@@ -37,6 +37,9 @@ const runtimePanel = source(
 const conversationTurns = source(
   "../src/lib/conversations/turn-service.ts",
 );
+const assistantActions = source(
+  "../src/app/components/assistant-message-actions.tsx",
+);
 
 test("only agents that start from a brief are offered to the model", async () => {
   const {
@@ -289,6 +292,36 @@ test("agent-result continuations stay in context without impersonating the user"
   assert.match(
     conversationTurns,
     /internalAgentContinuation[\s\S]*metadata:[\s\S]*internalAgentContinuation: true/,
+  );
+});
+
+test("a delegated research hand-back renders as one coherent turn", () => {
+  assert.match(
+    runtimePanel,
+    /delegatedTurnHasContinuation[\s\S]*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+  );
+  assert.match(runtimePanel, /delegatedTurnHasContinuation\s*\? "hidden"/);
+  assert.match(runtimePanel, /"Synthesizing research"/);
+  assert.match(runtimePanel, /"Research synthesized"/);
+  assert.match(
+    runtimePanel,
+    /suppressActions=\{message\.delegatedAgentRun === true\}/,
+  );
+  assert.match(assistantActions, /if \(suppressActions\) return null;/);
+});
+
+test("delegation and trusted hand-backs do not trip factual-answer gates", () => {
+  assert.match(
+    eventStream,
+    /webGroundingAppliesToCompletion[\s\S]*lastAgentLaunchRequestId === 0/,
+  );
+  assert.match(
+    conversationTurns,
+    /const geographicGrounding =[\s\S]*input\.internalAgentContinuation[\s\S]*trusted model-to-model continuation/,
+  );
+  assert.match(
+    conversationTurns,
+    /!input\.internalAgentContinuation &&[\s\S]*requiredCapabilities\.includes\("web_research"\)/,
   );
 });
 

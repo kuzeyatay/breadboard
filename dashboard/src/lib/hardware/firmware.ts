@@ -6,7 +6,12 @@
 // is accepted: a body referencing a constant that does not exist is discarded in
 // favour of the deterministic fallback rather than shipped broken.
 
-import { firmwareDriver, genericDriver, type DriverContext } from "./firmware-drivers.ts";
+import {
+  firmwareDriver,
+  genericDriver,
+  type DriverContext,
+  type FirmwareDriver,
+} from "./firmware-drivers.ts";
 import type { CompiledCircuit, PeripheralPlacement } from "./compiler.ts";
 import type { FirmwareLogic } from "./schemas.ts";
 import type { ComponentDefinition, FirmwareProject, HardwareProjectRequest } from "./types.ts";
@@ -47,11 +52,53 @@ interface PlacementFirmware {
   definition: ComponentDefinition;
   context: DriverContext;
   driver: NonNullable<ReturnType<typeof firmwareDriver>>;
+  /** False when generated code can only report why this part is unresolved. */
+  verified: boolean;
+}
+
+function busWithoutDriver(name: string): FirmwareDriver {
+  return {
+    variablePrefix: "unverified",
+    libraries: [],
+    includes: [],
+    declarations: () => [],
+    setup: (context) => [
+      `Serial.println(F("FAIL ${context.reference} ${name.replace(/["\\]/g, "")} has no verified firmware driver."));`,
+      "ok = false;",
+    ],
+    api: () => [],
+    fallbackLoop: () => [],
+  };
+}
+
+function unresolvedElectricalPlaceholder(name: string): FirmwareDriver {
+  return {
+    variablePrefix: "unresolved",
+    libraries: [],
+    includes: [],
+    declarations: () => [],
+    setup: (context) => [
+      `Serial.println(F("UNRESOLVED ${context.reference} ${name.replace(/["\\]/g, "")} has no verified electrical definition."));`,
+      `Serial.println(F("FAIL ${context.reference} cannot be initialised or validated."));`,
+      "ok = false;",
+    ],
+    api: () => [],
+    fallbackLoop: () => [],
+  };
 }
 
 function collectPlacements(circuit: CompiledCircuit): PlacementFirmware[] {
   const result: PlacementFirmware[] = [];
   for (const placement of circuit.peripherals) {
+    const isElectricalPlaceholder = placement.definition.rules.electricalPlaceholder === true;
+    const isPurePhysicalReference =
+      !isElectricalPlaceholder &&
+      placement.definition.interfaces.length === 0 &&
+      placement.definition.pins.length === 0;
+    // Optics, mounts and other geometry have no executable firmware contract.
+    // Calling them "initialised" is meaningless and hides incomplete circuits.
+    if (isPurePhysicalReference) continue;
+
     const pinConstants: Record<string, string> = {};
     for (const signal of placement.signalPins) {
       if (signal.assignment.constantName) {
@@ -62,11 +109,15 @@ function collectPlacements(circuit: CompiledCircuit): PlacementFirmware[] {
       pinConstants.SDA = "PIN_I2C_SDA";
       pinConstants.SCL = "PIN_I2C_SCL";
     }
-    // Every part reaches the firmware. Without a hand-written template one is
-    // synthesised from the pins the compiler assigned.
-    const driver =
-      firmwareDriver(placement.definition.id) ??
-      genericDriver({
+    const handWritten = firmwareDriver(placement.definition.id);
+    const unsupportedBus =
+      !handWritten && ["i2c", "spi", "uart"].includes(placement.interfaceKind);
+    const driver = isElectricalPlaceholder
+      ? unresolvedElectricalPlaceholder(placement.definition.name)
+      : handWritten ??
+        (unsupportedBus
+          ? busWithoutDriver(placement.definition.name)
+          : genericDriver({
         definitionId: placement.definition.id,
         signals: placement.signalPins.flatMap((signal) => {
           const pin = placement.definition.pins.find(
@@ -81,11 +132,12 @@ function collectPlacements(circuit: CompiledCircuit): PlacementFirmware[] {
                 : "in";
           return [{ pinId: pin.id, label: pin.label, kind } as const];
         }),
-      });
+          }));
     result.push({
       placement,
       definition: placement.definition,
       driver,
+      verified: !isElectricalPlaceholder && !unsupportedBus,
       context: {
         reference: placement.instance.reference,
         variable: driverVariable(driver.variablePrefix, placement.instance.reference),
@@ -186,6 +238,7 @@ function mainSource(input: {
   logic: FirmwareLogic | null;
 }): string {
   const { circuit, placements, includes, logic } = input;
+  const hasUnresolvedParts = placements.some((entry) => !entry.verified);
   const usesI2c = placements.some((entry) => entry.placement.interfaceKind === "i2c");
   const wireBegin = AVR_BOARDS.includes(circuit.controllerDefinition.id)
     ? "Wire.begin();  // this board's I2C pins are fixed by the core"
@@ -240,10 +293,11 @@ function mainSource(input: {
       : []),
     "  hardwareReady = ok;",
     "  if (!hardwareReady) {",
-    '    Serial.println(F("One or more parts did not initialise. Check the wiring above before trusting any reading."));',
-    "  } else {",
-    '    Serial.println(F("All parts initialised."));',
+    '    Serial.println(F("One or more parts are unresolved or did not initialise. Do not trust this build yet."));',
     "  }",
+    ...(!hasUnresolvedParts
+      ? ["  else {", '    Serial.println(F("All parts initialised."));', "  }"]
+      : []),
     "}",
     "",
     "void loop() {",
@@ -303,7 +357,7 @@ function readmeSource(input: {
       (entry) =>
         `- **${entry.context.reference}** ${entry.definition.name}${
           entry.context.i2cAddress ? ` at I²C ${entry.context.i2cAddress}` : ""
-        }`,
+        }${entry.verified ? "" : " — **UNRESOLVED: no verified firmware driver/electrical definition**"}`,
     ),
     "",
     "## Build",
@@ -341,6 +395,11 @@ export function generateFirmware(input: {
   // define; the deterministic fallback then keeps the project buildable.
   let logic = input.logic ?? null;
   let rejectedLogicReason: string | undefined;
+  if (logic && placements.some((entry) => !entry.verified)) {
+    rejectedLogicReason =
+      "Application logic was not included because one or more required electrical parts have no verified firmware binding.";
+    logic = null;
+  }
   if (logic) {
     const body = [logic.setupBody, logic.loopBody, logic.helperDeclarations].join("\n");
     const unknown = referencedGeneratedConstants(body).filter(
@@ -373,8 +432,14 @@ export function generateFirmware(input: {
     logic?.expectedSerialOutput?.trim() ||
     [
       `Breadboard hardware blueprint — ${circuit.controllerDefinition.name}`,
-      ...placements.map((entry) => `OK   ${entry.context.reference} ${entry.definition.name} ready`),
-      "All parts initialised.",
+      ...placements.map((entry) =>
+        entry.verified
+          ? `OK   ${entry.context.reference} ${entry.definition.name} ready`
+          : `FAIL ${entry.context.reference} ${entry.definition.name} is unresolved`,
+      ),
+      ...(placements.some((entry) => !entry.verified)
+        ? ["One or more parts are unresolved or did not initialise. Do not trust this build yet."]
+        : ["All parts initialised."]),
     ].join("\n");
 
   return {

@@ -302,7 +302,14 @@ def convert_chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> 
                     image = part.get("image_url")
                     url = image.get("url") if isinstance(image, dict) else image
                     if isinstance(url, str) and url:
-                        content_items.append({"type": "input_image", "image_url": _normalize_image_data_url(url)})
+                        input_image = {
+                            "type": "input_image",
+                            "image_url": _normalize_image_data_url(url),
+                        }
+                        detail = image.get("detail") if isinstance(image, dict) else None
+                        if detail in {"auto", "low", "high", "original"}:
+                            input_image["detail"] = detail
+                        content_items.append(input_image)
         elif isinstance(content, str) and content:
             kind = "output_text" if role == "assistant" else "input_text"
             content_items.append({"type": kind, "text": content})
@@ -558,7 +565,6 @@ def sse_translate_chat(
     saw_any_summary = False
     pending_summary_paragraph = False
     upstream_usage = None
-    ws_state: dict[str, Any] = {}
     ws_index: dict[str, int] = {}
     ws_next_index: int = 0
     
@@ -642,80 +648,15 @@ def sse_translate_chat(
             if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
                 response_id = evt["response"].get("id") or response_id
 
-            if isinstance(kind, str) and ("web_search_call" in kind):
-                try:
-                    call_id = evt.get("item_id") or "ws_call"
-                    if verbose and vlog:
-                        try:
-                            vlog(f"CM_TOOLS {kind} id={call_id} -> tool_calls(web_search)")
-                        except Exception:
-                            pass
-                    item = evt.get('item') if isinstance(evt.get('item'), dict) else {}
-                    params_dict = ws_state.setdefault(call_id, {}) if isinstance(ws_state.get(call_id), dict) else {}
-                    def _merge_from(src):
-                        if not isinstance(src, dict):
-                            return
-                        for whole in ('parameters','args','arguments','input'):
-                            if isinstance(src.get(whole), dict):
-                                params_dict.update(src.get(whole))
-                        if isinstance(src.get('query'), str): params_dict.setdefault('query', src.get('query'))
-                        if isinstance(src.get('q'), str): params_dict.setdefault('query', src.get('q'))
-                        for rk in ('recency','time_range','days'):
-                            if src.get(rk) is not None and rk not in params_dict: params_dict[rk] = src.get(rk)
-                        for dk in ('domains','include_domains','include'):
-                            if isinstance(src.get(dk), list) and 'domains' not in params_dict: params_dict['domains'] = src.get(dk)
-                        for mk in ('max_results','topn','limit'):
-                            if src.get(mk) is not None and 'max_results' not in params_dict: params_dict['max_results'] = src.get(mk)
-                    _merge_from(item)
-                    _merge_from(evt if isinstance(evt, dict) else None)
-                    params = params_dict if params_dict else None
-                    if isinstance(params, dict):
-                        try:
-                            ws_state.setdefault(call_id, {}).update(params)
-                        except Exception:
-                            pass
-                    eff_params = ws_state.get(call_id, params if isinstance(params, (dict, list, str)) else {})
-                    args_str = _serialize_tool_args(eff_params)
-                    if call_id not in ws_index:
-                        ws_index[call_id] = ws_next_index
-                        ws_next_index += 1
-                    _idx = ws_index.get(call_id, 0)
-                    delta_chunk = {
-                        "id": response_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": model,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {
-                                    "tool_calls": [
-                                        {
-                                            "index": _idx,
-                                            "id": call_id,
-                                            "type": "function",
-                                            "function": {"name": "web_search", "arguments": args_str},
-                                        }
-                                    ]
-                                },
-                                "finish_reason": None,
-                            }
-                        ],
-                    }
-                    yield f"data: {json.dumps(delta_chunk)}\n\n".encode("utf-8")
-                    if kind.endswith(".completed") or kind.endswith(".done"):
-                        finish_chunk = {
-                            "id": response_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": model,
-                            "choices": [
-                                {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
-                            ],
-                        }
-                        yield f"data: {json.dumps(finish_chunk)}\n\n".encode("utf-8")
-                except Exception:
-                    pass
+            # Responses API web_search calls are executed by the upstream
+            # service. Their lifecycle events are observability, not function
+            # calls for the chat-completions client to execute again.
+            if isinstance(kind, str) and "web_search_call" in kind:
+                if verbose and vlog:
+                    try:
+                        vlog(f"CM_TOOLS {kind} handled upstream")
+                    except Exception:
+                        pass
 
             if kind == "response.output_text.delta":
                 delta = evt.get("delta") or ""
@@ -741,30 +682,19 @@ def sse_translate_chat(
                 yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
             elif kind == "response.output_item.done":
                 item = evt.get("item") or {}
-                if isinstance(item, dict) and (item.get("type") == "function_call" or item.get("type") == "web_search_call"):
+                if isinstance(item, dict) and item.get("type") == "function_call":
                     call_id = item.get("call_id") or item.get("id") or ""
-                    name = item.get("name") or ("web_search" if item.get("type") == "web_search_call" else "")
+                    name = item.get("name") or ""
                     raw_args = item.get("arguments") or item.get("parameters")
-                    if isinstance(raw_args, dict):
-                        try:
-                            ws_state.setdefault(call_id, {}).update(raw_args)
-                        except Exception:
-                            pass
-                    eff_args = ws_state.get(call_id, raw_args if isinstance(raw_args, (dict, list, str)) else {})
                     try:
-                        args = _serialize_tool_args(eff_args)
+                        args = _serialize_tool_args(raw_args)
                     except Exception:
                         args = "{}"
-                    if item.get("type") == "web_search_call" and verbose and vlog:
-                        try:
-                            vlog(f"CM_TOOLS response.output_item.done web_search_call id={call_id} has_args={bool(args)}")
-                        except Exception:
-                            pass
                     if call_id not in ws_index:
                         ws_index[call_id] = ws_next_index
                         ws_next_index += 1
                     _idx = ws_index.get(call_id, 0)
-                    if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
+                    if call_id and name and isinstance(args, str):
                         delta_chunk = {
                             "id": response_id,
                             "object": "chat.completion.chunk",
@@ -797,6 +727,7 @@ def sse_translate_chat(
                             "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
                         }
                         yield f"data: {json.dumps(finish_chunk)}\n\n".encode("utf-8")
+                        sent_stop_chunk = True
             elif kind == "response.reasoning_summary_part.added":
                 if compat in ("think-tags", "o3"):
                     if saw_any_summary:

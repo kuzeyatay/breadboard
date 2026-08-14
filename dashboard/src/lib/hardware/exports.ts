@@ -47,6 +47,30 @@ export function assemblyMarkdown(design: HardwareDesign): string {
   return lines.join("\n");
 }
 
+function componentResearchMarkdown(design: HardwareDesign): string {
+  return [
+    `# ${design.title} — online component research`,
+    "",
+    "These records are the source-backed lookup snapshot used by this blueprint.",
+    "A found product was wired automatically only when its record was marked **used**.",
+    "",
+    ...(design.componentResearch ?? []).flatMap((record) => [
+      `## ${record.requestedAs}`,
+      "",
+      `Status: **${record.status}**.`,
+      "",
+      record.definition
+        ? `Candidate: ${record.definition.name}${record.definition.manufacturer ? ` — ${record.definition.manufacturer}` : ""}${record.definition.manufacturerPartNumber ? ` ${record.definition.manufacturerPartNumber}` : ""}.`
+        : "No component definition was accepted.",
+      "",
+      record.note,
+      "",
+      ...record.sources.map((source) => `- [${source.title}](${source.url}) — ${source.kind}`),
+      "",
+    ]),
+  ].join("\n");
+}
+
 export function designExportFiles(design: HardwareDesign): ExportFile[] {
   const files: ExportFile[] = [
     {
@@ -75,6 +99,15 @@ export function designExportFiles(design: HardwareDesign): ExportFile[] {
       content: `${JSON.stringify(design.circuitJson, null, 2)}\n`,
       mimeType: "application/json",
       description: "Circuit JSON (source-level subset): components, ports, nets and traces.",
+    });
+  }
+
+  if (design.componentResearch?.length) {
+    files.push({
+      path: "component-research.md",
+      content: componentResearchMarkdown(design),
+      mimeType: "text/markdown",
+      description: "Online component candidates, acceptance status, and manufacturer sources.",
     });
   }
 

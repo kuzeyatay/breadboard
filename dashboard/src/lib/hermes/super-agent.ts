@@ -220,6 +220,23 @@ function emailRoutingRule(): string {
 }
 
 /**
+ * Keep a multi-round research agent distinct from the inline lookup tool.
+ *
+ * Without an explicit boundary, the model sees that both can reach the web and
+ * reasonably chooses the tool it can run in the current turn. That defeats the
+ * point of Super Agent for questions whose answer depends on comparing a body
+ * of evidence rather than retrieving one fact.
+ */
+function researchRoutingRule(): string {
+  return [
+    "## Substantive research goes to Deep Research",
+    "Use `web_search` yourself for a narrow lookup: one current fact, one page, or one source that can settle the question. Do not turn it into a long batch of searches inside this Hermes turn.",
+    "When the user explicitly asks you to research, search into, or investigate a topic and the answer requires comparing evidence across sources, call `agent_launch` with agent id `deep-research`. Questions about whether a method works, its benefits or harms, and whether learning is retained are Deep Research work even when the user wants a normal conversational answer rather than a formal report.",
+    "For a normal question, begin the Deep Research brief with `--answer` so the worker does the full research loop but returns a direct sourced answer. Use its report output only when the user asks for a report, review, survey, or detailed write-up.",
+  ].join("\n");
+}
+
+/**
  * The directive and the inventory, as one system-prompt section.
  *
  * Two things are stated as fact rather than left to inference. First, the agent
@@ -307,7 +324,7 @@ export function renderSuperAgentDirective(
           (division) =>
             `- ${division.label} (${division.count}): ${division.examples.join(", ")}${division.count > division.examples.length ? ", …" : ""}`,
         ),
-        "A persona can also be pinned to the whole conversation from the Agents tab, or with `/agent:<slug>` in a message — that is the user's choice to make, not yours to announce every turn.",
+        "A persona can also be pinned to the whole conversation from the Agents tab, or with `/agents:agency-agents:<slug>` in a message — that is the user's choice to make, not yours to announce every turn.",
       ].join("\n"),
     );
   }
@@ -339,6 +356,13 @@ export function renderSuperAgentDirective(
       inventory.runtimeAgents.some((agent) => agent.id === INBOX_ZERO_AGENT_ID)
     ) {
       sections.push(emailRoutingRule());
+    }
+    if (
+      inventory.runtimeAgents.some(
+        (agent) => agent.id === "deep-research" && agent.launchable,
+      )
+    ) {
+      sections.push(researchRoutingRule());
     }
   }
 

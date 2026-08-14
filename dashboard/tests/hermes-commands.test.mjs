@@ -35,7 +35,7 @@ test("plain messages pass through unchanged", async () => {
 test("agent commands are namespaced, keep only the last selection, and preserve the user request", async () => {
   const selected = await resolveCommandMessage(
     1,
-    "/agent:ux-researcher /agent:frontend-developer review this interface",
+    "/agent:ux-researcher /agents:agency-agents:frontend-developer review this interface",
   );
   assert.equal(selected.text, "review this interface");
   assert.equal(selected.userText, "review this interface");
@@ -105,12 +105,19 @@ test("clean tokens resolve and collisions receive deterministic visible namespac
       { kind: "prompt", slug: "shared" },
       { kind: "mcp", slug: "drive" },
       { kind: "agent", slug: "shared" },
+      { kind: "agent", slug: "geographer", source: "Agency Agents" },
     ]),
     [
       { kind: "skill", slug: "shared", token: "skill-shared" },
       { kind: "prompt", slug: "shared", token: "prompt-shared" },
       { kind: "mcp", slug: "drive", token: "drive" },
       { kind: "agent", slug: "shared", token: "agent:shared" },
+      {
+        kind: "agent",
+        slug: "geographer",
+        source: "Agency Agents",
+        token: "agents:agency-agents:geographer",
+      },
     ],
   );
 });

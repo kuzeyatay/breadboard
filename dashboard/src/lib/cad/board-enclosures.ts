@@ -10,7 +10,6 @@
 // when the same record labels it as an assumption, so it cannot look like a
 // measured figure.
 
-import type { CadDesignFallback } from "./design-service.ts";
 import type { CADValidationIssue, ParametricCADArtifact } from "./types.ts";
 
 export interface BoardFootprint {
@@ -346,7 +345,7 @@ const MECHANISM =
 const MOUNT_ONLY =
   /\b(?:mount|bracket|clip|clamp|holder|cradle|adapter|fixture|jig|carrier|sled)\b/i;
 
-/** Classify shape/function before writing a CAD prompt or choosing a fallback. */
+/** Classify shape/function before writing the physical-design brief. */
 export function physicalDesignKind(brief: string): PhysicalDesignKind {
   const searchable = physicalSearchText(brief);
   if (OPTICAL_PRODUCT.test(searchable) && EYEWEAR.test(searchable)) return "optomechanical-product";
@@ -496,6 +495,42 @@ function normaliseCoverageText(value: string): string {
     .trim();
 }
 
+const COMPONENT_REFERENCE_STOP_WORDS = new Set([
+  "reference",
+  "envelope",
+  "module",
+  "assembly",
+  "custom",
+  "part",
+  "component",
+]);
+
+function componentReferenceTokens(value: string): Set<string> {
+  return new Set(
+    normaliseCoverageText(value)
+      .split(" ")
+      .filter((token) => token.length > 1 && !COMPONENT_REFERENCE_STOP_WORDS.has(token)),
+  );
+}
+
+/**
+ * Model-created design specs often call a measured item `display_reference`
+ * instead of repeating the compiler id `micro-oled-display`. Accept that
+ * human-readable naming only when at least two distinctive tokens agree;
+ * one generic word such as "optical" or "sensor" is not enough.
+ */
+function componentReferenceMatches(record: string, identifiers: string[]): boolean {
+  if (identifiers.some((identifier) => record.includes(identifier))) return true;
+  const recordTokens = componentReferenceTokens(record);
+  return identifiers.some((identifier) => {
+    const requestedTokens = componentReferenceTokens(identifier);
+    const shared = [...requestedTokens].filter((token) => recordTokens.has(token)).length;
+    const shorter = Math.min(requestedTokens.size, recordTokens.size);
+    const required = Math.min(3, Math.max(2, Math.ceil(shorter * 0.6)));
+    return shared >= required;
+  });
+}
+
 /** Semantic acceptance gate used in addition to OpenCascade validation. */
 export function physicalDesignCoverageIssues(
   input: EnclosureBriefInput,
@@ -553,6 +588,210 @@ export function physicalDesignCoverageIssues(
     });
   }
 
+  // A person holding several printed bodies cannot tell from the geometry which
+  // one clamps what, or which screw to buy. That is part of the deliverable, so
+  // a physical design that joins bodies or reserves bought parts is unfinished
+  // until its assembly graph is both documented and internally consistent.
+  const assembly = manifest.designSpec.assembly;
+  const referenced = manifest.designSpec.components.filter(
+    (component) => component.bodyRole === "reference",
+  );
+  const requiresAssembly =
+    manifest.designSpec.components.length > 1 ||
+    manifest.designSpec.components.some((component) => component.quantity > 1);
+  if (requiresAssembly && (!assembly || assembly.steps.length === 0)) {
+    issues.push({
+      code: "ASSEMBLY_NOT_DOCUMENTED",
+      severity: "error",
+      feature: "assembly",
+      message: `The design has ${printable.length} printed ${printable.length === 1 ? "body" : "bodies"}` +
+        (referenced.length
+          ? ` and ${referenced.length} bought/reference ${referenced.length === 1 ? "part" : "parts"}`
+          : "") +
+        ", but no ordered assembly steps say what attaches where.",
+      repairHint:
+        "Send `assembly` with cad_generate_model: an overview, the bought hardware with sizes and " +
+        "quantities, and one ordered step per join, naming the component ids it brings together.",
+    });
+  }
+
+  if (assembly?.steps.length) {
+    const componentIdList = manifest.designSpec.components.map((component) => component.id);
+    const hardwareIdList = assembly.hardware.map((item) => item.id);
+    const componentIds = new Set(componentIdList);
+    const hardwareIds = new Set(hardwareIdList);
+    const usedComponents = new Set<string>();
+    const usedHardware = new Set<string>();
+    const graph = new Map<string, Set<string>>();
+    const connect = (left: string, right: string) => {
+      if (!graph.has(left)) graph.set(left, new Set());
+      if (!graph.has(right)) graph.set(right, new Set());
+      graph.get(left)!.add(right);
+      graph.get(right)!.add(left);
+    };
+
+    const duplicateOrders = new Set<number>();
+    const seenOrders = new Set<number>();
+    const unknownParts = new Set<string>();
+    const unknownHardware = new Set<string>();
+    const emptySteps: number[] = [];
+    for (const step of assembly.steps) {
+      if (seenOrders.has(step.order)) duplicateOrders.add(step.order);
+      seenOrders.add(step.order);
+      if (!step.parts.length) emptySteps.push(step.order);
+
+      const joinedComponents: string[] = [];
+      for (const id of step.parts) {
+        if (!componentIds.has(id)) {
+          unknownParts.add(id);
+          continue;
+        }
+        usedComponents.add(id);
+        joinedComponents.push(id);
+      }
+      for (const id of step.hardware ?? []) {
+        if (!hardwareIds.has(id)) {
+          unknownHardware.add(id);
+          continue;
+        }
+        usedHardware.add(id);
+      }
+      const uniqueJoinedComponents = [...new Set(joinedComponents)];
+      for (let index = 1; index < uniqueJoinedComponents.length; index += 1) {
+        connect(uniqueJoinedComponents[0]!, uniqueJoinedComponents[index]!);
+      }
+    }
+
+    const duplicateIds = (ids: string[]) => {
+      const seen = new Set<string>();
+      const duplicates = new Set<string>();
+      for (const id of ids) {
+        if (seen.has(id)) duplicates.add(id);
+        seen.add(id);
+      }
+      return [...duplicates].sort();
+    };
+    const duplicateComponentIds = duplicateIds(componentIdList);
+    if (duplicateComponentIds.length) {
+      issues.push({
+        code: "ASSEMBLY_DUPLICATE_COMPONENT_IDS",
+        severity: "error",
+        feature: "assembly",
+        actual: duplicateComponentIds,
+        message: `Component ids must be unique before assembly can be interpreted: ${duplicateComponentIds.join(", ")}.`,
+        repairHint: "Give every printed body and reference component one stable, unique id.",
+      });
+    }
+    const duplicateHardwareIds = duplicateIds(hardwareIdList);
+    if (duplicateHardwareIds.length) {
+      issues.push({
+        code: "ASSEMBLY_DUPLICATE_HARDWARE_IDS",
+        severity: "error",
+        feature: "assembly",
+        actual: duplicateHardwareIds,
+        message: `Assembly hardware ids must be unique: ${duplicateHardwareIds.join(", ")}.`,
+        repairHint: "Merge identical BOM lines or assign distinct ids to genuinely different hardware.",
+      });
+    }
+    if (unknownParts.size) {
+      issues.push({
+        code: "ASSEMBLY_UNKNOWN_PART_IDS",
+        severity: "error",
+        feature: "assembly",
+        actual: [...unknownParts].sort(),
+        message: `Assembly steps name unknown component ids: ${[...unknownParts].sort().join(", ")}.`,
+        repairHint: "Use exact ids from designSpec.components in every assembly step.",
+      });
+    }
+    if (unknownHardware.size) {
+      issues.push({
+        code: "ASSEMBLY_UNKNOWN_HARDWARE_IDS",
+        severity: "error",
+        feature: "assembly",
+        actual: [...unknownHardware].sort(),
+        message: `Assembly steps name undeclared hardware ids: ${[...unknownHardware].sort().join(", ")}.`,
+        repairHint: "Declare each bought fastener, insert, pad or adhesive in assembly.hardware, then use that exact id.",
+      });
+    }
+    if (emptySteps.length) {
+      issues.push({
+        code: "ASSEMBLY_EMPTY_STEPS",
+        severity: "error",
+        feature: "assembly",
+        actual: emptySteps,
+        message: `Assembly steps ${emptySteps.join(", ")} do not name a component, so they cannot say what attaches where.`,
+        repairHint: "Name the exact component ids handled or joined in every step.",
+      });
+    }
+
+    if (duplicateOrders.size) {
+      issues.push({
+        code: "ASSEMBLY_DUPLICATE_ORDER",
+        severity: "error",
+        feature: "assembly",
+        actual: [...duplicateOrders].sort((left, right) => left - right),
+        message: `Assembly step order values must be unique; repeated: ${[...duplicateOrders]
+          .sort((left, right) => left - right)
+          .join(", ")}.`,
+        repairHint: "Renumber the steps into one unambiguous build order.",
+      });
+    }
+
+    const unusedComponents = [...componentIds].filter((id) => !usedComponents.has(id));
+    if (unusedComponents.length) {
+      issues.push({
+        code: "ASSEMBLY_UNUSED_COMPONENTS",
+        severity: "error",
+        feature: "assembly",
+        actual: unusedComponents,
+        message: `The assembly never says where these components go: ${unusedComponents.join(", ")}.`,
+        repairHint: "Add an ordered step that names every printed body and every reference component it seats, retains or aligns.",
+      });
+    }
+
+    const unusedHardware = [...hardwareIds].filter((id) => !usedHardware.has(id));
+    if (unusedHardware.length) {
+      issues.push({
+        code: "ASSEMBLY_UNUSED_HARDWARE",
+        severity: "error",
+        feature: "assembly",
+        actual: unusedHardware,
+        message: `The hardware list includes items no assembly step uses: ${unusedHardware.join(", ")}.`,
+        repairHint: "Use every listed item in a step, or remove it from assembly.hardware.",
+      });
+    }
+
+    // Steps are edges in an attachment graph. Checking only their count allowed
+    // two independently documented subassemblies to masquerade as one product.
+    // Only component co-membership creates an edge. A BOM id such as `m3_screw`
+    // can represent several physical screws, so using that same id in unrelated
+    // steps is not proof that those subassemblies touch each other.
+    if (!duplicateComponentIds.length && !unusedComponents.length && componentIds.size > 1) {
+      const start = manifest.designSpec.components[0]!.id;
+      const visited = new Set<string>([start]);
+      const pending = [start];
+      while (pending.length) {
+        const current = pending.pop()!;
+        for (const neighbour of graph.get(current) ?? []) {
+          if (visited.has(neighbour)) continue;
+          visited.add(neighbour);
+          pending.push(neighbour);
+        }
+      }
+      const disconnected = [...componentIds].filter((id) => !visited.has(id));
+      if (disconnected.length) {
+        issues.push({
+          code: "ASSEMBLY_GRAPH_DISCONNECTED",
+          severity: "error",
+          feature: "assembly",
+          actual: disconnected,
+          message: `The documented steps leave a separate, unattached subassembly: ${disconnected.join(", ")}.`,
+          repairHint: "Add the missing join between subassemblies and name both mating component ids and any hardware used.",
+        });
+      }
+    }
+  }
+
   const componentRecords = manifest.designSpec.components.map((component) =>
     `${component.id} ${component.name}`.toLowerCase().replace(/[^a-z0-9]+/g, " "),
   );
@@ -563,7 +802,7 @@ export function physicalDesignCoverageIssues(
     const identifiers = [peripheral.definitionId, peripheral.name].map((value) =>
       value.toLowerCase().replace(/[^a-z0-9]+/g, " "),
     );
-    if (!componentRecords.some((record) => identifiers.some((id) => record.includes(id)))) {
+    if (!componentRecords.some((record) => componentReferenceMatches(record, identifiers))) {
       issues.push({
         code: "MISSING_COMPONENT_REFERENCE",
         severity: "error",
@@ -698,235 +937,6 @@ export function enclosureBriefFromDesign(input: EnclosureBriefInput): string {
     );
   }
   return lines.join("\n");
-}
-
-/**
- * A known-good, editable *simple enclosure* when the model call fails.
- *
- * This is intentionally a real CadQuery program rather than a fake preview:
- * it goes through the same isolated OpenCascade build, validation and export
- * pipeline as model-written CAD. It is intentionally unavailable for mounts,
- * mechanisms, wearables and optomechanical products: substituting a box for an
- * unsupported product is worse than reporting that the design is incomplete.
- */
-export function enclosureFallbackFromDesign(
-  input: EnclosureBriefInput & {
-    process: "fdm" | "sla" | "sls" | "unknown";
-    wallThickness: number;
-    clearance: number;
-    printerBed: { x: number; y: number; z: number };
-  },
-): CadDesignFallback | null {
-  if (physicalDesignKind(input.userBrief) !== "simple-enclosure") return null;
-  const footprint = BOARD_FOOTPRINTS[input.controllerDefinitionId];
-  const boardLength = footprint?.length ?? 60;
-  const boardWidth = footprint?.width ?? 35;
-  const boardHeight = footprint?.height ?? 15;
-  const wall = input.wallThickness;
-  const clearance = input.clearance;
-  const floor = wall;
-  const lid = Math.max(wall, 1.2);
-  const boardClearance = Math.max(clearance, 0.25);
-  const extraHeight = input.prototypeType === "breadboard" ? 12 : 5;
-  // Ten millimetres of margin leaves real corner space for closure bosses;
-  // the former 4 mm margin could not hold a screw boss outside the PCB.
-  const assemblyMargin = 10;
-  const innerLength = boardLength + boardClearance * 2 + assemblyMargin;
-  const innerWidth = boardWidth + boardClearance * 2 + assemblyMargin;
-  const innerHeight = boardHeight + extraHeight;
-  const outerLength = innerLength + wall * 2;
-  const outerWidth = innerWidth + wall * 2;
-  const shellHeight = innerHeight + floor;
-  const serviceOpeningWidth = footprint?.connectors.length
-    ? Math.min(
-        innerWidth - 2,
-        footprint.connectors.reduce((sum, connector) => sum + connector.width, 0) +
-          Math.max(0, footprint.connectors.length - 1) * 3 +
-          clearance * 2,
-      )
-    : 0;
-  const serviceOpeningHeight = footprint?.connectors.length
-    ? Math.max(...footprint.connectors.map((connector) => connector.height)) + clearance * 2
-    : 0;
-  const serviceOpeningCentre = footprint?.connectors.length
-    ? Math.max(...footprint.connectors.map((connector) => connector.centreAboveBoard)) + floor
-    : 0;
-  const boardPocketHeight = 2;
-  const boardPocketRail = Math.max(1.2, wall * 0.55);
-  const closureScrewDiameter = 2.7;
-  const closureBossDiameter = Math.max(6, closureScrewDiameter + 3);
-  const closureBossInset = closureBossDiameter / 2 + 0.8;
-  const title = `${input.designTitle} enclosure`;
-
-  const parameters: Record<string, number | string | boolean> = {
-    board_length: boardLength,
-    board_width: boardWidth,
-    board_height: boardHeight,
-    wall: wall,
-    clearance: boardClearance,
-    assembly_margin: assemblyMargin,
-    floor: floor,
-    lid_thickness: lid,
-    inner_height: innerHeight,
-    board_pocket_height: boardPocketHeight,
-    board_pocket_rail: boardPocketRail,
-    closure_screw_diameter: closureScrewDiameter,
-    closure_boss_diameter: closureBossDiameter,
-    closure_boss_inset: closureBossInset,
-    service_opening_width: serviceOpeningWidth,
-    service_opening_height: serviceOpeningHeight,
-    service_opening_centre: serviceOpeningCentre,
-  };
-  const parameter = (
-    id: string,
-    label: string,
-    value: number | boolean,
-    source: "default" | "derived",
-    description: string,
-  ) => ({
-    id,
-    label,
-    value,
-    ...(typeof value === "number" ? { unit: "mm", minimum: 0.1 } : {}),
-    editable: source === "default",
-    source,
-    description,
-  });
-
-  const source = `import cadquery as cq
-
-DEFAULT_PARAMS = ${JSON.stringify(parameters, null, 2).replaceAll("true", "True").replaceAll("false", "False")}
-
-def build_model(params):
-    p = dict(DEFAULT_PARAMS)
-    p.update(params or {})
-    wall = float(p["wall"])
-    floor = float(p["floor"])
-    clearance = float(p["clearance"])
-    assembly_margin = float(p["assembly_margin"])
-    inner_l = float(p["board_length"]) + 2.0 * clearance + assembly_margin
-    inner_w = float(p["board_width"]) + 2.0 * clearance + assembly_margin
-    inner_h = float(p["inner_height"])
-    outer_l = inner_l + 2.0 * wall
-    outer_w = inner_w + 2.0 * wall
-    shell_h = inner_h + floor
-
-    outer = cq.Workplane("XY").box(outer_l, outer_w, shell_h, centered=(True, True, False))
-    cavity = cq.Workplane("XY").box(inner_l, inner_w, inner_h + wall, centered=(True, True, False)).translate((0, 0, floor))
-    shell = outer.cut(cavity)
-
-    # controller_retention: a sliding PCB pocket holds the board laterally;
-    # the retained lid prevents it lifting out after assembly.
-    pocket_h = float(p["board_pocket_height"])
-    rail_t = float(p["board_pocket_rail"])
-    board_l = float(p["board_length"])
-    board_w = float(p["board_width"])
-    rail_y = board_w / 2.0 + clearance + rail_t / 2.0
-    rail_l = board_l + 2.0 * clearance
-    left_rail = cq.Workplane("XY").box(rail_l, rail_t, pocket_h, centered=(True, True, False)).translate((0, -rail_y, floor))
-    right_rail = cq.Workplane("XY").box(rail_l, rail_t, pocket_h, centered=(True, True, False)).translate((0, rail_y, floor))
-    rear_stop = cq.Workplane("XY").box(rail_t, board_w + 2.0 * clearance + 2.0 * rail_t, pocket_h, centered=(True, True, False)).translate((rail_l / 2.0, 0, floor))
-    shell = shell.union(left_rail).union(right_rail).union(rear_stop)
-
-    # closure_retention: four screw bosses in the enclosure corners, outside
-    # the PCB pocket. The lid has matching clearance holes below.
-    screw_d = float(p["closure_screw_diameter"])
-    boss_d = float(p["closure_boss_diameter"])
-    boss_inset = float(p["closure_boss_inset"])
-    boss_points = [
-        (-inner_l / 2.0 + boss_inset, -inner_w / 2.0 + boss_inset),
-        (-inner_l / 2.0 + boss_inset, inner_w / 2.0 - boss_inset),
-        (inner_l / 2.0 - boss_inset, -inner_w / 2.0 + boss_inset),
-        (inner_l / 2.0 - boss_inset, inner_w / 2.0 - boss_inset),
-    ]
-    for bx, by in boss_points:
-        boss = cq.Workplane("XY").center(bx, by).circle(boss_d / 2.0).extrude(shell_h)
-        bore = cq.Workplane("XY").center(bx, by).circle(screw_d / 2.0).extrude(shell_h + wall)
-        shell = shell.union(boss).cut(bore)
-
-    opening_w = float(p["service_opening_width"])
-    opening_h = float(p["service_opening_height"])
-    if opening_w > 0.0 and opening_h > 0.0:
-        cutter = cq.Workplane("XY").box(3.0 * wall, opening_w, opening_h, centered=(True, True, True)).translate((-outer_l / 2.0, 0, float(p["service_opening_centre"])))
-        shell = shell.cut(cutter)
-
-    lid_t = float(p["lid_thickness"])
-    lid = cq.Workplane("XY").box(outer_l, outer_w, lid_t, centered=(True, True, False)).translate((0, 0, shell_h + 0.05))
-    for bx, by in boss_points:
-        lid_bore = cq.Workplane("XY").center(bx, by).circle(screw_d / 2.0 + 0.15).extrude(lid_t + 1.0).translate((0, 0, shell_h))
-        lid = lid.cut(lid_bore)
-    return {"shell": shell, "lid": lid}
-`;
-
-  return {
-    name: title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 120),
-    units: "mm",
-    parameters,
-    source,
-    note: `Deterministic fallback for: ${input.userBrief}`.slice(0, 2_000),
-    designSpec: {
-      name: title,
-      description:
-        `A parametric two-part enclosure sized around the ${input.controllerName}.`,
-      units: "mm",
-      manufacturingProcess: input.process,
-      parameters: [
-        parameter("board_length", "Board length", boardLength, "derived", "Measured controller PCB length."),
-        parameter("board_width", "Board width", boardWidth, "derived", "Measured controller PCB width."),
-        parameter("board_height", "Board height", boardHeight, "derived", "Measured maximum controller height."),
-        parameter("wall", "Wall thickness", wall, "default", "Manufacturing-process wall default."),
-        parameter("clearance", "Board clearance", boardClearance, "default", "Clearance around each board edge."),
-        parameter("assembly_margin", "Assembly margin", assemblyMargin, "derived", "Total extra length and width reserved outside the controller for retention and closure features."),
-        parameter("floor", "Floor thickness", floor, "derived", "Matches the wall thickness."),
-        parameter("lid_thickness", "Lid thickness", lid, "default", "Removable top plate thickness."),
-        parameter("inner_height", "Internal height", innerHeight, "derived", "Board height plus wiring allowance."),
-        parameter("board_pocket_height", "Board pocket height", boardPocketHeight, "default", "Height of the PCB guide rails and rear stop."),
-        parameter("board_pocket_rail", "Board pocket rail thickness", boardPocketRail, "derived", "Side-rail thickness for controller retention."),
-        parameter("closure_screw_diameter", "Closure screw clearance", closureScrewDiameter, "default", "Clearance diameter for four M2.5 lid screws."),
-        parameter("closure_boss_diameter", "Closure boss diameter", closureBossDiameter, "derived", "Material around each lid-screw hole."),
-        parameter("closure_boss_inset", "Closure boss inset", closureBossInset, "derived", "Boss-centre offset from each internal corner."),
-        parameter("service_opening_width", "Service opening width", serviceOpeningWidth, "derived", "Combined front connector access."),
-        parameter("service_opening_height", "Service opening height", serviceOpeningHeight, "derived", "Tallest front connector plus clearance."),
-        parameter("service_opening_centre", "Service opening centre", serviceOpeningCentre, "derived", "Opening centre above the enclosure floor."),
-      ],
-      components: [
-        { id: "shell", name: "Electronics shell", quantity: 1, bodyRole: "primary" },
-        { id: "lid", name: "Removable lid", quantity: 1, bodyRole: "lid" },
-        { id: input.controllerDefinitionId || "controller", name: input.controllerName, quantity: 1, bodyRole: "reference" },
-        ...input.peripherals
-          .filter((peripheral) => peripheral.mechanical)
-          .map((peripheral) => ({ id: peripheral.definitionId, name: peripheral.name, quantity: 1, bodyRole: "reference" as const })),
-        { id: "m2_5_lid_screws", name: "M2.5 lid screws", quantity: 4, bodyRole: "reference" },
-      ],
-      constraints: [
-        { id: "wall", type: "wall-thickness", description: "All primary walls meet the manufacturing-process default.", expected: wall, unit: "mm" },
-        { id: "board_fit", type: "clearance", description: "The controller envelope has clearance on every horizontal edge.", expected: boardClearance, unit: "mm" },
-        { id: "controller_retention", type: "fit", description: "Side rails, a rear stop and the installed lid retain the controller in a serviceable board pocket.", expected: boardClearance, unit: "mm" },
-        { id: "closure_retention", type: "hole", description: "Four M2.5 screws through the lid engage corner bosses in the shell.", expected: closureScrewDiameter, unit: "mm" },
-      ],
-      assumptions: [
-        ...(!footprint
-          ? [{ id: "board_envelope", description: `A ${boardLength} × ${boardWidth} × ${boardHeight} mm board envelope was assumed.`, reason: "No measured footprint exists for this controller.", userEditable: true }]
-          : []),
-        { id: "peripheral_space", description: `${extraHeight} mm of height above the controller is reserved for wiring and peripherals.`, reason: `The build style is ${input.prototypeType}.`, userEditable: true },
-      ],
-      exportSettings: {
-        stlLinearTolerance: 0.05,
-        stlAngularTolerance: 0.2,
-        generateStep: true,
-        generateStl: true,
-        generateGlb: true,
-        generate3mf: true,
-      },
-      declaredBoundingBox: {
-        x: outerLength,
-        y: outerWidth,
-        z: shellHeight + lid + 0.05,
-        tolerance: Math.max(0.5, clearance),
-      },
-      printerBed: input.printerBed,
-    },
-  };
 }
 
 function attachmentIntent(brief: string): boolean {

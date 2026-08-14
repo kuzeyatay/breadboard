@@ -90,8 +90,7 @@ class UnslopModelCoverageTests(unittest.TestCase):
     def _reset_cache() -> None:
         from chatmock.council import unslop as unslop_module
 
-        unslop_module._cached_directive = None
-        unslop_module._cache_key = None
+        unslop_module.reset_directive_cache()
 
     def _answer_with(self, model: str) -> ModelCall:
         router = _CapturingRouter()

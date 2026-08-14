@@ -156,6 +156,87 @@ const TEMPLATES: Record<string, FailureTemplate> = {
     repairHint: "Reduce the feature count or coarsen the export tolerance.",
     retryable: true,
   },
+  // ---- SolidWorks backend -------------------------------------------------
+  // An explicitly chosen backend that cannot run is never quietly replaced by
+  // CadQuery, so each of these has to say what is missing well enough to fix.
+  solidworks_unavailable: {
+    message: (detail) => detail || "The SolidWorks backend is not available on this machine.",
+    retryable: false,
+  },
+  solidworks_bridge_failed: {
+    message: (detail) =>
+      detail
+        ? `The SolidWorks bridge could not be started: ${detail}`
+        : "The SolidWorks bridge could not be started.",
+    retryable: false,
+  },
+  solidworks_bridge_crashed: {
+    message: (detail) =>
+      detail
+        ? `The SolidWorks bridge stopped unexpectedly: ${detail}`
+        : "The SolidWorks bridge stopped unexpectedly.",
+    repairHint: "The bridge restarts on the next request; the build can be attempted again.",
+    retryable: true,
+  },
+  solidworks_bridge_timeout: {
+    message: (detail) => detail || "SolidWorks did not finish starting in time.",
+    repairHint:
+      "SolidWorks may be showing a startup dialog. Bring it to the front, dismiss it, and try again.",
+    retryable: true,
+  },
+  solidworks_operation_timeout: {
+    message: (detail) => detail || "A SolidWorks operation did not finish in time.",
+    repairHint: "Reduce the number of sketch entities or features and try again.",
+    retryable: true,
+  },
+  solidworks_operation_failed: {
+    message: (detail) => detail || "SolidWorks refused one of the modelling operations.",
+    repairHint:
+      "Read which operation failed and change it. A profile that is not closed, or a cut shallower than the body it passes through, is the usual cause.",
+    retryable: true,
+  },
+  solidworks_invalid_program: {
+    message: (detail) => `The SolidWorks operation program did not validate: ${detail}`,
+    repairHint:
+      "Return a JSON object with `name` and an `operations` array of sketch/extrude/cut/fillet steps. Millimetres throughout.",
+    retryable: true,
+  },
+  solidworks_unsupported_operation: {
+    message: (detail) => detail || "That operation is not available through the SolidWorks bridge.",
+    repairHint:
+      "Rebuild the feature from the supported operations — sketch, extrude, cut, fillet — or use the CadQuery backend.",
+    retryable: true,
+  },
+  solidworks_export_failed: {
+    message: (detail) => detail || "A SolidWorks export did not produce a file.",
+    repairHint: "The part may have no solid body. Check that the first extrude produced one.",
+    retryable: true,
+  },
+  solidworks_export_escaped_workspace: {
+    message: (detail) => detail || "A SolidWorks export resolved outside its workspace.",
+    retryable: false,
+  },
+  solidworks_measurement_unavailable: {
+    message: (detail) =>
+      detail ||
+      "SolidWorks built the part, but Breadboard could not measure it because the local CAD service did not answer.",
+    retryable: false,
+  },
+  solidworks_measurement_failed: {
+    message: (detail) =>
+      detail || "The STEP SolidWorks exported could not be read back for measurement.",
+    repairHint:
+      "The exported geometry is not readable as a solid. Simplify the last feature and build again.",
+    retryable: true,
+  },
+  solidworks_tool_failed: {
+    message: (detail) => detail || "The SolidWorks bridge rejected a request.",
+    retryable: true,
+  },
+  solidworks_aborted: {
+    message: () => "The SolidWorks build was cancelled.",
+    retryable: false,
+  },
   export_too_large: {
     message: (detail) => detail || "An export exceeded the size limit.",
     repairHint: "Coarsen the STL tolerance in the export settings, or simplify the geometry.",

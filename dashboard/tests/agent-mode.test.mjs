@@ -21,6 +21,7 @@ const directService = source(
   "../src/lib/conversations/direct-turn-service.ts",
 );
 const turnService = source("../src/lib/conversations/turn-service.ts");
+const superAgentDirective = source("../src/lib/hermes/super-agent.ts");
 
 /** A localStorage-shaped stub plus the window surface the store subscribes to. */
 function installBrowser(initial = {}) {
@@ -215,4 +216,25 @@ test("a super-agent turn selects the whole inventory for itself", () => {
   );
   assert.match(turnService, /allowAllConnectionTools: superAgent/);
   assert.match(turnService, /renderSuperAgentDirective\(superAgentInventory\)/);
+});
+
+test("super agent delegates substantive evidence questions to Deep Research", () => {
+  assert.match(
+    superAgentDirective,
+    /## Substantive research goes to Deep Research/,
+  );
+  assert.match(
+    superAgentDirective,
+    /research, search into, or investigate a topic/,
+  );
+  assert.match(
+    superAgentDirective,
+    /whether a method works, its benefits or harms, and whether learning is retained/,
+  );
+  assert.match(superAgentDirective, /agent id `deep-research`/);
+  assert.match(superAgentDirective, /begin the Deep Research brief with `--answer`/);
+  assert.match(
+    superAgentDirective,
+    /does the full research loop but returns a direct sourced answer/,
+  );
 });

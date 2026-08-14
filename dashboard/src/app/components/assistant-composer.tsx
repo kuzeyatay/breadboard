@@ -86,6 +86,7 @@ import { SOCIALS_MANAGER_COMMAND } from '@/lib/socials-manager/identity.ts';
 import { HARDWARE_BLUEPRINT_COMMAND } from '@/lib/hardware/identity.ts';
 import { PARAMETRIC_CAD_COMMAND } from '@/lib/cad/identity.ts';
 import { HYPERFRAMES_COMMAND } from '@/lib/hyperframes/identity.ts';
+import { RESOURCE2SKILL_COMMAND } from '@/lib/resource2skill/identity.ts';
 import { OPENMONTAGE_COMMAND } from '@/lib/openmontage/identity.ts';
 import { OPENWORK_COMMAND } from '@/lib/openwork/identity.ts';
 import { OPENSCIENCE_COMMAND } from '@/lib/openscience/identity.ts';
@@ -295,6 +296,7 @@ interface Props {
   onSelectParametricCad?: () => void;
   /** HyperFrames needs no agent selection either — the command carries the brief. */
   onSelectHyperframes?: () => void;
+  onSelectResource2Skill?: () => void;
   /** OpenMontage likewise: the command carries the whole production brief. */
   onSelectOpenMontage?: () => void;
   /** OpenWork likewise: the command carries the task for its workspace. */
@@ -470,6 +472,7 @@ export default function AssistantComposer({
   onSelectHardwareBlueprint,
   onSelectParametricCad,
   onSelectHyperframes,
+  onSelectResource2Skill,
   onSelectOpenMontage,
   onSelectOpenwork,
   onSelectOpenscience,
@@ -978,6 +981,7 @@ export default function AssistantComposer({
     onSelectHardwareBlueprint ? 'hardware-blueprint' : null,
     onSelectParametricCad ? 'parametric-cad' : null,
     onSelectHyperframes ? 'hyperframes' : null,
+    onSelectResource2Skill ? 'resource2skill' : null,
     onSelectOpenMontage ? 'openmontage' : null,
     onSelectOpenwork ? 'openwork' : null,
     onSelectOpenscience ? 'openscience' : null,
@@ -1689,6 +1693,7 @@ export default function AssistantComposer({
             onSelectHardwareBlueprint={onSelectHardwareBlueprint ? () => insertCommandToken(HARDWARE_BLUEPRINT_COMMAND) : undefined}
             onSelectParametricCad={onSelectParametricCad ? () => insertCommandToken(PARAMETRIC_CAD_COMMAND) : undefined}
             onSelectHyperframes={onSelectHyperframes ? () => insertCommandToken(HYPERFRAMES_COMMAND) : undefined}
+            onSelectResource2Skill={onSelectResource2Skill ? () => insertCommandToken(RESOURCE2SKILL_COMMAND) : undefined}
             onSelectOpenMontage={onSelectOpenMontage ? () => insertCommandToken(OPENMONTAGE_COMMAND) : undefined}
             onSelectOpenwork={onSelectOpenwork ? () => insertCommandToken(OPENWORK_COMMAND) : undefined}
             onSelectOpenscience={onSelectOpenscience ? () => insertCommandToken(OPENSCIENCE_COMMAND) : undefined}

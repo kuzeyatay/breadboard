@@ -6,7 +6,7 @@
 // another tool to read the netlist; it is deliberately not a PCB, and nothing
 // downstream should claim otherwise.
 
-import { componentDefinition } from "./components/index.ts";
+import { componentDefinitionForDesign } from "./components/index.ts";
 import type { HardwareDesign } from "./types.ts";
 
 export interface CircuitJsonSourceComponent {
@@ -79,7 +79,7 @@ export function toCircuitJson(design: HardwareDesign): CircuitJsonElement[] {
   const elements: CircuitJsonElement[] = [];
 
   for (const instance of design.components) {
-    const definition = componentDefinition(instance.definitionId);
+    const definition = componentDefinitionForDesign(design, instance.definitionId);
     if (!definition) continue;
     elements.push({
       type: "source_component",

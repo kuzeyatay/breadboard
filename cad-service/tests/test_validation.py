@@ -53,13 +53,14 @@ def mesh(**overrides):
     return TessellationSummary.model_validate(payload)
 
 
-def run(solids, expectations=None, tessellation=None, exports=("step", "stl", "glb")):
+def run(solids, expectations=None, tessellation=None, exports=("step", "stl", "glb"), interferences=None):
     return validate_model(
         solids,
         box() if not solids else None or _combined(solids),
         tessellation or mesh(),
         ValidationExpectations.model_validate(expectations or {}),
         list(exports),
+        interferences,
     )
 
 
@@ -139,6 +140,18 @@ class ValidationTest(unittest.TestCase):
         touching = solid("lid", bounds=box(z=4.0, origin=(0.0, 0.0, 10.0)))
         issues = run([solid(), touching], {"expectedSolidCount": 2})
         self.assertNotIn("disconnected_bodies", codes(issues))
+
+    def test_volumetric_body_interference_is_an_error(self):
+        issues = run(
+            [solid("chassis"), solid("carriage")],
+            {"expectedSolidCount": 2},
+            interferences=[("chassis", "carriage", 12.5)],
+        )
+        collision = [issue for issue in issues if issue.code == "assembly_interference"]
+        self.assertEqual(len(collision), 1)
+        self.assertEqual(collision[0].severity, "error")
+        self.assertEqual(collision[0].actual, 12.5)
+        self.assertFalse(passed(issues))
 
     def test_holes_below_the_minimum_feature_size_are_warned_about(self):
         issues = run([solid()], {"holeDiameters": [0.4], "minimumFeatureSize": 0.8})

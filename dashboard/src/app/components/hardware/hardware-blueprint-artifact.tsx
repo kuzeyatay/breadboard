@@ -226,9 +226,11 @@ export default function HardwareBlueprintArtifact({
                     : `${overview.controller.reference} · ${overview.controller.logicVoltage} V logic`
                 }
               />
-              <Chip
-                label="Power source"
-                value={design.request.power.source}
+                <Chip
+                  label="Power source"
+                  value={`${design.request.power.source}${
+                    design.request.power.part ? ` · ${design.request.power.part}` : ""
+                  }`}
                 hint={
                   overview.rails.length
                     ? `Rails: ${overview.rails
@@ -352,6 +354,59 @@ export default function HardwareBlueprintArtifact({
                 ))}
               </div>
             </section>
+
+            {design.componentResearch?.length ? (
+              <details className="rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3">
+                <summary className="cursor-pointer text-sm font-semibold text-[var(--ink-heading)]">
+                  Online component research ({design.componentResearch.length})
+                </summary>
+                <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
+                  These records are saved with this blueprint. A found product is used for wiring only
+                  when manufacturer evidence supplies every fact the compiler needs.
+                </p>
+                <ul className="mt-2 space-y-2">
+                  {design.componentResearch.map((record, index) => (
+                    <li
+                      key={`${record.requestedAs}-${index}`}
+                      className="rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] p-2.5"
+                    >
+                      <div className="flex flex-wrap items-baseline justify-between gap-2">
+                        <p className="text-sm font-medium text-[var(--ink-heading)]">
+                          {record.requestedAs}
+                        </p>
+                        <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--ink-muted)]">
+                          {record.status.replaceAll("-", " ")}
+                        </span>
+                      </div>
+                      {record.definition?.manufacturer || record.definition?.manufacturerPartNumber ? (
+                        <p className="mt-0.5 text-xs text-[var(--ink)]">
+                          {[record.definition.manufacturer, record.definition.manufacturerPartNumber]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </p>
+                      ) : null}
+                      <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">{record.note}</p>
+                      {record.sources.length ? (
+                        <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                          {record.sources.map((source) => (
+                            <li key={source.url}>
+                              <a
+                                href={source.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[var(--botanical)] underline underline-offset-2"
+                              >
+                                {source.title}
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
 
             {overview.rails.length || overview.busses.length ? (
               <section>

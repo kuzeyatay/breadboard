@@ -106,6 +106,53 @@ export function resolveBackHref(currentHref: string, fallbackHref: string): stri
   return fallbackHref;
 }
 
+/**
+ * Pop the trail back to `href`, the way a browser's history stack behaves.
+ *
+ * Call this when a back control is actually followed. Without it, two pages
+ * that link to each other are each other's most recent different pathname, so
+ * every "back" click walks *forward* into the other one and the user ping-pongs
+ * between garden chat and the Quartz garden forever. Dropping the consumed
+ * entries means the next back control looks at what came before them.
+ */
+export function consumeBackTo(href: string): void {
+  const target = parse(href);
+  if (!target) return;
+
+  const trail = readTrail();
+  const current = trail.length > 0 ? parse(trail[trail.length - 1]) : null;
+
+  for (let index = trail.length - 1; index >= 0; index -= 1) {
+    const candidate = parse(trail[index]);
+    if (!candidate || candidate.pathname !== target.pathname) continue;
+
+    // Everything from the target onward is being unwound. Keep unwinding while
+    // the entries below it are just these same two pages: that run *is* an
+    // earlier bounce, and leaving it in place would make the user click back
+    // once per bounce to escape.
+    let cut = index;
+    while (cut > 0) {
+      const previous = parse(trail[cut - 1]);
+      if (!previous) break;
+      const isBounce =
+        previous.pathname === target.pathname || previous.pathname === current?.pathname;
+      if (!isBounce) break;
+      cut -= 1;
+    }
+
+    writeTrail(trail.slice(0, cut));
+    for (const listener of listeners) listener();
+    return;
+  }
+
+  // A fallback target that was never visited in this tab. The last entry is the
+  // page being left, so drop it rather than leaving it to be offered again.
+  if (trail.length > 0) {
+    writeTrail(trail.slice(0, -1));
+    for (const listener of listeners) listener();
+  }
+}
+
 const LABELS: Array<{ match: RegExp; label: string }> = [
   { match: /^\/dashboard(?:\/|$)/, label: 'Back to dashboard' },
   { match: /^\/gardens\/[^/]+\/pdf(?:\/|$)/, label: 'Back to PDF' },

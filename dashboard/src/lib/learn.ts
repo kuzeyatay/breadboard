@@ -5,6 +5,7 @@ import path from "path";
 import type OpenAI from "openai";
 import db from "@/lib/db";
 import { withCouncil, type CouncilMode, type CouncilTaskType } from "@/lib/council";
+import { scrubbed } from "@/lib/watermarks/scrub-text";
 import {
   DEFAULT_MODEL,
   cleanGeneratedText,
@@ -12,8 +13,10 @@ import {
   refreshClusterIndex,
   scanClusterKnowledge,
 } from "@/lib/knowledge";
+import { isLearnAuthoredLesson } from "@/lib/learning-garden";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import {
+  auditGardenForFinalization,
   finalizeGardenExport,
   groundLearnerFormula,
   repairLearningUnitsFromContract,
@@ -73,11 +76,13 @@ import {
   knowledgeClaimsForUnit,
   learningMapFromUnits,
   normalizeLearningUnits,
+  reconcileLearningUnitSourceArtifacts,
   reconcileLearningUnitConceptAliases,
   semanticConceptsForUnit,
   validateLearningUnitContracts,
   visualTypeCompatibleWithUnit,
   type LearningUnitContract,
+  type RegisteredSourceArtifact,
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
   type SourceFormulaContract,
@@ -107,6 +112,7 @@ import {
 } from "@/lib/visual-spec";
 import {
   extractSourceVisuals,
+  ensureSourcePdfPageSnapshots,
   isFullPageSnapshotUrl,
   loadSourceVisuals,
   recordSourceVisualAssignments,
@@ -248,6 +254,7 @@ export interface LearnJob {
   id: string;
   gardenId: string;
   userId?: number;
+  model: string;
   status: LearnStatus;
   mode: LearnMode;
   currentStep: string;
@@ -354,6 +361,7 @@ interface LearnJobRow {
   id: string;
   garden_id: string;
   user_id: number | null;
+  model: string | null;
   status: LearnStatus;
   mode: LearnMode;
   current_step: string | null;
@@ -492,6 +500,28 @@ function envPositiveInt(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value >= 1 ? Math.floor(value) : fallback;
 }
+
+function envClampedPositiveInt(
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  return Math.max(minimum, Math.min(maximum, envPositiveInt(name, fallback)));
+}
+
+const LEARN_FINALIZE_MAX_ROUNDS = envClampedPositiveInt(
+  "LEARN_FINALIZE_MAX_ROUNDS",
+  8,
+  1,
+  12,
+);
+const LEARN_FINALIZE_MAX_RUNTIME_MS = envClampedPositiveInt(
+  "LEARN_FINALIZE_MAX_RUNTIME_MS",
+  45 * 60 * 1000,
+  30 * 1000,
+  2 * 60 * 60 * 1000,
+);
 
 /** Council mode for normal subsection/page writing. Never full_council by default. */
 const LEARN_GENERATION_COUNCIL_MODE = envCouncilMode(
@@ -681,6 +711,8 @@ Contract rules:
 - A unit is the smallest meaningful teaching step: one learner question, one conceptual move.
 - Normal source-rich gardens need 15-25 units; never produce an 8-section/1-subsection outline.
 - Every important source figure, graph, table, displayed formula, result, example, limitation, or recommendation must be assigned to the one precise unit where it teaches best, or marked unused with a reason.
+- IDs in sourceFigures, sourceTables, and sourceFormulas may ONLY be copied verbatim from extractedSourceArtifacts. A figure-like ID mentioned in source prose is not a registered artifact and must never be used unless that exact ID is present in extractedSourceArtifacts.
+- Every structured artifact ID (Sx.Py.Fn, Sx.Py.Gn, Sx.Py.Tn, or Sx.Py.En) used anywhere in a unit, including sourceAnchors and evidenceAnchors, must be present in extractedSourceArtifacts with the matching kind.
 - Source figures must be planned for inline placement near their interpretation. Never plan a generic "Source Figures" dump.
 - Do not assign an interactiveVisual or visualType in this response. Breadboard runs a deterministic visual-necessity decision, alternative-medium comparison, garden-level coordination, and only then renderer/type selection.
 - Describe each unit's learning question, dynamic behavior, comparisons, parameters, source figures, formulas, tables, and prerequisites precisely enough for that downstream decision.
@@ -844,6 +876,7 @@ function ensureLearnTables(): void {
       id                         TEXT PRIMARY KEY,
       garden_id                  TEXT NOT NULL,
       user_id                    INTEGER,
+      model                      TEXT NOT NULL DEFAULT 'gpt-5.6-sol',
       status                     TEXT NOT NULL,
       mode                       TEXT NOT NULL,
       current_step               TEXT,
@@ -975,6 +1008,9 @@ function ensureLearnTables(): void {
   }
   if (!learnJobColumns.has("syllabus_source_id")) {
     db.exec("ALTER TABLE learn_jobs ADD COLUMN syllabus_source_id TEXT");
+  }
+  if (!learnJobColumns.has("model")) {
+    db.exec("ALTER TABLE learn_jobs ADD COLUMN model TEXT NOT NULL DEFAULT 'gpt-5.6-sol'");
   }
 
   const learnMapColumns = new Set(
@@ -1195,7 +1231,7 @@ function recordLearnTokenUsageEvent(jobId: string, event: LearnTokenUsageEvent):
 
 function userFacingLearnText(value: string): string {
   const text = value
-    .replace(/\bChatMock\b/gi, "")
+    .replace(/\bChatMock\b/gi, "the AI service")
     .replace(/\s{2,}/g, " ")
     .replace(/\s+([,.;:!?])/g, "$1")
     .trim();
@@ -1208,6 +1244,7 @@ function rowToJob(row: LearnJobRow | undefined): LearnJob | null {
     id: row.id,
     gardenId: row.garden_id,
     userId: row.user_id ?? undefined,
+    model: row.model?.trim() || LEARN_MODEL,
     status: row.status,
     mode: normalizeLearnOperationMode(row.mode),
     currentStep: userFacingLearnText(row.current_step ?? ""),
@@ -1266,6 +1303,7 @@ function createLearnJob({
   id,
   gardenId,
   userId,
+  model,
   mode,
   sourceIds,
   syllabusSourceId,
@@ -1275,6 +1313,7 @@ function createLearnJob({
   id?: string;
   gardenId: string;
   userId?: number;
+  model: string;
   mode: LearnMode;
   sourceIds: string[];
   syllabusSourceId?: string;
@@ -1287,6 +1326,7 @@ function createLearnJob({
     id: id ?? makeId("learn_job"),
     gardenId,
     userId,
+    model,
     status: "idle",
     mode,
     currentStep: "",
@@ -1303,14 +1343,15 @@ function createLearnJob({
   };
   db.prepare(
     `INSERT INTO learn_jobs (
-      id, garden_id, user_id, status, mode, current_step, progress_percent,
+      id, garden_id, user_id, model, status, mode, current_step, progress_percent,
       source_ids_json, syllabus_source_id, source_only, include_source_snapshots,
       active_elapsed_ms, timer_started_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     job.id,
     job.gardenId,
     job.userId ?? null,
+    job.model,
     job.status,
     job.mode,
     job.currentStep,
@@ -1524,6 +1565,7 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
     `UPDATE learn_jobs
      SET status = ?,
          mode = ?,
+         model = ?,
          current_step = ?,
          progress_percent = ?,
          current_section_title = ?,
@@ -1543,6 +1585,7 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
   ).run(
     next.status,
     next.mode,
+    next.model,
     next.currentStep,
     Math.max(0, Math.min(100, Math.round(next.progressPercent))),
     next.currentSectionTitle ?? null,
@@ -1918,6 +1961,188 @@ function sourceFiguresFromVisuals(visuals: SourceVisual[]): SourceFigure[] {
     }));
 }
 
+const STRUCTURED_SOURCE_ARTIFACT_RE = /^S(\d+)\.P(\d+)\.(?:F|G|T|E)\d+$/i;
+
+function registeredArtifactsFromFigures(sourceFigures: SourceFigure[]): RegisteredSourceArtifact[] {
+  return sourceFigures.map((figure) => ({
+    id: figure.figureId,
+    kind:
+      figure.kind === "table"
+        ? ("table" as const)
+        : figure.kind === "formula"
+          ? ("formula" as const)
+          : figure.kind === "graph"
+            ? ("graph" as const)
+            : ("figure" as const),
+  }));
+}
+
+function registeredArtifactsForGarden(clusterDir: string): RegisteredSourceArtifact[] {
+  const artifacts: RegisteredSourceArtifact[] = [];
+  for (const anchor of Object.values(buildCanonicalSourceAnchors(clusterDir))) {
+    if (anchor.origin !== "visual_ledger") continue;
+    if (anchor.kind === "formula" || anchor.kind === "table" || anchor.kind === "graph" || anchor.kind === "figure") {
+      artifacts.push({ id: anchor.id, kind: anchor.kind });
+    }
+  }
+  return artifacts;
+}
+
+function structuredArtifactIdsFromUnits(units: LearningUnitContract[]): string[] {
+  const ids = new Set<string>();
+  const add = (value: string | undefined) => {
+    const id = value?.trim() ?? "";
+    if (STRUCTURED_SOURCE_ARTIFACT_RE.test(id)) ids.add(id);
+  };
+  for (const unit of units) {
+    unit.sourceAnchors.forEach(add);
+    unit.sourceFigures.forEach((artifact) => add(artifact.id));
+    unit.sourceFormulas.forEach((artifact) => add(artifact.id));
+    unit.sourceTables.forEach((artifact) => add(artifact.id));
+    unit.interactiveVisual?.sourceAnchors.forEach(add);
+    unit.interactiveVisualPlan?.decision.evidence.sourceAnchorIds.forEach(add);
+    unit.interactiveVisualPlan?.visualIntent?.sourceAnchors.forEach(add);
+    unit.semanticConcepts?.forEach((concept) => concept.evidenceAnchors.forEach(add));
+    unit.knowledgeClaims?.forEach((claim) => {
+      claim.evidenceAnchors.forEach(add);
+      claim.derivationAnchors?.forEach(add);
+    });
+    add(unit.teachingMediumPlan?.sourceFigureAnchorId);
+    unit.teachingMediumPlan?.formulaAnchorIds?.forEach(add);
+  }
+  return [...ids].sort();
+}
+
+/**
+ * Candidate artifact labels emitted into each source's own Markdown during
+ * ingestion. They are hints, not evidence: remap the local source number to
+ * this run's selected-source order, then let PDF rendering + vision decide
+ * which exact ids are real before the planner can use them.
+ */
+function structuredArtifactIdsMentionedBySources(context: LearnSourceContext): string[] {
+  const ids = new Set<string>();
+  context.sources.forEach((source, index) => {
+    const re = /\bS\d+\.P(\d+)\.([FGTE])(\d+)\b/gi;
+    for (const match of (source.body ?? "").matchAll(re)) {
+      const pageNumber = Number.parseInt(match[1], 10);
+      const ordinal = Number.parseInt(match[3], 10);
+      if (!Number.isSafeInteger(pageNumber) || pageNumber < 1) continue;
+      if (!Number.isSafeInteger(ordinal) || ordinal < 1) continue;
+      ids.add(`S${index + 1}.P${pageNumber}.${match[2].toUpperCase()}${ordinal}`);
+    }
+  });
+  return [...ids].sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+}
+
+/**
+ * Resolve late-page artifact references against the preserved full PDF. PDF
+ * upload keeps a small eager snapshot cache for responsiveness, but Learn is
+ * not allowed to treat that cache boundary as the end of the source. Any
+ * structured id proposed by a contract causes that exact PDF page to be
+ * rendered and scanned before the id is accepted.
+ */
+async function ensureReferencedSourceArtifactsExtracted({
+  client,
+  model,
+  contentPath,
+  gardenId,
+  context,
+  units,
+  candidateArtifactIds = [],
+  checkpoint,
+  onProgress,
+}: {
+  client: OpenAI;
+  model: string;
+  contentPath: string;
+  gardenId: string;
+  context: LearnSourceContext;
+  units: LearningUnitContract[];
+  candidateArtifactIds?: readonly string[];
+  checkpoint?: () => void;
+  onProgress?: (step: string) => void;
+}): Promise<{ requestedIds: string[]; unresolvedIds: string[]; scanErrors: string[] }> {
+  const registeredBefore = new Set(context.sourceFigures.map((figure) => figure.figureId));
+  const requestedIds = [...new Set([
+    ...structuredArtifactIdsFromUnits(units),
+    ...candidateArtifactIds.filter((id) => STRUCTURED_SOURCE_ARTIFACT_RE.test(id)),
+  ])].filter((id) => !registeredBefore.has(id));
+  const pagesBySourceIndex = new Map<number, Set<number>>();
+  const scanErrors: string[] = [];
+  for (const id of requestedIds) {
+    const match = id.match(STRUCTURED_SOURCE_ARTIFACT_RE);
+    if (!match) continue;
+    const sourceIndex = Number.parseInt(match[1], 10);
+    const pageNumber = Number.parseInt(match[2], 10);
+    if (!Number.isInteger(sourceIndex) || !Number.isInteger(pageNumber)) continue;
+    const pages = pagesBySourceIndex.get(sourceIndex) ?? new Set<number>();
+    pages.add(pageNumber);
+    pagesBySourceIndex.set(sourceIndex, pages);
+  }
+
+  for (const [sourceIndex, pageNumbers] of pagesBySourceIndex) {
+    checkpoint?.();
+    const source = context.sources[sourceIndex - 1];
+    if (!source?.sourcePdf) continue;
+    const sortedPages = [...pageNumbers].sort((left, right) => left - right);
+    onProgress?.(
+      `Rendering referenced source page${sortedPages.length === 1 ? "" : "s"} ${sortedPages.join(", ")}...`,
+    );
+    const pageImageUrls = await ensureSourcePdfPageSnapshots({
+      contentPath,
+      gardenSlug: gardenId,
+      sourceId: source.slug,
+      sourcePdfUrl: source.sourcePdf,
+      pageNumbers: sortedPages,
+      checkpoint,
+      onProgress,
+    });
+    if (pageImageUrls.length === 0) continue;
+    // Scan each demanded page independently. A stubborn page must not discard
+    // registrations already proven on the other pages, and the per-page scan
+    // cache makes retries resume instead of spending the same vision tokens.
+    for (const pageImageUrl of pageImageUrls) {
+      let registered = false;
+      let lastError = "";
+      for (let attempt = 1; attempt <= 3 && !registered; attempt += 1) {
+        checkpoint?.();
+        try {
+          await extractSourceVisuals({
+            client,
+            model,
+            contentPath,
+            gardenSlug: gardenId,
+            sourceId: source.slug,
+            sourceIndex,
+            pageImageUrls: [pageImageUrl],
+            checkpoint,
+            onProgress,
+          });
+          registered = true;
+        } catch (error) {
+          lastError = errorMessage(error);
+          if (attempt < 3) {
+            onProgress?.(`Retrying source visual scan (${attempt + 1}/3)...`);
+          }
+        }
+      }
+      if (!registered) scanErrors.push(`${pageImageUrl}: ${lastError || "visual scan failed"}`);
+    }
+  }
+
+  const selectedSourceIds = new Set(context.sources.map((source) => source.slug));
+  const visuals = loadSourceVisuals(contentPath, gardenId).filter((visual) =>
+    selectedSourceIds.has(visual.sourceId),
+  );
+  context.sourceFigures = sourceFiguresFromVisuals(visuals);
+  const registeredAfter = new Set(context.sourceFigures.map((figure) => figure.figureId));
+  return {
+    requestedIds,
+    unresolvedIds: requestedIds.filter((id) => !registeredAfter.has(id)),
+    scanErrors,
+  };
+}
+
 export function collectLearnSourceContext(
   contentPath: string,
   gardenId: string,
@@ -1941,6 +2166,7 @@ export function collectLearnSourceContext(
       relPath: node.relPath,
       sourceType: node.sourceType,
       sourceFile: node.sourceFile,
+      sourcePdf: node.sourcePdf,
       date: node.date,
       wordCount: node.wordCount,
       excerpt: node.excerpt,
@@ -1978,7 +2204,7 @@ export function collectLearnSourceContext(
       tags: node.tags,
     }));
   const existingTextbookPages: LearnSourceSummary[] = knowledge.nodes
-    .filter((node) => node.type === "learning-page" || node.type === "textbook-page")
+    .filter(isLearnAuthoredLesson)
     .map((node) => ({
       id: node.slug,
       slug: node.slug,
@@ -2029,6 +2255,8 @@ async function ensureSourceVisualsExtracted({
   contentPath,
   gardenId,
   context,
+  deferEmptyVisualCheck = false,
+  checkpoint,
   onProgress,
 }: {
   client: OpenAI;
@@ -2036,6 +2264,9 @@ async function ensureSourceVisualsExtracted({
   contentPath: string;
   gardenId: string;
   context: LearnSourceContext;
+  /** Let an immediate follow-up on-demand scan satisfy a visual-rich source. */
+  deferEmptyVisualCheck?: boolean;
+  checkpoint?: () => void;
   onProgress?: (step: string) => void;
 }): Promise<SourceVisual[]> {
   const visualRichSlugs = new Set(
@@ -2044,6 +2275,7 @@ async function ensureSourceVisualsExtracted({
   const extractionErrors: string[] = [];
 
   for (let index = 0; index < context.sources.length; index += 1) {
+    checkpoint?.();
     const source = context.sources[index];
     const pageImageUrls = (source.sourceImages ?? []).filter(isFullPageSnapshotUrl);
     if (pageImageUrls.length === 0) continue;
@@ -2056,9 +2288,11 @@ async function ensureSourceVisualsExtracted({
         sourceId: source.slug,
         sourceIndex: index + 1,
         pageImageUrls,
+        checkpoint,
         onProgress,
       });
     } catch (error) {
+      checkpoint?.();
       const message = error instanceof Error ? error.message : String(error);
       extractionErrors.push(`${source.slug}: ${message}`);
     }
@@ -2070,7 +2304,7 @@ async function ensureSourceVisualsExtracted({
   );
   context.sourceFigures = sourceFiguresFromVisuals(visuals);
 
-  if (visualRichSlugs.size > 0) {
+  if (!deferEmptyVisualCheck && visualRichSlugs.size > 0) {
     const realFigures = visuals.filter(
       (visual) => visual.type !== "full_page_fallback" && visualRichSlugs.has(visual.sourceId),
     );
@@ -2135,9 +2369,9 @@ function promptSources(context: LearnSourceContext): unknown {
       content: truncate(source.body, 9000),
     })),
     conceptNodes: context.conceptNodes.slice(0, 80),
-    sourceFigures: context.sourceFigures.slice(0, 40),
+    sourceFigures: context.sourceFigures,
     // Stage-2 extracted visuals, in the shape the planner assigns from.
-    sourceVisuals: context.sourceFigures.slice(0, 40).map((figure) => ({
+    sourceVisuals: context.sourceFigures.map((figure) => ({
       sourceVisualId: figure.figureId,
       sourceId: figure.sourceId,
       page: figure.page,
@@ -2166,7 +2400,7 @@ function promptSourcesCompact(context: LearnSourceContext): unknown {
       excerpt: truncate(source.excerpt || source.body, 1200),
     })),
     conceptNodes: context.conceptNodes.slice(0, 60),
-    sourceVisuals: context.sourceFigures.slice(0, 40).map((figure) => ({
+    sourceVisuals: context.sourceFigures.map((figure) => ({
       sourceVisualId: figure.figureId,
       sourceId: figure.sourceId,
       page: figure.page,
@@ -2275,7 +2509,13 @@ async function callCouncilText({
     councilMode?: string;
   };
   return {
-    content: response.choices[0]?.message?.content?.trim() ?? "",
+    // Every piece of prose the pipeline writes into a garden page comes through
+    // here, so this is where invisible-Unicode marks come out of it — before
+    // any anchor is assigned or any gate counts a line. Only invisible
+    // characters go; formulas, anchors and fenced blocks are untouched, and the
+    // JSON path (`callCouncilJson`) is deliberately not scrubbed, so nothing
+    // structured is ever reshaped on its way to a parser.
+    content: scrubbed(response.choices[0]?.message?.content?.trim() ?? ""),
     councilRunId: typed.councilRunId ?? response.id,
     councilMode: typed.councilMode,
   };
@@ -2484,7 +2724,7 @@ function errorMessage(error: unknown, fallback = "Request failed"): string {
         ? error.trim()
         : fallback;
   if (/^(connection error\.?|fetch failed)$/i.test(message) || /\beconnrefused\b/i.test(message)) {
-    return "ChatMock is not connected. Start or restart ChatMock on port 8765, then retry Learn.";
+    return "The AI service connection was lost during Learn. Retry Learn; if it fails again, restart Breadboard's AI service.";
   }
   return message;
 }
@@ -2754,6 +2994,8 @@ function writeLearningUnitContractArtifacts({
   >;
 }): {
   units: LearningUnitContract[];
+  assignments: SourceArtifactAssignment[];
+  removedArtifactIds: string[];
   semanticAliasRepairs: Array<{
     normalizedAlias: string;
     removedFrom: string[];
@@ -2779,7 +3021,17 @@ function writeLearningUnitContractArtifacts({
     }));
     return { ...unit, sourceAnchors, semanticConcepts };
   });
-  const aliasReconciliation = reconcileLearningUnitConceptAliases(gatedUnits);
+  const sourceArtifactReconciliation = reconcileLearningUnitSourceArtifacts(
+    gatedUnits,
+    assignments,
+    registeredArtifactsForGarden(clusterDir),
+  );
+  const compatibleVisuals = dropIncompatibleInteractiveVisuals(
+    sourceArtifactReconciliation.units,
+  );
+  const aliasReconciliation = reconcileLearningUnitConceptAliases(
+    compatibleVisuals.units,
+  );
   let reconciledUnits = aliasReconciliation.units;
   // Build and validate the registry before writing the contract. This avoids
   // leaving a newly written, colliding contract paired with an older registry
@@ -2881,7 +3133,7 @@ function writeLearningUnitContractArtifacts({
     reconciledUnits.map((unit) => [unit.id, new Set(unit.sourceFormulas.map((formula) => formula.id))]),
   );
   const isFormulaArtifactId = (id: string) => /\.E\d+$/i.test(id);
-  const finalAssignments = assignments.filter((assignment) =>
+  const finalAssignments = sourceArtifactReconciliation.assignments.filter((assignment) =>
     !isFormulaArtifactId(assignment.sourceArtifactId)
     || (formulaOwnersByUnit.get(assignment.assignedLearningUnitId)?.has(assignment.sourceArtifactId) ?? false));
   // Necessity is the final gate before the contract is persisted. It is rerun
@@ -2957,7 +3209,12 @@ function writeLearningUnitContractArtifacts({
     contract: payload,
     planningMarkdown: `${lines.join("\n")}\n`,
   });
-  return { units: reconciledUnits, semanticAliasRepairs };
+  return {
+    units: reconciledUnits,
+    assignments: finalAssignments,
+    removedArtifactIds: sourceArtifactReconciliation.removedArtifactIds,
+    semanticAliasRepairs,
+  };
 }
 
 function persistRoutedVisualPlans(
@@ -3231,6 +3488,7 @@ export async function runLearnPlanning({
       id: jobId,
       gardenId,
       userId,
+      model,
       mode: resetSourceMap ? "full_rebuild" : "plan",
       // The full selection is persisted, syllabus included, so a later run
       // reproduces exactly the same teaching-set/syllabus split.
@@ -3305,6 +3563,44 @@ export async function runLearnPlanning({
       contentPath,
       gardenId,
       context,
+      deferEmptyVisualCheck: true,
+      checkpoint: () => throwIfLearnCancelled(job.id),
+      onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+    });
+
+    // Source Markdown can describe important figures from anywhere in the
+    // retained PDF, including pages outside the small eager image cache. Scan
+    // those mentioned pages now so extractedSourceArtifacts is complete before
+    // the Learning Unit Contract is requested. A prose label alone is never
+    // promoted; only the vision-registered result reaches the planner.
+    const mentionedArtifactIds = structuredArtifactIdsMentionedBySources(context);
+    if (mentionedArtifactIds.length > 0) {
+      const discovery = await ensureReferencedSourceArtifactsExtracted({
+        client,
+        model,
+        contentPath,
+        gardenId,
+        context,
+        units: [],
+        candidateArtifactIds: mentionedArtifactIds,
+        checkpoint: () => throwIfLearnCancelled(job.id),
+        onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+      });
+      appendLearnEvent(contentPath, gardenId, "learn_source_markdown_artifacts_discovered", {
+        jobId: job.id,
+        candidateCount: mentionedArtifactIds.length,
+        requestedIds: discovery.requestedIds,
+        unresolvedIds: discovery.unresolvedIds,
+        scanErrors: discovery.scanErrors,
+      });
+    }
+    await ensureSourceVisualsExtracted({
+      client,
+      model,
+      contentPath,
+      gardenId,
+      context,
+      checkpoint: () => throwIfLearnCancelled(job.id),
       onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
     });
 
@@ -3556,13 +3852,59 @@ export async function runLearnPlanning({
       });
     }
     throwIfLearnCancelled(job.id);
-    const artifactCount = importantSourceArtifactCount(context);
+    const reconcilePlannedSourceArtifacts = async (
+      candidateUnits: LearningUnitContract[],
+      stage: "initial" | "retry" | "fallback",
+    ): Promise<LearningUnitContract[]> => {
+      let resolution: { requestedIds: string[]; unresolvedIds: string[] } = {
+        requestedIds: [],
+        unresolvedIds: [],
+      };
+      try {
+        resolution = await ensureReferencedSourceArtifactsExtracted({
+          client,
+          model,
+          contentPath,
+          gardenId,
+          context,
+          units: candidateUnits,
+          checkpoint: () => throwIfLearnCancelled(job.id),
+          onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+        });
+      } catch (error) {
+        const warning = `Referenced source-page scan could not finish: ${errorMessage(error)}. Unverified artifact requirements were removed.`;
+        planningWarnings.push(warning);
+        appendLearnEvent(contentPath, gardenId, "learn_referenced_source_scan_failed", {
+          jobId: job.id,
+          stage,
+          reason: errorMessage(error),
+        });
+      }
+      const reconciliation = reconcileLearningUnitSourceArtifacts(
+        candidateUnits,
+        [],
+        registeredArtifactsFromFigures(context.sourceFigures),
+      );
+      if (reconciliation.removedArtifactIds.length > 0 || resolution.requestedIds.length > 0) {
+        appendLearnEvent(contentPath, gardenId, "learn_source_artifacts_reconciled", {
+          jobId: job.id,
+          stage,
+          requestedIds: resolution.requestedIds,
+          unresolvedIds: resolution.unresolvedIds,
+          removedArtifactIds: reconciliation.removedArtifactIds,
+        });
+      }
+      return reconciliation.units;
+    };
+
     let learningUnits = sanitizeModelLearningUnits(
       normalizeLearningUnits(topicMapCall.parsed),
       contentPath,
       gardenId,
       job.id,
     );
+    learningUnits = await reconcilePlannedSourceArtifacts(learningUnits, "initial");
+    let artifactCount = importantSourceArtifactCount(context);
     let contractProblems =
       learningUnits.length === 0
         ? ["planner returned no learningUnits"]
@@ -3587,12 +3929,14 @@ export async function runLearnPlanning({
           contentPath,
           jobId: job.id,
         });
-        const retryUnits = sanitizeModelLearningUnits(
+        let retryUnits = sanitizeModelLearningUnits(
           normalizeLearningUnits(retryCall.parsed),
           contentPath,
           gardenId,
           job.id,
         );
+        retryUnits = await reconcilePlannedSourceArtifacts(retryUnits, "retry");
+        artifactCount = importantSourceArtifactCount(context);
         const retryProblems =
           retryUnits.length === 0
             ? ["planner returned no learningUnits"]
@@ -3623,6 +3967,8 @@ export async function runLearnPlanning({
         learningUnits: fallbackLearningUnitsFromContext(context),
         overrides: loadVisualDecisionOverrides(clusterPath(contentPath, gardenId)),
       }).learningUnits;
+      learningUnits = await reconcilePlannedSourceArtifacts(learningUnits, "fallback");
+      artifactCount = importantSourceArtifactCount(context);
       contractProblems = validateLearningUnitContracts(learningUnits, { artifactCount });
       if (contractProblems.length > 0) {
         planningWarnings.push(`Fallback contract warnings: ${contractProblems.join("; ")}`);
@@ -3673,7 +4019,7 @@ export async function runLearnPlanning({
     throwIfLearnCancelled(job.id);
     learningUnits = visualNecessityReview.learningUnits;
     const planRecord = planningRecord(topicMapCall.parsed);
-    const sourceArtifactAssignments = assignSourceArtifacts(learningUnits);
+    let sourceArtifactAssignments = assignSourceArtifacts(learningUnits);
     let learningMap = learningMapFromUnits(learningUnits, {
       gardenId,
       title: sanitizeLearnerTitle(planningString(planRecord.title, context.gardenTitle || gardenId)),
@@ -3743,6 +4089,7 @@ export async function runLearnPlanning({
         visualNecessityReview,
       });
       learningUnits = contractWrite.units;
+      sourceArtifactAssignments = contractWrite.assignments;
       artifactSemanticAliasRepairs = contractWrite.semanticAliasRepairs;
       learningMap = learningMapWithConfirmedUnitContracts(learningMap, learningUnits);
       const repairedCoveragePlan = sourceCoveragePlan(
@@ -5485,16 +5832,15 @@ function sourceAnchorFromId(anchorId: string, sourceFigures: SourceFigure[]): Vi
   const clean = anchorId.trim();
   if (!/^S\d+\.P\d+\.[A-Z]\d+$/i.test(clean)) return null;
   const figure = sourceFigures.find((item) => item.figureId === clean);
-  const page =
-    figure?.page ??
-    (() => {
-      const match = clean.match(/\.P(\d+)\./i);
-      return match ? Number.parseInt(match[1], 10) : undefined;
-    })();
+  // A code-shaped label copied from source prose is only a candidate. It may
+  // become a visual anchor after its PDF page is materialized into the
+  // SourceVisual ledger, never merely because the string looks canonical.
+  if (!figure) return null;
+  const page = figure.page;
   const anchor: VisualSourceAnchor = {
-    description: figure?.caption?.trim() || clean,
+    description: figure.caption?.trim() || clean,
   };
-  if (figure?.sourceId) anchor.sourceId = figure.sourceId;
+  if (figure.sourceId) anchor.sourceId = figure.sourceId;
   if (page !== undefined && Number.isFinite(page)) anchor.page = page;
   if (/\.E\d+$/i.test(clean)) anchor.equationId = clean;
   else if (/\.T\d+$/i.test(clean)) anchor.tableId = clean;
@@ -6007,6 +6353,9 @@ async function reconcileInteractiveVisuals({
         visualizationId: opportunity.id,
         limit: generatedVisualBudget.max,
       });
+      if (opportunity.requirement === "required") {
+        throw new Error(`Required interactive visual "${opportunity.id}" could not be generated: ${reason}`);
+      }
       return { markdown: nextMarkdown, visualIds: keptIds };
     }
     const publishedOnPage = generatedVisualBudget.perPage.get(pageRelPath) ?? 0;
@@ -6021,6 +6370,9 @@ async function reconcileInteractiveVisuals({
         limitScope: "page",
         limit: generatedVisualBudget.maxPerPage,
       });
+      if (opportunity.requirement === "required") {
+        throw new Error(`Required interactive visual "${opportunity.id}" could not be generated: ${reason}`);
+      }
       return { markdown: nextMarkdown, visualIds: keptIds };
     }
 
@@ -6045,6 +6397,10 @@ async function reconcileInteractiveVisuals({
       sourceContext,
       sourceFigureSummaries: sourceFigures,
       formulaDefinitions: subsection.sourceFormulaContracts ?? [],
+      // Required interactions get the generator's full bounded repair budget.
+      // This is much cheaper than discovering the missing visual after every
+      // learner page has been written and rerunning garden-wide repair passes.
+      maxAttempts: opportunity.requirement === "required" ? 5 : undefined,
       availableSourceAnchorIds: new Set([
         ...(subsection.sourceAnchors ?? []),
         ...pageAnchorIds,
@@ -6099,6 +6455,21 @@ async function reconcileInteractiveVisuals({
               ? "failed_compilation"
               : "failed_validation";
       recordOutcome({ opportunityId: opportunity.id, status, reason: result.errors.join("; ") });
+      if (opportunity.requirement === "required") {
+        const criticReviewDidNotComplete =
+          result.failureCategory === "critic" &&
+          result.errors.some((error) => /^Critic review could not complete\b/i.test(error));
+        if (criticReviewDidNotComplete) {
+          throw new Error(
+            `Required interactive visual "${opportunity.id}" compiled and passed its deterministic gates, ` +
+              `but critic review could not complete: ${result.errors.join("; ")}.`,
+          );
+        }
+        throw new Error(
+          `Required interactive visual "${opportunity.id}" could not be generated after its bounded repair attempts` +
+            `${result.failureCategory ? ` (${result.failureCategory})` : ""}: ${result.errors.join("; ") || "no valid visual was produced"}.`,
+        );
+      }
     }
     return { markdown: nextMarkdown, visualIds: keptIds };
   }
@@ -6784,6 +7155,7 @@ export async function runTextbookGeneration({
         );
       }
       job = updateLearnJob(jobId, {
+        model,
         mode,
         sourceIds: context.selectedSourceIds,
         syllabusSourceId: context.syllabus?.slug,
@@ -6816,6 +7188,7 @@ export async function runTextbookGeneration({
           id: jobId,
           gardenId,
           userId,
+          model,
           mode,
           sourceIds: context.selectedSourceIds,
           syllabusSourceId: context.syllabus?.slug,
@@ -6918,7 +7291,7 @@ export async function runTextbookGeneration({
     ? { detect: (prose: string) => detectUnavailableCitations(prose, missingCitationProbes) }
     : undefined;
   let confirmedLearningUnits = learningUnitsFromCoveragePlan(map.coveragePlan);
-  const confirmedSourceArtifactAssignments = sourceArtifactAssignmentsFromCoveragePlan(map.coveragePlan);
+  let confirmedSourceArtifactAssignments = sourceArtifactAssignmentsFromCoveragePlan(map.coveragePlan);
   // Version ids are learning_* so nothing named "textbook" can leak into a
   // visible file name, event, or frontmatter value.
   const textbookVersionId = makeId("learning");
@@ -6962,13 +7335,66 @@ export async function runTextbookGeneration({
     // contract → write pages. Extraction therefore precedes the contract
     // write, so every source formula has a canonical identity BEFORE any
     // assignment is persisted.
-    const ledgerVisuals = await ensureSourceVisualsExtracted({
+    let ledgerVisuals = await ensureSourceVisualsExtracted({
       client,
       model,
       contentPath: artifactContentPath,
       gardenId,
       context,
+      deferEmptyVisualCheck: true,
+      checkpoint: () => throwIfLearnCancelled(job.id),
       onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+    });
+    let referencedArtifactResolution: { requestedIds: string[]; unresolvedIds: string[] } = {
+      requestedIds: [],
+      unresolvedIds: [],
+    };
+    try {
+      referencedArtifactResolution = await ensureReferencedSourceArtifactsExtracted({
+        client,
+        model,
+        contentPath: artifactContentPath,
+        gardenId,
+        context,
+        units: confirmedLearningUnits,
+        candidateArtifactIds: structuredArtifactIdsMentionedBySources(context),
+        checkpoint: () => throwIfLearnCancelled(job.id),
+        onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+      });
+      ledgerVisuals = loadSourceVisuals(artifactContentPath, gardenId).filter((visual) =>
+        context.sources.some((source) => source.slug === visual.sourceId),
+      );
+    } catch (error) {
+      appendLearnEvent(contentPath, gardenId, "learn_referenced_source_scan_failed", {
+        jobId: job.id,
+        textbookVersionId,
+        stage: "generation",
+        reason: errorMessage(error),
+      });
+    }
+    ledgerVisuals = await ensureSourceVisualsExtracted({
+      client,
+      model,
+      contentPath: artifactContentPath,
+      gardenId,
+      context,
+      checkpoint: () => throwIfLearnCancelled(job.id),
+      onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+    });
+    const sourceArtifactReconciliation = reconcileLearningUnitSourceArtifacts(
+      confirmedLearningUnits,
+      confirmedSourceArtifactAssignments,
+      registeredArtifactsFromFigures(context.sourceFigures),
+    );
+    confirmedLearningUnits = sourceArtifactReconciliation.units;
+    confirmedSourceArtifactAssignments = sourceArtifactReconciliation.assignments;
+    appendLearnEvent(contentPath, gardenId, "learn_source_artifacts_reconciled", {
+      jobId: job.id,
+      textbookVersionId,
+      stage: "generation",
+      requestedIds: referencedArtifactResolution.requestedIds,
+      unresolvedIds: referencedArtifactResolution.unresolvedIds,
+      removedArtifactIds: sourceArtifactReconciliation.removedArtifactIds,
     });
     const selectedSourceIds = new Set(context.sources.map((source) => source.slug));
     const selectedCanonicalSourceAnchors = Object.fromEntries(
@@ -7099,9 +7525,11 @@ export async function runTextbookGeneration({
       visualNecessityReview: generationVisualNecessityReview,
     });
     confirmedLearningUnits = contractWrite.units;
+    confirmedSourceArtifactAssignments = contractWrite.assignments;
     let repairedCoveragePlan = {
       ...planningRecord(map.coveragePlan),
       learningUnitContracts: confirmedLearningUnits,
+      sourceArtifactAssignments: confirmedSourceArtifactAssignments,
     };
     let repairedLearningMap = learningMapWithConfirmedUnitContracts(
       map.learningMap,
@@ -7134,6 +7562,7 @@ export async function runTextbookGeneration({
     repairedCoveragePlan = {
       ...repairedCoveragePlan,
       learningUnitContracts: confirmedLearningUnits,
+      sourceArtifactAssignments: confirmedSourceArtifactAssignments,
     };
     repairedLearningMap = learningMapWithConfirmedUnitContracts(
       repairedLearningMap,
@@ -8221,13 +8650,29 @@ export async function runTextbookGeneration({
       }
     }
 
-    const MAX_FINALIZE_PASSES = 3;
+    // Final repair is an L3 local-write loop: let repair continue while the
+    // meaningful garden state is changing, but bound it by both rounds and
+    // wall-clock time. Reports, logs, and events are excluded from the audit
+    // fingerprint, so bookkeeping churn cannot masquerade as repair progress.
+    const finalizeLoopStartedAt = Date.now();
+    const seenFailedStates = new Set<string>();
     let repairRun!: Awaited<ReturnType<typeof repairLearningUnitsFromContract>>;
     let finalizeReport!: ReturnType<typeof finalizeGardenExport>;
     let verification!: ReturnType<typeof verifyFinalArtifactNoMutation>;
-    let previousProblemSignature = "";
-    for (let pass = 1; pass <= MAX_FINALIZE_PASSES; pass += 1) {
+    let passesUsed = 0;
+    let lastStateFingerprint: string | undefined;
+    let lastBlockerFingerprint: string | undefined;
+    let finalizationStopReason: "passed" | "no_progress" | "max_rounds" | "max_runtime" = "max_rounds";
+    for (let pass = 1; pass <= LEARN_FINALIZE_MAX_ROUNDS; pass += 1) {
+      // Cancellation remains authoritative even when the retry budget has also
+      // expired. A started pass is allowed to reach verification; the runtime
+      // cap prevents starting another potentially expensive repair pass.
+      throwIfLearnCancelled(job.id);
       if (pass > 1) {
+        if (Date.now() - finalizeLoopStartedAt >= LEARN_FINALIZE_MAX_RUNTIME_MS) {
+          finalizationStopReason = "max_runtime";
+          break;
+        }
         updateLearnJob(job.id, {
           status: "building_navigation",
           currentStep: `Repairing remaining lesson issues (pass ${pass})`,
@@ -8236,7 +8681,7 @@ export async function runTextbookGeneration({
           currentPageTitle: undefined,
         });
       }
-      throwIfLearnCancelled(job.id);
+      passesUsed = pass;
       repairRun = await repairLearningUnitsFromContract({
         gardenDir: clusterDir,
         gardenSlug: gardenId,
@@ -8282,17 +8727,72 @@ export async function runTextbookGeneration({
         unresolvedRepairFailures: verification.unresolvedRepairFailures,
       });
 
-      if (finalizeReport.criticalProblems.length === 0 && verification.accepted) break;
-      // Stop retrying once a pass stops making progress (same blocking set as
-      // last time) so a down/unhelpful model does not burn extra passes.
-      const problemSignature = [
-        ...finalizeReport.criticalProblems,
-        ...verification.validationFailures,
-        ...verification.unresolvedRepairFailures,
-      ].sort().join("|");
-      if (problemSignature === previousProblemSignature) break;
-      previousProblemSignature = problemSignature;
+      const audit = auditGardenForFinalization(clusterDir, gardenId);
+      lastStateFingerprint = audit.stateFingerprint;
+      if (finalizeReport.criticalProblems.length === 0 && verification.accepted) {
+        finalizationStopReason = "passed";
+        break;
+      }
+
+      const blockerSignature = JSON.stringify(
+        [...new Set([
+          ...finalizeReport.criticalProblems,
+          ...verification.validationFailures,
+          ...verification.unresolvedRepairFailures,
+          ...verification.mutatedFiles.map((file) => `mutated during verification: ${file}`),
+        ].map((problem) => problem.trim()).filter(Boolean))].sort(),
+      );
+      const blockerFingerprint = createHash("sha256").update(blockerSignature).digest("hex");
+      lastBlockerFingerprint = blockerFingerprint;
+      const failedStateKey = `${blockerFingerprint}:${audit.stateFingerprint}`;
+
+      // Retry when either the blockers or meaningful on-disk state changed.
+      // Repeating the same pair proves a fixed point (or a cycle returning to
+      // one), so another model call would only spend tokens without progress.
+      if (seenFailedStates.has(failedStateKey)) {
+        finalizationStopReason = "no_progress";
+        break;
+      }
+      seenFailedStates.add(failedStateKey);
+
+      if (Date.now() - finalizeLoopStartedAt >= LEARN_FINALIZE_MAX_RUNTIME_MS) {
+        finalizationStopReason = "max_runtime";
+        break;
+      }
+      if (pass >= LEARN_FINALIZE_MAX_ROUNDS) {
+        finalizationStopReason = "max_rounds";
+        break;
+      }
+
+      appendLearnEvent(contentPath, gardenId, "learn_finalization_retry_scheduled", {
+        jobId: job.id,
+        textbookVersionId,
+        pass,
+        nextPass: pass + 1,
+        blockerFingerprint,
+        stateFingerprint: audit.stateFingerprint,
+        elapsedMs: Date.now() - finalizeLoopStartedAt,
+      });
     }
+
+    appendLearnEvent(
+      contentPath,
+      gardenId,
+      finalizationStopReason === "passed"
+        ? "learn_finalization_loop_completed"
+        : "learn_finalization_loop_stopped",
+      {
+        jobId: job.id,
+        textbookVersionId,
+        stoppedReason: finalizationStopReason,
+        passesUsed,
+        maxRounds: LEARN_FINALIZE_MAX_ROUNDS,
+        elapsedMs: Date.now() - finalizeLoopStartedAt,
+        maxRuntimeMs: LEARN_FINALIZE_MAX_RUNTIME_MS,
+        stateFingerprint: lastStateFingerprint,
+        blockerFingerprint: lastBlockerFingerprint,
+      },
+    );
 
     // Surface incomplete source-formula extraction as a distinct, non-blocking
     // signal so the cause (usually the vision model being unavailable at
@@ -8945,6 +9445,7 @@ export async function runLearnRepairOperation({
       id: jobId,
       gardenId,
       userId,
+      model,
       mode: "repair",
       sourceIds: context.sources.map((source) => source.slug),
       sourceOnly: true,
@@ -9561,6 +10062,7 @@ const STATIC_LEARN_CLEAR_REMOVAL_ROOTS = [
   ".breadboard/source-anchor-migration.json",
   ".breadboard/source-anchor-migration.md",
   ".breadboard/source-anchors.json",
+  ".breadboard/source-visual-scan-cache.json",
   ".breadboard/validation-report.md",
   ".breadboard/visual-necessity-decisions.json",
   ".breadboard/visual-necessity-decisions.md",
@@ -10635,8 +11137,8 @@ export async function recoverAbandonedLearnJobs({
             }
           : {
               status: "failed",
-              currentStep: "Interrupted by an app restart; prior Learn state restored",
-              error: "The Learn worker stopped without completing. The garden was restored and this operation is safe to retry.",
+              currentStep: "Unresponsive Learn worker recovered; prior Learn state restored",
+              error: "Learn stopped responding before completion. Your garden was restored and is safe to retry.",
             });
         discardLearnRunSnapshot({
           gardenId: candidate.garden_id,

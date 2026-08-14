@@ -26,10 +26,12 @@ import {
   atomicZettelHandle,
   conceptTagsForUnit,
   dedupeSourceArtifactAssignments,
+  dropIncompatibleInteractiveVisuals,
   interactiveVisualGroundingProblems,
   isAtomicZettelHandle,
   normalizeLearningUnits,
   normalizedSectionTitleKey,
+  reconcileLearningUnitSourceArtifacts,
   scaffoldLikeZettelHandle,
   sectionTitleUniquenessProblems,
   sectionSemanticProfiles,
@@ -38,6 +40,7 @@ import {
   zettelHandleQualityProblems,
   zettelHandlesForUnit,
   type LearningUnitContract,
+  type RegisteredSourceArtifact,
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
 } from "./learning-unit-contract.ts";
@@ -971,8 +974,14 @@ function embeddedGeneratedVisualIds(body: string): string[] {
   return [...new Set(ids)];
 }
 
+type PreservedContractVisualPlan = NonNullable<LearningUnitContract["interactiveVisualPlan"]>;
+
 /** Rerun necessity before scoped repair and persist only the contract planning fields. */
-function replanContractVisualNecessity(gardenDir: string, gardenSlug: string): void {
+function replanContractVisualNecessity(
+  gardenDir: string,
+  gardenSlug: string,
+  preservedVisualPlans: ReadonlyMap<string, PreservedContractVisualPlan> = new Map(),
+): void {
   const contract = readLearningUnitContract(gardenDir);
   if (!contract.foundPath || contract.units.length === 0) return;
   const plan = planGardenVisualNecessity({
@@ -988,10 +997,35 @@ function replanContractVisualNecessity(gardenDir: string, gardenSlug: string): v
   parsed.learningUnits = rawUnits.map((raw) => {
     const unit = plannedById.get(stringField(raw.id));
     if (!unit) return raw;
+    const preserved = preservedVisualPlans.get(unit.id);
+    const interactiveVisualPlan = preserved && preserved.requirement !== "none"
+      ? {
+          ...unit.interactiveVisualPlan,
+          decision: {
+            ...unit.interactiveVisualPlan!.decision,
+            necessity: preserved.requirement,
+            preferredMedium: "interactive_visual" as const,
+            reason:
+              "The prior interaction requirement remains active, but its incompatible trusted renderer was removed and must be rerouted to a valid implementation.",
+          },
+          requirement: preserved.requirement,
+          alternativeCoverage: preserved.alternativeCoverage,
+          visualIntent: undefined,
+        }
+      : unit.interactiveVisualPlan;
+    const teachingMediumPlan = preserved && preserved.requirement !== "none"
+      ? {
+          ...unit.teachingMediumPlan,
+          unitId: unit.id,
+          preferredMedium: "interactive_visual" as const,
+          reason:
+            "The interaction requirement is preserved while Breadboard reroutes the incompatible renderer.",
+        }
+      : unit.teachingMediumPlan;
     const next: Record<string, unknown> = {
       ...raw,
-      interactiveVisualPlan: unit.interactiveVisualPlan,
-      teachingMediumPlan: unit.teachingMediumPlan,
+      interactiveVisualPlan,
+      teachingMediumPlan,
     };
     if (unit.interactiveVisual) next.interactiveVisual = unit.interactiveVisual;
     else delete next.interactiveVisual;
@@ -1006,6 +1040,155 @@ function replanContractVisualNecessity(gardenDir: string, gardenSlug: string): v
     reviewCalls: plan.reviewCalls,
     rejectedReviews: plan.rejectedReviews,
   });
+}
+
+/**
+ * Heal legacy/model contracts that reference figure-like ids which were never
+ * registered by source extraction. A final page repair cannot manufacture a
+ * PDF crop, so these impossible requirements must be reconciled at the
+ * contract boundary before page-scoped repairs run.
+ */
+function reconcileContractArtifactsAgainstSourceRegistry(
+  gardenDir: string,
+  report: FinalizeReport,
+): Map<string, PreservedContractVisualPlan> {
+  const contract = readLearningUnitContract(gardenDir);
+  if (!contract.foundPath || contract.units.length === 0) return new Map();
+  const registered: RegisteredSourceArtifact[] = [];
+  for (const anchor of Object.values(buildCanonicalSourceAnchors(gardenDir))) {
+    if (anchor.origin !== "visual_ledger") continue;
+    if (anchor.kind === "formula" || anchor.kind === "table" || anchor.kind === "graph" || anchor.kind === "figure") {
+      registered.push({ id: anchor.id, kind: anchor.kind });
+    }
+  }
+  const reconciliation = reconcileLearningUnitSourceArtifacts(
+    contract.units,
+    contract.assignments,
+    registered,
+  );
+  const compatible = dropIncompatibleInteractiveVisuals(reconciliation.units);
+  const compatibleById = new Map(compatible.units.map((unit) => [unit.id, unit]));
+  const droppedVisualByUnit = new Map(
+    reconciliation.units
+      .filter((unit) => unit.interactiveVisual && !compatibleById.get(unit.id)?.interactiveVisual)
+      .map((unit) => [unit.id, unit.interactiveVisual!] as const),
+  );
+  if (reconciliation.removedArtifactIds.length === 0 && droppedVisualByUnit.size === 0) return new Map();
+  const preservedVisualPlans = new Map<string, PreservedContractVisualPlan>();
+  for (const unitId of droppedVisualByUnit.keys()) {
+    const plan = reconciliation.units.find((unit) => unit.id === unitId)?.interactiveVisualPlan;
+    if (plan && plan.requirement !== "none") preservedVisualPlans.set(unitId, plan);
+  }
+
+  const parsed = readJson<Record<string, unknown>>(contract.foundPath, {});
+  parsed.learningUnits = compatible.units;
+  parsed.sourceArtifactAssignments = reconciliation.assignments;
+  fs.writeFileSync(contract.foundPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8");
+  const contractRel = path.relative(gardenDir, contract.foundPath).replace(/\\/g, "/");
+  if (!report.changed.includes(contractRel)) report.changed.push(contractRel);
+
+  const validIds = new Set(registered.map((artifact) => artifact.id));
+  const isUnsupported = (id: string): boolean =>
+    /^S\d+\.P\d+\.(?:F|G|T|E)\d+$/i.test(id) && !validIds.has(id);
+  const pages = loadLearnerPages(gardenDir);
+  const visualsDir = path.join(gardenDir, ".breadboard", "visuals");
+  const visualIndexPath = path.join(gardenDir, ".breadboard", "visual-index.json");
+  const visualIndex = readJson<Record<string, Record<string, unknown>>>(visualIndexPath, {});
+  let visualIndexChanged = false;
+  for (const page of pages) {
+    for (const key of ["sourceAnchors", "sourceVisualIds", "sourceFormulaAnchors"] as const) {
+      const before = fmGetArray(page.rawFm, key);
+      const after = before.filter((id) => !isUnsupported(id));
+      if (!arraysEqual(before, after)) {
+        page.rawFm = fmSetArray(page.rawFm, key, after);
+        page.dirty = true;
+      }
+    }
+    rewriteEmbeddedVisualSpecs(page, (spec) => {
+      const before = JSON.stringify(spec);
+      if (Array.isArray(spec.sourceAnchors)) {
+        spec.sourceAnchors = spec.sourceAnchors.filter((value) => {
+          if (typeof value === "string") return !isUnsupported(value);
+          if (!value || typeof value !== "object") return true;
+          const record = value as Record<string, unknown>;
+          const ids = [
+            record.figureId,
+            record.tableId,
+            record.equationId,
+            record.sourceAnchorId,
+          ].filter((id): id is string => typeof id === "string");
+          return !ids.some(isUnsupported);
+        });
+      }
+      for (const key of ["figureId", "tableId", "equationId", "sourceAnchorId"] as const) {
+        const id = spec[key];
+        if (typeof id === "string" && isUnsupported(id)) delete spec[key];
+      }
+      if (JSON.stringify(spec) === before) return false;
+      saveVisualSpecArtifact(gardenDir, spec, report);
+      return true;
+    });
+
+    const unitId = fmGetScalar(page.rawFm, "learningUnitId");
+    const droppedVisual = droppedVisualByUnit.get(unitId);
+    if (droppedVisual) {
+      const removedVisualIds: string[] = [];
+      page.body = page.body.replace(VISUAL_BLOCK_RE, (fullMatch, json: string) => {
+        try {
+          const spec = JSON.parse(json) as Record<string, unknown>;
+          const id = String(spec.id ?? "").trim();
+          const type = String(spec.type ?? "").trim();
+          if (id !== droppedVisual.id && type !== droppedVisual.visualType) return fullMatch;
+          if (id) removedVisualIds.push(id);
+          return "";
+        } catch {
+          // Leave malformed blocks for the normal validation gate. This
+          // preflight only removes a renderer proven incompatible with its
+          // contract; it must not hide unrelated malformed content.
+          return fullMatch;
+        }
+      }).replace(/\n{3,}/g, "\n\n");
+      if (removedVisualIds.length > 0) {
+        page.rawFm = fmSetArray(
+          page.rawFm,
+          "visualIds",
+          fmGetArray(page.rawFm, "visualIds").filter((id) => !removedVisualIds.includes(id)),
+        );
+        page.rawFm = removeKeyLine(page.rawFm, "visualSkipReason");
+        page.dirty = true;
+        for (const id of removedVisualIds) {
+          const specRel = `.breadboard/visuals/${id}.json`;
+          if (fs.existsSync(path.join(gardenDir, specRel))) {
+            removeVisualArtifacts(visualsDir, visualIndex, id);
+            if (!report.removed.includes(specRel)) report.removed.push(specRel);
+          } else if (visualIndex[id]) {
+            delete visualIndex[id];
+          }
+          visualIndexChanged = true;
+        }
+        report.notes.push(
+          `removed incompatible trusted visual(s) ${removedVisualIds.join(", ")} from ${page.rel}; visual necessity will be replanned`,
+        );
+      }
+    }
+  }
+  if (visualIndexChanged) {
+    fs.mkdirSync(path.dirname(visualIndexPath), { recursive: true });
+    fs.writeFileSync(visualIndexPath, `${JSON.stringify(visualIndex, null, 2)}\n`, "utf-8");
+    if (!report.changed.includes(".breadboard/visual-index.json")) {
+      report.changed.push(".breadboard/visual-index.json");
+    }
+  }
+  writeDirtyLearnerPages(pages, report);
+  if (reconciliation.removedArtifactIds.length > 0) {
+    report.notes.push(
+      `removed unregistered source artifact requirements: ${reconciliation.removedArtifactIds.join(", ")}`,
+    );
+  }
+  if (compatible.dropped.length > 0) {
+    report.notes.push(...compatible.dropped.map((note) => `replanned incompatible interactive: ${note}`));
+  }
+  return preservedVisualPlans;
 }
 
 function embeddedGeneratedVisualVersions(body: string): Map<string, number> {
@@ -2908,12 +3091,16 @@ export async function repairLearningUnitsFromContract({
   modelRepair?: ModelRepairExecutor;
 }): Promise<LearningUnitRepairRunReport> {
   const requestedAt = new Date().toISOString();
-  replanContractVisualNecessity(gardenDir, gardenSlug);
+  const preflightRepairReport = emptyFinalizeReport();
+  const preservedVisualPlans = reconcileContractArtifactsAgainstSourceRegistry(gardenDir, preflightRepairReport);
+  replanContractVisualNecessity(gardenDir, gardenSlug, preservedVisualPlans);
   const reportForChecks = emptyFinalizeReport();
   const firstChecks = collectFinalizeChecks({ gardenDir, report: reportForChecks, includeReportSelfCheck: false });
   const requests = collectUnitRepairRequests({ gardenDir, checks: firstChecks });
   const repairReport = emptyFinalizeReport();
   const changedBefore = new Set(repairReport.changed);
+  repairReport.changed.push(...preflightRepairReport.changed);
+  repairReport.notes.push(...preflightRepairReport.notes);
   const repairedAt = new Date().toISOString();
 
   const wantModel = (repairExecutor === "model" || repairExecutor === "model_with_deterministic_fallback") && typeof modelRepair === "function";

@@ -4,6 +4,7 @@ import fs from "node:fs";
 
 import {
   backLabelFor,
+  consumeBackTo,
   recordVisit,
   resolveBackHref,
   subscribeToTrail,
@@ -42,9 +43,60 @@ test("moving around inside one surface never becomes its own back target", () =>
   assert.equal(resolveBackHref("/garden/plants?note=tulips", "/gardens/plants"), "/dashboard");
 });
 
-test("garden chat backs out to where it was opened from, not always the dashboard", () => {
+test("the resolver prefers the visited page over the fixed fallback", () => {
   trail("/dashboard", "/garden/plants", "/gardens/plants");
   assert.equal(resolveBackHref("/gardens/plants", "/dashboard"), "/garden/plants");
+});
+
+test("following back unwinds the trail instead of bouncing between two pages", () => {
+  // Garden chat and the Quartz garden each link to the other, so without
+  // unwinding they are each other's back target forever.
+  trail("/dashboard", "/garden/plants", "/gardens/plants");
+
+  const first = resolveBackHref("/gardens/plants", "/dashboard");
+  assert.equal(first, "/garden/plants");
+  consumeBackTo(first);
+  recordVisit(first);
+
+  const second = resolveBackHref("/garden/plants", "/gardens/plants");
+  assert.equal(second, "/dashboard");
+  consumeBackTo(second);
+  recordVisit(second);
+
+  assert.equal(resolveBackHref("/dashboard", "/dashboard"), "/dashboard");
+});
+
+test("a trail that already bounced escapes in one click, not one click per bounce", () => {
+  trail(
+    "/dashboard",
+    "/gardens/plants",
+    "/garden/plants",
+    "/gardens/plants",
+    "/garden/plants",
+    "/gardens/plants",
+  );
+
+  const first = resolveBackHref("/gardens/plants", "/dashboard");
+  assert.equal(first, "/garden/plants");
+  consumeBackTo(first);
+  recordVisit(first);
+
+  assert.equal(resolveBackHref("/garden/plants", "/gardens/plants"), "/dashboard");
+});
+
+test("following back to an unvisited fallback drops the page being left", () => {
+  trail("/gardens/plants");
+  consumeBackTo("/dashboard");
+  recordVisit("/dashboard");
+  assert.equal(resolveBackHref("/dashboard", "/dashboard"), "/dashboard");
+});
+
+test("the back control unwinds the trail when it is followed", () => {
+  const backLink = fs.readFileSync(
+    new URL("../src/app/components/back-link.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(backLink, /onClick=\{\(\) => consumeBackTo\(href\)\}/);
 });
 
 test("a deep link with no trail falls back to the fixed parent", () => {
@@ -99,21 +151,28 @@ test("labels describe where the resolved target lands", () => {
   assert.equal(backLabelFor("/somewhere-else", "Back to dashboard"), "Back");
 });
 
-test("the garden surfaces route their back control through the trail", () => {
+test("the Quartz garden routes its back control through the trail", () => {
   const quartzPage = fs.readFileSync(
     new URL("../src/app/garden/[clusterSlug]/page.tsx", import.meta.url),
-    "utf8",
-  );
-  const gardenChat = fs.readFileSync(
-    new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url),
     "utf8",
   );
   const layout = fs.readFileSync(new URL("../src/app/layout.tsx", import.meta.url), "utf8");
 
   assert.match(quartzPage, /<BackLink/);
   assert.doesNotMatch(quartzPage, /href=\{cluster\.isOwner \? `\/gardens\//);
-  assert.match(gardenChat, /<BackLink/);
   assert.match(layout, /<NavigationTrail \/>/);
+});
+
+test("garden chat leaves to the dashboard rather than following the trail", () => {
+  // Two surfaces that link to each other cannot both defer to the trail without
+  // becoming each other's back target, so garden chat is the fixed end.
+  const gardenChat = fs.readFileSync(
+    new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.doesNotMatch(gardenChat, /BackLink/);
+  assert.match(gardenChat, /href="\/dashboard"[\s\S]{0,900}Back to dashboard/);
 });
 
 test("reloading the embedded garden does not stack a history entry", () => {

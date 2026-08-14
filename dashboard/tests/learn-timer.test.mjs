@@ -133,7 +133,7 @@ test("Learn panel stays outside the independently scrolling chat transcript", ()
   assert.match(workspaceSource, /max-h-\[55vh\][\s\S]*?shrink-0 overflow-y-auto/);
 });
 
-test("navbar toggles Learn while a collapsed status indicator remains outside chat scrolling", () => {
+test("navbar Learn button owns the collapsed loading indicator", () => {
   const workspaceSource = fs.readFileSync(
     new URL(
       "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
@@ -141,24 +141,17 @@ test("navbar toggles Learn while a collapsed status indicator remains outside ch
     ),
     "utf8",
   );
-  const indicatorIndex = workspaceSource.indexOf("{renderCollapsedLearnIndicator()}");
-  const chatScrollerIndex = workspaceSource.search(
-    /<main(?:\s+ref=\{transcriptScrollRef\})?\s+className="flex-1 overflow-y-auto px-4 py-6">/,
-  );
-
   assert.match(workspaceSource, /learnPanelOpen \? "Close Learn panel" : "Open Learn panel"/);
-  assert.match(workspaceSource, /function renderCollapsedLearnIndicator/);
-  assert.ok(indicatorIndex >= 0, "collapsed Learn status should render");
-  assert.ok(indicatorIndex < chatScrollerIndex, "collapsed status must sit outside chat scrolling");
-  assert.match(workspaceSource, /status === "complete"[\s\S]*?text-\[#4f8a62\]/);
-  assert.match(workspaceSource, /status === "failed"[\s\S]*?text-\[#b85c5c\]/);
-  assert.match(workspaceSource, /status === "complete" \|\| status === "failed"/);
-  assert.match(workspaceSource, /h-5 w-5 rounded-full border-\[3px\] border-current/);
-  assert.doesNotMatch(workspaceSource, /d="m5 12\.5 4\.2 4\.2L19 7"/);
-  assert.match(workspaceSource, /onClick=\{\(\) => setLearnPanelOpen\(true\)\}/);
+  assert.match(
+    workspaceSource,
+    /learnBusy \|\|[\s\S]*?learnCancelBusy \|\|[\s\S]*?isLearnActive\(learnState\?\.job\?\.status\)[\s\S]*?<Spinner className="h-3\.5 w-3\.5"/,
+  );
+  assert.match(workspaceSource, /Learn is running\. Open Learn panel/);
+  assert.doesNotMatch(workspaceSource, /function renderCollapsedLearnIndicator/);
+  assert.doesNotMatch(workspaceSource, /renderCollapsedLearnIndicator\(\)/);
 });
 
-test("collapsed Learn indicator expires two minutes after a non-loading state", () => {
+test("Learn has no detached or post-completion loading circle", () => {
   const workspaceSource = fs.readFileSync(
     new URL(
       "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
@@ -167,23 +160,9 @@ test("collapsed Learn indicator expires two minutes after a non-loading state", 
     "utf8",
   );
 
-  assert.match(
-    workspaceSource,
-    /LEARN_SETTLED_INDICATOR_VISIBLE_MS = 2 \* 60 \* 1000/,
-  );
-  assert.match(workspaceSource, /Date\.parse\(job\.updatedAt \?\? ""\)/);
-  assert.match(
-    workspaceSource,
-    /window\.setTimeout\([\s\S]*?setShowSettledLearnIndicator\(false\)[\s\S]*?remainingMs/,
-  );
-  assert.match(
-    workspaceSource,
-    /if \(!active && !showSettledLearnIndicator\) return null/,
-  );
-  assert.match(
-    workspaceSource,
-    /if \(active\) \{[\s\S]*?setShowSettledLearnIndicator\(true\)/,
-  );
+  assert.doesNotMatch(workspaceSource, /LEARN_SETTLED_INDICATOR_VISIBLE_MS/);
+  assert.doesNotMatch(workspaceSource, /showSettledLearnIndicator/);
+  assert.doesNotMatch(workspaceSource, /setShowSettledLearnIndicator/);
 });
 
 test("failed Learn jobs choose retry or scoped repair from the current garden state", () => {
@@ -233,7 +212,7 @@ test("Learn failures stay in the panel without opening a dialog or toast", () =>
   assert.doesNotMatch(quartzAssistantSource, /LearnErrorDialog|learn-error-dismissal/);
   assert.match(
     workspaceSource,
-    /status === "failed" && job\?\.error[\s\S]*?displayLearnError\(job\.error\)/,
+    /showFailedState && job\?\.error[\s\S]*?displayLearnError\(job\.error\)/,
   );
   assert.match(
     learnActionCatch,
@@ -256,7 +235,7 @@ test("completed Learn panel exposes scoped repair beside Skip review", () => {
     skipReviewIndex,
   );
   const primaryActionIndex = workspaceSource.indexOf(
-    "{showPrimaryAction && (",
+    "{showPrimaryAction && !active && (",
     skipReviewIndex,
   );
   const completedFooterIndex = workspaceSource.indexOf(

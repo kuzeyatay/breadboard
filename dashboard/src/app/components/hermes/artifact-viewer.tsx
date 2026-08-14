@@ -5,7 +5,14 @@
 // Artifacts tab and the inline chat cards can import it without a circular
 // dependency — artifact-panel imports from this module, never the reverse.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import dynamic from "next/dynamic";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import { parseStoredDesign } from "@/lib/hardware/schemas.ts";
@@ -68,6 +75,39 @@ export const ARTIFACT_REVISE_EVENT = "breadboard:artifact-revise";
 export const GARDEN_DOCUMENTS_CHANGED_EVENT = "breadboard:garden-documents-changed";
 
 const ARTIFACTS_FOLDER = "artifacts";
+
+/**
+ * How wide the dock asks the shell to be. Documents read at a comfortable
+ * column; anything with its own canvas — a blueprint, a film, a gadget, a
+ * picture — needs the room, but never so much that the chat beside it stops
+ * being a chat.
+ */
+const DOCK_WIDTH = "clamp(24rem, 44vw, 50rem)";
+const WIDE_DOCK_WIDTH = "clamp(28rem, 56vw, 68rem)";
+
+// A surface can have two viewers mounted at once — the Artifacts archive owns
+// one and the transcript's inline cards own another — so the width the shell
+// gives up is reference counted. The last dock to close is the one that hands
+// it back; without the count, closing either would leave the other one
+// overlapping the app it had already made room in.
+let openDocks = 0;
+
+/** Reserve the dock's width on the shell for as long as one is open. */
+function useReservedDockWidth(open: boolean, width: string): void {
+  useEffect(() => {
+    if (!open) return;
+    const root = document.documentElement;
+    openDocks += 1;
+    root.dataset.artifactDock = "open";
+    root.style.setProperty("--bb-artifact-dock-width", width);
+    return () => {
+      openDocks -= 1;
+      if (openDocks > 0) return;
+      delete root.dataset.artifactDock;
+      root.style.removeProperty("--bb-artifact-dock-width");
+    };
+  }, [open, width]);
+}
 
 const kindLabels: Partial<Record<ArtifactKind, string>> = {
   audio: "Audio",
@@ -295,9 +335,12 @@ interface ArtifactViewerProps {
 }
 
 /**
- * Full-screen reading view for a single artifact. Markdown renders through the
- * same pipeline as chat messages, so a generated `.md` file reads as a document
- * — not as raw source dumped into a browser tab.
+ * Reading view for a single artifact, docked down the right-hand edge beside
+ * the chat that made it rather than thrown over the app as a modal — an
+ * artifact is something you read *while* you keep talking about it, and a
+ * dialog that blocks the conversation is the wrong shape for that. Markdown
+ * renders through the same pipeline as chat messages, so a generated `.md`
+ * file reads as a document, not as raw source dumped into a browser tab.
  */
 export default function ArtifactViewer({
   artifact,
@@ -355,6 +398,21 @@ export default function ArtifactViewer({
   const interactivePreviewUrl = interactive
     ? `${previewUrl}&channel=${encodeURIComponent(interactiveChannel)}`
     : previewUrl;
+
+  // Everything that renders its own canvas rather than a column of text takes
+  // the wider dock.
+  const wideDock =
+    hardwareBlueprint ||
+    parametricCad ||
+    modelFile ||
+    vimaxFilm ||
+    socialsPost ||
+    isGadget ||
+    interactive ||
+    richMedia ||
+    isRaster;
+  const dockWidth = wideDock ? WIDE_DOCK_WIDTH : DOCK_WIDTH;
+  useReservedDockWidth(Boolean(artifact), dockWidth);
 
   useEffect(() => {
     if (!artifact || !isTextual || !artifact.previewAvailable) return;
@@ -751,29 +809,26 @@ export default function ArtifactViewer({
   }
 
   return (
-    <div
-      className="bb-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label={artifact.title}
-      onClick={onClose}
-    >
+    <>
+      {/* Under the desktop breakpoint the dock has to cover the app rather
+          than sit beside it, so there it keeps a scrim to dismiss it by. Wide
+          screens make room for the panel instead, and a scrim over an app the
+          user can still work in would be a lie. */}
       <div
-        className={`bb-modal-panel neu-dialog flex w-full flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] text-[var(--ink)] shadow-2xl ${
-          usesDocumentViewer
-            ? "h-[92vh] max-h-[92vh] max-w-[min(76rem,95vw)]"
-            : hardwareBlueprint || vimaxFilm || socialsPost || isGadget
-              ? "h-[92vh] max-h-[92vh] max-w-[min(88rem,96vw)]"
-              : interactive || richMedia
-              ? "h-[92vh] max-h-[92vh] max-w-[min(88rem,96vw)]"
-              : isRaster
-                ? "h-[92vh] max-h-[92vh] max-w-[min(72rem,95vw)]"
-                : "max-h-[92vh] max-w-[min(60rem,94vw)]"
-        }`}
-        onClick={(event) => event.stopPropagation()}
+        className="bb-modal-backdrop fixed inset-0 z-[69] lg:hidden"
+        aria-hidden="true"
+        onClick={onClose}
+      />
+      <aside
+        style={{ "--bb-artifact-dock-width": dockWidth } as CSSProperties}
+        className="bb-artifact-dock fixed inset-y-0 right-0 z-[70] flex w-full flex-col overflow-hidden border-l border-[var(--line)] bg-[var(--paper-surface)] text-[var(--ink)] lg:w-[var(--bb-artifact-dock-width)]"
+        role="dialog"
+        aria-label={artifact.title}
       >
-        <header className="flex items-center gap-2 border-b border-[var(--line)] px-5 py-3">
-          <div className="min-w-0 flex-1">
+        {/* The dock is narrower than the dialog it replaces, so the actions
+            wrap under the title rather than squeezing it out of the row. */}
+        <header className="flex flex-wrap items-center gap-2 border-b border-[var(--line)] px-5 py-3">
+          <div className="min-w-[12rem] flex-1">
             <p className="truncate text-sm font-semibold text-[var(--ink-heading)]">
               {artifact.title}
             </p>
@@ -863,7 +918,7 @@ export default function ArtifactViewer({
         >
           {renderBody()}
         </div>
-      </div>
-    </div>
+      </aside>
+    </>
   );
 }

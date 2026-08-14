@@ -5,6 +5,7 @@ import { removeConversationModelBlobs } from "./model-uploads.ts";
 import { removeConversationVideoBlobs } from "./video-uploads.ts";
 import { removeConversationAudioBlobs } from "./audio-uploads.ts";
 import db from "../db.ts";
+import { scrubbed } from "../watermarks/scrub-text.ts";
 import type { HermesSurface } from "../hermes/config.ts";
 
 export type ConversationScopeKind = "global" | "garden" | "page";
@@ -693,13 +694,18 @@ function finishAssistantMessage(input: {
     if (!row) throw new ConversationStoreError(404, "turn_not_found", "Conversation turn not found.");
     if (row.status !== "pending") return row;
     const mergedMetadata = { ...parseObject(row.metadata), ...input.metadata };
+    // Every finished answer, on every surface and from every runtime, lands
+    // here — which makes it the one place invisible-Unicode marks can be taken
+    // out of what Breadboard says without asking each pipeline to remember.
+    // Only invisible characters are removed; the wording is untouched.
+    const content = scrubbed(input.content);
     database.prepare(`
       UPDATE conversation_messages
       SET content = ?, status = ?, metadata = ?, sources = ?, token_usage = ?,
           updated_at = datetime('now')
       WHERE id = ? AND status = 'pending'
     `).run(
-      input.content,
+      content,
       input.status,
       Object.keys(mergedMetadata).length > 0 ? JSON.stringify(mergedMetadata) : null,
       input.sources === undefined ? null : JSON.stringify(input.sources),

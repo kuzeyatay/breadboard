@@ -30,6 +30,25 @@ const primaryButton =
 const secondaryButton =
   "neu-button rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-4 py-2 text-sm text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-45";
 
+/**
+ * What a field's `statusProbe` resolves to, read once when the panel opens.
+ *
+ * A setting whose usefulness depends on something outside Breadboard is worth a
+ * line saying whether that thing is there. Deliberately one fetch of an
+ * endpoint that already exists and is passive — the renderer must not poll a
+ * desktop application, and reading this must never start one.
+ */
+const STATUS_PROBES: Record<string, (signal: AbortSignal) => Promise<string>> = {
+  solidworks: async (signal) => {
+    const response = await fetch("/api/cad/health", { cache: "no-store", signal });
+    const payload = (await response.json().catch(() => ({}))) as {
+      engines?: { solidworks?: { status?: string } };
+    };
+    const status = payload.engines?.solidworks?.status;
+    return status ? `SolidWorks — ${status}` : "";
+  },
+};
+
 export default function AgentRunDefaults({
   agentId,
   omit,
@@ -52,6 +71,7 @@ export default function AgentRunDefaults({
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [probes, setProbes] = useState<Record<string, string>>({});
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -86,6 +106,31 @@ export default function AgentRunDefaults({
     void load(controller.signal);
     return () => controller.abort();
   }, [load]);
+
+  const probeNames = useMemo(
+    () => [...new Set(fields.map((field) => field.statusProbe).filter(Boolean))] as string[],
+    [fields],
+  );
+
+  useEffect(() => {
+    if (!probeNames.length) return;
+    const controller = new AbortController();
+    void Promise.all(
+      probeNames.map(async (name) => {
+        const probe = STATUS_PROBES[name];
+        if (!probe) return;
+        try {
+          const label = await probe(controller.signal);
+          // A probe that cannot answer says nothing rather than something
+          // wrong: the setting itself still works.
+          if (label) setProbes((current) => ({ ...current, [name]: label }));
+        } catch {
+          // Ignored on purpose — see above.
+        }
+      }),
+    );
+    return () => controller.abort();
+  }, [probeNames]);
 
   if (!agent) return null;
 
@@ -182,6 +227,11 @@ export default function AgentRunDefaults({
             {field.flag ? (
               <p className="mt-1.5 text-[10px] leading-4 text-[var(--ink-muted)]">
                 Once: <span className="font-mono text-[var(--ink)]">{field.flag}</span>
+              </p>
+            ) : null}
+            {field.statusProbe && probes[field.statusProbe] ? (
+              <p className="mt-1 text-[10px] leading-4 text-[var(--ink-muted)]">
+                {probes[field.statusProbe]}
               </p>
             ) : null}
           </section>

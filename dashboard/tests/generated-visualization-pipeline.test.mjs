@@ -16,6 +16,7 @@ import {
   createGeneratedVisualization,
   loadGeneratedVisualDefinition,
   loadGeneratedVisualManifest,
+  normalizeDetailedGeneratedVisualCriticRecord,
   parseGeneratedVisualBlock,
   rollbackGeneratedVisualization,
   runGeneratedVisualBrowserTests,
@@ -192,6 +193,132 @@ test("generated routes clear stale incompatible contract types", () => {
   const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap([comparison]), learningUnits: [comparison] });
   const routed = applyVisualizationRoutesToLearningUnits([comparison], plan);
   assert.notEqual(routed[0].interactiveVisual?.visualType, "neural_coding");
+});
+
+test("detailed council critic rejection is normalized with actionable feedback", () => {
+  const rationale = "The path comparison fits the subsection, but its controls and variable grounding need revision.";
+  const critic = normalizeDetailedGeneratedVisualCriticRecord({
+    opportunityId: "visual-u7-18fcd14e",
+    decision: "reject",
+    overallScore: 0.62,
+    scores: {
+      interactionImprovesUnderstanding: 0.76,
+      subsectionFit: 0.96,
+      meaningfulControls: 0.32,
+      usefulDefaultState: 0.84,
+      variableIntroduction: 0.55,
+      sourceClaimsAndUnitsPreserved: 0.68,
+      avoidsDuplication: 0.98,
+      avoidsUnnecessaryComplexity: 0.9,
+      accessibility: 0.94,
+    },
+    rationale,
+  }, undefined, "visual-u7-18fcd14e");
+
+  assert.ok(critic);
+  assert.equal(critic.approved, false);
+  assert.equal(critic.providerApproved, false);
+  assert.equal(critic.reason, rationale);
+  assert.equal(critic.scores.pedagogicalValue, 0.32);
+  assert.equal(critic.scores.sourceFidelity, 0.68);
+  assert.equal(critic.scores.usability, 0.32);
+  assert.equal(critic.scores.accessibility, 0.94);
+  assert.equal(critic.providerScores.overallScore, 0.62);
+  assert.ok(critic.requestedChanges.some((change) => /variables that directly change/i.test(change)));
+  assert.ok(critic.requestedChanges.some((change) => /every variable and unit/i.test(change)));
+  assert.ok(critic.requestedChanges.some((change) => /source evidence/i.test(change)));
+});
+
+test("detailed council critic approval still enforces normalized score thresholds", () => {
+  const critic = normalizeDetailedGeneratedVisualCriticRecord({
+    opportunityId: "visual-approved",
+    decision: "approve",
+    overallScore: 0.91,
+    scores: {
+      interactionImprovesUnderstanding: 0.92,
+      subsectionFit: 0.95,
+      meaningfulControls: 0.88,
+      usefulDefaultState: 0.9,
+      variableIntroduction: 0.86,
+      sourceClaimsAndUnitsPreserved: 0.93,
+      avoidsDuplication: 0.94,
+      avoidsUnnecessaryComplexity: 0.89,
+      accessibility: 0.91,
+    },
+    rationale: "Approved with strong evidence.",
+  }, undefined, "visual-approved");
+
+  assert.equal(critic?.approved, true);
+  assert.deepEqual(critic?.requestedChanges, []);
+});
+
+test("detailed critic normalization rejects mismatched opportunities and non-numeric scores", () => {
+  const mismatched = normalizeDetailedGeneratedVisualCriticRecord({
+    opportunityId: "visual-from-another-unit",
+    decision: "approve",
+    overallScore: 0.95,
+    scores: { interactionImprovesUnderstanding: 0.95 },
+  }, undefined, "visual-for-this-unit");
+  const invalidScores = normalizeDetailedGeneratedVisualCriticRecord({
+    opportunityId: "visual-for-this-unit",
+    decision: "reject",
+    overallScore: null,
+    scores: {
+      interactionImprovesUnderstanding: null,
+      meaningfulControls: "",
+    },
+  }, undefined, "visual-for-this-unit");
+  const incompleteApproval = normalizeDetailedGeneratedVisualCriticRecord({
+    opportunityId: "visual-for-this-unit",
+    decision: "approve",
+    overallScore: 0.99,
+    scores: { interactionImprovesUnderstanding: 0.99 },
+  }, undefined, "visual-for-this-unit");
+  const contradictoryDecision = normalizeDetailedGeneratedVisualCriticRecord({
+    opportunityId: "visual-for-this-unit",
+    approved: true,
+    decision: "reject",
+    overallScore: 0.99,
+    scores: { interactionImprovesUnderstanding: 0.99 },
+  }, undefined, "visual-for-this-unit");
+
+  assert.equal(mismatched, null);
+  assert.equal(invalidScores, null);
+  assert.equal(incompleteApproval, null);
+  assert.equal(contradictoryDecision, null);
+});
+
+test("an under-scored rubric approval names the dimensions the critic skipped", () => {
+  const diagnostics = {};
+  const critic = normalizeDetailedGeneratedVisualCriticRecord({
+    approved: true,
+    reason: "The visualization connects potential difference, gradient, and field direction.",
+    scores: {
+      interactionImprovesUnderstanding: 0.9,
+      subsectionFit: 0.98,
+      controlMeaningfulness: 0.92,
+      defaultStateUsefulness: 0.94,
+      variableIntroduction: 0.91,
+    },
+  }, undefined, undefined, diagnostics);
+
+  assert.equal(critic, null);
+  assert.equal(diagnostics.detailed, true);
+  assert.match(diagnostics.reason, /without scoring/i);
+  for (const dimension of ["sourceClaimsAndUnits", "avoidsDuplication", "complexityDiscipline", "accessibility"]) {
+    assert.match(diagnostics.reason, new RegExp(dimension));
+  }
+});
+
+test("a legacy critic record is not claimed by the rubric path", () => {
+  const diagnostics = {};
+  const legacy = normalizeDetailedGeneratedVisualCriticRecord({
+    approved: true,
+    scores: { pedagogy: 0.9, source_coverage: 0.9, correctness: 0.9, interaction_quality: 0.9, accessibility: 0.9 },
+  }, undefined, undefined, diagnostics);
+
+  assert.equal(legacy, null);
+  assert.notEqual(diagnostics.detailed, true);
 });
 
 const validSource = `import { defineVisualization } from "@breadboard/visual-sdk";
@@ -381,6 +508,204 @@ test("versioned generated artifacts preserve evidence and support validated roll
     const restored = rollbackGeneratedVisualization({ gardenDir, id: opportunity.id, version: 1 });
     assert.equal(restored.version, 1);
     assert.equal(loadGeneratedVisualManifest(gardenDir, opportunity.id)?.version, 1);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("a detailed council rejection repairs with its real feedback before approval", async () => {
+  const plan = buildVisualizationPlan({ gardenId: "critic-repair", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = {
+    ...plan.opportunities[0],
+    gardenId: "critic-repair",
+    targetPage: "learning/1/critic-repair.md",
+    targetHeading: "Critic repair",
+  };
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-repair-"));
+  const events = [];
+  const candidateInputs = [];
+  const criticRecords = [
+    {
+      opportunityId: opportunity.id,
+      decision: "reject",
+      overallScore: 0.62,
+      scores: {
+        interactionImprovesUnderstanding: 0.76,
+        subsectionFit: 0.96,
+        meaningfulControls: 0.32,
+        usefulDefaultState: 0.84,
+        variableIntroduction: 0.55,
+        sourceClaimsAndUnitsPreserved: 0.68,
+        avoidsDuplication: 0.98,
+        avoidsUnnecessaryComplexity: 0.9,
+        accessibility: 0.94,
+      },
+      rationale: "Use meaningful, introduced, source-grounded variables.",
+    },
+    {
+      opportunityId: opportunity.id,
+      decision: "approve",
+      overallScore: 0.92,
+      scores: {
+        interactionImprovesUnderstanding: 0.92,
+        subsectionFit: 0.95,
+        meaningfulControls: 0.88,
+        usefulDefaultState: 0.9,
+        variableIntroduction: 0.86,
+        sourceClaimsAndUnitsPreserved: 0.93,
+        avoidsDuplication: 0.94,
+        avoidsUnnecessaryComplexity: 0.89,
+        accessibility: 0.91,
+      },
+      rationale: "Approved after the grounded repair.",
+    },
+  ];
+  const client = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [{ message: { content: JSON.stringify(criticRecords.shift()) } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }),
+      },
+    },
+  };
+  try {
+    const result = await createGeneratedVisualization({
+      client,
+      model: "test-model",
+      gardenDir,
+      opportunity,
+      pageMarkdown: "A source-grounded explanation.",
+      availableSourceAnchorIds: new Set(["S1.P2.F1"]),
+      maxAttempts: 2,
+      criticMaxAttempts: 1,
+      runBrowserTests: false,
+      onEvent: (event) => events.push(event),
+      candidateProvider: async (input) => {
+        candidateInputs.push(input);
+        return {
+          title: "Coupled state intervention",
+          explanation: "A source-grounded intervention explorer.",
+          sourceCode: validSource,
+          testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { main_output: 4 } }],
+          accessibilityDescription: "A gain slider changes both a numeric output and the plotted response.",
+          pedagogicalClaims: ["The propagated state changes with gain."],
+        };
+      },
+    });
+
+    assert.equal(result.manifest?.generationAttempt, 2, result.errors.join("; "));
+    assert.equal(candidateInputs.length, 2);
+    assert.match(candidateInputs[1].errors.join("; "), /meaningful, introduced, source-grounded variables/i);
+    assert.match(candidateInputs[1].errors.join("; "), /variables that directly change/i);
+    assert.match(candidateInputs[1].errors.join("; "), /every variable and unit/i);
+    assert.ok(events.some((event) => event.type === "visual_critic_rejected"));
+    assert.ok(events.some((event) => event.type === "visual_repair_started"));
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("critic protocol exhaustion retries the same validated artifact without regenerating it", async () => {
+  const plan = buildVisualizationPlan({ gardenId: "critic-failure", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = {
+    ...plan.opportunities[0],
+    gardenId: "critic-failure",
+    targetPage: "learning/1/critic-failure.md",
+    targetHeading: "Critic failure",
+  };
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-failure-"));
+  const events = [];
+  let candidateCalls = 0;
+  let criticCalls = 0;
+  try {
+    const result = await createGeneratedVisualization({
+      client: {},
+      model: "test-model",
+      gardenDir,
+      opportunity,
+      pageMarkdown: "A validated visual waiting for review.",
+      availableSourceAnchorIds: new Set(["S1.P2.F1"]),
+      maxAttempts: 5,
+      criticMaxAttempts: 2,
+      runBrowserTests: false,
+      onEvent: (event) => events.push(event),
+      candidateProvider: async () => {
+        candidateCalls += 1;
+        return {
+          title: "Coupled state intervention",
+          explanation: "A source-grounded intervention explorer.",
+          sourceCode: validSource,
+          testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { main_output: 4 } }],
+          accessibilityDescription: "A gain slider changes both a numeric output and the plotted response.",
+          pedagogicalClaims: ["The propagated state changes with gain."],
+        };
+      },
+      criticProvider: async () => {
+        criticCalls += 1;
+        throw new Error("critic returned an invalid record");
+      },
+    });
+
+    assert.equal(result.manifest, null);
+    assert.equal(result.failureCategory, "critic");
+    assert.equal(candidateCalls, 1);
+    assert.equal(criticCalls, 2);
+    assert.match(result.errors.join("; "), /could not complete after 2 attempts/i);
+    assert.doesNotMatch(result.errors.join("; "), /Retry critic review with the validated artifact/i);
+    assert.ok(events.some((event) => event.type === "visual_critic_retry"));
+    assert.ok(events.some((event) => event.type === "visual_critic_failed"));
+    assert.equal(events.some((event) => event.type === "visual_repair_started"), false);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("cancellation during critic review escapes the retry loop immediately", async () => {
+  const plan = buildVisualizationPlan({ gardenId: "critic-cancel", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = {
+    ...plan.opportunities[0],
+    gardenId: "critic-cancel",
+    targetPage: "learning/1/critic-cancel.md",
+    targetHeading: "Critic cancel",
+  };
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-cancel-"));
+  const events = [];
+  const abortController = new AbortController();
+  let criticCalls = 0;
+  try {
+    await assert.rejects(createGeneratedVisualization({
+      client: {},
+      model: "test-model",
+      gardenDir,
+      opportunity,
+      pageMarkdown: "A validated visual waiting for review.",
+      availableSourceAnchorIds: new Set(["S1.P2.F1"]),
+      maxAttempts: 5,
+      criticMaxAttempts: 3,
+      runBrowserTests: false,
+      abortSignal: abortController.signal,
+      onEvent: (event) => events.push(event),
+      candidateProvider: async () => ({
+        title: "Coupled state intervention",
+        explanation: "A source-grounded intervention explorer.",
+        sourceCode: validSource,
+        testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { main_output: 4 } }],
+        accessibilityDescription: "A gain slider changes both a numeric output and the plotted response.",
+        pedagogicalClaims: ["The propagated state changes with gain."],
+      }),
+      criticProvider: async () => {
+        criticCalls += 1;
+        abortController.abort(new Error("cancelled by test"));
+        throw new Error("cancelled by test");
+      },
+    }), /cancelled by test/i);
+
+    assert.equal(criticCalls, 1);
+    assert.equal(events.some((event) => event.type === "visual_critic_retry"), false);
+    assert.equal(events.some((event) => event.type === "visual_critic_failed"), false);
+    assert.equal(events.some((event) => event.type === "visual_fallback_used"), false);
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });
   }

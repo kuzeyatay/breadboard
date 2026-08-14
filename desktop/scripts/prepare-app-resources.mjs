@@ -432,6 +432,34 @@ log("staging unslop skill");
   );
 }
 
+// --- watermarks-remover ---------------------------------------------------
+// The scripts behind the `watermark_*` tools. `lib/watermarks/scripts.ts`
+// resolves them under the repository root at call time, so without this the
+// packaged app answers "the scripts are not installed" while the dev repo
+// (which has the clone) looks fine — the same hole unslop fell into. Only the
+// skill subtree ships: the clone's tests, Dockerfiles and CI are not read at
+// runtime. Everything here is Python 3.10+ stdlib, so the bundled CPython runs
+// it exactly as staged.
+log("staging watermarks-remover scripts");
+{
+  const watermarksSkill = path.join(repoRoot, "watermarks-remover", "skills", "remove-ai-marks");
+  if (!fs.existsSync(path.join(watermarksSkill, "scripts", "clean_file.py"))) {
+    fail(
+      "watermarks-remover/skills/remove-ai-marks/scripts/clean_file.py is missing; " +
+        "the packaged app would ship without the watermark tools.",
+    );
+  }
+  const watermarksTarget = path.join(stagingRoot, "watermarks-remover", "skills", "remove-ai-marks");
+  freshDir(path.join(stagingRoot, "watermarks-remover"));
+  copyTree(watermarksSkill, watermarksTarget, (rel) =>
+    /(^|\/)__pycache__(\/|$)/.test(rel) || /\.(pyc|pyo)$/.test(rel),
+  );
+  const watermarksLicense = path.join(repoRoot, "watermarks-remover", "LICENSE");
+  if (fs.existsSync(watermarksLicense)) {
+    fs.copyFileSync(watermarksLicense, path.join(stagingRoot, "watermarks-remover", "LICENSE"));
+  }
+}
+
 // --- loopx ----------------------------------------------------------------
 // The control plane that governs long-running Hermes conversations. Only the
 // Python package ships: the docs, the presentation app, and the regression

@@ -70,10 +70,25 @@ test("geography as a subject, rather than a place, needs no map call", () => {
     "Refactor the distance helper in src/lib/map/format.ts.",
     "Summarize this document.",
     "How does GPS trilateration work?",
+    "Deep Research found comprehension declining at around 250 words per minute in Acklin and Papesh.",
   ];
   for (const request of notRequired) {
     const verdict = requiresGeographicGrounding(request);
     assert.equal(verdict.required, false, `should not require grounding: ${request}`);
+  }
+});
+
+test("around still identifies an actual place lookup", () => {
+  for (const request of [
+    "What is around Eindhoven?",
+    "Find cafes around Strijp-S.",
+    "Show me pharmacies around Kadikoy.",
+  ]) {
+    assert.equal(
+      requiresGeographicGrounding(request).required,
+      true,
+      `should require grounding: ${request}`,
+    );
   }
 });
 

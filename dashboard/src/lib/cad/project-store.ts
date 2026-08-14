@@ -165,6 +165,39 @@ export function latestCadProjectForConversation(input: {
   );
 }
 
+/**
+ * Newest durable plan that never reached a publishable revision.
+ *
+ * A model timeout after `cad_create_project` must not force the next retry to
+ * repeat planning or leave the good specification orphaned. Callers may bind
+ * by the generated design name when they share a conversation with other CAD
+ * work (Hardware Blueprint does); the direct CAD agent simply resumes the
+ * newest unbuilt plan unless the person explicitly asked for a fresh project.
+ */
+export function latestUnbuiltCadProjectForConversation(input: {
+  userId: number;
+  conversationId: number;
+  name?: string;
+  database?: Database.Database;
+}): CadProjectRow | null {
+  const database = input.database ?? db;
+  const nameClause = input.name?.trim() ? " AND name = ?" : "";
+  const values: Array<number | string> = [input.userId, input.conversationId];
+  if (input.name?.trim()) values.push(input.name.trim());
+  return (
+    (database
+      .prepare(
+        `SELECT * FROM cad_projects
+         WHERE user_id = ? AND conversation_id = ?
+           AND current_revision = 0
+           AND artifact_id IS NULL
+           AND status IN ('draft', 'invalid')${nameClause}
+         ORDER BY updated_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(...values) as CadProjectRow | undefined) ?? null
+  );
+}
+
 export function setCadProjectArtifact(input: {
   projectId: string;
   artifactId: string;

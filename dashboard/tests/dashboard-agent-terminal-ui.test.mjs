@@ -26,6 +26,10 @@ const historyControls = fs.readFileSync(
   new URL("../src/app/components/hermes/history-client.tsx", import.meta.url),
   "utf8",
 );
+const breadboardLoader = fs.readFileSync(
+  new URL("../src/app/components/breadboard-loader.tsx", import.meta.url),
+  "utf8",
+);
 const terminalSidebar = fs.readFileSync(
   new URL("../src/app/components/hermes/terminal-sidebar.tsx", import.meta.url),
   "utf8",
@@ -164,7 +168,8 @@ test("the Hermes composer adds documents immediately after the slash control", (
 
 test("active conversations show a small spinner beside their row controls", () => {
   assert.match(historyControls, /export function ActiveChatIcon/);
-  assert.match(historyControls, /className=\{`animate-spin \$\{className\}`\}/);
+  assert.match(historyControls, /return <BreadboardLoader className=\{className\} \/>/);
+  assert.match(breadboardLoader, /className=\{`animate-spin \$\{className\}`\}/);
   assert.match(historyControls, /Boolean\(activeRun\)/);
   assert.match(
     historyControls,
@@ -193,6 +198,16 @@ test("active conversations show a small spinner beside their row controls", () =
       railRow.indexOf("<ActiveChatIcon") < railRow.indexOf("More actions"),
     "the active-chat spinner must sit before the rail's hover controls",
   );
+});
+
+test("initial transcript and Recents loading use the same text-free circle", () => {
+  assert.match(runtime, /<BreadboardLoader label="Loading this chat" \/>/);
+  assert.match(historyControls, /export function ChatHistoryLoading/);
+  assert.match(historyControls, /<SpinnerIcon className="h-3\.5 w-3\.5" \/>/);
+  assert.doesNotMatch(historyControls, /<span>\{label\}<\/span>/);
+  assert.match(breadboardLoader, /viewBox="0 0 24 24"/);
+  assert.match(breadboardLoader, /<circle/);
+  assert.doesNotMatch(breadboardLoader, /<rect|HOLES|bb-loader-charge/);
 });
 
 test("a fully open terminal stops the page behind it from scrolling", () => {

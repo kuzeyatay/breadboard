@@ -153,7 +153,7 @@ before anything happens; results are typed objects, never prose.
 | Tool | Input | Output |
 | --- | --- | --- |
 | `cad_create_project` | `name`, `units`, `design_spec`, `parameters` | `projectId`, `revision: 0`, `expectedSolidCount`, `defaults`, `disclaimers` |
-| `cad_generate_model` | `projectId`, `source`, `entrypoint`, `parameters`, `timeoutMs`, `note` | `revision`, `status`, `validationPassed`, `measurements`, `issues[]`, `attemptsRemaining` — or a typed failure with `repairHint` and `line` |
+| `cad_generate_model` | `projectId`, `source`, `entrypoint`, `parameters`, `timeoutMs`, `note`, `constraints?`, `assembly?` | `revision`, `status`, `validationPassed`, `measurements`, `issues[]`, `attemptsRemaining` — or a typed failure with `repairHint` and `line` |
 | `cad_validate_model` | `projectId`, `revision?` | `passed`, `status`, `issues[]`, `revalidated` (false when the recorded answer still applies) |
 | `cad_export_model` | `projectId`, `revision?`, `formats[]` | `exports[]` with `byteSize`, `sha256` and tessellation tolerances |
 | `cad_get_project` | `projectId`, `includeSource` | specification, parameters, source, measurements, last validation, revision history |
@@ -183,7 +183,7 @@ renderer publishes and again before the viewer draws.
   artifactType: "parametric-cad",
   projectId, revision, title,
   status: "draft" | "valid" | "valid-with-warnings" | "invalid",
-  designSpec: CADDesignSpec,      // parameters, components, constraints, assumptions
+  designSpec: CADDesignSpec,      // parameters, components, constraints, assumptions, assembly
   source, entrypoint, parameters, // the CadQuery program and what it ran with
   previewFile: CADFileReference | null,
   exports: CADFileReference[],
@@ -192,7 +192,8 @@ renderer publishes and again before the viewer draws.
   assumptions: string[], disclaimers: string[],
   revisionHistory: CADRevisionSummary[],
   generationLog: { at, stage, detail }[],
-  provenance: { engine, engineVersion, kernel, kernelVersion, pythonVersion, … },
+  provenance: { engine, engineVersion, kernel, kernelVersion, pythonVersion,
+                geometryAuthor: "model" | "deterministic-template", … },
 }
 ```
 
@@ -217,6 +218,29 @@ file set, and forks a new artifact version.
   it never becomes the design the user opens.
 - `parameterDiff` is computed against the parent revision. A first revision has
   no diff: the starting point of a design is not a change to it.
+
+### Acceptance, repair, and honest failure
+
+A caller may hand `designCadPart` an `acceptance` callback: requirements the
+kernel cannot check, measured against the manifest that was actually built. The
+Hardware Blueprint agent passes `physicalDesignCoverageIssues`, so the two gates
+now run in one place:
+
+1. The source phase builds and OpenCascade validates.
+2. Acceptance runs on the built design. If a required feature is missing, the
+   unmet requirements go back to the model **with a build attempt left**, and it
+   rewrites the program — sending `constraints` (and `assembly`) with the same
+   `cad_generate_model` call, since the source phase cannot otherwise touch the
+   specification.
+3. If those repairs are exhausted, the run ends without a CAD artifact. No
+   canned enclosure, mount, or product template is substituted for the model's
+   answer. Invalid revisions remain in project history for diagnosis but never
+   become the current or published design.
+
+New revisions always set `geometryAuthor: "model"`. The
+`"deterministic-template"` schema value is read-only compatibility for artifacts
+saved before deterministic CAD substitution was removed; the viewer labels
+those legacy artifacts explicitly.
 
 A parameter edit from the artifact panel posts to
 `POST /api/cad/projects/[projectId]/parameters`, which rebuilds the existing
@@ -314,8 +338,12 @@ cad.spec.created         cad.validation.started    cad.export.started
 cad.source.generated     cad.validation.completed  cad.export.completed
 cad.execution.started    cad.validation.failed     cad.artifact.created
 cad.execution.completed  cad.repair.started        cad.artifact.updated
-cad.execution.failed
+cad.execution.failed     cad.acceptance.failed
 ```
+
+`cad.acceptance.failed` comes from `design-service.ts` rather than the two files
+above: it is emitted when a built, kernel-valid design still misses a required
+feature after every repair attempt. The run then ends without publishing CAD.
 
 They ride the existing `id:/event:/data:` envelope, so no existing consumer
 changes.

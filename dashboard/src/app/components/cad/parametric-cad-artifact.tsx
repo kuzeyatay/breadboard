@@ -36,7 +36,9 @@ const FORMAT_LABELS: Record<string, string> = {
   stl: "STL · for slicing",
   glb: "GLB · 3D preview",
   "3mf": "3MF · for slicing",
+  sldprt: "SLDPRT · native SolidWorks part",
   source: "CadQuery source",
+  operations: "SolidWorks operations",
   spec: "Design specification",
   report: "Validation report",
 };
@@ -56,12 +58,12 @@ function statusTone(status: ParametricCADArtifact["status"]): {
   className: string;
 } {
   if (status === "valid") {
-    return { label: "Validated", className: "text-[var(--botanical)]" };
+    return { label: "Geometry checks passed", className: "text-[var(--botanical)]" };
   }
   if (status === "valid-with-warnings") {
-    return { label: "Validated with warnings", className: "text-[var(--selection-yellow-line)]" };
+    return { label: "Geometry passed with warnings", className: "text-[var(--selection-yellow-line)]" };
   }
-  if (status === "invalid") return { label: "Not valid", className: "text-[var(--danger)]" };
+  if (status === "invalid") return { label: "Geometry checks failed", className: "text-[var(--danger)]" };
   return { label: "Draft", className: "text-[var(--ink-muted)]" };
 }
 
@@ -73,9 +75,10 @@ const toggle =
 const toggleOn =
   "neu-button rounded-lg border border-[var(--botanical)] bg-[color-mix(in_srgb,var(--botanical)_16%,transparent)] px-2.5 py-1 text-xs font-medium text-[var(--ink-heading)]";
 
-type CadPanel = "parameters" | "validation" | "exports" | "source" | "history";
+type CadPanel = "assembly" | "parameters" | "validation" | "exports" | "source" | "history";
 
 const CAD_PANEL_IDS: Record<CadPanel, string> = {
+  assembly: "cad-assembly-panel",
   parameters: "cad-parameters-panel",
   validation: "cad-validation-panel",
   exports: "cad-exports-panel",
@@ -86,13 +89,17 @@ const CAD_PANEL_IDS: Record<CadPanel, string> = {
 export default function ParametricCadArtifact({
   design,
   conversationId,
-  initialPanel = "parameters",
+  initialPanel = "assembly",
   onRevised,
 }: {
   design: ParametricCADArtifact;
   /** Needed to publish a new artifact version when a parameter changes. */
   conversationId?: string;
-  /** Which panel opens first. Lets a caller point straight at the findings. */
+  /**
+   * Which panel opens first. Lets a caller point straight at the findings.
+   * Assembly leads by default — a reader opening a design first needs to know
+   * which body is which and what goes where, not the parameter values.
+   */
   initialPanel?: CadPanel;
   onRevised?: () => void;
 }) {
@@ -101,7 +108,10 @@ export default function ParametricCadArtifact({
   const [showGrid, setShowGrid] = useState(true);
   const [showBox, setShowBox] = useState(false);
   const [projection, setProjection] = useState<"perspective" | "orthographic">("perspective");
-  const [tab, setTab] = useState<CadPanel | null>(initialPanel);
+  const assembly = design.designSpec.assembly ?? null;
+  const [tab, setTab] = useState<CadPanel | null>(
+    initialPanel === "assembly" && !assembly ? "parameters" : initialPanel,
+  );
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
@@ -113,6 +123,12 @@ export default function ParametricCadArtifact({
   const warnings = design.validation.issues.filter((issue) => issue.severity === "warning");
   const notes = design.validation.issues.filter((issue) => issue.severity === "info");
   const editable = design.designSpec.parameters.filter((parameter) => parameter.editable);
+  const printed = design.designSpec.components.filter(
+    (component) => component.bodyRole !== "reference",
+  );
+  const bought = design.designSpec.components.filter(
+    (component) => component.bodyRole === "reference",
+  );
   const bedFit = useMemo(() => {
     const bed = design.designSpec.printerBed;
     if (!bed) return null;
@@ -200,6 +216,21 @@ export default function ParametricCadArtifact({
         <p className={`text-xs font-medium ${tone.className}`}>{tone.label}</p>
       </header>
 
+      {design.designSpec.description ? (
+        <p className="text-sm leading-relaxed text-[var(--ink)]">
+          {design.designSpec.description}
+        </p>
+      ) : null}
+
+      {templateBuilt(design) ? (
+        <p className="rounded-lg border border-[var(--selection-yellow-line)] bg-[var(--paper-strong)] p-3 text-xs leading-relaxed text-[var(--ink)]">
+          This geometry came from Breadboard&rsquo;s built-in recovery template for this kind of
+          product, not from the model&rsquo;s own program: the model-written build did not complete.
+          It is a real kernel-built, measured part, but its shape is generic to the template rather
+          than reasoned from the brief. Ask for a change to have the model rewrite it.
+        </p>
+      ) : null}
+
       {/* ---- interactive preview ------------------------------------- */}
       <section className="min-h-[320px] flex-1 overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-strong)]">
         <div className="flex flex-wrap items-center gap-1.5 border-b border-[var(--line)] px-3 py-2">
@@ -273,6 +304,7 @@ export default function ParametricCadArtifact({
       <nav className="flex flex-wrap gap-1.5">
         {(
           [
+            ...(assembly ? ([["assembly", "Assembly"]] as const) : []),
             ["parameters", `Parameters (${editable.length})`],
             ["validation", `Validation (${errors.length + warnings.length})`],
             ["exports", `Exports (${design.exports.length})`],
@@ -293,6 +325,140 @@ export default function ParametricCadArtifact({
           </button>
         ))}
       </nav>
+
+      {tab === "assembly" && assembly ? (
+        <section
+          id={CAD_PANEL_IDS.assembly}
+          aria-labelledby="cad-assembly-trigger"
+          className={`${panel} space-y-4`}
+        >
+          {assembly.overview ? (
+            <p className="text-sm leading-relaxed text-[var(--ink)]">{assembly.overview}</p>
+          ) : null}
+
+          {printed.length ? (
+            <div>
+              <p className={label}>Printed parts</p>
+              <ul className="mt-1.5 space-y-1">
+                {printed.map((component) => {
+                  const measured = bodyExtent(design, component.id, component.name);
+                  return (
+                    <li
+                      key={component.id}
+                      className="flex flex-wrap items-baseline gap-x-3 text-xs text-[var(--ink)]"
+                    >
+                      <span className="font-medium text-[var(--ink-heading)]">
+                        {component.quantity > 1 ? `${component.quantity} × ` : ""}
+                        {component.name}
+                      </span>
+                      <span className="font-mono text-[10px] text-[var(--ink-muted)]">
+                        {component.id}
+                      </span>
+                      {measured ? (
+                        <span className="text-[var(--ink-muted)]">
+                          {measured.x.toFixed(1)} × {measured.y.toFixed(1)} ×{" "}
+                          {measured.z.toFixed(1)} mm
+                        </span>
+                      ) : null}
+                      {component.material ? (
+                        <span className="text-[var(--ink-muted)]">{component.material}</span>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
+
+          {assembly.hardware.length ? (
+            <div>
+              <p className={label}>Hardware to supply</p>
+              <ul className="mt-1.5 space-y-1">
+                {assembly.hardware.map((item) => (
+                  <li key={item.id} className="text-xs leading-relaxed text-[var(--ink)]">
+                    <span className="font-medium text-[var(--ink-heading)]">
+                      {item.quantity} × {item.name}
+                    </span>
+                    {item.purpose ? (
+                      <span className="text-[var(--ink-muted)]"> — {item.purpose}</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {bought.length ? (
+            <div>
+              <p className={label}>Parts this design makes room for</p>
+              <p className="mt-1 text-xs leading-relaxed text-[var(--ink-muted)]">
+                Reference envelopes. They are not printed and not included; the geometry reserves
+                their space, so measure the ones you actually buy.
+              </p>
+              <ul className="mt-1.5 space-y-1">
+                {bought.map((component) => (
+                  <li
+                    key={component.id}
+                    className="flex flex-wrap items-baseline gap-x-3 text-xs text-[var(--ink)]"
+                  >
+                    <span>
+                      {component.quantity > 1 ? `${component.quantity} × ` : ""}
+                      {component.name}
+                    </span>
+                    <span className="font-mono text-[10px] text-[var(--ink-muted)]">
+                      {component.id}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {assembly.steps.length ? (
+            <div>
+              <p className={label}>Assembly order</p>
+              <ol className="mt-1.5 space-y-2">
+                {[...assembly.steps]
+                  .sort((left, right) => left.order - right.order)
+                  .map((step) => (
+                    <li
+                      key={`${step.order}-${step.summary}`}
+                      className="rounded-lg border border-[var(--line)] bg-[var(--paper-strong)] p-2.5"
+                    >
+                      <p className="text-xs font-medium text-[var(--ink-heading)]">
+                        {step.order}. {step.summary}
+                      </p>
+                      {step.detail ? (
+                        <p className="mt-0.5 text-xs leading-relaxed text-[var(--ink)]">
+                          {step.detail}
+                        </p>
+                      ) : null}
+                      {step.parts.length || step.hardware?.length ? (
+                        <p className="mt-1 text-[11px] leading-snug text-[var(--ink-muted)]">
+                          {[
+                            ...step.parts.map((id) => partLabel(design, id)),
+                            ...(step.hardware ?? []).map((id) => hardwareLabel(assembly, id)),
+                          ].join(" · ")}
+                        </p>
+                      ) : null}
+                    </li>
+                  ))}
+              </ol>
+            </div>
+          ) : null}
+
+          {assembly.notes?.length ? (
+            <div>
+              <p className={label}>Before you build it</p>
+              <ul className="mt-1.5 list-disc space-y-1 pl-5 text-xs leading-relaxed text-[var(--ink)]">
+                {assembly.notes.map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       {tab === "parameters" ? (
         <section
@@ -380,6 +546,11 @@ export default function ParametricCadArtifact({
           aria-labelledby="cad-validation-trigger"
           className={`${panel} space-y-3`}
         >
+          <p className="rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] p-2.5 text-xs leading-5 text-[var(--ink-muted)]">
+            Geometry checks cover solid topology, measured size, and declared manufacturing limits.
+            They do not by themselves prove assembly fit, strength, ergonomics, optical performance,
+            or product safety.
+          </p>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Measurement label="Bounding box">
               {measurements.boundingBox.x.toFixed(2)} × {measurements.boundingBox.y.toFixed(2)} ×{" "}
@@ -515,8 +686,13 @@ export default function ParametricCadArtifact({
           className={panel}
         >
           <p className={label}>
-            CadQuery program · {design.entrypoint}(params) · {design.provenance.engine}{" "}
-            {design.provenance.engineVersion} on OpenCascade {design.provenance.kernelVersion}
+            {/* A SolidWorks design is an operation program, not a Python one,
+                and it has no entrypoint to call. */}
+            {design.provenance.engine === "solidworks"
+              ? "SolidWorks operation program"
+              : `CadQuery program · ${design.entrypoint}(params)`}{" "}
+            · {design.provenance.engine} {design.provenance.engineVersion} on OpenCascade{" "}
+            {design.provenance.kernelVersion}
           </p>
           <pre className="mt-2 max-h-[420px] overflow-auto whitespace-pre rounded-lg bg-[var(--paper-strong)] p-3 text-xs leading-relaxed text-[var(--ink)]">
             {design.source}
@@ -587,6 +763,45 @@ export default function ParametricCadArtifact({
       ) : null}
     </div>
   );
+}
+
+/** Legacy provenance reader for artifacts saved before canned CAD was removed. */
+function templateBuilt(design: ParametricCADArtifact): boolean {
+  if (design.provenance.geometryAuthor) {
+    return design.provenance.geometryAuthor === "deterministic-template";
+  }
+  return /deterministic fallback/i.test(design.provenance.model);
+}
+
+/** The kernel's measurement of one named body, matched to its component. */
+function bodyExtent(
+  design: ParametricCADArtifact,
+  id: string,
+  name: string,
+): { x: number; y: number; z: number } | null {
+  const wanted = [id, name].map(normalizeName);
+  const body = design.measurements.bodies.find((candidate) =>
+    wanted.includes(normalizeName(candidate.name)),
+  );
+  return body ? body.boundingBox : null;
+}
+
+function normalizeName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+/** A step names parts by component id; show the reader the part's name. */
+function partLabel(design: ParametricCADArtifact, id: string): string {
+  const component = design.designSpec.components.find((candidate) => candidate.id === id);
+  return component ? component.name : id;
+}
+
+function hardwareLabel(
+  assembly: NonNullable<ParametricCADArtifact["designSpec"]["assembly"]>,
+  id: string,
+): string {
+  const item = assembly.hardware.find((candidate) => candidate.id === id);
+  return item ? `${item.quantity} × ${item.name}` : id;
 }
 
 function Measurement({ label: text, children }: { label: string; children: React.ReactNode }) {

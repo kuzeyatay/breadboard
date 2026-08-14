@@ -475,7 +475,7 @@ test("settings supports both a focus-trapped modal and an inline popover", () =>
   assert.match(dialog, /event\.key === "Escape"/);
   assert.match(dialog, /document\.body\.style\.overflow = "hidden"/);
   assert.match(dialog, /previouslyFocused\?\.focus\(\)/);
-  assert.match(dialog, /<SettingsAccounts onOpenProviders=/);
+  assert.match(dialog, /<SettingsAccounts \/>/);
   assert.match(dialog, /<SettingsAgentMemory \/>/);
   assert.match(dialog, /role="tablist"/);
   // Shares the application's surface tokens rather than ad-hoc colors.
@@ -491,6 +491,30 @@ test("the account panel drives ChatMock's own login flow and polls for completio
   assert.match(accountPanel, /window\.open\(payload\.login\.authorizationUrl/);
   // The browser's existing ChatGPT session is the main switching pitfall.
   assert.match(accountPanel, /private window/);
+});
+
+test("a second ChatGPT account can be added, listed, and removed", () => {
+  // ChatMock has carried several accounts for a long time — stepping to the
+  // next when one plan window runs out — but the panel rendered only the
+  // primary and offered no way to add one, so the feature was unreachable.
+  // Preserving the current credential is what turns login into "add": without
+  // it the flow overwrites `auth.json`.
+  assert.match(accountPanel, /fetch\("\/api\/chatmock\/accounts", \{ method: "POST" \}\)/);
+  assert.match(accountPanel, /\/api\/chatmock\/accounts\?key=\$\{encodeURIComponent\(key\)\}/);
+  assert.match(accountPanel, /chatgptRows\.map/);
+  assert.match(accountPanel, /"Add another"/);
+  // An account on cooldown is signed in but not answering; saying so is the
+  // difference between a useful sibling and an apparently idle duplicate.
+  assert.match(accountPanel, /function restingLabel/);
+  assert.match(accountPanel, /row\.cooldownReason/);
+});
+
+test("adding an account happens in the account list, not somewhere else", () => {
+  // Both buttons used to scroll to the other section, and neither signed
+  // anything in. The picker starts the real flow for the vendor pressed.
+  assert.doesNotMatch(accountPanel, /onOpenProviders/);
+  assert.match(accountPanel, /aria-expanded=\{adding\}/);
+  assert.match(accountPanel, /startSubscriptionLogin\(provider\.id, provider\.label, null\)/);
 });
 
 test("the memory panel reads the overview and offers edit, keep, forget, and delete", () => {

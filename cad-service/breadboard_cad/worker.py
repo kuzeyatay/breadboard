@@ -141,6 +141,7 @@ def run_job(request: BuildRequest, workdir: str) -> BuildResult:
         tessellation,
         request.expectations,
         [export.format for export in exports],
+        getattr(model, "interferences", lambda: [])(),
     )
 
     return BuildResult(

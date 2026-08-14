@@ -15,9 +15,11 @@
 
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import type OpenAI from "openai";
+import { PDFParse } from "pdf-parse";
 import { breadSystemPrompt } from "./assistant-identity.ts";
-import { cropPng } from "./png-crop.ts";
+import { cropPng, resizePngToMaxDimension } from "./png-crop.ts";
 import { slugify } from "./tags.ts";
 
 export type SourceVisualType =
@@ -69,8 +71,28 @@ export interface SourceVisual {
 }
 
 const LEDGER_RELATIVE_PATH = path.join(".breadboard", "source-visuals.json");
+const SCAN_CACHE_RELATIVE_PATH = path.join(".breadboard", "source-visual-scan-cache.json");
 const CROPPED_ASSETS_FOLDER = path.join("assets", "source-visuals");
 const DEFAULT_DETECTION_TIMEOUT_MS = 45_000;
+const DETECTOR_VERSION = 1;
+const DETECTION_IMAGE_MAX_DIMENSION = 768;
+
+interface SourceVisualDetection {
+  type: SourceVisualType;
+  caption: string;
+  bbox?: SourceVisualBBox;
+}
+
+interface SourceVisualScanEntry {
+  detectorVersion: number;
+  fingerprint: string;
+  detections: SourceVisualDetection[];
+}
+
+interface SourceVisualScanCache {
+  schemaVersion: 1;
+  sources: Record<string, Record<string, SourceVisualScanEntry>>;
+}
 
 function sourceVisualDetectionTimeoutMs(): number {
   const parsed = Number(process.env.SOURCE_VISUAL_DETECTION_TIMEOUT_MS);
@@ -129,6 +151,50 @@ export function sourceVisualsLedgerPath(contentPath: string, gardenSlug: string)
   return path.join(contentPath, gardenSlug, LEDGER_RELATIVE_PATH);
 }
 
+export function sourceVisualScanCachePath(contentPath: string, gardenSlug: string): string {
+  return path.join(contentPath, gardenSlug, SCAN_CACHE_RELATIVE_PATH);
+}
+
+function loadSourceVisualScanCache(
+  contentPath: string,
+  gardenSlug: string,
+): SourceVisualScanCache {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(sourceVisualScanCachePath(contentPath, gardenSlug), "utf-8"),
+    ) as Partial<SourceVisualScanCache>;
+    if (parsed.schemaVersion === 1 && parsed.sources && typeof parsed.sources === "object") {
+      return parsed as SourceVisualScanCache;
+    }
+  } catch {
+    // A missing or damaged optimization cache is safe to rebuild.
+  }
+  return { schemaVersion: 1, sources: {} };
+}
+
+function saveSourceVisualScanCache(
+  contentPath: string,
+  gardenSlug: string,
+  cache: SourceVisualScanCache,
+): void {
+  const cachePath = sourceVisualScanCachePath(contentPath, gardenSlug);
+  fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+  const temporaryPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
+  const serialized = JSON.stringify(cache, null, 2);
+  fs.writeFileSync(temporaryPath, serialized, "utf-8");
+  try {
+    fs.renameSync(temporaryPath, cachePath);
+  } catch {
+    // Some Windows filesystems do not replace an existing file atomically.
+    fs.writeFileSync(cachePath, serialized, "utf-8");
+    try {
+      fs.unlinkSync(temporaryPath);
+    } catch {
+      // Best-effort cleanup of the temporary cache file.
+    }
+  }
+}
+
 export function loadSourceVisuals(contentPath: string, gardenSlug: string): SourceVisual[] {
   try {
     const raw = fs.readFileSync(sourceVisualsLedgerPath(contentPath, gardenSlug), "utf-8");
@@ -155,10 +221,159 @@ function assetDiskPath(contentPath: string, gardenSlug: string, assetUrl: string
   const normalized = assetUrl.trim().replace(/\\/g, "/");
   const prefix = `/${gardenSlug}/`;
   if (!normalized.startsWith(prefix)) return null;
-  const gardenDir = path.resolve(contentPath, gardenSlug);
+  const contentDir = path.resolve(contentPath);
+  const gardenDir = path.resolve(contentDir, gardenSlug);
+  const gardenRelative = path.relative(contentDir, gardenDir);
+  if (
+    !gardenRelative ||
+    gardenRelative.startsWith(`..${path.sep}`) ||
+    gardenRelative === ".." ||
+    path.isAbsolute(gardenRelative)
+  ) {
+    return null;
+  }
   const resolved = path.resolve(gardenDir, normalized.slice(prefix.length));
-  if (!resolved.startsWith(gardenDir + path.sep)) return null;
+  const relative = path.relative(gardenDir, resolved);
+  if (
+    !relative ||
+    relative.startsWith(`..${path.sep}`) ||
+    relative === ".." ||
+    path.isAbsolute(relative)
+  ) {
+    return null;
+  }
   return resolved;
+}
+
+export interface EnsureSourcePdfPageSnapshotsOptions {
+  contentPath: string;
+  gardenSlug: string;
+  /** Basename slug of the source note whose canonical page assets are needed. */
+  sourceId: string;
+  /** Garden-relative URL of the preserved original PDF. */
+  sourcePdfUrl: string;
+  /** Specific 1-based PDF page numbers to materialize. */
+  pageNumbers: number[];
+  desiredWidth?: number;
+  /** Called before and after each page render so Learn can stop promptly. */
+  checkpoint?: () => void;
+  onProgress?: (step: string) => void;
+}
+
+/**
+ * Materialize only the requested full-page PDF snapshots. Existing canonical
+ * assets are reused, so a later Learn run can request pages mentioned by the
+ * syllabus without re-rendering the entire book or mutating the source note.
+ */
+export async function ensureSourcePdfPageSnapshots(
+  options: EnsureSourcePdfPageSnapshotsOptions,
+): Promise<string[]> {
+  const {
+    contentPath,
+    gardenSlug,
+    sourceId,
+    sourcePdfUrl,
+    checkpoint,
+    onProgress,
+    desiredWidth = 1200,
+  } = options;
+  const garden = gardenSlug.trim();
+  const sourceAssetId = slugify(sourceId) || "source";
+  const seen = new Set<number>();
+  const pageNumbers = options.pageNumbers.filter((pageNumber) => {
+    if (!Number.isSafeInteger(pageNumber) || pageNumber < 1 || seen.has(pageNumber)) return false;
+    seen.add(pageNumber);
+    return true;
+  });
+  if (pageNumbers.length === 0) return [];
+
+  const pageAsset = (pageNumber: number): { diskPath: string; url: string } => {
+    const fileName = `${sourceAssetId}-page-${String(pageNumber).padStart(3, "0")}.png`;
+    const url = `/${garden}/assets/${fileName}`;
+    const diskPath = assetDiskPath(contentPath, garden, url);
+    if (!diskPath) throw new Error("Refusing to create a source snapshot outside the garden.");
+    return { diskPath, url };
+  };
+
+  const assets = new Map(pageNumbers.map((pageNumber) => [pageNumber, pageAsset(pageNumber)]));
+  const missingPages = pageNumbers.filter((pageNumber) => {
+    const asset = assets.get(pageNumber);
+    if (!asset) return true;
+    try {
+      const stat = fs.statSync(asset.diskPath);
+      return !stat.isFile() || stat.size === 0;
+    } catch {
+      return true;
+    }
+  });
+  if (missingPages.length === 0) {
+    return pageNumbers.map((pageNumber) => assets.get(pageNumber)!.url);
+  }
+
+  const pdfPath = assetDiskPath(contentPath, garden, sourcePdfUrl);
+  if (!pdfPath || path.extname(pdfPath).toLowerCase() !== ".pdf" || !fs.existsSync(pdfPath)) {
+    throw new Error("The preserved source PDF is missing or is outside this garden.");
+  }
+  const gardenDir = fs.realpathSync(path.resolve(contentPath, garden));
+  const realPdfPath = fs.realpathSync(pdfPath);
+  const realPdfRelative = path.relative(gardenDir, realPdfPath);
+  if (
+    !realPdfRelative ||
+    realPdfRelative.startsWith(`..${path.sep}`) ||
+    realPdfRelative === ".." ||
+    path.isAbsolute(realPdfRelative)
+  ) {
+    throw new Error("The preserved source PDF resolves outside this garden.");
+  }
+
+  const pdfBuffer = fs.readFileSync(realPdfPath);
+  const parser = new PDFParse({ data: pdfBuffer });
+  try {
+    const info = await parser.getInfo();
+    const invalidPages = missingPages.filter((pageNumber) => pageNumber > info.total);
+    if (invalidPages.length > 0) {
+      throw new Error(
+        `Source PDF has ${info.total} page(s); requested page ${invalidPages.join(", ")}.`,
+      );
+    }
+
+    const renderWidth = Number.isFinite(desiredWidth)
+      ? Math.max(320, Math.min(2400, Math.round(desiredWidth)))
+      : 1200;
+    for (const pageNumber of missingPages) {
+      checkpoint?.();
+      onProgress?.(`Rendering source PDF page ${pageNumber}...`);
+      const screenshot = await parser.getScreenshot({
+        partial: [pageNumber],
+        desiredWidth: renderWidth,
+        imageBuffer: true,
+        imageDataUrl: false,
+      });
+      const page = screenshot.pages.find((candidate) => candidate.pageNumber === pageNumber);
+      if (!page?.data?.length) {
+        throw new Error(`Source PDF page ${pageNumber} could not be rendered.`);
+      }
+      const asset = assets.get(pageNumber)!;
+      fs.mkdirSync(path.dirname(asset.diskPath), { recursive: true });
+      const temporaryPath = `${asset.diskPath}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(temporaryPath, Buffer.from(page.data));
+      try {
+        fs.renameSync(temporaryPath, asset.diskPath);
+      } catch {
+        fs.writeFileSync(asset.diskPath, Buffer.from(page.data));
+        try {
+          fs.unlinkSync(temporaryPath);
+        } catch {
+          // Best-effort cleanup after a non-atomic Windows replacement.
+        }
+      }
+      checkpoint?.();
+    }
+  } finally {
+    await parser.destroy();
+  }
+
+  return pageNumbers.map((pageNumber) => assets.get(pageNumber)!.url);
 }
 
 function pageNumberFromAssetUrl(assetUrl: string): number | undefined {
@@ -171,11 +386,7 @@ export function isFullPageSnapshotUrl(assetUrl: string): boolean {
   return pageNumberFromAssetUrl(assetUrl) !== undefined;
 }
 
-function parseDetections(raw: string): Array<{
-  type: SourceVisualType;
-  caption: string;
-  bbox?: SourceVisualBBox;
-}> {
+function parseDetections(raw: string): SourceVisualDetection[] {
   const stripped = raw
     .trim()
     .replace(/^```(?:json)?\s*/i, "")
@@ -196,7 +407,7 @@ function parseDetections(raw: string): Array<{
   if (!Array.isArray(parsed)) return [];
 
   const valid = new Set(["figure", "graph", "table", "equation", "diagram"]);
-  const detections: Array<{ type: SourceVisualType; caption: string; bbox?: SourceVisualBBox }> = [];
+  const detections: SourceVisualDetection[] = [];
   const normalizeType = (type: SourceVisualType, caption: string): SourceVisualType => {
     if (type !== "figure" && type !== "diagram") return type;
     const lower = caption.toLowerCase();
@@ -249,8 +460,10 @@ async function detectVisualsOnPage(
   client: OpenAI,
   model: string,
   pngBuffer: Buffer,
-): Promise<Array<{ type: SourceVisualType; caption: string; bbox?: SourceVisualBBox }>> {
-  const dataUrl = `data:image/png;base64,${pngBuffer.toString("base64")}`;
+): Promise<SourceVisualDetection[]> {
+  const detectionBuffer =
+    resizePngToMaxDimension(pngBuffer, DETECTION_IMAGE_MAX_DIMENSION) ?? pngBuffer;
+  const dataUrl = `data:image/png;base64,${detectionBuffer.toString("base64")}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), sourceVisualDetectionTimeoutMs());
   try {
@@ -262,7 +475,7 @@ async function detectVisualsOnPage(
           {
             role: "user",
             content: [
-              { type: "image_url", image_url: { url: dataUrl } },
+              { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
               {
                 type: "text",
                 text: "List the meaningful visuals on this page as the JSON array described. Return [] if there are none.",
@@ -292,14 +505,16 @@ export interface ExtractSourceVisualsOptions {
   pageImageUrls: string[];
   /** Re-run detection even when the ledger already covers this source. */
   force?: boolean;
+  /** Called between page requests so cancellation preserves completed scans. */
+  checkpoint?: () => void;
   onProgress?: (step: string) => void;
   maxPages?: number;
 }
 
 /**
- * Detect + crop the meaningful visuals of one source. Idempotent per source:
- * when the ledger already has entries for `sourceId` (and force is not set) the
- * existing entries are returned untouched, preserving usage statuses.
+ * Detect + crop meaningful visuals on the supplied pages. Extraction is
+ * incremental: prior pages remain in the ledger while newly supplied pages are
+ * scanned (or restored from the per-page scan cache).
  */
 export async function extractSourceVisuals(
   options: ExtractSourceVisualsOptions,
@@ -313,16 +528,20 @@ export async function extractSourceVisuals(
     sourceIndex,
     pageImageUrls,
     force = false,
+    checkpoint,
     onProgress,
-    maxPages = 40,
+    maxPages,
   } = options;
 
   const ledger = loadSourceVisuals(contentPath, gardenSlug);
   const existing = ledger.filter((visual) => visual.sourceId === sourceId);
-  if (existing.length > 0 && !force) return existing;
 
+  const scanCache = loadSourceVisualScanCache(contentPath, gardenSlug);
+  const sourceCache = scanCache.sources[sourceId] ?? {};
+  scanCache.sources[sourceId] = sourceCache;
   const cropDir = path.join(contentPath, gardenSlug, CROPPED_ASSETS_FOLDER);
   const found: SourceVisual[] = [];
+  const replacedPages = new Set<number>();
   const counters = new Map<string, number>();
   const detectionErrors: string[] = [];
   let consecutiveDetectionFailures = 0;
@@ -335,8 +554,18 @@ export async function extractSourceVisuals(
     return `S${sourceIndex}.P${pageNumber}.${letter}${next}`;
   };
 
-  for (const pageUrl of pageImageUrls.slice(0, maxPages)) {
+  const requestedPageUrls = Number.isFinite(maxPages) && (maxPages ?? 0) > 0
+    ? pageImageUrls.slice(0, Math.floor(maxPages!))
+    : pageImageUrls;
+  for (const pageUrl of requestedPageUrls) {
+    checkpoint?.();
     const pageNumber = pageNumberFromAssetUrl(pageUrl) ?? 0;
+    if (pageNumber < 1) continue;
+    const existingOnPage = existing.filter((visual) => visual.pageNumber === pageNumber);
+    // Legacy ledgers predate the scan cache. An existing page entry still
+    // proves that page completed, and must not prevent later pages from being
+    // scanned.
+    if (!force && existingOnPage.length > 0) continue;
     const diskPath = assetDiskPath(contentPath, gardenSlug, pageUrl);
     if (!diskPath || !fs.existsSync(diskPath)) continue;
 
@@ -347,24 +576,44 @@ export async function extractSourceVisuals(
       continue;
     }
 
-    onProgress?.(`Extracting source visuals from page ${pageNumber || "?"}…`);
-    let detections: Array<{ type: SourceVisualType; caption: string; bbox?: SourceVisualBBox }> = [];
-    try {
-      detections = await detectVisualsOnPage(client, model, pngBuffer);
+    const fingerprint = crypto.createHash("sha256").update(pngBuffer).digest("hex");
+    const cached = sourceCache[pageUrl];
+    let detections: SourceVisualDetection[] = [];
+    if (
+      !force &&
+      cached?.detectorVersion === DETECTOR_VERSION &&
+      cached.fingerprint === fingerprint &&
+      Array.isArray(cached.detections)
+    ) {
+      detections = cached.detections;
       consecutiveDetectionFailures = 0;
-    } catch (error) {
-      // A THROW means the detection call itself failed (model unavailable,
-      // timeout, network) — distinct from a successful call that returned no
-      // visuals. Track it so the caller can tell "model down" from "no figures".
-      detections = [];
-      detectionErrors.push(`page ${pageNumber || "?"}: ${error instanceof Error ? error.message : String(error)}`);
-      consecutiveDetectionFailures += 1;
-      // Fail fast when the model is clearly unavailable: if the first pages all
-      // error and nothing has been extracted yet, stop scanning the rest rather
-      // than grinding every page (each with its own SDK retries).
-      if (found.length === 0 && consecutiveDetectionFailures >= 3) break;
+      onProgress?.(`Reusing saved visual scan for page ${pageNumber || "?"}...`);
+    } else {
+      try {
+        onProgress?.(`Scanning page ${pageNumber || "?"} for figures...`);
+        detections = await detectVisualsOnPage(client, model, pngBuffer);
+        consecutiveDetectionFailures = 0;
+        sourceCache[pageUrl] = {
+          detectorVersion: DETECTOR_VERSION,
+          fingerprint,
+          detections,
+        };
+        // Cache successful empty results too. This file is intentionally not a
+        // rollback output, so Stop/Retry never pays for completed pages again.
+        saveSourceVisualScanCache(contentPath, gardenSlug, scanCache);
+        checkpoint?.();
+      } catch (error) {
+        // A throw is different from a successful scan returning no visuals.
+        detections = [];
+        detectionErrors.push(`page ${pageNumber || "?"}: ${error instanceof Error ? error.message : String(error)}`);
+        consecutiveDetectionFailures += 1;
+        // Stop when the model is clearly unavailable rather than grinding
+        // every remaining page (each with its own SDK retries).
+        if (consecutiveDetectionFailures >= 3) break;
+      }
     }
 
+    replacedPages.add(pageNumber);
     if (detections.length === 0) continue;
 
     for (const detection of detections) {
@@ -400,12 +649,10 @@ export async function extractSourceVisuals(
     }
   }
 
-  // If detection FAILED (model unavailable) and nothing new was found, do not
-  // overwrite the ledger — preserve any prior good extraction — and surface the
-  // failure so Stage 2 reports a retryable model error instead of implying the
-  // source has no figures. A genuine "no meaningful visuals" result (successful
-  // calls that returned []) leaves no detectionErrors and falls through.
-  if (found.length === 0 && detectionErrors.length > 0) {
+  // A partial scan is not a completed extraction. Successful pages are already
+  // cached, but the rollback-owned output ledger remains untouched until Retry
+  // finishes every page.
+  if (detectionErrors.length > 0) {
     throw new Error(
       `vision detection failed on ${detectionErrors.length} page(s): ${detectionErrors.slice(0, 2).join("; ")}`,
     );
@@ -413,9 +660,15 @@ export async function extractSourceVisuals(
 
   // Pages where detection found nothing meaningful get no entry at all —
   // full-page screenshots are fallback assets, not extracted figures.
-  const merged = [...ledger.filter((visual) => visual.sourceId !== sourceId), ...found];
+  const preservedSourceVisuals = existing.filter(
+    (visual) => !replacedPages.has(visual.pageNumber),
+  );
+  const mergedSourceVisuals = [...preservedSourceVisuals, ...found].sort(
+    (left, right) => left.pageNumber - right.pageNumber || left.sourceVisualId.localeCompare(right.sourceVisualId),
+  );
+  const merged = [...ledger.filter((visual) => visual.sourceId !== sourceId), ...mergedSourceVisuals];
   saveSourceVisuals(contentPath, gardenSlug, merged);
-  return found;
+  return mergedSourceVisuals;
 }
 
 /** The image URL a page should embed for a visual: the crop when available,

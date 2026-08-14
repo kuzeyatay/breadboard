@@ -13,6 +13,11 @@ import type {
 } from "./types.ts";
 
 const boundedText = (max: number) => z.string().trim().max(max);
+const httpsUrl = z
+  .string()
+  .url()
+  .max(2_000)
+  .refine((value) => new URL(value).protocol === "https:", "source URL must use HTTPS");
 
 export const requestedPeripheralSchema = z.object({
   type: boundedText(120).min(1),
@@ -38,12 +43,14 @@ export const hardwareProjectRequestSchema = z.object({
 
   inputs: z.array(requestedPeripheralSchema).max(24).default([]),
   outputs: z.array(requestedPeripheralSchema).max(24).default([]),
+  physicalParts: z.array(requestedPeripheralSchema).max(24).default([]),
 
   communication: z.array(communicationInterfaceSchema).max(8).default([]),
 
   power: z
     .object({
       source: z.enum(["usb", "battery", "external-supply", "unknown"]).default("unknown"),
+      part: boundedText(120).min(1).optional(),
       voltage: z.number().min(0).max(48).optional(),
       maximumCurrentMa: z.number().min(0).max(20_000).optional(),
     })
@@ -97,6 +104,7 @@ export const hardwareDesignModificationSchema = z.object({
           type: z.literal("change-power"),
           source: z.object({
             source: z.enum(["usb", "battery", "external-supply", "unknown"]),
+            part: boundedText(120).min(1).optional(),
             voltage: z.number().min(0).max(48).optional(),
             maximumCurrentMa: z.number().min(0).max(20_000).optional(),
           }),
@@ -264,6 +272,128 @@ const electricalNetSchema = z.object({
   ),
 });
 
+const storedComponentPinSchema = z.object({
+  id: boundedText(80).min(1),
+  label: boundedText(120).min(1),
+  electricalType: z.enum([
+    "power-input", "power-output", "ground", "digital-input", "digital-output",
+    "digital-io", "analog-input", "analog-output", "passive", "open-drain",
+  ]),
+  functions: z.array(boundedText(80).min(1)).max(24),
+  maximumVoltage: z.number().min(0).max(48).optional(),
+  maximumCurrentMa: z.number().min(0).max(20_000).optional(),
+});
+
+const storedComponentDefinitionSchema = z.object({
+  id: boundedText(160).min(1),
+  aliases: z.array(boundedText(160).min(1)).max(24),
+  name: boundedText(240).min(1),
+  category: boundedText(100).min(1),
+  description: boundedText(2_000),
+  manufacturer: boundedText(200).optional(),
+  manufacturerPartNumber: boundedText(200).optional(),
+  electrical: z.object({
+    minimumSupplyVoltage: z.number().min(0).max(48).optional(),
+    typicalSupplyVoltage: z.number().min(0).max(48).optional(),
+    maximumSupplyVoltage: z.number().min(0).max(48).optional(),
+    logicVoltage: z.number().min(0).max(24).optional(),
+    typicalCurrentMa: z.number().min(0).max(20_000).optional(),
+    maximumCurrentMa: z.number().min(0).max(20_000).optional(),
+  }),
+  interfaces: z.array(boundedText(80).min(1)).max(16),
+  pins: z.array(storedComponentPinSchema).max(100),
+  rules: z.object({
+    electricalPlaceholder: z.boolean().optional(),
+    requiresCurrentLimiting: z.boolean().optional(),
+    requiresFlybackDiode: z.boolean().optional(),
+    requiresDriver: z.boolean().optional(),
+    requiresLevelShifter: z.boolean().optional(),
+    requiresDecoupling: z.boolean().optional(),
+    requiresPullups: z.boolean().optional(),
+    i2cAddresses: z.array(boundedText(16)).max(32).optional(),
+  }),
+  firmware: z
+    .object({
+      libraries: z.array(boundedText(240)).max(24),
+      includeStatements: z.array(boundedText(240)).max(24).optional(),
+    })
+    .optional(),
+  visual: z.object({
+    renderer: z.enum(["wokwi-element", "svg", "generic"]),
+    elementName: boundedText(160).optional(),
+    assetId: boundedText(160).optional(),
+    width: z.number().positive().max(2_000),
+    height: z.number().positive().max(2_000),
+    pinAnchors: z.record(
+      z.string(),
+      z.object({ x: z.number().finite(), y: z.number().finite() }),
+    ),
+  }),
+  estimatedUnitPrice: z.number().min(0).max(1_000_000).optional(),
+  substitutes: z.array(boundedText(240)).max(24).optional(),
+  mechanical: z
+    .object({
+      length: z.number().positive().max(2_000),
+      width: z.number().positive().max(2_000),
+      height: z.number().positive().max(2_000),
+      notes: boundedText(2_000).optional(),
+      integration: z.array(boundedText(1_000)).max(24).optional(),
+      functionalAxes: z.array(boundedText(500)).max(24).optional(),
+      exposedRegions: z.array(boundedText(500)).max(24).optional(),
+      massGrams: z.number().positive().max(100_000).optional(),
+    })
+    .optional(),
+});
+
+const componentResearchSchema = z
+  .object({
+    requestedAs: boundedText(160).min(1),
+    status: z.enum([
+      "used",
+      "reference-only",
+      "not-found",
+      "insufficient-evidence",
+      "timed-out",
+      "deferred",
+    ]),
+    note: boundedText(2_000),
+    definition: storedComponentDefinitionSchema.optional(),
+    sources: z
+      .array(
+        z.object({
+          title: boundedText(300).min(1),
+          url: httpsUrl,
+          kind: z.enum([
+            "manufacturer-product", "manufacturer-datasheet", "distributor", "other",
+          ]),
+        }),
+      )
+      .max(24),
+  })
+  .superRefine((record, context) => {
+    if (record.status !== "used") return;
+    if (!record.definition) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["definition"],
+        message: "a used research record requires a component definition",
+      });
+    } else if (record.definition.rules.electricalPlaceholder) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["definition", "rules", "electricalPlaceholder"],
+        message: "an electrical placeholder cannot be used as a researched component",
+      });
+    }
+    if (record.sources.length === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sources"],
+        message: "a used research record requires cited sources",
+      });
+    }
+  });
+
 /**
  * Structural check for a stored design. Used when a design is read back from
  * artifact storage — a persisted blueprint must be reopenable without rerunning
@@ -325,6 +455,7 @@ export const hardwareDesignSchema = z.object({
       warning: z.string().optional(),
     }),
   ),
+  componentResearch: z.array(componentResearchSchema).max(24).optional(),
   // Absent on designs stored before the compiler carried its figures forward;
   // the overview falls back to reading them out of the summary there.
   powerEstimate: z
@@ -379,6 +510,7 @@ export function withRequestDefaults(
     ...request,
     inputs: request.inputs ?? [],
     outputs: request.outputs ?? [],
+    physicalParts: request.physicalParts ?? [],
     communication: request.communication ?? [],
   } satisfies HardwareProjectRequest;
 }

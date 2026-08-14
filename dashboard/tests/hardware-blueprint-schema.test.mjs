@@ -68,6 +68,7 @@ test("optional collections default rather than failing", () => {
   assert.equal(result.ok, true);
   assert.deepEqual(result.value.inputs, []);
   assert.deepEqual(result.value.outputs, []);
+  assert.deepEqual(result.value.physicalParts, []);
   assert.equal(result.value.prototypeType, "breadboard");
   assert.equal(result.value.firmware.platform, "platformio");
   assert.equal(result.value.power.source, "unknown");

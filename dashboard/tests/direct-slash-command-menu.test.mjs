@@ -50,7 +50,7 @@ test("direct slash commands exclude setup entries and include usable agents", ()
 
   assert.deepEqual(
     items.map((item) => item.token),
-    ["agents:deep-research", "ready", "agent:researcher", "drive", "brief"],
+    ["agents:deep-research", "ready", "agents:agency-agents:researcher", "drive", "brief"],
   );
   assert.ok(items.every((item) => item.enabled !== false && item.healthy !== false));
 });

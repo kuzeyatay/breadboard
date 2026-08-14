@@ -19,6 +19,7 @@
 // server-only imports (no node: builtins, no database, no config.ts).
 
 import { AGENT_BROWSER_SLASH_COMMAND } from "../agent-browser/identity.ts";
+import { agencyAgentSlugFromToken } from "./agency-agent-command.ts";
 import { AGENT_REACH_COMMAND } from "../agent-reach/identity.ts";
 import { PARAMETRIC_CAD_COMMAND } from "../cad/identity.ts";
 import { CAREER_OPS_COMMAND } from "../career-ops/identity.ts";
@@ -30,6 +31,7 @@ import { DEEP_TUTOR_COMMAND } from "../deep-tutor/identity.ts";
 import { GET_DOC_COMMAND } from "../get-doc/identity.ts";
 import { HARDWARE_BLUEPRINT_COMMAND } from "../hardware/identity.ts";
 import { HYPERFRAMES_COMMAND } from "../hyperframes/identity.ts";
+import { RESOURCE2SKILL_COMMAND } from "../resource2skill/identity.ts";
 import { INBOX_ZERO_COMMAND } from "../inbox-zero/identity.ts";
 import { LEGAL_COMMAND } from "../legal/identity.ts";
 import { MEETING_NOTES_COMMAND } from "../meeting-notes/identity.ts";
@@ -230,6 +232,7 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   profile("hardware-blueprint", HARDWARE_BLUEPRINT_COMMAND, "Hardware Blueprint"),
   profile("parametric-cad", PARAMETRIC_CAD_COMMAND, "Parametric CAD"),
   profile("hyperframes", HYPERFRAMES_COMMAND, "HyperFrames"),
+  profile("resource2skill", RESOURCE2SKILL_COMMAND, "Resource2Skill"),
   // OpenMontage runs its whole production inside its own workspace from one
   // brief, so — like OpenWork — a stacked skill has nowhere to land: the
   // pipeline's own director skills are what the agent already reads.
@@ -354,6 +357,8 @@ export function leadingCapabilityTokens(text: string): {
       raw: `/${match[1]}`,
       kind: agent
         ? "runtime_agent"
+        : agencyAgentSlugFromToken(token)
+          ? "persona"
         : token.startsWith("agents:")
           ? "unknown_runtime_agent"
           : token.startsWith("agent:")

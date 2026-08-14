@@ -1,9 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import SettingsSubscriptions from "@/app/components/settings-subscriptions";
 import { notifyAssistantModelsChanged } from "@/app/components/use-assistant-models";
-import { providerStatusBadge, type ChatgptAccountSummary } from "@/lib/provider-status";
+import { providerStatusBadge } from "@/lib/provider-status";
 import type {
   ChatmockProvider,
   ChatmockProviderState,
@@ -26,19 +25,8 @@ interface DraftState {
 
 type VerifyResult = { ok: boolean; models?: string[]; error?: string };
 
-interface SettingsProvidersProps {
-  /** Scrolls to the account list, which owns the ChatGPT sign-in. */
-  onOpenAccount?: () => void;
-}
-
-
-
-export default function SettingsProviders({ onOpenAccount }: SettingsProvidersProps = {}) {
+export default function SettingsProviders() {
   const [state, setState] = useState<ChatmockProviderState | null>(null);
-  // ChatGPT's real state lives with the account list above; the row here
-  // reflects it rather than being a second, independent switch for the same
-  // account.
-  const [chatgptAccount, setChatgptAccount] = useState<ChatgptAccountSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -86,18 +74,6 @@ export default function SettingsProviders({ onOpenAccount }: SettingsProvidersPr
   useEffect(() => {
     void refresh();
   }, [refresh]);
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const response = await fetchCachedSettings("/api/chatmock/account");
-        const payload = await response.json().catch(() => ({}));
-        if (response.ok && payload.account) setChatgptAccount(payload.account);
-      } catch {
-        // The card falls back to its static description.
-      }
-    })();
-  }, []);
 
   /**
    * Providers that need a card of their own.
@@ -229,22 +205,19 @@ export default function SettingsProviders({ onOpenAccount }: SettingsProvidersPr
   }
 
 
-  if (loading) {
-    return <p className="text-sm text-[var(--ink-muted)]">Reading the configured providers…</p>;
-  }
+  // No second "Reading…" line, and no rule above one. Both halves of the
+  // Account tab load at once, so two waiting messages stacked either side of a
+  // separator read as two things loading rather than one page. The account
+  // list's line speaks for the tab; this half — separator included — simply
+  // appears once it has something to show.
+  if (loading) return null;
 
   return (
-    <div className="space-y-4">
-      {/* Every vendor you can sign in to, ChatGPT included. */}
-      <SettingsSubscriptions
-        onModelsSynced={() => {
-          void refresh(true);
-          // A subscription sign-in is the case that most obviously adds models.
-          notifyAssistantModelsChanged();
-        }}
-        onOpenAccount={onOpenAccount}
-        chatgptAccount={chatgptAccount}
-      />
+    <div className="space-y-4 border-t border-[var(--line)] pt-5">
+      {/* No card for the subscription proxy. It reported on a service the
+          reader never chose to run and cannot usefully act on: the account list
+          above already says which subscriptions are signed in, syncs the models
+          they unlock, and is the only place a sign-in starts. */}
 
       {/*
         No background-model panel here. The Intelligence menu next to the
@@ -465,15 +438,10 @@ export default function SettingsProviders({ onOpenAccount }: SettingsProvidersPr
         </p>
       ) : null}
 
-      <div className="space-y-1.5 border-t border-[var(--line)] pt-3 text-[11px] leading-5 text-[var(--ink-muted)]">
-        <p>
-          Keys are stored by the proxy, not the dashboard, and are never sent back to this
-          panel. The running proxy picks up a change on its next request — no restart needed.
-        </p>
-        {state?.settingsPath ? (
-          <p className="break-all font-mono">{state.settingsPath}</p>
-        ) : null}
-      </div>
+      {/* No closing footnote. Where the keys are kept and when they take
+          effect were reassurances about work the cards above already do and
+          finish on their own, and the file path underneath was an address
+          nothing on this page ever asks the reader to visit. */}
     </div>
   );
 }

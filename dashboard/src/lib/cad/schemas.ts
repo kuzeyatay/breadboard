@@ -68,6 +68,28 @@ export const cadAssumptionSchema = z.object({
   userEditable: z.boolean().default(true),
 });
 
+export const cadAssemblyHardwareSchema = z.object({
+  id: boundedText(80).min(1),
+  name: boundedText(160).min(1),
+  quantity: z.number().int().min(1).max(999).catch(1),
+  purpose: boundedText(400).optional(),
+});
+
+export const cadAssemblyStepSchema = z.object({
+  order: z.number().int().min(1).max(200),
+  summary: boundedText(400).min(1),
+  parts: z.array(boundedText(80)).max(24).default([]),
+  hardware: z.array(boundedText(80)).max(24).optional(),
+  detail: boundedText(1_200).optional(),
+});
+
+export const cadAssemblySchema = z.object({
+  overview: boundedText(1_200).default(""),
+  hardware: z.array(cadAssemblyHardwareSchema).max(64).default([]),
+  steps: z.array(cadAssemblyStepSchema).max(64).default([]),
+  notes: z.array(boundedText(600)).max(24).optional(),
+});
+
 export const cadExportSettingsSchema = z.object({
   stlLinearTolerance: z.number().gt(0).max(5).default(0.05),
   stlAngularTolerance: z.number().gt(0).max(2).default(0.2),
@@ -94,6 +116,9 @@ export const cadDesignSpecSchema = z.object({
   components: z.array(cadComponentSchema).max(64).default([]),
   constraints: z.array(cadConstraintSchema).max(120).default([]),
   assumptions: z.array(cadAssumptionSchema).max(64).default([]),
+  // Optional so that a design stored before assembly was recorded still reads
+  // back and renders, rather than announcing itself as an unreadable manifest.
+  assembly: cadAssemblySchema.optional(),
   exportSettings: cadExportSettingsSchema,
   declaredBoundingBox: z
     .object({
@@ -131,7 +156,20 @@ export const cadValidationIssueSchema = z.object({
 export const cadFileReferenceSchema = z.object({
   projectId: boundedText(80).min(1),
   revision: z.number().int().min(1),
-  format: z.enum(["step", "stl", "glb", "3mf", "source", "spec", "report"]),
+  // Every format the store can write, including the two a SolidWorks build
+  // produces — a native part read back through a schema that did not list them
+  // would fail to reopen.
+  format: z.enum([
+    "step",
+    "stl",
+    "glb",
+    "3mf",
+    "sldprt",
+    "source",
+    "operations",
+    "spec",
+    "report",
+  ]),
   filename: boundedText(160).min(1),
   mimeType: boundedText(120).min(1),
   byteSize: z.number().int().min(0),
@@ -243,6 +281,7 @@ export const parametricCadArtifactSchema = z.object({
     pythonVersion: boundedText(60),
     serviceVersion: boundedText(60),
     model: boundedText(120),
+    geometryAuthor: z.enum(["model", "deterministic-template"]).optional(),
     generatedAt: z.string().min(1),
     parentRevision: z.number().int().min(1).optional(),
     buildDurationMs: z.number().int().min(0).optional(),

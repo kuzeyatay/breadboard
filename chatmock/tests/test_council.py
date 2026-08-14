@@ -948,7 +948,10 @@ class CouncilRouteTests(unittest.TestCase):
                             {"type": "text", "text": "what is in this picture?"},
                             {
                                 "type": "image_url",
-                                "image_url": {"url": "data:image/png;base64,AAAA"},
+                                "image_url": {
+                                    "url": "data:image/png;base64,AAAA",
+                                    "detail": "low",
+                                },
                             },
                         ],
                     }
@@ -965,6 +968,8 @@ class CouncilRouteTests(unittest.TestCase):
         outbound = mock_start.call_args.args[1]
         parts = [part for item in outbound for part in item.get("content", [])]
         self.assertIn("input_image", [part.get("type") for part in parts])
+        image_part = next(part for part in parts if part.get("type") == "input_image")
+        self.assertEqual(image_part.get("detail"), "low")
 
     @patch("chatmock.routes_openai.start_upstream_request")
     def test_enable_council_false_bypasses_council(self, mock_start) -> None:
@@ -1433,6 +1438,10 @@ class CouncilDebugRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
 
 
+# A phrase unique to the compact block, so a test can tell the two forms apart.
+COMPACT_MARKER = "Straight quotes and apostrophes only"
+
+
 class UnslopIntegrationTests(unittest.TestCase):
     """The unslop skill humanizes only the final, UI-facing prose answer, never
     intermediate council calls or structured/machine output."""
@@ -1468,8 +1477,7 @@ class UnslopIntegrationTests(unittest.TestCase):
     def _reset_unslop_cache() -> None:
         from chatmock.council import unslop as unslop_module
 
-        unslop_module._cached_directive = None
-        unslop_module._cache_key = None
+        unslop_module.reset_directive_cache()
 
     def _runtime(self) -> tuple[CouncilRuntime, StubRouter]:
         router = StubRouter()
@@ -1495,7 +1503,15 @@ class UnslopIntegrationTests(unittest.TestCase):
         self.assertEqual(len(router.calls), 1)
         self.assertIn("UNSLOP_SKILL_MARKER", router.calls[0].system or "")
 
-    def test_learning_page_prose_synthesis_is_unslopped(self) -> None:
+    def test_learning_page_prose_gets_the_compact_block(self) -> None:
+        """Generated page prose gets the compact rules, not the full skill.
+
+        Measured 2026-08-14 by replaying real subsection prompts: the compact
+        block scores at least as well as the ~30KB skill on this path, so the
+        skill's remaining patterns were pure token cost. Interactive chat is a
+        different genre and still gets the full skill - see the direct-council
+        test above.
+        """
         runtime, router = self._runtime()
         runtime.run(
             CouncilInput(
@@ -1505,11 +1521,54 @@ class UnslopIntegrationTests(unittest.TestCase):
         )
         chair_systems = [s for s in self._systems(router) if "Chair Synthesizer" in s]
         self.assertTrue(chair_systems, "expected a chair synthesis call")
-        self.assertTrue(all("UNSLOP_SKILL_MARKER" in s for s in chair_systems))
-        # Candidates and critics (non-final calls) must NOT carry the skill.
+        self.assertTrue(all(COMPACT_MARKER in s for s in chair_systems))
+        self.assertTrue(all("UNSLOP_SKILL_MARKER" not in s for s in chair_systems))
+        # Candidates and critics (non-final calls) must NOT carry anything.
         non_final = [s for s in self._systems(router) if "Chair Synthesizer" not in s]
         self.assertTrue(non_final)
+        self.assertTrue(all(COMPACT_MARKER not in s for s in non_final))
         self.assertTrue(all("UNSLOP_SKILL_MARKER" not in s for s in non_final))
+
+    def test_compact_prose_can_be_switched_back_to_the_full_skill(self) -> None:
+        with patch.dict(os.environ, {"UNSLOP_COMPACT_PROSE": "false"}):
+            self._reset_unslop_cache()
+            runtime, router = self._runtime()
+            runtime.run(
+                CouncilInput(
+                    messages=[{"role": "user", "content": "write the section"}],
+                    task_type="subsection_generation",
+                )
+            )
+            chair_systems = [s for s in self._systems(router) if "Chair Synthesizer" in s]
+            self.assertTrue(chair_systems)
+            self.assertTrue(all("UNSLOP_SKILL_MARKER" in s for s in chair_systems))
+
+    def test_the_voice_profile_rides_along_with_the_compact_block(self) -> None:
+        """The Voice tab writes style-profile.md. It must survive the swap, or
+        calibrating a voice would silently stop affecting learning pages."""
+        refs = Path(self.skill_dir.name) / "references"
+        (refs / "style-profile.md").write_text("VOICE_PROFILE_MARKER", encoding="utf-8")
+        self._reset_unslop_cache()
+        runtime, router = self._runtime()
+        runtime.run(
+            CouncilInput(
+                messages=[{"role": "user", "content": "write the section"}],
+                task_type="subsection_generation",
+            )
+        )
+        chair_systems = [s for s in self._systems(router) if "Chair Synthesizer" in s]
+        self.assertTrue(chair_systems)
+        self.assertTrue(all("VOICE_PROFILE_MARKER" in s for s in chair_systems))
+        self.assertTrue(all(COMPACT_MARKER in s for s in chair_systems))
+
+    def test_the_compact_block_keeps_the_structural_guards(self) -> None:
+        """Losing these would let a rewrite touch LaTeX or a source anchor."""
+        from chatmock.council.unslop import unslop_directive
+
+        directive = unslop_directive(compact=True) or ""
+        for guard in ("S1.P12.F1", "breadboard-visual", "frontmatter", "display math"):
+            self.assertIn(guard, directive)
+        self.assertLess(len(directive), 4000, "the compact block stopped being compact")
 
     def test_structured_task_type_is_never_unslopped(self) -> None:
         runtime, router = self._runtime()

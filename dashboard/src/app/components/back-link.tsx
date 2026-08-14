@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useCallback, useSyncExternalStore } from 'react';
-import { backLabelFor, resolveBackHref, subscribeToTrail } from '@/lib/nav-history';
+import { backLabelFor, consumeBackTo, resolveBackHref, subscribeToTrail } from '@/lib/nav-history';
 
 interface Props {
   /** Where to go when this tab has no recorded previous page (deep link, reload). */
@@ -34,7 +34,11 @@ export default function BackLink({ fallbackHref, fallbackLabel, className }: Pro
   const label = href === fallbackHref ? fallbackLabel : backLabelFor(href, fallbackLabel);
 
   return (
-    <Link href={href} className={className ?? DEFAULT_CLASS}>
+    <Link
+      href={href}
+      onClick={() => consumeBackTo(href)}
+      className={className ?? DEFAULT_CLASS}
+    >
       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" />
       </svg>

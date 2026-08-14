@@ -73,13 +73,13 @@ export interface PeripheralPlacement {
 }
 
 export interface CurrentEstimate {
-  /** Sum of every part's typical current, including the controller itself. */
+  /** Sum of documented loads; a lower bound when unknownComponentIds is non-empty. */
   totalTypicalMa: number;
-  /** Worst case from each part's maximum, where one is documented. */
+  /** Documented worst-case loads; a lower bound when unknownComponentIds is non-empty. */
   totalMaximumMa: number;
   /** Per-rail typical load, keyed by net id. */
   perRailTypicalMa: Record<string, number>;
-  /** Parts whose current draw is not documented in the library. */
+  /** Active parts whose draw is undocumented or cannot be assigned to a supply rail. */
   unknownComponentIds: string[];
 }
 
@@ -96,6 +96,8 @@ export interface CompiledCircuit {
   groundNetId: string;
   railNetIdByVoltage: Record<string, string>;
   currentEstimate: CurrentEstimate;
+  /** Source-backed definitions available only to this blueprint. */
+  scopedDefinitions: readonly ComponentDefinition[];
 }
 
 const REFERENCE_PREFIXES: Record<string, string> = {
@@ -202,9 +204,11 @@ export interface CompileInput {
   request: HardwareProjectRequest;
   /** Peripherals already resolved by ../hardware/resolver.ts, in request order. */
   resolved: ResolvedPeripheral[];
+  scopedDefinitions?: readonly ComponentDefinition[];
 }
 
 export function compileCircuit(input: CompileInput): CompiledCircuit {
+  const scopedDefinitions = input.scopedDefinitions ?? [];
   const notes: CompilerNote[] = [];
   const decisions: DesignDecision[] = [];
   const nets = new NetBuilder();
@@ -275,7 +279,7 @@ export function compileCircuit(input: CompileInput): CompiledCircuit {
   // combination of sensors says "this hangs off a pair of glasses".
   const sizeConstraint = requestSizeConstraint(input.request);
   let controllerWasNamed = false;
-  const requestedController = resolveController(input.request.controller);
+  const requestedController = resolveController(input.request.controller, scopedDefinitions);
   let controllerDefinition: ComponentDefinition;
   if (requestedController?.status === "resolved") {
     controllerWasNamed = true;
@@ -481,11 +485,33 @@ export function compileCircuit(input: CompileInput): CompiledCircuit {
   if (input.request.power.source === "battery" && supplyInputPin) {
     const minimum = controllerDefinition.electrical.minimumSupplyVoltage;
     const maximum = controllerDefinition.electrical.maximumSupplyVoltage ?? supplyInputPin.maximumVoltage;
-    const candidates = ["lipo-battery-1200mah", "battery-holder-4aa"]
-      .map((id) => componentDefinition(id)!)
+    const requestedPower = input.request.power.part
+      ? resolveComponentPhrase(input.request.power.part, scopedDefinitions)
+      : null;
+    const requestedDefinition =
+      requestedPower?.status === "resolved" ? requestedPower.definition : null;
+    const candidateIds = [
+      ...(requestedDefinition ? [requestedDefinition.id] : []),
+      "lipo-battery-1200mah",
+      "battery-holder-4aa",
+    ].filter((id, index, ids) => ids.indexOf(id) === index);
+    const candidates = candidateIds
+      .map((id) => componentDefinition(id, scopedDefinitions))
+      .filter((candidate): candidate is ComponentDefinition => Boolean(candidate))
       .filter((candidate) => {
         const voltage = candidate.electrical.typicalSupplyVoltage ?? 0;
+        const hasCellOutput = candidate.pins.some(
+          (pin) =>
+            pin.electricalType === "power-output" && pin.functions.includes("supply-battery"),
+        );
+        const hasGround = candidate.pins.some((pin) => pin.electricalType === "ground");
+        const isCell =
+          candidate.category === "power-source" &&
+          hasCellOutput &&
+          hasGround &&
+          !candidate.pins.some((pin) => pin.electricalType === "power-input");
         return (
+          isCell &&
           (minimum === undefined || voltage >= minimum) &&
           (maximum === undefined || voltage <= maximum)
         );
@@ -515,6 +541,11 @@ export function compileCircuit(input: CompileInput): CompiledCircuit {
     } else {
       batteryFitted = true;
       const voltage = battery.electrical.typicalSupplyVoltage!;
+      const batteryPositivePin = battery.pins.find(
+        (pin) =>
+          pin.electricalType === "power-output" && pin.functions.includes("supply-battery"),
+      )!;
+      const batteryGroundPin = battery.pins.find((pin) => pin.electricalType === "ground")!;
       const batteryReference = nextReference(battery.category, battery.id);
       const switchReference = nextReference("input", "slide-switch");
       const cellNetId = "net_vbat_cell";
@@ -534,8 +565,8 @@ export function compileCircuit(input: CompileInput): CompiledCircuit {
         automaticallyAdded: true,
         additionReason: `The project is battery powered, and ${voltage} V suits ${controllerDefinition.name}'s ${supplyInputPin.label} input.`,
       });
-      nets.connect(cellNetId, batteryId, "POS");
-      nets.connect(groundNet.id, batteryId, "NEG");
+      nets.connect(cellNetId, batteryId, batteryPositivePin.id);
+      nets.connect(groundNet.id, batteryId, batteryGroundPin.id);
 
       supportParts.push({
         definitionId: "slide-switch",
@@ -1398,8 +1429,41 @@ export function compileCircuit(input: CompileInput): CompiledCircuit {
   // in the validation list with the reason, so the gap between what was asked
   // for and what was built is never left for the reader to notice.
   const presentDefinitionIds = new Set(components.map((instance) => instance.definitionId));
+  if (input.request.power.part) {
+    const phrase = input.request.power.part;
+    const outcome = resolveComponentPhrase(phrase, scopedDefinitions);
+    if (outcome.status !== "resolved") {
+      notes.push({
+        rule: "REQUESTED_POWER_PART_MISSING",
+        severity: "warning",
+        title: `The requested power part "${phrase}" is not in this design`,
+        message:
+          outcome.status === "ambiguous"
+            ? `The requested power part "${phrase}" matches more than one library entry, so none was selected automatically.`
+            : `No safely compilable power-source definition matches "${phrase}", so the compiler used only a compatible library power path.`,
+        componentIds: [],
+        netIds: [],
+        remediation:
+          "Review the saved online research and verify the cell, protection, charger, connector, current rating, and controller input range before selecting it.",
+      });
+    } else if (!presentDefinitionIds.has(outcome.definition.id)) {
+      notes.push({
+        rule: "REQUESTED_POWER_PART_MISSING",
+        severity: "warning",
+        title: `${outcome.definition.name} was requested but is not in this design`,
+        message: `The requested power part was not fitted because ${
+          omissionReasons.get(outcome.definition.id) ??
+          "it is not a directly compatible protected cell for this controller input"
+        }.`,
+        componentIds: [],
+        netIds: [],
+        remediation:
+          "Choose a protected cell within the controller input range and verify its charger and protection circuit.",
+      });
+    }
+  }
   for (const phrase of input.request.constraints.preferredComponents) {
-    const outcome = resolveComponentPhrase(phrase);
+    const outcome = resolveComponentPhrase(phrase, scopedDefinitions);
     if (outcome.status === "unsupported") {
       notes.push({
         rule: "PREFERRED_COMPONENT_MISSING",
@@ -1444,7 +1508,7 @@ export function compileCircuit(input: CompileInput): CompiledCircuit {
   }
 
   for (const phrase of input.request.constraints.forbiddenComponents) {
-    const outcome = resolveComponentPhrase(phrase);
+    const outcome = resolveComponentPhrase(phrase, scopedDefinitions);
     if (outcome.status !== "resolved") continue;
     if (!presentDefinitionIds.has(outcome.definition.id)) continue;
     const instances = components.filter(
@@ -1485,6 +1549,7 @@ export function compileCircuit(input: CompileInput): CompiledCircuit {
     groundNetId: groundNet.id,
     railNetIdByVoltage,
     currentEstimate,
+    scopedDefinitions,
   };
 }
 
@@ -1706,6 +1771,13 @@ function estimateCurrent(input: {
   const unknownComponentIds: string[] = [];
 
   for (const placement of input.peripherals) {
+    const isPurePhysicalReference =
+      placement.definition.rules.electricalPlaceholder !== true &&
+      placement.definition.interfaces.length === 0 &&
+      placement.definition.pins.length === 0;
+    // Optical, mounting and enclosure references are not electrical loads.
+    if (isPurePhysicalReference) continue;
+
     // An LED's draw is set by its series resistor, not by a datasheet figure.
     if (placement.definition.rules.requiresCurrentLimiting) {
       const drive = ledDriveCurrentMa({
@@ -1731,8 +1803,9 @@ function estimateCurrent(input: {
       // A part that consumes nothing is not "unknown" in a way that matters:
       // only parts that actually draw power are worth reporting.
       if (
-        placement.definition.category !== "passive" &&
-        !isContactOnly(placement.definition)
+        placement.definition.rules.electricalPlaceholder === true ||
+        (placement.definition.category !== "passive" &&
+          !isContactOnly(placement.definition))
       ) {
         unknownComponentIds.push(placement.instance.id);
       }
@@ -1743,6 +1816,10 @@ function estimateCurrent(input: {
     if (placement.supplyNetId) {
       perRailTypicalMa[placement.supplyNetId] =
         (perRailTypicalMa[placement.supplyNetId] ?? 0) + typical;
+    } else if (!isContactOnly(placement.definition)) {
+      // Even a documented load is not accounted for electrically until it is
+      // attached to a real rail. Keep it visible in the lower-bound warning.
+      unknownComponentIds.push(placement.instance.id);
     }
   }
 
@@ -1757,12 +1834,13 @@ function estimateCurrent(input: {
 /** Convenience wrapper used by tests and the design orchestrator. */
 export function resolveRequestPeripherals(
   request: HardwareProjectRequest,
+  scopedDefinitions: readonly ComponentDefinition[] = [],
 ): ResolvedPeripheral[] {
   const build = (list: HardwareProjectRequest["inputs"], role: "input" | "output") =>
     list.map((requested) => ({
       requested,
       role,
-      outcome: resolveComponentPhrase(requested.type),
+      outcome: resolveComponentPhrase(requested.type, scopedDefinitions),
     }));
   return [...build(request.inputs, "input"), ...build(request.outputs, "output")];
 }

@@ -253,6 +253,12 @@ def chat_completions() -> Response:
     include_usage = bool(stream_options.get("include_usage", False))
 
     tools_responses = convert_tools_chat_to_responses(payload.get("tools"))
+    has_function_web_search = any(
+        isinstance(tool, dict)
+        and tool.get("type") == "function"
+        and tool.get("name") == "web_search"
+        for tool in tools_responses
+    )
     tool_choice = convert_tool_choice_chat_to_responses(payload.get("tool_choice", "auto"))
     parallel_tool_calls = bool(payload.get("parallel_tool_calls", False))
     responses_tools_payload = payload.get("responses_tools") if isinstance(payload.get("responses_tools"), list) else []
@@ -274,7 +280,11 @@ def chat_completions() -> Response:
                 return jsonify(err), 400
             extra_tools.append(_t)
 
-        if not extra_tools and bool(current_app.config.get("DEFAULT_WEB_SEARCH")):
+        if (
+            not extra_tools
+            and not has_function_web_search
+            and bool(current_app.config.get("DEFAULT_WEB_SEARCH"))
+        ):
             responses_tool_choice = payload.get("responses_tool_choice")
             if not (isinstance(responses_tool_choice, str) and responses_tool_choice == "none"):
                 extra_tools = [{"type": "web_search"}]

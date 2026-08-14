@@ -45,7 +45,20 @@ interface IndexEntry {
   definition: ComponentDefinition;
 }
 
-const searchIndex: IndexEntry[] = COMPONENT_DEFINITIONS.flatMap((definition) => {
+function mergedDefinitions(
+  scopedDefinitions: readonly ComponentDefinition[] = [],
+): ComponentDefinition[] {
+  const definitions = new Map(
+    COMPONENT_DEFINITIONS.map((definition) => [definition.id, definition] as const),
+  );
+  for (const definition of scopedDefinitions) definitions.set(definition.id, definition);
+  return [...definitions.values()];
+}
+
+function buildSearchIndex(
+  scopedDefinitions: readonly ComponentDefinition[] = [],
+): IndexEntry[] {
+  return mergedDefinitions(scopedDefinitions).flatMap((definition) => {
   const keys = new Set<string>([
     normalize(definition.id),
     normalize(definition.name),
@@ -54,7 +67,8 @@ const searchIndex: IndexEntry[] = COMPONENT_DEFINITIONS.flatMap((definition) => 
   return [...keys]
     .filter(Boolean)
     .map((key) => ({ key, definition }));
-});
+  });
+}
 
 function uniqueDefinitions(entries: IndexEntry[]): ComponentDefinition[] {
   const seen = new Map<string, ComponentDefinition>();
@@ -67,10 +81,17 @@ function uniqueDefinitions(entries: IndexEntry[]): ComponentDefinition[] {
  * alias contained in the phrase wins, which is what makes "a 128x64 OLED
  * display" resolve to the SSD1306 without a fuzzy matcher.
  */
-export function resolveComponentPhrase(phrase: string): ResolutionOutcome {
-  const normalized = singularize(normalize(phrase));
+export function resolveComponentPhrase(
+  phrase: string,
+  scopedDefinitions: readonly ComponentDefinition[] = [],
+): ResolutionOutcome {
+  const normalized = normalize(phrase);
   if (!normalized) return { status: "unsupported" };
+  const searchIndex = buildSearchIndex(scopedDefinitions);
 
+  // Exact ids and aliases must win before plural handling. In particular,
+  // legitimate singular words ending in s ("lens", "glass", "BME680S")
+  // must not lose their final character before they are looked up.
   const exact = searchIndex.filter((entry) => entry.key === normalized);
   if (exact.length) {
     const definitions = uniqueDefinitions(exact);
@@ -79,14 +100,49 @@ export function resolveComponentPhrase(phrase: string): ResolutionOutcome {
       : { status: "ambiguous", candidates: definitions };
   }
 
-  const contained = searchIndex
+  let contained = searchIndex
     .filter((entry) => {
       if (entry.key.length < 3) return false;
       return new RegExp(`(?:^|\\s)${escapeRegExp(entry.key)}(?:\\s|$)`).test(normalized);
     })
     .sort((left, right) => right.key.length - left.key.length);
 
+  if (!contained.length) {
+    const singular = singularize(normalized);
+    contained = searchIndex
+      .filter((entry) => {
+        const key = singularize(entry.key);
+        if (key.length < 3) return false;
+        return new RegExp(`(?:^|\\s)${escapeRegExp(key)}(?:\\s|$)`).test(singular);
+      })
+      .sort((left, right) => right.key.length - left.key.length);
+  }
   if (!contained.length) return { status: "unsupported" };
+
+  // A specific-looking model number outranks a generic noun. Without this,
+  // "Acme AQ1 display" could silently become the library's generic SSD1306
+  // merely because both phrases contain "display", preventing online research
+  // for the part the person actually named.
+  const identifiers = partNumberTokens(normalized);
+  if (identifiers.length) {
+    let identifierMatches = contained.filter((entry) =>
+      identifiers.every((identifier) => entry.key.includes(identifier)),
+    );
+    if (!identifierMatches.length) {
+      const singular = singularize(normalized);
+      identifierMatches = searchIndex
+        .filter((entry) => {
+          const key = singularize(entry.key);
+          return (
+            identifiers.every((identifier) => key.includes(identifier)) &&
+            new RegExp(`(?:^|\\s)${escapeRegExp(key)}(?:\\s|$)`).test(singular)
+          );
+        })
+        .sort((left, right) => right.key.length - left.key.length);
+    }
+    if (!identifierMatches.length) return { status: "unsupported" };
+    contained = identifierMatches;
+  }
 
   const bestLength = contained[0].key.length;
   let tied = contained.filter((entry) => entry.key.length === bestLength);
@@ -106,10 +162,26 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Tokens such as BME280, AQ1-BREAKOUT or 128x64 usually name an exact part. */
+function partNumberTokens(value: string): string[] {
+  return value
+    .split(/\s+/)
+    .map((token) => token.replace(/^[^a-z0-9]+|[^a-z0-9.-]+$/gi, ""))
+    .filter(
+      (token) =>
+        token.length >= 3 &&
+        /[a-z]/i.test(token) &&
+        /\d/.test(token),
+    );
+}
+
 /** Resolve an explicitly named controller, never substituting a different one. */
-export function resolveController(phrase: string | undefined): ResolutionOutcome | null {
+export function resolveController(
+  phrase: string | undefined,
+  scopedDefinitions: readonly ComponentDefinition[] = [],
+): ResolutionOutcome | null {
   if (!phrase?.trim()) return null;
-  const outcome = resolveComponentPhrase(phrase);
+  const outcome = resolveComponentPhrase(phrase, scopedDefinitions);
   if (outcome.status === "resolved") {
     return isController(outcome.definition.id)
       ? outcome
@@ -128,11 +200,12 @@ export function resolveController(phrase: string | undefined): ResolutionOutcome
 export function resolvePeripherals(
   peripherals: RequestedPeripheral[],
   role: "input" | "output",
+  scopedDefinitions: readonly ComponentDefinition[] = [],
 ): ResolvedPeripheral[] {
   return peripherals.map((requested) => ({
     requested,
     role,
-    outcome: resolveComponentPhrase(requested.type),
+    outcome: resolveComponentPhrase(requested.type, scopedDefinitions),
   }));
 }
 

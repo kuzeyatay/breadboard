@@ -42,12 +42,12 @@ test("ChatGPT has exactly one sign-in, and it is ChatMock's", () => {
     false,
   );
 
-  // The providers section points back at the account list rather than offering
-  // a rival switch for the same account.
+  // ChatGPT's sign-in belongs to the account list, and lives there rather than
+  // being offered a second time further down the page.
+  const accounts = source("src/app/components/settings-accounts.tsx");
+  assert.match(accounts, /\/api\/chatmock\/account\/login/);
   const panel = source("src/app/components/settings-providers.tsx");
-  assert.match(panel, /onOpenAccount/);
-  const dialog = source("src/app/components/settings-dialog.tsx");
-  assert.match(dialog, /onOpenAccount=\{\(\) => scrollTo\(accountsRef\)\}/);
+  assert.doesNotMatch(panel, /chatmock\/account\/login/);
 });
 
 test("the sync never lists a model ChatMock already serves natively", () => {
@@ -114,6 +114,7 @@ test("Claude subscription model ids are stable and isolated from other subscript
     "claude-opus-5",
     "claude-sonnet-5",
     "claude-haiku-4-5-20251001",
+    "claude-fable-5",
   ]);
   assert.equal(claudeCode.isClaudeCodeModel("cliproxy/claude-sonnet-5"), true);
   assert.equal(claudeCode.isClaudeCodeModel("gemini-3-pro"), false);
@@ -223,9 +224,12 @@ test("dev-all shares the bearer with ChatMock and probes with it", () => {
 });
 
 test("the panel no longer tells the user to opt in", () => {
-  const panel = source("src/app/components/settings-subscriptions.tsx");
+  // The proxy card is gone; how to start the proxy is now said beside the
+  // sign-in buttons it disables, which is the only place it was ever needed.
+  const panel = source("src/app/components/settings-accounts.tsx");
   assert.doesNotMatch(panel, /CLIPROXY_MODE=optional/);
   assert.match(panel, /npm run cliproxy/);
+  assert.match(panel, /subscriptions\?\.installed/);
 });
 
 test("cliproxy routes authenticate the session and never leak the token", () => {
@@ -244,7 +248,9 @@ test("cliproxy routes authenticate the session and never leak the token", () => 
 });
 
 test("the sign-in panel polls and then syncs the unlocked models", () => {
-  const panel = source("src/app/components/settings-subscriptions.tsx");
+  // Signing in is the account list's job, so the poll that finishes it lives
+  // there too — beside the row the new credential becomes.
+  const panel = source("src/app/components/settings-accounts.tsx");
   assert.match(panel, /\/api\/cliproxy\/login\?state=/);
   assert.match(panel, /\/api\/cliproxy\/sync/);
   // Device-code providers must show the code, or the flow is unusable.
@@ -254,12 +260,13 @@ test("the sign-in panel polls and then syncs the unlocked models", () => {
 test("a sign-in that completed unobserved still takes effect", () => {
   // The poll only runs while the panel is mounted with a login pending. A
   // sign-in finished after the panel closed left the credential in the proxy
-  // but its models absent from ChatMock — connected, yet nothing worked.
-  const panel = source("src/app/components/settings-subscriptions.tsx");
+  // but its models absent from ChatMock — connected, yet nothing worked. This
+  // reconcile was the proxy card's one irreplaceable job, so it moved into the
+  // account list rather than being deleted with it.
+  const panel = source("src/app/components/settings-accounts.tsx");
   assert.match(panel, /reconciledRef/);
-  assert.match(panel, /status\.accounts\.length/);
-  // And a manual escape hatch exists either way.
-  assert.match(panel, /Sync models/);
+  assert.match(panel, /subscriptions\.accounts\.length/);
+  assert.match(panel, /syncSubscriptionModels/);
 });
 
 test("pay-per-token providers stay hidden except explicit setup integrations", () => {
@@ -326,27 +333,50 @@ test("credential filenames yield the account they belong to", () => {
   assert.equal(claude.label, "Claude");
 });
 
-test("each subscription appears once, in the add-an-account panel", () => {
+test("each vendor is offered once, by the account list's picker", () => {
   const settings = source("src/app/components/settings-providers.tsx");
-  // ChatGPT and the proxy are listed there, so a provider card for either would
-  // be the same entry twice under two names.
+  // ChatGPT and the proxy are offered in the picker above, so a provider card
+  // for either would be the same entry twice under two names.
   assert.match(settings, /provider\.kind !== "chatgpt_oauth"/);
   assert.match(settings, /provider\.id !== "cliproxy"/);
   assert.doesNotMatch(settings, /isChatgpt/);
 
-  const panel = source("src/app/components/settings-subscriptions.tsx");
-  assert.match(panel, /ChatGPT/);
-  assert.match(panel, /chatgptAccount/);
+  // The proxy card kept a second copy of that vendor list, whose ChatGPT row
+  // could only scroll back up to the account list. The card is gone entirely
+  // now: one list, where the buttons actually sign in.
+  assert.doesNotMatch(settings, /SettingsSubscriptions/);
+  assert.equal(
+    fs.existsSync(new URL("../src/app/components/settings-subscriptions.tsx", import.meta.url)),
+    false,
+  );
+
+  const accounts = source("src/app/components/settings-accounts.tsx");
+  assert.match(accounts, /providers\.map/);
+  assert.match(accounts, /Add another/);
+});
+
+test("a vendor that can only hold one account is not offered a second", () => {
+  // Claude's credential belongs to the Claude Code CLI, which keeps a single
+  // login: "Add another" there would replace the account it claims to add to.
+  assert.equal(config.cliproxyProvider("claude").singleAccount, true);
+  for (const id of ["antigravity", "kimi", "xai"]) {
+    assert.notEqual(config.cliproxyProvider(id).singleAccount, true, id);
+  }
+
+  const management = source("src/lib/cliproxy/management.ts");
+  assert.match(management, /singleAccount: provider\.singleAccount === true/);
+
+  const accounts = source("src/app/components/settings-accounts.tsx");
+  assert.match(accounts, /provider\.singleAccount && provider\.connected/);
+  assert.match(accounts, /disabled=\{!proxyRunning \|\| capped/);
 });
 
 test("connectedness is stated once per page, by the account list's dots", () => {
-  // The account list and this panel now share one page. The list has a dot per
-  // account; a "Connected" badge per vendor here would say the same thing a
-  // second time, and less precisely — these rows are vendors, not accounts.
-  const panel = source("src/app/components/settings-subscriptions.tsx");
-  assert.doesNotMatch(panel, />\s*Connected\s*</);
-  // The distinction the panel does draw is the verb on its button.
-  assert.match(panel, /Add another/);
+  // The list has a dot per account, and it is the only thing on the page that
+  // reports connectedness — the proxy card that also counted signed-in
+  // accounts has been removed.
+  const providers = source("src/app/components/settings-providers.tsx");
+  assert.doesNotMatch(providers, /subscription accounts signed in|Subscription proxy/);
 
   const accounts = source("src/app/components/settings-accounts.tsx");
   assert.match(accounts, /function ConnectionDot/);
@@ -356,16 +386,14 @@ test("connectedness is stated once per page, by the account list's dots", () => 
 
 test("an account connected in either half of the page reaches the other", () => {
   // Both halves are mounted at once, so neither remounts on the way back from
-  // the other. A sign-in or sign-out already announces itself for the model
-  // pickers; both halves listen to that announcement rather than going stale.
-  for (const file of [
-    "src/app/components/settings-accounts.tsx",
-    "src/app/components/settings-subscriptions.tsx",
-  ]) {
-    const panel = source(file);
-    assert.match(panel, /ASSISTANT_MODELS_CHANGED_EVENT/, `${file} must listen`);
-    assert.match(panel, /addEventListener\(ASSISTANT_MODELS_CHANGED_EVENT/, `${file} must listen`);
-  }
+  // the other. A provider connected below announces itself for the model
+  // pickers; the account list listens rather than going stale.
+  const accounts = source("src/app/components/settings-accounts.tsx");
+  assert.match(accounts, /ASSISTANT_MODELS_CHANGED_EVENT/);
+  assert.match(accounts, /addEventListener\(ASSISTANT_MODELS_CHANGED_EVENT/);
+
+  const providers = source("src/app/components/settings-providers.tsx");
+  assert.match(providers, /notifyAssistantModelsChanged\(\)/);
 });
 
 test("the Account tab is one list of every account", () => {
@@ -373,12 +401,13 @@ test("the Account tab is one list of every account", () => {
   assert.match(dialog, /Every account Breadboard is signed in to/);
   // One panel, not a ChatGPT box beside a Subscriptions box — they are the
   // same kind of thing and read as two when split.
-  assert.match(dialog, /<SettingsAccounts onOpenProviders=/);
+  assert.match(dialog, /<SettingsAccounts \/>/);
   assert.doesNotMatch(dialog, /SettingsSubscriptionAccounts/);
   assert.doesNotMatch(dialog, /SettingsChatgptAccount/);
 
   const accounts = source("src/app/components/settings-accounts.tsx");
   assert.match(accounts, /\/api\/chatmock\/account/);
+  assert.match(accounts, /\/api\/chatmock\/accounts/);
   assert.match(accounts, /\/api\/cliproxy\/status/);
   // Rows are named after the vendor, matching the model picker's headings.
   assert.match(accounts, /subscription\.vendorLabel/);

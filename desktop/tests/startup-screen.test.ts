@@ -9,6 +9,8 @@ const html = fs.readFileSync(path.join(startupRoot, "index.html"), "utf8");
 const css = fs.readFileSync(path.join(startupRoot, "startup.css"), "utf8");
 const script = fs.readFileSync(path.join(startupRoot, "startup.ts"), "utf8");
 const themeScript = fs.readFileSync(path.join(startupRoot, "theme.js"), "utf8");
+const recoveryHtml = fs.readFileSync(path.join(startupRoot, "recovery.html"), "utf8");
+const recoveryCss = fs.readFileSync(path.join(startupRoot, "recovery.css"), "utf8");
 
 test("desktop loading is a text-free kinetic scale field", () => {
   assert.match(html, /id="kinetic-field" class="kinetic-field"/);
@@ -41,6 +43,26 @@ test("startup paints in the last dashboard theme before its stylesheet loads", (
   assert.match(css, /--app-background:\s*#18181a/);
   assert.match(css, /:root\[data-theme="dark"\] \.loader::before/);
   assert.match(css, /:root\[data-theme="dark"\] \.dissolve-bloom/);
+});
+
+test("dashboard restarts show a themed recovery scene instead of a blank window", () => {
+  assert.match(recoveryHtml, /Reconnecting to your workspace/);
+  assert.match(recoveryHtml, /Your chats and garden are safe/);
+  assert.match(recoveryHtml, /role="status" aria-live="polite"/);
+  assert.ok(
+    recoveryHtml.indexOf('<script src=".\/theme.js"><\/script>') <
+      recoveryHtml.indexOf('<link rel="stylesheet" href=".\/recovery.css" \/>'),
+  );
+  assert.match(recoveryCss, /--background: #e6f0e6;/);
+  assert.match(recoveryCss, /:root\[data-theme="dark"\]/);
+  assert.match(recoveryCss, /@media \(prefers-reduced-motion: reduce\)/);
+
+  const copyStatic = fs.readFileSync(
+    path.join(desktopRoot, "scripts", "copy-static.mjs"),
+    "utf8",
+  );
+  assert.match(copyStatic, /"recovery\.html"/);
+  assert.match(copyStatic, /"recovery\.css"/);
 });
 
 test("a healthy startup ends on a welcome that is dismissed by hand", () => {

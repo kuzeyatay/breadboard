@@ -38,6 +38,13 @@ export interface CliproxyProviderSpec {
    */
   vendorLabel: string;
   description: string;
+  /**
+   * True when this vendor can only ever hold one signed-in account, so the UI
+   * offers no "Add another". Claude is the only one: its credential belongs to
+   * the official Claude Code CLI, which keeps a single login at a time, and
+   * signing in again replaces it rather than adding a sibling.
+   */
+  singleAccount?: boolean;
 }
 
 export const CLIPROXY_PROVIDERS: readonly CliproxyProviderSpec[] = [
@@ -51,6 +58,7 @@ export const CLIPROXY_PROVIDERS: readonly CliproxyProviderSpec[] = [
     flow: "redirect",
     vendorLabel: "Anthropic",
     description: "Your Claude Pro or Max subscription.",
+    singleAccount: true,
   },
   // ChatGPT is deliberately absent. CLIProxyAPI can sign into it
   // (`codex-auth-url`), but ChatMock already owns that account through its own

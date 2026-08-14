@@ -93,8 +93,56 @@ _STYLE_PROFILE_HEADER = """The author has calibrated a personal voice profile be
 
 _UNSLOP_FOOTER = "\n=== end UNSLOP ===\n"
 
-_cached_directive: Optional[str] = None
-_cache_key: Optional[str] = None
+# Compact form, used for generated learning-page prose.
+#
+# Measured 2026-08-14 by replaying five real subsection prompts from the council
+# ledger (same model, same council mode, only the directive varied). With no
+# directive at all, 2 of 5 pages picked up slop — and all of it was curly quotes
+# and one "serves as". With the full ~30KB skill, the mean tuned prose score was
+# 3.2; with the block below, 2.2. The full skill's remaining 40-odd patterns are
+# about marketing copy that a subsection prompt does not produce, so on this path
+# they cost ~7.4k tokens per call and change nothing measurable.
+#
+# Interactive chat is a different genre and is NOT covered by that measurement,
+# so it keeps the full skill. Flip UNSLOP_COMPACT_PROSE=false to restore the old
+# behavior everywhere.
+#
+# The first line matches _UNSLOP_HEADER's so the passthrough's
+# already-attached check works against either form.
+_UNSLOP_COMPACT = """=== UNSLOP: humanize this final, user-facing answer ===
+Write like a person, not a press release. Use "is" and "has", not "serves as", "stands as" or "boasts". Straight quotes and apostrophes only, never curly ones. No em dashes; use a period, comma, colon or parentheses. Avoid: delve, tapestry, vibrant, crucial, robust, seamless, groundbreaking, pivotal, testament, leverage, empower, realm, intricate, showcase, foster, underscore. No "it's not just X, it's Y". No "it is important to note that". One qualifier per claim. Vary sentence length. End on a concrete fact, not on why the topic matters.
+
+Hard limits, which override the rules above:
+- Rewrite natural-language prose ONLY. Never alter fenced code, inline or display math, LaTeX, formulas and their term definitions, ```breadboard-visual``` JSON blocks, tables, source-anchor ids such as S1.P12.F1, question/answer numbering, or YAML frontmatter.
+- If the request demands a specific output format, obey that format and ignore this block.
+- Never invent facts, numbers, examples, thresholds or citations. Removing slop must not change the meaning.
+- Keep the request's language, structure and roughly its length.
+"""
+
+# Directives are cached per form (full / compact), keyed by source-file mtimes.
+_cached_directives: Dict[bool, str] = {}
+_cache_keys: Dict[bool, str] = {}
+
+
+def reset_directive_cache() -> None:
+    """Drop every cached directive form. Tests call this between cases; in
+    production the mtime key handles invalidation on its own."""
+    _cached_directives.clear()
+    _cache_keys.clear()
+
+
+def compact_prose_enabled() -> bool:
+    """Whether allowlisted learning-page prose gets the compact block instead of
+    the full skill. Read at request time so it can be flipped live."""
+    return _env_bool("UNSLOP_COMPACT_PROSE", True)
+
+
+def use_compact(task_type: Optional[str]) -> bool:
+    """Compact for generated page prose (which carries a task type); full skill
+    for interactive chat (which carries none)."""
+    if not compact_prose_enabled():
+        return False
+    return bool(task_type and str(task_type).strip() in UNSLOP_PROSE_TASK_TYPES)
 
 
 def _candidate_skill_dirs() -> List[Path]:
@@ -157,39 +205,50 @@ def _read(path: Path) -> str:
         return ""
 
 
-def unslop_directive() -> Optional[str]:
-    """The guard + full unslop skill text + calibrated author profile (when one
-    exists). Returns None when the unslop repo cannot be found, so callers no-op
-    safely instead of failing a user's answer. The result is cached by file
-    mtime, so calibrating a new profile takes effect on the next answer without a
-    restart."""
-    global _cached_directive, _cache_key
+def unslop_directive(compact: bool = False) -> Optional[str]:
+    """The guard + unslop rules + calibrated author profile (when one exists).
+
+    `compact=True` swaps the full SKILL.md/blacklist body for the measured
+    compact block; the voice profile is still appended either way, so the Voice
+    tab keeps working on both paths. Returns None when the unslop repo cannot be
+    found, so callers no-op safely instead of failing a user's answer. Cached by
+    source-file mtime, so calibrating a new profile takes effect on the next
+    answer without a restart.
+    """
     base = skill_dir()
     if base is None:
-        _cached_directive, _cache_key = None, None
+        _cached_directives.clear()
+        _cache_keys.clear()
         return None
 
     key = _mtime_key(base)
-    if _cached_directive is not None and _cache_key == key:
-        return _cached_directive
+    cached = _cached_directives.get(compact)
+    if cached is not None and _cache_keys.get(compact) == key:
+        return cached
 
-    skill = _read(base / "SKILL.md")
-    if not skill:
-        _cached_directive, _cache_key = None, key
-        return None
-    if _env_bool("UNSLOP_INCLUDE_BLACKLIST", True):
-        blacklist = _read(base / "references" / "blacklist.md")
-        if blacklist:
-            skill = skill + "\n\n" + blacklist
+    if compact:
+        body = _UNSLOP_COMPACT
+    else:
+        skill = _read(base / "SKILL.md")
+        if not skill:
+            _cached_directives.pop(compact, None)
+            _cache_keys[compact] = key
+            return None
+        if _env_bool("UNSLOP_INCLUDE_BLACKLIST", True):
+            blacklist = _read(base / "references" / "blacklist.md")
+            if blacklist:
+                skill = skill + "\n\n" + blacklist
+        body = _UNSLOP_HEADER + "\n" + skill
 
-    directive = _UNSLOP_HEADER + "\n" + skill
+    directive = body
     profile = _read(base / "references" / "style-profile.md")
     if profile:
         directive += "\n\n" + _STYLE_PROFILE_HEADER + profile + "\n--- END AUTHOR VOICE PROFILE ---\n"
     directive += _UNSLOP_FOOTER
 
-    _cached_directive, _cache_key = directive, key
-    return _cached_directive
+    _cached_directives[compact] = directive
+    _cache_keys[compact] = key
+    return directive
 
 
 def maybe_unslop_system(system: str, task_type: Optional[str]) -> str:
@@ -198,7 +257,7 @@ def maybe_unslop_system(system: str, task_type: Optional[str]) -> str:
     unchanged."""
     if not unslop_applies(task_type):
         return system
-    directive = unslop_directive()
+    directive = unslop_directive(compact=use_compact(task_type))
     if not directive:
         return system
     return system + "\n\n" + directive
@@ -239,13 +298,17 @@ def _demands_structured_output(payload: Dict[str, Any]) -> bool:
     return isinstance(choice, str) and choice.strip().lower() == "required"
 
 
+def _payload_task_type(payload: Dict[str, Any]) -> Optional[str]:
+    task_type = payload.get("taskType") or payload.get("task_type")
+    return task_type if isinstance(task_type, str) else None
+
+
 def unslop_passthrough_applies(
     text_with_system: str,
     payload: Dict[str, Any],
 ) -> bool:
     """True when a council-bypassed request is a Breadboard UI prose turn."""
-    task_type = payload.get("taskType") or payload.get("task_type")
-    if not unslop_applies(task_type if isinstance(task_type, str) else None):
+    if not unslop_applies(_payload_task_type(payload)):
         return False
     if _demands_structured_output(payload):
         return False
@@ -272,7 +335,7 @@ def maybe_unslop_messages(
     )
     if not unslop_passthrough_applies(joined, payload):
         return messages
-    directive = unslop_directive()
+    directive = unslop_directive(compact=use_compact(_payload_task_type(payload)))
     if not directive:
         return messages
 
@@ -295,7 +358,7 @@ def maybe_unslop_instructions(
         return instructions
     if not unslop_passthrough_applies(instructions, payload):
         return instructions
-    directive = unslop_directive()
+    directive = unslop_directive(compact=use_compact(_payload_task_type(payload)))
     if not directive:
         return instructions
     if _UNSLOP_HEADER.splitlines()[0] in instructions:

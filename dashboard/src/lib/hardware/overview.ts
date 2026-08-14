@@ -7,7 +7,7 @@
 // invented, and no pin name is written down: a pin label is always looked up
 // from the definition the net connection points at.
 
-import { componentDefinition } from "./components/index.ts";
+import { componentDefinitionForDesign } from "./components/index.ts";
 import { isContactOnly } from "./electrical.ts";
 import { netStyle } from "./net-style.ts";
 import type {
@@ -207,6 +207,7 @@ function describeLink(input: {
   nets: ElectricalNet[];
   controllerId: string | null;
   byId: Map<string, ComponentInstance>;
+  definitionOf: (id: string) => ComponentDefinition | null;
 }): string {
   const signalNets = input.nets.filter((net) => !POWERLIKE.includes(net.role));
   if (!signalNets.length) {
@@ -226,7 +227,7 @@ function describeLink(input: {
       net.connections.find((connection) => connection.componentId === input.controllerId) ??
       net.connections.find((connection) => connection.componentId !== input.instance.id);
     const farInstance = other ? input.byId.get(other.componentId) : undefined;
-    const farDefinition = farInstance ? componentDefinition(farInstance.definitionId) : null;
+    const farDefinition = farInstance ? input.definitionOf(farInstance.definitionId) : null;
     for (const connection of own) {
       const near = pinLabelOf(input.definition, connection.pinId);
       links.push(
@@ -328,6 +329,7 @@ function readLegacyEstimate(design: HardwareDesign): Pick<
 }
 
 export function designOverview(design: HardwareDesign): DesignOverview {
+  const definitionOf = (id: string) => componentDefinitionForDesign(design, id);
   const byId = new Map(design.components.map((instance) => [instance.id, instance]));
   const netsByComponent = new Map<string, ElectricalNet[]>();
   let connections = 0;
@@ -342,14 +344,14 @@ export function designOverview(design: HardwareDesign): DesignOverview {
 
   const controllerInstance =
     design.components.find(
-      (instance) => componentDefinition(instance.definitionId)?.category === "controller",
+      (instance) => definitionOf(instance.definitionId)?.category === "controller",
     ) ?? null;
   const controllerDefinition = controllerInstance
-    ? componentDefinition(controllerInstance.definitionId)
+    ? definitionOf(controllerInstance.definitionId)
     : null;
 
   const parts: PartRole[] = design.components.map((instance) => {
-    const definition = componentDefinition(instance.definitionId);
+    const definition = definitionOf(instance.definitionId);
     const nets = netsByComponent.get(instance.id) ?? [];
     const category = definition?.category ?? "support";
     const isController = instance.id === controllerInstance?.id;
@@ -383,6 +385,7 @@ export function designOverview(design: HardwareDesign): DesignOverview {
             nets,
             controllerId: controllerInstance?.id ?? null,
             byId,
+            definitionOf,
           }),
       supply: isController
         ? `Fed from ${POWER_SOURCE_TEXT[design.request.power.source] ?? design.request.power.source}.`
@@ -439,7 +442,7 @@ export function designOverview(design: HardwareDesign): DesignOverview {
           const instance = byId.get(connection.componentId);
           if (!instance) return null;
           references.add(instance.reference);
-          const definition = componentDefinition(instance.definitionId);
+          const definition = definitionOf(instance.definitionId);
           return `${instance.reference} ${pinLabelOf(definition, connection.pinId)}`;
         })
         .filter((entry): entry is string => Boolean(entry));

@@ -37,6 +37,10 @@ import {
   loadAgencyAgentsCatalog,
 } from "./agency-agents.ts";
 import {
+  agencyAgentSlugFromToken,
+  agencyAgentToken,
+} from "./agency-agent-command.ts";
+import {
   isArisSkillSlug,
   loadArisAgentDefinition,
 } from "../aris/agent.ts";
@@ -140,7 +144,11 @@ export function skillAvailableForContext(
   return skill.classification === "eligible_general";
 }
 
-export function assignCommandTokens<T extends { kind: CommandHubItemKind; slug: string }>(
+export function assignCommandTokens<T extends {
+  kind: CommandHubItemKind;
+  slug: string;
+  source?: string;
+}>(
   items: T[],
 ): Array<T & { token: string }> {
   const counts = new Map<string, number>();
@@ -149,7 +157,9 @@ export function assignCommandTokens<T extends { kind: CommandHubItemKind; slug: 
     ...item,
     token:
       item.kind === "agent"
-        ? `agent:${item.slug}`
+        ? item.source === "Agency Agents"
+          ? agencyAgentToken(item.slug)
+          : `agent:${item.slug}`
         : counts.get(item.slug) === 1
         ? item.slug
         : `${item.kind === "mcp" ? "connection" : item.kind}-${item.slug}`,
@@ -432,6 +442,14 @@ function requestedSelectors(
           409,
           "external_agent_dispatch_required",
           `${runtimeAgent.name} turns must be launched by its chat runner. Refresh the chat and send ${runtimeAgent.command} again.`,
+        );
+      }
+      const agencyAgentSlug = agencyAgentSlugFromToken(token);
+      if (agencyAgentSlug) {
+        throw new ApiError(
+          404,
+          "agency_agent_not_found",
+          `No Agency Agent named "${agencyAgentSlug}" is available. Choose one from the Agents tab or use /agent:none.`,
         );
       }
       if (token.startsWith("agent:")) {

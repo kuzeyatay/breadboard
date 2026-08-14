@@ -21,12 +21,10 @@ const CONTENT = {
     confirmLabel: "Rebuild garden",
   },
   clear: {
-    title: "Clear all Learn data?",
-    description:
-      "This permanently removes the Learning Map, Learning Unit Contract, generated learner pages and visuals, validation reports, Learn job history, and snapshots.",
-    guidanceLabel: "What stays",
-    guidance:
-      "Uploaded source documents and notes outside the generated Learning folder will remain. This cannot be undone.",
+    title: "Clear Learn data?",
+    description: "This permanently deletes all generated Learn content and history. This cannot be undone.",
+    guidanceLabel: null,
+    guidance: null,
     confirmLabel: "Clear Learn data",
   },
 } satisfies Record<
@@ -34,8 +32,8 @@ const CONTENT = {
   {
     title: string;
     description: string;
-    guidanceLabel: string;
-    guidance: string;
+    guidanceLabel: string | null;
+    guidance: string | null;
     confirmLabel: string;
   }
 >;
@@ -102,7 +100,7 @@ export default function LearnConfirmationDialog({
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="learn-confirmation-title"
-        aria-describedby="learn-confirmation-description learn-confirmation-guidance"
+        aria-describedby={`learn-confirmation-description${content.guidance ? " learn-confirmation-guidance" : ""}`}
         className="bb-modal-panel neu-dialog w-full max-w-md overflow-hidden rounded-2xl border bg-[var(--paper-raised)] text-[var(--ink)]"
       >
         <div className="p-6 pb-5">
@@ -139,15 +137,17 @@ export default function LearnConfirmationDialog({
             </div>
           </div>
 
-          <div
-            id="learn-confirmation-guidance"
-            className="neu-inset mt-5 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm leading-5 text-[var(--ink-muted)]"
-          >
-            <p className="font-semibold text-[var(--ink-heading)]">
-              {content.guidanceLabel}
-            </p>
-            <p className="mt-1">{content.guidance}</p>
-          </div>
+          {content.guidance && (
+            <div
+              id="learn-confirmation-guidance"
+              className="neu-inset mt-5 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm leading-5 text-[var(--ink-muted)]"
+            >
+              <p className="font-semibold text-[var(--ink-heading)]">
+                {content.guidanceLabel}
+              </p>
+              <p className="mt-1">{content.guidance}</p>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col-reverse gap-2 border-t border-[var(--line)] bg-[var(--paper-surface)] px-6 py-4 sm:flex-row sm:justify-end">

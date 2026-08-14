@@ -712,6 +712,38 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
   box-shadow: var(--neu-hover-shadow);
 }
 
+/* A garden card's two actions are extruded from the card rather than painted on
+   it: same warm paper as the card, raised by light alone. The generic
+   `neu-button` fill is `--paper-raised`, which reads as a white slab against
+   that paper, so these keep `--paper-surface` and let the shadow pair do the
+   lifting. */
+.bb-garden-card-action {
+  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+  background-color: var(--paper-surface);
+  color: var(--ink);
+  box-shadow:
+    3px 3px 8px var(--neu-shadow-soft),
+    -3px -3px 8px color-mix(in srgb, var(--neu-highlight) 58%, transparent);
+  transition:
+    box-shadow var(--neu-duration) var(--neu-easing),
+    border-color var(--neu-duration) var(--neu-easing),
+    background-color var(--neu-duration) var(--neu-easing),
+    color var(--neu-duration) var(--neu-easing),
+    transform 90ms ease-out;
+}
+
+.bb-garden-card-action:hover {
+  border-color: color-mix(in srgb, var(--line-strong) 72%, transparent);
+  background-color: color-mix(in srgb, var(--paper-surface) 86%, var(--paper-strong));
+  color: var(--ink-heading);
+  box-shadow: var(--neu-hover-shadow);
+}
+
+.bb-garden-card-action:active {
+  box-shadow: var(--neu-inset-shadow);
+  transform: translateY(1px);
+}
+
 /* External-agent runs share one proportional system, built on the golden ratio
    so a card holds a lot of detail without feeling crowded.
 
@@ -989,6 +1021,68 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
     0 5px 12px color-mix(in srgb, var(--ink) 14%, transparent),
     inset 0 1px 0 color-mix(in srgb, white 88%, transparent),
     inset 0 -1px 0 color-mix(in srgb, var(--line) 58%, transparent) !important;
+}
+
+/* The artifact dock. An artifact opens as a panel down the right-hand edge
+   instead of as a modal in the middle of the app: the chat that produced it
+   stays readable — and stays usable — beside the thing it made, which is the
+   whole reason a document and its conversation belong on screen together.
+   The shell gives up the width rather than being covered, so nothing is
+   hidden behind the panel; the viewer sets the width it needs on the root
+   while it is open, and the fallback below is what the panel is worth before
+   that lands. Narrow viewports have no width to share, so the dock covers the
+   app there instead and carries its own scrim. */
+:root {
+  --bb-artifact-dock-width: clamp(24rem, 44vw, 50rem);
+}
+
+@media (min-width: 1024px) {
+  html[data-artifact-dock="open"] body {
+    padding-right: var(--bb-artifact-dock-width);
+  }
+
+  /* A bottom dock is positioned against the viewport, so page padding cannot
+     reach it: it gives up its own right edge instead. */
+  html[data-artifact-dock="open"] [data-terminal-dock] {
+    right: var(--bb-artifact-dock-width);
+  }
+}
+
+.bb-artifact-dock {
+  border-left-color: color-mix(in srgb, var(--line-strong) 82%, var(--paper-raised));
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--paper-raised) 96%, white), var(--paper-surface));
+  color: var(--ink);
+  box-shadow:
+    -20px 0 48px color-mix(in srgb, var(--ink) 18%, transparent),
+    inset 1px 0 0 color-mix(in srgb, white 80%, transparent);
+}
+
+html[data-theme="dark"] .bb-artifact-dock {
+  box-shadow:
+    -20px 0 48px rgb(0 0 0 / 50%),
+    inset 1px 0 0 rgb(255 255 255 / 5%);
+}
+
+/* The desktop window's drag strip and native caption buttons live along the
+   top edge; the dock starts below them so it never swallows the frame. */
+html[data-breadboard-desktop="true"] .bb-artifact-dock {
+  top: var(--breadboard-titlebar-height);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .bb-artifact-dock {
+    animation: bb-artifact-dock-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+@keyframes bb-artifact-dock-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
 }
 
 h1,
@@ -1384,38 +1478,6 @@ b {
   .vimax-shot-drift {
     animation-name: none;
     transform: var(--vimax-drift-from, none);
-  }
-}
-
-/* Breadboard loading mark: a charge slides along one strip of holes. The
-   translation is in SVG user units (48 of them, first hole to last), and it
-   fades at both ends so the charge does not snap back to the start. */
-@keyframes bb-loader-charge {
-  0% {
-    transform: translateX(0);
-    opacity: 0;
-  }
-  18%,
-  82% {
-    opacity: 1;
-  }
-  100% {
-    transform: translateX(48px);
-    opacity: 0;
-  }
-}
-
-.bb-loader-charge {
-  opacity: 0;
-  animation: bb-loader-charge 1.6s ease-in-out infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  /* Nothing moves, so the mark holds a half-travelled charge instead. */
-  .bb-loader-charge {
-    animation: none;
-    opacity: 1;
-    transform: translateX(24px);
   }
 }
 

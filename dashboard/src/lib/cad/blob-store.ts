@@ -42,10 +42,25 @@ export const CAD_FILE_DESCRIPTORS: Record<
     label: "3MF (for slicing)",
     binary: true,
   },
+  sldprt: {
+    filename: "model.SLDPRT",
+    mimeType: "application/octet-stream",
+    label: "SLDPRT (native SolidWorks part)",
+    binary: true,
+  },
   source: {
     filename: "model.py",
     mimeType: "text/x-python; charset=utf-8",
     label: "CadQuery source",
+    binary: false,
+  },
+  // A SolidWorks build has no Python program; its design is the ordered
+  // operation list, which belongs in its own slot rather than in a file called
+  // model.py that contains JSON.
+  operations: {
+    filename: "operations.json",
+    mimeType: "application/json; charset=utf-8",
+    label: "SolidWorks operations",
     binary: false,
   },
   spec: {

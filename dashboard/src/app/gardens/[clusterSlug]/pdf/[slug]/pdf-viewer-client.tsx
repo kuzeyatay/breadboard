@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import FastReadReader from "@/app/components/fastread-reader";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { startNavigationProgress } from "@/app/components/navigation-progress";
+import PdfToolsPanel, { type PendingStamp } from "@/app/components/pdf-tools-panel";
+import { stampImage } from "@/lib/pdf-tools";
 import {
   fetchFastReadNote,
   pdfTextToMarkdown,
@@ -303,6 +305,9 @@ export default function PdfViewerClient({
   const [savingTitle, setSavingTitle] = useState(false);
   const [fastReadNote, setFastReadNote] = useState<FastReadNote | null>(null);
   const [fastReadLoading, setFastReadLoading] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [pendingStamp, setPendingStamp] = useState<PendingStamp | null>(null);
+  const [toolRunning, setToolRunning] = useState(false);
 
   const pdfUrl = useMemo(() => {
     if (sourceUrl) return sourceUrl;
@@ -541,6 +546,108 @@ export default function PdfViewerClient({
   useEffect(() => {
     serverUndoRef.current = serverUndo;
   }, [serverUndo]);
+
+  const refreshHistoryCount = useCallback(async () => {
+    if (!historyUrl) return;
+    const response = await fetch(historyUrl).catch(() => null);
+    if (!response?.ok) return;
+    const body = await response.json().catch(() => ({ count: 0 }));
+    setServerHistoryCount(typeof body.count === "number" ? body.count : 0);
+  }, [historyUrl]);
+
+  // The bytes of the document as it stands, pdf.js annotation edits included, so
+  // a tool never operates on a stale copy of the file.
+  const currentPdfBytes = useCallback(async (): Promise<Uint8Array> => {
+    const pdfDocument = pdfDocumentRef.current;
+    if (!pdfDocument) throw new Error("The PDF is still opening.");
+    return pdfDocument.saveDocument();
+  }, []);
+
+  // A tool result becomes the document: it is written back to the server (the
+  // same path an annotation edit takes, so Undo still reaches it) and the viewer
+  // reopens on the new bytes. A read-only PDF keeps the result in this tab only.
+  const applyToolBytes = useCallback(
+    async (bytes: Uint8Array) => {
+      setError("");
+      if (!readOnly) {
+        const response = await fetch(pdfUrl, {
+          method: "PUT",
+          headers: { "Content-Type": "application/pdf" },
+          body: bytesToArrayBuffer(bytes),
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(
+            typeof body.error === "string" ? body.error : "Could not save the result.",
+          );
+        }
+        setLastSavedAt(
+          new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        );
+        await refreshHistoryCount();
+      }
+      await reloadFromBytes(bytes);
+    },
+    [pdfUrl, readOnly, refreshHistoryCount, reloadFromBytes],
+  );
+
+  const downloadToolBytes = useCallback(
+    (bytes: Uint8Array, suffix: string) => {
+      downloadBytes(bytes, editedFileName.replace(/(\.pdf)?$/i, `-${suffix}.pdf`));
+    },
+    [editedFileName],
+  );
+
+  // Click-to-place: the reader picks the spot on the page they can see, and the
+  // stamp is positioned in fractions of that page so pdf-tools can map it back
+  // through any /Rotate the page carries.
+  const placeStampAtClick = useCallback(
+    async (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!pendingStamp || toolRunning) return;
+      const target = event.target as HTMLElement | null;
+      const pageElement = target?.closest?.(".page") as HTMLElement | null;
+      if (!pageElement) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const pageIndex = Number(pageElement.dataset.pageNumber) - 1;
+      if (!Number.isInteger(pageIndex) || pageIndex < 0) return;
+      const rect = (pageElement.querySelector("canvas") ?? pageElement).getBoundingClientRect();
+      const stampWidth = pendingStamp.relWidth * rect.width;
+      const stampHeight = stampWidth / pendingStamp.aspect;
+      const clamp = (value: number, span: number) =>
+        Math.min(Math.max(value, 0), Math.max(0, 1 - span));
+
+      setToolRunning(true);
+      setPendingStamp(null);
+      try {
+        const stamped = await stampImage(await currentPdfBytes(), pendingStamp.image, {
+          pageIndex,
+          relX: clamp(
+            (event.clientX - rect.left - stampWidth / 2) / rect.width,
+            stampWidth / rect.width,
+          ),
+          relY: clamp(
+            (event.clientY - rect.top - stampHeight / 2) / rect.height,
+            stampHeight / rect.height,
+          ),
+          relWidth: pendingStamp.relWidth,
+          opacity: pendingStamp.opacity,
+        });
+        await applyToolBytes(stamped);
+      } catch (stampError) {
+        setError(
+          stampError instanceof Error
+            ? stampError.message
+            : "Could not place that signature.",
+        );
+      } finally {
+        setToolRunning(false);
+      }
+    },
+    [applyToolBytes, currentPdfBytes, pendingStamp, toolRunning],
+  );
 
   const saveStatusText = useMemo(() => {
     if (saveState === "saving") return "Saving changes";
@@ -1266,6 +1373,39 @@ export default function PdfViewerClient({
           </button>
           <button
             type="button"
+            onClick={() => {
+              setToolsOpen((open) => !open);
+              setPendingStamp(null);
+            }}
+            disabled={loading}
+            title="Watermark, sign, number, rearrange or protect this PDF"
+            className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+              toolsOpen
+                ? "border-gray-600 bg-gray-800 text-white"
+                : "border-gray-700 bg-gray-900 text-gray-300 hover:border-gray-500 hover:text-white"
+            }`}
+            aria-pressed={toolsOpen}
+            aria-expanded={toolsOpen}
+            aria-controls="pdf-tools-panel"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.336l-3.276 3.277a3.004 3.004 0 0 1-2.25-2.25l3.276-3.276a4.5 4.5 0 0 0-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437 1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008Z"
+              />
+            </svg>
+            Tools
+          </button>
+          <button
+            type="button"
             onClick={() => void openFastRead()}
             disabled={loading || fastReadLoading}
             title="Speed-read this PDF one word at a time"
@@ -1482,11 +1622,58 @@ export default function PdfViewerClient({
           <div
             id="viewerContainer"
             ref={containerRef}
-            className="absolute inset-0 overflow-auto bg-gray-900 [--page-border:1px_solid_#c7d8cc] [--page-margin:12px_auto_4px] [--pdfViewer-padding-bottom:24px]"
+            onClickCapture={placeStampAtClick}
+            className={`absolute inset-0 overflow-auto bg-gray-900 [--page-border:1px_solid_#c7d8cc] [--page-margin:12px_auto_4px] [--pdfViewer-padding-bottom:24px] ${
+              pendingStamp ? "cursor-crosshair" : ""
+            }`}
           >
             <div ref={viewerRef} className="pdfViewer" />
           </div>
+          {(pendingStamp || toolRunning) && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center">
+              <span className="pointer-events-auto flex items-center gap-2 rounded-full border border-gray-700 bg-gray-950/95 px-4 py-2 text-xs text-gray-200 shadow-lg">
+                {toolRunning ? (
+                  <>
+                    <Spinner className="h-3.5 w-3.5" />
+                    Applying to the PDF
+                  </>
+                ) : (
+                  <>
+                    Click the page where the signature should go
+                    <button
+                      type="button"
+                      onClick={() => setPendingStamp(null)}
+                      className="rounded border border-gray-700 px-2 py-0.5 text-[11px] text-gray-400 transition-colors hover:border-gray-500 hover:text-white"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                )}
+              </span>
+            </div>
+          )}
         </div>
+
+        {toolsOpen && (
+          <div id="pdf-tools-panel" className="flex min-h-0">
+            <PdfToolsPanel
+              pageCount={pageCount}
+              readOnly={readOnly}
+              fileName={editedFileName}
+              getBytes={currentPdfBytes}
+              applyBytes={applyToolBytes}
+              downloadBytes={downloadToolBytes}
+              startPlacement={setPendingStamp}
+              placementArmed={Boolean(pendingStamp)}
+              onCancelPlacement={() => setPendingStamp(null)}
+              onError={setError}
+              onClose={() => {
+                setToolsOpen(false);
+                setPendingStamp(null);
+              }}
+            />
+          </div>
+        )}
       </section>
 
       {fastReadNote && (

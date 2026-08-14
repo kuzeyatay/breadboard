@@ -1,5 +1,6 @@
 import { BrowserWindow, app } from "electron";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   hardenWindow,
   isNavigationAllowed,
@@ -11,6 +12,7 @@ import type { BreadboardWindowTheme } from "./window-options";
 export interface WindowManagerOptions {
   allowed: AllowedOrigins;
   startupHtmlPath: string;
+  recoveryHtmlPath?: string;
   preloadPath: string;
   iconPath?: string;
   minimumStartupVisibleMs?: number;
@@ -137,6 +139,8 @@ interface LocalPageRecoveryState {
   url: string;
   attempt: number;
   timer: ReturnType<typeof setTimeout> | null;
+  replacement: BrowserWindow | null;
+  paintToken: number;
 }
 
 export function isFullScreenShortcut(input: FullScreenShortcutInput): boolean {
@@ -261,6 +265,34 @@ export class WindowManager {
     window.setOpacity(1);
   }
 
+  private recoveryHtmlPath(): string {
+    return (
+      this.options.recoveryHtmlPath ??
+      path.join(path.dirname(this.options.startupHtmlPath), "recovery.html")
+    );
+  }
+
+  /**
+   * File pages are allowed so Electron can show its own startup and recovery
+   * scenes. Neither is an application page worth returning to, however. Keep
+   * them out of the remembered dashboard history while retaining file-backed
+   * pages used by integration fixtures and packaged local surfaces.
+   */
+  private isRecoverableLocalPage(url: string): boolean {
+    if (!isNavigationAllowed(this.options.allowed, url)) return false;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "file:") return true;
+      const excludedPaths = [
+        this.options.startupHtmlPath,
+        this.recoveryHtmlPath(),
+      ].map((file) => pathToFileURL(file).pathname);
+      return !excludedPaths.includes(parsed.pathname);
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * A development Next.js server deliberately restarts near its heap limit.
    * If that lands during a renderer reload, Chromium leaves the native window
@@ -282,11 +314,13 @@ export class WindowManager {
       url: initialUrl,
       attempt: 0,
       timer: null,
+      replacement: null,
+      paintToken: 0,
     };
     this.localPageRecovery.set(window, state);
 
     const rememberAllowedUrl = (url: string) => {
-      if (isNavigationAllowed(this.options.allowed, url)) state.url = url;
+      if (this.isRecoverableLocalPage(url)) state.url = url;
     };
     window.webContents.on("did-navigate", (_event, url) => {
       rememberAllowedUrl(url);
@@ -298,7 +332,7 @@ export class WindowManager {
       const url = window.webContents.getURL();
       // Chromium may finish loading its internal error document after emitting
       // did-fail-load. Only a real Breadboard URL proves recovery succeeded.
-      if (!isNavigationAllowed(this.options.allowed, url)) return;
+      if (!this.isRecoverableLocalPage(url)) return;
       rememberAllowedUrl(url);
       state.attempt = 0;
       if (state.timer !== null) clearTimeout(state.timer);
@@ -319,6 +353,10 @@ export class WindowManager {
     window.once("closed", () => {
       if (state.timer !== null) clearTimeout(state.timer);
       state.timer = null;
+      state.paintToken += 1;
+      const replacement = state.replacement;
+      state.replacement = null;
+      if (replacement && !replacement.isDestroyed()) replacement.destroy();
     });
   }
 
@@ -326,6 +364,10 @@ export class WindowManager {
     window: BrowserWindow,
     state: LocalPageRecoveryState,
   ): void {
+    if (window === this.mainWindow) {
+      this.beginMainWindowRecovery(window, state);
+      return;
+    }
     if (window.isDestroyed() || state.timer !== null) return;
     const delay = localPageRecoveryDelayMs(state.attempt);
     state.attempt += 1;
@@ -338,13 +380,130 @@ export class WindowManager {
     }, delay);
   }
 
-  createMainWindow(): BrowserWindow {
-    if (this.mainWindow && !this.mainWindow.isDestroyed()) return this.mainWindow;
-    const window = this.buildWindow();
-    // `ready-to-show` can be missed when Chromium's first hidden paint stalls
-    // (seen on Windows after a dev rebuild). Never leave a healthy app running
-    // indefinitely without a visible native window.
-    this.revealWhenReady(window);
+  /**
+   * Keep a useful local scene on screen while a replacement dashboard retries
+   * and paints offscreen. The old behavior retried in the visible renderer;
+   * during a Next.js restart that exposed nothing but BrowserWindow's native
+   * background color, and a successful retry still had to hydrate in public.
+   */
+  private beginMainWindowRecovery(
+    failedWindow: BrowserWindow,
+    state: LocalPageRecoveryState,
+  ): void {
+    if (failedWindow.isDestroyed() || state.replacement) return;
+
+    if (state.timer !== null) clearTimeout(state.timer);
+    state.timer = null;
+    state.paintToken += 1;
+
+    const replacement = this.buildWindow();
+    state.replacement = replacement;
+    this.parkOffscreen(replacement);
+
+    const retry = () => this.scheduleMainWindowReplacementLoad(state);
+    replacement.webContents.on("did-fail-load", (
+      _event,
+      errorCode,
+      _description,
+      _failedUrl,
+      isMainFrame,
+    ) => {
+      // -3 is an intentional aborted navigation, normally a redirect.
+      if (!isMainFrame || errorCode === -3) return;
+      state.paintToken += 1;
+      retry();
+    });
+    replacement.webContents.on("render-process-gone", () => {
+      state.paintToken += 1;
+      retry();
+    });
+    replacement.webContents.on("did-finish-load", () => {
+      const loadedUrl = replacement.webContents.getURL();
+      if (!this.isRecoverableLocalPage(loadedUrl)) return;
+      state.url = loadedUrl;
+      state.attempt = 0;
+      if (state.timer !== null) clearTimeout(state.timer);
+      state.timer = null;
+      const paintToken = ++state.paintToken;
+      void this.waitForFirstPaint(replacement).then(() => {
+        if (
+          state.replacement !== replacement ||
+          state.paintToken !== paintToken ||
+          replacement.isDestroyed() ||
+          !this.isRecoverableLocalPage(replacement.webContents.getURL())
+        ) {
+          return;
+        }
+        this.swapToRecoveredMainWindow(failedWindow, replacement, state);
+      });
+    });
+
+    // Replacing a crashed renderer with a file page gives immediate, reliable
+    // feedback while the network-backed dashboard is unavailable.
+    void failedWindow
+      .loadFile(this.recoveryHtmlPath(), {
+        query: { theme: this.currentTheme },
+      })
+      .catch(() => undefined);
+    retry();
+  }
+
+  private scheduleMainWindowReplacementLoad(
+    state: LocalPageRecoveryState,
+  ): void {
+    const replacement = state.replacement;
+    if (!replacement || replacement.isDestroyed() || state.timer !== null) return;
+    const delay = localPageRecoveryDelayMs(state.attempt);
+    state.attempt += 1;
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      if (state.replacement !== replacement || replacement.isDestroyed()) return;
+      void replacement.loadURL(state.url).catch(() => {
+        this.scheduleMainWindowReplacementLoad(state);
+      });
+    }, delay);
+  }
+
+  private swapToRecoveredMainWindow(
+    failedWindow: BrowserWindow,
+    replacement: BrowserWindow,
+    state: LocalPageRecoveryState,
+  ): void {
+    if (
+      this.mainWindow !== failedWindow ||
+      failedWindow.isDestroyed() ||
+      replacement.isDestroyed() ||
+      state.replacement !== replacement
+    ) {
+      if (!replacement.isDestroyed()) replacement.destroy();
+      state.replacement = null;
+      return;
+    }
+
+    if (failedWindow.isFullScreen()) replacement.setFullScreen(true);
+    else if (failedWindow.isMaximized()) replacement.maximize();
+    else replacement.setBounds(failedWindow.getBounds());
+
+    state.replacement = null;
+    state.paintToken += 1;
+    if (state.timer !== null) clearTimeout(state.timer);
+    state.timer = null;
+
+    // These listeners belong only to the offscreen retry phase. The adopted
+    // window gets a fresh recovery state below; leaving both sets installed
+    // would make every later navigation run an obsolete paint probe as well.
+    replacement.webContents.removeAllListeners("did-fail-load");
+    replacement.webContents.removeAllListeners("render-process-gone");
+    replacement.webContents.removeAllListeners("did-finish-load");
+    this.unparkWindow(replacement);
+    this.mainWindow = replacement;
+    this.installLocalPageRecovery(replacement, state.url);
+    this.installMainWindowLifetime(replacement);
+    replacement.show();
+    failedWindow.destroy();
+  }
+
+  private installMainWindowLifetime(window: BrowserWindow): void {
     window.on("closed", () => {
       // Only if it is still the main window: a dashboard swap retires this one
       // deliberately, and must not blank out its replacement.
@@ -353,6 +512,16 @@ export class WindowManager {
       // visible one, since `window-all-closed` would never fire.
       this.discardDashboardPreload();
     });
+  }
+
+  createMainWindow(): BrowserWindow {
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) return this.mainWindow;
+    const window = this.buildWindow();
+    // `ready-to-show` can be missed when Chromium's first hidden paint stalls
+    // (seen on Windows after a dev rebuild). Never leave a healthy app running
+    // indefinitely without a visible native window.
+    this.revealWhenReady(window);
+    this.installMainWindowLifetime(window);
     this.mainWindow = window;
     return window;
   }
@@ -504,10 +673,7 @@ export class WindowManager {
     }
     this.unparkWindow(dashboard);
     this.mainWindow = dashboard;
-    dashboard.on("closed", () => {
-      if (this.mainWindow === dashboard) this.mainWindow = null;
-      this.discardDashboardPreload();
-    });
+    this.installMainWindowLifetime(dashboard);
     dashboard.show();
     if (startup && !startup.isDestroyed() && startup !== dashboard) startup.destroy();
     return true;

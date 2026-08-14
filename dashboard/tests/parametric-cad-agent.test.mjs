@@ -15,6 +15,7 @@ const safety = await import("../src/lib/cad/safety.ts");
 const errors = await import("../src/lib/cad/errors.ts");
 const tools = await import("../src/lib/cad/tools.ts");
 const enclosures = await import("../src/lib/cad/board-enclosures.ts");
+const designService = await import("../src/lib/cad/design-service.ts");
 const { artifactRenderer, availableArtifactRenderers } = await import(
   "../src/lib/hermes/artifact-renderers.ts"
 );
@@ -23,6 +24,101 @@ const { parseExternalAgentRun, externalAgentMessageFields, EXTERNAL_AGENT_RUN_KI
 const { runtimeAgentByToken, findCapabilityConflict } = await import(
   "../src/lib/hermes/capability-combinations.ts"
 );
+
+test("editable CAD parameters must actually drive geometry", () => {
+  const issues = tools.unusedCadParameterIssues(
+    `# eye_relief is adjustable\ndef build_model(params):\n    width = params["width"]\n    return width`,
+    {
+      parameters: [
+        { id: "width", label: "Width", value: 20, editable: true },
+        { id: "eye_relief", label: "Eye relief", value: 18, editable: true },
+        { id: "note_only", label: "Internal note", value: 1, editable: false },
+      ],
+    },
+  );
+  assert.deepEqual(issues.map((issue) => issue.feature), ["eye_relief"]);
+  assert.equal(issues[0].severity, "error");
+});
+
+test("an old valid revision cannot masquerade as this turn's CAD build", () => {
+  const project = { id: "cadp_revision_identity", current_revision: 4 };
+
+  assert.equal(
+    designService.isCurrentBuildFromThisTurn({}, project, 4),
+    false,
+    "a no-op model response must not reuse the existing current revision",
+  );
+  assert.equal(
+    designService.isCurrentBuildFromThisTurn(
+      {
+        lastBuild: {
+          projectId: project.id,
+          revision: 5,
+          status: "invalid",
+          issues: [{ code: "invalid_shape", severity: "error", message: "bad solid" }],
+        },
+      },
+      project,
+      4,
+    ),
+    false,
+    "a failed revision leaves current_revision on the older model and must fail the turn",
+  );
+  assert.equal(
+    designService.isCurrentBuildFromThisTurn(
+      {
+        lastBuild: {
+          projectId: project.id,
+          revision: 4,
+          status: "valid",
+          issues: [],
+        },
+      },
+      project,
+      4,
+    ),
+    false,
+    "even a valid stored revision is stale unless this request advanced it",
+  );
+  assert.equal(
+    designService.isCurrentBuildFromThisTurn(
+      {
+        lastBuild: {
+          projectId: "cadp_other_project",
+          revision: 5,
+          status: "valid",
+          issues: [],
+        },
+      },
+      { ...project, current_revision: 5 },
+      4,
+    ),
+    false,
+    "revision numbers are project-local",
+  );
+  assert.equal(
+    designService.isCurrentBuildFromThisTurn(
+      {
+        lastBuild: {
+          projectId: project.id,
+          revision: 5,
+          status: "valid-with-warnings",
+          issues: [{ code: "clearance", severity: "warning", message: "review clearance" }],
+        },
+      },
+      { ...project, current_revision: 5 },
+      4,
+    ),
+    true,
+  );
+
+  const manager = source("src/lib/cad/run-manager.ts");
+  const publicationGate = manager.indexOf("outcome.builtRevision !== manifest.revision");
+  const artifactFork = manager.indexOf("openCadArtifactContext({");
+  assert.ok(publicationGate > 0 && artifactFork > publicationGate);
+  assert.match(manager, /outcome\.builtRevision <= outcome\.startingRevision/);
+  assert.match(manager, /!manifest\.validation\.passed/);
+});
 
 // ---------------------------------------------------------------------------
 // Agent registration
@@ -766,7 +862,7 @@ test("the enclosure brief carries measured board figures, not invented ones", ()
   assert.doesNotMatch(unknown, /Board footprint:/);
 });
 
-test("physical CAD preserves product intent and gates the box fallback", () => {
+test("physical CAD preserves product intent and exposes no canned geometry fallback", () => {
   const arInput = {
     userBrief: "design AR glasses that fit onto my glasses",
     designTitle: "Clip-on AR display",
@@ -801,14 +897,8 @@ test("physical CAD preserves product intent and gates the box fallback", () => {
   assert.match(brief, /50 × 35 × 2 mm/);
   assert.doesNotMatch(brief, /Design a two-part enclosure/);
 
-  const fallback = enclosures.enclosureFallbackFromDesign({
-    ...arInput,
-    process: "fdm",
-    wallThickness: 2.4,
-    clearance: 0.3,
-    printerBed: { x: 220, y: 220, z: 250 },
-  });
-  assert.equal(fallback, null, "a board box must never stand in for an optical wearable");
+  assert.equal("enclosureFallbackFromDesign" in enclosures, false);
+  assert.equal("physicalFallbackFromDesign" in enclosures, false);
 });
 
 test("physical-design routing covers enclosures, mounts, wearables, mechanisms and freeform parts", () => {
@@ -988,6 +1078,8 @@ test("the hardware agent asks the CAD agent instead of growing its own generator
   assert.match(manager, /enclosure\.failed/);
   assert.match(manager, /cad\.manifest\.validation\.passed/);
   assert.match(manager, /physicalDesignCoverageIssues/);
+  assert.doesNotMatch(manager, /physicalFallbackFromDesign/);
+  assert.doesNotMatch(manager, /enclosureFallbackFromDesign/);
   assert.match(manager, /not published as a completed design/);
   assert.match(manager, /markPhysicalDesignIncomplete\(final\.design, enclosureNotice\)/);
   assert.match(manager, /rule: "PHYSICAL_DESIGN_INCOMPLETE"/);
@@ -1004,14 +1096,272 @@ test("the hardware agent asks the CAD agent instead of growing its own generator
 
 test("an interrupted final answer preserves only a valid built CAD revision", () => {
   const service = source("src/lib/cad/design-service.ts");
-  assert.match(service, /partialProject\.status === "valid"/);
-  assert.match(service, /partialProject\.status === "valid-with-warnings"/);
+  assert.match(
+    service,
+    /isCurrentBuildFromThisTurn\(toolContext, partialProject, startingRevision\)/,
+  );
+  assert.match(service, /build\.status === "valid"/);
+  assert.match(service, /build\.status === "valid-with-warnings"/);
+  assert.match(service, /build\.revision === project\.current_revision/);
   assert.match(service, /cad\.model\.response_incomplete/);
   assert.doesNotMatch(
     service,
     /if \(partialProject\?\.current_revision\) \{/,
     "an invalid or draft partial revision must not be treated as the deliverable",
   );
+});
+
+test("the CAD service never substitutes deterministic geometry for a failed model design", () => {
+  const service = source("src/lib/cad/design-service.ts");
+  const store = source("src/lib/cad/project-store.ts");
+  assert.doesNotMatch(service, /CadDesignFallback|runCadFallback|fromFallback/);
+  assert.doesNotMatch(service, /cad\.fallback\.(started|completed|resumed_project|adopted_project)/);
+  assert.doesNotMatch(service, /deterministic-template|deterministic fallback/);
+  assert.doesNotMatch(store, /replaceUnbuiltCadProjectSpec/);
+  assert.match(service, /reason: failureReason\(toolContext, \[\], message\)/);
+  assert.match(service, /The geometry passed kernel validation but did not satisfy the requested product/);
+});
+
+test("a model outage returns no CAD result instead of recovery geometry", async () => {
+  const { designCadPart } = await import("../src/lib/cad/design-service.ts");
+  const realFetch = globalThis.fetch;
+  const events = [];
+  try {
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ error: { message: "model unavailable" } }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      });
+    const result = await designCadPart({
+      userId: 1,
+      conversationId: 1,
+      clusterId: null,
+      brief: "Design AR glasses that clip onto ordinary eyeglasses.",
+      baseUrl: "http://127.0.0.1:9/v1",
+      model: "test-model",
+      reasoningEffort: "medium",
+      process: "fdm",
+      modelRequestTimeoutMs: 1_000,
+      emit: (type) => events.push(type),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal("manifest" in result, false);
+    assert.equal("projectId" in result, false);
+    assert.equal(events.some((type) => /fallback|template/i.test(type)), false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a saved CAD plan is built in a forced, bounded source phase", async () => {
+  const { runCadProjectBuildPhase } = await import("../src/lib/cad/model-client.ts");
+  const designSpec = {
+    schemaVersion: 1,
+    projectId: "cadp_recovery_test",
+    name: "Recovery bracket",
+    description: "A small recovery-test bracket.",
+    units: "mm",
+    manufacturingProcess: "fdm",
+    parameters: [
+      { id: "width", label: "Width", value: 20, editable: true, source: "user" },
+    ],
+    components: [{ id: "body", name: "Body", quantity: 1, bodyRole: "primary" }],
+    constraints: [],
+    assumptions: [],
+    exportSettings: {
+      stlLinearTolerance: 0.1,
+      stlAngularTolerance: 0.2,
+      generateStep: true,
+      generateStl: true,
+      generateGlb: true,
+      generate3mf: false,
+    },
+  };
+  const project = {
+    id: designSpec.projectId,
+    user_id: 1,
+    conversation_id: 1,
+    cluster_id: null,
+    artifact_id: null,
+    name: designSpec.name,
+    units: "mm",
+    process: "fdm",
+    status: "draft",
+    current_revision: 0,
+    latest_revision: 0,
+    design_spec_json: JSON.stringify(designSpec),
+    created_at: "2026-08-12T00:00:00.000Z",
+    updated_at: "2026-08-12T00:00:00.000Z",
+  };
+  const context = {
+    userId: 1,
+    conversationId: 1,
+    clusterId: null,
+    model: "test-model",
+    instruction: "build it",
+    safety: safety.assessCadSafety("a bracket"),
+    defaults: defaults.cadDefaults("fdm"),
+    attemptsRemaining: 3,
+    projectId: project.id,
+  };
+  const realFetch = globalThis.fetch;
+  const requestBodies = [];
+  const toolArguments = [];
+  try {
+    globalThis.fetch = async (_url, init) => {
+      requestBodies.push(JSON.parse(String(init.body)));
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                tool_calls: [
+                  {
+                    id: "call_build",
+                    type: "function",
+                    function: {
+                      name: "cad_generate_model",
+                      arguments: JSON.stringify({
+                        projectId: "cadp_wrong_project",
+                        source:
+                          'import cadquery as cq\nDEFAULT_PARAMS={"width":20}\ndef build_model(params):\n p={**DEFAULT_PARAMS,**params}\n return {"body":cq.Workplane("XY").box(p["width"],10,3)}',
+                        parameters: { width: 999, invented: 1 },
+                      }),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const result = await runCadProjectBuildPhase({
+      baseUrl: "http://chatmock.local/v1",
+      model: "test-model",
+      reasoningEffort: "xhigh",
+      project,
+      toolContext: context,
+      runTool: async (_name, args) => {
+        toolArguments.push(args);
+        return { ok: true, validationPassed: true, revision: 1, status: "valid" };
+      },
+    });
+    assert.equal(result.stoppedBecause, "answered");
+    assert.equal(requestBodies.length, 1);
+    assert.equal(requestBodies[0].reasoning_effort, "medium");
+    assert.deepEqual(requestBodies[0].tools.map((entry) => entry.function.name), [
+      "cad_generate_model",
+    ]);
+    assert.deepEqual(requestBodies[0].tool_choice, {
+      type: "function",
+      function: { name: "cad_generate_model" },
+    });
+    assert.equal(toolArguments[0].projectId, project.id);
+    assert.deepEqual(toolArguments[0].parameters, { width: 20 });
+    assert.equal(toolArguments[0].timeoutMs, 120_000);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("the CAD source phase repairs one failed build instead of dropping the saved plan", async () => {
+  const { runCadProjectBuildPhase } = await import("../src/lib/cad/model-client.ts");
+  const spec = {
+    schemaVersion: 1,
+    projectId: "cadp_repair_test",
+    name: "Repair test",
+    description: "Repair test",
+    units: "mm",
+    manufacturingProcess: "fdm",
+    parameters: [],
+    components: [{ id: "body", name: "Body", quantity: 1, bodyRole: "primary" }],
+    constraints: [],
+    assumptions: [],
+    exportSettings: {
+      stlLinearTolerance: 0.1,
+      stlAngularTolerance: 0.2,
+      generateStep: true,
+      generateStl: true,
+      generateGlb: true,
+      generate3mf: false,
+    },
+  };
+  const project = {
+    id: spec.projectId,
+    user_id: 1,
+    conversation_id: 1,
+    cluster_id: null,
+    artifact_id: null,
+    name: spec.name,
+    units: "mm",
+    process: "fdm",
+    status: "draft",
+    current_revision: 0,
+    latest_revision: 0,
+    design_spec_json: JSON.stringify(spec),
+    created_at: "",
+    updated_at: "",
+  };
+  const context = {
+    userId: 1,
+    conversationId: 1,
+    clusterId: null,
+    model: "test-model",
+    instruction: "build it",
+    safety: safety.assessCadSafety("a bracket"),
+    defaults: defaults.cadDefaults("fdm"),
+    attemptsRemaining: 3,
+    projectId: project.id,
+  };
+  const realFetch = globalThis.fetch;
+  let completions = 0;
+  let builds = 0;
+  try {
+    globalThis.fetch = async () => {
+      completions += 1;
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                tool_calls: [
+                  {
+                    id: `call_${completions}`,
+                    function: {
+                      name: "cad_generate_model",
+                      arguments: JSON.stringify({ source: `source_${completions}`, parameters: {} }),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const result = await runCadProjectBuildPhase({
+      baseUrl: "http://chatmock.local/v1",
+      model: "test-model",
+      project,
+      toolContext: context,
+      runTool: async () => {
+        builds += 1;
+        return builds === 1
+          ? { ok: false, error: "invalid_shape", message: "Body is not watertight." }
+          : { ok: true, validationPassed: true, revision: 2, status: "valid" };
+      },
+    });
+    assert.equal(completions, 2);
+    assert.equal(builds, 2);
+    assert.equal(result.stoppedBecause, "answered");
+    assert.equal(result.toolCalls.length, 2);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1239,4 +1589,305 @@ test("the local service is supervised in dev and on the desktop", () => {
   assert.equal(packageJson.scripts["dev:cad"], "node scripts/start-cad.mjs");
   assert.equal(packageJson.scripts["setup:cad"], "node scripts/setup-cad.mjs");
   assert.equal(packageJson.scripts["test:cad"], "node scripts/test-cad.mjs");
+});
+
+// ---------------------------------------------------------------------------
+// What attaches where, and who wrote the geometry
+// ---------------------------------------------------------------------------
+
+const AR_INPUT = {
+  userBrief: "design AR glasses that clip onto my glasses",
+  designTitle: "Universal Clip-On AR Glasses",
+  controllerDefinitionId: "xiao-esp32c3",
+  controllerName: "Seeed Studio XIAO ESP32C3",
+  peripherals: [
+    {
+      name: "0.49-inch micro-OLED",
+      definitionId: "micro-oled-display",
+      mechanical: { length: 19, width: 15, height: 6 },
+    },
+    {
+      name: "Waveguide combiner",
+      definitionId: "waveguide-combiner",
+      mechanical: { length: 50, width: 35, height: 2 },
+    },
+  ],
+  prototypeType: "pcb",
+};
+
+test("a multi-body design that never says what attaches where is not accepted", () => {
+  const designSpec = {
+    constraints: [],
+    components: [
+      { id: "temple_chassis", name: "Temple chassis", quantity: 1, bodyRole: "primary" },
+        { id: "display_mount", name: "Display mount", quantity: 1, bodyRole: "other" },
+        { id: "combiner_mount", name: "Combiner mount", quantity: 1, bodyRole: "other" },
+      ...AR_INPUT.peripherals.map((part) => ({
+        id: part.definitionId,
+        name: part.name,
+        quantity: 1,
+        bodyRole: "reference",
+      })),
+    ],
+    assembly: {
+      overview: "Attach the display mount to the chassis, then attach the combiner mount.",
+      hardware: [],
+      steps: [
+        {
+          order: 1,
+          summary: "Seat the display and attach its mount.",
+          parts: ["temple_chassis", "display_mount", "micro-oled-display"],
+          detail: "Seat the display reference in the display mount, then attach the mount to the chassis.",
+        },
+        {
+          order: 2,
+          summary: "Seat and align the combiner.",
+          parts: ["display_mount", "combiner_mount", "waveguide-combiner"],
+          detail: "Seat the waveguide reference in the combiner mount, then align it with the display mount.",
+        },
+      ],
+    },
+  };
+  const manifest = {
+    designSpec,
+    source: "temple_chassis display_mount combiner_mount",
+    measurements: { boundingBox: { x: 122, y: 66, z: 44 } },
+  };
+  assert.deepEqual(
+    enclosures
+      .physicalDesignCoverageIssues(AR_INPUT, manifest)
+      .filter((issue) => issue.code.startsWith("ASSEMBLY_")),
+    [],
+    "complete, connected instructions that use real ids should pass",
+  );
+
+  const oneStepAssembly = {
+    ...manifest,
+    designSpec: {
+      ...designSpec,
+      assembly: {
+        overview: "Install both bought parts while joining the three printed bodies.",
+        hardware: [],
+        steps: [
+          {
+            order: 1,
+            summary: "Join and align the complete optical assembly.",
+            parts: designSpec.components.map((component) => component.id),
+            detail: "Seat each reference envelope and join both carriers to the chassis.",
+          },
+        ],
+      },
+    },
+  };
+  assert.deepEqual(
+    enclosures
+      .physicalDesignCoverageIssues(AR_INPUT, oneStepAssembly)
+      .filter((issue) => issue.code.startsWith("ASSEMBLY_")),
+    [],
+    "one real step may legitimately join more than two parts",
+  );
+
+  const undocumented = {
+    ...manifest,
+    designSpec: { ...designSpec, assembly: undefined },
+  };
+  const issue = enclosures
+    .physicalDesignCoverageIssues(AR_INPUT, undocumented)
+    .find((candidate) => candidate.code === "ASSEMBLY_NOT_DOCUMENTED");
+  assert.ok(issue, "multiple printed bodies and no assembly is not a finished design");
+  assert.equal(issue.severity, "error");
+  assert.match(issue.repairHint, /cad_generate_model/);
+});
+
+test("assembly instructions must use real ids, cover every item and join every subassembly", () => {
+  const input = {
+    userBrief: "design a wearable instrument with a removable sensor arm",
+    designTitle: "Wearable instrument",
+    controllerDefinitionId: "xiao-esp32c3",
+    controllerName: "Seeed Studio XIAO ESP32C3",
+    peripherals: [],
+    prototypeType: "pcb",
+  };
+  const manifest = {
+    designSpec: {
+      constraints: [],
+      components: [
+        { id: "chassis", name: "Chassis", quantity: 1, bodyRole: "primary" },
+        { id: "pod", name: "Electronics pod", quantity: 1, bodyRole: "other" },
+        { id: "sensor_arm", name: "Sensor arm", quantity: 1, bodyRole: "other" },
+      ],
+      assembly: {
+        overview: "Two documented subassemblies that are not actually joined.",
+        hardware: [
+          { id: "m3_screw", name: "M3 x 12 screw", quantity: 2 },
+          { id: "unused_pad", name: "1 mm silicone pad", quantity: 1 },
+        ],
+        steps: [
+          {
+            order: 1,
+            summary: "Bolt the pod to the chassis.",
+            parts: ["chassis", "pod"],
+            hardware: ["m3_screw"],
+          },
+          {
+            order: 1,
+            summary: "Prepare the separate arm.",
+            parts: ["sensor_arm", "made_up_part"],
+            hardware: ["made_up_hardware"],
+          },
+        ],
+      },
+    },
+    source: "chassis pod sensor_arm",
+    measurements: { boundingBox: { x: 100, y: 50, z: 25 } },
+  };
+
+  const codes = new Set(
+    enclosures.physicalDesignCoverageIssues(input, manifest).map((issue) => issue.code),
+  );
+  assert.ok(codes.has("ASSEMBLY_UNKNOWN_PART_IDS"));
+  assert.ok(codes.has("ASSEMBLY_UNKNOWN_HARDWARE_IDS"));
+  assert.ok(codes.has("ASSEMBLY_DUPLICATE_ORDER"));
+  assert.ok(codes.has("ASSEMBLY_UNUSED_HARDWARE"));
+  assert.ok(codes.has("ASSEMBLY_GRAPH_DISCONNECTED"));
+
+  const withUnusedComponent = {
+    ...manifest,
+    designSpec: {
+      ...manifest.designSpec,
+      components: [
+        ...manifest.designSpec.components,
+        { id: "unused_cover", name: "Cover", quantity: 1, bodyRole: "lid" },
+      ],
+    },
+  };
+  assert.ok(
+    enclosures
+      .physicalDesignCoverageIssues(input, withUnusedComponent)
+      .some((issue) => issue.code === "ASSEMBLY_UNUSED_COMPONENTS"),
+  );
+});
+
+test("a valid solid that misses a required feature is repaired, not published", async () => {
+  const { runCadProjectBuildPhase } = await import("../src/lib/cad/model-client.ts");
+  const spec = {
+    schemaVersion: 1,
+    projectId: "cadp_acceptance_test",
+    name: "Acceptance test",
+    description: "Acceptance test",
+    units: "mm",
+    manufacturingProcess: "fdm",
+    parameters: [],
+    components: [{ id: "body", name: "Body", quantity: 1, bodyRole: "primary" }],
+    constraints: [],
+    assumptions: [],
+    exportSettings: {
+      stlLinearTolerance: 0.1,
+      stlAngularTolerance: 0.2,
+      generateStep: true,
+      generateStl: true,
+      generateGlb: true,
+      generate3mf: false,
+    },
+  };
+  const project = {
+    id: spec.projectId,
+    user_id: 1,
+    conversation_id: 1,
+    cluster_id: null,
+    artifact_id: null,
+    name: spec.name,
+    units: "mm",
+    process: "fdm",
+    status: "draft",
+    current_revision: 0,
+    latest_revision: 0,
+    design_spec_json: JSON.stringify(spec),
+    created_at: "",
+    updated_at: "",
+  };
+  const context = {
+    userId: 1,
+    conversationId: 1,
+    clusterId: null,
+    model: "test-model",
+    instruction: "build it",
+    safety: safety.assessCadSafety("a bracket"),
+    defaults: defaults.cadDefaults("fdm"),
+    attemptsRemaining: 3,
+    projectId: project.id,
+  };
+  const realFetch = globalThis.fetch;
+  const prompts = [];
+  let completions = 0;
+  let checks = 0;
+  try {
+    globalThis.fetch = async (_url, init) => {
+      completions += 1;
+      prompts.push(JSON.parse(init.body).messages.at(-1).content);
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                tool_calls: [
+                  {
+                    id: `call_${completions}`,
+                    function: {
+                      name: "cad_generate_model",
+                      arguments: JSON.stringify({ source: `source_${completions}`, parameters: {} }),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const result = await runCadProjectBuildPhase({
+      baseUrl: "http://chatmock.local/v1",
+      model: "test-model",
+      project,
+      toolContext: context,
+      runTool: async () => ({ ok: true, validationPassed: true, revision: 1, status: "valid" }),
+      // Valid geometry, but the clamp the brief asked for is missing until the
+      // second attempt.
+      acceptance: () => {
+        checks += 1;
+        return checks === 1
+          ? [
+              {
+                code: "MISSING_REQUIRED_FEATURE",
+                severity: "error",
+                feature: "host_interface_retention",
+                message: "The geometry built, but it has no clamp.",
+                repairHint: 'Record a constraint with id "host_interface_retention".',
+              },
+            ]
+          : [];
+      },
+    });
+
+    assert.equal(completions, 2, "a missing feature must be sent back to the model");
+    assert.equal(result.stoppedBecause, "answered");
+    // The model is told exactly what is missing, not merely that something is.
+    assert.match(prompts[1], /host_interface_retention/);
+    assert.match(prompts[1], /it has no clamp/);
+    assert.match(prompts[1], /constraints/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("the physical hand-off gives the model bounded repair attempts and no template", () => {
+  const manager = source("src/lib/hardware/run-manager.ts");
+  assert.match(manager, /acceptance: \(manifest\) => physicalDesignCoverageIssues\(/);
+  assert.match(manager, /maxModelBuildSteps: 2/);
+  assert.doesNotMatch(manager, /physicalFallbackFromDesign|enclosureFallbackFromDesign/);
+
+  const service = source("src/lib/cad/design-service.ts");
+  assert.doesNotMatch(service, /geometryAuthor: "deterministic-template"/);
+  assert.match(service, /cad\.acceptance\.failed/);
 });

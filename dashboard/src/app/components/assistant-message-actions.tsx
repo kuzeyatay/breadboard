@@ -86,12 +86,22 @@ const actionClass =
  * transcript wraps each message in `MessageActionsSlot` and the row is
  * portalled to the end, so copy/speak/retry always sit below the artifacts.
  */
-const MessageActionsSlotContext = createContext<HTMLElement | null>(null);
+const MessageActionsSlotContext = createContext<{
+  slot: HTMLElement | null;
+  suppressActions: boolean;
+}>({ slot: null, suppressActions: false });
 
-export function MessageActionsSlot({ children }: { children: ReactNode }) {
+export function MessageActionsSlot({
+  children,
+  suppressActions = false,
+}: {
+  children: ReactNode;
+  /** Keep controls from escaping a visually hidden owner through the portal. */
+  suppressActions?: boolean;
+}) {
   const [slot, setSlot] = useState<HTMLElement | null>(null);
   return (
-    <MessageActionsSlotContext.Provider value={slot}>
+    <MessageActionsSlotContext.Provider value={{ slot, suppressActions }}>
       {children}
       {/* `contents` so an empty slot adds no gap to a flex message column. */}
       <div ref={setSlot} className="contents" />
@@ -115,7 +125,7 @@ export default function AssistantMessageActions({
   const copyTimerRef = useRef<number | null>(null);
   const speechAbortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
-  const slot = useContext(MessageActionsSlotContext);
+  const { slot, suppressActions } = useContext(MessageActionsSlotContext);
   const storageKey = useMemo(() => contentKey(content), [content]);
 
   useEffect(() => {
@@ -414,5 +424,6 @@ export default function AssistantMessageActions({
     </div>
   );
 
+  if (suppressActions) return null;
   return slot ? createPortal(actions, slot) : actions;
 }

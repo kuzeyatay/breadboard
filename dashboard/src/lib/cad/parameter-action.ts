@@ -144,6 +144,19 @@ export async function applyParameterUpdate(
       { retryable: outcome.failure?.retryable ?? true },
     );
   }
+  if (outcome.status !== "valid" && outcome.status !== "valid-with-warnings") {
+    const blocking = (outcome.issues ?? []).filter((issue) => issue.severity === "error");
+    throw new CadServiceError(
+      "cad_validation_failed",
+      blocking.length > 0
+        ? `Those parameter values produced invalid geometry: ${blocking
+            .slice(0, 3)
+            .map((issue) => issue.message)
+            .join("; ")}. The last valid revision is unchanged.`
+        : "Those parameter values did not produce a valid CAD result. The last valid revision is unchanged.",
+      { retryable: false },
+    );
+  }
 
   const notice = engineeringReviewNotice(safety);
   const manifest = buildCadManifest({

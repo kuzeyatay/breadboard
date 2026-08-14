@@ -11,13 +11,11 @@
 
 import { cadDefaults, type CadDefaults } from "./defaults.ts";
 import { buildCadManifest } from "./artifact.ts";
-import { runCadAgentLoop } from "./model-client.ts";
+import { DEFAULT_CAD_ENGINE, type CadEngineId } from "./engines.ts";
+import { solidworksAvailability } from "./solidworks/availability.ts";
+import { runCadAgentLoop, runCadProjectBuildPhase } from "./model-client.ts";
 import { cadSystemPrompt, summariseProjectForModel } from "./prompts.ts";
-import {
-  getCadProject,
-  readRevisionParameters,
-  type CadProjectRow,
-} from "./project-store.ts";
+import { getCadProject, readRevisionParameters, type CadProjectRow } from "./project-store.ts";
 import {
   assessCadSafety,
   CAD_VALIDATION_DISCLAIMER,
@@ -25,9 +23,7 @@ import {
   type CadSafetyDecision,
 } from "./safety.ts";
 import type { CadToolContext } from "./tools.ts";
-import { runCadTool } from "./tools.ts";
-import type { CADDesignSpecDraft } from "./schemas.ts";
-import type { CADUnits, ManufacturingProcess, ParametricCADArtifact } from "./types.ts";
+import type { CADValidationIssue, ManufacturingProcess, ParametricCADArtifact } from "./types.ts";
 
 /** Automatic model-driven builds per user turn, before the agent must stop. */
 export const MAX_BUILD_ATTEMPTS = 3;
@@ -45,6 +41,17 @@ export interface DesignCadPartInput {
   process?: ManufacturingProcess;
   printerBed?: { x: number; y: number; z: number };
   units?: "mm" | "inch";
+  /**
+   * Which CAD backend builds the part. Omitted means CadQuery, so every caller
+   * that predates the setting keeps the behaviour it had.
+   */
+  engine?: CadEngineId;
+  /**
+   * True when the person chose this backend rather than it being inferred. An
+   * explicit backend that cannot run makes the design fail with a reason; an
+   * automatic one may fall back.
+   */
+  engineExplicit?: boolean;
   /** An existing project to revise instead of starting a new one. */
   existingProject?: CadProjectRow | null;
   /** Bodies of the existing design, for the follow-up summary. */
@@ -55,22 +62,21 @@ export interface DesignCadPartInput {
   emit?: (type: string, payload: Record<string, unknown>) => void;
   /** Deadline for one model turn; omitted for the CAD agent's long-form default. */
   modelRequestTimeoutMs?: number;
+  /** A shorter source-only deadline once a durable design specification exists. */
+  modelBuildRequestTimeoutMs?: number;
+  /** Maximum source-generation and repair turns after a durable plan exists. */
+  maxModelBuildSteps?: number;
   /**
-   * A deterministic geometry program the caller can supply when a model is
-   * unavailable. Parametric CAD remains open-ended; this prevents known
-   * hardware envelopes from disappearing because one completion timed out.
+   * Requirements the kernel cannot check — that the product actually has the
+   * clamp, seat or optical carrier it was asked for.
+   *
+   * Given here rather than applied afterwards for one reason: a design that
+   * misses a required feature used to be built, measured, and then discarded by
+   * the caller with nothing published. Now the model is told what is missing
+   * while it still has an attempt left, and only a design that cannot be
+   * repaired fails honestly instead of being published as a usable result.
    */
-  fallback?: CadDesignFallback;
-}
-
-export interface CadDesignFallback {
-  name: string;
-  units: CADUnits;
-  designSpec: CADDesignSpecDraft;
-  parameters: Record<string, number | string | boolean>;
-  source: string;
-  entrypoint?: string;
-  note: string;
+  acceptance?: (manifest: ParametricCADArtifact) => CADValidationIssue[];
 }
 
 export type DesignCadPartOutcome =
@@ -78,10 +84,16 @@ export type DesignCadPartOutcome =
       ok: true;
       manifest: ParametricCADArtifact;
       projectId: string;
+      /** Revision identity proving this turn built the manifest it returned. */
+      builtRevision: number;
+      /** Current revision when this turn started; a successful edit must advance it. */
+      startingRevision: number;
       answer: string;
       attemptsUsed: number;
       safety: CadSafetyDecision;
       disclaimers: string[];
+      /** Requirements still unmet after every model repair attempt. */
+      acceptanceIssues: CADValidationIssue[];
     }
   | {
       ok: false;
@@ -113,8 +125,41 @@ export async function designCadPart(
 
   const base: CadDefaults = cadDefaults(input.process ?? "fdm");
   const defaults = input.printerBed ? { ...base, printerBed: input.printerBed } : base;
+  const startingRevision = input.existingProject?.current_revision ?? 0;
 
-  let toolContext: CadToolContext = {
+  // The backend is settled before a single model token is spent. A run that
+  // cannot reach SolidWorks should say so in a second, not after two minutes of
+  // planning a part it can never build — and an explicitly chosen backend is
+  // never quietly swapped for the other one.
+  const requested: CadEngineId = input.engine ?? DEFAULT_CAD_ENGINE;
+  let engine = requested;
+  if (requested === "solidworks") {
+    const availability = await solidworksAvailability();
+    if (!availability.available) {
+      if (input.engineExplicit) {
+        return {
+          ok: false,
+          refused: false,
+          safety,
+          attemptsUsed: 0,
+          reason: availability.message,
+        };
+      }
+      input.emit?.("cad.engine.fallback", {
+        from: "solidworks",
+        to: DEFAULT_CAD_ENGINE,
+        reason: availability.message,
+      });
+      engine = DEFAULT_CAD_ENGINE;
+    } else {
+      input.emit?.("cad.engine.selected", {
+        engine: "solidworks",
+        solidworksRunning: availability.running,
+      });
+    }
+  }
+
+  const toolContext: CadToolContext = {
     userId: input.userId,
     conversationId: input.conversationId,
     clusterId: input.clusterId,
@@ -122,6 +167,7 @@ export async function designCadPart(
     instruction: input.brief,
     safety,
     defaults,
+    engine,
     attemptsRemaining: MAX_BUILD_ATTEMPTS,
     ...(input.signal ? { signal: input.signal } : {}),
     ...(input.emit ? { emit: input.emit } : {}),
@@ -144,35 +190,104 @@ export async function designCadPart(
         })
       : undefined;
 
+  const disclaimers = cadDisclaimers(safety);
+  /**
+   * The caller's requirements, measured against what was actually built. Cheap
+   * enough to run between attempts: it reads one stored revision.
+   */
+  const acceptanceIssuesFor = (id: string): CADValidationIssue[] => {
+    if (!input.acceptance) return [];
+    const built = buildCadManifest({ projectId: id, disclaimers });
+    return built ? input.acceptance(built) : [];
+  };
+
   let loop;
   try {
-    loop = await runCadAgentLoop({
-      baseUrl: input.baseUrl,
-      model: input.model,
-      reasoningEffort: input.reasoningEffort,
-      ...(input.signal ? { signal: input.signal } : {}),
-      ...(input.onUsage ? { onUsage: input.onUsage } : {}),
-      ...(input.modelRequestTimeoutMs ? { requestTimeoutMs: input.modelRequestTimeoutMs } : {}),
-      systemPrompt: cadSystemPrompt({
-        defaults,
-        safety,
-        attemptBudget: MAX_BUILD_ATTEMPTS,
-        ...(summary ? { existingProject: summary } : {}),
-      }),
-      userMessage: userMessageFor(input),
-      toolContext,
-    });
+    if (input.existingProject?.current_revision === 0) {
+      // A prior turn may have completed the expensive structured plan before
+      // its source-generation response timed out. Resume that durable draft;
+      // asking the model to plan it again only creates duplicate projects.
+      toolContext.projectId = input.existingProject.id;
+      loop = {
+        answer: "Resuming the saved CAD specification.",
+        projectId: input.existingProject.id,
+        toolCalls: [],
+        stoppedBecause: "step_limit" as const,
+      };
+      input.emit?.("cad.spec.resumed", { projectId: input.existingProject.id });
+    } else {
+      const isNewProject = !input.existingProject;
+      loop = await runCadAgentLoop({
+        baseUrl: input.baseUrl,
+        model: input.model,
+        reasoningEffort: isNewProject
+          ? stagedReasoningEffort(input.reasoningEffort)
+          : input.reasoningEffort,
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.onUsage ? { onUsage: input.onUsage } : {}),
+        ...(input.modelRequestTimeoutMs
+          ? {
+              requestTimeoutMs: isNewProject
+                ? Math.min(input.modelRequestTimeoutMs, 240_000)
+                : input.modelRequestTimeoutMs,
+            }
+          : isNewProject
+            ? { requestTimeoutMs: 240_000 }
+            : {}),
+        systemPrompt: cadSystemPrompt({
+          defaults,
+          safety,
+          engine,
+          attemptBudget: MAX_BUILD_ATTEMPTS,
+          ...(summary ? { existingProject: summary } : {}),
+        }),
+        userMessage: userMessageFor(input),
+        toolContext,
+        // A new design is deliberately two-phase. The first completion only
+        // records the plan; a fresh, much smaller completion writes source.
+        ...(isNewProject
+          ? {
+              maxSteps: 1,
+              allowedToolNames: ["cad_create_project"],
+              forcedToolName: "cad_create_project",
+            }
+          : {}),
+      });
+    }
+
+    const plannedProjectId = loop.projectId ?? toolContext.projectId ?? null;
+    const plannedProject = plannedProjectId ? getCadProject(plannedProjectId) : null;
+    if (plannedProject?.current_revision === 0) {
+      input.emit?.("cad.build.started", { projectId: plannedProject.id, resumed: Boolean(input.existingProject) });
+      loop = await runCadProjectBuildPhase({
+        baseUrl: input.baseUrl,
+        model: input.model,
+        reasoningEffort: input.reasoningEffort,
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.onUsage ? { onUsage: input.onUsage } : {}),
+        ...(input.modelBuildRequestTimeoutMs ?? input.modelRequestTimeoutMs
+          ? {
+              requestTimeoutMs:
+                input.modelBuildRequestTimeoutMs ?? input.modelRequestTimeoutMs,
+            }
+          : {}),
+        ...(input.maxModelBuildSteps
+          ? { maxBuildSteps: input.maxModelBuildSteps }
+          : {}),
+        ...(input.acceptance ? { acceptance: acceptanceIssuesFor } : {}),
+        project: plannedProject,
+        toolContext,
+      });
+    }
   } catch (error) {
     if (input.signal?.aborted) throw error;
 
     // A model may have created and successfully built a project before its
-    // final prose response times out. That valid revision is the deliverable;
-    // replacing it with a new generic fallback project would throw away the
-    // better CAD and can publish two artifacts for one turn.
+    // final prose response times out. That valid revision is the deliverable.
     const partialProject = toolContext.projectId ? getCadProject(toolContext.projectId) : null;
     if (
-      partialProject?.current_revision &&
-      (partialProject.status === "valid" || partialProject.status === "valid-with-warnings")
+      partialProject &&
+      isCurrentBuildFromThisTurn(toolContext, partialProject, startingRevision)
     ) {
       input.emit?.("cad.model.response_incomplete", {
         projectId: partialProject.id,
@@ -186,51 +301,23 @@ export async function designCadPart(
         stoppedBecause: "answered" as const,
       };
     } else {
-      if (!input.fallback) {
-        return {
-          ok: false,
-          refused: false,
-          safety,
-          attemptsUsed: MAX_BUILD_ATTEMPTS - toolContext.attemptsRemaining,
-          reason:
-            error instanceof Error
-              ? error.message
-              : "The model-driven CAD pass failed before it produced a complete design.",
-        };
-      }
-      input.emit?.("cad.fallback.started", {
-        reason: error instanceof Error ? error.message : "The model-driven CAD pass failed.",
-      });
-      const fallback = await runCadFallback(input.fallback, {
-        ...toolContext,
-        model: `${input.model} + deterministic fallback`,
-        attemptsRemaining: MAX_BUILD_ATTEMPTS,
-        projectId: undefined,
-        lastBuild: undefined,
-      });
-      toolContext = fallback.context;
-      loop = fallback.loop;
+      const message =
+        error instanceof Error
+          ? error.message
+          : "The model-driven CAD pass failed before it produced a complete design.";
+      return {
+        ok: false,
+        refused: false,
+        safety,
+        attemptsUsed: MAX_BUILD_ATTEMPTS - toolContext.attemptsRemaining,
+        reason: failureReason(toolContext, [], message),
+      };
     }
   }
 
-  let projectId = loop.projectId ?? toolContext.projectId ?? input.existingProject?.id ?? null;
-  let project = projectId ? getCadProject(projectId) : null;
-  if ((!project || !project.current_revision) && input.fallback && !input.signal?.aborted) {
-    input.emit?.("cad.fallback.started", {
-      reason: failureReason(toolContext, loop.toolCalls, loop.answer),
-    });
-    const fallback = await runCadFallback(input.fallback, {
-      ...toolContext,
-      model: `${input.model} + deterministic fallback`,
-      attemptsRemaining: MAX_BUILD_ATTEMPTS,
-      projectId: undefined,
-      lastBuild: undefined,
-    });
-    toolContext = fallback.context;
-    loop = fallback.loop;
-    projectId = loop.projectId ?? toolContext.projectId ?? null;
-    project = projectId ? getCadProject(projectId) : null;
-  }
+  const projectId = loop.projectId ?? toolContext.projectId ?? input.existingProject?.id ?? null;
+  const project = projectId ? getCadProject(projectId) : null;
+
   const attemptsUsed = MAX_BUILD_ATTEMPTS - toolContext.attemptsRemaining;
 
   if (!project || !project.current_revision) {
@@ -243,7 +330,22 @@ export async function designCadPart(
     };
   }
 
-  const disclaimers = cadDisclaimers(safety);
+  // `current_revision` deliberately stays on the last valid model when a new
+  // build fails. That storage invariant protects the working design, but it
+  // also means merely loading `project` cannot prove this turn produced it.
+  // Require the final build recorded by this fresh tool context to be valid,
+  // current, and newer than the revision this request began with. Otherwise a
+  // failed/no-op edit could be republished as a successful new answer.
+  if (!isCurrentBuildFromThisTurn(toolContext, project, startingRevision)) {
+    return {
+      ok: false,
+      refused: false,
+      safety,
+      attemptsUsed,
+      reason: noFreshBuildReason(toolContext, project, loop.toolCalls, loop.answer),
+    };
+  }
+
   const manifest = buildCadManifest({ projectId: project.id, disclaimers });
   if (!manifest) {
     return {
@@ -254,88 +356,82 @@ export async function designCadPart(
       reason: "The built design could not be assembled for storage.",
     };
   }
+  const completedBuild = toolContext.lastBuild!;
+  if (
+    manifest.projectId !== completedBuild.projectId ||
+    manifest.revision !== completedBuild.revision ||
+    !manifest.validation.passed ||
+    (manifest.status !== "valid" && manifest.status !== "valid-with-warnings")
+  ) {
+    return {
+      ok: false,
+      refused: false,
+      safety,
+      attemptsUsed,
+      reason:
+        "The newly built CAD revision could not be matched to a current validated manifest, so nothing was published.",
+    };
+  }
+
+  const acceptanceIssues = input.acceptance ? input.acceptance(manifest) : [];
+  if (acceptanceIssues.length) {
+    input.emit?.("cad.acceptance.failed", {
+      projectId: project.id,
+      issues: acceptanceIssues.slice(0, 8),
+      unmetCount: acceptanceIssues.length,
+    });
+    const listed = acceptanceIssues
+      .slice(0, 4)
+      .map((issue) => `${issue.code} — ${issue.message}`)
+      .join(" ");
+    return {
+      ok: false,
+      refused: false,
+      safety,
+      attemptsUsed,
+      reason:
+        `The geometry passed kernel validation but did not satisfy the requested product ` +
+        `after ${attemptsUsed} attempt(s). ${listed}` +
+        (acceptanceIssues.length > 4 ? ` (+${acceptanceIssues.length - 4} more)` : ""),
+    };
+  }
 
   return {
     ok: true,
     manifest,
     projectId: project.id,
+    builtRevision: completedBuild.revision,
+    startingRevision,
     answer: loop.answer,
     attemptsUsed,
     safety,
     disclaimers,
+    acceptanceIssues,
   };
 }
 
-async function runCadFallback(
-  fallback: CadDesignFallback,
-  context: CadToolContext,
-): Promise<{
-  context: CadToolContext;
-  loop: Awaited<ReturnType<typeof runCadAgentLoop>>;
-}> {
-  const calls: Array<{ name: string; ok: boolean; summary: string }> = [];
-  const created = await runCadTool(
-    "cad_create_project",
-    {
-      name: fallback.name,
-      units: fallback.units,
-      design_spec: fallback.designSpec,
-      parameters: fallback.parameters,
-    },
-    context,
+/**
+ * A project row alone is not evidence that this request built anything: its
+ * current revision can be an older valid revision retained after a bad edit.
+ */
+export function isCurrentBuildFromThisTurn(
+  toolContext: Pick<CadToolContext, "lastBuild">,
+  project: Pick<CadProjectRow, "id" | "current_revision">,
+  startingRevision: number,
+): boolean {
+  const build = toolContext.lastBuild;
+  return Boolean(
+    build &&
+      !build.failure &&
+      build.projectId === project.id &&
+      build.revision > startingRevision &&
+      build.revision === project.current_revision &&
+      (build.status === "valid" || build.status === "valid-with-warnings"),
   );
-  calls.push({
-    name: "cad_create_project",
-    ok: created.ok !== false,
-    summary: String(created.message ?? created.projectId ?? "project creation failed"),
-  });
-  const projectId = typeof created.projectId === "string" ? created.projectId : null;
-  if (!projectId || created.ok === false) {
-    return {
-      context,
-      loop: {
-        answer: String(created.message ?? "The fallback CAD project could not be created."),
-        projectId,
-        toolCalls: calls,
-        stoppedBecause: "answered",
-      },
-    };
-  }
+}
 
-  const generated = await runCadTool(
-    "cad_generate_model",
-    {
-      projectId,
-      source: fallback.source,
-      entrypoint: fallback.entrypoint ?? "build_model",
-      parameters: fallback.parameters,
-      timeoutMs: 45_000,
-      note: fallback.note,
-    },
-    context,
-  );
-  calls.push({
-    name: "cad_generate_model",
-    ok: generated.ok !== false,
-    summary: String(generated.message ?? generated.status ?? "fallback build finished"),
-  });
-  context.emit?.("cad.fallback.completed", {
-    projectId,
-    built: generated.ok !== false,
-    status: generated.status ?? "invalid",
-  });
-  return {
-    context,
-    loop: {
-      answer:
-        generated.ok === false
-          ? String(generated.message ?? "The deterministic fallback did not build.")
-          : "The deterministic parametric fallback produced the CAD model.",
-      projectId,
-      toolCalls: calls,
-      stoppedBecause: "answered",
-    },
-  };
+function stagedReasoningEffort(value: string): string {
+  return ["none", "minimal", "low", "medium"].includes(value) ? value : "medium";
 }
 
 function userMessageFor(input: DesignCadPartInput): string {
@@ -395,4 +491,27 @@ function failureReason(
   return answer
     ? `No valid solid was produced. ${answer.slice(0, 600)}`
     : "The agent finished without building a model.";
+}
+
+function noFreshBuildReason(
+  toolContext: CadToolContext,
+  project: CadProjectRow,
+  toolCalls: Array<{ name: string; ok: boolean; summary: string }>,
+  answer: string,
+): string {
+  const build = toolContext.lastBuild;
+  if (!build) {
+    return "No new CAD revision was built for this request. The existing design was left unchanged and was not republished.";
+  }
+  if (
+    build.failure ||
+    build.status === "invalid" ||
+    build.projectId !== project.id
+  ) {
+    return failureReason(toolContext, toolCalls, answer);
+  }
+  return (
+    "The final CAD build did not become this project's current validated revision. " +
+    "The existing design was left unchanged and was not republished."
+  );
 }

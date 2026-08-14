@@ -51,7 +51,7 @@ export function generateBom(circuit: CompiledCircuit): BomItem[] {
   const items: BomItem[] = [];
   for (const [key, group] of groups) {
     const [definitionId] = key.split("::");
-    const definition = componentDefinition(definitionId);
+    const definition = componentDefinition(definitionId, circuit.scopedDefinitions);
     if (!definition) continue;
     const first = circuit.components.find((instance) => instance.id === group.instanceIds[0])!;
     const quantity = group.instanceIds.length;
@@ -81,7 +81,7 @@ export function generateBom(circuit: CompiledCircuit): BomItem[] {
   // Controller first, then the parts that do something, then passives and
   // prototyping hardware — the order somebody would actually buy them in.
   const rank = (item: BomItem): number => {
-    const category = componentDefinition(item.componentDefinitionId)?.category ?? "";
+    const category = componentDefinition(item.componentDefinitionId, circuit.scopedDefinitions)?.category ?? "";
     if (category === "controller") return 0;
     if (["sensor", "display", "actuator", "input", "indicator"].includes(category)) return 1;
     if (category === "passive") return 2;

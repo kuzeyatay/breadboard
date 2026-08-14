@@ -296,7 +296,7 @@ describe("learn route and council wiring", () => {
     }
     assert.doesNotMatch(workspaceSource, /JSON\.stringify\(\{\s*model,/);
     assert.doesNotMatch(workspaceSource, /Council · GPT-5\.6 Sol · High reasoning/);
-    assert.match(learnSource, /ChatMock is not connected\. Start or restart ChatMock on port 8765/);
+    assert.match(learnSource, /The AI service connection was lost during Learn\. Retry Learn; if it fails again/);
   });
 
   test("an initial planning failure retries Learn instead of invoking repair", () => {
@@ -316,7 +316,7 @@ describe("learn route and council wiring", () => {
     assert.match(workspaceSource, /status === "failed"[\s\S]*?"Retry Learn"/);
     assert.match(
       workspaceSource,
-      /ChatMock was not connected\. Start or restart ChatMock, then choose Retry Learn\./,
+      /The AI service connection was lost during Learn\. Retry Learn; if it fails again/,
     );
   });
 
@@ -529,6 +529,8 @@ describe("learn route and council wiring", () => {
     assert.ok(rollbackPathsStart >= 0 && rollbackPathsEnd > rollbackPathsStart);
     const rollbackPaths = learnSource.slice(rollbackPathsStart, rollbackPathsEnd);
     assert.doesNotMatch(rollbackPaths, /"_index\.md"|"sources\/_index\.md"/);
+    assert.doesNotMatch(rollbackPaths, /source-visual-scan-cache/);
+    assert.match(learnSource, /STATIC_LEARN_CLEAR_REMOVAL_ROOTS[\s\S]*?source-visual-scan-cache\.json/);
     assert.match(learnSource, /const snapshotCandidates = \[\.\.\.LEARN_RUN_ROLLBACK_PATHS\]/);
     assert.doesNotMatch(learnSource, /function deleteLearnDatabaseState/);
     assert.match(learnSource, /const activeController = activeLearnAbortControllers\.get\(latest\.id\)/);

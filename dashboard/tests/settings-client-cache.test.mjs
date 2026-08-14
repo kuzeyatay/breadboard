@@ -111,7 +111,6 @@ test("the settings overview prewarms and visited panels stay mounted", () => {
   const dialog = source("../src/app/components/settings-dialog.tsx");
   const accounts = source("../src/app/components/settings-accounts.tsx");
   const providers = source("../src/app/components/settings-providers.tsx");
-  const subscriptions = source("../src/app/components/settings-subscriptions.tsx");
 
   assert.match(composer, /window\.setTimeout\(\(\) => \{\s*void preloadSettingsOverview\(\)/);
   assert.match(composer, /settingsMounted \? \(/);
@@ -120,5 +119,6 @@ test("the settings overview prewarms and visited panels stay mounted", () => {
   assert.match(dialog, /hidden=\{tab !== "memory"\}/);
   assert.match(accounts, /fetchCachedSettings\("\/api\/chatmock\/account"/);
   assert.match(providers, /fetchCachedSettings\("\/api\/chatmock\/providers"/);
-  assert.match(subscriptions, /fetchCachedSettings\("\/api\/cliproxy\/status"/);
+  // The proxy status is read by the account list now, not a card of its own.
+  assert.match(accounts, /fetchCachedSettings\("\/api\/cliproxy\/status"/);
 });

@@ -57,6 +57,7 @@ def validate_model(
     tessellation: TessellationSummary | None,
     expectations: ValidationExpectations,
     exported_formats: list[str],
+    interferences: list[tuple[str, str, float]] | None = None,
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
 
@@ -102,11 +103,9 @@ def validate_model(
                 _issue(
                     "not_watertight",
                     "error",
-                    f"The body '{solid.name}' is not a closed, watertight volume, so it cannot "
-                    "be sliced for printing.",
+                    f"The body '{solid.name}' is not a closed, watertight volume, so it cannot be sliced for printing.",
                     feature=solid.name,
-                    repair_hint="Build the body from closed operations (box/extrude/revolve plus "
-                    "cut/union) rather than from loose faces or shells.",
+                    repair_hint="Build the body from closed operations rather than loose faces or shells.",
                 )
             )
         if solid.volume <= MINIMUM_MEANINGFUL_VOLUME_MM3:
@@ -114,24 +113,46 @@ def validate_model(
                 _issue(
                     "degenerate_solid",
                     "error",
-                    f"The body '{solid.name}' has effectively no volume ({solid.volume:.6g} mm³).",
+                    f"The body '{solid.name}' has effectively no volume ({solid.volume:.6g} mm^3).",
                     feature=solid.name,
                     actual=solid.volume,
                     repair_hint="A cut removed the whole body, or a dimension resolved to zero.",
                 )
             )
-        box = solid.bounding_box
-        if not _finite(box.x, box.y, box.z, solid.volume, solid.surface_area):
+        solid_box = solid.bounding_box
+        if not _finite(
+            solid_box.x,
+            solid_box.y,
+            solid_box.z,
+            solid.volume,
+            solid.surface_area,
+        ):
             issues.append(
                 _issue(
                     "non_finite_geometry",
                     "error",
                     f"The body '{solid.name}' has non-finite coordinates or measurements.",
                     feature=solid.name,
-                    repair_hint="A parameter evaluated to NaN or infinity. Check the arithmetic "
-                    "that derives this body's dimensions.",
+                    repair_hint="Check the arithmetic that derives this body's dimensions.",
                 )
             )
+
+    # ---- multi-body assembly -------------------------------------------
+    # Each body can be watertight and still occupy the same material volume
+    # as another body. That is not an assembly; it is a collision hidden by
+    # validating the parts one at a time.
+    for left, right, volume in interferences or []:
+        issues.append(
+            _issue(
+                "assembly_interference",
+                "error",
+                f"The bodies '{left}' and '{right}' overlap by {volume:.4f} mm^3 in assembled coordinates.",
+                feature=f"{left} <-> {right}",
+                expected=0,
+                actual=volume,
+                repair_hint="Move or reshape the bodies so rigid parts have clearance or only intentional zero-volume contact.",
+            )
+        )
 
     if bounding_box is None:
         return issues

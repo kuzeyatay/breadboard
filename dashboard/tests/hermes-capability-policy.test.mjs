@@ -125,6 +125,10 @@ test("surface, authentication, high-impact, and crafted-token checks fail closed
     assert.equal(decision.mode, "knowledge");
   }
   assert.equal(outcomeWithoutCapabilityTokens("/skill:react-repair /drive explain this"), "explain this");
+  assert.equal(
+    outcomeWithoutCapabilityTokens("/agents:agency-agents:geographer explain this"),
+    "explain this",
+  );
 });
 
 test("selected tools cannot widen the server decision", () => {

@@ -627,6 +627,163 @@ describe("contract-driven semantic repair loop", () => {
     }
   });
 
+  test("preflight removes a legacy SNN calculator from an electromagnetics unit without hiding the required-visual blocker", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-incompatible-metric-"));
+    try {
+      const dir = path.join(root, "electromagnetism");
+      const bb = path.join(dir, ".breadboard");
+      const lessonDir = path.join(dir, "learning", "1. Electric Potential");
+      fs.mkdirSync(path.join(bb, "visuals"), { recursive: true });
+      fs.mkdirSync(lessonDir, { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "electromagnetism" }) + "# Electromagnetism\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(
+        path.join(dir, "sources", "book.md"),
+        fm({ title: "Electromagnetics", breadboardType: "source_document", sourceId: "book" }) +
+          "# Page 100\n\nElectric potential has a gradient, and an electric field stores energy throughout space.\n",
+      );
+      fs.writeFileSync(path.join(bb, "source-visuals.json"), "[]");
+      const spec = {
+        id: "vis-electric-energy",
+        type: "metric_calculator",
+        title: "Energy Calculator",
+        sourceAnchors: [],
+        sourceGroundingStatus: "conceptual-no-direct-source-figure",
+        justification: "A conceptual calculator was selected.",
+        conceptTargets: ["energy"],
+        pedagogicalPurpose: "Let the learner manipulate inputs for energy and observe how the selected metric responds.",
+        controls: [
+          { name: "spikeCount", label: "Spike count", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 100 },
+          { name: "energyPerSpike", label: "Energy per spike", type: "slider", min: 0, max: 1, step: 0.01, defaultValue: 0.1 },
+        ],
+        inputs: ["spike count", "energy per spike"],
+        outputs: ["energy"],
+        caption: "Adjust spike count to estimate energy.",
+        regenerationPrompt: "Improve this calculator.",
+        version: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      fs.writeFileSync(path.join(bb, "visuals", `${spec.id}.json`), JSON.stringify(spec, null, 2));
+      fs.writeFileSync(
+        path.join(bb, "visual-index.json"),
+        JSON.stringify({ [spec.id]: { id: spec.id, type: spec.type } }, null, 2),
+      );
+      fs.writeFileSync(
+        path.join(bb, "learning-unit-contract.json"),
+        JSON.stringify({
+          sourceSetHash: "fixture",
+          generatedAt: "2026-01-01T00:00:00.000Z",
+          learningUnits: [{
+            id: "U1",
+            title: "Electric Potential, Gradient, and Energy Density",
+            role: "formula",
+            learningQuestion: "How does a scalar potential encode an electrostatic field, and how is stored energy distributed through that field?",
+            prerequisiteConcepts: ["electric field"],
+            newConcepts: ["electric potential", "gradient", "electric energy density"],
+            sourceAnchors: [],
+            sourceFigures: [],
+            sourceFormulas: [],
+            sourceTables: [],
+            interactiveVisual: {
+              id: spec.id,
+              visualType: "metric_calculator",
+              uniqueConcept: "electric potential and field energy",
+              whyStaticSourceFigureIsNotEnough: "The learner changes field parameters and observes stored energy.",
+              learnerManipulates: ["field strength"],
+              expectedInsight: "field strength changes electric energy density",
+              sourceAnchors: [],
+              duplicateSignature: "legacy-snn-calculator",
+            },
+            interactiveVisualPlan: {
+              decision: {
+                unitId: "U1",
+                pageId: "U1",
+                necessity: "required",
+                preferredMedium: "interactive_visual",
+                learningGoal: "Relate electric potential, field gradient, and stored energy.",
+                manipulationValue: 0.82,
+                dynamicBehaviorValue: 0.78,
+                comparisonValue: 0.76,
+                spatialValue: 0.78,
+                parameterSensitivityValue: 0.86,
+                sourceFigureSufficiency: 0.05,
+                proseSufficiency: 0.35,
+                formulaSufficiency: 0.05,
+                workedExampleSufficiency: 0.08,
+                cognitiveLoadRisk: 0.2,
+                duplicationRisk: 0,
+                implementationRisk: 0.4,
+                evidence: {
+                  unitRole: "formula",
+                  concepts: ["electric potential", "gradient", "electric energy density"],
+                  learningQuestion: "How does potential encode the electric field?",
+                  sourceAnchorIds: [],
+                  nearbyVisualIntentIds: [],
+                },
+                reason: "The interaction is required to expose the parameter relationship.",
+                recommendedVisualType: "metric_calculator",
+              },
+              requirement: "required",
+              alternativeCoverage: "uncovered",
+              visualIntent: {
+                id: spec.id,
+                visualType: "metric_calculator",
+                uniqueConcept: "electric potential and field energy",
+                whyStaticSourceFigureIsNotEnough: "The learner changes field parameters and observes stored energy.",
+                learnerManipulates: ["field strength"],
+                expectedInsight: "field strength changes electric energy density",
+                sourceAnchors: [],
+                duplicateSignature: "legacy-snn-calculator",
+              },
+            },
+            teachingMediumPlan: {
+              unitId: "U1",
+              preferredMedium: "interactive_visual",
+              reason: "A required parameter relationship needs interaction.",
+            },
+            zettelNotes: [],
+            mustNotRepeat: [],
+            expectedWordRange: [700, 900],
+          }],
+          sourceArtifactAssignments: [],
+        }, null, 2),
+      );
+      fs.writeFileSync(
+        path.join(lessonDir, "_index.md"),
+        fm({ title: "1. Electric Potential", breadboardType: "textbook_section" }) + "# 1. Electric Potential\n",
+      );
+      fs.writeFileSync(
+        path.join(lessonDir, "1.1 Electric Potential, Gradient, and Energy Density.md"),
+        fm({
+          title: "1.1 Electric Potential, Gradient, and Energy Density",
+          knowledge_type: "learning-page",
+          breadboardType: "learning_page",
+          learningUnitId: "U1",
+          learningUnitRole: "formula",
+          visualIds: [spec.id],
+          generatedBy: "learn_button",
+        }) + `${FILLER("electric potential gradient and field energy", "metric")}\n\n${block(spec)}\n`,
+      );
+
+      const run = await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "electromagnetism" });
+      const pagePath = fs.readdirSync(path.join(dir, "learning"), { recursive: true })
+        .map(String)
+        .find((rel) => rel.endsWith(".md") && fs.readFileSync(path.join(dir, "learning", rel), "utf-8").includes('learningUnitId: "U1"'));
+      assert.ok(pagePath, "the learner page should remain present");
+      const page = fs.readFileSync(path.join(dir, "learning", pagePath), "utf-8");
+      assert.doesNotMatch(page, /breadboard-visual/);
+      assert.doesNotMatch(page, /vis-electric-energy/);
+      assert.equal(fs.existsSync(path.join(bb, "visuals", `${spec.id}.json`)), false);
+      const contract = JSON.parse(fs.readFileSync(path.join(bb, "learning-unit-contract.json"), "utf-8"));
+      assert.equal(contract.learningUnits[0].interactiveVisual, undefined);
+      assert.match(run.finalizerNotes.join("\n"), /removed incompatible trusted visual/);
+      assert.match(run.finalValidationFailures.join("\n"), /required interactive visual is missing/i);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("focuses duplicate metric calculators by page metric family before validation", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-metric-focus-"));
     try {

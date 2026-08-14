@@ -3853,11 +3853,24 @@ export function missingRegistryAnchorIds(problems: string[]): string[] {
 
 /** Fix 6: the human-readable "not published" explanation for missing anchors. */
 export function describeMissingAnchorFailure(ids: string[]): string {
+  const structuredArtifacts = ids.filter((id) => /\.(?:F|G|T|E)\d+$/i.test(id));
+  const textAnchors = ids.filter((id) => !structuredArtifacts.includes(id));
+  const guidance: string[] = [];
+  if (structuredArtifacts.length > 0) {
+    guidance.push(
+      "Structured figure/table/equation anchors must be extracted from their preserved source-PDF pages; they must not be registered as text anchors. Retry Learn so the referenced pages can be rendered and scanned on demand, or remove the requirement if the visual is unsupported.",
+    );
+  }
+  if (textAnchors.length > 0) {
+    guidance.push(
+      "Text anchors must be registered from exact source text, replaced with existing canonical anchors, or removed if unsupported.",
+    );
+  }
   return [
     "The garden was generated as a draft but not published because these source anchors are referenced but not registered:",
     ...ids.map((id) => `- ${id}`),
     "",
-    "Recommended repair: register these as source text anchors from their page, replace them with existing canonical anchors, or remove them if unsupported.",
+    `Recommended repair: ${guidance.join(" ")}`,
   ].join("\n");
 }
 

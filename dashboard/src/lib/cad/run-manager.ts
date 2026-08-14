@@ -34,7 +34,10 @@ import {
 import { designCadPart, MAX_BUILD_ATTEMPTS } from "./design-service.ts";
 import { CadServiceError } from "./errors.ts";
 import { CadModelError } from "./model-client.ts";
-import { latestCadProjectForConversation } from "./project-store.ts";
+import {
+  latestCadProjectForConversation,
+  latestUnbuiltCadProjectForConversation,
+} from "./project-store.ts";
 import { cadServiceConfigured, cadServiceListening } from "./service.ts";
 import type { ParametricCADArtifact } from "./types.ts";
 import type { ParametricCadRequest } from "./identity.ts";
@@ -270,11 +273,16 @@ async function drive(run: RunState, input: StartCadRunInput): Promise<void> {
       });
   const previousDesign = previousArtifact ? readStoredCadDesign(previousArtifact) : null;
   const existingProject =
-    !input.parsed.fresh && previousDesign
-      ? latestCadProjectForConversation({
-          userId: input.userId,
-          conversationId: conversation.id,
-        })
+    !input.parsed.fresh
+      ? previousDesign
+        ? latestCadProjectForConversation({
+            userId: input.userId,
+            conversationId: conversation.id,
+          })
+        : latestUnbuiltCadProjectForConversation({
+            userId: input.userId,
+            conversationId: conversation.id,
+          })
       : null;
 
   emit(run, "interpret.started", { revising: Boolean(existingProject) });
@@ -320,7 +328,7 @@ Start a new project; do not modify the design already in this conversation.`
 
   emit(run, "interpret.completed", { attemptsUsed: outcome.attemptsUsed });
 
-  if (!outcome.ok) {
+  if (outcome.ok === false) {
     run.status = "failed";
     const usage = {
       ...sumChatTokenUsage(spent),
@@ -341,6 +349,30 @@ Start a new project; do not modify the design already in this conversation.`
   }
 
   const manifest = outcome.manifest;
+
+  // Defence in depth at the publication boundary. The design service records
+  // the revision it built during this request; an older current revision must
+  // never be forked into a new artifact if an edit timed out or failed.
+  if (
+    outcome.projectId !== manifest.projectId ||
+    outcome.builtRevision !== manifest.revision ||
+    outcome.builtRevision <= outcome.startingRevision ||
+    !manifest.validation.passed ||
+    (manifest.status !== "valid" && manifest.status !== "valid-with-warnings")
+  ) {
+    run.status = "failed";
+    const content =
+      "The CAD request did not produce a new validated revision, so the existing design was left unchanged and was not republished.";
+    const usage = {
+      ...sumChatTokenUsage(spent),
+      responseDurationMs: Date.now() - run.createdAt,
+    };
+    run.usage = usage;
+    emit(run, "run.failed", { error: content, attemptsUsed: outcome.attemptsUsed });
+    publishTerminal(run, { outcome: "failed", content, usage });
+    schedule(run);
+    return;
+  }
 
   let context: CadArtifactContext | null = null;
   let artifactId: string | null = null;
@@ -476,16 +508,29 @@ function chatSummary(input: {
   ).length;
   const statusLine =
     manifest.status === "valid"
-      ? "Validation found nothing to fix."
+      ? "Geometry checks found nothing to fix; product-level fit and safety still require engineering review."
       : manifest.status === "valid-with-warnings"
-        ? `${warnings} warning${warnings === 1 ? "" : "s"} to read before printing.`
+        ? `Geometry passed with ${warnings} warning${warnings === 1 ? "" : "s"} to read before printing; product-level fit and safety remain unverified.`
         : `${errors} error${errors === 1 ? "" : "s"} remain unresolved.`;
+
+  const assembly = manifest.designSpec.assembly;
+  const hardwareCount = assembly?.hardware.reduce((total, item) => total + item.quantity, 0) ?? 0;
 
   return [
     `**${manifest.title}** — ${statusLine}`,
     `Measured ${box.x.toFixed(1)} × ${box.y.toFixed(1)} × ${box.z.toFixed(1)} mm, ` +
       `${manifest.measurements.solidCount} ${manifest.measurements.solidCount === 1 ? "body" : "bodies"}, ` +
       `revision ${manifest.revision}.`,
+    // What attaches where is the artifact's Assembly panel, not this message;
+    // what the reader needs here is to know it exists and what it will cost them
+    // in parts they have to go and buy.
+    assembly?.steps.length
+      ? `Assembly: ${assembly.steps.length} step${assembly.steps.length === 1 ? "" : "s"}` +
+        (hardwareCount
+          ? `, ${hardwareCount} bought part${hardwareCount === 1 ? "" : "s"} to supply`
+          : "") +
+        " — see the design's Assembly panel."
+      : "",
     input.answer.trim(),
     input.artifactId
       ? ""

@@ -74,6 +74,7 @@ import {
   type CurrentLocationSnapshot,
 } from "@/lib/current-location";
 import { requestUsesCurrentLocation } from "@/lib/hermes/current-location-context";
+import { scrubbed } from "@/lib/watermarks/scrub-text";
 
 export type AgentSurface = "dashboard_terminal" | "garden_chat" | "quartz_ai";
 
@@ -258,6 +259,8 @@ export interface AgentMessage {
    * video build and then plays the rendered file inline.
    */
   hyperframesRun?: { runId: string; brief: string };
+  /** Present when this assistant turn is a Resource2Skill artifact run. */
+  resource2SkillRun?: { runId: string; brief: string };
   /**
    * Present when this assistant turn is an OpenMontage run. The card streams
    * the production and replays it from the workspace afterwards.
@@ -582,6 +585,7 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["hardwareBlueprintRun", "hardware_blueprint"],
   ["parametricCadRun", "parametric_cad"],
   ["hyperframesRun", "hyperframes"],
+  ["resource2SkillRun", "resource2skill"],
   ["openMontageRun", "openmontage"],
   ["vimaxRun", "vimax"],
   ["shortsRun", "shorts"],
@@ -1390,6 +1394,22 @@ export function useAgentSession(
                   content: narrationSegments[narrationSegments.length - 1],
                 };
                 commit(assistant);
+              }
+              // The answer was assembled here from stream deltas, and this hook
+              // keeps it rather than refetching — so without this the bubble on
+              // screen would still carry the invisible-Unicode marks the store
+              // already had removed, and copying the answer would copy them.
+              //
+              // Only at `done`, never per delta: the decision to keep or remove
+              // a zero-width joiner depends on the character before it, and a
+              // chunk boundary falling between an emoji and its joiner would
+              // make that decision wrong and break the emoji.
+              {
+                const clean = scrubbed(assistant.content);
+                if (clean !== assistant.content) {
+                  assistant = { ...assistant, content: clean };
+                  commit(assistant);
+                }
               }
               commitResponseDuration();
               setActivities((current) =>

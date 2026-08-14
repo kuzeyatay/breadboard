@@ -6,6 +6,36 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
+    <title>Electromagnetism 1</title>
+    <link>https://localhost:8081/electromagnetism-1/</link>
+    <guid>https://localhost:8081/electromagnetism-1/</guid>
+    <description><![CDATA[ Learning garden with 2 source documents, 0 lesson pages, and 6252 graph links. ]]></description>
+    <pubDate>Thu, 13 Aug 2026 21:00:00 GMT</pubDate>
+  </item><item>
+    <title>Sources</title>
+    <link>https://localhost:8081/electromagnetism-1/sources/</link>
+    <guid>https://localhost:8081/electromagnetism-1/sources/</guid>
+    <description><![CDATA[ Sources engineering-electromagnetics-9th-ed-9nbsped_compress.pdf StudyGuide_5EPF0.pdf . ]]></description>
+    <pubDate>Thu, 13 Aug 2026 21:00:00 GMT</pubDate>
+  </item><item>
+    <title>StudyGuide_5EPF0.pdf</title>
+    <link>https://localhost:8081/electromagnetism-1/sources/studyguide-5epf0</link>
+    <guid>https://localhost:8081/electromagnetism-1/sources/studyguide-5epf0</guid>
+    <description><![CDATA[ Study Guide Electromagnetics I (5EPF0) ]]></description>
+    <pubDate>Thu, 13 Aug 2026 12:11:44 GMT</pubDate>
+  </item><item>
+    <title>engineering-electromagnetics-9th-ed-9nbsped_compress.pdf</title>
+    <link>https://localhost:8081/electromagnetism-1/sources/engineering-electromagnetics-9th-ed-9nbsped-compress</link>
+    <guid>https://localhost:8081/electromagnetism-1/sources/engineering-electromagnetics-9th-ed-9nbsped-compress</guid>
+    <description><![CDATA[ Engineering Electromagnetics, Ninth Edition: Learning Spine and Vector Analysis Foundations ]]></description>
+    <pubDate>Thu, 13 Aug 2026 12:06:57 GMT</pubDate>
+  </item><item>
+    <title>My garden</title>
+    <link>https://localhost:8081/private-library/user-1/</link>
+    <guid>https://localhost:8081/private-library/user-1/</guid>
+    <description><![CDATA[ All the gardens attached to your account. ]]></description>
+    <pubDate>Wed, 12 Aug 2026 21:00:00 GMT</pubDate>
+  </item><item>
     <title>Physics for EE</title>
     <link>https://localhost:8081/physics-for-ee/</link>
     <guid>https://localhost:8081/physics-for-ee/</guid>
@@ -24,12 +54,6 @@
     <description><![CDATA[ Learning garden with 0 source documents, 0 lesson pages, and 0 graph links. ]]></description>
     <pubDate>Tue, 28 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>My garden</title>
-    <link>https://localhost:8081/private-library/user-1/</link>
-    <guid>https://localhost:8081/private-library/user-1/</guid>
-    <description><![CDATA[ All the gardens attached to your account. ]]></description>
-    <pubDate>Tue, 28 Jul 2026 21:00:00 GMT</pubDate>
-  </item><item>
     <title>Communication 1</title>
     <link>https://localhost:8081/communication-1/</link>
     <guid>https://localhost:8081/communication-1/</guid>
@@ -40,30 +64,6 @@
     <link>https://localhost:8081/communication-1/sources/</link>
     <guid>https://localhost:8081/communication-1/sources/</guid>
     <description><![CDATA[ Sources Week 1 Lecture 1 Transcript Week 1 Lecture 1 Transcript - part2 Week 1 Lecture 2 Communications 1 Course Reader - Sampling, PAM, PCM, and Noise Digital and analog communication systems Communications 1 (5ETC0) Topic Map . ]]></description>
-    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
-  </item><item>
-    <title>Computer Architecture</title>
-    <link>https://localhost:8081/computer-architecture-2/</link>
-    <guid>https://localhost:8081/computer-architecture-2/</guid>
-    <description><![CDATA[ Learning garden with 2 source documents, 0 lesson pages, and 989 graph links. ]]></description>
-    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
-  </item><item>
-    <title>Sources</title>
-    <link>https://localhost:8081/computer-architecture-2/sources/</link>
-    <guid>https://localhost:8081/computer-architecture-2/sources/</guid>
-    <description><![CDATA[ Sources Computer Architecture-2 Memory Hierarchies and Cache Organization . ]]></description>
-    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
-  </item><item>
-    <title>Math 2</title>
-    <link>https://localhost:8081/math-2/</link>
-    <guid>https://localhost:8081/math-2/</guid>
-    <description><![CDATA[ Learning garden with 24 source documents, 0 lesson pages, and 0 graph links. ]]></description>
-    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
-  </item><item>
-    <title>Sources</title>
-    <link>https://localhost:8081/math-2/sources/</link>
-    <guid>https://localhost:8081/math-2/sources/</guid>
-    <description><![CDATA[ Sources 5EZB0_SC_week2-1 5EZB0_SC_week6 calculus-a-complete-course-10_compress Final_exam_2024 final_exam_2025 final-exam-for-5ezb0-math-2-exam-details-and-instructions lecture transcripts Math2 Midterm2026 Mathematics 2 - Lec 1-1 Mathematics 2 - Lec 10 Mathematics 2 - Lec 11 Mathematics 2 - Lec 12 ... ]]></description>
     <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item>
     </channel>

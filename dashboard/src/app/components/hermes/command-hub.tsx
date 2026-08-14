@@ -21,6 +21,10 @@ import {
   type PublicAgencyAgent,
 } from "@/lib/hermes/agency-agents-client";
 import {
+  AGENCY_AGENTS_DIRECTORY_COMMAND,
+  agencyAgentToken,
+} from "@/lib/hermes/agency-agent-command";
+import {
   commandResponseUrl,
   invalidateCommandResponseCache,
   loadCachedCommandResponse,
@@ -49,6 +53,7 @@ import { SOCIALS_MANAGER_COMMAND } from "@/lib/socials-manager/identity.ts";
 import { HARDWARE_BLUEPRINT_COMMAND } from "@/lib/hardware/identity.ts";
 import { PARAMETRIC_CAD_COMMAND } from "@/lib/cad/identity.ts";
 import { HYPERFRAMES_COMMAND } from "@/lib/hyperframes/identity.ts";
+import { RESOURCE2SKILL_COMMAND } from "@/lib/resource2skill/identity.ts";
 import { OPENMONTAGE_COMMAND } from "@/lib/openmontage/identity.ts";
 import { OPENWORK_COMMAND } from "@/lib/openwork/identity.ts";
 import { OPENSCIENCE_COMMAND } from "@/lib/openscience/identity.ts";
@@ -88,6 +93,11 @@ const AgentReachSettingsDialog = dynamic(
 
 const HyperframesSettingsDialog = dynamic(
   () => import("./hyperframes-settings-dialog"),
+  { ssr: false },
+);
+
+const Resource2SkillSettingsDialog = dynamic(
+  () => import("./resource2skill-settings-dialog"),
   { ssr: false },
 );
 
@@ -157,7 +167,7 @@ function commandItemForAgencyAgent(agent: PublicAgencyAgent): CommandHubItem {
     id: agent.id,
     kind: "agent",
     slug: agent.slug,
-    token: `agent:${agent.slug}`,
+    token: agencyAgentToken(agent.slug),
     name: agent.name,
     description: agent.description,
     category: agent.divisionLabel,
@@ -243,6 +253,8 @@ interface Props {
   onSelectParametricCad?: () => void;
   /** When provided, selecting HyperFrames inserts its canonical command. */
   onSelectHyperframes?: () => void;
+  /** When provided, selecting Resource2Skill inserts its canonical command. */
+  onSelectResource2Skill?: () => void;
   /** When provided, selecting OpenMontage inserts its canonical command. */
   onSelectOpenMontage?: () => void;
   /** When provided, selecting OpenWork inserts its canonical command. */
@@ -433,6 +445,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onSelectHardwareBlueprint,
       onSelectParametricCad,
       onSelectHyperframes,
+      onSelectResource2Skill,
       onSelectOpenMontage,
       onSelectOpenwork,
       onSelectOpenscience,
@@ -476,6 +489,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const [socialsManagerSettingsOpen, setSocialsManagerSettingsOpen] = useState(false);
     const [agentReachSettingsOpen, setAgentReachSettingsOpen] = useState(false);
     const [hyperframesSettingsOpen, setHyperframesSettingsOpen] = useState(false);
+    const [resource2SkillSettingsOpen, setResource2SkillSettingsOpen] = useState(false);
     const [openMontageSettingsOpen, setOpenMontageSettingsOpen] = useState(false);
     const [openworkSettingsOpen, setOpenworkSettingsOpen] = useState(false);
     const [openscienceSettingsOpen, setOpenscienceSettingsOpen] = useState(false);
@@ -622,7 +636,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       const normalized = query.trim().toLowerCase();
       const filtered = normalized
         ? source.filter((item) =>
-            `${item.name} ${item.description} ${item.category ?? ""} ${item.source ?? ""} ${item.searchTerms ?? ""}`
+            `${item.token} ${item.name} ${item.description} ${item.category ?? ""} ${item.source ?? ""} ${item.searchTerms ?? ""}`
               .toLowerCase()
               .includes(normalized),
           )
@@ -927,7 +941,16 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       agencyDirectoryItems.length > 0 ||
       matchesAgentSearch(
         "Agency agents",
+        AGENCY_AGENTS_DIRECTORY_COMMAND,
         "specialist personas design engineering marketing strategy",
+      );
+    const showResource2Skill =
+      surface !== "quartz_ai" &&
+      Boolean(onSelectResource2Skill) &&
+      matchesAgentSearch(
+        "Resource2Skill",
+        RESOURCE2SKILL_COMMAND,
+        "website web deck slides powerpoint excel workbook spreadsheet blender 3d music audio artifact distilled skills",
       );
     const hasVisibleAgents =
       showAgentTars ||
@@ -946,6 +969,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       showSocialsManager ||
       showHardwareBlueprint ||
       showHyperframes ||
+      showResource2Skill ||
       showOpenMontage ||
       showOpenwork ||
       showOpenscience ||
@@ -2080,6 +2104,41 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                       </li>
                       ) }]
                       : []),
+                    ...(showResource2Skill
+                      ? [{ name: "Resource2Skill", node: (
+                      <li key="resource2skill"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForId("agent:resource2skill"))}
+                      >
+                        <button
+                          id="resource2skill-entry"
+                          type="button"
+                          onClick={() => {
+                            onSelectResource2Skill?.();
+                            onOpenChange(false);
+                          }}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{RESOURCE2SKILL_COMMAND}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Builds polished Web, PowerPoint, Excel, Blender, or audio artifacts with Microsoft&apos;s distilled multimodal skill libraries.
+                          </span>
+                        </button>
+                        <AgentSettingsButton
+                          name="Resource2Skill"
+                          onOpen={() => {
+                            setResource2SkillSettingsOpen(true);
+                            onOpenChange(false);
+                          }}
+                        />
+                        <FavoriteBox
+                          color={highlightColorForId("agent:resource2skill")}
+                          onColorChange={(color) => setHighlightId("agent:resource2skill", color)}
+                          label="Choose Resource2Skill highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
                     ...(showOpenMontage
                       ? [{ name: "OpenMontage", node: (
                       <li key="openmontage"
@@ -2434,15 +2493,8 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                         className="group flex w-full items-center gap-2 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
                       >
                         <span className="min-w-0 flex-1">
-                          <span className="flex items-center gap-2">
-                            <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">Agency agents</span>
-                            <span className="rounded-full bg-[var(--paper-strong)] px-2 py-0.5 text-[10px] tabular-nums text-[var(--ink-muted)]">
-                              {agencyAgentsLoading || !agencyAgentsLoaded
-                                ? "…"
-                                : agencyAgentsNotice
-                                  ? "Unavailable"
-                                  : agencyAgents.length.toLocaleString()}
-                            </span>
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">
+                            {AGENCY_AGENTS_DIRECTORY_COMMAND}
                           </span>
                           <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
                             Browse specialist personas for design, engineering, marketing, strategy, and more.
@@ -2678,7 +2730,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                                 >
                                   <span className="min-w-0 flex-1">
                                     <span className="flex items-center gap-2">
-                                      <span className="truncate font-mono text-sm font-medium text-[var(--ink-heading)]">{item.name}</span>
+                                      <span className="truncate font-mono text-sm font-medium text-[var(--ink-heading)]">/{item.token}</span>
                                     </span>
                                       <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink-muted)]">{item.description}</span>
                                       {item.vibe ? (
@@ -2728,6 +2780,9 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         ) : null}
         {surface === "quartz_ai" ? null : hyperframesSettingsOpen ? (
           <HyperframesSettingsDialog onClose={() => setHyperframesSettingsOpen(false)} />
+        ) : null}
+        {surface === "quartz_ai" ? null : resource2SkillSettingsOpen ? (
+          <Resource2SkillSettingsDialog onClose={() => setResource2SkillSettingsOpen(false)} />
         ) : null}
         {surface === "quartz_ai" ? null : openMontageSettingsOpen ? (
           <OpenMontageSettingsDialog onClose={() => setOpenMontageSettingsOpen(false)} />

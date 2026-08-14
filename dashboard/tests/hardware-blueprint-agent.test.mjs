@@ -490,15 +490,17 @@ test("the run reports its thinking time and the tokens it spent", () => {
   assert.match(manager, /emit\(run, "run\.usage"/);
   assert.match(manager, /const usage = \{ \.\.\.sumChatTokenUsage\(spent\), responseDurationMs: elapsedMs \}/);
   assert.match(manager, /emit\(run, "run\.completed", \{[\s\S]*?usage,/);
-  // Three steps spend tokens now: interpretation, firmware logic, and the
-  // enclosure hand-off to the Parametric CAD agent when the brief asks for one.
-  assert.equal((manager.match(/onUsage,/g) ?? []).length, 3, "a model step is not reporting usage");
+  // Four paths may spend tokens now: interpretation, bounded component
+  // research, firmware logic, and the enclosure hand-off to Parametric CAD.
+  assert.equal((manager.match(/onUsage,/g) ?? []).length, 4, "a model step is not reporting usage");
 
   const card = source("src/app/components/hermes/inline-hardware-blueprint-run.tsx");
   assert.match(card, /<AssistantResponseMeta/);
   assert.match(card, /agentName="Hardware Blueprint"/);
   assert.match(card, /"run\.usage"/);
   assert.match(card, /persistedUsage\?: ChatTokenUsage/);
+  assert.match(card, /counts\.errors > 0/);
+  assert.match(card, /needsChanges \? "needs changes" : status/);
   for (const host of [
     "src/app/components/hermes/agent-runtime-panel.tsx",
     "src/app/gardens/[clusterSlug]/workspace-client.tsx",

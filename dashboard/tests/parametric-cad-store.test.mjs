@@ -14,6 +14,10 @@ const store = await import("../src/lib/cad/project-store.ts");
 const blobs = await import("../src/lib/cad/blob-store.ts");
 const { parseStoredCadArtifact } = await import("../src/lib/cad/schemas.ts");
 
+test("the project store does not expose a draft-replacement escape hatch", () => {
+  assert.equal("replaceUnbuiltCadProjectSpec" in store, false);
+});
+
 function harness() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-cad-store-"));
   const database = new Database(path.join(root, "cad.sqlite"));
@@ -199,6 +203,78 @@ test("an invalid regeneration never replaces the last working design", () => {
     const healed = store.getCadProject(project.id, context.database);
     assert.equal(healed.current_revision, 3);
     assert.equal(healed.status, "valid-with-warnings");
+  } finally {
+    context.database.close();
+    fs.rmSync(context.root, { recursive: true, force: true });
+  }
+});
+
+test("artifact publication refuses an invalid or non-current CAD revision", async () => {
+  const context = harness();
+  try {
+    const { buildCadManifest, publishCadDesign } = await import("../src/lib/cad/artifact.ts");
+    const project = createProject(context);
+    recordRevision(context, project, 1);
+    recordRevision(context, project, 2, {
+      status: "invalid",
+      validation: {
+        passed: false,
+        checkedAt: new Date().toISOString(),
+        issues: [{ code: "not_watertight", severity: "error", message: "open body" }],
+      },
+    });
+    const invalid = buildCadManifest({
+      projectId: project.id,
+      revision: 2,
+      disclaimers: ["Geometric validation only."],
+      database: context.database,
+    });
+    assert.ok(invalid);
+    assert.equal(invalid.status, "invalid");
+
+    const artifactContext = {
+      userId: 1,
+      conversationPublicId: "conv_terminal",
+      runtimeSessionId: 20,
+      hermesSessionId: "session",
+      conversationId: 12,
+      clusterId: null,
+      surface: "dashboard_terminal",
+      runId: "run_one",
+      assistantMessageId: null,
+    };
+    const before = context.database
+      .prepare("SELECT COUNT(*) AS count FROM hermes_artifacts")
+      .get().count;
+    assert.equal(
+      await publishCadDesign({
+        context: artifactContext,
+        manifest: invalid,
+        database: context.database,
+      }),
+      null,
+    );
+
+    // Caller metadata cannot turn a failed stored revision into a publishable
+    // one: the publication boundary re-reads the current revision from storage.
+    const forged = {
+      ...invalid,
+      status: "valid",
+      validation: { ...invalid.validation, passed: true, issues: [] },
+    };
+    assert.equal(
+      await publishCadDesign({
+        context: artifactContext,
+        manifest: forged,
+        database: context.database,
+      }),
+      null,
+    );
+    const after = context.database
+      .prepare("SELECT COUNT(*) AS count FROM hermes_artifacts")
+      .get().count;
+    assert.equal(after, before, "an invalid CAD attempt created an artifact");
+    assert.equal(store.getCadProject(project.id, context.database).current_revision, 1);
   } finally {
     context.database.close();
     fs.rmSync(context.root, { recursive: true, force: true });

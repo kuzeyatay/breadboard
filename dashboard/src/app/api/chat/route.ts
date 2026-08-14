@@ -35,6 +35,7 @@ import {
   createResponseTextRecovery,
   reasoningTextFromOutputItem,
 } from '@/lib/responses-stream-text.ts';
+import { resolveSmallTalkReply, smallTalkEventStream } from '@/lib/chat-small-talk.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -301,13 +302,29 @@ export async function POST(request: Request) {
     const selectedReasoningEffort = normalizeAssistantReasoningEffort(reasoningEffort, thinking);
     const thinkingEnabled = selectedReasoningEffort !== 'none';
 
+    // Legacy mode gets the same retrieval gate as Hermes. Exact small-talk
+    // turns need neither a full garden scan nor GraphRAG context; attachments
+    // always keep the request on the normal multimodal/document path.
+    const lastUserMessage = [...chatMessages].reverse().find((message) => message.role === 'user');
+    const smallTalkReply =
+      chatAttachments.length === 0
+        ? resolveSmallTalkReply(lastUserMessage?.content ?? '')
+        : null;
+    if (smallTalkReply) {
+      recordAuditEvent({
+        eventType: 'small_talk.fast_path',
+        gardenId: cluster.slug,
+        payload: { intent: smallTalkReply.intent, backend: 'legacy' },
+      });
+      return smallTalkEventStream(smallTalkReply);
+    }
+
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
       return NextResponse.json({ error: 'QUARTZ_CONTENT_PATH not configured' }, { status: 500 });
     }
 
     const knowledge = scanClusterKnowledge(contentPath, cluster.slug);
-    const lastUserMessage = [...chatMessages].reverse().find((message) => message.role === 'user');
 
     const selectedFocusSlugs = new Set<string>();
     for (const slug of selectedSourceSlugs) {

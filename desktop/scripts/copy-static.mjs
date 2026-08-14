@@ -10,6 +10,8 @@ fs.mkdirSync(targetDir, { recursive: true });
 for (const file of [
   "index.html",
   "startup.css",
+  "recovery.html",
+  "recovery.css",
   "theme.js",
   "breadboard-icon.svg",
   "intro.m4a",

@@ -233,6 +233,38 @@ class CadQueryModel:
             assembly.add(shape, name=name, color=color)
         return assembly
 
+    def interferences(self) -> list[tuple[str, str, float]]:
+        """Measure impossible rigid-body overlap in the assembled coordinates.
+
+        Per-body validity cannot see one printable part passing through another.
+        A positive common volume is deterministic evidence of interference;
+        face/edge contact has zero volume and is deliberately left alone.
+        """
+        overlaps: list[tuple[str, str, float]] = []
+        for index, (left_name, left) in enumerate(self._named):
+            left_box = _bounding_box(left)
+            for right_name, right in self._named[index + 1 :]:
+                right_box = _bounding_box(right)
+                if (
+                    left_box.xmax <= right_box.xmin
+                    or right_box.xmax <= left_box.xmin
+                    or left_box.ymax <= right_box.ymin
+                    or right_box.ymax <= left_box.ymin
+                    or left_box.zmax <= right_box.zmin
+                    or right_box.zmax <= left_box.zmin
+                ):
+                    continue
+                try:
+                    common = left.intersect(right)
+                    volume = float(common.Volume())
+                except Exception:
+                    # Topology validation will report broken shapes separately;
+                    # an intersection query must not take down the whole build.
+                    continue
+                if volume > 1e-4:
+                    overlaps.append((left_name, right_name, volume))
+        return overlaps
+
     def tessellate(
         self, linear_tolerance: float, angular_tolerance: float
     ) -> TessellationSummary:

@@ -129,6 +129,7 @@ hermes-skills/approved/
 /harvey-labs/
 /hermes-agent/
 /hyperframes/
+/Resource2Skill/
 /iFixAi/
 /inbox-zero/
 /loopx/
@@ -158,6 +159,7 @@ hermes-skills/approved/
 /vimax/
 /voicebox/
 /watch/
+/watermarks-remover/
 
 # ---------------------------------------------------------------------------
 # Per-agent generated workspaces, runs and installs
@@ -175,6 +177,7 @@ dashboard/cad-projects/
 # HyperFrames CLI Breadboard installs into its own npm prefix.
 dashboard/hyperframes-runs/
 dashboard/hyperframes-cli/
+dashboard/resource2skill-runs/
 
 # OpenMontage productions are deliverables and are never pruned.
 dashboard/openmontage-runs/

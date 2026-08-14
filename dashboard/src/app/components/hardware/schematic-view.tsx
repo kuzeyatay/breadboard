@@ -10,7 +10,7 @@
 // values, power rails and net highlighting rather than leaving the tab empty.
 
 import { useMemo, useRef } from "react";
-import { componentDefinition } from "@/lib/hardware/components/index.ts";
+import { componentDefinitionForDesign } from "@/lib/hardware/components/index.ts";
 import { netStyle } from "@/lib/hardware/net-style.ts";
 import type { HardwareDesign } from "@/lib/hardware/types";
 import { useFitView } from "./use-fit-view";
@@ -74,7 +74,7 @@ function buildSchematic(design: HardwareDesign): {
   for (const instance of controllerFirst) {
     const pins = wiredPins.get(instance.id);
     if (!pins?.size) continue;
-    const definition = componentDefinition(instance.definitionId);
+    const definition = componentDefinitionForDesign(design, instance.definitionId);
     if (!definition) continue;
 
     const ordered = definition.pins.filter((pin) => pins.has(pin.id));

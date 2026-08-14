@@ -38,6 +38,13 @@ test("document ingestion accumulates OCR and map-generation usage across calls",
     inFlightCalls: 0,
   });
   assert.equal(sumIngestTokenUsage([usage, usage]).totalTokens, 24_000);
+  assert.equal(
+    sumIngestTokenUsage([
+      { ...usage, model: "gpt-5.6-sol" },
+      { ...usage, model: "gpt-5.6-sol" },
+    ]).model,
+    "gpt-5.6-sol",
+  );
 });
 
 test("ingestion streams actual usage and both document-upload interfaces render it", () => {
@@ -59,7 +66,7 @@ test("ingestion streams actual usage and both document-upload interfaces render 
   );
 
   assert.match(route, /attachIngestTokenUsageTracking/);
-  assert.match(route, /send\(\{ type: "usage", tokenUsage \}\)/);
+  assert.match(route, /send\(\{ type: "usage", tokenUsage: \{ \.\.\.tokenUsage, model \} \}\)/);
   assert.match(route, /type: "result",[\s\S]*?tokenUsage/);
   assert.match(route, /type: "error",[\s\S]*?tokenUsage/);
   assert.match(dashboard, /<DocumentIngestionTokenUsage/);
@@ -79,6 +86,7 @@ test("ingestion streams actual usage and both document-upload interfaces render 
   assert.match(panel, /Input[\s\S]*?Output[\s\S]*?Reasoning[\s\S]*?Total/);
   assert.match(panel, /Waiting for usage/);
   assert.match(panel, /Document ingestion token usage for/);
+  assert.match(panel, /<ModelCallIndicator model=\{usage\.model\}/);
 });
 
 test("the ingestion warning appears only for explicit ChatMock vision errors", () => {
