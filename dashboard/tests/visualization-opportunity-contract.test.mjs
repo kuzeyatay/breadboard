@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  analyzeVisualizationOpportunities,
   buildVisualizationPlan,
   requiredGeneratedVisualizationContractProblems,
+  selectVisualizationRoutes,
 } from "../src/lib/visualization-opportunities.ts";
 import {
   decideInteractiveVisualNecessity,
@@ -88,30 +90,29 @@ function mapFor(unit) {
   };
 }
 
-test("U7 path-work opportunity uses grounded contract IDs instead of step/main_output", () => {
+test("legacy U7 question inference cannot bypass the model-authored control-contract gate", () => {
   const unit = plannedRequiredUnit();
-  const plan = buildVisualizationPlan({
+  const opportunities = analyzeVisualizationOpportunities({
     gardenId: "electromagnetism-1",
     learningMap: mapFor(unit),
     learningUnits: [unit],
   });
-  const opportunity = plan.opportunities[0];
-
-  assert.equal(plan.decisions[0].route, "generated_module");
-  assert.deepEqual(
-    opportunity.requiredInputs.map(({ id, label }) => ({ id, label })),
-    [{ id: "charge_position_along_path", label: "charge position along path" }],
+  const selected = selectVisualizationRoutes({ opportunities, learningUnits: [unit] });
+  assert.match(
+    requiredGeneratedVisualizationContractProblems(selected).join(" "),
+    /validated model-authored learner control contract/i,
   );
-  assert.deepEqual(
-    opportunity.requiredOutputs.map(({ id, label }) => ({ id, label })),
-    [{ id: "electric_work", label: "Electric work" }],
+  assert.throws(
+    () => buildVisualizationPlan({
+      gardenId: "electromagnetism-1",
+      learningMap: mapFor(unit),
+      learningUnits: [unit],
+    }),
+    /validated model-authored learner control contract/i,
   );
-  assert.equal(requiredGeneratedVisualizationContractProblems(plan).length, 0);
-  assert.equal(opportunity.requiredInputs.some((input) => input.id === "step"), false);
-  assert.equal(opportunity.requiredOutputs.some((output) => output.id === "main_output"), false);
 });
 
-test("explicit encode and acts-like questions produce grounded input/output pairs", () => {
+test("legacy encode and acts-like question parsers do not satisfy required generated contracts", () => {
   const fixtures = [
     {
       unit: plannedRequiredUnit({
@@ -156,24 +157,15 @@ test("explicit encode and acts-like questions produce grounded input/output pair
   ];
 
   for (const fixture of fixtures) {
-    const plan = buildVisualizationPlan({
-      gardenId: "electromagnetism-1",
-      learningMap: mapFor(fixture.unit),
-      learningUnits: [fixture.unit],
-    });
-    const opportunity = plan.opportunities[0];
-    assert.deepEqual(
-      { id: opportunity.requiredInputs[0]?.id, label: opportunity.requiredInputs[0]?.label },
-      fixture.input,
-      `${fixture.unit.id} input`,
+    assert.throws(
+      () => buildVisualizationPlan({
+        gardenId: "electromagnetism-1",
+        learningMap: mapFor(fixture.unit),
+        learningUnits: [fixture.unit],
+      }),
+      /validated model-authored learner control contract/i,
+      fixture.unit.id,
     );
-    assert.deepEqual(
-      { id: opportunity.requiredOutputs[0]?.id, label: opportunity.requiredOutputs[0]?.label },
-      fixture.output,
-      `${fixture.unit.id} output`,
-    );
-    assert.equal(opportunity.requiredInputs.some((input) => input.id === "step"), false);
-    assert.equal(opportunity.requiredOutputs.some((output) => output.id === "main_output"), false);
   }
 });
 
@@ -201,5 +193,22 @@ test("an unparseable required generated relationship fails planning instead of r
       learningUnits: [unit],
     }),
     /Visualization opportunity contract validation failed:.*no source-grounded learner input/i,
+  );
+});
+
+test("visualization routing never invents a necessity plan when the model-authored plan is absent", () => {
+  const planned = plannedRequiredUnit();
+  const unit = {
+    ...planned,
+    interactiveVisualPlan: undefined,
+    teachingMediumPlan: undefined,
+  };
+  assert.throws(
+    () => buildVisualizationPlan({
+      gardenId: "electromagnetism-1",
+      learningMap: mapFor(unit),
+      learningUnits: [unit],
+    }),
+    /requires a validated model-authored necessity and teaching-medium decision/i,
   );
 });

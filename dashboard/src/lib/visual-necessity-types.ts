@@ -1,3 +1,5 @@
+import type { VisualizationInteractionGoal } from "./visualization-registry.ts";
+
 export type InteractiveVisualNecessity =
   | "required"
   | "recommended"
@@ -15,6 +17,33 @@ export type PreferredTeachingMedium =
   | "timeline"
   | "prose"
   | "no_additional_visual";
+
+export interface InteractiveVisualControlEvidence {
+  anchor: string;
+  quote: string;
+}
+
+export interface InteractiveVisualControlContract {
+  kind: "variable" | "select_case" | "process_position";
+  label: string;
+  options?: string[];
+  evidence: InteractiveVisualControlEvidence[];
+}
+
+export type InteractiveVisualOutputRepresentation =
+  | "value"
+  | "chart"
+  | "diagram"
+  | "animation"
+  | "timeline"
+  | "table"
+  | "annotation";
+
+export interface InteractiveVisualObservableContract {
+  label: string;
+  representation: InteractiveVisualOutputRepresentation;
+  evidence: InteractiveVisualControlEvidence[];
+}
 
 export interface InteractiveVisualIntent {
   id: string;
@@ -61,6 +90,13 @@ export interface ContractInteractiveVisualPlan {
   decision: VisualNecessityDecision;
   requirement: "required" | "recommended" | "optional" | "none";
   visualIntent?: InteractiveVisualIntent;
+  /** Validated model-authored controls; planning consumes these without inferring content. */
+  controlContract?: InteractiveVisualControlContract[];
+  /** Model-authored interaction behavior. Routing must not infer this from prose or roles. */
+  interactionGoal?: VisualizationInteractionGoal;
+  /** Model-authored learner-visible response and its presentation form. */
+  observable?: InteractiveVisualObservableContract;
+  expectedInsightEvidence?: InteractiveVisualControlEvidence[];
   omissionReason?: string;
   /** Explicitly controls the exceptional case where an omitted recommendation may block. */
   alternativeCoverage?: "covered" | "uncovered" | "unverified";

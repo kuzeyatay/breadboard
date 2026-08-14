@@ -103,6 +103,11 @@ interface Props {
   browserTitle?: string;
   sourceUrl?: string;
   readOnly?: boolean;
+  /**
+   * Whether this account asked for the Fast-read seat in its profile. Off is
+   * the default, so a page that has not read the setting shows no button.
+   */
+  fastRead?: boolean;
 }
 
 function Spinner({ className = "h-4 w-4" }: { className?: string }) {
@@ -267,6 +272,7 @@ export default function PdfViewerClient({
   browserTitle,
   sourceUrl,
   readOnly = false,
+  fastRead = false,
 }: Props) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1404,25 +1410,27 @@ export default function PdfViewerClient({
             </svg>
             Tools
           </button>
-          <button
-            type="button"
-            onClick={() => void openFastRead()}
-            disabled={loading || fastReadLoading}
-            title="Speed-read this PDF one word at a time"
-            className="flex items-center gap-1.5 rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <svg
-              className="h-3.5 w-3.5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={1.8}
-              aria-hidden="true"
+          {fastRead && (
+            <button
+              type="button"
+              onClick={() => void openFastRead()}
+              disabled={loading || fastReadLoading}
+              title="Speed-read this PDF one word at a time"
+              className="flex items-center gap-1.5 rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13 4 6 13h5l-1 7 7-9h-5z" />
-            </svg>
-            {fastReadLoading ? "Opening..." : "Fast-read"}
-          </button>
+              <svg
+                className="h-3.5 w-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.8}
+                aria-hidden="true"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 4 6 13h5l-1 7 7-9h-5z" />
+              </svg>
+              {fastReadLoading ? "Opening..." : "Fast-read"}
+            </button>
+          )}
           <button
             type="button"
             onClick={goToPreviousPage}

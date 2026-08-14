@@ -55,6 +55,13 @@ export const FASTREAD_MAX_WPM = 900;
 export const FASTREAD_DEFAULT_WPM = 350;
 export const FASTREAD_WPM_STEP = 25;
 
+/**
+ * How many words of already-read and still-to-come prose sit on either side of
+ * the focal word. More than fits on the line is fine — the display clips what
+ * runs off the edge, so this only has to be generous enough to reach it.
+ */
+export const FASTREAD_CONTEXT_WORDS = 8;
+
 const VISUAL_BLOCK_LANGS = new Set([
   'breadboard-visual',
   'breadboard-generated-visual',
@@ -812,6 +819,42 @@ export function stepBackward(
   return {
     segmentIndex: previous,
     wordIndex: target.kind === 'text' ? Math.max(0, target.words.length - 1) : 0,
+  };
+}
+
+export interface FastReadContext {
+  /** Words just read, in reading order, ready to display before the focal word. */
+  before: string;
+  /** Words about to be read, ready to display after the focal word. */
+  after: string;
+}
+
+/**
+ * The prose on either side of the cursor, so the focal word can be shown in its
+ * sentence instead of alone.
+ *
+ * Context never crosses a segment boundary. A boundary is a stop — a figure, an
+ * equation, a code block — so the words beyond it are not the continuation of
+ * this sentence, and running them together would read as one when they are not.
+ * Near a stop the line is simply shorter on that side.
+ */
+export function contextAround(
+  segments: FastReadSegment[],
+  cursor: FastReadCursor,
+  span: number = FASTREAD_CONTEXT_WORDS,
+): FastReadContext {
+  const segment = segments[cursor.segmentIndex];
+  if (!segment || segment.kind !== 'text' || span <= 0) return { before: '', after: '' };
+
+  const text = (from: number, to: number) =>
+    segment.words
+      .slice(Math.max(0, from), Math.max(0, to))
+      .map((word) => word.text)
+      .join(' ');
+
+  return {
+    before: text(cursor.wordIndex - span, cursor.wordIndex),
+    after: text(cursor.wordIndex + 1, cursor.wordIndex + 1 + span),
   };
 }
 

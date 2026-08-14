@@ -1386,12 +1386,14 @@ interface TargetedRepairSummary {
   notes: string[];
 }
 
-/** Production repair: MODEL-first for semantic page/section issues, then the
- *  FULL deterministic finalization for mechanical fixes and as a fallback. */
+/** Production repair. Legacy callers may retain deterministic mechanical
+ * repair; active Learn disables it so a model rejection remains a blocker. */
 export function makeCriticArtifactRepair(opts: {
   modelRepair?: ModelRepairFn;
   deterministicFinalize?: (gardenDir: string, gardenSlug: string) => void;
+  allowDeterministicRepairs?: boolean;
 } = {}): ArtifactRepairFn {
+  const allowDeterministicRepairs = opts.allowDeterministicRepairs !== false;
   const finalize = opts.deterministicFinalize ?? ((gardenDir: string, gardenSlug: string) => {
     try { finalizeGardenExport({ gardenDir, gardenSlug }); }
     catch { try { reconcileFinalGardenState(gardenDir, gardenSlug); } catch { /* best effort */ } }
@@ -1399,22 +1401,24 @@ export function makeCriticArtifactRepair(opts: {
   return async (gardenDir, gardenSlug, requests, ctx) => {
     const provenance: RepairProvenanceRecord[] = [];
     const handledByModel = new Set<string>();
-    for (const req of requests) {
-      const targeted = applyTargetedDeterministicRepair(gardenDir, gardenSlug, req);
-      if (!targeted.attempted || targeted.changed.length === 0) continue;
-      provenance.push({
-        requestId: req.id,
-        targetKind: req.targetKind,
-        targetPath: req.targetPath,
-        executorAttempted: ["deterministic"],
-        executorUsed: "deterministic",
-        changed: true,
-      });
-      handledByModel.add(req.id);
+    if (allowDeterministicRepairs) {
+      for (const req of requests) {
+        const targeted = applyTargetedDeterministicRepair(gardenDir, gardenSlug, req);
+        if (!targeted.attempted || targeted.changed.length === 0) continue;
+        provenance.push({
+          requestId: req.id,
+          targetKind: req.targetKind,
+          targetPath: req.targetPath,
+          executorAttempted: ["deterministic"],
+          executorUsed: "deterministic",
+          changed: true,
+        });
+        handledByModel.add(req.id);
+      }
     }
     if (opts.modelRepair) {
       for (const req of requests) {
-        if (!requestIsModelFirst(req, ctx.issuesById)) continue;
+        if (allowDeterministicRepairs && !requestIsModelFirst(req, ctx.issuesById)) continue;
         if (handledByModel.has(req.id)) continue;
         const issue = ctx.issuesById?.get(req.issueIds[0]);
         if (!issue) continue;
@@ -1430,19 +1434,27 @@ export function makeCriticArtifactRepair(opts: {
         } catch (error) {
           modelFailureReason = error instanceof Error ? error.message : String(error);
         }
-        if (!changed) attempted.push("deterministic"); // deterministic finalize below is the fallback
+        if (!changed && allowDeterministicRepairs) attempted.push("deterministic");
         provenance.push({ requestId: req.id, targetKind: req.targetKind, targetPath: req.targetPath, executorAttempted: attempted, executorUsed: used, modelFailureReason, changed });
         handledByModel.add(req.id);
       }
     }
-    // Deterministic finalization: mechanical fixes + fallback for failed model repairs.
-    finalize(gardenDir, gardenSlug);
-    for (const p of provenance) {
-      if (p.executorUsed === "none") p.executorUsed = "deterministic"; // finalize was the fallback
+    if (allowDeterministicRepairs) {
+      finalize(gardenDir, gardenSlug);
+      for (const p of provenance) {
+        if (p.executorUsed === "none") p.executorUsed = "deterministic";
+      }
     }
     for (const req of requests) {
       if (handledByModel.has(req.id)) continue;
-      provenance.push({ requestId: req.id, targetKind: req.targetKind, targetPath: req.targetPath, executorAttempted: ["deterministic"], executorUsed: "deterministic", changed: true });
+      provenance.push({
+        requestId: req.id,
+        targetKind: req.targetKind,
+        targetPath: req.targetPath,
+        executorAttempted: allowDeterministicRepairs ? ["deterministic"] : [],
+        executorUsed: allowDeterministicRepairs ? "deterministic" : "none",
+        changed: allowDeterministicRepairs,
+      });
     }
     return { attempted: requests.length, resolved: 0, provenance };
   };

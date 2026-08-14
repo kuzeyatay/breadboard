@@ -14,11 +14,16 @@ const INTERNAL_GARDEN_FOLDERS = new Set([
   "tags",
 ])
 
-export function isVisibleGardenRootFolder(node: GardenRootNode): boolean {
-  if (!node.isFolder) return false
-
+export function isVisibleGardenRootEntry(node: GardenRootNode): boolean {
   const segment = node.slugSegment.trim().toLowerCase()
-  if (!segment || INTERNAL_GARDEN_FOLDERS.has(segment)) return false
+  if (!segment) return false
+
+  // Notes may live directly at the garden root. They are real Explorer
+  // entries, even though they are not folders; dropping them leaves a garden
+  // with dozens of pages looking empty in the navigation tree.
+  if (!node.isFolder) return segment !== "index" && node.data !== null
+
+  if (INTERNAL_GARDEN_FOLDERS.has(segment)) return false
 
   // User-created folders have an `_index.md`, represented by data on the folder node.
   // Keep the two historical garden folders visible for older content without an index.

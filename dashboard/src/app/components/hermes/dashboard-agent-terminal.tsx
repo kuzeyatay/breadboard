@@ -18,6 +18,7 @@ import { useAssistantIntelligence } from "@/app/components/use-assistant-intelli
 import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import AgentRuntimePanel from "./agent-runtime-panel";
+import { ArtifactDockHostProvider } from "./artifact-dock-host";
 import ArtifactPanel, {
   ARTIFACT_REVISE_EVENT,
 } from "./artifact-panel";
@@ -488,6 +489,10 @@ function RuntimeTerminal({
   // One panel at a time opens beside the transcript: the artifact archive,
   // uploads, scheduling, or route-owned automations. All live in the left rail.
   const [sidePanel, setSidePanel] = useState<TerminalPanel | null>(initialPanel);
+  // The lane an opened artifact fills, beside the transcript and inside the
+  // dock. Held in state rather than a ref so the viewers below re-render once
+  // it exists and can portal into it.
+  const [artifactLane, setArtifactLane] = useState<HTMLDivElement | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   // Linking a phone (WhatsApp, Telegram) lives in Settings → Messaging, reached
   // from the Intelligence menu. It is a once-a-year setup task, not a control
@@ -5647,6 +5652,10 @@ function RuntimeTerminal({
         // unstacked body would land in that margin and get run through
         // html-to-image on every frame of a dock resize.
         <div className="relative z-[1] flex min-h-0 flex-1 bg-[var(--paper-surface)]">
+          {/* Everything in the dock shares one lane for opened artifacts: the
+              transcript's own cards and the Artifacts archive both file into
+              it, so an artifact never leaves the dock it was made in. */}
+          <ArtifactDockHostProvider host={artifactLane}>
           {sidebarOpen ? (
             <TerminalSidebar
               chats={sidebarChats}
@@ -5976,6 +5985,14 @@ function RuntimeTerminal({
               )}
             </aside>
           ) : null}
+          {/* Empty until an artifact is opened, and then an even half of what
+              is left beside the transcript — the chat keeps the other half. */}
+          <div
+            ref={setArtifactLane}
+            className="bb-artifact-lane"
+            data-artifact-lane
+          />
+          </ArtifactDockHostProvider>
         </div>
       ) : null}
 

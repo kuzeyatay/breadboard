@@ -13,7 +13,9 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
+import { useArtifactDockHost } from "./artifact-dock-host";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import { parseStoredDesign } from "@/lib/hardware/schemas.ts";
 import { parseStoredCadArtifact } from "@/lib/cad/schemas.ts";
@@ -77,13 +79,11 @@ export const GARDEN_DOCUMENTS_CHANGED_EVENT = "breadboard:garden-documents-chang
 const ARTIFACTS_FOLDER = "artifacts";
 
 /**
- * How wide the dock asks the shell to be. Documents read at a comfortable
- * column; anything with its own canvas — a blueprint, a film, a gadget, a
- * picture — needs the room, but never so much that the chat beside it stops
- * being a chat.
+ * An even split: the artifact takes half, the conversation keeps half. The
+ * floor is what a document still reads at before the dock stops being worth
+ * opening — below it, on a narrow window, the dock covers the surface instead.
  */
-const DOCK_WIDTH = "clamp(24rem, 44vw, 50rem)";
-const WIDE_DOCK_WIDTH = "clamp(28rem, 56vw, 68rem)";
+const DOCK_WIDTH = "max(24rem, 50vw)";
 
 // A surface can have two viewers mounted at once — the Artifacts archive owns
 // one and the transcript's inline cards own another — so the width the shell
@@ -92,7 +92,11 @@ const WIDE_DOCK_WIDTH = "clamp(28rem, 56vw, 68rem)";
 // overlapping the app it had already made room in.
 let openDocks = 0;
 
-/** Reserve the dock's width on the shell for as long as one is open. */
+/**
+ * Reserve the dock's width on the shell for as long as one is open. Only the
+ * free-floating dock needs this: a dock that lives in a surface's own lane is
+ * already taking up space there.
+ */
 function useReservedDockWidth(open: boolean, width: string): void {
   useEffect(() => {
     if (!open) return;
@@ -381,11 +385,6 @@ export default function ArtifactViewer({
   const vimaxFilm = artifact?.renderer === "vimax-production";
   const socialsPost = artifact?.renderer === "socials-manager-post";
   const isGadget = artifact?.renderer === "gadget";
-  const richMedia =
-    artifact?.kind === "video" ||
-    artifact?.kind === "presentation";
-  // Generated artwork is the point of the viewer for social posts, so it gets a
-  // full-height frame rather than the narrow default panel.
   const isRaster = artifact?.kind === "image" || artifact?.kind === "diagram";
   const artifactId = artifact?.id ?? "";
   const artifactVersion = artifact?.version ?? 0;
@@ -399,20 +398,11 @@ export default function ArtifactViewer({
     ? `${previewUrl}&channel=${encodeURIComponent(interactiveChannel)}`
     : previewUrl;
 
-  // Everything that renders its own canvas rather than a column of text takes
-  // the wider dock.
-  const wideDock =
-    hardwareBlueprint ||
-    parametricCad ||
-    modelFile ||
-    vimaxFilm ||
-    socialsPost ||
-    isGadget ||
-    interactive ||
-    richMedia ||
-    isRaster;
-  const dockWidth = wideDock ? WIDE_DOCK_WIDTH : DOCK_WIDTH;
-  useReservedDockWidth(Boolean(artifact), dockWidth);
+  // A surface that hosts the dock in its own layout (the Terminal) hands down
+  // the lane to open in; one that does not (a full-page Garden) gets the dock
+  // pinned to the viewport instead, and gives up the width for it.
+  const dockHost = useArtifactDockHost();
+  useReservedDockWidth(Boolean(artifact) && !dockHost, DOCK_WIDTH);
 
   useEffect(() => {
     if (!artifact || !isTextual || !artifact.previewAvailable) return;
@@ -808,21 +798,22 @@ export default function ArtifactViewer({
     );
   }
 
-  return (
-    <>
-      {/* Under the desktop breakpoint the dock has to cover the app rather
-          than sit beside it, so there it keeps a scrim to dismiss it by. Wide
-          screens make room for the panel instead, and a scrim over an app the
-          user can still work in would be a lie. */}
-      <div
-        className="bb-modal-backdrop fixed inset-0 z-[69] lg:hidden"
-        aria-hidden="true"
-        onClick={onClose}
-      />
+  const panel = (
       <aside
-        style={{ "--bb-artifact-dock-width": dockWidth } as CSSProperties}
-        className="bb-artifact-dock fixed inset-y-0 right-0 z-[70] flex w-full flex-col overflow-hidden border-l border-[var(--line)] bg-[var(--paper-surface)] text-[var(--ink)] lg:w-[var(--bb-artifact-dock-width)]"
-        role="dialog"
+        style={
+          dockHost
+            ? undefined
+            : ({ "--bb-artifact-dock-width": DOCK_WIDTH } as CSSProperties)
+        }
+        className={
+          dockHost
+            ? // In a surface's own lane the split is the lane's business: the
+              // panel simply fills it.
+              "bb-artifact-dock flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-[var(--line)] bg-[var(--paper-surface)] text-[var(--ink)]"
+            : "bb-artifact-dock bb-artifact-dock-floating fixed inset-y-0 right-0 z-[70] flex w-full flex-col overflow-hidden border-l border-[var(--line)] bg-[var(--paper-surface)] text-[var(--ink)] lg:w-[var(--bb-artifact-dock-width)]"
+        }
+        // In a lane the panel is part of the surface, not a window over it.
+        role={dockHost ? undefined : "dialog"}
         aria-label={artifact.title}
       >
         {/* The dock is narrower than the dialog it replaces, so the actions
@@ -919,6 +910,22 @@ export default function ArtifactViewer({
           {renderBody()}
         </div>
       </aside>
+  );
+
+  if (dockHost) return createPortal(panel, dockHost);
+
+  return (
+    <>
+      {/* A free-floating dock covers the app under the desktop breakpoint —
+          there is no width to share there — so it keeps a scrim to dismiss it
+          by. Wider than that the app makes room beside it instead, and a scrim
+          over a chat the user can still type into would be a lie. */}
+      <div
+        className="bb-modal-backdrop fixed inset-0 z-[69] lg:hidden"
+        aria-hidden="true"
+        onClick={onClose}
+      />
+      {panel}
     </>
   );
 }

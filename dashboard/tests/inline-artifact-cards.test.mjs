@@ -157,9 +157,6 @@ test("gadgets use the standard artifact placeholder until opened", () => {
   assert.doesNotMatch(cards, /import InlineGadget|isGadgetArtifact/);
   assert.match(cards, /<ArtifactFileIcon kind=\{artifact\.kind\} \/>/);
   assert.match(viewer, /if \(isGadget\) \{\s*return <InlineGadget artifact=\{artifact\} \/>/);
-  // A gadget draws its own canvas, so it opens the wider of the two docks.
-  assert.match(viewer, /const wideDock =[\s\S]*?isGadget/);
-  assert.match(viewer, /const WIDE_DOCK_WIDTH = "clamp\(/);
 });
 
 test("both runtime and legacy garden chats pin artifact cards to their owning message", () => {
@@ -220,16 +217,37 @@ test("Markdown artifacts keep their document reading surface in the dock", () =>
   );
 });
 
-test("an opened artifact docks to the right instead of covering the chat", () => {
-  // An artifact is read while the conversation about it continues, so the
-  // viewer is a panel beside the chat rather than a dialog over it: no scrim
-  // on a chat that still takes messages, and nothing modal about it.
+test("an artifact opened in the Terminal fills a lane inside the dock, not the window", () => {
+  // The Terminal is a dock along the bottom of the page, so an artifact opened
+  // from it belongs inside that dock — a viewport-pinned panel would float free
+  // of the chat it came from and cover the app above it.
+  assert.match(terminal, /<ArtifactDockHostProvider host=\{artifactLane\}>/);
+  assert.match(terminal, /ref=\{setArtifactLane\}[\s\S]*?className="bb-artifact-lane"/);
+  assert.match(viewer, /const dockHost = useArtifactDockHost\(\)/);
+  assert.match(viewer, /if \(dockHost\) return createPortal\(panel, dockHost\)/);
+
+  // The lane and the transcript each take half of what the dock has left, and
+  // the lane costs nothing until something is opened into it.
+  assert.match(globals, /\.bb-artifact-lane \{[\s\S]*?flex: 1 1 0%;/);
+  assert.match(globals, /\.bb-artifact-lane:empty \{\s*display: none;/);
+  assert.match(terminal, /<div className="flex min-w-0 flex-1 flex-col">/);
+
+  // A surface with a lane must not also make the shell give up width for a
+  // panel that is already inside it.
+  assert.match(viewer, /useReservedDockWidth\(Boolean\(artifact\) && !dockHost, DOCK_WIDTH\)/);
+});
+
+test("a full-page surface with no lane pins the dock beside the page instead", () => {
+  // An artifact is read while the conversation about it continues, so even the
+  // free-floating dock is a panel beside the chat, not a dialog over it.
   assert.doesNotMatch(viewer, /aria-modal/);
-  assert.match(viewer, /className="bb-artifact-dock fixed inset-y-0 right-0/);
+  assert.match(viewer, /bb-artifact-dock bb-artifact-dock-floating fixed inset-y-0 right-0/);
+  assert.match(viewer, /lg:w-\[var\(--bb-artifact-dock-width\)\]/);
+  // An even split, the same one the Terminal's lane gives.
+  assert.match(viewer, /const DOCK_WIDTH = "max\(24rem, 50vw\)"/);
   // Narrow viewports have no width to share, so there — and only there — the
   // dock covers the app and carries a scrim to dismiss it.
   assert.match(viewer, /bb-modal-backdrop fixed inset-0 z-\[69\] lg:hidden/);
-  assert.match(viewer, /lg:w-\[var\(--bb-artifact-dock-width\)\]/);
 
   // The shell gives the width up rather than being covered by the panel.
   assert.match(viewer, /root\.dataset\.artifactDock = "open"/);

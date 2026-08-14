@@ -598,6 +598,62 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     let streamError: unknown;
     let activeApprovalFingerprint: string | undefined;
     let lastRunningHeartbeatAt = 0;
+    const completedToolCallIds = new Set<string>();
+    const normalizeWithRecoveredTools = (
+      raw: RawHermesEvent,
+    ): NormalizedAgentEvent[] => {
+      const rawEvents: RawHermesEvent[] = [];
+      const payload = isRecord(raw.payload) ? raw.payload : {};
+      if (raw.type === "message.complete" && Array.isArray(payload.completed_tools)) {
+        for (const value of payload.completed_tools.slice(0, 256)) {
+          if (!isRecord(value)) continue;
+          const toolCallId =
+            typeof value.tool_id === "string"
+              ? value.tool_id
+              : typeof value.toolCallId === "string"
+                ? value.toolCallId
+                : "";
+          const toolName =
+            typeof value.name === "string"
+              ? value.name
+              : typeof value.toolName === "string"
+                ? value.toolName
+                : "";
+          if (!toolCallId.trim() || !toolName.trim()) continue;
+          rawEvents.push({
+            type: "tool.complete",
+            session_id: session.liveSessionId,
+            payload: {
+              tool_id: toolCallId,
+              name: toolName,
+              ...(typeof value.success === "boolean"
+                ? { success: value.success }
+                : {}),
+              ...(typeof value.summary === "string"
+                ? { summary: value.summary }
+                : {}),
+            },
+          });
+        }
+      }
+      rawEvents.push(raw);
+      const events: NormalizedAgentEvent[] = [];
+      for (const rawEvent of rawEvents) {
+        for (const event of normalizeHermesEvent(
+          rawEvent,
+          session.liveSessionId,
+          input.externalSessionId,
+          state,
+        )) {
+          if (event.type === "tool.completed") {
+            if (completedToolCallIds.has(event.payload.toolCallId)) continue;
+            completedToolCallIds.add(event.payload.toolCallId);
+          }
+          events.push(event);
+        }
+      }
+      return events;
+    };
     const activeTurnReference = () => {
       let resolved:
         | { messageId?: string; instruction?: string; submitted?: boolean }
@@ -677,12 +733,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
             if (fingerprint === activeApprovalFingerprint) continue;
             activeApprovalFingerprint = fingerprint;
           }
-          const normalized = normalizeHermesEvent(
-            raw,
-            session.liveSessionId,
-            input.externalSessionId,
-            state,
-          );
+          const normalized = normalizeWithRecoveredTools(raw);
           if (raw.type === "message.complete") {
             const payload = isRecord(raw.payload) ? raw.payload : {};
             const completedTurnId =
@@ -744,12 +795,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
             session_id: session.liveSessionId,
             payload: approval,
           };
-          const normalized = normalizeHermesEvent(
-            raw,
-            session.liveSessionId,
-            input.externalSessionId,
-            state,
-          );
+          const normalized = normalizeWithRecoveredTools(raw);
           for (const event of normalized) yield event;
           continue;
         }
@@ -796,12 +842,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
             turn_id: turnId,
           },
         };
-        const normalized = normalizeHermesEvent(
-          raw,
-          session.liveSessionId,
-          input.externalSessionId,
-          state,
-        );
+        const normalized = normalizeWithRecoveredTools(raw);
         session.activeTurnId = undefined;
         session.activeTurnText = undefined;
         session.submittedTurnId = undefined;

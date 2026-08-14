@@ -96,31 +96,6 @@ export default function NavBar({
             Plan
           </a>
         )}
-        {shortcuts.map && (
-          <a
-            href="/map"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
-            title="Open the map — the places, routes and results the assistant is working from — in a new tab"
-          >
-            <svg
-              className="h-3.5 w-3.5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.8}
-              aria-hidden="true"
-            >
-              <path
-                strokeLinejoin="round"
-                d="M9 4.5 3.5 6.8v12.7L9 17.2l6 2.3 5.5-2.3V4.5L15 6.8 9 4.5Z"
-              />
-              <path strokeLinecap="round" d="M9 4.5v12.7M15 6.8v12.7" />
-            </svg>
-            Map
-          </a>
-        )}
         {/* The profile chip is the way to the profile page, which is where
             inviting and signing out now live — both are account business, and
             neither was worth a permanent seat in the navbar. */}

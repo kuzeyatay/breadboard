@@ -51,6 +51,10 @@ import {
   type CurrentLocationPreference,
   type CurrentLocationSnapshot,
 } from "@/lib/current-location.ts";
+import {
+  inDesktopShell,
+  requestCurrentLocationFix,
+} from "@/lib/current-location-source.ts";
 
 interface Invite {
   id: number;
@@ -549,30 +553,18 @@ function ThemePanel() {
   const automatic = mode === "sun";
 
   async function requestLocalSunTimes(): Promise<void> {
-    if (!("geolocation" in navigator)) {
+    setLocationStatus("locating");
+    // A week-old fix is ample for sunrise and sunset, which move by minutes.
+    const attempt = await requestCurrentLocationFix({ maxAgeMs: 7 * 86_400_000 });
+    if (!attempt.ok) {
       setLocationStatus("fallback");
       return;
     }
-    setLocationStatus("locating");
-    const bridge = (
-      window as Window & {
-        breadboardDesktop?: {
-          allowThemeLocation?: () => Promise<boolean>;
-        };
-      }
-    ).breadboardDesktop;
-    await bridge?.allowThemeLocation?.().catch(() => false);
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        rememberAppThemeLocation({
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-        });
-        setLocationStatus("precise");
-      },
-      () => setLocationStatus("fallback"),
-      { enableHighAccuracy: false, maximumAge: 7 * 86_400_000, timeout: 8_000 },
-    );
+    rememberAppThemeLocation({
+      latitude: attempt.fix.latitude,
+      longitude: attempt.fix.longitude,
+    });
+    setLocationStatus("precise");
   }
 
   function toggleAutomaticTheme() {
@@ -667,6 +659,11 @@ function LocationPanel() {
   }, []);
 
   useEffect(() => {
+    // The desktop shell answers this question with its own permission handler,
+    // which opens geolocation per request on the user's click. Before that
+    // click it reports "denied" for a permission nobody has refused, and the
+    // card would read Blocked on a machine where location works perfectly.
+    if (inDesktopShell()) return;
     if (!("permissions" in navigator) || !navigator.permissions?.query) return;
     let active = true;
     let permission: PermissionStatus | null = null;
@@ -714,61 +711,41 @@ function LocationPanel() {
     requestSequence.current = requestId;
     setRequestState("checking");
     setError(null);
-    if (!("geolocation" in navigator)) {
-      setRequestState("unavailable");
-      setError("This browser does not provide device location.");
+
+    // Whichever source on this machine can answer: the browser's own
+    // geolocation, or the operating system by way of the local server.
+    const attempt = await requestCurrentLocationFix();
+    if (requestSequence.current !== requestId) return;
+
+    if (!attempt.ok) {
+      if (attempt.kind === "blocked") setPermissionState("denied");
+      setRequestState(attempt.kind);
+      setError(attempt.message);
       return;
     }
 
-    const bridge = (
-      window as Window & {
-        breadboardDesktop?: {
-          allowThemeLocation?: () => Promise<boolean>;
-        };
-      }
-    ).breadboardDesktop;
-    await bridge?.allowThemeLocation?.().catch(() => false);
-    if (requestSequence.current !== requestId) return;
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        if (requestSequence.current !== requestId) return;
-        const snapshot = normalizeCurrentLocationSnapshot({
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          capturedAt: new Date().toISOString(),
-          accuracyMeters: position.coords.accuracy,
-          timeZone: deviceTimeZone(),
-        });
-        if (!snapshot || !storePreference(true, snapshot)) {
-          setRequestState("unavailable");
-          setError("Breadboard received a location fix it could not safely use.");
-          return;
-        }
-        // The same coarse fix can improve sunrise/sunset calculations. This
-        // does not enable automatic theme mode, and theme consent never enables
-        // use of location in answers.
-        rememberAppThemeLocation({
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-        });
-        setPermissionState("granted");
-        setRequestState("idle");
-        setError(null);
-      },
-      (failure) => {
-        if (requestSequence.current !== requestId) return;
-        if (failure.code === 1) {
-          setPermissionState("denied");
-          setRequestState("blocked");
-          setError("Allow location in your browser or system settings, then try again.");
-          return;
-        }
-        setRequestState("unavailable");
-        setError("Breadboard could not determine this device's location. Check location services and try again.");
-      },
-      { enableHighAccuracy: false, maximumAge: 15 * 60_000, timeout: 8_000 },
-    );
+    const snapshot = normalizeCurrentLocationSnapshot({
+      latitude: attempt.fix.latitude,
+      longitude: attempt.fix.longitude,
+      capturedAt: new Date().toISOString(),
+      accuracyMeters: attempt.fix.accuracyMeters,
+      timeZone: deviceTimeZone(),
+    });
+    if (!snapshot || !storePreference(true, snapshot)) {
+      setRequestState("unavailable");
+      setError("Breadboard received a location fix it could not safely use.");
+      return;
+    }
+    // The same coarse fix can improve sunrise/sunset calculations. This does
+    // not enable automatic theme mode, and theme consent never enables use of
+    // location in answers.
+    rememberAppThemeLocation({
+      latitude: attempt.fix.latitude,
+      longitude: attempt.fix.longitude,
+    });
+    setPermissionState("granted");
+    setRequestState("idle");
+    setError(null);
   }
 
   function enableLocation() {
@@ -893,12 +870,8 @@ function LocationPanel() {
         </div>
       </div>
 
-      <p className="neu-inset mt-4 rounded-xl px-3 py-2.5 text-[11px] leading-5 text-gray-500">
-        When enabled, Breadboard sends an approximate location to your selected AI or search
-        provider only for relevant answers. It is not saved as a personal memory.
-      </p>
       {error && (
-        <p className="mt-3 text-xs text-red-400" role="alert">
+        <p className="mt-4 text-xs text-red-400" role="alert">
           {error}
         </p>
       )}
@@ -966,17 +939,22 @@ function ShortcutPanel({ initial }: { initial: NavbarShortcuts }) {
         {NAVBAR_SHORTCUTS.map((shortcut) => (
           <li key={shortcut.key} className="flex items-start justify-between gap-4">
             <div className="min-w-0">
+              {/* The switch itself already says whether the seat is taken, so
+                  the row carries no second badge repeating it. A seat that is a
+                  control rather than a link has nowhere to send you, so its
+                  name is plain text. */}
               <div className="flex items-center gap-2">
-                <a
-                  href={shortcut.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm font-medium text-white transition-colors hover:text-[var(--botanical)]"
-                >
-                  {shortcut.label}
-                </a>
-                {shortcuts[shortcut.key] && (
-                  <span className="text-[11px] text-[var(--botanical)]">In the navbar</span>
+                {shortcut.href ? (
+                  <a
+                    href={shortcut.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm font-medium text-white transition-colors hover:text-[var(--botanical)]"
+                  >
+                    {shortcut.label}
+                  </a>
+                ) : (
+                  <span className="text-sm font-medium text-white">{shortcut.label}</span>
                 )}
               </div>
               <p className="mt-0.5 text-xs leading-5 text-gray-500">{shortcut.description}</p>
@@ -1699,42 +1677,48 @@ export default function ProfileClient({
         </div>
 
         {/* ------------------------------------------------ output and cost */}
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <Card title="What came out of it" hint="Artifacts by kind, and the agents you actually run.">
-            {artifactKinds.length === 0 ? (
-              <p className="text-xs text-gray-600">Nothing has been produced yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {artifactKinds.slice(0, 6).map((entry) => (
-                  <Bar
-                    key={entry.kind}
-                    label={entry.label}
-                    value={formatCount(entry.count)}
-                    share={artifactMax === 0 ? 0 : entry.count / artifactMax}
-                  />
-                ))}
-              </div>
-            )}
-
-            {agents.length > 0 && (
-              <>
-                <h3 className="mb-2 mt-5 text-xs font-semibold uppercase tracking-wide text-gray-600">
-                  Agents
-                </h3>
+        <div className="mt-4 grid items-start gap-4 lg:grid-cols-2">
+          <div className="space-y-4">
+            <Card title="What came out of it" hint="Artifacts by kind, and the agents you actually run.">
+              {artifactKinds.length === 0 ? (
+                <p className="text-xs text-gray-600">Nothing has been produced yet.</p>
+              ) : (
                 <div className="space-y-2">
-                  {agents.slice(0, 6).map((agent) => (
+                  {artifactKinds.slice(0, 6).map((entry) => (
                     <Bar
-                      key={agent.kind}
-                      label={agent.label}
-                      value={formatCount(agent.runs)}
-                      share={agentMax === 0 ? 0 : agent.runs / agentMax}
-                      meta={agent.failed > 0 ? `${agent.failed} failed` : undefined}
+                      key={entry.kind}
+                      label={entry.label}
+                      value={formatCount(entry.count)}
+                      share={artifactMax === 0 ? 0 : entry.count / artifactMax}
                     />
                   ))}
                 </div>
-              </>
-            )}
-          </Card>
+              )}
+
+              {agents.length > 0 && (
+                <>
+                  <h3 className="mb-2 mt-5 text-xs font-semibold uppercase tracking-wide text-gray-600">
+                    Agents
+                  </h3>
+                  <div className="space-y-2">
+                    {agents.slice(0, 6).map((agent) => (
+                      <Bar
+                        key={agent.kind}
+                        label={agent.label}
+                        value={formatCount(agent.runs)}
+                        share={agentMax === 0 ? 0 : agent.runs / agentMax}
+                        meta={agent.failed > 0 ? `${agent.failed} failed` : undefined}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
+            </Card>
+
+            <ThemePanel />
+
+            <LocationPanel />
+          </div>
 
           <div className="space-y-4">
             <Card
@@ -1757,10 +1741,6 @@ export default function ProfileClient({
             </Card>
 
             <ShortcutPanel initial={initialShortcuts} />
-
-            <ThemePanel />
-
-            <LocationPanel />
 
             <InvitePanel initial={stats.invites} />
           </div>

@@ -210,7 +210,12 @@ export function requiresGeographicGrounding(
 
   // A definition question with no referent at all ("what is a roundabout?") is
   // knowledge work. The same question aimed at a place is not.
-  if (DEFINITIONAL.test(folded) && !hasDeictic && !hasProperNoun) {
+  if (
+    DEFINITIONAL.test(folded) &&
+    !hasDeictic &&
+    !hasProperNoun &&
+    !hasSpatialPhrase
+  ) {
     return {
       required: false,
       asks,

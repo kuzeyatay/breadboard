@@ -1,5 +1,5 @@
 import { FileTrieNode } from "../../util/fileTrie"
-import { isVisibleGardenRootFolder } from "../../util/explorerScope"
+import { isVisibleGardenRootEntry } from "../../util/explorerScope"
 import { FullSlug, resolveRelative, simplifySlug } from "../../util/path"
 import { ContentDetails } from "../../plugins/emitters/contentIndex"
 
@@ -83,7 +83,7 @@ function applyGardenExplorerScope(explorer: HTMLElement, trie: FileTrieNode<Cont
   if (!shouldEnforceGardenTree || !effectiveAllowed) return
   for (const clusterNode of trie.children) {
     if (!effectiveAllowed.includes(clusterNode.slugSegment)) continue
-    clusterNode.children = clusterNode.children.filter(isVisibleGardenRootFolder)
+    clusterNode.children = clusterNode.children.filter(isVisibleGardenRootEntry)
   }
 }
 

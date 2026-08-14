@@ -169,8 +169,8 @@ test("evidence opens from the overflow menu without a standalone disclosure", ()
   assert.doesNotMatch(evidence, /View evidence/);
   assert.match(evidence, /neu-popover/);
   assert.match(evidence, /border border-\[var\(--line\)\]/);
-  assert.match(evidence, /Garden grounding/);
-  assert.match(evidence, /Garden not consulted for this answer\./);
+  assert.doesNotMatch(evidence, /Garden grounding/);
+  assert.doesNotMatch(evidence, /Garden not consulted for this answer\./);
   assert.match(evidence, /Open source page/);
 
   const menuStart = actions.indexOf('aria-label="More response actions menu"');

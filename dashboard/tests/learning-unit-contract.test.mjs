@@ -5,6 +5,7 @@ import {
   sectionSemanticProfile,
   sectionTitleGrammarProblems,
   clusterUnitsIntoSections,
+  learningMapFromModelAuthoredUnits,
   learningMapFromUnits,
   assignSourceArtifacts,
   atomicZettelHandle,
@@ -25,6 +26,86 @@ import {
 } from "../src/lib/learning-unit-contract.ts";
 import { sanitizeLearnerTitle } from "../src/lib/learn-utils.ts";
 import { isValidPublicConceptSlug } from "../src/lib/semantic-core.ts";
+
+function modelAuthoredSpine() {
+  const sections = [
+    ["S1", "Electric Fields and Sources", "Build the field model from charge and force."],
+    ["S2", "Flux and Divergence", "Connect local field behavior to enclosed charge."],
+    ["S3", "Potential and Stored Energy", "Relate work, potential, and energy."],
+    ["S4", "Electromagnetic-Wave Propagation", "Connect changing fields to propagating waves."],
+  ];
+  return sections.flatMap(([id, title, purpose], sectionIndex) => [0, 1].map((offset) => {
+    const index = sectionIndex * 2 + offset + 1;
+    return {
+      id: `U${index}`,
+      title: `Authored unit ${index}`,
+      role: "core_concept",
+      learningQuestion: `What source-grounded idea ${index} must the learner understand?`,
+      prerequisiteConcepts: [],
+      newConcepts: [`Concept ${index}`],
+      sourceAnchors: [`S1.P${index}`],
+      sourceFigures: [],
+      sourceFormulas: [],
+      sourceTables: [],
+      zettelNotes: [],
+      semanticConcepts: [{
+        slug: `concept-${index}`,
+        preferredLabel: `Concept ${index}`,
+        role: "primary",
+        aliases: [],
+        evidenceAnchors: [`S1.P${index}`],
+      }],
+      knowledgeClaims: [],
+      mustNotRepeat: [],
+      expectedWordRange: [700, 900],
+      section: { id, title, purpose },
+    };
+  }));
+}
+
+test("the active spine projects model-authored sections verbatim", () => {
+  const units = normalizeLearningUnits(modelAuthoredSpine(), { modelAuthoredOnly: true });
+  const problems = validateLearningUnitContracts(units, {
+    requireModelAuthoredSemantics: true,
+    requireModelAuthoredSections: true,
+  });
+  assert.deepEqual(problems, []);
+  const map = learningMapFromModelAuthoredUnits(units, {
+    gardenId: "electromagnetism",
+    title: "Electromagnetism",
+    summary: "A model-authored learning sequence.",
+    sourceOnly: true,
+    createdAt: "2026-08-14T00:00:00.000Z",
+  });
+  assert.deepEqual(
+    map.sections.map((section) => [section.title, section.purpose]),
+    [
+      ["Electric Fields and Sources", "Build the field model from charge and force."],
+      ["Flux and Divergence", "Connect local field behavior to enclosed charge."],
+      ["Potential and Stored Energy", "Relate work, potential, and energy."],
+      ["Electromagnetic-Wave Propagation", "Connect changing fields to propagating waves."],
+    ],
+  );
+});
+
+test("model-only normalization never invents concepts, roles, word ranges, or sections", () => {
+  const [unit] = normalizeLearningUnits([{
+    id: "U1",
+    title: "Incomplete model unit",
+    learningQuestion: "What is missing?",
+  }], { modelAuthoredOnly: true });
+  assert.deepEqual(unit.semanticConcepts, []);
+  assert.deepEqual(unit.knowledgeClaims, []);
+  assert.deepEqual(unit.expectedWordRange, [0, 0]);
+  assert.equal(unit.sectionPlan, undefined);
+  const problems = validateLearningUnitContracts([unit], {
+    requireModelAuthoredSemantics: true,
+    requireModelAuthoredSections: true,
+  });
+  assert.match(problems.join("\n"), /invalid or missing model-authored role/);
+  assert.match(problems.join("\n"), /missing model-authored semanticConcepts/);
+  assert.match(problems.join("\n"), /missing model-authored section/);
+});
 
 // A realistic set of learning units for an SNN source (used generically — the
 // clustering/validation logic is domain-agnostic).

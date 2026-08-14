@@ -250,9 +250,12 @@ describe("learn route and council wiring", () => {
     assert.match(learnSource, /taskType: "full_page_revision"/);
     assert.match(learnSource, /LEARN_PLANNING_COUNCIL_MODE/);
     assert.match(learnSource, /isPlanningTimeoutError/);
-    assert.match(learnSource, /learn_source_map_fallback/);
-    assert.match(learnSource, /learn_scope_contract_fallback/);
-    assert.match(learnSource, /learn_learning_spine_fallback/);
+    assert.doesNotMatch(learnSource, /learn_source_map_fallback/);
+    assert.doesNotMatch(learnSource, /learn_scope_contract_fallback/);
+    assert.doesNotMatch(learnSource, /learn_learning_spine_fallback/);
+    assert.doesNotMatch(learnSource, /planGardenVisualNecessity/);
+    assert.match(learnSource, /runModelVisualNecessityPlanning/);
+    assert.match(learnSource, /No fallback curriculum was written/);
     // Bad generation must fail the job, never degrade into a fallback learner
     // page. The old preparedFallback path is gone; pageBody starts null and a
     // failed page throws after quarantining the draft for debugging.

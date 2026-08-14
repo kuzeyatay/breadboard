@@ -11,10 +11,14 @@ import crypto from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { loadRootEnv } from "./load-root-env.mjs";
+import { loadRootEnv, loadDashboardEnv } from "./load-root-env.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
+// dev-all.mjs reads the dashboard's git-ignored .env.local too, so the focused
+// launcher must as well: without this, `npm run dev:gbrain` exits on
+// GBRAIN_MODE=disabled even when .env.local enables GBrain for the full stack.
+loadDashboardEnv(repoRoot);
 
 const mode = (process.env.GBRAIN_MODE?.trim().toLowerCase() || "disabled");
 if (mode === "disabled") {

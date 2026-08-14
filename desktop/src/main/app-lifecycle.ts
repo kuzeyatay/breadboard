@@ -194,6 +194,10 @@ export class AppLifecycle {
       preloadPath: defaultPreloadPath(this.moduleDir),
       iconPath: this.iconPath(),
       initialTheme: readLastWindowTheme(this.paths.configDir),
+      // Window recovery runs entirely in the main process, where nothing else
+      // is written down. A reconnect scene that never lifts is unexplainable
+      // without this.
+      log: (line) => supervisorLog.write(line),
     });
 
     this.registerIpcHandlers();

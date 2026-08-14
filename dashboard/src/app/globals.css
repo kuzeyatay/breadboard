@@ -1023,17 +1023,36 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
     inset 0 -1px 0 color-mix(in srgb, var(--line) 58%, transparent) !important;
 }
 
-/* The artifact dock. An artifact opens as a panel down the right-hand edge
-   instead of as a modal in the middle of the app: the chat that produced it
-   stays readable — and stays usable — beside the thing it made, which is the
-   whole reason a document and its conversation belong on screen together.
-   The shell gives up the width rather than being covered, so nothing is
-   hidden behind the panel; the viewer sets the width it needs on the root
-   while it is open, and the fallback below is what the panel is worth before
-   that lands. Narrow viewports have no width to share, so the dock covers the
-   app there instead and carries its own scrim. */
+/* The artifact dock. An artifact opens as a panel beside the chat that made it
+   instead of as a modal in the middle of the app: a document and the
+   conversation about it belong on screen together, and a dialog that blocks the
+   conversation is the wrong shape for that.
+
+   A surface that is itself a panel — the Terminal, a dock along the bottom of
+   the page — hosts the artifact in a lane of its own, so what it made stays
+   inside it instead of floating over the whole window. The lane is nothing at
+   all until something is portalled into it, and an even half of what is left
+   beside the transcript once something is.
+
+   A surface that is a whole page has no lane to give, and the panel pins itself
+   to the right of the viewport instead. There the shell gives up the width
+   rather than being covered: the viewer sets the width on the root while it is
+   open, and the fallback below is what the panel is worth before that lands.
+   Narrow viewports have no width to share, so it covers the app there and
+   carries its own scrim. */
+.bb-artifact-lane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 0%;
+}
+
+.bb-artifact-lane:empty {
+  display: none;
+}
+
 :root {
-  --bb-artifact-dock-width: clamp(24rem, 44vw, 50rem);
+  --bb-artifact-dock-width: max(24rem, 50vw);
 }
 
 @media (min-width: 1024px) {
@@ -1065,8 +1084,9 @@ html[data-theme="dark"] .bb-artifact-dock {
 }
 
 /* The desktop window's drag strip and native caption buttons live along the
-   top edge; the dock starts below them so it never swallows the frame. */
-html[data-breadboard-desktop="true"] .bb-artifact-dock {
+   top edge; a viewport-pinned dock starts below them so it never swallows the
+   frame. A docked-in-a-lane panel is inside the page and never reaches it. */
+html[data-breadboard-desktop="true"] .bb-artifact-dock-floating {
   top: var(--breadboard-titlebar-height);
 }
 
@@ -2150,47 +2170,54 @@ b {
   font-size: 0.95rem;
 }
 
+/* The two guide ticks stack directly above and below the line rather than
+   floating at the edges of the stage: with the sentence spread across the
+   line, a tick has to sit close to the focal letter to name it. */
 .fastread-word-stage {
   position: relative;
   width: 100%;
   min-height: 16rem;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 0.5rem;
 }
 
 .fastread-marker {
-  position: absolute;
-  left: 50%;
+  flex: none;
   width: 2px;
-  height: 2.75rem;
-  transform: translateX(-50%);
+  height: 1.6rem;
   pointer-events: none;
 }
 
 .fastread-marker-top {
-  top: 0;
-  background: linear-gradient(to bottom, var(--danger), transparent);
-}
-
-.fastread-marker-bottom {
-  bottom: 0;
   background: linear-gradient(to top, var(--danger), transparent);
 }
 
-/* The focal letter is absolutely centred and the rest of the word grows out
-   from it, so successive words never shift the fixation point. */
+.fastread-marker-bottom {
+  background: linear-gradient(to bottom, var(--danger), transparent);
+}
+
+/* Three tracks across the line: the prose already read, the focal letter, the
+   prose still to come. The side tracks take an equal share of the width
+   (`flex: 1 1 0`), so the letter between them sits on the centre line whatever
+   the words around it are doing — successive words never shift the fixation
+   point. Each track clips its own overflow, so the sentence runs off both
+   edges of the stage instead of pushing the focal point sideways. */
 .fastread-word {
   position: relative;
   width: 100%;
-  height: 1.3em;
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
   font-family: var(--font-mono), ui-monospace, monospace;
   font-size: clamp(2.25rem, 7vw, 5rem);
   font-weight: 500;
-  line-height: 1;
+  /* Room above and below the line for ascenders and descenders: the tracks clip
+     what leaves their box, and at line-height 1 a `j` or a comma is cut in half. */
+  line-height: 1.4;
   white-space: nowrap;
   text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
@@ -2200,31 +2227,55 @@ b {
   font-size: clamp(1.5rem, 4.5vw, 3rem);
 }
 
+.fastread-rail {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Each track packs against the focal letter, so overflow always leaves through
+   the outer edge: the oldest words fall off the left, the furthest-ahead off
+   the right. The fade softens that cut — `mask-image` is ignored on some
+   Chromium builds, and where it is the track still clips, just harder. */
+.fastread-rail-lead {
+  justify-content: flex-end;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 22%);
+  mask-image: linear-gradient(to right, transparent 0, #000 22%);
+}
+
+.fastread-rail-trail {
+  justify-content: flex-start;
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 22%);
+  mask-image: linear-gradient(to left, transparent 0, #000 22%);
+}
+
+/* Read and unread prose is present but never competes with the focal word:
+   lighter weight, and dropped well back in the ink. */
+.fastread-context {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--ink) 40%, transparent);
+  font-weight: 400;
+}
+
 .fastread-orp {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  flex: 0 0 auto;
   color: var(--danger);
   font-weight: 700;
 }
 
-.fastread-before {
-  position: absolute;
-  left: 50%;
-  transform: translateX(calc(-100% - 0.5ch));
-  text-align: right;
-  color: var(--ink);
-}
-
+.fastread-before,
 .fastread-after {
-  position: absolute;
-  left: calc(50% + 0.5ch);
-  text-align: left;
+  flex: 0 0 auto;
   color: var(--ink);
+  font-weight: 700;
 }
 
 .fastread-atomic {
+  flex: 0 0 auto;
   color: var(--ink);
+  font-weight: 700;
 }
 
 .fastread-stop,

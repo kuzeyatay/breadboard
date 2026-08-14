@@ -495,8 +495,15 @@ function validateControl(value: unknown, errors: string[], index: number): value
     if (min === undefined || max === undefined || min >= max) errors.push(`controls[${index}] needs min < max`);
     if (step === undefined || step <= 0) errors.push(`controls[${index}] needs a positive step`);
   }
-  if (type === "select" && (!Array.isArray(value.options) || value.options.length < 2)) {
-    errors.push(`controls[${index}] select needs at least two options`);
+  if (type === "select") {
+    const options = Array.isArray(value.options)
+      ? value.options.filter((option): option is string => typeof option === "string" && option.trim().length > 0)
+      : [];
+    if (options.length < 2) errors.push(`controls[${index}] select needs at least two options`);
+    if (new Set(options).size !== options.length) errors.push(`controls[${index}] select options must be unique`);
+    if (typeof value.defaultValue !== "string" || !options.includes(value.defaultValue)) {
+      errors.push(`controls[${index}] select defaultValue must match one declared option`);
+    }
   }
   return true;
 }
@@ -689,11 +696,48 @@ export function validateGeneratedVisualizationDefinition(
   if (opportunity) {
     for (const requiredOutput of opportunity.requiredOutputs) {
       if (!outputs.some((output) => isRecord(output) && output.id === requiredOutput.id)) {
-        warnings.push(`opportunity output ${requiredOutput.id} is represented by a renamed module output`);
+        errors.push(`opportunity requires output ${requiredOutput.id}, but the module does not declare it`);
       }
     }
-    if (opportunity.requiredInputs.length > 0 && controls.length === 0) {
-      errors.push("opportunity requires learner inputs but the module has no controls");
+    const controlsById = new Map(
+      controls
+        .filter(isRecord)
+        .map((control) => [String(control.id ?? ""), control]),
+    );
+    for (const requiredInput of opportunity.requiredInputs) {
+      const control = controlsById.get(requiredInput.id);
+      if (!control) {
+        errors.push(`opportunity requires control ${requiredInput.id}, but the module does not declare it`);
+        continue;
+      }
+      if (control.type !== requiredInput.type) {
+        errors.push(
+          `opportunity control ${requiredInput.id} must use type ${requiredInput.type}, not ${String(control.type ?? "(missing)")}`,
+        );
+      }
+      if (requiredInput.type === "select" && control.type === "select") {
+        if (Array.isArray(requiredInput.options)) {
+          const actualOptions = Array.isArray(control.options)
+            ? control.options.filter((option): option is string => typeof option === "string")
+            : [];
+          if (
+            actualOptions.length !== requiredInput.options.length
+            || actualOptions.some((option, index) => option !== requiredInput.options?.[index])
+          ) {
+            errors.push(
+              `opportunity select control ${requiredInput.id} must preserve its declared option order`,
+            );
+          }
+        }
+        if (
+          requiredInput.defaultValue !== undefined
+          && control.defaultValue !== requiredInput.defaultValue
+        ) {
+          errors.push(
+            `opportunity select control ${requiredInput.id} must use defaultValue ${JSON.stringify(requiredInput.defaultValue)}`,
+          );
+        }
+      }
     }
   }
   return {
@@ -708,7 +752,18 @@ export function compileGeneratedVisualization(
   opportunity?: VisualizationOpportunity,
 ): GeneratedVisualCompilation {
   const sourceHash = sha256(sourceCode);
-  const cacheKey = `${VISUAL_SDK_VERSION}:${sourceHash}:${opportunity?.similarityFingerprint ?? opportunity?.id ?? "unscoped"}`;
+  const opportunityContractHash = opportunity
+    ? sha256(JSON.stringify({
+        requiredInputs: opportunity.requiredInputs,
+        requiredOutputs: opportunity.requiredOutputs,
+      }))
+    : "unscoped";
+  const cacheKey = [
+    VISUAL_SDK_VERSION,
+    sourceHash,
+    opportunity?.similarityFingerprint ?? opportunity?.id ?? "unscoped",
+    opportunityContractHash,
+  ].join(":");
   const cached = GENERATED_COMPILATION_CACHE.get(cacheKey);
   if (cached) return { ...structuredClone(cached), cacheHit: true };
   const ast = staticAstValidation(sourceCode);
@@ -801,15 +856,93 @@ export function evaluateVisualExpression(
   }
 }
 
+function selectOptionIndex(control: GeneratedVisualControl): number {
+  if (control.type !== "select" || !Array.isArray(control.options)) return 0;
+  const index = control.options.indexOf(String(control.defaultValue));
+  return index >= 0 ? index : 0;
+}
+
 function numericDefaults(definition: GeneratedVisualizationDefinition): Record<string, number> {
   const state: Record<string, number> = {};
   for (const control of definition.controls) {
     if (typeof control.defaultValue === "number") state[control.id] = control.defaultValue;
     else if (typeof control.defaultValue === "boolean") state[control.id] = control.defaultValue ? 1 : 0;
+    else if (control.type === "select") state[control.id] = selectOptionIndex(control);
+    else if (control.type === "button") state[control.id] = 0;
   }
   state.x = 0;
   state.t = 0;
   return state;
+}
+
+function alternateControlStates(
+  control: GeneratedVisualControl,
+  current: number,
+): number[] {
+  if (control.type === "select") {
+    const optionCount = control.options?.length ?? 0;
+    return Array.from({ length: optionCount }, (_, index) => index)
+      .filter((index) => index !== current);
+  }
+  if (control.type === "toggle") return [current === 0 ? 1 : 0];
+  if (control.type === "button") return [current + 1];
+  if (control.type === "slider" || control.type === "number") {
+    const candidates = [
+      control.min,
+      control.max,
+      current - (control.step ?? 1),
+      current + (control.step ?? 1),
+    ];
+    return [...new Set(candidates.filter(
+      (candidate): candidate is number =>
+        typeof candidate === "number"
+        && Number.isFinite(candidate)
+        && Math.abs(candidate - current) > 1e-12
+        && (control.min === undefined || candidate >= control.min)
+        && (control.max === undefined || candidate <= control.max),
+    ))];
+  }
+  return [];
+}
+
+function numericExpressionSamples(
+  definition: GeneratedVisualizationDefinition,
+  state: Record<string, number>,
+): number[] {
+  const values: number[] = [];
+  const commonStates = [
+    { ...state, x: 0, t: 0 },
+    { ...state, x: 0.371, t: 0.371 },
+    { ...state, x: 1, t: 1 },
+  ];
+  for (const output of definition.outputs) {
+    if (!output.expression) continue;
+    for (const sampleState of commonStates) {
+      values.push(evaluateVisualExpression(output.expression, sampleState));
+    }
+  }
+  for (const scene of definition.scenes) {
+    const record = scene as unknown as Record<string, unknown>;
+    const expressions = expressionFieldsFromScene(record).map(
+      ([, expression]) => expression as VisualExpression,
+    );
+    if (scene.kind === "timeline") {
+      expressions.push({ kind: "input", id: scene.progressInput });
+    }
+    const sceneStates = scene.kind === "plot"
+      ? [
+          { ...state, x: scene.xMin, t: 0 },
+          { ...state, x: (scene.xMin + scene.xMax) / 2, t: 0.5 },
+          { ...state, x: scene.xMax, t: 1 },
+        ]
+      : commonStates;
+    for (const expression of expressions) {
+      for (const sampleState of sceneStates) {
+        values.push(evaluateVisualExpression(expression, sampleState));
+      }
+    }
+  }
+  return values;
 }
 
 function outputValues(
@@ -850,18 +983,41 @@ export function runGeneratedVisualDeterministicTests(input: {
     detail: JSON.stringify(values),
   });
 
-  for (const control of input.definition.controls) {
-    if (control.type !== "slider" && control.type !== "number") continue;
-    const next = { ...defaults, [control.id]: Number(control.max ?? control.defaultValue) };
-    const changed = outputValues(input.definition, next);
-    const hasDerivedOutputs = Object.keys(values).length > 0;
-    const differs = Object.keys(values).some(
-      (id) => Number.isFinite(changed[id]) && Math.abs(changed[id] - values[id]) > 1e-9,
-    );
+  const controlsById = new Map(input.definition.controls.map((control) => [control.id, control]));
+  for (const requiredInput of input.opportunity.requiredInputs) {
+    const control = controlsById.get(requiredInput.id);
+    if (!control) {
+      semanticTests.push({
+        name: `${requiredInput.label} is implemented by the generated module`,
+        passed: false,
+        detail: `missing required control ${requiredInput.id}`,
+      });
+      continue;
+    }
+    const alternates = alternateControlStates(control, defaults[control.id] ?? 0);
+    const baselineSamples = numericExpressionSamples(input.definition, defaults);
+    const effectiveAlternate = alternates.find((alternate) => {
+      const changedSamples = numericExpressionSamples(
+        input.definition,
+        { ...defaults, [control.id]: alternate },
+      );
+      return baselineSamples.some(
+        (value, index) =>
+          Number.isFinite(value)
+          && Number.isFinite(changedSamples[index])
+          && Math.abs(changedSamples[index] - value) > 1e-9,
+      );
+    });
+    const differs = effectiveAlternate !== undefined;
     semanticTests.push({
-      name: `${control.label} updates a derived output`,
-      passed: !hasDerivedOutputs || differs,
-      detail: JSON.stringify(changed),
+      name: `${control.label} changes a numeric output or scene expression`,
+      passed: differs,
+      detail: JSON.stringify({
+        defaultState: defaults[control.id],
+        alternateState: effectiveAlternate ?? alternates[0],
+        testedAlternateStates: alternates,
+        numericExpressionCount: baselineSamples.length,
+      }),
     });
   }
 
@@ -1430,7 +1586,8 @@ export default defineVisualization({
     "A plot may include markers:[{id,label,x,y,color?}] with expression-valued x/y; use a marker for the selected point and never fake a point as a sparse line series. " +
     "Diagram node coordinates must remain within x=40-600 and y=40-320 and labels must be concise. " +
     "Each testCases item represents inputs and expected as arrays of {id,value} pairs and includes tolerance (number or null). " +
-    "Use the exact required input and output IDs from the opportunity. Use only source-backed relationships. Label illustrative or normalized values clearly. Controls must materially change an output. " +
+    "Use the exact required input IDs, input types, and output IDs from the opportunity. Use only source-backed relationships. Label illustrative or normalized values clearly. Every required control must materially change a numeric output or scene expression. " +
+    "A select control is exposed to expressions as the stable zero-based index of its option in the declared options array (0 for the first option, 1 for the second, and so on), while the interface displays the option label; use conditional expressions against those numeric indices. " +
     "Keep sourceCode below 8,000 bytes and use at most five scenes; prefer the smallest expression tree that teaches the objective. testCases should cover only simple derived outputs with numeric expectations you can compute exactly (an empty testCases array is allowed because Breadboard adds deterministic tests). " +
     "sourceCode must end immediately after the final ASCII semicolon; do not append Markdown fences, commentary, or non-ASCII punctuation. " +
     `This is a complete syntactically valid module template; follow its schema exactly:\n${validModuleTemplate}`;

@@ -4,6 +4,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  contextAround,
   formatTimeRemaining,
   getActualORPIndex,
   getORPIndex,
@@ -553,6 +554,94 @@ test('stepping back walks into the previous segment and stops at the start', () 
   assert.equal(stepBackward(segments, { segmentIndex: 0, wordIndex: 0 }), null);
 });
 
+/* -- the sentence around the focal word ----------------------------------- */
+
+test('the focal word carries the prose on either side of it', () => {
+  const { segments } = parseFastReadDocument('one two three four five six seven');
+
+  assert.deepEqual(contextAround(segments, { segmentIndex: 0, wordIndex: 3 }, 2), {
+    before: 'two three',
+    after: 'five six',
+  });
+});
+
+test('context runs out at the ends of the run instead of wrapping', () => {
+  const { segments } = parseFastReadDocument('one two three');
+
+  assert.deepEqual(contextAround(segments, { segmentIndex: 0, wordIndex: 0 }, 4), {
+    before: '',
+    after: 'two three',
+  });
+  assert.deepEqual(contextAround(segments, { segmentIndex: 0, wordIndex: 2 }, 4), {
+    before: 'one two',
+    after: '',
+  });
+});
+
+test('context never reads across a stop', () => {
+  // The figure interrupts the sentence, so the words beyond it are not its
+  // continuation — running them together would read as one sentence.
+  const { segments } = parseFastReadDocument('before the ![f](/f.png) after the figure');
+
+  assert.deepEqual(contextAround(segments, { segmentIndex: 0, wordIndex: 0 }, 8), {
+    before: '',
+    after: 'the',
+  });
+  assert.deepEqual(contextAround(segments, { segmentIndex: 2, wordIndex: 0 }, 8), {
+    before: '',
+    after: 'the figure',
+  });
+  // A stop is not read at all, so it has no sentence of its own.
+  assert.deepEqual(contextAround(segments, { segmentIndex: 1, wordIndex: 0 }, 8), {
+    before: '',
+    after: '',
+  });
+});
+
+test('context shows the word as it is read, not as it was written', () => {
+  const { segments } = parseFastReadDocument('the **bold** `code` and $\\alpha$ decay');
+  const { before, after } = contextAround(segments, { segmentIndex: 0, wordIndex: 3 }, 3);
+
+  assert.equal(before, 'the bold code');
+  assert.equal(after, 'α decay');
+});
+
+test('the reading line is built from three tracks that hold the centre', () => {
+  const reader = fs.readFileSync(
+    fileURLToPath(new URL('../src/app/components/fastread-reader.tsx', import.meta.url)),
+    'utf8',
+  );
+  const css = fs.readFileSync(fileURLToPath(new URL('../src/app/globals.css', import.meta.url)), 'utf8');
+
+  // Read prose, focal glyph, prose to come — and the focal word's own halves
+  // ride the side tracks so they stay flush against the focal letter.
+  assert.match(reader, /className="fastread-rail fastread-rail-lead"/);
+  assert.match(reader, /className="fastread-rail fastread-rail-trail"/);
+  assert.match(reader, /\{context\.before\}&nbsp;/);
+  assert.match(reader, /&nbsp;\{context\.after\}/);
+  assert.match(reader, /<span className="fastread-before">\{parts\.before\}<\/span>/);
+  assert.match(reader, /<span className="fastread-after">\{parts\.after\}<\/span>/);
+
+  // Equal-width tracks are the whole trick: the glyph between them lands on the
+  // centre line whatever the words around it are doing.
+  const rail = sliceRules(css, /^\.fastread-rail \{/m);
+  assert.match(rail, /flex: 1 1 0;/);
+  assert.match(rail, /min-width: 0;/);
+  assert.match(rail, /overflow: hidden;/);
+
+  // Each track packs against the focal letter, so overflow leaves outward.
+  assert.match(sliceRules(css, /^\.fastread-rail-lead \{/m), /justify-content: flex-end;/);
+  assert.match(sliceRules(css, /^\.fastread-rail-trail \{/m), /justify-content: flex-start;/);
+
+  // The tracks clip their own box, so the line needs room for descenders.
+  const word = sliceRules(css, /^\.fastread-word \{/m);
+  assert.match(word, /line-height: 1\.4;/);
+  assert.doesNotMatch(word, /line-height: 1;/);
+
+  // The sentence is decoration around the word being read, never announced.
+  assert.match(reader, /className="fastread-context" aria-hidden="true"/);
+});
+
 test('every word of a real garden note is reachable by stepping', () => {
   const markdown = fs.readFileSync(
     fileURLToPath(
@@ -696,10 +785,54 @@ test('the garden navbar renders the Fast-read button', () => {
   );
 
   assert.match(page, /import FastReadButton from '@\/app\/components\/fastread-button'/);
-  assert.match(page, /<FastReadButton clusterSlug=\{clusterSlug\} initialNote=\{note\} \/>/);
+  assert.match(page, /\{fastRead && <FastReadButton clusterSlug=\{clusterSlug\} initialNote=\{note\} \/>\}/);
   // The feature is spelled Fast-read everywhere it is read.
   assert.match(button, /'Opening\.\.\.' : 'Fast-read'/);
   assert.doesNotMatch(button, />\s*Fastread\s*</);
+});
+
+test('the Fast-read seat is off until the profile grants it', () => {
+  const gardenPage = fs.readFileSync(
+    fileURLToPath(new URL('../src/app/garden/[clusterSlug]/page.tsx', import.meta.url)),
+    'utf8',
+  );
+  const pdfPage = fs.readFileSync(
+    fileURLToPath(
+      new URL('../src/app/gardens/[clusterSlug]/pdf/[slug]/page.tsx', import.meta.url),
+    ),
+    'utf8',
+  );
+  const artifactPdfPage = fs.readFileSync(
+    fileURLToPath(new URL('../src/app/artifacts/[artifactId]/pdf/page.tsx', import.meta.url)),
+    'utf8',
+  );
+  const viewer = fs.readFileSync(
+    fileURLToPath(
+      new URL('../src/app/gardens/[clusterSlug]/pdf/[slug]/pdf-viewer-client.tsx', import.meta.url),
+    ),
+    'utf8',
+  );
+  const shortcuts = fs.readFileSync(
+    fileURLToPath(new URL('../src/lib/profile/navbar-shortcuts.ts', import.meta.url)),
+    'utf8',
+  );
+
+  // One setting, read on the server by every page that offers the button, so
+  // the navbar is right on first paint instead of growing a button afterwards.
+  for (const page of [gardenPage, pdfPage, artifactPdfPage]) {
+    assert.match(page, /getNavbarShortcuts/);
+  }
+  assert.match(pdfPage, /fastRead=\{fastRead\}/);
+  assert.match(artifactPdfPage, /fastRead=\{getNavbarShortcuts\(userId\)\.fastRead\}/);
+
+  // The viewer defaults to hidden, so a caller that never read the setting
+  // cannot show the button by omission.
+  assert.match(viewer, /fastRead = false,/);
+  assert.match(viewer, /\{fastRead && \(\s*<button/);
+
+  // And the profile catalog offers it, off.
+  assert.match(shortcuts, /key: "fastRead",\s*\n\s*label: "Fast-read",/);
+  assert.match(shortcuts, /fastRead: false,/);
 });
 
 test('the reader names itself Fast-read', () => {

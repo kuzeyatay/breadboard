@@ -9,7 +9,6 @@ import { scrubbed } from "@/lib/watermarks/scrub-text";
 import {
   DEFAULT_MODEL,
   cleanGeneratedText,
-  normalizeTopicTags,
   refreshClusterIndex,
   scanClusterKnowledge,
 } from "@/lib/knowledge";
@@ -21,44 +20,15 @@ import {
   groundLearnerFormula,
   repairLearningUnitsFromContract,
   verifyFinalArtifactNoMutation,
-  type RepairExecutorMode,
 } from "@/lib/garden-finalize";
 import { createOpenAIRepairExecutor } from "@/lib/repair-executor";
-import { buildCanonicalSourceAnchors, describeMissingAnchorFailure, healDanglingReplacementReferences, ingestModelSourceAnchors, migrateLegacyTextConceptAnchors, missingRegistryAnchorIds, reconcileFinalGardenState } from "@/lib/final-garden-state";
+import { buildCanonicalSourceAnchors, describeMissingAnchorFailure, ingestModelSourceAnchors, missingRegistryAnchorIds } from "@/lib/final-garden-state";
 import { freezeActiveGenerationByVersion } from "@/lib/learn-structure-reconciliation";
+import { buildFormulaIdentityRegistry } from "@/lib/formula-identity";
 import {
-  buildFormulaIdentityRegistry,
-  legacyFormulaFamily,
-  type CanonicalFormulaIdentity,
-  type FormulaIdentityRepairDecision,
-  type FormulaIdentityRepairPacket,
-} from "@/lib/formula-identity";
-import {
-  applyFormulaAssignmentPlanToUnits,
-  assertPlannedFormulaAssignment,
-  buildFormulaAssignmentPlan,
-  buildGardenFormulaFamilyRegistry,
-  deriveUnitFormulaRequirement,
-  finalizeFormulaAssignmentPlanWithoutCritic,
   formulaCandidatesForUnit,
-  formulaAssignmentProvenanceFromPlan,
-  resolveFormulaAssignmentAmbiguities,
-  type FormulaAssignmentPlan,
-  type FormulaAssignmentProvenance,
-  type FormulaAssignmentRepairDecision,
-  type FormulaAssignmentRepairModel,
-  type FormulaAssignmentRepairPacket,
 } from "@/lib/formula-assignment";
 import { createChatMockAnchorCritic, createChatMockCritic, createChatMockModelRepair, makeCriticArtifactRepair, runCriticLoop } from "@/lib/critic-loop";
-import {
-  decideFinalAcceptance,
-  runWeakAnchorSelfHealingLoop,
-  writeWeakAnchorSelfHealingReports,
-  type WeakAnchorDecisionKind,
-  type WeakAnchorRepairDecision,
-  type WeakAnchorRepairModel,
-  type WeakAnchorRepairPacket,
-} from "@/lib/weak-anchor-self-healing";
 import {
   appendGardenEvent,
   buildDeterministicVisual,
@@ -72,9 +42,8 @@ import {
   anchorTextCompatibleWithVisualType,
   conceptTagsForUnit,
   dedupeSourceArtifactAssignments,
-  dropIncompatibleInteractiveVisuals,
   knowledgeClaimsForUnit,
-  learningMapFromUnits,
+  learningMapFromModelAuthoredUnits,
   normalizeLearningUnits,
   reconcileLearningUnitSourceArtifacts,
   reconcileLearningUnitConceptAliases,
@@ -84,25 +53,14 @@ import {
   type LearningUnitContract,
   type RegisteredSourceArtifact,
   type SourceArtifactAssignment,
-  type SourceFigurePlacement,
-  type SourceFormulaContract,
 } from "@/lib/learning-unit-contract";
 import {
   claimIdForPlan,
   ensureGardenConceptRegistry,
   writeGardenConceptRegistryAndContract,
 } from "@/lib/garden-semantics";
-import {
-  isValidPublicConceptSlug,
-  normalizeConceptSlug,
-  normalizeLookupText,
-} from "@/lib/semantic-core";
+import { normalizeConceptSlug, normalizeLookupText } from "@/lib/semantic-core";
 import { reconcileFinalGardenSemantics } from "@/lib/semantic-reconciliation";
-import {
-  reconcileFinalFormulaProjections,
-  type FormulaUsageRepairDecision,
-  type FormulaUsageRepairPacket,
-} from "@/lib/formula-usage-reconciliation";
 import {
   IMPLEMENTED_VISUAL_TYPES,
   buildVisualBlock,
@@ -125,7 +83,6 @@ import {
   buildLearningPageFrontmatter,
   canonicalizeLearnerWikilinks,
   containsRawVisualPlaceholder,
-  ensureQuestionBlock,
   excludeSyllabusFromSources,
   fallbackLearningMapFromSources,
   formulaMetricFamily,
@@ -135,12 +92,9 @@ import {
   normalizeLearningMapCandidate,
   parseJsonCandidate,
   publicLearningVersionId,
-  scrubAiisms,
   removeRawVisualPlaceholders,
   safeLearnFileSegment,
   sanitizeLearnerTitle,
-  scrubSourceCommentaryProse,
-  scrubLearnerProse,
   selectLearnSources,
   selectLearnSyllabus,
   sourceAppearsVisualRich,
@@ -158,6 +112,7 @@ import {
   type LearnSourceSummary,
   type LearnStatus,
   type FormulaGroundingEntry,
+  type QualityProblem,
   type LearningSectionPlan,
   type LearningSubsectionPlan,
   type ProposedLearningMap,
@@ -183,21 +138,18 @@ import {
   type UnavailableCitationProbe,
 } from "@/lib/learn-syllabus";
 import {
-  applyVisualNecessityDecisionsToUnits,
   loadVisualDecisionOverrides,
-  planGardenVisualNecessity,
-  reviewAmbiguousVisualNecessityDecisions,
   saveVisualNecessityArtifacts,
   type GardenVisualNecessityPlan,
-  type PreferredTeachingMedium,
-  type VisualNecessityReviewPacket,
-  type VisualNecessityReviewResponse,
 } from "@/lib/visual-necessity";
+import {
+  buildModelVisualNecessityPacket,
+  runModelVisualNecessityPlanning,
+} from "@/lib/model-visual-necessity";
 import { learnBuildStateMode } from "@/lib/garden-build/mode";
 import { runCanonicalGardenShadowBuild } from "@/lib/garden-build/shadow";
 import {
   buildVisualizationCoverageReport,
-  buildVisualizationPlan,
   applyVisualizationRoutesToLearningUnits,
   coverageGateMode,
   saveVisualizationCoverageReport,
@@ -205,6 +157,10 @@ import {
   type VisualizationPlan,
   type VisualizationPublicationOutcome,
 } from "@/lib/visualization-opportunities";
+import {
+  buildVisualizationPlanWithContractRepair,
+  type VisualizationContractRepairPacket,
+} from "@/lib/visualization-contract-repair";
 import {
   buildGeneratedVisualBlock,
   createGeneratedVisualization,
@@ -559,7 +515,7 @@ const LEARN_PLANNING_TIMEOUT_MS = envPositiveInt(
 );
 /** Council mode for the retry after a planning timeout. A single-model call is
  * far more likely to finish inside the window than another full fan-out, so
- * the deterministic fallback is reached only when even that fails. */
+ * both attempts fail, planning fails closed without a synthetic curriculum. */
 const LEARN_PLANNING_RETRY_COUNCIL_MODE = envCouncilMode(
   "LEARN_PLANNING_RETRY_COUNCIL_MODE",
   "direct_council",
@@ -629,20 +585,44 @@ const TITLE_RULES = `Title rules (hard requirements):
 - Never contain "paper", "source", "textbook", or "overview" in a title.`;
 
 const SOURCE_MAP_PROMPT = `You create the internal Source Map for a Breadboard learning garden. This document is internal planning data; learners never see it.
-Return ONLY JSON. Include:
-- sources: each source title, role, source id/slug, central concepts, formulas, examples, questions, and caveats
-- figures: figures/graphs/tables/formula displays with labels when provided
-- sourceAnchors: compact anchors that later pages can cite
-- missingOrUnclear: unclear or missing source material
+Return ONLY JSON with this exact top-level shape:
+{
+  "sources": [{
+    "id": "exact supplied source id",
+    "title": "exact supplied source title",
+    "role": "what this source contributes",
+    "centralConcepts": ["concise source-grounded concept"],
+    "formulas": ["registered formula id plus concise purpose"],
+    "examples": ["concise source-grounded example"],
+    "questions": ["question the material can answer"],
+    "caveats": ["only genuinely unsupported or unclear material"]
+  }],
+  "figures": [{
+    "id": "exact id from supplied sourceVisuals",
+    "sourceId": "exact supplied source id",
+    "kind": "figure | graph | table | formula",
+    "caption": "concise caption",
+    "teachingValue": "what this registered artifact can teach"
+  }],
+  "sourceAnchors": [{
+    "id": "stable source-grounding id or exact registered artifact id",
+    "sourceId": "exact supplied source id",
+    "title": "short anchor title",
+    "summary": "concise supported content"
+  }],
+  "missingOrUnclear": ["only genuinely missing or unclear content"]
+}
+Return exactly one sources entry for every supplied source id and no unknown source. Keep the map concise: at most 30 central concepts and 20 entries in each other per-source list.
+Every figures id must be copied from supplied sourceVisuals; prose mentions do not create registered artifacts.
 Availability rule (hard): any formula, equation, figure, table, or graph that has an extracted anchor or caption IS available source material. Never place it in missingOrUnclear, and never write caveats saying formulas/equations/notation/definitions/tables/figures are unavailable, "caption-only", "captions but not exact", or "not present" — pages will ground on those anchors. Caveat ONLY about content that has no extracted anchor at all.
 Stay source-aware. If source-only mode is true, do not add outside facts.`;
 
 const SCOPE_CONTRACT_PROMPT = `You create the internal Scope Contract for a Breadboard learning garden. This document is internal planning data; learners never see it.
-Return ONLY JSON with included, excluded, background, deferred, sourceEmphasis, and caveats.
+Return ONLY JSON with exactly these six arrays of concise strings: included, excluded, background, deferred, sourceEmphasis, and caveats. included and sourceEmphasis must be non-empty. Do not return prose outside the JSON object.
 The contract must protect source scope: no unsupported expansion, no disconnected topic cards, and no final Generated Subtopics pages.
 Availability rule (hard): treat any extracted formula, equation, figure, table, or graph anchor as available. Do not add caveats claiming formulas, notation, definitions, tables, or figures are unavailable or caption-only when anchors for them exist.`;
 
-const TOPIC_MAP_PROMPT = `You create the source-grounded Learning Unit Contract for a Breadboard learning garden. Learner pages are NOT planned as sections first. They are planned as 15-25 learning units, then Breadboard clusters those units into sections.
+const TOPIC_MAP_PROMPT = `You create the source-grounded Learning Unit Contract and its section spine for a Breadboard learning garden. Author 15-25 learning units first, then assign every unit to a model-authored section in the same response. Code will validate and project your section decisions verbatim; it will not cluster, title, or explain sections for you.
 Return ONLY JSON with this shape:
 {
   "title": "Topic title (the subject itself, e.g. 'Spiking Neural Networks')",
@@ -700,23 +680,32 @@ Return ONLY JSON with this shape:
         }
       ],
       "mustNotRepeat": ["motif, framing, or example already used"],
-      "expectedWordRange": [700, 1100]
+      "expectedWordRange": [700, 1100],
+      "section": {
+        "id": "S1",
+        "title": "A specific learner-facing section title",
+        "purpose": "What this section teaches and why these units belong together",
+        "singleSubsectionReason": "required only when this section intentionally contains one unit"
+      }
     }
   ],
   "warnings": ["..."]
 }
 ${TITLE_RULES}
 Contract rules:
-- Generate learningUnits first. Do not return a direct section/subsection map as the primary plan.
+- Generate learningUnits first and encode their section ownership in each unit's section object. Do not return a separate nested section/subsection map.
+- Author 4-7 sections in learner order. A section normally owns 2-5 contiguous units. If one unit must stand alone, repeat a precise singleSubsectionReason on that section's unit. Reuse the exact same section id, title, purpose, and singleSubsectionReason on every unit assigned to that section.
+- Section titles and purposes are learner-facing semantic content. They must be specific to this garden; code will never synthesize or repair them.
 - A unit is the smallest meaningful teaching step: one learner question, one conceptual move.
 - Normal source-rich gardens need 15-25 units; never produce an 8-section/1-subsection outline.
 - Every important source figure, graph, table, displayed formula, result, example, limitation, or recommendation must be assigned to the one precise unit where it teaches best, or marked unused with a reason.
 - IDs in sourceFigures, sourceTables, and sourceFormulas may ONLY be copied verbatim from extractedSourceArtifacts. A figure-like ID mentioned in source prose is not a registered artifact and must never be used unless that exact ID is present in extractedSourceArtifacts.
 - Every structured artifact ID (Sx.Py.Fn, Sx.Py.Gn, Sx.Py.Tn, or Sx.Py.En) used anywhere in a unit, including sourceAnchors and evidenceAnchors, must be present in extractedSourceArtifacts with the matching kind.
 - Source figures must be planned for inline placement near their interpretation. Never plan a generic "Source Figures" dump.
-- Do not assign an interactiveVisual or visualType in this response. Breadboard runs a deterministic visual-necessity decision, alternative-medium comparison, garden-level coordination, and only then renderer/type selection.
-- Describe each unit's learning question, dynamic behavior, comparisons, parameters, source figures, formulas, tables, and prerequisites precisely enough for that downstream decision.
+- Do not assign an interactiveVisual or visualType in this response. A separate whole-garden AI review authors visual necessity, alternative-medium choice, and a typed learner-control contract after this learning spine passes validation.
+- Describe each unit's learning question, dynamic behavior, comparisons, parameters, source figures, formulas, tables, and prerequisites precisely enough for that source-grounded model review. Code validates its evidence and behavior but never invents a pedagogical visual decision.
 - Concepts are reusable identities, never complete claims, page-title summaries, filenames, locations, or planner phrases. Reuse an existing canonical slug or alias whenever possible.
+- Every unit must explicitly contain semanticConcepts with one or two primary concepts. Code will never infer missing concepts or claims from titles, roles, or zettel notes.
 - Every normalized alias must belong to exactly one concept. Never use another concept's slug or preferred label as an alias, and never assign the same alias to multiple concepts.
 - Mark one or two genuinely central concepts primary. Use supporting concepts only when they materially help retrieval or graph traversal.
 - Plan 1-5 public concepts per learner unit. Never add filler to satisfy a target count.
@@ -2410,49 +2399,6 @@ function promptSourcesCompact(context: LearnSourceContext): unknown {
   };
 }
 
-/** Compact a large planning JSON so it can ride into the next stage's prompt
- * without dominating the token budget (the spine needs the shape, not every
- * verbose field). */
-function compactPlanningPayload(value: unknown, maxLength = 6000): unknown {
-  const text = JSON.stringify(value ?? null);
-  if (text.length <= maxLength) return value;
-  return { truncatedJson: `${text.slice(0, maxLength)}…`, note: "compacted for prompt size" };
-}
-
-function fallbackSourceMap(context: LearnSourceContext): unknown {
-  return {
-    gardenId: context.gardenId,
-    sourceSetHash: context.sourceSetHash,
-    sources: context.sources.map((source) => ({
-      id: source.slug,
-      title: source.title,
-      role: "uploaded source material",
-      relPath: source.relPath,
-      sourceType: source.sourceType,
-      concepts: context.conceptNodes
-        .filter((concept) => !concept.sourceDocument || concept.sourceDocument === source.slug)
-        .slice(0, 12)
-        .map((concept) => concept.title),
-      excerpt: source.excerpt,
-    })),
-    figures: context.sourceFigures,
-    missingOrUnclear: [],
-  };
-}
-
-function fallbackScopeContract(context: LearnSourceContext, sourceOnly: boolean): unknown {
-  return {
-    included: context.sources.map((source) => source.title),
-    excluded: sourceOnly
-      ? ["Claims, examples, and details not supported by the uploaded sources."]
-      : ["Disconnected topic cards as the primary reading path."],
-    background: ["Internal ConceptNodes may be used as planning scaffolding."],
-    deferred: ["Manual edits to section order beyond confirm/regenerate."],
-    sourceOnly,
-    caveats: context.sources.length > 0 ? [] : ["No uploaded sources found."],
-  };
-}
-
 async function callCouncilText({
   client,
   model,
@@ -2556,23 +2502,36 @@ async function callCouncilJson({
   return { ...result, parsed: parseJsonCandidate(result.content) };
 }
 
-const VISUAL_REVIEW_ACTIONS = [
-  "confirm_required",
-  "downgrade_to_recommended",
-  "downgrade_to_optional",
-  "select_noninteractive_medium",
-  "reject_as_distracting",
-] as const;
-const VISUAL_REVIEW_MEDIA: PreferredTeachingMedium[] = [
-  "source_figure",
-  "generated_static_diagram",
-  "formula_derivation",
-  "worked_example",
-  "comparison_table",
-  "timeline",
-  "prose",
-  "no_additional_visual",
-];
+async function requestVisualizationContractRepair(input: {
+  client: OpenAI;
+  model: string;
+  gardenId: string;
+  packet: VisualizationContractRepairPacket;
+}): Promise<unknown> {
+  const { parsed } = await callCouncilJson({
+    client: input.client,
+    model: input.model,
+    taskType: "visualization_generation",
+    gardenId: input.gardenId,
+    system:
+      "Repair only the missing learner-control contract for each supplied required interactive visual. " +
+      "Return STRICT JSON: {\"repairs\":[{\"unitId\":string,\"controls\":[{\"kind\":\"variable\"|\"select_case\"|\"process_position\",\"label\":string,\"options\"?:string[],\"evidence\":[{\"anchor\":string,\"quote\":string}]}],\"expectedInsight\":string,\"expectedInsightEvidence\":[{\"anchor\":string,\"quote\":string}]}]}. " +
+      "Use only the evidence entries supplied for that same unit. Every quote must be an exact substring of the entry with that anchor. " +
+      "A variable must be an explicit formula term or be named in an explicit change/dependency claim. " +
+      "A select_case needs at least two source-named options and every option must occur in its cited quote. " +
+      "A process_position must name an explicit path, time, phase, stage, or process position. " +
+      "The expected insight must be directly supported by its cited quote. Never invent plausible controls, labels, cases, claims, or units. " +
+      "Do not return or change necessity, requirement, renderer, visual type, route, or publication policy. Address every failed unit and use previousRejectionReasons to correct a rejected attempt.",
+    user: JSON.stringify(input.packet),
+    sourceContext: input.packet,
+    councilModeOverride: "direct_council",
+    timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+  });
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Visualization contract repair returned no JSON object.");
+  }
+  return parsed;
+}
 
 async function planAndReviewVisualNecessity(input: {
   client: OpenAI;
@@ -2581,85 +2540,85 @@ async function planAndReviewVisualNecessity(input: {
   contentPath: string;
   jobId: string;
   learningUnits: LearningUnitContract[];
-  maxReviews?: number;
 }): Promise<GardenVisualNecessityPlan> {
   const gardenDir = clusterPath(input.contentPath, input.gardenId);
-  const deterministic = planGardenVisualNecessity({
+  const overrides = loadVisualDecisionOverrides(gardenDir);
+  const packet = buildModelVisualNecessityPacket({
     gardenId: input.gardenId,
     learningUnits: input.learningUnits,
-    overrides: loadVisualDecisionOverrides(gardenDir),
+    // These are safety ceilings, not targets. Allowing every unit keeps code
+    // out of the pedagogical decision; the model must justify the actual set.
+    budget: {
+      maximumInteractiveUnits: input.learningUnits.length,
+      maximumRequiredInteractiveUnits: input.learningUnits.length,
+      maximumRepeatedInteractionSignature: 1,
+    },
+    sectionByUnit: Object.fromEntries(
+      input.learningUnits.flatMap((unit) =>
+        unit.sectionPlan?.id ? [[unit.id, unit.sectionPlan.id]] : []),
+    ),
+    overrides,
   });
-  const criticEnabled = (process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false";
-  if (!criticEnabled) return deterministic;
-
-  const reviewed = await reviewAmbiguousVisualNecessityDecisions({
-    units: deterministic.learningUnits,
-    decisions: deterministic.decisions,
-    maxReviews: input.maxReviews ?? 3,
+  const run = await runModelVisualNecessityPlanning({
+    packet,
+    learningUnits: input.learningUnits,
     shouldRethrowError: () => jobStatusById(input.jobId) === "cancelled",
-    reviewer: async (packet: VisualNecessityReviewPacket): Promise<VisualNecessityReviewResponse> => {
+    provider: async (request) => {
+      throwIfLearnCancelled(input.jobId);
       const { parsed } = await callCouncilJson({
         client: input.client,
         model: input.model,
         taskType: "visual_necessity_review",
         gardenId: input.gardenId,
-        system:
-          "Review only the supplied ambiguous interactive-visual necessity decision. Return STRICT JSON: " +
-          "{\"action\":\"confirm_required\"|\"downgrade_to_recommended\"|\"downgrade_to_optional\"|\"select_noninteractive_medium\"|\"reject_as_distracting\",\"preferredMedium\"?:string,\"visualType\"?:string,\"reason\":string}. " +
-          "Use only allowedActions, supportedAlternatives, and an already-supported visual type. A sufficient source figure/formula/example, nearby duplicate, aesthetics, or a quota cannot justify interaction.",
-        user: JSON.stringify(packet),
-        sourceContext: packet,
+        system: request.system,
+        user: request.user,
+        // Evidence is already present once in the user payload. Keep council
+        // routing metadata compact so the same garden packet is not charged or
+        // reasoned over twice.
+        sourceContext: {
+          gardenId: input.gardenId,
+          taskType: "visual_necessity_review",
+          attempt: request.attempt,
+          unitIds: packet.units.map((unit) => unit.unitId),
+        },
         councilModeOverride: "direct_council",
         timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
       });
-      if (!parsed || typeof parsed !== "object") throw new Error("Visual necessity reviewer returned no JSON object.");
-      const record = parsed as Record<string, unknown>;
-      const action = String(record.action ?? "") as VisualNecessityReviewResponse["action"];
-      if (!(VISUAL_REVIEW_ACTIONS as readonly string[]).includes(action)) {
-        throw new Error(`Visual necessity reviewer returned unsupported action ${action || "(empty)"}.`);
+      if (!parsed || typeof parsed !== "object") {
+        throw new Error("Visual-necessity planner returned no JSON object.");
       }
-      const preferredMedium = typeof record.preferredMedium === "string"
-        ? record.preferredMedium as PreferredTeachingMedium
-        : undefined;
-      if (preferredMedium && !VISUAL_REVIEW_MEDIA.includes(preferredMedium)) {
-        throw new Error(`Visual necessity reviewer returned unsupported medium ${preferredMedium}.`);
-      }
-      return {
-        action,
-        ...(preferredMedium ? { preferredMedium } : {}),
-        ...(typeof record.visualType === "string" ? { visualType: record.visualType } : {}),
-        reason: typeof record.reason === "string" ? record.reason : "",
-      };
+      return parsed;
     },
   });
-  const finalPlan = applyVisualNecessityDecisionsToUnits({
-    gardenId: input.gardenId,
-    learningUnits: deterministic.learningUnits,
-    decisions: reviewed.decisions,
-    overrides: deterministic.overrides,
-    reviewCalls: reviewed.reviewCalls,
-    rejectedReviews: reviewed.rejectedReviews,
-  });
-  finalPlan.unresolvedRecords = reviewed.unresolvedRecords;
   appendLearnEvent(input.contentPath, input.gardenId, "learn_visual_necessity_review_completed", {
     jobId: input.jobId,
-    ambiguousDecisionsReviewed: reviewed.reviewCalls,
-    rejectedReviews: reviewed.rejectedReviews,
-    required: finalPlan.decisions.filter((decision) => decision.necessity === "required").length,
-    recommended: finalPlan.decisions.filter((decision) => decision.necessity === "recommended").length,
-    optional: finalPlan.decisions.filter((decision) => decision.necessity === "optional").length,
-    noInteraction: finalPlan.decisions.filter((decision) =>
-      decision.necessity === "not_needed" || decision.necessity === "harmful_or_distracting").length,
+    decisionSource: "model_batch",
+    modelCalls: run.calls,
+    rejectedReviews: run.repairCalls,
+    required: run.plan.counts.required,
+    recommended: run.plan.counts.recommended,
+    optional: run.plan.counts.optional,
+    noInteraction: run.plan.counts.nonInteractive,
   });
-  return finalPlan;
+  return {
+    learningUnits: run.plan.learningUnits,
+    decisions: run.plan.decisions,
+    teachingMedia: run.plan.teachingMedia,
+    budget: run.plan.budget,
+    overrides: packet.overrides,
+    reviewCalls: run.calls,
+    rejectedReviews: run.repairCalls,
+    decisionRecords: run.plan.decisionRecords,
+    zeroVisualSafeguard: run.plan.zeroVisualSafeguard,
+    unresolvedRecords: [],
+  };
 }
 
 /**
  * Planning call with a timeout ladder: one attempt at the configured planning
  * council mode with a generous timeout, then one retry at the (lighter, faster)
- * retry mode. Only when BOTH time out does the error reach the caller, whose
- * deterministic fallback is the genuine last resort — never the first response
- * to a slow council.
+ * retry mode. If both time out, the error reaches the caller and the isolated
+ * Learn workspace is discarded; no semantic planning fallback is created.
  */
 async function callPlanningJsonWithRetry({
   client,
@@ -2716,6 +2675,284 @@ async function callPlanningJsonWithRetry({
   }
 }
 
+async function callValidatedPlanningJson({
+  client,
+  model,
+  taskType,
+  gardenId,
+  system,
+  user,
+  sourceContext,
+  contentPath,
+  jobId,
+  stageLabel,
+  validate,
+}: {
+  client: OpenAI;
+  model: string;
+  taskType: CouncilTaskType;
+  gardenId: string;
+  system: string;
+  user: string;
+  sourceContext: unknown;
+  contentPath: string;
+  jobId: string;
+  stageLabel: string;
+  validate: (value: unknown) => string[];
+}): Promise<CouncilJsonResult> {
+  const originalRequest = parseJsonCandidate(user) ?? user;
+  let result = await callPlanningJsonWithRetry({
+    client,
+    model,
+    taskType,
+    gardenId,
+    system,
+    user,
+    sourceContext,
+    contentPath,
+    jobId,
+  });
+  let problems = validate(result.parsed);
+  for (let repairAttempt = 1; repairAttempt <= 2 && problems.length > 0; repairAttempt += 1) {
+    throwIfLearnCancelled(jobId);
+    appendLearnEvent(contentPath, gardenId, "learn_planning_schema_repair_started", {
+      jobId,
+      taskType,
+      stageLabel,
+      repairAttempt,
+      problems,
+    });
+    const invalidResponse = result.parsed ?? {
+      unparsedResponse: result.content.slice(0, 12_000),
+    };
+    result = await callPlanningJsonWithRetry({
+      client,
+      model,
+      taskType,
+      gardenId,
+      system:
+        `${system}\n\nYour previous ${stageLabel} response failed the supplied hard validation problems. ` +
+        "Return a complete corrected replacement JSON object. Do not explain, patch, omit required entries, or rely on code to fill anything in.",
+      user: compactJson({
+        originalRequest,
+        invalidResponse,
+        validationProblems: problems,
+        repairAttempt,
+      }),
+      sourceContext: {
+        gardenId,
+        taskType,
+        stageLabel,
+        repairAttempt,
+      },
+      contentPath,
+      jobId,
+    });
+    problems = validate(result.parsed);
+    appendLearnEvent(contentPath, gardenId, "learn_planning_schema_repair_reviewed", {
+      jobId,
+      taskType,
+      stageLabel,
+      repairAttempt,
+      remainingProblems: problems,
+    });
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `${stageLabel} remained invalid after 3 bounded AI-authored attempts: ${problems.join("; ")}. No deterministic fallback was used.`,
+    );
+  }
+  return result;
+}
+
+function sourceMapPlanProblems(input: {
+  value: unknown;
+  sourceIds: readonly string[];
+  registeredArtifacts: readonly Pick<SourceFigure, "figureId" | "kind" | "page">[];
+}): string[] {
+  const record = planningRecord(input.value);
+  const problems: string[] = [];
+  const rawSources = Array.isArray(record.sources) ? record.sources : [];
+  if (!Array.isArray(record.sources)) problems.push("sources must be an array");
+  const expectedSourceIds = new Set(input.sourceIds);
+  const seenSourceIds = new Set<string>();
+  rawSources.forEach((rawSource, index) => {
+    const source = planningRecord(rawSource);
+    const id = typeof source.id === "string" ? source.id.trim() : "";
+    if (!id || !expectedSourceIds.has(id)) {
+      problems.push(`sources[${index}].id must be an exact supplied source id`);
+    } else if (seenSourceIds.has(id)) {
+      problems.push(`source ${id} appears more than once`);
+    } else {
+      seenSourceIds.add(id);
+    }
+    if (typeof source.title !== "string" || !source.title.trim()) {
+      problems.push(`sources[${index}].title is required`);
+    }
+    if (typeof source.role !== "string" || !source.role.trim()) {
+      problems.push(`sources[${index}].role is required`);
+    }
+    for (const field of ["centralConcepts", "formulas", "examples", "questions", "caveats"]) {
+      if (!Array.isArray(source[field]) || !(source[field] as unknown[]).every((item) => typeof item === "string")) {
+        problems.push(`sources[${index}].${field} must be an array of strings`);
+      }
+    }
+  });
+  for (const sourceId of expectedSourceIds) {
+    if (!seenSourceIds.has(sourceId)) problems.push(`source ${sourceId} is missing from the Source Map`);
+  }
+
+  const figures = Array.isArray(record.figures) ? record.figures : [];
+  if (!Array.isArray(record.figures)) problems.push("figures must be an array");
+  const registeredArtifactIds = new Set(input.registeredArtifacts.map((artifact) => artifact.figureId));
+  const seenArtifactIds = new Set<string>();
+  figures.forEach((rawFigure, index) => {
+    const figure = planningRecord(rawFigure);
+    const id = typeof figure.id === "string" ? figure.id.trim() : "";
+    const sourceId = typeof figure.sourceId === "string" ? figure.sourceId.trim() : "";
+    if (!id || !registeredArtifactIds.has(id)) {
+      problems.push(`figures[${index}].id must be copied from registered sourceVisuals`);
+    } else if (seenArtifactIds.has(id)) {
+      problems.push(`registered artifact ${id} appears more than once`);
+    } else {
+      seenArtifactIds.add(id);
+    }
+    if (!expectedSourceIds.has(sourceId)) {
+      problems.push(`figures[${index}].sourceId must be an exact supplied source id`);
+    }
+  });
+  for (const artifactId of registeredArtifactIds) {
+    if (!seenArtifactIds.has(artifactId)) {
+      problems.push(`registered source artifact ${artifactId} is missing from figures`);
+    }
+  }
+
+  const anchors = Array.isArray(record.sourceAnchors) ? record.sourceAnchors : [];
+  if (!Array.isArray(record.sourceAnchors)) problems.push("sourceAnchors must be an array");
+  anchors.forEach((rawAnchor, index) => {
+    const anchor = planningRecord(rawAnchor);
+    if (typeof anchor.id !== "string" || !anchor.id.trim()) {
+      problems.push(`sourceAnchors[${index}].id is required`);
+    }
+    if (typeof anchor.sourceId !== "string" || !expectedSourceIds.has(anchor.sourceId.trim())) {
+      problems.push(`sourceAnchors[${index}].sourceId must be an exact supplied source id`);
+    }
+    if (typeof anchor.title !== "string" || !anchor.title.trim()) {
+      problems.push(`sourceAnchors[${index}].title is required`);
+    }
+    if (typeof anchor.summary !== "string" || !anchor.summary.trim()) {
+      problems.push(`sourceAnchors[${index}].summary is required`);
+    }
+  });
+  if (!Array.isArray(record.missingOrUnclear) || !record.missingOrUnclear.every((item) => typeof item === "string")) {
+    problems.push("missingOrUnclear must be an array of strings");
+  }
+  const authoredText = JSON.stringify(record);
+  const unavailableClaim = (subject: RegExp) =>
+    new RegExp(
+      `${subject.source}[^.\\n]{0,100}(?:not (?:present|available|included|provided|detected)|unavailable|caption[- ]only)`,
+      "i",
+    ).test(authoredText);
+  if (
+    input.registeredArtifacts.some((artifact) => artifact.kind === "formula") &&
+    unavailableClaim(/(?:formula|equation|mathematical notation|mathematical definition)s?/)
+  ) {
+    problems.push("Source Map contradicts the registry by claiming available formula/equation evidence is unavailable");
+  }
+  if (
+    input.registeredArtifacts.some((artifact) => artifact.kind === "table") &&
+    unavailableClaim(/tables?/)
+  ) {
+    problems.push("Source Map contradicts the registry by claiming available table evidence is unavailable");
+  }
+  if (
+    input.registeredArtifacts.some((artifact) => artifact.kind !== "formula" && artifact.kind !== "table") &&
+    unavailableClaim(/(?:figure|graph)s?/)
+  ) {
+    problems.push("Source Map contradicts the registry by claiming available figure/graph evidence is unavailable");
+  }
+  if (
+    input.registeredArtifacts.some((artifact) => Number(artifact.page) > 24) &&
+    /(?:truncated|available only|only available)[^.\n]{0,80}(?:page\s*24|first\s*24\s*pages)|later (?:pages|sections)[^.\n]{0,80}(?:not available|unavailable)/i.test(authoredText)
+  ) {
+    problems.push("Source Map contradicts the registry by claiming later source pages are unavailable");
+  }
+  return [...new Set(problems)];
+}
+
+function scopeContractProblems(value: unknown): string[] {
+  const record = planningRecord(value);
+  const problems: string[] = [];
+  for (const field of ["included", "excluded", "background", "deferred", "sourceEmphasis", "caveats"]) {
+    if (!Array.isArray(record[field]) || !(record[field] as unknown[]).every((item) => typeof item === "string")) {
+      problems.push(`${field} must be an array of strings`);
+    }
+  }
+  if (!Array.isArray(record.included) || record.included.length === 0) {
+    problems.push("included must contain at least one model-authored scope item");
+  }
+  if (!Array.isArray(record.sourceEmphasis) || record.sourceEmphasis.length === 0) {
+    problems.push("sourceEmphasis must contain at least one model-authored priority");
+  }
+  return [...new Set(problems)];
+}
+
+function syllabusPlanProblems(value: unknown): string[] {
+  const record = planningRecord(value);
+  const problems: string[] = [];
+  const materials = Array.isArray(record.referencedMaterials) ? record.referencedMaterials : [];
+  const units = Array.isArray(record.units) ? record.units : [];
+  if (!Array.isArray(record.referencedMaterials)) problems.push("referencedMaterials must be an array");
+  if (!Array.isArray(record.units)) problems.push("units must be an array");
+  const materialIds = new Set<string>();
+  const materialKinds = new Set([
+    "textbook", "chapter", "paper", "reading", "lecture", "slides", "dataset", "video", "other",
+  ]);
+  materials.forEach((rawMaterial, index) => {
+    const material = planningRecord(rawMaterial);
+    const id = typeof material.id === "string" ? material.id.trim() : "";
+    if (!id) problems.push(`referencedMaterials[${index}].id is required`);
+    else if (materialIds.has(id)) problems.push(`referenced material id ${id} is duplicated`);
+    else materialIds.add(id);
+    if (typeof material.citation !== "string" || !material.citation.trim()) {
+      problems.push(`referencedMaterials[${index}].citation is required`);
+    }
+    if (typeof material.kind !== "string" || !materialKinds.has(material.kind)) {
+      problems.push(`referencedMaterials[${index}].kind is invalid`);
+    }
+    if (typeof material.required !== "boolean") {
+      problems.push(`referencedMaterials[${index}].required must be boolean`);
+    }
+    if (!Array.isArray(material.authors) || !material.authors.every((item) => typeof item === "string")) {
+      problems.push(`referencedMaterials[${index}].authors must be an array of strings`);
+    }
+  });
+  const unitIds = new Set<string>();
+  units.forEach((rawUnit, index) => {
+    const unit = planningRecord(rawUnit);
+    const id = typeof unit.id === "string" ? unit.id.trim() : "";
+    if (!id) problems.push(`units[${index}].id is required`);
+    else if (unitIds.has(id)) problems.push(`syllabus unit id ${id} is duplicated`);
+    else unitIds.add(id);
+    if (typeof unit.title !== "string" || !unit.title.trim()) {
+      problems.push(`units[${index}].title is required`);
+    }
+    for (const field of ["objectives", "topics", "materialIds"]) {
+      if (!Array.isArray(unit[field]) || !(unit[field] as unknown[]).every((item) => typeof item === "string")) {
+        problems.push(`units[${index}].${field} must be an array of strings`);
+      }
+    }
+    if (Array.isArray(unit.materialIds)) {
+      for (const materialId of unit.materialIds) {
+        if (typeof materialId === "string" && !materialIds.has(materialId)) {
+          problems.push(`units[${index}] references unknown material id ${materialId}`);
+        }
+      }
+    }
+  });
+  return [...new Set(problems)];
+}
+
 function errorMessage(error: unknown, fallback = "Request failed"): string {
   const message =
     error instanceof Error && error.message.trim()
@@ -2747,164 +2984,48 @@ function isPlanningTimeoutError(error: unknown): boolean {
   return /timeout|timed out|aborted|aborterror|etimedout|econnreset|socket hang up/.test(haystack);
 }
 
-function planningFallbackWarning(label: string, error: unknown): string {
-  return `${label} request timed out twice (${LEARN_PLANNING_COUNCIL_MODE} then ${LEARN_PLANNING_RETRY_COUNCIL_MODE}, ${Math.round(LEARN_PLANNING_TIMEOUT_MS / 60000)} min each: ${errorMessage(error)}). Used deterministic source-grounded planning fallback as the last resort.`;
-}
-
-function fallbackCouncilJsonResult(parsed: unknown, councilRunId: string): CouncilJsonResult {
-  return {
-    content: compactJson(parsed),
-    parsed,
-    councilRunId,
-    councilMode: "fallback",
-  };
-}
-
-function fallbackLearningSpinePlan(
-  context: LearnSourceContext,
-  sourceOnly: boolean,
-  warning: string,
-): Record<string, unknown> {
-  return {
-    title: sanitizeLearnerTitle(context.gardenTitle || context.sources[0]?.title || context.gardenId || "Learning Path"),
-    summary: `A source-grounded learning sequence generated from ${context.sources.length} uploaded source${context.sources.length === 1 ? "" : "s"}.`,
-    sourceOnly,
-    learningUnits: fallbackLearningUnitsFromContext(context),
-    warnings: [warning],
-  };
-}
-
 function importantSourceArtifactCount(context: LearnSourceContext): number {
   return context.sourceFigures.filter((figure) => Boolean(figure.figureId)).length;
 }
 
-function planningString(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+function modelAuthoredLearningMapMetadataProblems(value: unknown): string[] {
+  const record = planningRecord(value);
+  const problems: string[] = [];
+  if (typeof record.title !== "string" || !record.title.trim()) {
+    problems.push("planner returned no model-authored garden title");
+  } else if (sanitizeLearnerTitle(record.title.trim()) !== record.title.trim()) {
+    problems.push(
+      `model-authored garden title violates learner-facing title rules; return it already corrected as "${sanitizeLearnerTitle(record.title.trim())}"`,
+    );
+  }
+  if (typeof record.summary !== "string" || !record.summary.trim()) {
+    problems.push("planner returned no model-authored garden summary");
+  }
+  return problems;
+}
+
+function modelAuthoredUnitTitleProblems(units: readonly LearningUnitContract[]): string[] {
+  const problems: string[] = [];
+  for (const unit of units) {
+    if (unit.title && sanitizeLearnerTitle(unit.title) !== unit.title) {
+      problems.push(
+        `unit "${unit.id}": model-authored title violates learner-facing title rules; return it already corrected as "${sanitizeLearnerTitle(unit.title)}"`,
+      );
+    }
+    const sectionTitle = unit.sectionPlan?.title;
+    if (sectionTitle && sanitizeLearnerTitle(sectionTitle) !== sectionTitle) {
+      problems.push(
+        `section "${unit.sectionPlan?.id}": model-authored title violates learner-facing title rules; return it already corrected as "${sanitizeLearnerTitle(sectionTitle)}"`,
+      );
+    }
+  }
+  return [...new Set(problems)];
 }
 
 function planningRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
-}
-
-function sourceFigurePlacementForFallback(figure: SourceFigure): SourceFigurePlacement {
-  if (figure.kind === "formula") return "after_formula_introduction";
-  if (figure.kind === "table" || figure.kind === "graph") return "inside_result_interpretation";
-  return "inside_concept_explanation";
-}
-
-function fallbackLearningUnitsFromContext(context: LearnSourceContext): LearningUnitContract[] {
-  const topic = sanitizeLearnerTitle(context.gardenTitle || context.sources[0]?.title || context.gardenId || "This Topic");
-  const sourceAnchors = context.sources.length > 0 ? context.sources.map((source) => source.title) : [topic];
-  const grounding = [
-    topic,
-    ...context.sources.map((source) => `${source.title}\n${source.excerpt ?? ""}\n${source.body ?? ""}`),
-    ...(context.concepts ?? []).map((concept) => `${concept.title}\n${concept.excerpt ?? ""}`),
-  ].join("\n");
-  const fallbackConceptPool = normalizeTopicTags(
-    [
-      ...context.sources.flatMap((source) => source.tags ?? []),
-      ...(context.concepts ?? []).flatMap((concept) => concept.tags ?? []),
-    ],
-    grounding,
-    5,
-    grounding,
-  );
-  const topicSlug = normalizeConceptSlug(topic);
-  if (fallbackConceptPool.length === 0 && isValidPublicConceptSlug(topicSlug)) {
-    fallbackConceptPool.push(topicSlug);
-  }
-  const nowRange: [number, number] = [700, 1100];
-  const mk = (
-    id: string,
-    role: LearningUnitContract["role"],
-    title: string,
-    question: string,
-    _claim: string,
-  ): LearningUnitContract => {
-    void _claim;
-    const numericId = Math.max(0, Number(id.replace(/\D/g, "")) - 1);
-    const primary = fallbackConceptPool.length > 0
-      ? fallbackConceptPool[numericId % fallbackConceptPool.length]
-      : "";
-    return {
-      id,
-      role,
-      title: sanitizeLearnerTitle(title),
-      learningQuestion: question,
-      prerequisiteConcepts: [],
-      newConcepts: primary ? [primary] : [],
-      sourceAnchors,
-      sourceFigures: [],
-      sourceFormulas: [],
-      sourceTables: [],
-      zettelNotes: [],
-      semanticConcepts: primary
-        ? [{
-            slug: primary,
-            preferredLabel: primary.replace(/-/g, " "),
-            role: "primary",
-            aliases: [],
-            evidenceAnchors: sourceAnchors,
-          }]
-        : [],
-      knowledgeClaims: [],
-      mustNotRepeat: [],
-      expectedWordRange: nowRange,
-    };
-  };
-
-  const units: LearningUnitContract[] = [
-    mk("U1", "motivation", `Why ${topic} Exists`, `What problem makes ${topic} worth learning?`, `${topic} exists because a practical problem needs a more precise way to reason about it.`),
-    mk("U2", "core_concept", `The Core Idea of ${topic}`, `What is the central idea?`, `${topic} has one central idea that organizes the rest of the learning path.`),
-    mk("U3", "mechanism", "The Main Mechanism", "How does the mechanism work step by step?", "A mechanism becomes understandable when each moving part is tied to its role."),
-    mk("U4", "worked_example", "A Concrete Worked Example", "How does the idea behave in a concrete case?", "A worked example turns an abstract mechanism into a traceable sequence."),
-    mk("U5", "formula", "The Formal Pieces", "Which formulas or formal definitions matter?", "Formal definitions are useful when every term is tied to what it measures."),
-    mk("U6", "training_method", "How It Learns or Changes", "What changes over time, and why?", "A changing system needs a rule that explains how state or behavior updates."),
-    mk("U7", "metric", "How It Is Measured", "Which measurements decide whether the method works?", "A measurement is meaningful only when its units and tradeoffs are explicit."),
-    mk("U8", "result_interpretation", "Interpreting the Results", "What should the learner notice in the results?", "A result teaches when the learner can name the pattern and its consequence."),
-    mk("U9", "comparison", "Comparing Alternatives", "How do competing methods differ?", "A comparison is useful when it separates definition, metric, and context."),
-    mk("U10", "application", "Where It Fits", "When is this useful in practice?", "A method fits an application when its strengths match the deployment constraints."),
-    mk("U11", "limitation", "Limits and Failure Modes", "Where does the approach stop working well?", "Limitations are part of the concept because they reveal the assumptions underneath."),
-    mk("U12", "synthesis", "Putting the Ideas Together", "How do the pieces connect into one mental model?", "A learning path becomes durable when motivation, mechanism, metric, evidence, and limits connect."),
-  ];
-
-  const byRole = new Map(units.map((unit) => [unit.role, unit]));
-  for (const figure of context.sourceFigures) {
-    if (!figure.figureId) continue;
-    const caption = figure.caption || figure.figureId;
-    if (figure.kind === "formula") {
-      byRole.get("formula")?.sourceFormulas.push({
-        id: figure.figureId,
-        teachingGoal: `Define and interpret ${caption}.`,
-        termsToDefine: [],
-        placement: "before_example",
-      });
-      continue;
-    }
-    if (figure.kind === "table") {
-      byRole.get("comparison")?.sourceTables.push({
-        id: figure.figureId,
-        teachingGoal: `Use ${caption} to compare the relevant rows or columns.`,
-        rowsOrColumnsToExplain: [],
-        placement: "inside_comparison",
-      });
-      continue;
-    }
-    const target =
-      figure.kind === "graph" || /result|accuracy|latency|energy|loss|curve|comparison/i.test(caption)
-        ? byRole.get("result_interpretation")
-        : byRole.get("mechanism");
-    target?.sourceFigures.push({
-      id: figure.figureId,
-      placement: sourceFigurePlacementForFallback(figure),
-      mustBeDiscussedWith: caption,
-      interpretationGoal: `Explain what ${caption} shows and why it matters for this learning step.`,
-    });
-  }
-
-  return units;
 }
 
 function sourceCoveragePlan(
@@ -2988,10 +3109,7 @@ function writeLearningUnitContractArtifacts({
   units: LearningUnitContract[];
   assignments: SourceArtifactAssignment[];
   sourceSetHash: string;
-  visualNecessityReview?: Pick<
-    GardenVisualNecessityPlan,
-    "decisions" | "reviewCalls" | "rejectedReviews" | "unresolvedRecords"
-  >;
+  visualNecessityReview?: GardenVisualNecessityPlan;
 }): {
   units: LearningUnitContract[];
   assignments: SourceArtifactAssignment[];
@@ -3026,11 +3144,8 @@ function writeLearningUnitContractArtifacts({
     assignments,
     registeredArtifactsForGarden(clusterDir),
   );
-  const compatibleVisuals = dropIncompatibleInteractiveVisuals(
-    sourceArtifactReconciliation.units,
-  );
   const aliasReconciliation = reconcileLearningUnitConceptAliases(
-    compatibleVisuals.units,
+    sourceArtifactReconciliation.units,
   );
   let reconciledUnits = aliasReconciliation.units;
   // Build and validate the registry before writing the contract. This avoids
@@ -3045,75 +3160,6 @@ function writeLearningUnitContractArtifacts({
   });
   const unitsBeforeRegistryAlignment = reconciledUnits;
   reconciledUnits = alignLearningUnitConceptAliasesWithRegistry(reconciledUnits, registry);
-  // Formula identities are source-derived and outrank model-authored contract
-  // coverage. When the extraction ledger is already available, the verified
-  // family-constrained planner rebuilds the formula assignments GLOBALLY:
-  // incompatible model proposals are rejected (never persisted), compatible
-  // formulas land on their strongest unambiguous unit, and leftovers stay
-  // unassigned with a reason. Anchors extraction has not seen yet pass
-  // through untouched; the post-extraction pass re-plans them strictly.
-  const formulaIdentities = buildFormulaIdentityRegistry(buildCanonicalSourceAnchors(clusterDir), clusterDir);
-  const identityById = new Map(formulaIdentities.map((identity) => [identity.anchorId, identity]));
-  let formulaAssignmentProvenance: FormulaAssignmentProvenance[] = [];
-  let formulaAssignmentPlan: FormulaAssignmentPlan | undefined;
-  const contractFamilyRegistry = buildGardenFormulaFamilyRegistry(formulaIdentities);
-  if (formulaIdentities.length > 0) {
-    const knownAnchorIds = new Set(formulaIdentities.map((identity) => identity.anchorId));
-    const previousAssignments = reconciledUnits.flatMap((unit) =>
-      unit.sourceFormulas
-        .filter((formula) => knownAnchorIds.has(formula.id))
-        .map((formula) => ({ formulaAnchorId: formula.id, unitId: unit.id })));
-    formulaAssignmentPlan = finalizeFormulaAssignmentPlanWithoutCritic(
-      buildFormulaAssignmentPlan(formulaIdentities, reconciledUnits, { previousAssignments, familyRegistry: contractFamilyRegistry }),
-    );
-    const application = applyFormulaAssignmentPlanToUnits({
-      units: reconciledUnits,
-      plan: formulaAssignmentPlan,
-      formulas: formulaIdentities,
-      familyRegistry: contractFamilyRegistry,
-      unknownAnchorPolicy: "preserve",
-    });
-    if (application.result.applied) {
-      reconciledUnits = application.units;
-      formulaAssignmentProvenance = formulaAssignmentProvenanceFromPlan(formulaAssignmentPlan, previousAssignments);
-    }
-    const planArtifactDir = path.join(clusterDir, ".breadboard");
-    fs.mkdirSync(planArtifactDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(planArtifactDir, "formula-assignment-plan.json"),
-      `${JSON.stringify({
-        schemaVersion: 1,
-        generatedAt: nowIso(),
-        plan: formulaAssignmentPlan,
-        provenance: formulaAssignmentProvenance,
-        application: application.result,
-      }, null, 2)}\n`,
-    );
-  }
-  // Unweakened backstop: no assignment survives this function unless the
-  // strict compatibility guard passes it. The planner above guarantees this;
-  // if it ever cannot (rolled back), generation fails here exactly as before.
-  reconciledUnits = reconciledUnits.map((unit) => {
-    for (const formula of unit.sourceFormulas) {
-      const identity = identityById.get(formula.id);
-      if (!identity) continue; // Source extraction may still be pending; page generation has the strict guard.
-      assertPlannedFormulaAssignment(identity, deriveUnitFormulaRequirement(unit, contractFamilyRegistry), unit, contractFamilyRegistry);
-    }
-    const formalIds = new Set(unit.sourceFormulas.map((formula) => formula.id));
-    return {
-      ...unit,
-      sourceAnchors: unit.sourceAnchors.filter((anchorId) => {
-        const identity = identityById.get(anchorId);
-        if (!identity || formalIds.has(anchorId)) return true;
-        try {
-          assertPlannedFormulaAssignment(identity, deriveUnitFormulaRequirement(unit, contractFamilyRegistry), unit, contractFamilyRegistry);
-          return true;
-        } catch {
-          return false;
-        }
-      }),
-    };
-  });
   const registryAlignmentRepairs = registryAlignmentAliasRepairs(
     unitsBeforeRegistryAlignment,
     reconciledUnits,
@@ -3122,42 +3168,54 @@ function writeLearningUnitContractArtifacts({
     ...aliasReconciliation.repairs,
     ...registryAlignmentRepairs,
   ];
-  // Keep source-artifact assignments consistent with the planner-cleaned units:
-  // the formula planner removes ungroundable/incompatible formulas from a unit's
-  // sourceFormulas, so a formula assignment survives only when the target unit
-  // still lists that formula. Otherwise a stale assignment (e.g. a caption-only
-  // anchor whose extraction produced no formula text) would make the finalizer
-  // demand a page ground a formula the contract no longer carries. Figure and
-  // table assignments are untouched by the formula planner and pass through.
-  const formulaOwnersByUnit = new Map(
-    reconciledUnits.map((unit) => [unit.id, new Set(unit.sourceFormulas.map((formula) => formula.id))]),
+  // Assignments are a projection of the model-authored unit contracts. This
+  // boundary may discard a stale projection, but it never chooses a different
+  // owner or invents a replacement placement.
+  const artifactOwnersByUnit = new Map(
+    reconciledUnits.map((unit) => [
+      unit.id,
+      new Set([
+        ...unit.sourceFigures.map((artifact) => artifact.id),
+        ...unit.sourceFormulas.map((artifact) => artifact.id),
+        ...unit.sourceTables.map((artifact) => artifact.id),
+      ]),
+    ]),
   );
-  const isFormulaArtifactId = (id: string) => /\.E\d+$/i.test(id);
   const finalAssignments = sourceArtifactReconciliation.assignments.filter((assignment) =>
-    !isFormulaArtifactId(assignment.sourceArtifactId)
-    || (formulaOwnersByUnit.get(assignment.assignedLearningUnitId)?.has(assignment.sourceArtifactId) ?? false));
-  // Necessity is the final gate before the contract is persisted. It is rerun
-  // after formula/source reconciliation so alternative-media sufficiency is
-  // based on the same artifacts page generation will actually receive.
-  const visualNecessityPlan = planGardenVisualNecessity({
-    gardenId: path.basename(clusterDir),
-    learningUnits: reconciledUnits,
-    overrides: loadVisualDecisionOverrides(clusterDir),
-    reviewedDecisions: visualNecessityReview?.decisions,
-    reviewCalls: visualNecessityReview?.reviewCalls,
-    rejectedReviews: visualNecessityReview?.rejectedReviews,
-  });
-  reconciledUnits = visualNecessityPlan.learningUnits;
+    artifactOwnersByUnit.get(assignment.assignedLearningUnitId)?.has(assignment.sourceArtifactId) ?? false);
+  // Pedagogical visual decisions are model-authored before this writer runs.
+  // This boundary may reconcile source registries mechanically, but it must
+  // never replace those decisions with keyword scores, quotas, or inferred
+  // media. Missing review data is therefore a hard planning error.
+  if (!visualNecessityReview) {
+    throw new Error("A validated model-authored visual-necessity plan is required before persisting the Learning Unit Contract.");
+  }
+  const decisionByUnit = new Map(
+    visualNecessityReview.decisions.map((decision) => [decision.unitId, decision]),
+  );
+  const mediumByUnit = new Map(
+    visualNecessityReview.teachingMedia.map((medium) => [medium.unitId, medium]),
+  );
+  const missingVisualPlans = reconciledUnits.filter((unit) =>
+    !unit.interactiveVisualPlan ||
+    !decisionByUnit.has(unit.id) ||
+    !unit.teachingMediumPlan ||
+    !mediumByUnit.has(unit.id));
+  if (missingVisualPlans.length > 0) {
+    throw new Error(
+      `Model-authored visual-necessity coverage is missing for: ${missingVisualPlans.map((unit) => unit.id).join(", ")}`,
+    );
+  }
   saveVisualNecessityArtifacts(clusterDir, path.basename(clusterDir), {
-    decisions: visualNecessityPlan.decisions,
-    teachingMedia: visualNecessityPlan.teachingMedia,
-    budget: visualNecessityPlan.budget,
-    overrides: visualNecessityPlan.overrides,
-    reviewCalls: visualNecessityPlan.reviewCalls,
-    rejectedReviews: visualNecessityPlan.rejectedReviews,
-    decisionRecords: visualNecessityPlan.decisionRecords,
-    zeroVisualSafeguard: visualNecessityPlan.zeroVisualSafeguard,
-    unresolvedRecords: visualNecessityReview?.unresolvedRecords,
+    decisions: visualNecessityReview.decisions,
+    teachingMedia: visualNecessityReview.teachingMedia,
+    budget: visualNecessityReview.budget,
+    overrides: visualNecessityReview.overrides,
+    reviewCalls: visualNecessityReview.reviewCalls,
+    rejectedReviews: visualNecessityReview.rejectedReviews,
+    decisionRecords: visualNecessityReview.decisionRecords,
+    zeroVisualSafeguard: visualNecessityReview.zeroVisualSafeguard,
+    unresolvedRecords: visualNecessityReview.unresolvedRecords,
   });
   const payload = {
     sourceSetHash,
@@ -3165,7 +3223,6 @@ function writeLearningUnitContractArtifacts({
     learningUnits: reconciledUnits,
     sourceArtifactAssignments: finalAssignments,
     ...(deferredSourceAnchors.length ? { deferredSourceAnchors: [...new Set(deferredSourceAnchors)] } : {}),
-    ...(formulaAssignmentProvenance.length ? { formulaAssignmentProvenance } : {}),
     ...(semanticAliasRepairs.length
       ? { semanticAliasRepairs }
       : {}),
@@ -3244,90 +3301,22 @@ function persistRoutedVisualPlans(
   fs.writeFileSync(filePath, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8");
 }
 
-/**
- * Record justified omissions on the source-visuals ledger. A formula the
- * assignment plan deliberately left without a unit (duplicate, out of scope,
- * no compatible unit) becomes "Intentionally Omitted" in Source Coverage with
- * the plan's reason — never "missing". Formulas the plan assigned anywhere
- * are cleared back to normal usage.
- */
-function markIntentionallyOmittedFormulasInLedger(
-  clusterDir: string,
-  plan: FormulaAssignmentPlan,
-): void {
-  const ledgerAbs = path.join(clusterDir, ".breadboard", "source-visuals.json");
-  if (!fs.existsSync(ledgerAbs)) return;
-  let ledger: Array<Record<string, unknown>>;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(ledgerAbs, "utf-8"));
-    if (!Array.isArray(parsed)) return;
-    ledger = parsed as Array<Record<string, unknown>>;
-  } catch {
-    return;
-  }
-  const assignedIds = new Set(
-    plan.assignments
-      .filter((assignment) => assignment.status === "assigned" || assignment.status === "reused_with_reason")
-      .map((assignment) => assignment.formulaAnchorId),
-  );
-  const omittedReasons = new Map<string, string>();
-  for (const assignment of plan.assignments) {
-    if (assignment.status !== "unassigned_with_reason") continue;
-    if (assignedIds.has(assignment.formulaAnchorId)) continue;
-    omittedReasons.set(assignment.formulaAnchorId, assignment.reason);
-  }
-  let changed = false;
-  for (const record of ledger) {
-    const id = String(record.sourceVisualId ?? "");
-    if (omittedReasons.has(id)) {
-      if (record.conceptUsage !== "intentionally_omitted" || record.skipReason !== omittedReasons.get(id)) {
-        record.conceptUsage = "intentionally_omitted";
-        record.skipReason = omittedReasons.get(id);
-        changed = true;
-      }
-    } else if (assignedIds.has(id) && record.conceptUsage === "intentionally_omitted") {
-      delete record.conceptUsage;
-      delete record.skipReason;
-      changed = true;
-    }
-  }
-  if (changed) fs.writeFileSync(ledgerAbs, `${JSON.stringify(ledger, null, 2)}\n`);
-}
-
 function learningUnitsFromCoveragePlan(plan: unknown): LearningUnitContract[] {
   const record = planningRecord(plan);
-  return normalizeLearningUnits({ learningUnits: record.learningUnitContracts });
+  return normalizeLearningUnits(
+    { learningUnits: record.learningUnitContracts },
+    { modelAuthoredOnly: true },
+  );
 }
 
-/** Unit titles become learner-visible page/section titles, so they get the
- * same commentary scrub as every other learner title ("… as Evidence",
- * "What the Evidence Shows", "… in this paper") before depth validation. */
-function sanitizeLearningUnitTitles(units: LearningUnitContract[]): LearningUnitContract[] {
-  return units.map((unit) => ({ ...unit, title: sanitizeLearnerTitle(unit.title) }));
-}
-
-/** Title scrub + drop of any incompatible optional interactive visual, so a
- * single visual-type mismatch never rejects an otherwise-good model contract
- * (which would force the deterministic fallback). */
-function sanitizeModelLearningUnits(
-  units: LearningUnitContract[],
-  contentPath: string,
-  gardenId: string,
-  jobId: string,
-): LearningUnitContract[] {
-  const titled = sanitizeLearningUnitTitles(units);
-  const { units: sanitized, dropped } = dropIncompatibleInteractiveVisuals(titled);
-  if (dropped.length > 0) {
-    appendLearnEvent(contentPath, gardenId, "learn_incompatible_visual_dropped", {
-      jobId,
-      dropped,
-    });
-  }
-  return planGardenVisualNecessity({
-    gardenId,
-    learningUnits: sanitized,
-    overrides: loadVisualDecisionOverrides(clusterPath(contentPath, gardenId)),
-  }).learningUnits;
+/** Reject incompatible legacy visual payloads before the dedicated model visual pass. */
+function prematureVisualPlanningProblems(units: readonly LearningUnitContract[]): string[] {
+  return units
+    .filter((unit) => unit.interactiveVisual || unit.interactiveVisualPlan || unit.teachingMediumPlan)
+    .map(
+      (unit) =>
+        `unit "${unit.id}" authored visual decisions during learning-spine planning; remove them so the dedicated whole-garden visual model can decide`,
+    );
 }
 
 function isContractBackedLearningMap(map: StoredLearningMap | null | undefined): map is StoredLearningMap {
@@ -3646,36 +3635,24 @@ export async function runLearnPlanning({
         progressPercent: 4,
       });
       throwIfLearnCancelled(job.id);
-      try {
-        const syllabusCall = await callPlanningJsonWithRetry({
-          client,
-          model,
-          taskType: "source_map",
-          gardenId,
-          system: SYLLABUS_READING_PROMPT,
-          user: compactJson({ syllabus: syllabusPayload }),
-          sourceContext: { ...planningSourceMeta, taskType: "syllabus_reading" },
-          contentPath,
-          jobId: job.id,
-        });
-        const syllabusPlan = normalizeSyllabusPlan(syllabusCall.parsed);
-        syllabusCoverage = buildSyllabusCoverage(
-          syllabusPlan,
-          resolveSyllabusMaterials(syllabusPlan, context.sources),
-        );
-      } catch (error) {
-        if (!isPlanningTimeoutError(error)) throw error;
-        // Without a reading, the syllabus still steers as plain text; it just
-        // cannot gate material availability. Say so rather than pretending.
-        const warning = planningFallbackWarning("Syllabus reading", error);
-        planningWarnings.push(
-          `${warning} Assigned readings were not checked against this garden's documents.`,
-        );
-        appendLearnEvent(contentPath, gardenId, "learn_syllabus_reading_fallback", {
-          jobId: job.id,
-          error: errorMessage(error),
-        });
-      }
+      const syllabusCall = await callValidatedPlanningJson({
+        client,
+        model,
+        taskType: "source_map",
+        gardenId,
+        system: SYLLABUS_READING_PROMPT,
+        user: compactJson({ syllabus: syllabusPayload }),
+        sourceContext: { ...planningSourceMeta, taskType: "syllabus_reading" },
+        contentPath,
+        jobId: job.id,
+        stageLabel: "Syllabus reading",
+        validate: syllabusPlanProblems,
+      });
+      const syllabusPlan = normalizeSyllabusPlan(syllabusCall.parsed);
+      syllabusCoverage = buildSyllabusCoverage(
+        syllabusPlan,
+        resolveSyllabusMaterials(syllabusPlan, context.sources),
+      );
 
       if (syllabusCoverage) {
         const summary = summarizeSyllabusCoverage(syllabusCoverage);
@@ -3709,39 +3686,30 @@ export async function runLearnPlanning({
       : undefined;
 
     throwIfLearnCancelled(job.id);
-    let sourceMapCall: CouncilJsonResult;
-    try {
-      sourceMapCall = await callPlanningJsonWithRetry({
-        client,
-        model,
-        taskType: "source_map",
-        gardenId,
-        system: withSyllabusRules(SOURCE_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
-        user: compactJson({
-          sourceOnly,
-          syllabus: syllabusPayload,
-          syllabusCoverage: syllabusCoveragePayload,
-          sourceContext: promptSourceContext,
-        }),
-        sourceContext: { ...planningSourceMeta, taskType: "source_map" },
-        contentPath,
-        jobId: job.id,
-      });
-    } catch (error) {
-      if (!isPlanningTimeoutError(error)) throw error;
-      const warning = planningFallbackWarning("Source map", error);
-      planningWarnings.push(warning);
-      sourceMapCall = fallbackCouncilJsonResult(
-        fallbackSourceMap(context),
-        `fallback-source-map-${job.id}`,
-      );
-      appendLearnEvent(contentPath, gardenId, "learn_source_map_fallback", {
-        jobId: job.id,
-        error: errorMessage(error),
-      });
-    }
+    const sourceMapCall = await callValidatedPlanningJson({
+      client,
+      model,
+      taskType: "source_map",
+      gardenId,
+      system: withSyllabusRules(SOURCE_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+      user: compactJson({
+        sourceOnly,
+        syllabus: syllabusPayload,
+        syllabusCoverage: syllabusCoveragePayload,
+        sourceContext: promptSourceContext,
+      }),
+      sourceContext: { ...planningSourceMeta, taskType: "source_map" },
+      contentPath,
+      jobId: job.id,
+      stageLabel: "Source Map",
+      validate: (value) => sourceMapPlanProblems({
+        value,
+        sourceIds: context.sources.map((source) => source.slug),
+        registeredArtifacts: context.sourceFigures,
+      }),
+    });
     throwIfLearnCancelled(job.id);
-    const sourceMap = sourceMapCall.parsed ?? fallbackSourceMap(context);
+    const sourceMap = sourceMapCall.parsed as Record<string, unknown>;
     appendLearnEvent(contentPath, gardenId, "learn_source_map_created", {
       jobId: job.id,
       councilRunId: sourceMapCall.councilRunId,
@@ -3753,44 +3721,30 @@ export async function runLearnPlanning({
     });
 
     throwIfLearnCancelled(job.id);
-    let scopeCall: CouncilJsonResult;
-    try {
-      scopeCall = await callPlanningJsonWithRetry({
-        client,
-        model,
-        taskType: "scope_contract",
-        gardenId,
-        system: withSyllabusRules(SCOPE_CONTRACT_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
-        // The scope contract reasons over the source map (already a digest of the
-        // full text), so it takes the compacted map + a body-free source context.
-        // The syllabus stays in full: it is what defines the scope.
-        user: compactJson({
-          sourceOnly,
-          syllabus: syllabusPayload,
-          syllabusCoverage: syllabusCoveragePayload,
-          sourceMap: compactPlanningPayload(sourceMap),
-          sources: promptSourcesCompact(context),
-        }),
-        sourceContext: { ...planningSourceMeta, taskType: "scope_contract" },
-        contentPath,
-        jobId: job.id,
-      });
-    } catch (error) {
-      if (!isPlanningTimeoutError(error)) throw error;
-      const warning = planningFallbackWarning("Scope contract", error);
-      planningWarnings.push(warning);
-      scopeCall = fallbackCouncilJsonResult(
-        fallbackScopeContract(context, sourceOnly),
-        `fallback-scope-contract-${job.id}`,
-      );
-      appendLearnEvent(contentPath, gardenId, "learn_scope_contract_fallback", {
-        jobId: job.id,
-        error: errorMessage(error),
-      });
-    }
+    const scopeCall = await callValidatedPlanningJson({
+      client,
+      model,
+      taskType: "scope_contract",
+      gardenId,
+      system: withSyllabusRules(SCOPE_CONTRACT_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+      // The scope contract reasons over the source map (already a digest of the
+      // full text), so it takes the compacted map + a body-free source context.
+      // The syllabus stays in full: it is what defines the scope.
+      user: compactJson({
+        sourceOnly,
+        syllabus: syllabusPayload,
+        syllabusCoverage: syllabusCoveragePayload,
+        sourceMap,
+        sources: promptSourcesCompact(context),
+      }),
+      sourceContext: { ...planningSourceMeta, taskType: "scope_contract" },
+      contentPath,
+      jobId: job.id,
+      stageLabel: "Scope Contract",
+      validate: scopeContractProblems,
+    });
     throwIfLearnCancelled(job.id);
-    const scopeContract =
-      scopeCall.parsed ?? fallbackScopeContract(context, sourceOnly);
+    const scopeContract = scopeCall.parsed as Record<string, unknown>;
     appendLearnEvent(contentPath, gardenId, "learn_scope_contract_created", {
       jobId: job.id,
       councilRunId: scopeCall.councilRunId,
@@ -3801,17 +3755,17 @@ export async function runLearnPlanning({
       progressPercent: 65,
     });
 
-    // The spine prompt is the largest and slowest: it already carries the source
-    // map + scope contract, so it uses the body-free compact source context and
-    // compacts oversized upstream JSON to keep the request small and fast.
+    // The spine receives the complete validated Source Map and Scope Contract.
+    // Only the duplicate raw-source context is body-free; semantic upstream
+    // plans are never sliced into lossy `truncatedJson` strings.
     const spineSourceContext = promptSourcesCompact(context);
     const topicMapUser = (deepenNote: string) =>
       compactJson({
         sourceOnly,
         syllabus: syllabusPayload,
         syllabusCoverage: syllabusCoveragePayload,
-        sourceMap: compactPlanningPayload(sourceMap),
-        scopeContract: compactPlanningPayload(scopeContract),
+        sourceMap,
+        scopeContract,
         sources: spineSourceContext,
         extractedSourceArtifacts: context.sourceFigures.map((figure) => ({
           id: figure.figureId,
@@ -3825,36 +3779,22 @@ export async function runLearnPlanning({
       }) + deepenNote;
 
     throwIfLearnCancelled(job.id);
-    let topicMapCall: CouncilJsonResult;
-    try {
-      topicMapCall = await callPlanningJsonWithRetry({
-        client,
-        model,
-        taskType: "learning_spine",
-        gardenId,
-        system: withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
-        user: topicMapUser(""),
-        sourceContext: { ...planningSourceMeta, taskType: "learning_spine" },
-        contentPath,
-        jobId: job.id,
-      });
-    } catch (error) {
-      if (!isPlanningTimeoutError(error)) throw error;
-      const warning = planningFallbackWarning("Learning spine", error);
-      planningWarnings.push(warning);
-      topicMapCall = fallbackCouncilJsonResult(
-        fallbackLearningSpinePlan(context, sourceOnly, warning),
-        `fallback-learning-spine-${job.id}`,
-      );
-      appendLearnEvent(contentPath, gardenId, "learn_learning_spine_fallback", {
-        jobId: job.id,
-        error: errorMessage(error),
-      });
-    }
+    let topicMapCall = await callPlanningJsonWithRetry({
+      client,
+      model,
+      taskType: "learning_spine",
+      gardenId,
+      system: withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+      user: topicMapUser(""),
+      sourceContext: { ...planningSourceMeta, taskType: "learning_spine" },
+      contentPath,
+      jobId: job.id,
+    });
     throwIfLearnCancelled(job.id);
+    let latestSourceArtifactProblems: string[] = [];
     const reconcilePlannedSourceArtifacts = async (
       candidateUnits: LearningUnitContract[],
-      stage: "initial" | "retry" | "fallback",
+      stage: "initial" | "repair",
     ): Promise<LearningUnitContract[]> => {
       let resolution: { requestedIds: string[]; unresolvedIds: string[] } = {
         requestedIds: [],
@@ -3894,89 +3834,97 @@ export async function runLearnPlanning({
           removedArtifactIds: reconciliation.removedArtifactIds,
         });
       }
+      latestSourceArtifactProblems = reconciliation.removedArtifactIds.length > 0
+        ? [
+            `model referenced unregistered structured source artifacts: ${reconciliation.removedArtifactIds.join(", ")}; return a complete replacement contract using only registered extractedSourceArtifacts`,
+          ]
+        : [];
       return reconciliation.units;
     };
 
-    let learningUnits = sanitizeModelLearningUnits(
-      normalizeLearningUnits(topicMapCall.parsed),
-      contentPath,
-      gardenId,
-      job.id,
-    );
+    let learningUnits = normalizeLearningUnits(topicMapCall.parsed, { modelAuthoredOnly: true });
     learningUnits = await reconcilePlannedSourceArtifacts(learningUnits, "initial");
     let artifactCount = importantSourceArtifactCount(context);
-    let contractProblems =
+    let contractProblems = [
+      ...modelAuthoredLearningMapMetadataProblems(topicMapCall.parsed),
+      ...modelAuthoredUnitTitleProblems(learningUnits),
+      ...prematureVisualPlanningProblems(learningUnits),
+      ...latestSourceArtifactProblems,
+      ...(
       learningUnits.length === 0
         ? ["planner returned no learningUnits"]
-        : validateLearningUnitContracts(learningUnits, { artifactCount });
+        : validateLearningUnitContracts(learningUnits, {
+            artifactCount,
+            requireModelAuthoredSemantics: true,
+            requireModelAuthoredSections: true,
+          })
+      ),
+    ];
 
-    // The contract must be a real source-grounded learning plan, not a shallow
-    // section list. Retry once with explicit feedback before using the
-    // deterministic unit fallback.
-    if (contractProblems.length > 0) {
+    // Invalid pedagogy is repaired by the model that authored it. Keep the
+    // strongest complete candidate across two bounded full-contract repairs;
+    // code never invents a generic curriculum to make the gate go green.
+    let feedbackProblems = contractProblems;
+    for (let repairAttempt = 1; repairAttempt <= 2 && contractProblems.length > 0; repairAttempt += 1) {
       const deepenNote =
-        `\n\nThe previous Learning Unit Contract failed these hard planning checks: ${contractProblems.join("; ")}. ` +
-        `Regenerate the plan as 15-25 precise learningUnits. Assign every important figure/table/formula/result to a precise unit, keep interactive visuals optional and unique, plan reusable semanticConcepts separately from readable grounded knowledgeClaims, and do not return sections first.`;
-      try {
-        const retryCall = await callPlanningJsonWithRetry({
-          client,
-          model,
-          taskType: "learning_spine",
-          gardenId,
-          system: withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
-          user: topicMapUser(deepenNote),
-          sourceContext: { ...planningSourceMeta, taskType: "learning_spine" },
-          contentPath,
-          jobId: job.id,
-        });
-        let retryUnits = sanitizeModelLearningUnits(
-          normalizeLearningUnits(retryCall.parsed),
-          contentPath,
-          gardenId,
-          job.id,
-        );
-        retryUnits = await reconcilePlannedSourceArtifacts(retryUnits, "retry");
-        artifactCount = importantSourceArtifactCount(context);
-        const retryProblems =
-          retryUnits.length === 0
-            ? ["planner returned no learningUnits"]
-            : validateLearningUnitContracts(retryUnits, { artifactCount });
-        if (retryProblems.length < contractProblems.length) {
-          topicMapCall = retryCall;
-          learningUnits = retryUnits;
-          contractProblems = retryProblems;
-        }
-      } catch (error) {
-        if (!isPlanningTimeoutError(error)) throw error;
-        const warning = planningFallbackWarning("Learning spine retry", error);
-        planningWarnings.push(warning);
-        appendLearnEvent(contentPath, gardenId, "learn_learning_spine_retry_fallback", {
-          jobId: job.id,
-          error: errorMessage(error),
-          contractProblems,
-        });
+        `\n\nRepair attempt ${repairAttempt}. The previous Learning Unit Contract failed these hard checks: ${feedbackProblems.join("; ")}. ` +
+        "Return a complete replacement contract, not a patch or prose explanation. Preserve valid source assignments, regenerate 15-25 precise learningUnits, assign every important registered artifact, keep semanticConcepts separate from readable knowledgeClaims, and do not return sections first.";
+      const retryCall = await callPlanningJsonWithRetry({
+        client,
+        model,
+        taskType: "learning_spine",
+        gardenId,
+        system: withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+        user: topicMapUser(deepenNote),
+        sourceContext: {
+          ...planningSourceMeta,
+          taskType: "learning_spine_repair",
+          repairAttempt,
+          validationProblems: feedbackProblems,
+        },
+        contentPath,
+        jobId: job.id,
+      });
+      let retryUnits = normalizeLearningUnits(retryCall.parsed, { modelAuthoredOnly: true });
+      retryUnits = await reconcilePlannedSourceArtifacts(retryUnits, "repair");
+      artifactCount = importantSourceArtifactCount(context);
+      const retryProblems = [
+        ...modelAuthoredLearningMapMetadataProblems(retryCall.parsed),
+        ...modelAuthoredUnitTitleProblems(retryUnits),
+        ...prematureVisualPlanningProblems(retryUnits),
+        ...latestSourceArtifactProblems,
+        ...(
+        retryUnits.length === 0
+          ? ["planner returned no learningUnits"]
+          : validateLearningUnitContracts(retryUnits, {
+              artifactCount,
+              requireModelAuthoredSemantics: true,
+              requireModelAuthoredSections: true,
+            })
+        ),
+      ];
+      appendLearnEvent(contentPath, gardenId, "learn_learning_spine_repair_reviewed", {
+        jobId: job.id,
+        repairAttempt,
+        problemsBefore: feedbackProblems,
+        problemsAfter: retryProblems,
+      });
+      feedbackProblems = retryProblems;
+      if (retryProblems.length < contractProblems.length) {
+        topicMapCall = retryCall;
+        learningUnits = retryUnits;
+        contractProblems = retryProblems;
       }
     }
 
     if (contractProblems.length > 0) {
-      planningWarnings.push(
-        `Model Learning Unit Contract rejected: ${contractProblems.join("; ")}. Used deterministic source-grounded unit fallback.`,
+      throw new Error(
+        `The AI-authored Learning Unit Contract remained invalid after 3 bounded attempts: ${contractProblems.join("; ")}. No fallback curriculum was written.`,
       );
-      learningUnits = planGardenVisualNecessity({
-        gardenId,
-        learningUnits: fallbackLearningUnitsFromContext(context),
-        overrides: loadVisualDecisionOverrides(clusterPath(contentPath, gardenId)),
-      }).learningUnits;
-      learningUnits = await reconcilePlannedSourceArtifacts(learningUnits, "fallback");
-      artifactCount = importantSourceArtifactCount(context);
-      contractProblems = validateLearningUnitContracts(learningUnits, { artifactCount });
-      if (contractProblems.length > 0) {
-        planningWarnings.push(`Fallback contract warnings: ${contractProblems.join("; ")}`);
-      }
     }
 
     throwIfLearnCancelled(job.id);
-    // Reconcile the final model/fallback plan against the garden's existing
+    // Reconcile the final model-authored plan against the garden's existing
     // canonical concept ownership before deriving either the visible map or
     // the database coverage plan. The dry run deliberately carries no model
     // evidence anchors: source gating occurs when the artifacts are written.
@@ -4020,13 +3968,10 @@ export async function runLearnPlanning({
     learningUnits = visualNecessityReview.learningUnits;
     const planRecord = planningRecord(topicMapCall.parsed);
     let sourceArtifactAssignments = assignSourceArtifacts(learningUnits);
-    let learningMap = learningMapFromUnits(learningUnits, {
+    let learningMap = learningMapFromModelAuthoredUnits(learningUnits, {
       gardenId,
-      title: sanitizeLearnerTitle(planningString(planRecord.title, context.gardenTitle || gardenId)),
-      summary: planningString(
-        planRecord.summary,
-        `A source-grounded learning sequence generated from ${context.sources.length} uploaded source${context.sources.length === 1 ? "" : "s"}.`,
-      ),
+      title: String(planRecord.title).trim(),
+      summary: String(planRecord.summary).trim(),
       sourceOnly,
       createdAt: nowIso(),
       warnings: Array.from(
@@ -4120,14 +4065,29 @@ export async function runLearnPlanning({
       ...artifactSemanticAliasRepairs,
     ];
     const visualizationPlanningStartedAt = Date.now();
-    const visualizationPlan = buildVisualizationPlan({
+    const visualizationPlanning = await buildVisualizationPlanWithContractRepair({
       gardenId,
       learningMap,
       learningUnits,
       necessityReviewCalls: visualNecessityReview.reviewCalls,
       rejectedNecessityReviews: visualNecessityReview.rejectedReviews,
       visualDecisionOverrides: visualNecessityReview.overrides,
+      repairProvider: (packet) => requestVisualizationContractRepair({
+        client,
+        model,
+        gardenId,
+        packet,
+      }),
+      maxRepairAttempts: 2,
+      checkCancelled: () => throwIfLearnCancelled(job.id),
+      onEvent: (type, data) => appendLearnEvent(contentPath, gardenId, type, {
+        jobId: job.id,
+        learningMapId: storedMap.id,
+        ...data,
+      }),
     });
+    learningUnits = visualizationPlanning.learningUnits;
+    const visualizationPlan = visualizationPlanning.plan;
     learningUnits = applyVisualizationRoutesToLearningUnits(learningUnits, visualizationPlan);
     persistRoutedVisualPlans(clusterPath(contentPath, gardenId), learningUnits);
     learningMap = learningMapWithConfirmedUnitContracts(learningMap, learningUnits);
@@ -4562,6 +4522,46 @@ function formulaGroundingEntries(
   });
 }
 
+function assessModelAuthoredLessonQuality(
+  body: string,
+  options: {
+    assignedVisualUrls: string[];
+    unavailableCitations?: { detect: (prose: string) => string[] };
+    subsection: LearningSubsectionPlan;
+    sourceFormulaFigures: SourceFigure[];
+  },
+): ReturnType<typeof assessLessonQuality> {
+  const base = assessLessonQuality(body, {
+    assignedVisualUrls: options.assignedVisualUrls,
+    unavailableCitations: options.unavailableCitations,
+  });
+  const groundedFormulaIds = new Set(
+    formulaGroundingEntries(
+      extractQuartzMath(normalizeQuartzMarkdown(body)),
+      options.sourceFormulaFigures,
+    )
+      .filter((entry) => entry.groundingStatus === "source-anchored" && entry.sourceAnchor)
+      .map((entry) => entry.sourceAnchor as string),
+  );
+  const formulaProblems: QualityProblem[] = (options.subsection.sourceFormulaContracts ?? [])
+    .filter((formula) => !groundedFormulaIds.has(formula.id))
+    .map((formula) => ({
+      code: "missing-source-formula",
+      message: `required source formula ${formula.id} is not actually explained in the lesson`,
+      hard: true,
+      evidence: [
+        formula.teachingGoal,
+        ...(formula.termsToDefine ?? []),
+      ].filter(Boolean),
+    }));
+  const problems = [...base.problems, ...formulaProblems];
+  return {
+    ok: problems.length === 0,
+    hardFail: problems.some((problem) => problem.hard),
+    problems,
+  };
+}
+
 function sourceFormulaFiguresForSubsection(
   context: LearnSourceContext,
   subsection: LearningSubsectionPlan,
@@ -4576,245 +4576,91 @@ function sourceFormulaFiguresForSubsection(
     sourceFormulaFigures(context),
     subsection.sourceFormulaContracts ?? [],
   );
-  const byId = new Map(existing.map((figure) => [figure.figureId, figure]));
-  for (const formula of subsection.sourceFormulaContracts ?? []) {
-    if (!formula.id || byId.has(formula.id)) continue;
-    byId.set(formula.id, {
-      figureId: formula.id,
-      kind: "formula",
-      caption: [formula.teachingGoal, ...(formula.termsToDefine ?? [])].filter(Boolean).join("; "),
-      suggestedVisualUse: formula.placement,
-    });
-  }
-  return [...byId.values()];
-}
-
-function ensureContractFormulaGrounding(
-  entries: FormulaGroundingEntry[],
-  subsection: LearningSubsectionPlan,
-  identityById: Map<string, CanonicalFormulaIdentity> = new Map(),
-): FormulaGroundingEntry[] {
-  const anchors = (subsection.sourceFormulaContracts ?? []).map((formula) => formula.id).filter(Boolean);
-  if (anchors.length === 0) return entries;
-  const grounded = new Set(
-    entries
-      .filter((entry) => (entry.groundingStatus === "source-anchored" || entry.groundingStatus === "source-derived") && entry.sourceAnchor)
-      .map((entry) => entry.sourceAnchor as string),
-  );
-  const next = [...entries];
-  for (const formula of subsection.sourceFormulaContracts ?? []) {
-    if (!formula.id || grounded.has(formula.id)) continue;
-    const synthesized = synthesizedFormulaForContract(formula, identityById.get(formula.id));
-    if (!synthesized || !isGroundableFormula(synthesized.text)) continue;
-    next.push({
-      kind: "source_derived_definition",
-      text: synthesized.text,
-      normalizedText: normalizedFormulaForFrontmatter(synthesized.text),
-      groundingStatus: "source-derived",
-      sourceAnchor: formula.id,
-      sourceAnchorTitle: formula.teachingGoal || formula.id,
-      formulaFamily: identityById.get(formula.id)?.verified
-        ? legacyFormulaFamily(identityById.get(formula.id)!.family)
-        : undefined,
-      matchReason: synthesized.reason,
-      confidence: 0.8,
-      justification: `Required by the Learning Unit Contract source formula anchor ${formula.id}; ${synthesized.reason}.`,
-    });
-    grounded.add(formula.id);
-  }
-  return next;
-}
-
-function synthesizedFormulaForContract(
-  formula: SourceFormulaContract,
-  identity?: CanonicalFormulaIdentity,
-): { text: string; reason: string } | null {
-  if (identity?.verified && identity.canonicalText) {
-    return {
-      text: identity.canonicalText,
-      reason: `the verified canonical ${identity.family} equation was recovered from source evidence`,
-    };
-  }
-  const text = [formula.teachingGoal, ...(formula.termsToDefine ?? [])]
-    .join(" ")
-    .toLowerCase();
-  if (/\baccuracy|correct prediction|classification/i.test(text)) {
-    return {
-      text: "\\text{Accuracy} = \\frac{N_{\\text{correct}}}{N_{\\text{total}}}",
-      reason: "the anchor describes accuracy as correct predictions over total predictions",
-    };
-  }
-  if (/\blatency|decision time|response time/i.test(text)) {
-    return {
-      text: "T_{\\text{latency}} = t_{\\text{decision}} - t_{\\text{stimulus}}",
-      reason: "the anchor describes latency as time to decision",
-    };
-  }
-  if (/\bspike count|total spike|number of spikes|spikes summed/i.test(text)) {
-    return {
-      text: "N_{\\text{spike count}} = \\sum_{n,t} s_n(t)",
-      reason: "the anchor describes total spike count summed across neurons and time",
-    };
-  }
-  if (/\befficiency|normalized energy|accuracy per energy/i.test(text)) {
-    return {
-      text: "\\eta_{\\text{efficiency}} = \\frac{\\text{Accuracy}}{E_{\\text{energy}}}",
-      reason: "the anchor describes normalized efficiency as accuracy per energy",
-    };
-  }
-  if (/\benergy|synaptic operation|synop|joule/i.test(text)) {
-    return {
-      text: "E_{\\text{energy}} = N_{\\text{spikes}}E_{\\text{spike}} + N_{\\text{synops}}E_{\\text{synop}}",
-      reason: "the anchor describes total energy from spike and synaptic operation costs",
-    };
-  }
-  if (/\bconvergence|epoch|target accuracy|learning curve/i.test(text)) {
-    return {
-      text: "T_{\\text{convergence}} = \\min\\{e : A(e) \\geq A_{\\text{target}}\\}",
-      reason: "the anchor describes convergence as the first epoch that reaches a target accuracy",
-    };
-  }
-  return null;
+  return existing;
 }
 
 function renderLearningMapMarkdown(map: ProposedLearningMap): string {
   const lines: string[] = [
     "# Learning Map",
     "",
-    "## Section Order",
+    map.summary,
     "",
   ];
   map.sections.forEach((section, sectionIndex) => {
     const sectionNumber = sectionIndex + 1;
-    const sectionTitle = sanitizeLearnerTitle(section.title);
-    lines.push(`- ${sectionNumber}. ${sectionTitle}`);
+    const sectionTitle = section.title;
+    lines.push(`## ${sectionNumber}. ${sectionTitle}`, "", section.purpose, "");
     section.subsections.forEach((subsection, subsectionIndex) => {
-      const subsectionTitle = sanitizeLearnerTitle(subsection.title);
+      const subsectionTitle = subsection.title;
       const relPath = `${learningSectionFolder(sectionNumber, sectionTitle)}/${textbookPageFileName(
         sectionNumber,
         subsectionIndex + 1,
         subsectionTitle,
       )}`;
-      lines.push(
-        `  - ${sectionNumber}.${subsectionIndex + 1} ${wikilinkForRelPath(relPath, subsectionTitle)}`,
-      );
+      lines.push(`- ${sectionNumber}.${subsectionIndex + 1} ${wikilinkForRelPath(relPath, subsectionTitle)}`);
     });
+    lines.push("");
   });
-  lines.push("", "## Prerequisite Chain", "");
-  map.sections.forEach((section, index) => {
-    const previous = index === 0 ? "Start here" : sanitizeLearnerTitle(map.sections[index - 1].title);
-    lines.push(`- ${previous} -> ${sanitizeLearnerTitle(section.title)}`);
-  });
-  lines.push("", "## Trunk, Branch, Leaf Concepts", "");
-  map.sections.forEach((section) => {
-    lines.push(`- Trunk: ${sanitizeLearnerTitle(section.title)}`);
-    section.subsections.forEach((subsection) => {
-      lines.push(`  - Branch/leaf: ${sanitizeLearnerTitle(subsection.title)}`);
-    });
-  });
-  lines.push("", "## Bridge Concepts", "");
-  lines.push("- Bridges are introduced where adjacent subsections share source anchors or concept tags.");
-  lines.push("", "## Warnings", "");
-  lines.push(...(map.warnings.length > 0 ? map.warnings.map((warning) => `- ${warning}`) : ["- None."]));
+  if (map.warnings.length > 0) {
+    lines.push("## Scope Notes", "", ...map.warnings.map((warning) => `- ${warning}`), "");
+  }
   return `${lines.join("\n")}\n`;
 }
 
-function renderLearningIndexMarkdown(
-  map: ProposedLearningMap,
-  context: LearnSourceContext,
-): string {
+function renderLearningIndexMarkdown(map: ProposedLearningMap): string {
   const lines = [
-    `# ${map.title || context.gardenTitle}`,
+    `# ${map.title}`,
     "",
-    map.summary || `A guided path through ${context.gardenTitle}, one lesson at a time.`,
-    "",
-    "Read the sections in order. Start with the [[learning/Topic Overview|Topic Overview]], then work through each numbered section.",
+    map.summary,
     "",
     "## Sections",
     "",
   ];
   map.sections.forEach((section, sectionIndex) => {
     const sectionNumber = sectionIndex + 1;
-    const sectionTitle = sanitizeLearnerTitle(section.title);
+    const sectionTitle = section.title;
     const folder = learningSectionFolder(sectionNumber, sectionTitle);
     lines.push(`- ${wikilinkForRelPath(`${folder}/_index.md`, `${sectionNumber}. ${sectionTitle}`)}`);
     section.subsections.forEach((subsection, subsectionIndex) => {
       const relPath = `${folder}/${textbookPageFileName(
         sectionNumber,
         subsectionIndex + 1,
-        sanitizeLearnerTitle(subsection.title),
+        subsection.title,
       )}`;
       lines.push(
-        `  - ${wikilinkForRelPath(relPath, `${sectionNumber}.${subsectionIndex + 1} ${sanitizeLearnerTitle(subsection.title)}`)}`,
+        `  - ${wikilinkForRelPath(relPath, `${sectionNumber}.${subsectionIndex + 1} ${subsection.title}`)}`,
       );
     });
   });
   return `${lines.join("\n")}\n`;
 }
 
-function renderTopicOverviewFallback(map: ProposedLearningMap, context: LearnSourceContext): string {
-  const lines = [
-    "# Topic Overview",
-    "",
-    `${context.gardenTitle} is organized as a sequence of lessons you can read in order.`,
-    "",
-    "## How To Learn This Garden",
-    "",
-    "Read the sections in order. Each subsection introduces the next idea only after the motivation for it is clear.",
-    "",
-    "## Recommended Reading Order",
-    "",
-  ];
-  map.sections.forEach((section, sectionIndex) => {
-    const sectionNumber = sectionIndex + 1;
-    const sectionTitle = sanitizeLearnerTitle(section.title);
-    lines.push(`- ${sectionNumber}. ${sectionTitle}`);
-    section.subsections.forEach((subsection, subsectionIndex) => {
-      const subsectionTitle = sanitizeLearnerTitle(subsection.title);
-      const relPath = `${learningSectionFolder(sectionNumber, sectionTitle)}/${textbookPageFileName(
-        sectionNumber,
-        subsectionIndex + 1,
-        subsectionTitle,
-      )}`;
-      lines.push(`  - ${wikilinkForRelPath(relPath, `${sectionNumber}.${subsectionIndex + 1} ${subsectionTitle}`)}`);
-    });
-  });
-  const tags = normalizeTopicTags(
-    map.sections.flatMap((section) =>
-      section.subsections.flatMap((subsection) => subsection.conceptTags),
-    ),
-    map.summary,
-    12,
-    map.summary,
-  );
-  lines.push("", "## High-Level Concept Tags", "");
-  lines.push(...(tags.length > 0 ? tags.map((tag) => `- ${tag}`) : ["- Guided learning path"]));
-  lines.push("", "## Scope Notes", "");
-  lines.push(...(map.warnings.length > 0 ? map.warnings.map((warning) => `- ${warning}`) : ["- This garden stays within the scope of its underlying material unless explicitly updated."]));
-  return `${lines.join("\n")}\n`;
+function validateTopicOverview(
+  markdown: string,
+  map: ProposedLearningMap,
+): { markdown: string; problems: string[] } {
+  const problems: string[] = [];
+  const generalQuality = assessLessonQuality(markdown, { minWords: 250 });
+  for (const problem of generalQuality.problems) {
+    if (problem.code === "no-qa" || problem.code === "no-example") continue;
+    problems.push(`${problem.code}: ${problem.message}`);
+  }
+  if (/```breadboard-visual/i.test(markdown) || containsRawVisualPlaceholder(markdown)) {
+    problems.push("overview contains an interactive-visual block or placeholder");
+  }
+  for (const section of map.sections) {
+    if (!markdown.toLocaleLowerCase().includes(section.title.toLocaleLowerCase())) {
+      problems.push(`overview reading order omits section "${section.title}"`);
+    }
+  }
+  const canonicalized = canonicalizeLearnerWikilinks(markdown, map);
+  if (canonicalized.unresolved.length > 0) {
+    problems.push(`overview contains unresolved wikilinks: ${canonicalized.unresolved.join(", ")}`);
+  }
+  return { markdown: canonicalized.markdown, problems: [...new Set(problems)] };
 }
 
 function sourceMapMarkdown(sourceMap: unknown, context: LearnSourceContext): string {
-  const formulas = sourceFormulaFigures(context);
-  const sourceMapFacts = {
-    hasFormulas: formulas.length > 0,
-    hasTables: context.sourceFigures.some((figure) => figure.kind === "table" || /\.T\d+$/i.test(figure.figureId)),
-    hasFigures: context.sourceFigures.some((figure) => figure.kind !== "formula" && !/\.E\d+$/i.test(figure.figureId)),
-    hasLaterPages: context.sourceFigures.some((figure) => Number(figure.page) > 2),
-  };
-  const formulaAcknowledgement =
-    formulas.length > 0
-      ? [
-          "",
-          "## Formula Coverage",
-          "",
-          "The source contains explicit metric formulas for accuracy, latency, total spike count, total energy, normalized energy efficiency, and convergence time. These formulas should be taught in the unified evaluation section.",
-          "",
-          ...formulas.map((formula) => `- ${formula.figureId}: ${formula.caption ?? "metric formula"}`),
-          "",
-        ]
-      : [];
-  const renderedSourceMap = sanitizeSourceMapContradictions(sourceMap, sourceMapFacts);
   return [
     "# Source Map",
     "",
@@ -4830,11 +4676,10 @@ function sourceMapMarkdown(sourceMap: unknown, context: LearnSourceContext): str
             `- ${figure.figureId}: ${figure.caption ?? figure.kind} (${figure.kind})${figure.page ? `, page ${figure.page}` : ""}`,
         )
       : ["- No source figures were detected from markdown snapshots."]),
-    ...formulaAcknowledgement,
     "",
     "## Council Source Map",
     "",
-    renderObjectMarkdown(renderedSourceMap),
+    renderObjectMarkdown(sourceMap),
     "",
   ].join("\n");
 }
@@ -4847,53 +4692,6 @@ function sourceFormulaFigures(context: LearnSourceContext): SourceFigure[] {
   return context.sourceFigures.filter(
     (figure) => figure.kind === "formula" || /\.E\d+$/i.test(figure.figureId),
   );
-}
-
-function sanitizeSourceMapContradictions(
-  value: unknown,
-  facts: { hasFormulas: boolean; hasTables: boolean; hasFigures: boolean; hasLaterPages: boolean },
-): unknown {
-  if (typeof value === "string") {
-    let next = value;
-    if (facts.hasFormulas) {
-      next = next
-        .replace(
-          /explicit mathematical definitions are not present[^.]*\./gi,
-          "explicit metric formulas are present in the extracted source anchors.",
-        )
-        .replace(
-          /explicit mathematical definitions are not present/gi,
-          "explicit metric formulas are present",
-        )
-        .replace(/formulas? (?:are|is) not present/gi, "formula anchors are present")
-        .replace(/formula captions but not exact[^.\n]*/gi, "source formula anchors and text-derived metric meanings are available")
-        .replace(/exact displayed notation[^.\n]*/gi, "source formula notation is handled through formula anchors or text fallback")
-        .replace(/standard explanatory notation only[^.\n]*/gi, "source-derived formula notation is recorded explicitly")
-        .replace(/captions only|caption-only|notation unavailable|mathematical notation not included/gi, "formula anchors and text fallback are available");
-    }
-    if (facts.hasTables) {
-      next = next.replace(/tables? (?:are|is) not (?:present|available|detected)/gi, "tables are present in the extracted source anchors");
-    }
-    if (facts.hasFigures) {
-      next = next.replace(/figures? (?:are|is) not (?:present|available|detected)/gi, "figures are present in the extracted source anchors");
-    }
-    if (facts.hasLaterPages) {
-      next = next
-        .replace(/truncated after page\s*2[^.\n]*/gi, "later source pages are available in the extracted anchors")
-        .replace(/later sections? (?:are|is)? ?(?:not available|unavailable)[^.\n]*/gi, "later sections are available through source anchors");
-    }
-    return next;
-  }
-  if (Array.isArray(value)) return value.map((item) => sanitizeSourceMapContradictions(item, facts));
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-        key,
-        sanitizeSourceMapContradictions(item, facts),
-      ]),
-    );
-  }
-  return value;
 }
 
 function sourceCoverageMarkdown({
@@ -5760,23 +5558,6 @@ function assignSourceVisualsForSubsection({
 /** Stage 5: guarantee every assigned source visual appears in the body as a
  * real Markdown image near its most relevant paragraph. The model is asked to
  * weave them in; this is the deterministic backstop. */
-function embedAssignedSourceVisuals(markdown: string, visuals: SourceVisual[]): string {
-  let paragraphs = markdown.trim().split(/\n{2,}/);
-  for (const visual of visuals) {
-    const url = sourceVisualEmbedUrl(visual);
-    const snippet = sourceVisualMarkdown(visual);
-    if (!url || !snippet) continue;
-    if (paragraphs.some((paragraph) => paragraph.includes(url))) continue;
-    const index = bestParagraphIndex(paragraphs, visual.caption);
-    paragraphs = [
-      ...paragraphs.slice(0, index + 1),
-      snippet,
-      ...paragraphs.slice(index + 1),
-    ];
-  }
-  return paragraphs.join("\n\n");
-}
-
 const EMBEDDED_VISUAL_BLOCK_RE = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
 
 function stripEmbeddedVisualBlocks(markdown: string): string {
@@ -6557,11 +6338,9 @@ function debugFailedSubsectionDraft({
   sources: LearnSourceSummary[];
   assignedVisuals: SourceVisual[];
 }): string {
-  const cleanTitle = sanitizeLearnerTitle(subsection.title);
+  const cleanTitle = subsection.title;
   const title = `${sectionNumber}.${subsectionNumber} ${cleanTitle}`;
-  const purpose = scrubLearnerProse(
-    subsection.purpose || `${cleanTitle} connects the section topic to the concrete ideas a learner needs next.`,
-  );
+  const purpose = subsection.purpose || `${cleanTitle} connects the section topic to the concrete ideas a learner needs next.`;
   const details = fallbackRelevantDetails({ sources, subsection, anchors });
   const conceptList = (subsection.conceptTags ?? [])
     .map((tag) => tag.split("/").at(-1)?.replace(/-/g, " "))
@@ -6869,7 +6648,7 @@ function buildPageDossier({
   sourceArtifactAssignments?: SourceArtifactAssignment[];
   sourceOnly: boolean;
 }): PageDossier {
-  const subsectionTitle = sanitizeLearnerTitle(subsection.title);
+  const subsectionTitle = subsection.title;
   const keywords = fallbackKeywords(subsection, anchors);
   const assignedArtifactsForUnit = subsection.learningUnitId && sourceArtifactAssignments
     ? sourceArtifactAssignments.filter((assignment) => assignment.assignedLearningUnitId === subsection.learningUnitId)
@@ -7406,9 +7185,6 @@ export async function runTextbookGeneration({
       selectedCanonicalSourceAnchors,
       clusterDir,
     );
-    // Garden-derived family registry so custom (non-universal) formula families
-    // are recognized by every requirement/guard on this run.
-    const generationFamilyRegistry = buildGardenFormulaFamilyRegistry(sourceFormulaIdentities);
     const sourceFormulaIdentityById = new Map(
       sourceFormulaIdentities.map((identity) => [identity.anchorId, identity]),
     );
@@ -7418,94 +7194,21 @@ export async function runTextbookGeneration({
     // compatibility matrix. An unavailable/refused critic leaves the unit
     // source-formula-free — it never blocks generation and never lets an
     // incompatible family through.
-    {
-      const criticEnabled = (process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false";
-      const assignmentRepairModel: FormulaAssignmentRepairModel | undefined = criticEnabled
-        ? async (packet: FormulaAssignmentRepairPacket): Promise<FormulaAssignmentRepairDecision | null> => {
-            const system =
-              "Select the ONE source formula this learning unit should teach, or report that none fits. Return STRICT JSON: " +
-              "{\"action\":\"select_candidate\"|\"no_compatible_formula\",\"anchorId\"?:string,\"justification\":string,\"confidence\":\"high\"|\"medium\"|\"low\"}. " +
-              "You may ONLY pick an anchorId from candidates. rejectedCandidates are listed for context and are FORBIDDEN. " +
-              "Never invent an anchor or formula text, never change the unit's semantic family, and prefer no_compatible_formula over a doubtful pick.";
-            const { parsed } = await callCouncilJson({
-              client,
-              model,
-              taskType: "critique",
-              gardenId,
-              system,
-              user: JSON.stringify(packet),
-              sourceContext: packet,
-              councilModeOverride: "direct_council",
-              timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
-            });
-            if (!parsed || typeof parsed !== "object") return null;
-            const record = parsed as Record<string, unknown>;
-            const action = String(record.action ?? "");
-            const confidence = ["high", "medium", "low"].includes(String(record.confidence ?? ""))
-              ? String(record.confidence) as "high" | "medium" | "low" : "low";
-            const justification = typeof record.justification === "string" ? record.justification : "";
-            if (action === "select_candidate" && typeof record.anchorId === "string") {
-              return { action, anchorId: record.anchorId, justification, confidence };
-            }
-            if (action === "no_compatible_formula") {
-              return { action, justification, confidence };
-            }
-            return null;
-          }
-        : undefined;
-      const previousAssignments = confirmedLearningUnits.flatMap((unit) =>
-        unit.sourceFormulas.map((formula) => ({ formulaAnchorId: formula.id, unitId: unit.id })));
-      const initialPlan = buildFormulaAssignmentPlan(sourceFormulaIdentities, confirmedLearningUnits, {
-        previousAssignments,
-        familyRegistry: generationFamilyRegistry,
-      });
-      const ambiguityResolution = await resolveFormulaAssignmentAmbiguities({
-        plan: initialPlan,
-        formulas: sourceFormulaIdentities,
-        units: confirmedLearningUnits,
-        repairModel: assignmentRepairModel,
-        familyRegistry: generationFamilyRegistry,
-        maxCalls: 3,
-      });
-      const assignmentPlan = ambiguityResolution.plan;
-      const planApplication = applyFormulaAssignmentPlanToUnits({
-        units: confirmedLearningUnits,
-        plan: assignmentPlan,
-        formulas: sourceFormulaIdentities,
-        familyRegistry: generationFamilyRegistry,
-        unknownAnchorPolicy: "remove",
-      });
-      if (planApplication.result.applied) {
-        confirmedLearningUnits = planApplication.units;
+    for (const unit of confirmedLearningUnits) {
+      for (const formula of unit.sourceFormulas) {
+        if (!sourceFormulaIdentityById.has(formula.id)) {
+          throw new Error(
+            `Model-authored formula assignment ${formula.id} on ${unit.id} has no canonical source record. Repair the learning-unit contract.`,
+          );
+        }
       }
-      // Formulas the plan intentionally left unassigned are recorded on the
-      // source-visuals ledger so Source Coverage reports them as justified
-      // omissions instead of missing material.
-      markIntentionallyOmittedFormulasInLedger(clusterDir, assignmentPlan);
-      appendLearnEvent(contentPath, gardenId, "learn_formula_assignment_planned", {
-        jobId: job.id,
-        textbookVersionId,
-        verifiedIdentities: sourceFormulaIdentities.filter((identity) => identity.verified).length,
-        totalIdentities: sourceFormulaIdentities.length,
-        compatibilityPairsEvaluated: sourceFormulaIdentities.length * confirmedLearningUnits.length,
-        assignments: assignmentPlan.assignments
-          .filter((assignment) => assignment.status === "assigned" || assignment.status === "reused_with_reason")
-          .map((assignment) => `${assignment.formulaAnchorId} -> ${assignment.unitId}`),
-        rejectedAssignments: assignmentPlan.rejectedAssignments,
-        formulasIntentionallyUnassigned: assignmentPlan.formulasWithoutCompatibleUnits,
-        unitsWithoutCompatibleFormula: assignmentPlan.unitsMissingRequiredFormulas,
-        ambiguitiesSentToChatMock: ambiguityResolution.packetsSent,
-        chatMockDecisionsApplied: ambiguityResolution.decisionsApplied,
-        planValid: assignmentPlan.valid,
-        planProblems: assignmentPlan.problems,
-        applied: planApplication.result.applied,
-        rolledBack: planApplication.result.rolledBack,
-        blockersBefore: planApplication.result.blockersBefore,
-        blockersAfter: planApplication.result.blockersAfter,
-      });
     }
-    // Rerun necessity against the post-formula contract. Only ambiguous cases
-    // use the bounded reviewer; every response is independently validated.
+    // Rerun the whole-garden model decision against the post-formula contract;
+    // every unit and every active interaction are independently validated.
+    // Keep the previously validated typed control contract as grounding
+    // evidence. Necessity deliberately clears renderer intent, but generation
+    // must not discard the model-authored learner action and request it again.
+    const preNecessityVisualGroundingUnits = confirmedLearningUnits;
     const generationVisualNecessityReview = await planAndReviewVisualNecessity({
       client,
       model,
@@ -7515,8 +7218,8 @@ export async function runTextbookGeneration({
       learningUnits: confirmedLearningUnits,
     });
     confirmedLearningUnits = generationVisualNecessityReview.learningUnits;
-    // Persist the planned contract; the deterministic planner inside the
-    // writer re-validates the (already valid) assignments idempotently.
+    // Persist the model-authored visual plan. The writer may still reconcile
+    // source/formula registry integrity, but it cannot replace visual pedagogy.
     const contractWrite = writeLearningUnitContractArtifacts({
       clusterDir,
       units: confirmedLearningUnits,
@@ -7546,14 +7249,30 @@ export async function runTextbookGeneration({
     // will use. The saved plan is the auditable routing control plane for this
     // run; page-specific target paths are filled as each unit is written.
     const visualizationPlanningStartedAt = Date.now();
-    visualizationPlan = buildVisualizationPlan({
+    const generationVisualizationPlanning = await buildVisualizationPlanWithContractRepair({
       gardenId,
       learningMap: repairedLearningMap,
       learningUnits: confirmedLearningUnits,
+      groundingUnits: preNecessityVisualGroundingUnits,
       necessityReviewCalls: generationVisualNecessityReview.reviewCalls,
       rejectedNecessityReviews: generationVisualNecessityReview.rejectedReviews,
       visualDecisionOverrides: generationVisualNecessityReview.overrides,
+      repairProvider: (packet) => requestVisualizationContractRepair({
+        client,
+        model,
+        gardenId,
+        packet,
+      }),
+      maxRepairAttempts: 2,
+      checkCancelled: () => throwIfLearnCancelled(job.id),
+      onEvent: (type, data) => appendLearnEvent(contentPath, gardenId, type, {
+        jobId: job.id,
+        textbookVersionId,
+        ...data,
+      }),
     });
+    visualizationPlan = generationVisualizationPlanning.plan;
+    confirmedLearningUnits = generationVisualizationPlanning.learningUnits;
     confirmedLearningUnits = applyVisualizationRoutesToLearningUnits(
       confirmedLearningUnits,
       visualizationPlan,
@@ -7615,7 +7334,6 @@ export async function runTextbookGeneration({
       for (const formula of unit.sourceFormulas) {
         const identity = sourceFormulaIdentityById.get(formula.id);
         if (!identity) throw new Error(`Formula pre-write guard: ${formula.id} has no canonical source record.`);
-        assertPlannedFormulaAssignment(identity, deriveUnitFormulaRequirement(unit, generationFamilyRegistry), unit, generationFamilyRegistry);
       }
     }
     throwIfLearnCancelled(job.id);
@@ -7625,52 +7343,64 @@ export async function runTextbookGeneration({
       progressPercent: 3,
     });
 
-    let overviewBody = "";
-    try {
-      const overviewCall = await callCouncilText({
-        client,
-        model,
-        taskType: "source_synthesis",
-        gardenId,
-        pageId: "learning/Topic Overview",
-        system: OVERVIEW_PROMPT,
-        user: compactJson({
-          learningMap: map.learningMap,
-          scopeContract: map.scopeContract,
-          sourceOnly,
-        }),
-        sourceContext: {
+    let overviewBody: string | null = null;
+    let lastOverviewDraft = "";
+    let lastOverviewProblems = ["no usable overview draft was returned"];
+    for (let attempt = 0; attempt < 3 && !overviewBody; attempt += 1) {
+      throwIfLearnCancelled(job.id);
+      try {
+        const overviewCall = await callCouncilText({
+          client,
+          model,
+          taskType: "source_synthesis",
           gardenId,
           pageId: "learning/Topic Overview",
-          taskType: "source_synthesis",
-          sourceIds: context.sources.map((source) => source.slug),
-        },
-        councilModeOverride: LEARN_GENERATION_COUNCIL_MODE,
-      });
-      overviewBody = cleanCouncilMarkdown(
-        overviewCall.content,
-        renderTopicOverviewFallback(map.learningMap, context),
+          system: OVERVIEW_PROMPT,
+          user: compactJson({
+            task: attempt === 0 ? "write_topic_overview" : "repair_topic_overview",
+            learningMap: map.learningMap,
+            scopeContract: map.scopeContract,
+            sourceOnly,
+            ...(attempt > 0
+              ? {
+                  previousMarkdown: lastOverviewDraft,
+                  failedProblems: lastOverviewProblems,
+                  instruction: "Return a complete corrected Markdown body. Do not explain the repair.",
+                }
+              : {}),
+          }),
+          sourceContext: {
+            gardenId,
+            pageId: "learning/Topic Overview",
+            taskType: attempt === 0 ? "source_synthesis" : "source_synthesis_repair",
+            sourceIds: context.sources.map((source) => source.slug),
+            repairAttempt: attempt,
+          },
+          councilModeOverride: LEARN_GENERATION_COUNCIL_MODE,
+        });
+        lastOverviewDraft = cleanCouncilMarkdown(overviewCall.content, "").trim();
+        if (!lastOverviewDraft) {
+          lastOverviewProblems = ["model returned an empty overview"];
+          continue;
+        }
+        const validated = validateTopicOverview(lastOverviewDraft, map.learningMap);
+        lastOverviewProblems = validated.problems;
+        appendLearnEvent(contentPath, gardenId, "learn_overview_reviewed", {
+          jobId: job.id,
+          attempt: attempt + 1,
+          problems: validated.problems,
+        });
+        if (validated.problems.length === 0) overviewBody = validated.markdown;
+      } catch (error) {
+        lastOverviewProblems = [`overview model call failed: ${errorMessage(error)}`];
+      }
+    }
+    if (!overviewBody) {
+      throw new Error(
+        `The AI-authored Topic Overview remained invalid after 3 bounded attempts: ${lastOverviewProblems.join("; ")}. No fallback overview was written.`,
       );
-    } catch {
-      overviewBody = renderTopicOverviewFallback(map.learningMap, context);
     }
     throwIfLearnCancelled(job.id);
-
-    // The overview is LLM-authored and tends to emit loose title-based
-    // wikilinks (`[[Section]]`, `[[Section#Subsection]]`) that do not resolve
-    // to the numbered on-disk folders. Rewrite every resolvable link to its
-    // canonical vault-root path; report anything left broken.
-    {
-      const canonicalized = canonicalizeLearnerWikilinks(overviewBody, map.learningMap);
-      overviewBody = canonicalized.markdown;
-      if (canonicalized.unresolved.length > 0) {
-        appendLearnEvent(contentPath, gardenId, "learn_overview_broken_links", {
-          jobId: job.id,
-          unresolved: canonicalized.unresolved,
-        });
-      }
-      overviewBody = stripEmbeddedVisualBlocks(overviewBody);
-    }
 
     // Learner-facing planning pages live in learning/. Everything else is
     // internal and is written under .breadboard/planning/ so it never appears
@@ -7678,9 +7408,9 @@ export async function runTextbookGeneration({
     const learningRelPaths = [
       {
         relPath: `${LEARNING_ROOT}/_index.md`,
-        title: map.learningMap.title || context.gardenTitle,
+        title: map.learningMap.title,
         type: "learning-index",
-        body: renderLearningIndexMarkdown(map.learningMap, context),
+        body: renderLearningIndexMarkdown(map.learningMap),
       },
       {
         relPath: `${LEARNING_ROOT}/Topic Overview.md`,
@@ -7753,7 +7483,7 @@ export async function runTextbookGeneration({
       const section = map.learningMap.sections[sectionIndex];
       const sectionNumber = sectionIndex + 1;
       // Older stored maps may predate title sanitation — enforce it at render.
-      const sectionTitle = sanitizeLearnerTitle(section.title);
+      const sectionTitle = section.title;
       const sectionFolder = learningSectionFolder(sectionNumber, sectionTitle);
       const sectionIndexRelPath = `${sectionFolder}/_index.md`;
       throwIfLearnCancelled(job.id);
@@ -7773,24 +7503,19 @@ export async function runTextbookGeneration({
             learningVersion: publicLearningVersionId(textbookVersionId),
             sourceSetHash: context.sourceSetHash,
           }) +
-          `# ${sectionNumber}. ${sectionTitle}\n\n${scrubLearnerProse(section.purpose || `Work through the lessons in this section in order to build up ${sectionTitle}.`)}\n`,
+          `# ${sectionNumber}. ${sectionTitle}\n\n${section.purpose}\n`,
       });
 
       for (let subsectionIndex = 0; subsectionIndex < section.subsections.length; subsectionIndex += 1) {
         throwIfLearnCancelled(job.id);
         const subsection = section.subsections[subsectionIndex];
         const subsectionNumber = subsectionIndex + 1;
-        const subsectionTitle = sanitizeLearnerTitle(subsection.title);
+        const subsectionTitle = subsection.title;
         const pageTitle = `${sectionNumber}.${subsectionNumber} ${subsectionTitle}`;
         const pageFileName = textbookPageFileName(sectionNumber, subsectionNumber, subsectionTitle);
         const pageRelPath = `${sectionFolder}/${pageFileName}`;
         const pageId = pageRelPath.replace(/\.md$/i, "");
-        const anchors =
-          subsection.sourceAnchors.length > 0
-            ? subsection.sourceAnchors
-            : section.sourceAnchors.length > 0
-              ? section.sourceAnchors
-              : context.sources.map((source) => source.title);
+        const anchors = subsection.sourceAnchors;
         // Stage 3: which extracted source visuals belong on this page.
         const assignedVisuals = assignSourceVisualsForSubsection({
           visuals: ledgerVisuals,
@@ -7800,21 +7525,19 @@ export async function runTextbookGeneration({
           sourceArtifactAssignments: confirmedSourceArtifactAssignments,
         });
         const metricFormulaAnchorIds = (subsection.sourceFormulaContracts ?? []).map((formula) => formula.id);
-        const formulaUnit = confirmedLearningUnits.find((unit) => unit.id === subsection.learningUnitId);
-        const formulaUnitRequirement = formulaUnit ? deriveUnitFormulaRequirement(formulaUnit, generationFamilyRegistry) : undefined;
         for (const anchorId of metricFormulaAnchorIds) {
           const identity = sourceFormulaIdentityById.get(anchorId);
-          if (!identity || !formulaUnit || !formulaUnitRequirement) {
+          if (!identity) {
             throw new Error(`Formula pre-write guard: ${anchorId} cannot be resolved to a verified unit assignment.`);
           }
-          assertPlannedFormulaAssignment(identity, formulaUnitRequirement, formulaUnit, generationFamilyRegistry);
         }
         const sourceFigures = sourceFiguresFromVisuals(assignedVisuals);
+        const pageSourceFormulaFigures = sourceFormulaFiguresForSubsection(context, subsection);
         const interactiveSourceFigures =
           metricFormulaAnchorIds.length > 0
             ? [
                 ...sourceFigures,
-                ...sourceFormulaFiguresForSubsection(context, subsection).filter(
+                ...pageSourceFormulaFigures.filter(
                   (formula) => !sourceFigures.some((figure) => figure.figureId === formula.figureId),
                 ),
               ]
@@ -7823,7 +7546,7 @@ export async function runTextbookGeneration({
         // subsection, nothing else. The full source map / scope contract /
         // learning spine never ride into page prompts anymore.
         const pageDossier = buildPageDossier({
-          gardenTitle: map.learningMap.title || context.gardenTitle,
+          gardenTitle: map.learningMap.title,
           sectionTitle,
           sectionPurpose: section.purpose,
           subsection,
@@ -7873,11 +7596,9 @@ export async function runTextbookGeneration({
           .map((visual) => sourceVisualEmbedUrl(visual))
           .filter((url): url is string => Boolean(url));
 
-        // Stage 4: up to two direct_council generation calls. Each attempt gets
-        // deterministic clean/scrub + visual embedding, then the local quality
-        // critic. A hard-failing attempt gets one focused repair call. If no
-        // attempt passes, the last draft is quarantined for debugging and the
-        // job fails. The deterministic emergency draft is never learner-facing.
+        // Stage 4: bounded model generation and repair. Code evaluates the
+        // returned lesson but never rewrites its pedagogy, inserts a Q&A, adds
+        // a formula, or places a source visual on the model's behalf.
         let pageBody: string | null = null;
         let subsectionRunId: string | undefined;
         let revisionRunId: string | undefined;
@@ -7962,26 +7683,12 @@ export async function runTextbookGeneration({
             }
           }
 
-          // Deterministic hygiene, Q&A safety net, and source-visual embedding
-          // happen before the critic so it judges the final page.
-          attemptBody = scrubSourceCommentaryProse(scrubAiisms(scrubLearnerProse(attemptBody)));
-          attemptBody = ensureQuestionBlock(attemptBody, subsectionTitle);
-          attemptBody = embedAssignedSourceVisuals(attemptBody, assignedVisuals);
-
-          let quality = assessLessonQuality(attemptBody, {
+          let quality = assessModelAuthoredLessonQuality(attemptBody, {
             assignedVisualUrls,
             unavailableCitations: unavailableCitationGate,
+            subsection,
+            sourceFormulaFigures: pageSourceFormulaFigures,
           });
-          if (quality.problems.some((problem) => problem.code === "source-commentary")) {
-            // Free deterministic re-scrub before spending any model call.
-            attemptBody = scrubSourceCommentaryProse(attemptBody);
-            attemptBody = ensureQuestionBlock(attemptBody, subsectionTitle);
-            attemptBody = embedAssignedSourceVisuals(attemptBody, assignedVisuals);
-            quality = assessLessonQuality(attemptBody, {
-            assignedVisualUrls,
-            unavailableCitations: unavailableCitationGate,
-          });
-          }
 
           // Hard-fail-only repair: one focused call that fixes the listed
           // problems in place. Minor style issues never trigger a rewrite.
@@ -8032,15 +7739,14 @@ export async function runTextbookGeneration({
               });
               revisionRunId = repaired.councilRunId ?? revisionRunId;
               attemptBody = cleanCouncilMarkdown(repaired.content, attemptBody);
-              attemptBody = scrubSourceCommentaryProse(scrubAiisms(scrubLearnerProse(attemptBody)));
-              attemptBody = ensureQuestionBlock(attemptBody, subsectionTitle);
-              attemptBody = embedAssignedSourceVisuals(attemptBody, assignedVisuals);
-              quality = assessLessonQuality(attemptBody, {
-            assignedVisualUrls,
-            unavailableCitations: unavailableCitationGate,
-          });
+              quality = assessModelAuthoredLessonQuality(attemptBody, {
+                assignedVisualUrls,
+                unavailableCitations: unavailableCitationGate,
+                subsection,
+                sourceFormulaFigures: pageSourceFormulaFigures,
+              });
             } catch {
-              // Keep the deterministic result and let the hard gate decide.
+              // Keep the model draft and let the hard gate decide.
             }
           }
           lastQuality = quality;
@@ -8133,23 +7839,11 @@ export async function runTextbookGeneration({
         );
         const assignedVisualIds = assignedVisuals.map((visual) => visual.sourceVisualId);
         const pageMathExpressions = extractQuartzMath(normalizeQuartzMarkdown(pageBody));
-        const formulas = ensureContractFormulaGrounding(
-          formulaGroundingEntries(pageMathExpressions, sourceFormulaFiguresForSubsection(context, subsection)),
-          subsection,
-          sourceFormulaIdentityById,
-        );
+        const formulas = formulaGroundingEntries(pageMathExpressions, pageSourceFormulaFigures);
         for (const formula of formulas) {
           if (!formula.sourceAnchor) continue;
-          const identity = sourceFormulaIdentityById.get(formula.sourceAnchor);
-          if (!identity || !formulaUnit || !formulaUnitRequirement) {
+          if (!sourceFormulaIdentityById.has(formula.sourceAnchor)) {
             throw new Error(`Formula page pre-write guard: ${formula.sourceAnchor} has no verified unit identity.`);
-          }
-          assertPlannedFormulaAssignment(identity, formulaUnitRequirement, formulaUnit, generationFamilyRegistry);
-          const entryFamily = formulaMetricFamily(formula.text);
-          if (entryFamily && entryFamily !== legacyFormulaFamily(identity.family)) {
-            throw new Error(
-              `Formula page pre-write guard: ${formula.sourceAnchor} is ${identity.family}, but learner formula was classified as ${entryFamily}.`,
-            );
           }
         }
         const finalContent =
@@ -8318,18 +8012,13 @@ export async function runTextbookGeneration({
       currentPageTitle: undefined,
     });
     throwIfLearnCancelled(job.id);
-    // The Learn button prefers model-backed prose repair with deterministic
-    // fallback. BREADBOARD_REPAIR_EXECUTOR can still force deterministic/model
-    // modes for local debugging and tests.
-    const repairExecutorMode = ((): RepairExecutorMode => {
-      const raw = (process.env.BREADBOARD_REPAIR_EXECUTOR ?? "").trim();
-      if (raw === "model" || raw === "model_with_deterministic_fallback" || raw === "deterministic") return raw;
-      return "model_with_deterministic_fallback";
-    })();
+    // Learner-facing repair is model-only. Validation remains deterministic;
+    // a rejected or unavailable model candidate leaves the blocker visible.
+    const repairExecutorMode = "model" as const;
     // Stages 8a+8b (repair -> export finalize -> verify) run as a bounded
     // convergence loop instead of a single pass followed by a hard fail. Each
-    // pass repairs the flagged pages (ChatMock-backed model repair with a
-    // deterministic fallback), finalizes the on-disk tree exactly as Quartz
+    // pass repairs the flagged pages with a model candidate, then validates
+    // the on-disk tree exactly as Quartz
     // sees it, and verifies it. When the deterministic gate still finds
     // problems, ChatMock gets another focused pass: `collectUnitRepairRequests`
     // re-derives requests from exactly what still fails, and re-running the
@@ -8356,7 +8045,6 @@ export async function runTextbookGeneration({
         currentVersion: publicLearningVersionId(textbookVersionId),
       });
       if (generationFreeze.changed) {
-        reconcileFinalGardenState(clusterDir, gardenId);
         appendLearnEvent(contentPath, gardenId, "learn_generation_freeze_completed", {
           jobId: job.id,
           textbookVersionId,
@@ -8390,7 +8078,6 @@ export async function runTextbookGeneration({
         archiveUnusedConcepts: true,
         strictMode: false,
       });
-      if (semantic.changed) reconcileFinalGardenState(clusterDir, gardenId);
       appendLearnEvent(contentPath, gardenId, "learn_semantic_reconciliation_completed", {
         jobId: job.id,
         textbookVersionId,
@@ -8415,195 +8102,6 @@ export async function runTextbookGeneration({
           reconciliationError instanceof Error
             ? reconciliationError.message
             : String(reconciliationError),
-      });
-    }
-
-    // Stage 7c: formula assignment/metadata/lineage/ledger/coverage are one
-    // canonical projection. Deterministic compatibility and lineage rules run
-    // first; ChatMock sees only a narrow packet when genuine ambiguity remains,
-    // and its structured decision is independently verified before application.
-    try {
-      const criticEnabled = (process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false";
-      const formulaRepairModel = criticEnabled
-        ? async (packet: FormulaUsageRepairPacket): Promise<FormulaUsageRepairDecision | null> => {
-            const system =
-              "You resolve ONE formula-usage ambiguity in a final learning page. Return STRICT JSON: " +
-              "{\"action\": string, \"entryIndex\"?: number, \"formulaAnchorId\"?: string, \"targetUnitId\"?: string, \"reason\": string}. " +
-              "Choose action only from allowedActions. Never invent a formula, formula anchor, source excerpt, unit, or notation. " +
-              "Never create a source definition from a numeric example, change unrelated prose/titles/tags/visuals/anchors, " +
-              "or silently remove a contract requirement. Use only pageFormulaEntries, contractRequiredFormulas, and candidateDefinitions supplied.";
-            const { parsed } = await callCouncilJson({
-              client,
-              model,
-              taskType: "critique",
-              gardenId,
-              system,
-              user: JSON.stringify(packet),
-              sourceContext: packet,
-              councilModeOverride: "direct_council",
-              timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
-            });
-            if (!parsed || typeof parsed !== "object") return null;
-            const record = parsed as Record<string, unknown>;
-            const action = String(record.action ?? "") as FormulaUsageRepairDecision["action"];
-            if (!packet.allowedActions.includes(action)) return null;
-            return {
-              action,
-              entryIndex: typeof record.entryIndex === "number" ? record.entryIndex : undefined,
-              formulaAnchorId: typeof record.formulaAnchorId === "string" ? record.formulaAnchorId : undefined,
-              targetUnitId: typeof record.targetUnitId === "string" ? record.targetUnitId : undefined,
-              reason: typeof record.reason === "string" ? record.reason : "ChatMock formula-usage decision",
-            };
-          }
-        : undefined;
-      const formulaIdentityRepairModel = criticEnabled
-        ? async (packet: FormulaIdentityRepairPacket): Promise<FormulaIdentityRepairDecision | null> => {
-            const system =
-              "Resolve ONE canonical formula identity/assignment conflict. Return STRICT JSON: " +
-              "{\"issueId\":string,\"action\":string,\"verifiedFamily\"?:string,\"replacementAnchorId\"?:string," +
-              "\"confidence\":\"high\"|\"medium\"|\"low\",\"justification\":string}. " +
-              "Use only allowedActions and assignmentCandidates in the packet. Never invent formula text, anchor IDs, source pages, " +
-              "or select by page title alone. Exact symbolic structure and source context outrank captions. " +
-              "Never force a wrong-family formula onto the page or alter unrelated formulas.";
-            const { parsed } = await callCouncilJson({
-              client,
-              model,
-              taskType: "critique",
-              gardenId,
-              system,
-              user: JSON.stringify(packet),
-              sourceContext: packet,
-              councilModeOverride: "direct_council",
-              timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
-            });
-            if (!parsed || typeof parsed !== "object") return null;
-            const record = parsed as Record<string, unknown>;
-            const action = String(record.action ?? "") as FormulaIdentityRepairDecision["action"];
-            const confidence = String(record.confidence ?? "") as FormulaIdentityRepairDecision["confidence"];
-            if (!packet.allowedActions.includes(action) || !["high", "medium", "low"].includes(confidence)) return null;
-            return {
-              issueId: String(record.issueId ?? ""),
-              action,
-              verifiedFamily: typeof record.verifiedFamily === "string"
-                ? record.verifiedFamily as FormulaIdentityRepairDecision["verifiedFamily"] : undefined,
-              replacementAnchorId: typeof record.replacementAnchorId === "string" ? record.replacementAnchorId : undefined,
-              confidence,
-              justification: typeof record.justification === "string" ? record.justification : "",
-            };
-          }
-        : undefined;
-      const formulaReconciliation = await reconcileFinalFormulaProjections(clusterDir, gardenId, {
-        maxChatMockCalls: 2,
-        strictMode: false,
-        formulaRepairModel,
-        formulaIdentityRepairModel,
-      });
-      appendLearnEvent(contentPath, gardenId, "learn_formula_projection_reconciliation_completed", {
-        jobId: job.id,
-        textbookVersionId,
-        contractAssignmentsChecked: formulaReconciliation.contractAssignmentsChecked,
-        compatibleMissingAssignmentsRepaired: formulaReconciliation.definitionsAdded + formulaReconciliation.definitionsLinked,
-        incompatibleAssignmentsFound: formulaReconciliation.incompatibleAssignmentsFound,
-        formulaIdentitiesVerified: formulaReconciliation.formulaIdentitiesVerified,
-        registryFamilyCorrections: formulaReconciliation.registryFamilyCorrections,
-        assignmentsReplaced: formulaReconciliation.assignmentsReplaced,
-        assignmentsMoved: formulaReconciliation.assignmentsMoved,
-        ambiguousAssignmentsSentToChatMock: formulaReconciliation.ambiguousAssignmentsSentToChatMock,
-        remainingFormulaFamilyMismatches: formulaReconciliation.remainingFormulaFamilyMismatches,
-        definitionsAdded: formulaReconciliation.definitionsAdded,
-        definitionsLinked: formulaReconciliation.definitionsLinked,
-        orphanWorkedExamplesBefore: formulaReconciliation.orphanWorkedExamplesBefore,
-        workedExamplesRelined: formulaReconciliation.workedExamplesRelined,
-        workedExamplesReclassified: formulaReconciliation.workedExamplesReclassified,
-        metadataEntriesRemoved: formulaReconciliation.metadataEntriesRemoved,
-        chatMockCallsUsed: formulaReconciliation.chatMockCallsUsed,
-        formulaLedgerModesChanged: formulaReconciliation.formulaLedgerModesChanged,
-        sourceCoverageEntriesRegenerated: formulaReconciliation.sourceCoverageEntriesRegenerated,
-        remainingFormulaBlockers: formulaReconciliation.unresolvedIssues.length,
-        passed: formulaReconciliation.passed,
-        rolledBack: formulaReconciliation.rolledBack,
-      });
-    } catch (formulaError) {
-      appendLearnEvent(contentPath, gardenId, "learn_formula_projection_reconciliation_failed", {
-        jobId: job.id,
-        reason: formulaError instanceof Error ? formulaError.message : String(formulaError),
-      });
-    }
-
-    // Stage 8 (pre-finalize): bounded, deterministic-first / ChatMock-second
-    // weak-anchor self-healing. ACTIVELY referenced low/unsupported source anchors
-    // are repaired from real source evidence — deterministically when a single
-    // candidate is unambiguous, otherwise via a targeted ChatMock decision that is
-    // INDEPENDENTLY verified (excerpt present in source + relevant + right family;
-    // replacement ids must be ones we offered) — BEFORE the terminal finalize gate.
-    // It never fails generation and never invents evidence; unused/historical weak
-    // anchors are ignored so they never spend a ChatMock call. Residual blockers are
-    // caught by the existing deterministic gate + Stage 8c critic.
-    try {
-      const criticEnabled = (process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false";
-      const weakAnchorRepairModel: WeakAnchorRepairModel | undefined = criticEnabled
-        ? async (packet: WeakAnchorRepairPacket): Promise<WeakAnchorRepairDecision | null> => {
-            const system =
-              "You repair ONE weak source anchor for a learning garden. You are given the anchor, why it is weak, " +
-              "the pages/units that reference it, verbatim candidate source passages, and existing alternative anchors. " +
-              "Return STRICT JSON: {\"decision\": \"confirm_current_grounding\"|\"reground_from_source\"|\"replace_with_existing_anchor\"|\"reject_no_grounding\", " +
-              "\"confidence\": \"high\"|\"medium\"|\"low\", \"reason\": string, \"exactText\"?: string, \"sourceId\"?: string, \"page\"?: number, \"replacementAnchorId\"?: string}. " +
-              "RULES: choose only from the provided candidatePassages or existingAlternativeAnchors; never invent a passage, an id, or a page; " +
-              "for confirm/reground return a VERBATIM exactText that appears in the source; for replace, replacementAnchorId MUST be one of existingAlternativeAnchors; " +
-              "if nothing provided supports the anchor's meaning, return reject_no_grounding.";
-            const { parsed } = await callCouncilJson({
-              client,
-              model,
-              taskType: "critique",
-              gardenId,
-              system,
-              user: JSON.stringify(packet),
-              sourceContext: packet,
-              councilModeOverride: "direct_council",
-              timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
-            });
-            if (!parsed || typeof parsed !== "object") return null;
-            const d = parsed as Record<string, unknown>;
-            const kind = String(d.decision ?? "");
-            const allowed: WeakAnchorDecisionKind[] = ["confirm_current_grounding", "reground_from_source", "replace_with_existing_anchor", "reject_no_grounding"];
-            if (!allowed.includes(kind as WeakAnchorDecisionKind)) return null;
-            const conf = String(d.confidence ?? "low");
-            return {
-              issueIdentity: packet.issueIdentity,
-              anchorId: packet.anchor.id,
-              decision: kind as WeakAnchorDecisionKind,
-              confidence: (["high", "medium", "low"].includes(conf) ? conf : "low") as "high" | "medium" | "low",
-              reason: typeof d.reason === "string" ? d.reason : "chatmock weak-anchor decision",
-              exactText: typeof d.exactText === "string" ? d.exactText : undefined,
-              sourceId: typeof d.sourceId === "string" ? d.sourceId : undefined,
-              page: typeof d.page === "number" ? d.page : undefined,
-              replacementAnchorId: typeof d.replacementAnchorId === "string" ? d.replacementAnchorId : undefined,
-              origin: "chatmock",
-            };
-          }
-        : undefined;
-      const selfHealing = await runWeakAnchorSelfHealingLoop(clusterDir, gardenId, { anchorRepairModel: weakAnchorRepairModel });
-      if (selfHealing.deterministicRepairs > 0 || selfHealing.chatMockRepairs > 0) {
-        reconcileFinalGardenState(clusterDir, gardenId);
-      }
-      writeWeakAnchorSelfHealingReports(clusterDir, selfHealing);
-      const acceptance = decideFinalAcceptance(selfHealing);
-      appendLearnEvent(contentPath, gardenId, "learn_weak_anchor_self_healing_completed", {
-        jobId: job.id,
-        textbookVersionId,
-        deterministicRepairs: selfHealing.deterministicRepairs,
-        chatMockRepairs: selfHealing.chatMockRepairs,
-        totalChatMockCalls: selfHealing.totalChatMockCalls,
-        resolved: selfHealing.resolvedAnchorIds.length,
-        unresolvedActiveAnchorCount: acceptance.unresolvedActiveAnchorCount,
-        criticAvailable: selfHealing.criticAvailable,
-        publishReady: acceptance.publishReady,
-        primaryReason: acceptance.primaryReason,
-      });
-    } catch (selfHealError) {
-      appendLearnEvent(contentPath, gardenId, "learn_weak_anchor_self_healing_skipped", {
-        jobId: job.id,
-        reason: selfHealError instanceof Error ? selfHealError.message : String(selfHealError),
       });
     }
 
@@ -8686,6 +8184,8 @@ export async function runTextbookGeneration({
         gardenDir: clusterDir,
         gardenSlug: gardenId,
         repairExecutor: repairExecutorMode,
+        preserveModelAuthoredVisuals: true,
+        preserveModelAuthoredContent: true,
         modelRepair:
           repairExecutorMode === "deterministic"
             ? undefined
@@ -8703,10 +8203,14 @@ export async function runTextbookGeneration({
         changedFiles: repairRun.changedFiles,
       });
 
-      // Deterministic export finalize + hard gate: clean and validate the
-      // on-disk tree exactly as Quartz will see it.
+      // Validation-only export finalize + hard gate. Structural paths and
+      // projections may be normalized, but learner content remains model-owned.
       throwIfLearnCancelled(job.id);
-      finalizeReport = finalizeGardenExport({ gardenDir: clusterDir, gardenSlug: gardenId });
+      finalizeReport = finalizeGardenExport({
+        gardenDir: clusterDir,
+        gardenSlug: gardenId,
+        preserveModelAuthoredContent: true,
+      });
       appendLearnEvent(contentPath, gardenId, "learn_export_finalized", {
         jobId: job.id,
         textbookVersionId,
@@ -8836,47 +8340,9 @@ export async function runTextbookGeneration({
     // critic or unresolved blocker leaves the published garden untouched.
     try {
       if ((process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false") {
-        // Fix 13 step 2: migrate/rescore LEGACY text-concept anchors BEFORE the
-        // critic runs, so no legacy numeric-confidence anchor is grandfathered in.
-        try {
-          const migration = migrateLegacyTextConceptAnchors(clusterDir, gardenId);
-          if (migration.counts.legacyFound > 0) {
-            reconcileFinalGardenState(clusterDir, gardenId);
-            appendLearnEvent(contentPath, gardenId, "learn_legacy_anchors_migrated", {
-              jobId: job.id,
-              legacyFound: migration.counts.legacyFound,
-              migrated: migration.counts.migrated,
-              replaced: migration.counts.replaced,
-              needsCritic: migration.counts.needs_critic_review,
-              blocking: migration.counts.blocking,
-              suspiciousPassages: migration.duplicateGroups.filter((g) => g.suspicious).length,
-              replacementPlanApplied: Boolean(migration.replacementPlanApplied),
-            });
-          }
-          // Safety net for a garden left with DANGLING references by an earlier
-          // UNSAFE per-anchor replacement pass (repoint to surviving anchors /
-          // restore both-deleted cycles). The two-phase planner prevents this
-          // going forward; this heals any pre-existing damage before the critic.
-          const heal = healDanglingReplacementReferences(clusterDir, gardenId);
-          if (heal.healed.length > 0 || heal.problems.length > 0) {
-            reconcileFinalGardenState(clusterDir, gardenId);
-            appendLearnEvent(contentPath, gardenId, "learn_dangling_anchor_references_healed", {
-              jobId: job.id,
-              healed: heal.healed.length,
-              repointed: heal.healed.filter((h) => h.action === "repointed").length,
-              restored: heal.healed.filter((h) => h.action === "restored").length,
-              problems: heal.problems,
-            });
-          }
-        } catch (migrationError) {
-          appendLearnEvent(contentPath, gardenId, "learn_legacy_anchor_migration_failed", {
-            jobId: job.id,
-            reason: migrationError instanceof Error ? migrationError.message : String(migrationError),
-          });
-        }
-        // Real ChatMock-backed repair: the model rewrites the flagged page/section
-        // first for semantic issues, then the deterministic finalizer runs for
-        // mechanical fixes and as the fallback when a model candidate is rejected.
+        // The model rewrites any flagged semantic content. Structural validators
+        // re-audit the result without substituting heuristic lesson prose or a
+        // canned visual contract for a rejected candidate.
         const modelRepair = createChatMockModelRepair({ client, model, timeoutMs: LEARN_PLANNING_TIMEOUT_MS });
         const criticLoop = await runCriticLoop({
           gardenDir: clusterDir,
@@ -8886,7 +8352,7 @@ export async function runTextbookGeneration({
           // confirm, replace, create a better anchor, or reject — inside the
           // same critic-loop rounds. Unresolved ones keep publishReady false.
           anchorConfirm: createChatMockAnchorCritic({ client, model, timeoutMs: LEARN_PLANNING_TIMEOUT_MS }),
-          repair: makeCriticArtifactRepair({ modelRepair }),
+          repair: makeCriticArtifactRepair({ modelRepair, allowDeterministicRepairs: false }),
           // Let the loop audit the live state so anchor resolution counts toward
           // publish-readiness. Deterministic critical failures already threw above.
           structuralFailure: false,

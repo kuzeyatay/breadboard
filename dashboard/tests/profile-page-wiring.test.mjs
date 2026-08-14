@@ -16,6 +16,8 @@ const client = read("src/app/profile/profile-client.tsx");
 const navHistory = read("src/lib/nav-history.ts");
 const invitesRoute = read("src/app/api/invites/route.ts");
 const shortcutsRoute = read("src/app/api/profile/navbar-shortcuts/route.ts");
+const locationSource = read("src/lib/current-location-source.ts");
+const deviceLocationRoute = read("src/app/api/profile/device-location/route.ts");
 const dashboardPage = read("src/app/dashboard/page.tsx");
 const dashboardShell = read("src/app/dashboard/dashboard-page-shell.tsx");
 const dashboardClient = read("src/app/dashboard/dashboard-client.tsx");
@@ -92,6 +94,13 @@ test("the optional navbar entries obey their settings", () => {
   assert.match(dashboardClient, /shortcuts=\{navbarShortcuts\}/);
 });
 
+test("a seat with no page of its own still gets a row", () => {
+  // Fast-read is a control, not a destination: the row names it in plain text
+  // rather than linking somewhere that does not exist.
+  assert.match(client, /shortcut\.href \? \(/);
+  assert.match(client, /<span className="text-sm font-medium text-white">\{shortcut\.label\}<\/span>/);
+});
+
 test("the profile page owns the switches and reaches its own route", () => {
   assert.match(client, /NAVBAR_SHORTCUTS\.map/, "one catalog drives both sides");
   assert.match(client, /role="switch"/);
@@ -122,18 +131,36 @@ test("the profile exposes current-location availability without folding it into 
   assert.match(client, />\s*Enable\s*<\/button>/);
   assert.match(client, /checking \? "Checking[^\"]*" : "Refresh"/);
   assert.match(client, />\s*Turn off\s*<\/button>/);
-  assert.match(client, /navigator\.geolocation\.getCurrentPosition/);
-  assert.match(client, /allowThemeLocation/);
-  assert.match(client, /enableHighAccuracy: false/);
+  assert.match(client, /requestCurrentLocationFix\(/);
+  assert.match(locationSource, /navigator\.geolocation\.getCurrentPosition/);
+  assert.match(locationSource, /allowThemeLocation/);
+  assert.match(locationSource, /enableHighAccuracy: false/);
   assert.match(client, /clearStoredCurrentLocationPreference/);
   assert.match(client, /rememberAppThemeLocation/);
-  assert.match(client, /selected AI or search[\s\S]*?provider only for relevant answers/);
-  assert.match(client, /not saved as a personal memory/);
   assert.ok(
     client.indexOf("applyAppThemeMode(\"sun\")") < client.indexOf("function LocationPanel()"),
     "the existing theme control remains separate from answer-location consent",
   );
   assert.match(client, /writeStoredCurrentLocationPreference\([\s\S]*?useForAnswers/);
+});
+
+test("a shell whose browser cannot locate falls back to the operating system", () => {
+  // Electron has no geolocation provider at all, so the browser source fails
+  // there however the permission is answered. Asking the OS through the local
+  // server is what keeps the desktop app from reporting a block nobody made.
+  assert.match(locationSource, /export function inDesktopShell/);
+  assert.match(locationSource, /inDesktopShell\(\)\s*\n?\s*\?\s*\[systemFix/);
+  assert.match(locationSource, /fetch\("\/api\/profile\/device-location", \{ method: "POST" \}\)/);
+  assert.match(deviceLocationRoute, /requireUserId/);
+  assert.match(
+    deviceLocationRoute,
+    /isLoopbackHostname/,
+    "a remotely served instance must not report the host's location",
+  );
+  assert.match(deviceLocationRoute, /readSystemLocation/);
+  // The desktop shell's own permission verdict is meaningless before the click
+  // that grants it, so the card must not read it as a refusal.
+  assert.match(client, /if \(inDesktopShell\(\)\) return;/);
 });
 
 test("the identity card carries no monogram tile", () => {
