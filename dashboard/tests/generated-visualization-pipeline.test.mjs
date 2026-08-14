@@ -8,8 +8,9 @@ import test from "node:test";
 import {
   applyVisualizationRoutesToLearningUnits,
   buildVisualizationCoverageReport,
-  buildVisualizationPlan,
+  buildVisualizationPlan as buildVisualizationPlanRaw,
 } from "../src/lib/visualization-opportunities.ts";
+import { planGardenVisualNecessity } from "../src/lib/visual-necessity.ts";
 import {
   buildGeneratedVisualBlock,
   compileGeneratedVisualization,
@@ -78,6 +79,67 @@ function learningMap(units) {
       })),
     }],
   };
+}
+
+/**
+ * Generated-visual pipeline fixtures start after Learn's bounded model contract
+ * repair. Author the same typed/evidenced contract explicitly so these tests
+ * exercise generation rather than bypassing the new pre-generation gate.
+ */
+function buildVisualizationPlan(input) {
+  const necessity = planGardenVisualNecessity({
+    gardenId: input.gardenId,
+    learningUnits: input.learningUnits,
+  });
+  const originalById = new Map(input.learningUnits.map((candidate) => [candidate.id, candidate]));
+  const repairedUnits = necessity.learningUnits.map((planned) => {
+    if (planned.interactiveVisualPlan?.requirement !== "required") return planned;
+    const original = originalById.get(planned.id) ?? planned;
+    const question = original.learningQuestion.replace(/\s+/g, " ").trim();
+    const relationship = question.match(/\bchanging\s+(.+?)\s+alter\s+(.+?)[?.]?$/i);
+    const formulaTerm = original.sourceFormulas.flatMap((formula) => formula.termsToDefine)
+      .find((term) => !/^(?:parameter|value|variable)$/i.test(term));
+    const controlLabel = relationship?.[1]?.trim() || formulaTerm || original.newConcepts[0];
+    const expectedInsight = relationship?.[2]?.trim() || original.newConcepts[0] || original.title;
+    const controlEvidence = relationship
+      ? { anchor: `unit:${planned.id}:learning-question`, quote: question }
+      : formulaTerm
+        ? {
+            anchor: original.sourceFormulas.find((formula) => formula.termsToDefine.includes(formulaTerm))?.id,
+            quote: formulaTerm,
+          }
+        : { anchor: `unit:${planned.id}:concept`, quote: original.newConcepts[0] };
+    const insightEvidence = relationship
+      ? { anchor: `unit:${planned.id}:learning-question`, quote: question }
+      : { anchor: `unit:${planned.id}:concept`, quote: original.newConcepts[0] };
+    const previous = original.interactiveVisual;
+    const visualIntent = {
+      id: previous?.id ?? `test-contract-${planned.id.toLowerCase()}`,
+      uniqueConcept: previous?.uniqueConcept ?? original.newConcepts[0] ?? original.title,
+      visualType: previous?.visualType ?? "generated_module",
+      whyStaticSourceFigureIsNotEnough:
+        previous?.whyStaticSourceFigureIsNotEnough ?? planned.interactiveVisualPlan.decision.reason,
+      learnerManipulates: [controlLabel],
+      expectedInsight,
+      sourceAnchors: previous?.sourceAnchors ?? original.sourceAnchors,
+      duplicateSignature: previous?.duplicateSignature ?? `test-${planned.id.toLowerCase()}`,
+    };
+    return {
+      ...planned,
+      interactiveVisual: visualIntent,
+      interactiveVisualPlan: {
+        ...planned.interactiveVisualPlan,
+        visualIntent,
+        controlContract: [{
+          kind: "variable",
+          label: controlLabel,
+          evidence: [controlEvidence],
+        }],
+        expectedInsightEvidence: [insightEvidence],
+      },
+    };
+  });
+  return buildVisualizationPlanRaw({ ...input, learningUnits: repairedUnits });
 }
 
 test("opportunity analysis covers every unit and routes a non-catalog interaction to generation", () => {
@@ -330,7 +392,7 @@ export default defineVisualization({
   accessibilityDescription: "A gain slider updates a numeric propagated-state result and a plotted response curve.",
   controls: [{ id: "gain", label: "Gain", type: "slider", min: 0, max: 3, step: 0.1, defaultValue: 1 }],
   outputs: [{
-    id: "main_output",
+    id: "coupled_state_propagation_under_intervention",
     label: "Propagated state",
     representation: "chart",
     expression: { kind: "binary", op: "add", left: { kind: "input", id: "gain" }, right: { kind: "input", id: "x" } }
@@ -360,7 +422,7 @@ test("strict AST compiler emits only the fixed JSON envelope and deterministic t
     definition: compiled.definition,
     opportunity,
     availableSourceAnchorIds: new Set(["S1.P2.F1"]),
-    testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { main_output: 4 } }],
+    testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { coupled_state_propagation_under_intervention: 4 } }],
   });
   assert.equal(tests.passed, true, JSON.stringify(tests));
 });
@@ -391,11 +453,41 @@ test("AST validator rejects arbitrary imports and privileged application or brow
 
 test("compilation cache is source-, opportunity-, and SDK-version aware", () => {
   const uniqueSource = validSource.replace("Coupled state intervention", "Cached coupled state intervention");
-  const first = compileGeneratedVisualization(uniqueSource);
-  const second = compileGeneratedVisualization(uniqueSource);
+  const opportunity = {
+    id: "cache-opportunity",
+    similarityFingerprint: "stable-semantic-fingerprint",
+    requiredInputs: [{
+      id: "gain",
+      label: "Gain",
+      type: "slider",
+      min: 0,
+      max: 3,
+      step: 0.1,
+      defaultValue: 1,
+    }],
+    requiredOutputs: [{
+      id: "coupled_state_propagation_under_intervention",
+      label: "Propagated state",
+      representation: "chart",
+    }],
+  };
+  const first = compileGeneratedVisualization(uniqueSource, opportunity);
+  const second = compileGeneratedVisualization(uniqueSource, opportunity);
   assert.equal(first.cacheHit, false);
   assert.equal(second.cacheHit, true);
   assert.equal(first.compiledHash, second.compiledHash);
+
+  const changedContract = {
+    ...opportunity,
+    requiredOutputs: [{
+      ...opportunity.requiredOutputs[0],
+      id: "repaired_contract_output",
+    }],
+  };
+  const afterContractRepair = compileGeneratedVisualization(uniqueSource, changedContract);
+  assert.equal(afterContractRepair.cacheHit, false);
+  assert.equal(afterContractRepair.validation.valid, false);
+  assert.match(afterContractRepair.validation.errors.join("; "), /requires output repaired_contract_output/i);
 });
 
 test("generated Markdown block identity round-trips", () => {
@@ -466,7 +558,7 @@ test("versioned generated artifacts preserve evidence and support validated roll
     title: "Coupled state intervention",
     explanation: "A source-grounded intervention explorer.",
     sourceCode: validSource,
-    testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { main_output: 4 } }],
+    testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { coupled_state_propagation_under_intervention: 4 } }],
     accessibilityDescription: "A gain slider changes both a numeric output and the plotted propagation response.",
     pedagogicalClaims: ["The propagated state changes with gain."],
   });
@@ -588,7 +680,7 @@ test("a detailed council rejection repairs with its real feedback before approva
           title: "Coupled state intervention",
           explanation: "A source-grounded intervention explorer.",
           sourceCode: validSource,
-          testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { main_output: 4 } }],
+          testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { coupled_state_propagation_under_intervention: 4 } }],
           accessibilityDescription: "A gain slider changes both a numeric output and the plotted response.",
           pedagogicalClaims: ["The propagated state changes with gain."],
         };
@@ -637,7 +729,7 @@ test("critic protocol exhaustion retries the same validated artifact without reg
           title: "Coupled state intervention",
           explanation: "A source-grounded intervention explorer.",
           sourceCode: validSource,
-          testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { main_output: 4 } }],
+          testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { coupled_state_propagation_under_intervention: 4 } }],
           accessibilityDescription: "A gain slider changes both a numeric output and the plotted response.",
           pedagogicalClaims: ["The propagated state changes with gain."],
         };
@@ -691,7 +783,7 @@ test("cancellation during critic review escapes the retry loop immediately", asy
         title: "Coupled state intervention",
         explanation: "A source-grounded intervention explorer.",
         sourceCode: validSource,
-        testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { main_output: 4 } }],
+        testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { coupled_state_propagation_under_intervention: 4 } }],
         accessibilityDescription: "A gain slider changes both a numeric output and the plotted response.",
         pedagogicalClaims: ["The propagated state changes with gain."],
       }),
@@ -742,7 +834,7 @@ test("a deterministic runtime-test failure is recorded and repaired on the next 
           testCases: [{
             name: "gain doubles state",
             inputs: { gain: 2, x: 2 },
-            expected: { main_output: calls === 1 ? 999 : 4 },
+            expected: { coupled_state_propagation_under_intervention: calls === 1 ? 999 : 4 },
           }],
           accessibilityDescription: "A labeled gain control changes the response.",
           pedagogicalClaims: ["Gain changes the propagated state."],
@@ -837,7 +929,7 @@ test("generated visualization work obeys the configured concurrency limit", asyn
             title: "Queued visual",
             explanation: "A queued visual.",
             sourceCode: validSource,
-            testCases: [{ name: "finite", inputs: { gain: 1, x: 1 }, expected: { main_output: 2 } }],
+            testCases: [{ name: "finite", inputs: { gain: 1, x: 1 }, expected: { coupled_state_propagation_under_intervention: 2 } }],
             accessibilityDescription: "A queued visual with labeled controls.",
             pedagogicalClaims: ["The output is finite."],
           };

@@ -344,8 +344,15 @@
     const state = {}
     const defaults = {}
     definition.controls.forEach((control) => {
-      state[control.id] = control.defaultValue
-      defaults[control.id] = control.defaultValue
+      const initialValue = control.type === "select"
+        ? Math.max(0, (control.options || []).indexOf(String(control.defaultValue)))
+        : control.type === "toggle"
+          ? (Boolean(control.defaultValue) ? 1 : 0)
+          : control.type === "button"
+            ? finite(control.defaultValue)
+            : control.defaultValue
+      state[control.id] = initialValue
+      defaults[control.id] = initialValue
     })
     state.x = 0
     state.t = 0
@@ -464,10 +471,20 @@
           })
           input.value = String(control.defaultValue)
           input.addEventListener("change", () => {
-            state[control.id] = input.value
+            // Expressions are numeric-only. A select therefore exposes the
+            // stable zero-based index of its declared option while the learner
+            // continues to see (and accessibility APIs continue to announce)
+            // the human-readable option label.
+            state[control.id] = input.selectedIndex
             readout.textContent = input.value
             draw()
-            parent.postMessage({ type: EVENT, event: "input", controlId: control.id, value: state[control.id] }, "*")
+            parent.postMessage({
+              type: EVENT,
+              event: "input",
+              controlId: control.id,
+              value: input.value,
+              optionIndex: state[control.id],
+            }, "*")
           })
         } else if (control.type === "toggle") {
           input = element("input")

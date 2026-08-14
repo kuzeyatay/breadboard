@@ -131,7 +131,9 @@ test("the remembered theme initializes before paint and is configurable from the
   assert.match(profile, /title="Theme"/);
   assert.match(profile, /Sunrise to sunset/);
   assert.match(profile, /applyAppThemeMode\("sun"\)/);
-  assert.match(profile, /navigator\.geolocation\.getCurrentPosition/);
+  // Sunrise and sunset need a fix from whichever source this machine has, not
+  // from the browser alone — inside the desktop shell the browser has none.
+  assert.match(profile, /requestCurrentLocationFix\(\{ maxAgeMs: 7 \* 86_400_000 \}\)/);
 });
 
 test("dark mode uses charcoal paper and Breadboard's pastel utility bridge", () => {

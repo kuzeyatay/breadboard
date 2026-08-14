@@ -9,6 +9,7 @@ import {
   FASTREAD_MAX_WPM,
   FASTREAD_MIN_WPM,
   FASTREAD_WPM_STEP,
+  contextAround,
   formatTimeRemaining,
   getWordDelay,
   parseFastReadDocument,
@@ -277,6 +278,9 @@ export default function FastReadReader({ title, content, onClose }: Props) {
   }, [advance, onClose, stepBack, togglePlay]);
 
   const parts = currentWord && !currentWord.atomic ? splitWordForDisplay(currentWord.text) : null;
+  // The sentence around the focal word. Both sides are clipped by the stage, so
+  // the line always reads as a window sliding over the prose.
+  const context = useMemo(() => contextAround(segments, cursor), [cursor, segments]);
   const empty = !totalWords && !parsed.stopCount;
 
   const overlay = (
@@ -395,18 +399,33 @@ export default function FastReadReader({ title, content, onClose }: Props) {
         ) : (
           <div className="fastread-word-stage">
             <span className="fastread-marker fastread-marker-top" aria-hidden="true" />
+            {/* Three tracks: the read prose, the focal glyph, the prose to come.
+                The side tracks are equal-width and clip their overflow, so the
+                focal point holds the centre line however long the words are. */}
             <div className={currentWord?.atomic ? 'fastread-word atomic' : 'fastread-word'}>
+              <span className="fastread-rail fastread-rail-lead">
+                {context.before && (
+                  <span className="fastread-context" aria-hidden="true">
+                    {context.before}&nbsp;
+                  </span>
+                )}
+                {parts && <span className="fastread-before">{parts.before}</span>}
+              </span>
               {currentWord?.atomic ? (
                 <span className="fastread-atomic">{currentWord.text}</span>
               ) : parts ? (
-                <>
-                  <span className="fastread-orp">{parts.orp}</span>
-                  <span className="fastread-before">{parts.before}</span>
-                  <span className="fastread-after">{parts.after}</span>
-                </>
+                <span className="fastread-orp">{parts.orp}</span>
               ) : (
                 <span className="fastread-atomic">Ready</span>
               )}
+              <span className="fastread-rail fastread-rail-trail">
+                {parts && <span className="fastread-after">{parts.after}</span>}
+                {context.after && (
+                  <span className="fastread-context" aria-hidden="true">
+                    &nbsp;{context.after}
+                  </span>
+                )}
+              </span>
             </div>
             <span className="fastread-marker fastread-marker-bottom" aria-hidden="true" />
           </div>

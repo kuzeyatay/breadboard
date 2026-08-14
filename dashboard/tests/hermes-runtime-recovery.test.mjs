@@ -357,6 +357,14 @@ test("Hermes recovers a correlated terminal result when the live completion fram
           payload: {
             text: "Deleted the files and verified the preserved file still exists.",
             status: "complete",
+            completed_tools: [
+              {
+                tool_id: "call-recovered-web",
+                name: "web_search",
+                success: true,
+                summary: "Found the supporting source",
+              },
+            ],
           },
         };
       }
@@ -401,22 +409,104 @@ test("Hermes recovers a correlated terminal result when the live completion fram
     instruction: "delete the listed files",
   })[Symbol.asyncIterator]();
   const recovered = [];
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     recovered.push((await events.next()).value);
   }
   await events.return();
 
   assert.deepEqual(
     recovered.map((event) => event.type),
-    ["assistant.delta", "assistant.completed", "session.status"],
+    ["tool.completed", "assistant.delta", "assistant.completed", "session.status"],
   );
-  assert.equal(recovered[0].messageId, "msg_turn-1");
-  assert.equal(recovered[2].payload.status, "idle");
+  assert.equal(recovered[0].payload.toolCallId, "call-recovered-web");
+  assert.equal(recovered[0].payload.success, true);
+  assert.equal(recovered[1].messageId, "msg_turn-1");
+  assert.equal(recovered[3].payload.status, "idle");
   const recoveryRequest = requests.find(
     (request) => request.method === "session.turn_result",
   );
   assert.equal(recoveryRequest.params.turn_id, "msg_turn-1");
   assert.equal(recoveryRequest.params.expected_user_text, "delete the listed files");
+});
+
+test("a terminal tool journal does not duplicate lifecycle frames already seen live", async () => {
+  const fakeClient = {
+    async request(method) {
+      if (method === "session.create") {
+        return { session_id: "live-tools", stored_session_id: "stored-tools" };
+      }
+      return { status: "streaming" };
+    },
+    async *events(_liveSessionId, _signal, onConnected) {
+      onConnected?.();
+      yield {
+        type: "tool.complete",
+        session_id: "live-tools",
+        payload: {
+          tool_id: "call-web-live",
+          name: "web_search",
+          success: true,
+          summary: "Found the source",
+        },
+      };
+      yield {
+        type: "message.complete",
+        session_id: "live-tools",
+        payload: {
+          turn_id: "msg_live-tools",
+          text: "Sourced answer.",
+          status: "complete",
+          completed_tools: [
+            {
+              tool_id: "call-web-live",
+              name: "web_search",
+              success: true,
+              summary: "Found the source",
+            },
+          ],
+        },
+      };
+    },
+    clearSession() {},
+  };
+  const adapter = new HermesRuntimeAdapter({
+    baseUrl: "http://127.0.0.1:9119",
+    sessionToken: "test",
+    requestTimeoutMs: 5_000,
+  });
+  adapter.client = fakeClient;
+  const session = await adapter.createSession({
+    surface: "dashboard_terminal",
+    sessionKey: "live-tool-dedupe-test",
+    filesystemMode: "restricted",
+  });
+  await adapter.startRun({
+    ...session,
+    agentName: session.agentName,
+    text: "research the claim",
+    messageId: "msg_live-tools",
+  });
+
+  const events = [];
+  for await (const event of adapter.streamSession({
+    externalSessionId: session.externalSessionId,
+    liveSessionId: session.liveSessionId,
+    workspaceKey: session.workspaceKey,
+    directory: session.directory,
+    messageId: "msg_live-tools",
+    instruction: "research the claim",
+  })) {
+    events.push(event);
+  }
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["tool.completed", "assistant.delta", "assistant.completed", "session.status"],
+  );
+  assert.equal(
+    events.filter((event) => event.type === "tool.completed").length,
+    1,
+  );
 });
 
 test("Hermes recovers a pending permission when its live approval frame is lost", async () => {

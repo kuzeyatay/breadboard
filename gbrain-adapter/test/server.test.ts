@@ -16,8 +16,11 @@ afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-async function boot(port: number, pgDir: string) {
-  return startAdapter({ port, secret: SECRET, pgDir, host: "127.0.0.1", embeddingProvider: "hash" });
+// Port 0 asks the OS for a free port and every caller reads `s.port` back, so
+// these tests can never collide with a Breadboard service that happens to be
+// running (7731 is the CAD service; the adapter itself owns 7717).
+async function boot(pgDir: string) {
+  return startAdapter({ port: 0, secret: SECRET, pgDir, host: "127.0.0.1", embeddingProvider: "hash" });
 }
 
 test("adapter refuses to start without a secret", async () => {
@@ -25,7 +28,7 @@ test("adapter refuses to start without a secret", async () => {
 });
 
 test("health is reachable and never leaks the secret or a path", async () => {
-  const s = await boot(7731, ":memory:");
+  const s = await boot(":memory:");
   const res = await fetch(`http://127.0.0.1:${s.port}/health`);
   const body = await res.json();
   expect(res.status).toBe(200);
@@ -36,7 +39,7 @@ test("health is reachable and never leaks the secret or a path", async () => {
 });
 
 test("requests without the secret are rejected", async () => {
-  const s = await boot(7732, ":memory:");
+  const s = await boot(":memory:");
   const res = await fetch(`http://127.0.0.1:${s.port}/search`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -49,7 +52,7 @@ test("requests without the secret are rejected", async () => {
 });
 
 test("missing scope fails closed at the HTTP boundary", async () => {
-  const s = await boot(7733, ":memory:");
+  const s = await boot(":memory:");
   const res = await fetch(`http://127.0.0.1:${s.port}/search`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${SECRET}` },
@@ -61,7 +64,7 @@ test("missing scope fails closed at the HTTP boundary", async () => {
 });
 
 test("errors never contain a stack, path, or secret", async () => {
-  const s = await boot(7734, ":memory:");
+  const s = await boot(":memory:");
   const res = await fetch(`http://127.0.0.1:${s.port}/search`, {
     method: "POST",
     headers: { authorization: `Bearer ${SECRET}` },
@@ -76,7 +79,7 @@ test("errors never contain a stack, path, or secret", async () => {
 
 test("end-to-end: register -> durable persistence across restart -> scoped query -> citation", async () => {
   const pgDir = path.join(tmpDir, "e2e-pglite");
-  const s1 = await boot(7735, pgDir);
+  const s1 = await boot(pgDir);
   const reg = await fetch(`http://127.0.0.1:${s1.port}/register-source`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${SECRET}` },
@@ -97,7 +100,7 @@ test("end-to-end: register -> durable persistence across restart -> scoped query
   await s1.stop(); // flush + close the PGLite dir
 
   // Reopen the SAME directory in a fresh process-like store: data must survive.
-  const s2 = await boot(7736, pgDir);
+  const s2 = await boot(pgDir);
   const search = await fetch(`http://127.0.0.1:${s2.port}/search`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${SECRET}` },

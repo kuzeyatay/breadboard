@@ -607,6 +607,24 @@ describe("Fix 2: ChatMock model repair", { skip }, () => {
     assert.ok(res.rounds.some((r) => r.provenance.some((p) => (p.modelFailureReason ?? "").includes("model timeout"))));
   });
 
+  test("active Learn mode never falls back to deterministic semantic repair", async () => {
+    const dir = freshCopy();
+    const pageRel = firstPage(dir)[0];
+    let finalizeRan = false;
+    const repair = makeCriticArtifactRepair({
+      modelRepair: () => null,
+      deterministicFinalize: () => { finalizeRan = true; },
+      allowDeterministicRepairs: false,
+    });
+    const issue = { id: "model-only", severity: "blocking", type: "repeated_opening", repairTarget: "unit_page", pagePath: pageRel, problem: "p", evidence: "e", expected: "x", suggestedRepair: "s" };
+    const outcome = await repair(dir, "test-2", criticIssuesToRepairRequests([issue]), { round: 1, issuesById: new Map([[issue.id, issue]]) });
+    assert.equal(finalizeRan, false);
+    const provenance = outcome.provenance.find((entry) => entry.targetPath === pageRel);
+    assert.deepEqual(provenance.executorAttempted, ["model"]);
+    assert.equal(provenance.executorUsed, "none");
+    assert.equal(provenance.changed, false);
+  });
+
   test("parseModelRepairOutput handles markdown and json targets", () => {
     assert.match(parseModelRepairOutput("```markdown\n---\ntitle: x\n---\n\nbody\n```", "learning/p.md").revisedMarkdown, /title: x/);
     assert.deepEqual(parseModelRepairOutput('{"a":1}', ".breadboard/visuals/v.json").revisedJson, { a: 1 });

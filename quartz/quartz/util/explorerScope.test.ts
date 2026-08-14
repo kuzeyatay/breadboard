@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { isVisibleGardenRootFolder } from "./explorerScope"
+import { isVisibleGardenRootEntry } from "./explorerScope"
 
 function folder(slugSegment: string, hasIndex = false) {
   return {
@@ -17,22 +17,35 @@ test("garden Explorer includes user-created root folders", () => {
     "module-vii-quantum-mechanics",
     "notes",
   ]) {
-    assert.equal(isVisibleGardenRootFolder(folder(name, true)), true, name)
+    assert.equal(isVisibleGardenRootEntry(folder(name, true)), true, name)
   }
 })
 
 test("garden Explorer keeps legacy Learning and Sources folders", () => {
-  assert.equal(isVisibleGardenRootFolder(folder("learning")), true)
-  assert.equal(isVisibleGardenRootFolder(folder("Sources")), true)
+  assert.equal(isVisibleGardenRootEntry(folder("learning")), true)
+  assert.equal(isVisibleGardenRootEntry(folder("Sources")), true)
 })
 
-test("garden Explorer hides internal folders and root files", () => {
+test("garden Explorer hides internal and unindexed folders", () => {
   for (const name of [".breadboard", "assets", "generated", "Internal", "static", "tags"]) {
-    assert.equal(isVisibleGardenRootFolder(folder(name, true)), false, name)
+    assert.equal(isVisibleGardenRootEntry(folder(name, true)), false, name)
   }
 
+  assert.equal(isVisibleGardenRootEntry(folder("empty-folder")), false)
+})
+
+test("garden Explorer includes notes stored directly at the garden root", () => {
   assert.equal(
-    isVisibleGardenRootFolder({ isFolder: false, slugSegment: "loose-note", data: {} }),
+    isVisibleGardenRootEntry({
+      isFolder: false,
+      slugSegment: "standard-negative-and-positive-feedback-transfer-functions",
+      data: { title: "Standard Negative and Positive Feedback Transfer Functions" },
+    }),
+    true,
+  )
+  assert.equal(isVisibleGardenRootEntry({ isFolder: false, slugSegment: "index", data: {} }), false)
+  assert.equal(
+    isVisibleGardenRootEntry({ isFolder: false, slugSegment: "missing-note", data: null }),
     false,
   )
 })

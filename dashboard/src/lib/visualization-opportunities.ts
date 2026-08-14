@@ -9,17 +9,18 @@ import {
 import type { ProposedLearningMap } from "./learn-utils.ts";
 import {
   deriveGardenVisualBudget,
-  planGardenVisualNecessity,
   saveVisualNecessityArtifacts,
 } from "./visual-necessity.ts";
 import type {
   ContractInteractiveVisualPlan,
   GardenVisualBudget,
   InteractiveVisualIntent,
+  InteractiveVisualOutputRepresentation,
   TeachingMediumPlan,
   VisualDecisionOverride,
   VisualNecessityDecision,
 } from "./visual-necessity-types.ts";
+import { persistedVisualizationControlContractProblems } from "./visualization-contract-validation.ts";
 import {
   TRUSTED_RENDERER_REGISTRY,
   trustedRenderer,
@@ -28,14 +29,7 @@ import {
 } from "./visualization-registry.ts";
 
 export type VisualizationInputType = "slider" | "number" | "select" | "toggle" | "button";
-export type VisualizationOutputRepresentation =
-  | "value"
-  | "chart"
-  | "diagram"
-  | "animation"
-  | "timeline"
-  | "table"
-  | "annotation";
+export type VisualizationOutputRepresentation = InteractiveVisualOutputRepresentation;
 
 export interface VisualizationOpportunityInput {
   id: string;
@@ -83,6 +77,8 @@ export interface VisualizationOpportunity {
   interactionGoal: VisualizationInteractionGoal;
   requiredInputs: VisualizationOpportunityInput[];
   requiredOutputs: VisualizationOpportunityOutput[];
+  /** Empty only when a typed, source-grounded control contract validates. */
+  controlContractProblems: string[];
   preferredRenderer?: string;
   requiresGeneratedModule: boolean;
   priority: "critical" | "high" | "medium" | "low";
@@ -175,29 +171,6 @@ function unitText(unit: LearningUnitContract): string {
     .join(" ");
 }
 
-function interactionGoalForUnit(unit: LearningUnitContract): VisualizationInteractionGoal {
-  const text = unitText(unit);
-  // A unit whose *role* is comparison is fundamentally a compare-cases
-  // interaction, even when its prose incidentally mentions temporal words
-  // ("signals over time"). Checking this before the time/step keyword rules keeps
-  // such units from being misrouted to a time-series renderer and then falling
-  // through to the generated-module path when no time renderer fits.
-  if (unit.role === "comparison" || /compare|versus|trade[- ]?off|alternative/i.test(text)) {
-    return "compare_cases";
-  }
-  if (/algorithm|step|sequence|procedure|derivation/i.test(text)) return "step_through_process";
-  if (/time|timeline|temporal|dynamic|training|convergence|trajectory|animation/i.test(text)) {
-    return "observe_change_over_time";
-  }
-  if (/network|hierarchy|structure|spatial|geometry|node|edge/i.test(text)) return "explore_structure";
-  if (unit.role === "mechanism" || /causal|feedback|mechanism|system/i.test(text)) {
-    return "simulate_system";
-  }
-  if (unit.role === "formula" || unit.sourceFormulas.length > 0) return "manipulate_variables";
-  if (/predict|boundary|optimization|hypothesis/i.test(text)) return "test_prediction";
-  return "inspect_relationship";
-}
-
 function priorityForUnit(unit: LearningUnitContract): VisualizationOpportunity["priority"] {
   const requirement = unit.interactiveVisualPlan?.requirement;
   if (requirement === "required") return "critical";
@@ -208,11 +181,6 @@ function priorityForUnit(unit: LearningUnitContract): VisualizationOpportunity["
 
 function inputId(label: string, index: number): string {
   return safeId(label).replace(/-/g, "_") || `input_${index + 1}`;
-}
-
-interface GroundedQuestionRelationship {
-  inputs: string[];
-  outputs: string[];
 }
 
 const GENERIC_VISUAL_CONTRACT_IDS = new Set([
@@ -236,90 +204,6 @@ function cleanQuestionPhrase(value: string): string {
     .trim();
 }
 
-/**
- * Extract only relationships that the learning contract states explicitly.
- * This is intentionally conservative: a missing match is a planning defect,
- * not permission to invent a generic slider called `step` or `parameter`.
- */
-function groundedRelationshipFromQuestion(question: string): GroundedQuestionRelationship {
-  const compactQuestion = question.replace(/\s+/g, " ").trim();
-  if (!compactQuestion) return { inputs: [], outputs: [] };
-
-  const changing = compactQuestion.match(
-    /\b(?:changing|varying|adjusting|increasing|decreasing)\s+(.+?)\s+(?:alters?|affects?|changes?|shapes?|influences?|controls?|determines?|modifies?|shifts?)\s+(.+?)(?:\s+over time)?[?.]?$/i,
-  );
-  if (changing) {
-    return {
-      inputs: [cleanQuestionPhrase(changing[1])].filter(Boolean),
-      outputs: [cleanQuestionPhrase(changing[2])].filter(Boolean),
-    };
-  }
-
-  const changesWith = compactQuestion.match(
-    /\b(?:how|why)\s+(?:does|do)\s+(.+?)\s+(?:change|vary|evolve|respond)\s+(?:with|as)\s+(.+?)[?.]?$/i,
-  );
-  if (changesWith) {
-    return {
-      inputs: [cleanQuestionPhrase(changesWith[2])].filter(Boolean),
-      outputs: [cleanQuestionPhrase(changesWith[1])].filter(Boolean),
-    };
-  }
-
-  const directRelationship = compactQuestion.match(
-    /\b(?:how|why)\s+(?:does|do|must|can)\s+(.+?)\s+(?:encodes?|generates?|produces?|determines?|acts?\s+like)\s+(.+?)(?=,\s*(?:and|while|but)\b|\?|$)/i,
-  );
-  if (directRelationship) {
-    return {
-      inputs: [cleanQuestionPhrase(directRelationship[1])].filter(Boolean),
-      outputs: [cleanQuestionPhrase(directRelationship[2])].filter(Boolean),
-    };
-  }
-
-  const motionAlongPath = compactQuestion.match(
-    /\bhow\s+does\s+.+?\s+when\s+(.+?)\s+(?:moves?|travels?|progresses?)\s+(along|through|across)\s+(.+?)[?.]?$/i,
-  );
-  if (motionAlongPath) {
-    const movingEntity = cleanQuestionPhrase(motionAlongPath[1]);
-    const preposition = motionAlongPath[2].toLowerCase();
-    const path = cleanQuestionPhrase(motionAlongPath[3]);
-    return {
-      inputs: movingEntity && path
-        ? [`${movingEntity} position ${preposition} ${path}`]
-        : [],
-      // The response is selected from the unit's explicit concepts below; the
-      // question's pre-"when" clause is not parsed into an invented quantity.
-      outputs: [],
-    };
-  }
-
-  const whenChanges = compactQuestion.match(
-    /\b(?:what happens to|how does)\s+(.+?)\s+when\s+(.+?)\s+(?:changes?|varies?|increases?|decreases?)[?.]?$/i,
-  );
-  if (whenChanges) {
-    return {
-      inputs: [cleanQuestionPhrase(whenChanges[2])].filter(Boolean),
-      outputs: [cleanQuestionPhrase(whenChanges[1])].filter(Boolean),
-    };
-  }
-
-  return { inputs: [], outputs: [] };
-}
-
-function explicitComparisonCases(unit: LearningUnitContract): string[] {
-  const question = unit.learningQuestion.replace(/\s+/g, " ").trim();
-  const versus = question.match(/\b(.+?)\s+(?:versus|vs\.?)\s+(.+?)(?:\?|\s+(?:under|when|across)\b)/i);
-  if (versus) {
-    return [cleanQuestionPhrase(versus[1]), cleanQuestionPhrase(versus[2])]
-      .filter(Boolean)
-      .slice(-2);
-  }
-  const between = question.match(/\b(?:difference|trade-?off)\s+between\s+(.+?)\s+and\s+(.+?)[?.]?$/i);
-  if (between) {
-    return [cleanQuestionPhrase(between[1]), cleanQuestionPhrase(between[2])].filter(Boolean);
-  }
-  return [];
-}
-
 export function requiredGeneratedVisualizationContractProblems(input: {
   opportunities: readonly VisualizationOpportunity[];
   decisions: readonly VisualizationRouteDecision[];
@@ -331,6 +215,11 @@ export function requiredGeneratedVisualizationContractProblems(input: {
   for (const opportunity of input.opportunities) {
     const route = routeByOpportunity.get(opportunity.id);
     if (opportunity.requirement !== "required" || route?.route !== "generated_module") continue;
+    if (opportunity.controlContractProblems.length > 0) {
+      problems.push(
+        `${opportunity.id}: required generated visualization needs a validated model-authored learner control contract (${opportunity.controlContractProblems.join("; ")})`,
+      );
+    }
     if (opportunity.requiredInputs.length === 0) {
       problems.push(
         `${opportunity.id}: required generated visualization has no source-grounded learner input; repair the learning-unit contract with a specific variable, case, or process position`,
@@ -366,82 +255,54 @@ export function requiredGeneratedVisualizationContractProblems(input: {
 }
 
 function requiredInputsForUnit(
-  unit: LearningUnitContract,
-  groundingUnit: LearningUnitContract = unit,
+  _unit: LearningUnitContract,
+  groundingUnit: LearningUnitContract = _unit,
 ): VisualizationOpportunityInput[] {
-  const declared = [
-    ...(groundingUnit.interactiveVisual?.learnerManipulates ?? []),
-    ...(groundingUnit.interactiveVisualPlan?.visualIntent?.learnerManipulates ?? []),
-  ];
-  const formulaTerms = unit.sourceFormulas.flatMap((formula) => formula.termsToDefine);
-  const questionRelationship = groundedRelationshipFromQuestion(unit.learningQuestion);
-  const labels = [...new Set([...declared, ...formulaTerms, ...questionRelationship.inputs])]
-    .map(cleanQuestionPhrase)
-    .filter((label) => label && !GENERIC_VISUAL_CONTRACT_LABEL_RE.test(label))
-    .slice(0, 8);
-  const comparisonCases = explicitComparisonCases(unit);
-  if (unit.role === "comparison" && labels.length === 0 && comparisonCases.length >= 2) {
-    return [
-      {
-        id: inputId(`${comparisonCases.join(" versus ")} case`, 0),
-        label: `${comparisonCases.join(" versus ")} case`,
-        type: "select",
-        options: comparisonCases,
-        defaultValue: comparisonCases[0],
-      },
-    ];
+  const controlContract = groundingUnit.interactiveVisualPlan?.controlContract ?? [];
+  if (controlContract.length > 0) {
+    return controlContract.flatMap((control, index): VisualizationOpportunityInput[] => {
+      if (control.kind === "select_case") {
+        const options = [...new Set((control.options ?? []).map(cleanQuestionPhrase).filter(Boolean))];
+        if (options.length < 2) return [];
+        return [{
+          id: inputId(control.label, index),
+          label: control.label,
+          type: "select",
+          options,
+          defaultValue: options[0],
+        }];
+      }
+      return [{
+        id: inputId(control.label, index),
+        label: control.label,
+        type: "slider",
+        min: 0,
+        max: 1,
+        step: 0.01,
+        defaultValue: 0.5,
+      }];
+    });
   }
-  // Do not synthesize a generic control. A required generated visualization
-  // without a source-grounded learner action is rejected by the planning gate
-  // below, where the contract can be repaired before generation spends tokens.
-  if (labels.length === 0) return [];
-  return labels.map((label, index) => ({
-    id: inputId(label, index),
-    label,
-    type: "slider",
-    min: 0,
-    max: 1,
-    step: 0.01,
-    defaultValue: 0.5,
-  }));
+  return [];
 }
 
 function requiredOutputsForUnit(
-  unit: LearningUnitContract,
-  goal: VisualizationInteractionGoal,
-  groundingUnit: LearningUnitContract = unit,
+  _unit: LearningUnitContract,
+  _goal: VisualizationInteractionGoal,
+  groundingUnit: LearningUnitContract = _unit,
 ): VisualizationOpportunityOutput[] {
-  const questionRelationship = groundedRelationshipFromQuestion(unit.learningQuestion);
-  const labels = [
-    ...questionRelationship.outputs,
-    groundingUnit.interactiveVisual?.expectedInsight,
-    groundingUnit.interactiveVisualPlan?.visualIntent?.expectedInsight,
-    unit.interactiveVisual?.expectedInsight,
-    unit.newConcepts[0],
-    unit.semanticConcepts?.find((concept) => concept.role === "primary")?.preferredLabel,
-    unit.title,
-  ]
-    .map((label) => cleanQuestionPhrase(label ?? ""))
-    .filter((label) => label && !GENERIC_VISUAL_CONTRACT_LABEL_RE.test(label));
-  const label = labels[0];
-  if (!label) return [];
-  return [{
-    id: inputId(label, 0),
-    label,
-    representation: outputRepresentation(goal, unit),
-  }];
-}
-
-function outputRepresentation(
-  goal: VisualizationInteractionGoal,
-  unit: LearningUnitContract,
-): VisualizationOutputRepresentation {
-  if (goal === "observe_change_over_time") return "animation";
-  if (goal === "step_through_process") return "timeline";
-  if (goal === "explore_structure" || goal === "simulate_system") return "diagram";
-  if (goal === "compare_cases" && unit.sourceTables.length > 0) return "table";
-  if (unit.role === "formula" || goal === "manipulate_variables") return "chart";
-  return "annotation";
+  const authoredObservable = groundingUnit.interactiveVisualPlan?.observable;
+  if (
+    authoredObservable &&
+    persistedVisualizationControlContractProblems(groundingUnit).length === 0
+  ) {
+    return [{
+      id: inputId(authoredObservable.label, 0),
+      label: authoredObservable.label,
+      representation: authoredObservable.representation,
+    }];
+  }
+  return [];
 }
 
 function subsectionTarget(map: ProposedLearningMap, unitId: string, fallbackTitle: string) {
@@ -487,7 +348,7 @@ export function analyzeVisualizationOpportunities(input: {
     const groundingUnit = groundingById.get(unit.id) ?? unit;
     const visualPlan = unit.interactiveVisualPlan!;
     const priority = priorityForUnit(unit);
-    const interactionGoal = interactionGoalForUnit(unit);
+    const interactionGoal = visualPlan.interactionGoal!;
     const target = subsectionTarget(input.learningMap, unit.id, unit.title);
     const conceptIds = [
       ...(unit.semanticConcepts ?? []).map((concept) => concept.slug),
@@ -513,13 +374,8 @@ export function analyzeVisualizationOpportunities(input: {
         explanation: `The original source figure remains available; any interactive reconstruction is illustrative and supports: ${figure.interpretationGoal}`,
       };
     });
-    const learningObjective =
-      unit.interactiveVisual?.expectedInsight || unit.learningQuestion || `Understand ${unit.title}`;
-    const pedagogicalReason =
-      unit.interactiveVisual?.whyStaticSourceFigureIsNotEnough ||
-      (priority === "low"
-        ? "The subsection is primarily explanatory and has no manipulable relationship, process, comparison, or structure that interaction would clarify."
-        : `Interaction lets the learner ${interactionGoal.replace(/_/g, " ")} instead of only reading a static explanation.`);
+    const learningObjective = visualPlan.visualIntent!.expectedInsight;
+    const pedagogicalReason = visualPlan.visualIntent!.whyStaticSourceFigureIsNotEnough;
     const fingerprint = stableHash({
       concepts: [...conceptIds].sort(),
       formulas: unit.sourceFormulas.map((formula) => formula.id).sort(),
@@ -538,17 +394,16 @@ export function analyzeVisualizationOpportunities(input: {
       sourceVisualIds: [...new Set(sourceVisualIds)],
       sourceVisualRelationships,
       learningObjective,
-      learnerQuestion: unit.learningQuestion || unit.title,
+      learnerQuestion: unit.learningQuestion,
       pedagogicalReason,
       interactionGoal,
       requiredInputs: requiredInputsForUnit(unit, groundingUnit),
       requiredOutputs: requiredOutputsForUnit(unit, interactionGoal, groundingUnit),
-      ...(unit.interactiveVisual?.visualType
-        ? { preferredRenderer: unit.interactiveVisual.visualType }
-        : {}),
+      controlContractProblems: persistedVisualizationControlContractProblems(groundingUnit),
+      preferredRenderer: "generated_module",
       requiresGeneratedModule: false,
       priority,
-      confidence: unit.interactiveVisual ? 0.95 : priority === "low" ? 0.65 : 0.82,
+      confidence: visualPlan.decision.confidence,
       similarityFingerprint: fingerprint,
       necessityDecision: visualPlan.decision,
       requirement: visualPlan.requirement,
@@ -578,11 +433,27 @@ function compatibilityScore(
 export function selectVisualizationRoutes(input: {
   opportunities: VisualizationOpportunity[];
   learningUnits: LearningUnitContract[];
+  /** The active Learn path uses model authority and never picks a renderer semantically. */
+  routingAuthority?: "legacy_heuristic" | "model_authored";
 }): { opportunities: VisualizationOpportunity[]; decisions: VisualizationRouteDecision[] } {
   const units = new Map(input.learningUnits.map((unit) => [unit.id, unit]));
   const firstByFingerprint = new Map<string, VisualizationOpportunity>();
   const decisions: VisualizationRouteDecision[] = [];
   const opportunities = input.opportunities.map((opportunity) => ({ ...opportunity }));
+
+  if (input.routingAuthority === "model_authored") {
+    for (const opportunity of opportunities) {
+      opportunity.requiresGeneratedModule = true;
+      decisions.push({
+        opportunityId: opportunity.id,
+        route: "generated_module",
+        reason:
+          opportunity.necessityDecision.reason ||
+          "The model-authored visual contract requires a generated interaction.",
+      });
+    }
+    return { opportunities, decisions };
+  }
 
   for (const opportunity of opportunities) {
     const duplicate = firstByFingerprint.get(opportunity.similarityFingerprint);
@@ -653,6 +524,7 @@ export function buildVisualizationPlan(input: {
   gardenId: string;
   learningMap: ProposedLearningMap;
   learningUnits: LearningUnitContract[];
+  groundingUnits?: LearningUnitContract[];
   necessityReviewCalls?: number;
   rejectedNecessityReviews?: number;
   visualDecisionOverrides?: VisualDecisionOverride[];
@@ -660,29 +532,47 @@ export function buildVisualizationPlan(input: {
   const hasPersistedNecessity =
     input.learningUnits.length > 0 &&
     input.learningUnits.every((unit) => unit.interactiveVisualPlan && unit.teachingMediumPlan);
-  const necessityPlan = hasPersistedNecessity
-    ? {
-        learningUnits: input.learningUnits,
-        decisions: input.learningUnits.map((unit) => unit.interactiveVisualPlan!.decision),
-        teachingMedia: input.learningUnits.map((unit) => unit.teachingMediumPlan!),
-        budget: deriveGardenVisualBudget(
-          input.learningUnits,
-          input.learningUnits.map((unit) => unit.interactiveVisualPlan!.decision),
-        ),
-        overrides: input.visualDecisionOverrides ?? [],
-      }
-    : planGardenVisualNecessity({
-        gardenId: input.gardenId,
-        learningUnits: input.learningUnits,
-      });
+  if (!hasPersistedNecessity) {
+    throw new Error(
+      "Visualization routing requires a validated model-authored necessity and teaching-medium decision for every learning unit.",
+    );
+  }
+  const incompleteModelContracts = input.learningUnits.flatMap((unit) => {
+    const plan = unit.interactiveVisualPlan!;
+    if (plan.requirement === "none") return [];
+    const problems: string[] = [];
+    if (!plan.interactionGoal) problems.push("missing model-authored interactionGoal");
+    if (!plan.visualIntent) problems.push("missing model-authored visualIntent");
+    if (!plan.observable) problems.push("missing model-authored observable");
+    problems.push(...persistedVisualizationControlContractProblems(unit));
+    return problems.map((problem) => `${unit.id}: ${problem}`);
+  });
+  if (incompleteModelContracts.length > 0) {
+    throw new Error(
+      `Visualization opportunity contract validation failed: ${[...new Set(incompleteModelContracts)].join("; ")}`,
+    );
+  }
+  const necessityPlan = {
+    learningUnits: input.learningUnits,
+    decisions: input.learningUnits.map((unit) => unit.interactiveVisualPlan!.decision),
+    teachingMedia: input.learningUnits.map((unit) => unit.teachingMediumPlan!),
+    // This is report metadata only. It does not select, promote, demote, or
+    // remove a visual; all such decisions are already present on the contract.
+    budget: deriveGardenVisualBudget(
+      input.learningUnits,
+      input.learningUnits.map((unit) => unit.interactiveVisualPlan!.decision),
+    ),
+    overrides: input.visualDecisionOverrides ?? [],
+  };
   const opportunities = analyzeVisualizationOpportunities({
     ...input,
     learningUnits: necessityPlan.learningUnits,
-    groundingUnits: input.learningUnits,
+    groundingUnits: input.groundingUnits ?? input.learningUnits,
   });
   const selected = selectVisualizationRoutes({
     opportunities,
     learningUnits: necessityPlan.learningUnits,
+    routingAuthority: "model_authored",
   });
   const opportunityContractProblems = requiredGeneratedVisualizationContractProblems(selected);
   if (opportunityContractProblems.length > 0) {
@@ -731,9 +621,13 @@ export function applyVisualizationRoutesToLearningUnits(
       };
     }
     const candidateType = route.selectedRenderer ?? visualPlan.decision.recommendedVisualType;
-    const selectedType = candidateType && visualTypeCompatibleWithUnit(candidateType, unit).ok
-      ? candidateType
-      : undefined;
+    const selectedType = route.route === "generated_module"
+      ? candidateType && visualTypeCompatibleWithUnit(candidateType, unit).ok
+        ? candidateType
+        : "generated_module"
+      : candidateType && visualTypeCompatibleWithUnit(candidateType, unit).ok
+        ? candidateType
+        : undefined;
     if (!selectedType) {
       return {
         ...unit,

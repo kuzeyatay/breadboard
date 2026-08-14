@@ -19,6 +19,8 @@ export interface WindowManagerOptions {
   welcomeGateMaxWaitMs?: number;
   dashboardPreloadGraceMs?: number;
   initialTheme?: BreadboardWindowTheme;
+  /** Where window recovery reports what it is doing. Silent when omitted. */
+  log?: (line: string) => void;
 }
 
 interface DashboardPreload {
@@ -31,6 +33,16 @@ interface DashboardPreload {
 export const DEFAULT_MINIMUM_STARTUP_VISIBLE_MS = 2_200;
 export const WINDOW_VISIBILITY_FALLBACK_MS = 1_500;
 export const LOCAL_PAGE_RECOVERY_DELAYS_MS = [250, 500, 1_000, 2_000, 5_000] as const;
+/**
+ * A retry only reschedules itself when the load reports back. A navigation that
+ * reports nothing at all therefore ends the loop and strands the recovery scene
+ * on screen — which is exactly what a restarting dev server can produce, since
+ * the listening socket can accept a connection that the process behind it is no
+ * longer in a position to answer. Nothing distinguishes that from a slow first
+ * compile except how long it lasts, so the ceiling is set well past even a cold
+ * route build: it exists to break deadlocks, never to interrupt progress.
+ */
+export const LOCAL_PAGE_LOAD_WATCHDOG_MS = 90_000;
 
 /** Back off quickly at first, then keep checking without spinning forever. */
 export function localPageRecoveryDelayMs(attempt: number): number {
@@ -70,6 +82,13 @@ export const DASHBOARD_PAINT_MAX_WAIT_MS = 60_000;
  * is discovered here rather than at the much longer outer cap.
  */
 export const FIRST_PAINT_PROBE_MAX_WAIT_MS = 12_000;
+/**
+ * The probe caps itself, but only if it runs: a renderer wedged on its main
+ * thread never reaches the timer it set. Recovery hands the window back on the
+ * far side of this wait, so an unsettled probe is the difference between a
+ * dashboard returning and a person staring at the reconnect scene forever.
+ */
+export const FIRST_PAINT_MAX_WAIT_MS = FIRST_PAINT_PROBE_MAX_WAIT_MS + 3_000;
 
 /**
  * Where a preloading window waits while it renders. Windows clamps this to
@@ -139,6 +158,8 @@ interface LocalPageRecoveryState {
   url: string;
   attempt: number;
   timer: ReturnType<typeof setTimeout> | null;
+  /** Armed for the duration of one load attempt; see the watchdog constant. */
+  watchdog: ReturnType<typeof setTimeout> | null;
   replacement: BrowserWindow | null;
   paintToken: number;
 }
@@ -185,6 +206,10 @@ export class WindowManager {
 
   rememberTheme(theme: BreadboardWindowTheme): void {
     this.currentTheme = theme;
+  }
+
+  private log(line: string): void {
+    this.options.log?.(`[window] ${line}`);
   }
 
   private installWindowShortcuts(window: BrowserWindow): void {
@@ -314,6 +339,7 @@ export class WindowManager {
       url: initialUrl,
       attempt: 0,
       timer: null,
+      watchdog: null,
       replacement: null,
       paintToken: 0,
     };
@@ -335,24 +361,31 @@ export class WindowManager {
       if (!this.isRecoverableLocalPage(url)) return;
       rememberAllowedUrl(url);
       state.attempt = 0;
+      this.clearLoadWatchdog(state);
       if (state.timer !== null) clearTimeout(state.timer);
       state.timer = null;
     });
     window.webContents.on(
       "did-fail-load",
       (_event, errorCode, _description, failedUrl, isMainFrame) => {
-        // -3 is an intentional aborted navigation, normally a redirect.
+        // -3 is an intentional aborted navigation, normally a redirect. The
+        // watchdog stays armed through one: the navigation it belongs to is
+        // still the attempt in flight, and something has to outlive a redirect
+        // that leads nowhere.
         if (!isMainFrame || errorCode === -3) return;
         rememberAllowedUrl(failedUrl);
+        this.clearLoadWatchdog(state);
         this.scheduleLocalPageRecovery(window, state);
       },
     );
     window.webContents.on("render-process-gone", () => {
+      this.clearLoadWatchdog(state);
       this.scheduleLocalPageRecovery(window, state);
     });
     window.once("closed", () => {
       if (state.timer !== null) clearTimeout(state.timer);
       state.timer = null;
+      this.clearLoadWatchdog(state);
       state.paintToken += 1;
       const replacement = state.replacement;
       state.replacement = null;
@@ -374,10 +407,47 @@ export class WindowManager {
     state.timer = setTimeout(() => {
       state.timer = null;
       if (window.isDestroyed()) return;
+      this.armLoadWatchdog(window, state, () =>
+        this.scheduleLocalPageRecovery(window, state),
+      );
       void window.loadURL(state.url).catch(() => {
+        this.clearLoadWatchdog(state);
         this.scheduleLocalPageRecovery(window, state);
       });
     }, delay);
+  }
+
+  private clearLoadWatchdog(state: LocalPageRecoveryState): void {
+    if (state.watchdog !== null) clearTimeout(state.watchdog);
+    state.watchdog = null;
+  }
+
+  /**
+   * Keep one load attempt accountable. Every other path out of a retry is an
+   * event the load itself raises; this is the one that covers a load raising
+   * nothing, by abandoning the navigation so its failure becomes observable.
+   */
+  private armLoadWatchdog(
+    window: BrowserWindow,
+    state: LocalPageRecoveryState,
+    retry: () => void,
+  ): void {
+    this.clearLoadWatchdog(state);
+    state.watchdog = setTimeout(() => {
+      state.watchdog = null;
+      if (window.isDestroyed()) return;
+      this.log(
+        `load of ${state.url} answered nothing for ${LOCAL_PAGE_LOAD_WATCHDOG_MS}ms; abandoning it and retrying`,
+      );
+      state.paintToken += 1;
+      try {
+        window.webContents.stop();
+      } catch {
+        // A window torn down between the check and the call. The retry below
+        // finds it destroyed and stops there.
+      }
+      retry();
+    }, LOCAL_PAGE_LOAD_WATCHDOG_MS);
   }
 
   /**
@@ -408,30 +478,45 @@ export class WindowManager {
       _failedUrl,
       isMainFrame,
     ) => {
-      // -3 is an intentional aborted navigation, normally a redirect.
+      // -3 is an intentional aborted navigation, normally a redirect. Leaving
+      // the watchdog armed through it is deliberate: the attempt is still in
+      // flight, and a redirect chain that dies quietly must not end the loop.
       if (!isMainFrame || errorCode === -3) return;
+      this.clearLoadWatchdog(state);
       state.paintToken += 1;
       retry();
     });
     replacement.webContents.on("render-process-gone", () => {
+      this.clearLoadWatchdog(state);
       state.paintToken += 1;
       retry();
     });
     replacement.webContents.on("did-finish-load", () => {
       const loadedUrl = replacement.webContents.getURL();
-      if (!this.isRecoverableLocalPage(loadedUrl)) return;
+      this.clearLoadWatchdog(state);
+      // Chromium finishes loading its own error document, so a finished load is
+      // not yet a recovered one. Retrying rather than returning is what keeps a
+      // dashboard that came back from being met with a window that stopped
+      // asking for it.
+      if (!this.isRecoverableLocalPage(loadedUrl)) {
+        state.paintToken += 1;
+        retry();
+        return;
+      }
       state.url = loadedUrl;
       state.attempt = 0;
       if (state.timer !== null) clearTimeout(state.timer);
       state.timer = null;
       const paintToken = ++state.paintToken;
       void this.waitForFirstPaint(replacement).then(() => {
-        if (
-          state.replacement !== replacement ||
-          state.paintToken !== paintToken ||
-          replacement.isDestroyed() ||
-          !this.isRecoverableLocalPage(replacement.webContents.getURL())
-        ) {
+        // A newer attempt owns the outcome now, and retired windows are somebody
+        // else's to finish. Both are handled elsewhere; leaving is correct.
+        if (state.replacement !== replacement || state.paintToken !== paintToken) return;
+        if (replacement.isDestroyed()) return;
+        if (!this.isRecoverableLocalPage(replacement.webContents.getURL())) {
+          // It wandered off the app while painting. Nothing else is armed for
+          // this attempt, so the retry has to be asked for here.
+          retry();
           return;
         }
         this.swapToRecoveredMainWindow(failedWindow, replacement, state);
@@ -440,6 +525,7 @@ export class WindowManager {
 
     // Replacing a crashed renderer with a file page gives immediate, reliable
     // feedback while the network-backed dashboard is unavailable.
+    this.log(`dashboard page lost; showing the reconnect scene and retrying ${state.url}`);
     void failedWindow
       .loadFile(this.recoveryHtmlPath(), {
         query: { theme: this.currentTheme },
@@ -458,7 +544,11 @@ export class WindowManager {
     state.timer = setTimeout(() => {
       state.timer = null;
       if (state.replacement !== replacement || replacement.isDestroyed()) return;
+      this.armLoadWatchdog(replacement, state, () =>
+        this.scheduleMainWindowReplacementLoad(state),
+      );
       void replacement.loadURL(state.url).catch(() => {
+        this.clearLoadWatchdog(state);
         this.scheduleMainWindowReplacementLoad(state);
       });
     }, delay);
@@ -488,6 +578,8 @@ export class WindowManager {
     state.paintToken += 1;
     if (state.timer !== null) clearTimeout(state.timer);
     state.timer = null;
+    this.clearLoadWatchdog(state);
+    this.log(`dashboard came back; handing the window over to ${state.url}`);
 
     // These listeners belong only to the offscreen retry phase. The adopted
     // window gets a fresh recovery state below; leaving both sets installed
@@ -612,15 +704,28 @@ export class WindowManager {
     return preload;
   }
 
-  /** Runs {@link FIRST_PAINT_PROBE} in the loaded page; never throws. */
-  private async waitForFirstPaint(window: BrowserWindow): Promise<void> {
+  /** Runs {@link FIRST_PAINT_PROBE} in the loaded page; never throws, always
+   *  settles. The probe's own cap lives inside the renderer, so it is no help
+   *  when the renderer is the thing that has stopped. */
+  private async waitForFirstPaint(
+    window: BrowserWindow,
+    maxWaitMs = FIRST_PAINT_MAX_WAIT_MS,
+  ): Promise<void> {
     if (window.isDestroyed()) return;
+    let ceiling: ReturnType<typeof setTimeout> | undefined;
     try {
-      await window.webContents.executeJavaScript(FIRST_PAINT_PROBE, true);
+      await Promise.race([
+        window.webContents.executeJavaScript(FIRST_PAINT_PROBE, true),
+        new Promise((resolve) => {
+          ceiling = setTimeout(resolve, maxWaitMs);
+        }),
+      ]);
     } catch {
       // Navigated away, closed, or refused the evaluation. The page is no worse
       // off than it was before this check existed, and stalling here would cost
       // the person the whole outer wait for nothing.
+    } finally {
+      if (ceiling) clearTimeout(ceiling);
     }
   }
 

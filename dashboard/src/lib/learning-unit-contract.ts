@@ -46,10 +46,12 @@ import type {
   ContractInteractiveVisualPlan,
   InteractiveVisualIntent,
   InteractiveVisualNecessity,
+  InteractiveVisualOutputRepresentation,
   PreferredTeachingMedium,
   TeachingMediumPlan,
   VisualNecessityDecision,
 } from "./visual-necessity-types.ts";
+import type { VisualizationInteractionGoal } from "./visualization-registry.ts";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -165,6 +167,17 @@ export interface LearningUnitContract {
 
   mustNotRepeat: string[];
   expectedWordRange: [number, number];
+
+  /**
+   * Section ownership is authored with the learning spine. The active Learn
+   * path projects these fields verbatim and never clusters units by role.
+   */
+  sectionPlan?: {
+    id: string;
+    title: string;
+    purpose: string;
+    singleSubsectionReason?: string;
+  };
 }
 
 /** One decision about where a single source artifact is taught. */
@@ -1329,6 +1342,35 @@ function normalizeInteractiveVisualType(value: string): string {
   return normalized;
 }
 
+function normalizeInteractiveVisualEvidence(raw: unknown): Array<{ anchor: string; quote: string }> {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    const anchor = compact(record.anchor);
+    const quote = compact(record.quote);
+    return anchor && quote ? [{ anchor, quote }] : [];
+  }).slice(0, 6);
+}
+
+function normalizeInteractiveVisualControls(raw: unknown) {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    const kind = compact(record.kind);
+    const label = compact(record.label);
+    if (!label || !["variable", "select_case", "process_position"].includes(kind)) return [];
+    const options = asStringArray(record.options).slice(0, 8);
+    return [{
+      kind: kind as "variable" | "select_case" | "process_position",
+      label,
+      ...(kind === "select_case" && options.length > 0 ? { options } : {}),
+      evidence: normalizeInteractiveVisualEvidence(record.evidence),
+    }];
+  }).slice(0, 3);
+}
+
 function normalizeInteractiveVisual(raw: unknown): InteractiveVisualContract | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const record = raw as Record<string, unknown>;
@@ -1376,6 +1418,25 @@ const TEACHING_MEDIA: readonly PreferredTeachingMedium[] = [
   "timeline",
   "prose",
   "no_additional_visual",
+];
+const INTERACTION_GOALS: readonly VisualizationInteractionGoal[] = [
+  "manipulate_variables",
+  "observe_change_over_time",
+  "compare_cases",
+  "step_through_process",
+  "explore_structure",
+  "test_prediction",
+  "inspect_relationship",
+  "simulate_system",
+];
+const OUTPUT_REPRESENTATIONS: readonly InteractiveVisualOutputRepresentation[] = [
+  "value",
+  "chart",
+  "diagram",
+  "animation",
+  "timeline",
+  "table",
+  "annotation",
 ];
 
 function normalizedScore(value: unknown): number {
@@ -1443,10 +1504,41 @@ function normalizeContractInteractiveVisualPlan(
     return undefined;
   }
   const visualIntent = normalizeInteractiveVisual(record.visualIntent) ?? fallbackIntent;
+  const controlContract = normalizeInteractiveVisualControls(record.controlContract);
+  const interactionGoal = compact(record.interactionGoal) as VisualizationInteractionGoal;
+  const observableRecord =
+    record.observable && typeof record.observable === "object"
+      ? (record.observable as Record<string, unknown>)
+      : undefined;
+  const observableLabel = compact(observableRecord?.label);
+  const observableRepresentation = compact(
+    observableRecord?.representation,
+  ) as InteractiveVisualOutputRepresentation;
+  const observableEvidence = normalizeInteractiveVisualEvidence(observableRecord?.evidence);
+  const expectedInsightEvidence = normalizeInteractiveVisualEvidence(record.expectedInsightEvidence);
   return {
     decision,
     requirement,
     ...(requirement !== "none" && visualIntent ? { visualIntent } : {}),
+    ...(requirement !== "none" && controlContract.length > 0 ? { controlContract } : {}),
+    ...(requirement !== "none" && INTERACTION_GOALS.includes(interactionGoal)
+      ? { interactionGoal }
+      : {}),
+    ...(requirement !== "none" &&
+    observableLabel &&
+    OUTPUT_REPRESENTATIONS.includes(observableRepresentation) &&
+    observableEvidence.length > 0
+      ? {
+          observable: {
+            label: observableLabel,
+            representation: observableRepresentation,
+            evidence: observableEvidence,
+          },
+        }
+      : {}),
+    ...(requirement !== "none" && expectedInsightEvidence.length > 0
+      ? { expectedInsightEvidence }
+      : {}),
     ...(compact(record.omissionReason) ? { omissionReason: compact(record.omissionReason) } : {}),
     ...(["covered", "uncovered", "unverified"].includes(compact(record.alternativeCoverage))
       ? {
@@ -1545,7 +1637,15 @@ export function dropIncompatibleInteractiveVisuals(
   return { units: sanitized, dropped };
 }
 
-export function normalizeLearningUnits(raw: unknown): LearningUnitContract[] {
+export interface NormalizeLearningUnitOptions {
+  /** Preserve only explicit model-authored semantics; never infer missing content. */
+  modelAuthoredOnly?: boolean;
+}
+
+export function normalizeLearningUnits(
+  raw: unknown,
+  options: NormalizeLearningUnitOptions = {},
+): LearningUnitContract[] {
   const list = Array.isArray(raw)
     ? raw
     : raw && typeof raw === "object"
@@ -1560,7 +1660,9 @@ export function normalizeLearningUnits(raw: unknown): LearningUnitContract[] {
   const usedIds = new Set<string>();
   list.forEach((item, index) => {
     const record = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
-    const title = compact(record.title ?? record.name) || `Learning unit ${index + 1}`;
+    const title =
+      compact(record.title ?? record.name) ||
+      (options.modelAuthoredOnly ? "" : `Learning unit ${index + 1}`);
     let id = compact(record.id) || `U${index + 1}`;
     id = id.replace(/[^A-Za-z0-9_.-]/g, "-");
     while (usedIds.has(id)) id = `${id}x`;
@@ -1569,7 +1671,9 @@ export function normalizeLearningUnits(raw: unknown): LearningUnitContract[] {
     const unit: LearningUnitContract = {
       id,
       title,
-      role: asRole(record.role),
+      role: options.modelAuthoredOnly
+        ? (compact(record.role).toLowerCase().replace(/[\s-]+/g, "_") as LearningUnitRole)
+        : asRole(record.role),
       learningQuestion: compact(record.learningQuestion ?? record.question),
       prerequisiteConcepts: asStringArray(record.prerequisiteConcepts ?? record.prerequisites),
       newConcepts: asStringArray(record.newConcepts ?? record.concepts),
@@ -1592,15 +1696,45 @@ export function normalizeLearningUnits(raw: unknown): LearningUnitContract[] {
         .map(normalizedKnowledgeClaim)
         .filter(Boolean) as KnowledgeClaimPlan[],
       mustNotRepeat: asStringArray(record.mustNotRepeat ?? record.avoid),
-      expectedWordRange: normalizeWordRange(record.expectedWordRange ?? record.wordRange),
+      expectedWordRange: options.modelAuthoredOnly
+        ? (() => {
+            const rawRange = record.expectedWordRange ?? record.wordRange;
+            if (!Array.isArray(rawRange) || rawRange.length < 2) return [0, 0] as [number, number];
+            const lo = Number(rawRange[0]);
+            const hi = Number(rawRange[1]);
+            return Number.isFinite(lo) && Number.isFinite(hi)
+              ? [Math.round(lo), Math.round(hi)] as [number, number]
+              : [0, 0] as [number, number];
+          })()
+        : normalizeWordRange(record.expectedWordRange ?? record.wordRange),
+      sectionPlan:
+        (record.sectionPlan ?? record.section) && typeof (record.sectionPlan ?? record.section) === "object"
+          ? (() => {
+              const section = (record.sectionPlan ?? record.section) as Record<string, unknown>;
+              const sectionId = compact(section.id);
+              const sectionTitle = compact(section.title);
+              const purpose = compact(section.purpose);
+              if (!sectionId && !sectionTitle && !purpose) return undefined;
+              return {
+                id: sectionId,
+                title: sectionTitle,
+                purpose,
+                ...(compact(section.singleSubsectionReason)
+                  ? { singleSubsectionReason: compact(section.singleSubsectionReason) }
+                  : {}),
+              };
+            })()
+          : undefined,
     };
-    units.push({
-      ...unit,
-      semanticConcepts: deriveSemanticConcepts(unit),
-      knowledgeClaims: deriveKnowledgeClaims(unit),
-    });
+    units.push(options.modelAuthoredOnly
+      ? unit
+      : {
+          ...unit,
+          semanticConcepts: deriveSemanticConcepts(unit),
+          knowledgeClaims: deriveKnowledgeClaims(unit),
+        });
   });
-  return reconcileLearningUnitConceptAliases(units).units;
+  return options.modelAuthoredOnly ? units : reconcileLearningUnitConceptAliases(units).units;
 }
 
 function asArray(value: unknown): unknown[] {
@@ -2068,6 +2202,50 @@ export function learningMapFromUnits(
   };
 }
 
+/**
+ * Project the model-authored spine into the learner map without clustering,
+ * title generation, purpose templates, or any other semantic fallback.
+ * Callers must run `validateLearningUnitContracts` with
+ * `requireModelAuthoredSections` first; this function still fails closed when
+ * invoked incorrectly so an incomplete contract can never become a page tree.
+ */
+export function learningMapFromModelAuthoredUnits(
+  units: LearningUnitContract[],
+  meta: {
+    gardenId: string;
+    title: string;
+    summary: string;
+    sourceOnly: boolean;
+    createdAt: string;
+    warnings?: string[];
+  },
+): ProposedLearningMap {
+  if (!meta.title.trim() || !meta.summary.trim()) {
+    throw new Error("Model-authored learning-map title and summary are required.");
+  }
+  const sectionProjection = modelAuthoredSectionGroups(units);
+  if (sectionProjection.problems.length > 0) {
+    throw new Error(
+      `Model-authored section contract is invalid: ${sectionProjection.problems.join("; ")}`,
+    );
+  }
+  const sections: LearningSectionPlan[] = sectionProjection.groups.map((group) => ({
+    title: group.title,
+    purpose: group.purpose,
+    sourceAnchors: [...new Set(group.units.flatMap((unit) => unit.sourceAnchors))],
+    subsections: group.units.map(subsectionFromUnit),
+  }));
+  return {
+    gardenId: meta.gardenId,
+    title: meta.title,
+    summary: meta.summary,
+    sections,
+    warnings: meta.warnings ?? [],
+    sourceOnly: meta.sourceOnly,
+    createdAt: meta.createdAt,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Inline source-figure placement (Fix 2)
 // ---------------------------------------------------------------------------
@@ -2146,6 +2324,67 @@ export interface ContractValidationOptions {
   artifactCount?: number;
   /** Minimum units expected for an artifact-rich source. */
   minUnitsForRichSource?: number;
+  /** Normal Learn planning requires every semantic field to come from the model. */
+  requireModelAuthoredSemantics?: boolean;
+  /** Normal Learn planning requires explicit section ownership and prose. */
+  requireModelAuthoredSections?: boolean;
+}
+
+interface ModelAuthoredSectionGroup {
+  id: string;
+  title: string;
+  purpose: string;
+  singleSubsectionReason?: string;
+  units: LearningUnitContract[];
+}
+
+function modelAuthoredSectionGroups(
+  units: readonly LearningUnitContract[],
+): { groups: ModelAuthoredSectionGroup[]; problems: string[] } {
+  const groups: ModelAuthoredSectionGroup[] = [];
+  const closedIds = new Set<string>();
+  const problems: string[] = [];
+  let current: ModelAuthoredSectionGroup | undefined;
+  for (const unit of units) {
+    const section = unit.sectionPlan;
+    if (!section?.id || !section.title || !section.purpose) {
+      problems.push(`unit "${unit.id}": missing model-authored section id, title, or purpose`);
+      continue;
+    }
+    if (!current || current.id !== section.id) {
+      if (current) closedIds.add(current.id);
+      if (closedIds.has(section.id)) {
+        problems.push(`section "${section.id}" is non-contiguous in the learning-unit order`);
+      }
+      current = { ...section, units: [] };
+      groups.push(current);
+    } else if (
+      current.title !== section.title ||
+      current.purpose !== section.purpose ||
+      (current.singleSubsectionReason ?? "") !== (section.singleSubsectionReason ?? "")
+    ) {
+      problems.push(`section "${section.id}" has inconsistent model-authored metadata across its units`);
+    }
+    current.units.push(unit);
+  }
+  const duplicateTitles = new Set<string>();
+  const seenTitles = new Set<string>();
+  for (const group of groups) {
+    const key = group.title.toLowerCase();
+    if (seenTitles.has(key)) duplicateTitles.add(group.title);
+    seenTitles.add(key);
+    if (group.units.length === 1 && !group.singleSubsectionReason) {
+      problems.push(`section "${group.id}" has one unit without a model-authored singleSubsectionReason`);
+    }
+    if (group.units.length > MAX_SUBS_PER_SECTION) {
+      problems.push(`section "${group.id}" has ${group.units.length} units; maximum is ${MAX_SUBS_PER_SECTION}`);
+    }
+  }
+  for (const title of duplicateTitles) problems.push(`duplicate model-authored section title "${title}"`);
+  if (groups.length < MIN_SECTIONS || groups.length > MAX_SECTIONS) {
+    problems.push(`model authored ${groups.length} sections; expected ${MIN_SECTIONS}-${MAX_SECTIONS}`);
+  }
+  return { groups, problems: [...new Set(problems)] };
 }
 
 /**
@@ -2178,9 +2417,14 @@ export function validateLearningUnitContracts(
     problems.push(`only ${units.length} learning units; a garden needs a real teaching sequence (>= 8)`);
   }
 
-  // Section-depth prediction from clustering.
-  const clusters = clusterUnitsIntoSections(units);
-  problems.push(...clusterDepthProblems(clusters));
+  if (options.requireModelAuthoredSections) {
+    problems.push(...modelAuthoredSectionGroups(units).problems);
+  } else {
+    // Legacy callers may still validate the old role-cluster projection. The
+    // active Learn path never enters this branch.
+    const clusters = clusterUnitsIntoSections(units);
+    problems.push(...clusterDepthProblems(clusters));
+  }
 
   // Interactive-visual uniqueness (Fix 4).
   for (const dup of duplicateInteractiveVisuals(units)) {
@@ -2213,14 +2457,36 @@ export function validateLearningUnitContracts(
 
   // Public concepts and readable claims are validated independently.
   for (const unit of units) {
+    if (options.requireModelAuthoredSemantics) {
+      if (!unit.title) problems.push(`unit "${unit.id}": missing model-authored title`);
+      if (!(LEARNING_UNIT_ROLES as readonly string[]).includes(unit.role)) {
+        problems.push(`unit "${unit.id}": invalid or missing model-authored role`);
+      }
+      if (!unit.learningQuestion) {
+        problems.push(`unit "${unit.id}": missing model-authored learningQuestion`);
+      }
+      if (
+        unit.expectedWordRange[0] <= 0 ||
+        unit.expectedWordRange[1] < unit.expectedWordRange[0]
+      ) {
+        problems.push(`unit "${unit.id}": missing or invalid model-authored expectedWordRange`);
+      }
+      if (!unit.semanticConcepts?.length) {
+        problems.push(`unit "${unit.id}": missing model-authored semanticConcepts`);
+      }
+    }
     for (const concept of unit.semanticConcepts ?? []) {
       if (!isValidPublicConceptSlug(normalizeConceptSlug(concept.slug))) {
         problems.push(`unit "${unit.id}": invalid or claim-shaped public concept "${concept.slug}"`);
       }
     }
     const concepts = semanticConceptsForUnit(unit);
-    if (!concepts.some((concept) => concept.role === "primary")) {
+    const primaryConcepts = concepts.filter((concept) => concept.role === "primary");
+    if (primaryConcepts.length === 0) {
       problems.push(`unit "${unit.id}": no primary semantic concept`);
+    }
+    if (options.requireModelAuthoredSemantics && primaryConcepts.length > 2) {
+      problems.push(`unit "${unit.id}": more than two primary semantic concepts`);
     }
     if (concepts.length > 5) problems.push(`unit "${unit.id}": more than five public concepts`);
     for (const concept of concepts) {

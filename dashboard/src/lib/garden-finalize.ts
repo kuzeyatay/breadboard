@@ -1051,6 +1051,7 @@ function replanContractVisualNecessity(
 function reconcileContractArtifactsAgainstSourceRegistry(
   gardenDir: string,
   report: FinalizeReport,
+  options: { preserveModelAuthoredVisuals?: boolean } = {},
 ): Map<string, PreservedContractVisualPlan> {
   const contract = readLearningUnitContract(gardenDir);
   if (!contract.foundPath || contract.units.length === 0) return new Map();
@@ -1066,7 +1067,9 @@ function reconcileContractArtifactsAgainstSourceRegistry(
     contract.assignments,
     registered,
   );
-  const compatible = dropIncompatibleInteractiveVisuals(reconciliation.units);
+  const compatible = options.preserveModelAuthoredVisuals
+    ? { units: reconciliation.units, dropped: [] as string[] }
+    : dropIncompatibleInteractiveVisuals(reconciliation.units);
   const compatibleById = new Map(compatible.units.map((unit) => [unit.id, unit]));
   const droppedVisualByUnit = new Map(
     reconciliation.units
@@ -1788,9 +1791,14 @@ export interface ReconciledAnchorUsage {
 export function finalizeGardenExport({
   gardenDir,
   gardenSlug,
+  preserveModelAuthoredContent = false,
 }: {
   gardenDir: string;
   gardenSlug: string;
+  /** Active Learn uses validation-only finalization: structural projection and
+   * hard gates may run, but learner prose, formulas, visuals, and contract
+   * semantics are never synthesized or rewritten by deterministic repair. */
+  preserveModelAuthoredContent?: boolean;
 }): FinalizeReport {
   const report: FinalizeReport = {
     changed: [],
@@ -1810,14 +1818,16 @@ export function finalizeGardenExport({
 
   // --- Pass A: export-tree cleanup (Internal/, numbered source folders) ------
   cleanExportTree(gardenDir, report);
-  const semanticMigration = migrateGardenSemantics(gardenDir, { gardenId: gardenSlug });
-  for (const rel of semanticMigration.changedFiles) {
-    if (!report.changed.includes(rel)) report.changed.push(rel);
-  }
-  if (semanticMigration.migrated) {
-    report.notes.push(
-      `migrated claim-as-tag metadata to semantic schema v${semanticMigration.schemaVersion}`,
-    );
+  if (!preserveModelAuthoredContent) {
+    const semanticMigration = migrateGardenSemantics(gardenDir, { gardenId: gardenSlug });
+    for (const rel of semanticMigration.changedFiles) {
+      if (!report.changed.includes(rel)) report.changed.push(rel);
+    }
+    if (semanticMigration.migrated) {
+      report.notes.push(
+        `migrated claim-as-tag metadata to semantic schema v${semanticMigration.schemaVersion}`,
+      );
+    }
   }
 
   // --- Load facts once -------------------------------------------------------
@@ -1835,19 +1845,25 @@ export function finalizeGardenExport({
   normalizeSourceWikilinks(gardenDir, report);
 
   // --- Pass D: stale caveat sanitation (visible + planning) ------------------
-  sanitizeStaleCaveatFiles(gardenDir, { laterPagesExist, formulaAnchorsExist, tableAnchorsExist, figureAnchorsExist }, report);
+  if (!preserveModelAuthoredContent) {
+    sanitizeStaleCaveatFiles(gardenDir, { laterPagesExist, formulaAnchorsExist, tableAnchorsExist, figureAnchorsExist }, report);
+  }
   repairLearnerNavigationSourceLinks(gardenDir, report);
 
   // Semantic decisions are made by the Learning Unit Contract repair loop before
   // finalization. The finalizer only performs deterministic export hygiene:
   // filesystem cleanup, source/link normalization, stale-caveat removal,
   // path/label alignment, validation reporting, and hard gating.
-  regroundFormulas({ gardenDir, ledger, learnerPages, report });
-  repairLearnerAcronymGrammar(learnerPages, report);
+  if (!preserveModelAuthoredContent) {
+    regroundFormulas({ gardenDir, ledger, learnerPages, report });
+    repairLearnerAcronymGrammar(learnerPages, report);
+  }
   repairSourceVisualImagePathCasing(gardenDir, learnerPages, report);
-  repairVisualAnchorRolesAndReasons(gardenDir, learnerPages, report);
-  repairSourceTextConceptAnchors(gardenDir, learnerPages, report);
-  synchronizePageVisualTextAnchors(learnerPages, report);
+  if (!preserveModelAuthoredContent) {
+    repairVisualAnchorRolesAndReasons(gardenDir, learnerPages, report);
+    repairSourceTextConceptAnchors(gardenDir, learnerPages, report);
+    synchronizePageVisualTextAnchors(learnerPages, report);
+  }
   pruneOrphanSemanticRepairProvenance(gardenDir, learnerPages, report);
 
   // --- Persist learner-page edits --------------------------------------------
@@ -1859,12 +1875,16 @@ export function finalizeGardenExport({
   }
   alignSectionFoldersWithTitles(gardenDir, report);
   repairSectionNavigationLabels(gardenDir, report);
-  repairSectionIndexProse(gardenDir, report);
-  repairOrphanLearnerPageUnitIds(gardenDir, readLearningUnitContract(gardenDir), report);
+  if (!preserveModelAuthoredContent) {
+    repairSectionIndexProse(gardenDir, report);
+    repairOrphanLearnerPageUnitIds(gardenDir, readLearningUnitContract(gardenDir), report);
+  }
   const finalLearnerPages = loadLearnerPages(gardenDir);
   const finalContract = readLearningUnitContract(gardenDir);
-  registerExistingTextAnchors(gardenDir, finalLearnerPages, new Map(finalContract.units.map((unit) => [unit.id, unit])), report);
-  synchronizeContractSourceAnchors(gardenDir, finalContract, finalLearnerPages, report);
+  if (!preserveModelAuthoredContent) {
+    registerExistingTextAnchors(gardenDir, finalLearnerPages, new Map(finalContract.units.map((unit) => [unit.id, unit])), report);
+    synchronizeContractSourceAnchors(gardenDir, finalContract, finalLearnerPages, report);
+  }
 
   // --- Pass I2: post-structure semantic reconciliation ------------------------
   // Section/page renames are complete above, so every path is now FINAL. The
@@ -1903,7 +1923,7 @@ export function finalizeGardenExport({
   // the source ledger, and Source Coverage are one rollback-backed projection.
   // This runs before the general final-state audit so the terminal gate is not
   // the first component to discover deterministic formula drift.
-  {
+  if (!preserveModelAuthoredContent) {
     const formula = reconcileFinalFormulaProjectionsDeterministic(gardenDir, gardenSlug, { strictMode: false });
     for (const rel of formula.changedFiles) if (!report.changed.includes(rel)) report.changed.push(rel);
     if (formula.changedFiles.length > 0) {
@@ -1924,7 +1944,7 @@ export function finalizeGardenExport({
   // ledger, Source Map caveats, repair provenance, worked-example labels) back
   // into agreement with it. Source Coverage is regenerated as a pure projection
   // of this state, so no report can drift from the final pages.
-  {
+  if (!preserveModelAuthoredContent) {
     const reconcile = reconcileFinalGardenState(gardenDir, gardenSlug);
     for (const rel of reconcile.changed) if (!report.changed.includes(rel)) report.changed.push(rel);
     for (const note of reconcile.notes) report.notes.push(note);
@@ -3082,6 +3102,8 @@ export async function repairLearningUnitsFromContract({
   gardenSlug,
   repairExecutor = "deterministic",
   modelRepair,
+  preserveModelAuthoredVisuals = false,
+  preserveModelAuthoredContent = false,
 }: {
   gardenDir: string;
   gardenSlug: string;
@@ -3089,11 +3111,24 @@ export async function repairLearningUnitsFromContract({
   repairExecutor?: RepairExecutorMode;
   /** Injected model executor. Required for the "model" modes; ignored otherwise. */
   modelRepair?: ModelRepairExecutor;
+  /** Active Learn plans keep the validated model visual contract immutable. */
+  preserveModelAuthoredVisuals?: boolean;
+  /** Skip preflight contract/source reconciliation that would silently mutate
+   * model-authored semantics before the model sees the validation failures. */
+  preserveModelAuthoredContent?: boolean;
 }): Promise<LearningUnitRepairRunReport> {
   const requestedAt = new Date().toISOString();
   const preflightRepairReport = emptyFinalizeReport();
-  const preservedVisualPlans = reconcileContractArtifactsAgainstSourceRegistry(gardenDir, preflightRepairReport);
-  replanContractVisualNecessity(gardenDir, gardenSlug, preservedVisualPlans);
+  const preservedVisualPlans = preserveModelAuthoredContent
+    ? new Map<string, PreservedContractVisualPlan>()
+    : reconcileContractArtifactsAgainstSourceRegistry(
+        gardenDir,
+        preflightRepairReport,
+        { preserveModelAuthoredVisuals },
+      );
+  if (!preserveModelAuthoredContent && !preserveModelAuthoredVisuals) {
+    replanContractVisualNecessity(gardenDir, gardenSlug, preservedVisualPlans);
+  }
   const reportForChecks = emptyFinalizeReport();
   const firstChecks = collectFinalizeChecks({ gardenDir, report: reportForChecks, includeReportSelfCheck: false });
   const requests = collectUnitRepairRequests({ gardenDir, checks: firstChecks });

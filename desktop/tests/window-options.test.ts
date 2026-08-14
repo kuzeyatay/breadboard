@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import {
@@ -15,6 +15,9 @@ import {
 import {
   DASHBOARD_PAINT_MAX_WAIT_MS,
   DEFAULT_MINIMUM_STARTUP_VISIBLE_MS,
+  FIRST_PAINT_MAX_WAIT_MS,
+  FIRST_PAINT_PROBE_MAX_WAIT_MS,
+  LOCAL_PAGE_LOAD_WATCHDOG_MS,
   LOCAL_PAGE_RECOVERY_DELAYS_MS,
   WELCOME_GATE_MAX_WAIT_MS,
   WINDOW_VISIBILITY_FALLBACK_MS,
@@ -23,6 +26,48 @@ import {
   localPageRecoveryDelayMs,
   remainingStartupVisibleMs,
 } from "../src/main/window-manager";
+
+/** A window fake with just enough surface for the recovery paths. */
+function fakeWindow(url: string) {
+  const webContents = new EventEmitter() as EventEmitter & {
+    getURL: () => string;
+    stop: () => void;
+    executeJavaScript: (code: string, gesture?: boolean) => Promise<unknown>;
+  };
+  webContents.getURL = () => url;
+  const stopped: string[] = [];
+  webContents.stop = () => {
+    stopped.push(webContents.getURL());
+  };
+  webContents.executeJavaScript = async () => true;
+  const loaded: string[] = [];
+  const files: string[] = [];
+  const window = Object.assign(new EventEmitter(), {
+    webContents,
+    stopped,
+    loaded,
+    files,
+    isDestroyed: () => false,
+    destroy: () => {},
+    // A navigation that answers nothing: no events, and a promise that never
+    // settles. This is the shape a restarting dev server can leave behind.
+    loadURL: (target: string) => {
+      loaded.push(target);
+      return new Promise<void>(() => {});
+    },
+    loadFile: async (file: string) => {
+      files.push(file);
+    },
+  });
+  return window;
+}
+
+/** Let queued promise callbacks run while the clock is mocked. */
+async function flush(): Promise<void> {
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve();
+  }
+}
 
 test("main window options enforce renderer isolation", () => {
   const options = mainWindowOptions(
@@ -93,6 +138,9 @@ test("a failed local page reload retries quickly and then settles into a bounded
     [-2, 0, 1, 2, 3, 4, 5, 99].map(localPageRecoveryDelayMs),
     [250, 250, 500, 1_000, 2_000, 5_000, 5_000, 5_000],
   );
+  // Well past a cold route compile: the watchdog breaks deadlocks, and a slow
+  // load that is still making progress must never be mistaken for one.
+  assert.equal(LOCAL_PAGE_LOAD_WATCHDOG_MS, 90_000);
 });
 
 test("a failed dashboard navigation reloads the last owned URL", async () => {
@@ -132,6 +180,121 @@ test("a failed dashboard navigation reloads the last owned URL", async () => {
 
   assert.deepEqual(loaded, [target]);
   window.emit("closed");
+});
+
+test("a navigation that answers nothing is abandoned instead of ending the retry loop", async () => {
+  const target = "http://127.0.0.1:3000/dashboard";
+  const manager = new WindowManager({
+    allowed: { origins: new Set(["http://127.0.0.1:3000"]) },
+    startupHtmlPath: "C:\\app\\startup\\index.html",
+    preloadPath: "C:\\app\\preload.js",
+  });
+  const window = fakeWindow("chrome-error://chromewebdata/");
+
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    (
+      manager as unknown as {
+        installLocalPageRecovery: (window: unknown, url: string) => void;
+      }
+    ).installLocalPageRecovery(window, target);
+    window.webContents.emit("did-fail-load", {}, -102, "Connection refused", target, true);
+
+    mock.timers.tick(LOCAL_PAGE_RECOVERY_DELAYS_MS[0]);
+    await flush();
+    assert.deepEqual(window.loaded, [target], "the first retry should have been attempted");
+
+    // The load reports neither success nor failure — the state the stranded
+    // reconnect scene was found in. Everything short of the watchdog is silent.
+    mock.timers.tick(LOCAL_PAGE_LOAD_WATCHDOG_MS - 1);
+    await flush();
+    assert.deepEqual(window.loaded, [target], "a load in progress must not be interrupted");
+
+    mock.timers.tick(1);
+    await flush();
+    assert.equal(window.stopped.length, 1, "the hung navigation should be abandoned");
+
+    mock.timers.tick(LOCAL_PAGE_RECOVERY_DELAYS_MS[1]);
+    await flush();
+    assert.deepEqual(window.loaded, [target, target], "the loop should still be asking");
+  } finally {
+    mock.timers.reset();
+    window.emit("closed");
+  }
+});
+
+test("a reconnecting window keeps asking after a load finishes on an error page", async () => {
+  const target = "http://127.0.0.1:3000/dashboard";
+  const manager = new WindowManager({
+    allowed: { origins: new Set(["http://127.0.0.1:3000"]) },
+    startupHtmlPath: "C:\\app\\startup\\index.html",
+    recoveryHtmlPath: "C:\\app\\startup\\recovery.html",
+    preloadPath: "C:\\app\\preload.js",
+  });
+  const failed = fakeWindow(target);
+  const replacement = fakeWindow("chrome-error://chromewebdata/");
+  const internals = manager as unknown as {
+    mainWindow: unknown;
+    buildWindow: () => unknown;
+    parkOffscreen: (window: unknown) => void;
+    installLocalPageRecovery: (window: unknown, url: string) => void;
+  };
+  internals.mainWindow = failed;
+  internals.buildWindow = () => replacement;
+  internals.parkOffscreen = () => {};
+
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    internals.installLocalPageRecovery(failed, target);
+    failed.webContents.emit("did-fail-load", {}, -102, "Connection refused", target, true);
+    await flush();
+    assert.deepEqual(
+      failed.files,
+      ["C:\\app\\startup\\recovery.html"],
+      "the visible window should show the reconnect scene",
+    );
+
+    mock.timers.tick(LOCAL_PAGE_RECOVERY_DELAYS_MS[0]);
+    await flush();
+    assert.deepEqual(replacement.loaded, [target]);
+
+    // Chromium finishes loading its own error document for a refused
+    // connection. Treating that as an outcome is what used to end the loop.
+    replacement.webContents.emit("did-finish-load");
+    await flush();
+    mock.timers.tick(LOCAL_PAGE_RECOVERY_DELAYS_MS[1]);
+    await flush();
+    assert.deepEqual(
+      replacement.loaded,
+      [target, target],
+      "an error document must not be mistaken for a recovered dashboard",
+    );
+  } finally {
+    mock.timers.reset();
+    failed.emit("closed");
+    replacement.emit("closed");
+  }
+});
+
+test("the first-paint probe cannot outlast a wedged renderer", async () => {
+  const manager = new WindowManager({
+    allowed: { origins: new Set() },
+    startupHtmlPath: "C:\\app\\startup\\index.html",
+    preloadPath: "C:\\app\\preload.js",
+  });
+  // The probe caps itself inside the page, so the ceiling around it only has to
+  // outlast that; a renderer too busy to run its own timer is what it is for.
+  assert.equal(FIRST_PAINT_MAX_WAIT_MS, FIRST_PAINT_PROBE_MAX_WAIT_MS + 3_000);
+
+  const window = fakeWindow("http://127.0.0.1:3000/dashboard");
+  window.webContents.executeJavaScript = () => new Promise<unknown>(() => {});
+  const waited = Date.now();
+  await (
+    manager as unknown as {
+      waitForFirstPaint: (window: unknown, maxWaitMs?: number) => Promise<void>;
+    }
+  ).waitForFirstPaint(window, 40);
+  assert.ok(Date.now() - waited < 1_000, "the wait should have been capped");
 });
 
 test("the dashboard waits behind the welcome screen", async () => {

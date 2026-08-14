@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
 import { scanClusterKnowledge } from "@/lib/knowledge";
+import { getNavbarShortcuts } from "@/lib/profile/navbar-shortcuts-store.ts";
 import { requireReadableClusterFromSlug } from "@/lib/server-auth";
 import PdfViewerClient from "./pdf-viewer-client";
 
@@ -67,6 +68,10 @@ export default async function PdfSourcePage({
   const data = await getPdfPageData(clusterSlug, slug);
   if (!data) notFound();
 
+  const userId = Number((session.user as { id?: string }).id);
+  const fastRead =
+    Number.isFinite(userId) && userId > 0 ? getNavbarShortcuts(userId).fastRead : false;
+
   return (
     <div className="h-screen overflow-hidden bg-gray-950 text-gray-100 flex flex-col">
       <PdfViewerClient
@@ -74,6 +79,7 @@ export default async function PdfSourcePage({
         documentSlug={slug}
         title={data.title}
         browserTitle={data.pdfFileName}
+        fastRead={fastRead}
       />
     </div>
   );

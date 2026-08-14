@@ -5,6 +5,7 @@ import {
   ArtifactStoreError,
   getArtifactForUser,
 } from "@/lib/hermes/artifact-store";
+import { getNavbarShortcuts } from "@/lib/profile/navbar-shortcuts-store.ts";
 import PdfViewerClient from "@/app/gardens/[clusterSlug]/pdf/[slug]/pdf-viewer-client";
 
 export const dynamic = "force-dynamic";
@@ -59,6 +60,7 @@ export default async function ArtifactPdfPage({
         browserTitle={artifact.filename}
         sourceUrl={sourceUrl}
         readOnly
+        fastRead={getNavbarShortcuts(userId).fastRead}
       />
     </div>
   );
