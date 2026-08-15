@@ -10,7 +10,7 @@
 // own menu — pick several chats, or clear the section — appears only on hover.
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { ActiveChatIcon, ChatHistoryLoading } from "./history-client";
+import { ActiveChatIcon, ChatHistoryLoading, UnreadChatDot } from "./history-client";
 import { ArtifactArchiveIcon } from "./artifact-panel";
 import { CHAT_HIGHLIGHTS, chatHighlight } from "@/lib/conversations/highlights";
 
@@ -24,6 +24,8 @@ export interface TerminalSidebarChat {
   pinned: boolean;
   /** A palette slug from lib/conversations/highlights, or null for unmarked. */
   highlight: string | null;
+  /** Finished while the user was in another chat, and still unread. */
+  unread: boolean;
 }
 
 /** What the rail is doing to Recents: nothing, picking chats, or marking them. */
@@ -513,8 +515,12 @@ function ChatRow({
           </span>
         </span>
       </button>
+      {/* One spot for the whole life of a run: the spinner while it works, then
+          the dot until someone reads what came back. */}
       {chat.active ? (
         <ActiveChatIcon label={`${chat.title} is running`} className="mr-1 h-3.5 w-3.5" />
+      ) : chat.unread ? (
+        <UnreadChatDot label={`${chat.title} finished — unread`} className="mr-2 h-2 w-2" />
       ) : null}
       <span
         className={`mr-1 shrink-0 items-center gap-0.5 ${

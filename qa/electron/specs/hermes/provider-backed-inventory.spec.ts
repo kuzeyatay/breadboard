@@ -4,6 +4,7 @@ import { expect, test } from "../../fixtures";
 import type { Page } from "@playwright/test";
 import {
   assertGardenWorkspace,
+  assertAuthenticatedDashboard,
   closeTerminal,
   createGarden,
   openGardenWorkspace,
@@ -41,7 +42,7 @@ test("Hermes provider-backed scenario inventory", async ({ qa }) => {
   const run = async (
     id: string,
     action: () => Promise<ScenarioProbeOutcome>,
-    timeoutMs = 90_000,
+    timeoutMs = 180_000,
   ): Promise<void> => {
     const attempt = await qa.scenarios.probe(info, id, action, {
       timeoutMs,
@@ -148,6 +149,7 @@ test("Hermes provider-backed scenario inventory", async ({ qa }) => {
       name: "Edit message and create a branch",
       exact: true,
     }).last();
+    const baseline = await visibleAssistantText(page);
     if (!(await edit.isVisible().catch(() => false))) {
       return blockedWithoutDependency("The real Garden Chat branch/edit control was not visible.");
     }
@@ -156,7 +158,7 @@ test("Hermes provider-backed scenario inventory", async ({ qa }) => {
     await expect(editor).toBeVisible({ timeout: 20_000 });
     await editor.fill("Reply with exactly BRANCH_E2E_OK.");
     await page.getByRole("button", { name: "Save & send", exact: true }).click();
-    const turn = await waitForAssistantMarkerResult(page, "BRANCH_E2E_OK", 60_000);
+    const turn = await waitForAssistantMarkerResult(page, "BRANCH_E2E_OK", 60_000, baseline);
     return turn.completed
       ? { status: "PASS", actual: turn.assistantText }
       : blocked(turn, "Edited branch did not produce a completed assistant response.");
@@ -170,30 +172,40 @@ test("Hermes provider-backed scenario inventory", async ({ qa }) => {
       120_000,
     );
     if (!turn.completed) return blocked(turn, "Artifact-generation turn did not complete.");
-    const artifactText = page.getByText("HERMES_ARTIFACT_OK", { exact: false }).last();
-    const artifactVisible = await artifactText.isVisible().catch(() => false);
+    const artifactCard = page.locator(".bb-neu-artifact-card").filter({
+      hasText: "hermes-e2e-artifact",
+    });
+    const artifactVisible = await artifactCard.first().isVisible().catch(() => false);
     return artifactVisible
       ? { status: "PASS", actual: "Artifact content was visible in the real artifact/chat UI." }
       : failProduct("The assistant completed, but no artifact content/card was visible to open.");
   }, 150_000);
 
   await run("artifact-refresh-restart-persistence", async () => {
-    const visible = await page.getByText("HERMES_ARTIFACT_OK", { exact: false }).last().isVisible().catch(() => false);
+    const visible = await page.locator(".bb-neu-artifact-card").filter({
+      hasText: "hermes-e2e-artifact",
+    }).first().isVisible().catch(() => false);
     if (!visible) return blockedWithoutDependency("No completed artifact was available for persistence checks.");
     await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
     await assertGardenWorkspace(page, gardenA, [], 120_000);
-    return (await page.getByText("HERMES_ARTIFACT_OK", { exact: false }).last().isVisible().catch(() => false))
+    return (await page.locator(".bb-neu-artifact-card").filter({
+      hasText: "hermes-e2e-artifact",
+    }).first().isVisible().catch(() => false))
       ? { status: "PASS", actual: "Artifact content remained visible after renderer reload." }
       : failProduct("Artifact content was lost after renderer reload.");
   });
 
   await run("terminal-command-completion", async () => {
+    if (new URL(page.url()).pathname !== "/dashboard") {
+      await page.getByRole("link", { name: "Back to dashboard", exact: true }).click();
+    }
     await openTerminal(page, 60_000);
     const composer = page.getByPlaceholder(/Ask anything across your gardens/).first();
     await expect(composer).toBeEditable({ timeout: 60_000 });
+    const baseline = await visibleAssistantText(page);
     await composer.fill("Run the safe command `echo HERMES_TERMINAL_OK` in the isolated QA workspace and reply with exactly TERMINAL_COMMAND_OK.");
     await page.getByRole("button", { name: "Send", exact: true }).last().click();
-    const turn = await waitForAssistantMarkerResult(page, "TERMINAL_COMMAND_OK", 120_000);
+    const turn = await waitForAssistantMarkerResult(page, "TERMINAL_COMMAND_OK", 120_000, baseline);
     return turn.completed && turn.assistantText.includes("HERMES_TERMINAL_OK")
       ? { status: "PASS", actual: turn.assistantText }
       : blocked(turn, "Terminal did not produce a completed safe command result.");
@@ -204,7 +216,7 @@ test("Hermes provider-backed scenario inventory", async ({ qa }) => {
     if (!marker) return blockedWithoutDependency("No completed Terminal task was available to refresh.");
     await closeTerminal(page, 60_000);
     await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
-    await assertGardenWorkspace(page, gardenA, [], 120_000);
+    await assertAuthenticatedDashboard(page, undefined, 120_000);
     return { status: "PASS", actual: "Terminal task completed before renderer refresh; workspace remained usable." };
   });
 
@@ -225,9 +237,10 @@ test("Hermes provider-backed scenario inventory", async ({ qa }) => {
   await run("terminal-error-recovery", async () => {
     const composer = page.getByPlaceholder(/Ask anything across your gardens/).first();
     if (!(await composer.isVisible().catch(() => false))) return blockedWithoutDependency("Terminal surface was not open.");
+    const baseline = await visibleAssistantText(page);
     await composer.fill("Run the harmless nonexistent command hermes_qa_command_that_does_not_exist, report the error, then reply with exactly TERMINAL_ERROR_RECOVERED.");
     await page.getByRole("button", { name: "Send", exact: true }).last().click();
-    const turn = await waitForAssistantMarkerResult(page, "TERMINAL_ERROR_RECOVERED", 120_000);
+    const turn = await waitForAssistantMarkerResult(page, "TERMINAL_ERROR_RECOVERED", 120_000, baseline);
     return turn.completed
       ? { status: "PASS", actual: turn.assistantText }
       : blocked(turn, "Terminal error recovery did not complete in the renderer.");
@@ -235,6 +248,9 @@ test("Hermes provider-backed scenario inventory", async ({ qa }) => {
 
   await run("chat-cancel-and-recover", async () => {
     await closeTerminal(page, 60_000).catch(() => undefined);
+    if (new URL(page.url()).pathname !== new URL(gardenA.workspaceHref, page.url()).pathname) {
+      await openGardenWorkspace(page, gardenA);
+    }
     const composer = page.getByPlaceholder(/Ask about your documents/).first();
     await expect(composer).toBeEditable({ timeout: 60_000 });
     await composer.fill("Write a very long harmless explanation of why a disposable QA run is isolated, and keep streaming until stopped.");
@@ -312,17 +328,40 @@ async function sendGardenTurn(
   const composer = page.getByPlaceholder(/Ask about your documents/).first();
   await expect(composer).toBeVisible({ timeout: 30_000 });
   await expect(composer).toBeEditable({ timeout: 120_000 });
+  const baseline = await visibleAssistantText(page);
   await composer.fill(prompt);
+  const persisted = page.waitForResponse(
+    (response) => {
+      const pathname = new URL(response.url()).pathname;
+      return response.request().method() === "PATCH" &&
+        /^\/api\/chat-sessions\/\d+$/.test(pathname) &&
+        response.ok();
+    },
+    { timeout: Math.max(timeoutMs, 120_000) },
+  );
   await page.getByRole("button", { name: "Send", exact: true }).last().click();
-  return waitForTurn(page, prompt, criterion, timeoutMs);
+  const turn = await waitForTurn(page, prompt, criterion, timeoutMs, baseline);
+  if (turn.completed) {
+    try {
+      await persisted;
+    } catch {
+      return {
+        ...turn,
+        completed: false,
+        failureText: "Assistant marker appeared before the chat transcript PATCH completed.",
+      };
+    }
+  }
+  return turn;
 }
 
 async function waitForAssistantMarkerResult(
   page: Page,
   marker: string,
   timeoutMs: number,
+  baseline = "",
 ): Promise<TurnResult> {
-  return waitForTurn(page, marker, (text) => text.includes(marker), timeoutMs);
+  return waitForTurn(page, marker, (text) => text.includes(marker), timeoutMs, baseline);
 }
 
 async function waitForTurn(
@@ -330,6 +369,7 @@ async function waitForTurn(
   prompt: string,
   criterion: (assistantText: string) => boolean,
   timeoutMs: number,
+  baseline = "",
 ): Promise<TurnResult> {
   const deadline = Date.now() + timeoutMs;
   let assistantText = "";
@@ -341,7 +381,10 @@ async function waitForTurn(
     userMessageVisible = await page.locator(".neu-chat-message-user").filter({ hasText: prompt }).count().then((count) => count > 0).catch(() => false);
     const composer = page.getByPlaceholder(/Ask about your documents|Ask anything across your gardens/).first();
     const composerUsable = await composer.isEnabled().catch(() => false);
-    if (criterion(assistantText)) return { completed: true, assistantText, failureText, userMessageVisible, composerUsable };
+    const delta = assistantText.startsWith(baseline)
+      ? assistantText.slice(baseline.length).trim()
+      : assistantText;
+    if (criterion(delta)) return { completed: true, assistantText: delta, failureText, userMessageVisible, composerUsable };
     if (failureText && composerUsable) return { completed: false, assistantText, failureText, userMessageVisible, composerUsable };
     await delay(250);
   }
@@ -352,6 +395,13 @@ async function waitForTurn(
 async function waitForAssistantMarker(page: Page, marker: string, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    const exact = page.getByText(marker, { exact: true }).first();
+    if (await exact.isVisible().catch(() => false)) {
+      const isUser = await exact
+        .evaluate((node) => Boolean(node.closest(".neu-chat-message-user")))
+        .catch(() => true);
+      if (!isUser) return true;
+    }
     if ((await visibleAssistantText(page)).includes(marker)) return true;
     await delay(250);
   }

@@ -5,6 +5,13 @@ import test from "node:test";
 import { searchConversations, conversationSearchTerms } from "../src/lib/conversations/search.ts";
 import { chatHighlight, isChatHighlight } from "../src/lib/conversations/highlights.ts";
 import {
+  chatActivityById,
+  nextUnreadChats,
+  readUnreadChats,
+  sameChatIds,
+  writeUnreadChats,
+} from "../src/lib/conversations/unread.ts";
+import {
   collectUploads,
   dataUrlByteLength,
   formatUploadSize,
@@ -18,6 +25,7 @@ const source = (relativePath) =>
 
 const sidebar = source("../src/app/components/hermes/terminal-sidebar.tsx");
 const terminal = source("../src/app/components/hermes/dashboard-agent-terminal.tsx");
+const historyClient = source("../src/app/components/hermes/history-client.tsx");
 const searchDialog = source("../src/app/components/hermes/chat-search-dialog.tsx");
 const uploadsPanel = source("../src/app/components/hermes/uploads-panel.tsx");
 const scheduledPanel = source("../src/app/components/hermes/terminal-scheduled-panel.tsx");
@@ -269,6 +277,158 @@ test("highlighting is a pen kept in hand, and a repeated color lifts the mark", 
   assert.match(terminal, /highlight\?: string \| null/);
   assert.match(terminal, /onHighlightChat=\{\(chat, highlight\) =>/);
   assert.match(terminal, /\{ highlight \},[\s\S]{0,80}"This chat could not be highlighted\."/);
+});
+
+test("a chat that finishes while the user is elsewhere is marked unread", () => {
+  // The user is reading conv_b while conv_a is still running.
+  const running = [
+    { id: "conv_a", active: true },
+    { id: "conv_b", active: false },
+  ];
+  const seen = chatActivityById(running);
+
+  const finished = [
+    { id: "conv_a", active: false },
+    { id: "conv_b", active: false },
+  ];
+  const unread = nextUnreadChats({
+    unread: new Set(),
+    previousActive: seen,
+    chats: finished,
+    viewingChatId: "conv_b",
+  });
+  assert.deepEqual([...unread], ["conv_a"]);
+
+  // It survives the refreshes that follow, because the mark is state, not an
+  // event: the chat stays finished and stays unread.
+  const later = nextUnreadChats({
+    unread,
+    previousActive: chatActivityById(finished),
+    chats: finished,
+    viewingChatId: "conv_b",
+  });
+  assert.deepEqual([...later], ["conv_a"]);
+
+  // Opening it is what reads it.
+  const opened = nextUnreadChats({
+    unread: later,
+    previousActive: chatActivityById(finished),
+    chats: finished,
+    viewingChatId: "conv_a",
+  });
+  assert.deepEqual([...opened], []);
+});
+
+test("the dot is raised on the edge, so a reload cannot mark every finished chat", () => {
+  // Nothing was ever seen running here: this is a first paint, or a reload.
+  const first = nextUnreadChats({
+    unread: new Set(),
+    previousActive: new Map(),
+    chats: [
+      { id: "conv_a", active: false },
+      { id: "conv_b", active: false },
+    ],
+    viewingChatId: null,
+  });
+  assert.deepEqual([...first], []);
+
+  // A run that finishes in the open chat while the dock is showing it is read
+  // as it lands; the same run finishing with the dock shut is not.
+  const running = chatActivityById([{ id: "conv_a", active: true }]);
+  const done = [{ id: "conv_a", active: false }];
+  assert.deepEqual(
+    [...nextUnreadChats({ unread: new Set(), previousActive: running, chats: done, viewingChatId: "conv_a" })],
+    [],
+  );
+  assert.deepEqual(
+    [...nextUnreadChats({ unread: new Set(), previousActive: running, chats: done, viewingChatId: null })],
+    ["conv_a"],
+  );
+});
+
+test("unread ids are pruned against a loaded list, never against an unloaded one", () => {
+  const unread = new Set(["conv_a", "conv_gone"]);
+  // A list that came back without conv_gone: it was deleted elsewhere.
+  assert.deepEqual(
+    [
+      ...nextUnreadChats({
+        unread,
+        previousActive: new Map(),
+        chats: [{ id: "conv_a", active: false }],
+        viewingChatId: null,
+      }),
+    ],
+    ["conv_a"],
+  );
+  // An empty list is an unloaded one far more often than it is a user with no
+  // chats, so the first render cannot wipe what was restored from storage.
+  assert.deepEqual(
+    [...nextUnreadChats({ unread, previousActive: new Map(), chats: [], viewingChatId: null })],
+    ["conv_a", "conv_gone"],
+  );
+
+  assert.equal(sameChatIds(new Set(["a", "b"]), new Set(["b", "a"])), true);
+  assert.equal(sameChatIds(new Set(["a"]), new Set(["a", "b"])), false);
+});
+
+test("unread is reading state for one browser, kept in localStorage", () => {
+  const store = new Map();
+  const storage = {
+    getItem: (key) => store.get(key) ?? null,
+    setItem: (key, value) => store.set(key, value),
+  };
+  writeUnreadChats(storage, new Set(["conv_a", "conv_b"]));
+  assert.deepEqual([...readUnreadChats(storage)], ["conv_a", "conv_b"]);
+
+  // A corrupted or foreign entry costs the dot, never the rail.
+  store.set("breadboard:terminal:unread-chats", "{not json");
+  assert.deepEqual([...readUnreadChats(storage)], []);
+  store.set("breadboard:terminal:unread-chats", JSON.stringify(["conv_a", 7, null]));
+  assert.deepEqual([...readUnreadChats(storage)], ["conv_a"]);
+  assert.deepEqual([...readUnreadChats({ getItem: () => null })], []);
+});
+
+test("the row's one status spot runs spinner, then dot, then nothing", () => {
+  // The dot takes the spinner's place rather than sitting beside it, so a row
+  // never claims to be working and waiting at once.
+  assert.match(
+    sidebar,
+    /\{chat\.active \? \([\s\S]{0,200}<ActiveChatIcon[\s\S]{0,200}\) : chat\.unread \? \([\s\S]{0,200}<UnreadChatDot/,
+  );
+  assert.match(sidebar, /unread: boolean;/);
+  assert.match(terminal, /unread: unreadChats\.has\(item\.id\)/);
+
+  // Breadboard's pale green — the dock handle's color — because this is a
+  // "there is something here", not a warning.
+  assert.match(historyClient, /export function UnreadChatDot/);
+  assert.match(historyClient, /bg-\[#A9C1B1\]/);
+
+  // Read means on screen: the open chat only counts while the dock shows it.
+  assert.match(terminal, /const viewingChatId = bodyMounted \? session\.sessionId : null;/);
+  // The previous activity map is captured before it is replaced — a state
+  // updater runs during the next render, by which time the ref would already
+  // hold the snapshot being compared against.
+  assert.match(
+    terminal,
+    /const previousActive = chatActivity\.current;\s*chatActivity\.current = chatActivityById\(history\);/,
+  );
+  // Deleting a chat takes its dot with it: pruning deliberately does nothing
+  // against an empty list, which is what deleting the last chat produces.
+  assert.match(terminal, /forgetUnreadChats\(\[item\.id\]\)/);
+  assert.match(terminal, /forgetUnreadChats\(deleted\)/);
+});
+
+test("the dock bar carries the rollup, so a shut terminal still says something landed", () => {
+  assert.match(
+    terminal,
+    /const unreadCount = sidebarChats\.filter\(\(chat\) => chat\.unread && !chat\.active\)\.length;/,
+  );
+  // Open, it sits beside the title with its count, so it cannot be read as a
+  // second runtime light; shut, the bar is the button, so the count is spoken
+  // through the button's own label.
+  assert.match(terminal, /\{unreadCount > 0 \? \([\s\S]{0,400}<UnreadChatDot label=\{unreadLabel\}/);
+  assert.match(terminal, /aria-label=\{isOpen \? undefined : `Open terminal\$\{unreadSuffix\}`\}/);
+  assert.match(terminal, /const unreadSuffix = unreadCount > 0 \? ` — \$\{unreadLabel\}` : "";/);
 });
 
 test("search finds a chat by an exact word and by a description of it", () => {
