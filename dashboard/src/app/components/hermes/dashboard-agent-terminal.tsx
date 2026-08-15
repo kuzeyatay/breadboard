@@ -24,7 +24,18 @@ import ArtifactPanel, {
   ARTIFACT_REVISE_EVENT,
 } from "./artifact-panel";
 import GBrainStatusBadge from "./gbrain-status-badge";
-import { chatSessionIsActive, deleteChatSession } from "./history-client";
+import {
+  chatSessionIsActive,
+  deleteChatSession,
+  UnreadChatDot,
+} from "./history-client";
+import {
+  chatActivityById,
+  nextUnreadChats,
+  readUnreadChats,
+  sameChatIds,
+  writeUnreadChats,
+} from "@/lib/conversations/unread";
 import {
   invalidateHermesSessionSummaries,
   HERMES_SESSIONS_CHANGED_EVENT,
@@ -238,6 +249,18 @@ const COLLAPSED_HEIGHT = 48;
 const MIN_HEIGHT = COLLAPSED_HEIGHT;
 const HEALTH_RETRY_DELAY_MS = 3_000;
 
+// Clicking the bar opens or closes the dock outright, and that travel is
+// animated. Dragging it never is — an edge with a transition on it trails the
+// pointer instead of sitting under it.
+//
+// The curves are the ones the header items already boot in and out on, so the
+// dock and the things printed into it move on one vocabulary: out fast and
+// settling, back in gathering speed.
+const DOCK_OPEN_MS = 420;
+const DOCK_CLOSE_MS = 320;
+const DOCK_OPEN_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
+const DOCK_CLOSE_EASING = "cubic-bezier(0.55, 0, 0.68, 0.4)";
+
 const SUGGESTED_PROMPTS: Record<TerminalScope, string[]> = {
   mine: [
     "What topics span more than one of my gardens?",
@@ -277,6 +300,11 @@ function clampHeight(height: number): number {
 
 function defaultOpenHeight(): number {
   return maxHeight();
+}
+
+function prefersReducedMotion(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 type HealthState = {
@@ -447,7 +475,11 @@ function RuntimeTerminal({
   runtimeUnavailable?: boolean;
   onRefreshRuntime: () => void;
 }) {
-  const resizeStartRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const resizeStartRef = useRef<{
+    startY: number;
+    startHeight: number;
+    wasOpen: boolean;
+  } | null>(null);
   const preferredOpenHeightRef = useRef<number | null>(null);
   const [height, setHeight] = useState(COLLAPSED_HEIGHT);
 
@@ -477,6 +509,17 @@ function RuntimeTerminal({
   const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  // Chats whose run finished while the user was somewhere else. Restored from
+  // localStorage in an effect rather than in the initial state, so the first
+  // render matches the server's.
+  const [unreadChats, setUnreadChats] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  // Activity as of the previous refresh. The dot is raised on the edge from
+  // running to finished, so a list that arrives already-finished — a reload,
+  // a first paint — marks nothing.
+  const chatActivity = useRef<ReadonlyMap<string, boolean>>(new Map());
+  const unreadRestored = useRef(false);
   // Bumped when a rename/pin/highlight/delete starts and again when it
   // settles. A poll response carrying an older epoch overlapped a local
   // mutation, so its snapshot may predate it — showing it would revert the
@@ -577,6 +620,15 @@ function RuntimeTerminal({
 
   const isOpen = height > COLLAPSED_HEIGHT + 8;
 
+  // The height is state, so a toggle would otherwise land in a single frame.
+  // `glide` holds the direction of a click-driven change for as long as its
+  // animation lasts, and it does two jobs: it puts the transition on the dock,
+  // and while closing it keeps the body rendered, so the dock carries the
+  // transcript down with it instead of shrinking an emptied surface.
+  const [glide, setGlide] = useState<"opening" | "closing" | null>(null);
+  const glideTimer = useRef<number | null>(null);
+  const bodyMounted = isOpen || glide === "closing";
+
   // Keep the header items mounted through their exit animation so they can
   // retract (not just vanish) when the terminal collapses. `headerMounted`
   // drives DOM presence; `headerClosing` swaps the reveal for the conceal.
@@ -611,6 +663,9 @@ function RuntimeTerminal({
     () => () => {
       if (headerCloseTimer.current !== null) {
         window.clearTimeout(headerCloseTimer.current);
+      }
+      if (glideTimer.current !== null) {
+        window.clearTimeout(glideTimer.current);
       }
     },
     [],
@@ -853,6 +908,55 @@ function RuntimeTerminal({
       ),
     );
   }, [currentChatActive, session.messages, session.sessionId]);
+
+  // A chat counts as read only while the dock is actually showing it. An answer
+  // that lands in the open chat while the terminal is collapsed is as unseen as
+  // one that lands in a chat the user walked away from.
+  const viewingChatId = bodyMounted ? session.sessionId : null;
+
+  useEffect(() => {
+    setUnreadChats(readUnreadChats(window.localStorage));
+  }, []);
+
+  // One pass per refresh of the rail: raise the dot on every chat that stopped
+  // running out of sight, and take it off the one being read. The previous
+  // activity map is read before it is replaced — a state updater runs during
+  // the next render, by which time the ref would already hold this snapshot.
+  useEffect(() => {
+    const previousActive = chatActivity.current;
+    chatActivity.current = chatActivityById(history);
+    setUnreadChats((current) => {
+      const next = nextUnreadChats({
+        unread: current,
+        previousActive,
+        chats: history,
+        viewingChatId,
+      });
+      return sameChatIds(current, next) ? current : next;
+    });
+  }, [history, viewingChatId]);
+
+  useEffect(() => {
+    if (!unreadRestored.current) {
+      // The first commit carries the empty starting value rather than anything
+      // that happened, and the restore above has not landed yet: writing it
+      // would erase the dots this browser was still holding.
+      unreadRestored.current = true;
+      return;
+    }
+    writeUnreadChats(window.localStorage, unreadChats);
+  }, [unreadChats]);
+
+  // Deleting a chat takes its dot with it. The pass above cannot be relied on
+  // for this: it deliberately leaves the set alone when the list arrives empty,
+  // which is exactly what deleting the last chat produces.
+  const forgetUnreadChats = useCallback((ids: Iterable<string>) => {
+    setUnreadChats((current) => {
+      const next = new Set(current);
+      for (const id of ids) next.delete(id);
+      return sameChatIds(current, next) ? current : next;
+    });
+  }, []);
 
   // Selecting Agent TARS resolves the browser-operator agent to run against.
   // The runtime, workspace, and secrets stay server-side; we only need its id.
@@ -5342,6 +5446,7 @@ function RuntimeTerminal({
     historyEpoch.current += 1;
     invalidateHermesSessionSummaries("dashboard_terminal");
     setHistory((current) => current.filter((entry) => entry.id !== item.id));
+    forgetUnreadChats([item.id]);
     // The open chat no longer exists; fall back to an empty one.
     if (item.id === session.sessionId) startNewChat();
   }
@@ -5375,6 +5480,7 @@ function RuntimeTerminal({
       historyEpoch.current += 1;
       invalidateHermesSessionSummaries("dashboard_terminal");
       setHistory((current) => current.filter((entry) => !deleted.has(entry.id)));
+      forgetUnreadChats(deleted);
       // The open chat may have been one of them; fall back to an empty one.
       if (session.sessionId && deleted.has(session.sessionId)) startNewChat();
     }
@@ -5396,7 +5502,18 @@ function RuntimeTerminal({
     active: item.active,
     pinned: item.pinned,
     highlight: item.highlight,
+    unread: unreadChats.has(item.id),
   }));
+  // The rollup the dock bar carries. A chat still running is not counted: the
+  // dot says something is waiting to be read, not that something is happening.
+  const unreadCount = sidebarChats.filter((chat) => chat.unread && !chat.active).length;
+  const unreadLabel =
+    unreadCount === 1
+      ? "1 chat finished and has not been read"
+      : `${unreadCount} chats finished and have not been read`;
+  // The shut bar shows a dot with no words beside it, so the words go on the
+  // bar itself — it is the button that opens the terminal.
+  const unreadSuffix = unreadCount > 0 ? ` — ${unreadLabel}` : "";
 
   function togglePanel(panel: TerminalPanel) {
     setSidePanel((current) => (current === panel ? null : panel));
@@ -5497,9 +5614,45 @@ function RuntimeTerminal({
   const glassMounted = glassPhase !== "off";
   const glassActive = glassPhase === "active";
 
+  function cancelGlide() {
+    if (glideTimer.current !== null) {
+      window.clearTimeout(glideTimer.current);
+      glideTimer.current = null;
+    }
+    setGlide(null);
+  }
+
+  // The one place the dock is opened or closed outright; everything else moves
+  // it by dragging. The timer only outlives the animation to take the
+  // transition back off, so the next drag starts unencumbered.
+  function toggleDock(open: boolean) {
+    cancelGlide();
+    setHeight(
+      open ? (preferredOpenHeightRef.current ?? defaultOpenHeight()) : COLLAPSED_HEIGHT,
+    );
+    if (prefersReducedMotion()) return;
+    setGlide(open ? "opening" : "closing");
+    glideTimer.current = window.setTimeout(
+      () => {
+        glideTimer.current = null;
+        setGlide(null);
+      },
+      open ? DOCK_OPEN_MS : DOCK_CLOSE_MS,
+    );
+  }
+
   function handleResizeStart(event: ReactPointerEvent<HTMLElement>) {
     event.preventDefault();
-    resizeStartRef.current = { startY: event.clientY, startHeight: height };
+    resizeStartRef.current = {
+      startY: event.clientY,
+      // Where the edge actually is, which is not the height in state while a
+      // glide is still running.
+      startHeight: dockRef.current?.getBoundingClientRect().height ?? height,
+      // Whether it counts as open, though, is the state's call: caught halfway
+      // through closing the dock is still tall, and a click there means "open
+      // it again", not "close it twice".
+      wasOpen: isOpen,
+    };
     event.currentTarget.setPointerCapture(event.pointerId);
     setIsResizing(true);
     document.body.style.cursor = "row-resize";
@@ -5509,6 +5662,10 @@ function RuntimeTerminal({
   function handleResizeMove(event: ReactPointerEvent<HTMLElement>) {
     const start = resizeStartRef.current;
     if (!start) return;
+    // Past the click threshold the pointer owns the edge, so a glide still
+    // running has to let go of it. Below the threshold this is the jitter of a
+    // click being held, and cancelling there would snap a dock mid-travel.
+    if (glide && Math.abs(start.startY - event.clientY) >= 4) cancelGlide();
     setHeight(clampHeight(start.startHeight + (start.startY - event.clientY)));
   }
 
@@ -5517,7 +5674,6 @@ function RuntimeTerminal({
     if (!start) return;
     const moved = Math.abs(start.startY - event.clientY) >= 4;
     const clickedHeader = event.currentTarget.tagName === "HEADER";
-    const wasOpen = start.startHeight > COLLAPSED_HEIGHT + 8;
     resizeStartRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -5526,22 +5682,29 @@ function RuntimeTerminal({
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
     if (!moved && event.type !== "pointercancel" && clickedHeader) {
-      setHeight(
-        wasOpen
-          ? COLLAPSED_HEIGHT
-          : (preferredOpenHeightRef.current ?? defaultOpenHeight()),
-      );
+      toggleDock(!start.wasOpen);
     }
   }
 
   const terminalStyle: CSSProperties = {
     height,
+    // Set for the span of a click-driven open or close and no longer: a dragged
+    // edge carrying a transition trails the pointer rather than tracking it.
+    transition: glide
+      ? glide === "opening"
+        ? `height ${DOCK_OPEN_MS}ms ${DOCK_OPEN_EASING}`
+        : `height ${DOCK_CLOSE_MS}ms ${DOCK_CLOSE_EASING}`
+      : undefined,
     // Once the shader owns the bar, the dock's fill has to get out of the way:
     // the scene layer paints above it, and a solid dock would just be a second,
     // flatter surface behind the glass.
+    //
+    // The surface follows the body rather than `isOpen`, or a closing dock
+    // would drop to the bar's color for the length of its own animation, with
+    // the transcript still standing on it.
     background: glassActive
       ? "transparent"
-      : isOpen
+      : bodyMounted
         ? "var(--paper-surface)"
         : "var(--terminal-bar)",
     borderTopColor: glassActive ? "transparent" : "rgba(169, 193, 177, 0.7)",
@@ -5613,11 +5776,11 @@ function RuntimeTerminal({
         role={isOpen ? undefined : "button"}
         tabIndex={isOpen ? undefined : 0}
         aria-expanded={isOpen ? undefined : false}
-        aria-label={isOpen ? undefined : "Open terminal"}
+        aria-label={isOpen ? undefined : `Open terminal${unreadSuffix}`}
         title={
           isOpen
             ? "Click empty space to close, or drag to resize the terminal"
-            : "Click to fully open, or drag up to resize the terminal"
+            : `Click to fully open, or drag up to resize the terminal${unreadSuffix}`
         }
         onKeyDown={(event) => {
           if (
@@ -5625,7 +5788,7 @@ function RuntimeTerminal({
             (event.key === "Enter" || event.key === " ")
           ) {
             event.preventDefault();
-            setHeight(preferredOpenHeightRef.current ?? defaultOpenHeight());
+            toggleDock(true);
           }
         }}
         ref={barRef}
@@ -5655,6 +5818,18 @@ function RuntimeTerminal({
               >
                 Terminal
               </p>
+              {/* The rail's dots, rolled up: the list can be collapsed, or
+                  scrolled past the row that finished. Carries its count so it
+                  never reads as a second runtime light. */}
+              {unreadCount > 0 ? (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[#3d5147]"
+                  title={unreadLabel}
+                >
+                  <UnreadChatDot label={unreadLabel} />
+                  {unreadCount > 1 ? <span aria-hidden>{unreadCount}</span> : null}
+                </span>
+              ) : null}
               {!runtimeOnline ? (
                 <button
                   type="button"
@@ -5697,10 +5872,21 @@ function RuntimeTerminal({
                 the runtime state alone. Temporary chat sits in the chat itself,
                 below this bar. */}
           </>
+        ) : unreadCount > 0 ? (
+          // Shut, the bar says nothing at all — except that an answer landed
+          // while the terminal was closed. The count is spoken through the
+          // header's own label, so the mark itself stays out of the reading.
+          <span
+            aria-hidden
+            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#3d5147]"
+          >
+            <span className="h-2 w-2 shrink-0 rounded-full bg-[#A9C1B1] shadow-[0_0_0_1px_rgba(169,193,177,0.45)]" />
+            {unreadCount > 1 ? unreadCount : null}
+          </span>
         ) : null}
       </header>
 
-      {isOpen ? (
+      {bodyMounted ? (
         // Carries the surface the dock used to paint itself. Without it the
         // wallpaper layer behind the glass bar would show through the chat.
         //

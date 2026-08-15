@@ -387,8 +387,54 @@ test("spatial runtime mounts accessibly at browser viewports", (t) => {
   try {
     const result = runGeneratedVisualBrowserTests({ definition: spatialDefinition(), outputDir, timeoutMs: 25_000 });
     assert.ok(result.tests.every((entry) => entry.passed), JSON.stringify(result.tests));
+    assert.ok(
+      result.tests
+        .filter((entry) => entry.name.startsWith("browser mount"))
+        .every((entry) => entry.detail === "mounted and self-tested"),
+    );
     assert.equal(result.browser?.screenshotCreated, true);
     assert.ok(fs.statSync(path.join(outputDir, "preview.png")).size > 0);
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("browser self-test diagnostics are bounded, preserve the primary cause, and decode authored identifiers safely", (t) => {
+  if (!browserPath()) return t.skip("Chromium or Edge is not installed");
+  const definition = spatialDefinition();
+  const primaryOutputId = `case_view<&\"${"x".repeat(305)}😀${"y".repeat(133)}`;
+  definition.outputs = Array.from({ length: 20 }, (_, index) => ({
+    id: index === 0 ? primaryOutputId : `case_view_${index}`,
+    label: `Selected construction ${index}`,
+    representation: "diagram",
+    expression: {
+      kind: "binary",
+      op: "divide",
+      left: { kind: "constant", value: 1 },
+      right: {
+        kind: "binary",
+        op: "subtract",
+        left: { kind: "constant", value: 1 },
+        right: { kind: "input", id: "case_mode" },
+      },
+    },
+  }));
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-browser-diagnostics-"));
+  try {
+    const result = runGeneratedVisualBrowserTests({ definition, outputDir, timeoutMs: 25_000 });
+    const mountTests = result.tests.filter((entry) => entry.name.startsWith("browser mount"));
+    assert.equal(mountTests.length, 3);
+    for (const entry of mountTests) {
+      assert.equal(entry.passed, false);
+      assert.match(
+        entry.detail ?? "",
+        /runtime self-check failures: output\.after_control_change\.nonfinite: outputId=case_view<&"x/,
+      );
+      assert.match(entry.detail ?? "", /\[truncated:500\]/);
+      assert.match(entry.detail ?? "", /additional_failures:\d+/);
+      assert.doesNotMatch(entry.detail ?? "", /&(?:amp|lt|quot);/);
+      assert.ok((entry.detail?.length ?? 0) < 5_000, entry.detail);
+    }
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
   }

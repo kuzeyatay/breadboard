@@ -487,6 +487,11 @@ export default defineVisualization({
   theme: { accent: "green" }
 });`;
 
+const browserFailingSource = validSource.replace(
+  'expression: { kind: "binary", op: "add", left: { kind: "input", id: "gain" }, right: { kind: "input", id: "x" } }',
+  'expression: { kind: "binary", op: "add", left: { kind: "input", id: "gain" }, right: { kind: "binary", op: "divide", left: { kind: "constant", value: 1 }, right: { kind: "binary", op: "subtract", left: { kind: "constant", value: 3 }, right: { kind: "input", id: "gain" } } } }',
+);
+
 test("strict AST compiler emits only the fixed JSON envelope and deterministic tests pass", () => {
   const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap([unit()]), learningUnits: [unit()] });
   const opportunity = plan.opportunities[0];
@@ -1009,6 +1014,64 @@ test("a deterministic runtime-test failure is recorded and repaired on the next 
     const attemptsRoot = path.join(gardenDir, ".breadboard", "visuals", opportunity.id, "attempts");
     const rejectionFiles = fs.readdirSync(attemptsRoot, { recursive: true }).filter((entry) => String(entry).endsWith("rejection.json"));
     assert.equal(rejectionFiles.length, 1);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("exact browser self-test diagnostics reach the next AI repair packet", { skip: !browserAvailable }, async () => {
+  const plan = buildVisualizationPlan({ gardenId: "browser-repair", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = {
+    ...plan.opportunities[0],
+    gardenId: "browser-repair",
+    targetPage: "learning/1/browser-repair.md",
+    targetHeading: "Browser repair",
+  };
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-browser-repair-"));
+  const candidateInputs = [];
+  try {
+    const result = await createGeneratedVisualization({
+      client: {},
+      model: "test-model",
+      gardenDir,
+      opportunity,
+      pageMarkdown: "An anchored explanation.",
+      availableSourceAnchorIds: new Set(["S1.P2.F1"]),
+      maxAttempts: 2,
+      runBrowserTests: true,
+      candidateProvider: async (input) => {
+        candidateInputs.push(input);
+        const firstAttempt = candidateInputs.length === 1;
+        return {
+          title: "Coupled state intervention",
+          explanation: "A browser-tested intervention explorer.",
+          sourceCode: firstAttempt ? browserFailingSource : validSource,
+          testCases: [{
+            name: "gain changes state",
+            inputs: { gain: 2, x: 2 },
+            expected: { coupled_state_propagation_under_intervention: firstAttempt ? 3 : 4 },
+          }],
+          accessibilityDescription: "A labeled gain control changes the response.",
+          pedagogicalClaims: ["Gain changes the propagated state."],
+        };
+      },
+      criticProvider: async () => ({
+        approved: true,
+        checkedAt: new Date().toISOString(),
+        reason: "Approved after browser repair.",
+        requestedChanges: [],
+        scores: { pedagogicalValue: 0.9, sourceFidelity: 0.9, usability: 0.9, accessibility: 0.9 },
+      }),
+    });
+
+    assert.equal(result.manifest?.generationAttempt, 2, result.errors.join("; "));
+    assert.equal(candidateInputs.length, 2);
+    assert.equal(candidateInputs[1].previousSourceCode, browserFailingSource);
+    assert.deepEqual(candidateInputs[1].errors, [
+      "browser mount 375x667 light: runtime self-check failures: output.after_control_change.nonfinite: outputId=coupled_state_propagation_under_intervention",
+      "browser mount 1280x800 dark: runtime self-check failures: output.after_control_change.nonfinite: outputId=coupled_state_propagation_under_intervention",
+      "browser mount 1280x800 reduced-motion: runtime self-check failures: output.after_control_change.nonfinite: outputId=coupled_state_propagation_under_intervention",
+    ]);
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });
   }

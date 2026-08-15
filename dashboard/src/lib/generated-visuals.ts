@@ -2829,6 +2829,40 @@ function previewHtml(
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><style>html,body{margin:0;padding:0;background:#f8f6ef;color:#10251c;font-family:system-ui,sans-serif}</style></head><body><div id="breadboard-generated-visual-root"></div><script>window.__BREADBOARD_VISUAL_TEST_MODE__=true;</script><script>${runtime.replace(/<\/script/gi, "<\\/script")}</script><script>window.postMessage({type:"breadboard-generated-visual:init",definition:${serialized},theme:${JSON.stringify(theme)}},"*");</script></body></html>`;
 }
 
+const GENERATED_VISUAL_BROWSER_DIAGNOSTIC_MAX_ENTRIES = 12;
+const GENERATED_VISUAL_BROWSER_DIAGNOSTIC_MAX_LENGTH = 512;
+
+function browserRuntimeDiagnostics(output: string): string[] {
+  const body = output.match(/<body\b[^>]*>/i)?.[0];
+  const encoded = body?.match(
+    /\bdata-breadboard-runtime-diagnostics="([^"]*)"/i,
+  )?.[1];
+  if (!encoded) return [];
+  try {
+    const parsed = JSON.parse(decodeURIComponent(encoded));
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .slice(0, GENERATED_VISUAL_BROWSER_DIAGNOSTIC_MAX_ENTRIES)
+      .map((entry) =>
+        entry.length <= GENERATED_VISUAL_BROWSER_DIAGNOSTIC_MAX_LENGTH
+          ? entry
+          : `${entry.slice(0, GENERATED_VISUAL_BROWSER_DIAGNOSTIC_MAX_LENGTH - 18)}...[truncated]`,
+      );
+  } catch {
+    return [];
+  }
+}
+
+function browserRuntimeFailureDetail(output: string): string {
+  const diagnostics = browserRuntimeDiagnostics(output);
+  if (diagnostics.length > 0)
+    return `runtime self-check failures: ${diagnostics.join("; ")}`;
+  return output.match(/<body[^>]*>/i)?.[0] ?? output.slice(-500);
+}
+
 export function runGeneratedVisualBrowserTests(input: {
   definition: GeneratedVisualizationDefinition;
   outputDir: string;
@@ -2955,7 +2989,7 @@ export function runGeneratedVisualBrowserTests(input: {
         result.error?.message ||
         (browserPassed
           ? "mounted and self-tested"
-          : (output.match(/<body[^>]*>/i)?.[0] ?? output.slice(-500))),
+          : browserRuntimeFailureDetail(output)),
     });
   }
   const screenshotHtmlPath = path.join(

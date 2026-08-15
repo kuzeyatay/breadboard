@@ -14,6 +14,55 @@
   let activeSpatialDragCleanup = null
   let activeSpatialDragScene = null
   let activeDefinitionCleanup = null
+  const RUNTIME_DIAGNOSTIC_MAX_ENTRIES = 12
+  const RUNTIME_DIAGNOSTIC_MAX_LENGTH = 384
+
+  const safeRuntimeDiagnosticText = (value) => {
+    const text = String(value ?? "")
+      .replace(/\s+/g, " ")
+      .trim()
+    let unicodeSafe = ""
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index)
+      if (code >= 0xd800 && code <= 0xdbff) {
+        const next = text.charCodeAt(index + 1)
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          unicodeSafe += text[index] + text[index + 1]
+          index += 1
+        } else unicodeSafe += "\ufffd"
+      } else unicodeSafe += code >= 0xdc00 && code <= 0xdfff ? "\ufffd" : text[index]
+    }
+    if (unicodeSafe.length <= RUNTIME_DIAGNOSTIC_MAX_LENGTH) return unicodeSafe
+    const suffix = `...[truncated:${unicodeSafe.length}]`
+    let prefixLength = RUNTIME_DIAGNOSTIC_MAX_LENGTH - suffix.length
+    if (
+      prefixLength > 0 &&
+      unicodeSafe.charCodeAt(prefixLength - 1) >= 0xd800 &&
+      unicodeSafe.charCodeAt(prefixLength - 1) <= 0xdbff &&
+      unicodeSafe.charCodeAt(prefixLength) >= 0xdc00 &&
+      unicodeSafe.charCodeAt(prefixLength) <= 0xdfff
+    )
+      prefixLength -= 1
+    return `${unicodeSafe.slice(0, prefixLength)}${suffix}`
+  }
+
+  const writeRuntimeDiagnostics = (diagnostics) => {
+    const normalized = diagnostics.map(safeRuntimeDiagnosticText).filter(Boolean)
+    if (normalized.length === 0) {
+      delete document.body.dataset.breadboardRuntimeDiagnostics
+      return
+    }
+    const visibleCount =
+      normalized.length > RUNTIME_DIAGNOSTIC_MAX_ENTRIES
+        ? RUNTIME_DIAGNOSTIC_MAX_ENTRIES - 1
+        : RUNTIME_DIAGNOSTIC_MAX_ENTRIES
+    const bounded = normalized.slice(0, visibleCount)
+    if (normalized.length > visibleCount)
+      bounded.push(`additional_failures:${normalized.length - visibleCount}`)
+    document.body.dataset.breadboardRuntimeDiagnostics = encodeURIComponent(
+      JSON.stringify(bounded),
+    )
+  }
 
   const element = (tag, className, text) => {
     const node = document.createElement(tag)
@@ -2541,45 +2590,73 @@
         if (selfTestsRan) return
         selfTestsRan = true
         try {
-          let passed = true
-          const spatialDomIsValid = () =>
-            Array.from(document.querySelectorAll("[data-spatial-host=true]")).every((host) => {
-              const svg = host.querySelector("[data-spatial-projection]")
-              const primitives = host.querySelectorAll("[data-spatial-kind]")
-              const legendItems = host.querySelectorAll("[data-spatial-legend-id]")
-              const labels = Array.from(host.querySelectorAll("[data-spatial-label-for]"))
-              const labelBoxes = labels.map((label) => label.getBBox())
-              const labelsDoNotOverlap = labelBoxes.every((box, index) =>
-                labelBoxes.slice(index + 1).every((candidate) => {
-                  const overlapWidth = Math.max(
-                    0,
-                    Math.min(box.x + box.width, candidate.x + candidate.width) -
-                      Math.max(box.x, candidate.x),
+          const failures = []
+          const boxSummary = (box) =>
+            `x=${Math.round(box.x * 10) / 10},y=${Math.round(box.y * 10) / 10},width=${Math.round(box.width * 10) / 10},height=${Math.round(box.height * 10) / 10}`
+          const collectSpatialDiagnostics = (phase) =>
+            Array.from(document.querySelectorAll("[data-spatial-host=true]")).forEach(
+              (host, hostIndex) => {
+                const scope = `spatial.${phase}.host[${hostIndex}]`
+                const svg = host.querySelector("[data-spatial-projection]")
+                const primitives = host.querySelectorAll("[data-spatial-kind]")
+                const legendItems = host.querySelectorAll("[data-spatial-legend-id]")
+                const labels = Array.from(host.querySelectorAll("[data-spatial-label-for]"))
+                const labelBoxes = labels.map((label) => label.getBBox())
+                if (!svg) failures.push(`${scope}.projection: missing projection SVG`)
+                else {
+                  if (!["orthographic", "perspective"].includes(svg.dataset.spatialProjection))
+                    failures.push(
+                      `${scope}.projection: expected orthographic|perspective; actual=${String(svg.dataset.spatialProjection)}`,
+                    )
+                  if (!["fixed", "orbit"].includes(svg.dataset.spatialInteraction))
+                    failures.push(
+                      `${scope}.interaction: expected fixed|orbit; actual=${String(svg.dataset.spatialInteraction)}`,
+                    )
+                  if (!svg.querySelector("desc"))
+                    failures.push(`${scope}.description: missing SVG desc`)
+                }
+                if (primitives.length === 0)
+                  failures.push(`${scope}.primitives: expected at least 1; actual=0`)
+                if (legendItems.length !== primitives.length)
+                  failures.push(
+                    `${scope}.legend_count: expected=${primitives.length}; actual=${legendItems.length}`,
                   )
-                  const overlapHeight = Math.max(
-                    0,
-                    Math.min(box.y + box.height, candidate.y + candidate.height) -
-                      Math.max(box.y, candidate.y),
+                if (labels.length !== primitives.length)
+                  failures.push(
+                    `${scope}.label_count: expected=${primitives.length}; actual=${labels.length}`,
                   )
-                  return overlapWidth * overlapHeight <= 16
-                }),
-              )
-              return (
-                Boolean(svg) &&
-                ["orthographic", "perspective"].includes(svg.dataset.spatialProjection) &&
-                ["fixed", "orbit"].includes(svg.dataset.spatialInteraction) &&
-                Boolean(svg.querySelector("desc")) &&
-                primitives.length > 0 &&
-                legendItems.length === primitives.length &&
-                labels.length === primitives.length &&
-                labelsDoNotOverlap &&
-                Array.from(primitives).every(
-                  (node) =>
-                    Boolean(node.getAttribute("aria-label")) &&
-                    node.getAttribute("tabindex") === "0",
+                labelBoxes.forEach((box, index) =>
+                  labelBoxes.slice(index + 1).forEach((candidate, offset) => {
+                    const overlapWidth = Math.max(
+                      0,
+                      Math.min(box.x + box.width, candidate.x + candidate.width) -
+                        Math.max(box.x, candidate.x),
+                    )
+                    const overlapHeight = Math.max(
+                      0,
+                      Math.min(box.y + box.height, candidate.y + candidate.height) -
+                        Math.max(box.y, candidate.y),
+                    )
+                    const overlapArea = overlapWidth * overlapHeight
+                    if (overlapArea > 16) {
+                      const candidateIndex = index + offset + 1
+                      failures.push(
+                        `${scope}.label_overlap: first=${String(labels[index].dataset.spatialLabelFor)} (${boxSummary(box)}); second=${String(labels[candidateIndex].dataset.spatialLabelFor)} (${boxSummary(candidate)}); overlapArea=${Math.round(overlapArea * 10) / 10}`,
+                      )
+                    }
+                  }),
                 )
-              )
-            })
+                Array.from(primitives).forEach((node, primitiveIndex) => {
+                  const missing = []
+                  if (!node.getAttribute("aria-label")) missing.push("aria-label")
+                  if (node.getAttribute("tabindex") !== "0") missing.push('tabindex="0"')
+                  if (missing.length > 0)
+                    failures.push(
+                      `${scope}.primitive_accessibility: primitive=${String(node.dataset.spatialId ?? primitiveIndex)}; missing=${missing.join(",")}`,
+                    )
+                })
+              },
+            )
           const first = document.querySelector("[data-control-id]")
           if (first) {
             first.focus()
@@ -2594,20 +2671,26 @@
               first.dispatchEvent(new Event("change", { bubbles: true }))
             } else first.click()
           }
-          if (!spatialDomIsValid()) passed = false
+          collectSpatialDiagnostics("after_control_change")
           document.querySelectorAll("[data-output-finite]").forEach((node) => {
-            if (node.dataset.outputFinite !== "true") passed = false
+            if (node.dataset.outputFinite !== "true")
+              failures.push(
+                `output.after_control_change.nonfinite: outputId=${String(node.dataset.outputId)}`,
+              )
           })
           const resetButton = document.querySelector("[data-action=reset]")
           if (resetButton) resetButton.click()
-          if (!spatialDomIsValid()) passed = false
+          collectSpatialDiagnostics("after_reset")
           document.querySelectorAll("[data-control-id]").forEach((node) => {
             const control = definition.controls.find(
               (candidate) => candidate.id === node.dataset.controlId,
             )
             if (!control) return
             const actual = node.type === "checkbox" ? node.checked : node.value
-            if (String(actual) !== String(control.defaultValue)) passed = false
+            if (String(actual) !== String(control.defaultValue))
+              failures.push(
+                `control.after_reset.mismatch: controlId=${String(node.dataset.controlId)}; expected=${String(control.defaultValue)}; actual=${String(actual)}`,
+              )
           })
           const scrollWidth = document.documentElement.scrollWidth
           const clientWidth = document.documentElement.clientWidth
@@ -2615,9 +2698,13 @@
           document.body.dataset.breadboardClientWidth = String(clientWidth)
           if (scrollWidth > clientWidth + 1) {
             document.body.dataset.breadboardOverflow = "true"
-            passed = false
+            failures.push(
+              `layout.horizontal_overflow: scrollWidth=${scrollWidth}; clientWidth=${clientWidth}`,
+            )
           }
-          document.body.dataset.breadboardRuntimeTests = passed ? "passed" : "failed"
+          writeRuntimeDiagnostics(failures)
+          document.body.dataset.breadboardRuntimeTests =
+            failures.length === 0 ? "passed" : "failed"
           window.scrollTo(0, 0)
         } catch (error) {
           // Without this the attribute is simply never written, which reads as
@@ -2625,6 +2712,9 @@
           document.body.dataset.breadboardRuntimeTests = "failed"
           document.body.dataset.breadboardRuntimeError =
             error instanceof Error ? `${error.message}` : "self-test failed"
+          writeRuntimeDiagnostics([
+            `runtime.self_test.exception: ${error instanceof Error ? error.message : "self-test failed"}`,
+          ])
         }
       }
       // A headless --dump-dom run renders on demand, so a frame after this
@@ -2652,6 +2742,10 @@
       renderDefinition(message.definition, message.theme, message.language)
     } catch (error) {
       document.body.dataset.breadboardRuntimeTests = "failed"
+      if (window.__BREADBOARD_VISUAL_TEST_MODE__)
+        writeRuntimeDiagnostics([
+          `runtime.render.exception: ${error instanceof Error ? error.message : "render failed"}`,
+        ])
       parent.postMessage(
         {
           type: EVENT,

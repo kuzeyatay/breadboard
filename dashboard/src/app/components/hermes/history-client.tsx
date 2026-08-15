@@ -81,6 +81,28 @@ export function ActiveChatIcon({
   );
 }
 
+// The run finished while the user was elsewhere and nobody has read it yet.
+// It takes the spinner's place on the row, so one spot carries the whole life
+// of a run: spinning, then waiting to be read, then nothing. Breadboard's pale
+// green — the color of the dock's drag handle and the rail's divider — because
+// this is a "there is something here", never a warning.
+export function UnreadChatDot({
+  label,
+  className = "h-2 w-2",
+}: {
+  label: string;
+  className?: string;
+}) {
+  return (
+    <span
+      role="status"
+      aria-label={label}
+      title={label}
+      className={`inline-block shrink-0 rounded-full bg-[#A9C1B1] shadow-[0_0_0_1px_rgba(169,193,177,0.45)] ${className}`}
+    />
+  );
+}
+
 // Placeholder for a Recents list whose first fetch is still in flight. An empty
 // list and an unloaded one look identical otherwise, so "No chats yet" would
 // flash on every mount for someone who does have chats.

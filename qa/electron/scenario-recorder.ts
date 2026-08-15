@@ -2,7 +2,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { test as playwrightTest, type TestInfo } from "@playwright/test";
 
-export type ScenarioStatus = "PASS" | "FAIL" | "BLOCKED" | "NOT_RUN";
+export type ScenarioStatus =
+  | "PASS"
+  | "FAIL"
+  | "BLOCKED"
+  | "SKIPPED_OPTIONAL"
+  | "NOT_SUPPORTED"
+  | "NOT_RUN";
 export type FailureClassification =
   | "PRODUCT_BUG"
   | "TEST_ENVIRONMENT"
@@ -10,6 +16,11 @@ export type FailureClassification =
   | "EXPECTED_BEHAVIOR"
   | "FLAKY"
   | "MISSING_FEATURE"
+  | "QA_FIXTURE_MISSING"
+  | "QA_HARNESS_LIMITATION"
+  | "OPTIONAL_DEPENDENCY_NOT_CONFIGURED"
+  | "PRODUCT_PREREQUISITE_MISSING"
+  | "INTENTIONALLY_UNSUPPORTED"
   | null;
 export type BlockerClassification = Exclude<
   FailureClassification,
@@ -103,6 +114,19 @@ export type ScenarioProbeOutcome =
       readonly dependency: ScenarioDependencyKind;
       readonly reason: string;
       readonly evidence?: readonly string[];
+      readonly classification?: BlockerClassification;
+    }
+  | {
+      readonly status: "SKIPPED_OPTIONAL";
+      readonly reason: string;
+      readonly evidence?: readonly string[];
+      readonly classification?: Exclude<FailureClassification, null>;
+    }
+  | {
+      readonly status: "NOT_SUPPORTED";
+      readonly reason: string;
+      readonly evidence?: readonly string[];
+      readonly classification?: Exclude<FailureClassification, null>;
     }
   | {
       readonly status: "NOT_RUN";
@@ -247,6 +271,28 @@ export class ScenarioRecorder {
           startedAt,
         );
       }
+      if (outcome.status === "SKIPPED_OPTIONAL") {
+        return this.recordDisposition(
+          id,
+          "SKIPPED_OPTIONAL",
+          outcome.reason,
+          outcome.evidence ?? [],
+          started,
+          startedAt,
+          outcome.classification ?? "OPTIONAL_DEPENDENCY_NOT_CONFIGURED",
+        );
+      }
+      if (outcome.status === "NOT_SUPPORTED") {
+        return this.recordDisposition(
+          id,
+          "NOT_SUPPORTED",
+          outcome.reason,
+          outcome.evidence ?? [],
+          started,
+          startedAt,
+          outcome.classification ?? "INTENTIONALLY_UNSUPPORTED",
+        );
+      }
       return this.recordMissingDependency(
         id,
         outcome.dependency,
@@ -254,6 +300,7 @@ export class ScenarioRecorder {
         outcome.evidence ?? [],
         started,
         startedAt,
+        outcome.classification,
       );
     } catch (error) {
       const decision = await options.classifyFailure?.(error);
@@ -301,6 +348,44 @@ export class ScenarioRecorder {
       evidence,
       now,
       new Date(now).toISOString(),
+    );
+  }
+
+  skipOptional(
+    id: string,
+    reason: string,
+    evidence: readonly string[] = [],
+    classification: Exclude<FailureClassification, null> =
+      "OPTIONAL_DEPENDENCY_NOT_CONFIGURED",
+  ): ScenarioAttempt {
+    const now = Date.now();
+    return this.recordDisposition(
+      id,
+      "SKIPPED_OPTIONAL",
+      reason,
+      evidence,
+      now,
+      new Date(now).toISOString(),
+      classification,
+    );
+  }
+
+  notSupported(
+    id: string,
+    reason: string,
+    evidence: readonly string[] = [],
+    classification: Exclude<FailureClassification, null> =
+      "INTENTIONALLY_UNSUPPORTED",
+  ): ScenarioAttempt {
+    const now = Date.now();
+    return this.recordDisposition(
+      id,
+      "NOT_SUPPORTED",
+      reason,
+      evidence,
+      now,
+      new Date(now).toISOString(),
+      classification,
     );
   }
 
@@ -368,6 +453,7 @@ export class ScenarioRecorder {
     evidence: readonly string[],
     started: number,
     startedAt: string,
+    classificationOverride?: BlockerClassification,
   ): ScenarioAttempt {
     const definition = this.definition(id);
     const policy = definition.blockerPolicy;
@@ -376,14 +462,16 @@ export class ScenarioRecorder {
         ? {
             dependency,
             action: policy.onMissingRequired,
-            classification: policy.requiredClassification,
+            classification:
+              classificationOverride ?? policy.requiredClassification,
             continueInventory: policy.continueInventory,
             repairEligible: policy.repairEligible,
           }
         : {
             dependency,
             action: policy.onMissingOptional,
-            classification: policy.optionalClassification,
+            classification:
+              classificationOverride ?? policy.optionalClassification,
             continueInventory: policy.continueInventory,
             repairEligible: policy.repairEligible,
           };
@@ -392,6 +480,30 @@ export class ScenarioRecorder {
       status: "BLOCKED",
       classification: blocker.classification,
       blocker,
+      degradations: [],
+      startedAt,
+      started,
+      expected: definition.successCriteria.join("; "),
+      actual: reason,
+      evidence,
+    });
+  }
+
+  private recordDisposition(
+    id: string,
+    status: "SKIPPED_OPTIONAL" | "NOT_SUPPORTED",
+    reason: string,
+    evidence: readonly string[],
+    started: number,
+    startedAt: string,
+    classification: Exclude<FailureClassification, null>,
+  ): ScenarioAttempt {
+    const definition = this.definition(id);
+    return this.record({
+      id,
+      status,
+      classification,
+      blocker: null,
       degradations: [],
       startedAt,
       started,
