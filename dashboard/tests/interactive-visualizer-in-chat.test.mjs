@@ -146,3 +146,64 @@ test("the inline variant stays an artifact while embedding its sandbox in the re
     assert.match(surface, /interactiveVisualizerCommandForArtifact\(artifact\)/);
   }
 });
+
+test("the inline visualizer keeps its artifact card directly below the embed", () => {
+  const cards = source("../src/app/components/hermes/inline-artifact-cards.tsx");
+  const embed = source("../src/app/components/hermes/inline-interactive-visualizer.tsx");
+  const branchStart = cards.indexOf(
+    "shouldRenderInteractiveVisualizerInline(artifact) &&",
+  );
+  const imageBranch = cards.indexOf('artifact.kind === "image"', branchStart);
+  assert.ok(branchStart >= 0);
+  assert.ok(imageBranch > branchStart);
+  const inlineBranch = cards.slice(branchStart, imageBranch);
+  const visualizer = inlineBranch.indexOf("<InlineInteractiveVisualizer");
+  const artifactCard = inlineBranch.indexOf("<InlineArtifactFileCard");
+
+  assert.ok(visualizer >= 0);
+  assert.ok(
+    artifactCard > visualizer,
+    "the rectangular artifact card must follow the inline visualization",
+  );
+  assert.match(inlineBranch, /artifact\.status === "ready"/);
+  assert.match(inlineBranch, /artifact\.previewAvailable/);
+  assert.match(
+    inlineBranch,
+    /onOpen=\{\(\) => context\.setOpenId\(artifact\.id\)\}/,
+  );
+  assert.match(cards, /function InlineArtifactFileCard/);
+  assert.match(embed, /onClick=\{onOpen\}/);
+  assert.match(
+    embed,
+    /aria-label=\{`Open \$\{artifact\.title\} in the artifact viewer`\}/,
+  );
+});
+
+test("the in-chat visualizer cannot complete without its current-run artifact", () => {
+  const turnService = source("../src/lib/conversations/turn-service.ts");
+  const runStore = source("../src/lib/hermes/run-store.ts");
+  const eventStream = source("../src/lib/hermes/event-stream.ts");
+  const artifactStore = source("../src/lib/hermes/artifact-store.ts");
+
+  assert.match(
+    turnService,
+    /selectedInteractiveVisualizerSkill\([\s\S]*resolved\.invocations[\s\S]*requiredArtifacts/,
+  );
+  assert.match(runStore, /requiredArtifacts\?: RuntimeArtifactRequirement\[\]/);
+  assert.match(turnService, /readyEventType: "artifact\.completed"/);
+  assert.match(eventStream, /missingRequiredArtifact\(\)/);
+  assert.match(eventStream, /code: "required_artifact_missing"/);
+  assert.match(eventStream, /finalize\("failed"\)/);
+  const gateIndex = eventStream.indexOf(
+    "const missingArtifact = missingRequiredArtifact()",
+  );
+  assert.ok(gateIndex >= 0);
+  assert.ok(
+    gateIndex < eventStream.indexOf("          emit(event);", gateIndex),
+    "the artifact gate must run before the upstream idle event is emitted",
+  );
+  assert.match(
+    artifactStore,
+    /event\.run_id = \?[\s\S]*event\.event_type = \?[\s\S]*event\.status = 'ready'[\s\S]*message\.client_message_id = \?[\s\S]*artifact\.renderer_id = \?[\s\S]*artifact\.source_skill = \?/,
+  );
+});

@@ -61,6 +61,16 @@ already installed, the runner closes and removes that installation first,
 preserves its normal `%APPDATA%` data, and reinstalls/relaunches Breadboard in
 a `finally` path after the isolated smoke test.
 
+For deeper Electron renderer and preload evidence against one already installed
+or unpacked executable, use the env-gated Playwright `packaged` project. It
+requires an explicit absolute `BREADBOARD_QA_PACKAGED_EXE`, uses a fresh
+isolated profile, verifies `app.isPackaged` and production window hardening,
+captures diagnostics/trace evidence, and proves its observed service ports and
+owned process identities release after a normal close. It never installs,
+uninstalls, discovers an executable, or kills unrelated processes. See
+`qa/electron/README.md` for the command and the exact division of responsibility
+with the installed smoke.
+
 Keep at least 6 GB free for the installed smoke run itself. Every evidence
 directory intentionally retains its isolated `user-data/Data` after uninstall
 to prove the uninstall policy. After preserving the JSON and log evidence, old

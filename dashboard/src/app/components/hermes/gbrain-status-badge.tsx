@@ -24,7 +24,6 @@ interface Props {
 }
 
 const LABEL: Record<string, { text: string; tone: string; title: string }> = {
-  healthy: { text: "Knowledge: hybrid", tone: "#16a34a", title: "GBrain hybrid retrieval is healthy." },
   degraded: { text: "Knowledge: keyword-only", tone: "#d97706", title: "GBrain is running in lexical-degraded mode (no embeddings)." },
   indexing: { text: "Knowledge: indexing…", tone: "#2563eb", title: "GBrain is indexing this garden." },
   stale: { text: "Knowledge: stale", tone: "#d97706", title: "This garden's index is stale; a reindex is recommended." },
@@ -78,6 +77,9 @@ export default function GBrainStatusBadge({ gardenSlug, canReindex }: Props) {
     if (syncStatus === "syncing" || syncStatus === "pending") key = "indexing";
     else if (syncStatus === "stale" || syncStatus === "failed") key = "stale";
   }
+  // Healthy knowledge retrieval is the normal state, so it does not need to
+  // occupy persistent header space. Keep displaying actionable/degraded states.
+  if (key === "healthy") return null;
   const label = LABEL[key] ?? LABEL.unavailable;
   const showReindex = canReindex && gardenSlug && (key === "stale" || key === "unavailable" || status.state === "degraded");
 

@@ -77,6 +77,11 @@ export function resolveStockAnalystRoot(
 ): StockAnalystRuntime | null {
   const candidates: Array<{ root: string; source: StockAnalystRuntime["source"] }> = [];
   const explicit = configured(env.STOCK_ANALYST_ROOT);
+  if (env.BREADBOARD_QA_MODE === "1") {
+    return explicit && isClone(explicit)
+      ? { root: explicit, source: "configured" }
+      : null;
+  }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   candidates.push({
     root: path.join(repositoryRoot(), "daily_stock_analysis"),

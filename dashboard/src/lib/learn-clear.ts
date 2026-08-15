@@ -65,6 +65,8 @@ const GENERATED_LEARN_PATHS = [
   ".breadboard/validation-report.md",
   ".breadboard/visual-necessity-decisions.json",
   ".breadboard/visual-necessity-decisions.md",
+  ".breadboard/visual-decision-records.json",
+  ".breadboard/visual-contract-executability-reviews.json",
   ".breadboard/visualization-plan.json",
   ".breadboard/visualization-coverage.json",
   ".breadboard/visualization-coverage.md",

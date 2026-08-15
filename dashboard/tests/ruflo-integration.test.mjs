@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 const source = (relativePath) =>
@@ -125,6 +127,93 @@ test("Ruflo bounds the worker count a client can request", () => {
   assert.equal(runManager.clampWorkerCount(-40), runManager.MIN_WORKER_COUNT);
   assert.equal(runManager.clampWorkerCount(9_000), runManager.MAX_WORKER_COUNT);
   assert.equal(runManager.clampWorkerCount(4), 4);
+});
+
+test("Ruflo materializes attached screenshots for Claude and removes them", () => {
+  const repository = fs.mkdtempSync(
+    path.join(os.tmpdir(), "breadboard-ruflo-attachment-test-"),
+  );
+  let materialized;
+  try {
+    const bytes = Buffer.from("ruflo image fixture");
+    materialized = runManager.materializeRufloImageAttachments(repository, [
+      {
+        type: "image",
+        name: "screenshot.png",
+        dataUrl: `data:image/png;base64,${bytes.toString("base64")}`,
+      },
+    ]);
+    assert.equal(materialized.paths.length, 1);
+    assert.deepEqual(fs.readFileSync(materialized.paths[0]), bytes);
+
+    const instruction = runManager.rufloImageInstruction(
+      repository,
+      materialized.paths,
+    );
+    assert.match(instruction, /Claude Code's Read tool/);
+    assert.match(instruction, /screenshot-1\.png/);
+    assert.match(instruction, /read-only run inputs/);
+
+    const attachmentDirectory = path.dirname(materialized.paths[0]);
+    materialized.cleanup();
+    assert.equal(fs.existsSync(attachmentDirectory), false);
+    materialized = undefined;
+  } finally {
+    materialized?.cleanup();
+    fs.rmSync(repository, { recursive: true, force: true });
+  }
+});
+
+test("Ruflo carries image attachments through the chat, route, and swarm objective", () => {
+  const launcher = source("src/app/components/hermes/use-ruflo-agent.ts");
+  const terminal = source(
+    "src/app/components/hermes/dashboard-agent-terminal.tsx",
+  );
+  const gardenWorkspace = source(
+    "src/app/gardens/[clusterSlug]/workspace-client.tsx",
+  );
+  const route = source("src/app/api/ruflo/runs/route.ts");
+  const manager = source("src/lib/ruflo/run-manager.ts");
+
+  assert.match(launcher, /async \(task: string, attachments: readonly ChatAttachment\[\] = \[\]\)/);
+  assert.match(launcher, /chatMessageAttachments\(attachments\)/);
+  assert.match(launcher, /attachments: imageAttachments/);
+  assert.match(launcher, /attachments: persistedAttachments/);
+  assert.match(
+    terminal,
+    /rufloTask \|\| "Review the attached screenshot and implement the requested fix\."/,
+  );
+  assert.match(terminal, /await launchRufloRun\([\s\S]*?pendingAttachments/);
+  assert.match(
+    terminal,
+    /if \(ruflo\.agent\)[\s\S]*?chatAttachments\.length === 0[\s\S]*?setChatAttachments\(\[\]\)[\s\S]*?void launchRufloRun\([\s\S]*?pendingAttachments/,
+  );
+  assert.match(
+    gardenWorkspace,
+    /async function launchRuflo\([\s\S]*?attachments: readonly ChatAttachment\[\] = \[\]/,
+  );
+  assert.match(
+    gardenWorkspace,
+    /fetch\("\/api\/ruflo\/runs"[\s\S]*?attachments: attachments\.filter/,
+  );
+  assert.match(
+    gardenWorkspace,
+    /const rufloAttachments = pendingAttachments[\s\S]*?await launchRuflo\([\s\S]*?rufloAttachments/,
+  );
+  assert.match(
+    gardenWorkspace,
+    /if \(rufloAgent\)[\s\S]*?setChatAttachments\(\[\]\)[\s\S]*?void launchRuflo\([\s\S]*?pendingAttachments/,
+  );
+
+  assert.match(route, /normalizeChatMessageAttachments\(body\.attachments\)/);
+  assert.match(route, /\.filter\(\(attachment\) => attachment\.type === "image"\)/);
+  assert.match(route, /attachments,/);
+  assert.match(manager, /materializeRufloImageAttachments/);
+  assert.match(manager, /\[baseObjective, attachmentContext\]/);
+  assert.match(manager, /part\.replace\(\/\\s\+\/g, " "\)/);
+  assert.match(manager, /\[prompt, attachmentContext\]/);
+  assert.match(manager, /spawnExecutor\(executorPrompt\)/);
+  assert.match(manager, /attachmentCount: materialized\.paths\.length/);
 });
 
 test("Ruflo reports what is missing instead of failing silently", () => {

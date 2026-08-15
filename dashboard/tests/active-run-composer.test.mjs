@@ -278,20 +278,20 @@ test("Stop is idempotent and cancelled output remains distinct from failure", ()
     sessionHook,
     /case "cancelled":\s*failed = false;\s*setError\(null\)/,
   );
-  assert.match(runtimePanel, /stateLabel=\{responseInterrupted \? "Interrupted" : undefined\}/);
+  assert.match(runtimePanel, /stateLabel=\{\s*responseInterrupted\s*\?\s*"Interrupted"/);
 });
 
 test("runtime problems render as recoverable in-chat errors", () => {
   // The failure renders inside the assistant message that broke. Interrupted
-  // and Try again occupy its normal lifecycle row, with the error text below.
-  const stateRow = runtimePanel.indexOf(
-    'stateLabel={responseInterrupted ? "Interrupted" : undefined}',
+  // occupies its normal lifecycle row, with the error text below. Retry stays
+  // in the response action row instead of being repeated as a text control.
+  const stateRow = runtimePanel.search(
+    /stateLabel=\{\s*responseInterrupted\s*\?\s*"Interrupted"/,
   );
   assert.ok(stateRow >= 0);
   const stateBlock = runtimePanel.slice(stateRow, stateRow + 900);
-  assert.match(stateBlock, /stateAction=/);
-  assert.match(stateBlock, /Try again/);
-  assert.match(stateBlock, /retryAssistantAsBranch\(index\)/);
+  assert.doesNotMatch(stateBlock, /stateAction=/);
+  assert.doesNotMatch(stateBlock, /Try again/);
   const inlineError = runtimePanel.indexOf(
     "{failureInline && index === lastAssistantIndex ? (",
   );
@@ -308,9 +308,18 @@ test("runtime problems render as recoverable in-chat errors", () => {
   assert.match(fallbackBlock, /role="alert"/);
   assert.match(fallbackBlock, /<AssistantResponseMeta/);
   assert.match(fallbackBlock, /label="Interrupted"/);
-  assert.match(fallbackBlock, /Try again/);
+  assert.match(fallbackBlock, /action=/);
+  assert.match(fallbackBlock, /aria-label="Regenerate response"/);
+  assert.doesNotMatch(fallbackBlock, /Try again/);
   assert.doesNotMatch(fallbackBlock, /Response interrupted/);
   assert.doesNotMatch(fallbackBlock, /backdrop-blur|red-950/);
+
+  const actions = runtimePanel.indexOf("<AssistantMessageActions", stateRow);
+  assert.ok(actions > stateRow);
+  const actionsBlock = runtimePanel.slice(actions, actions + 1_500);
+  assert.match(actionsBlock, /onRetry=/);
+  assert.match(actionsBlock, /\(!responseInterrupted \|\| !disabled\)/);
+  assert.match(actionsBlock, /retryAssistantAsBranch\(index\)/);
 });
 
 test("a newly opened turn stream ignores stale zero-output completion events", () => {
@@ -333,6 +342,23 @@ test("an accepted run is reattached when its pre-dispatch viewer closes", () => 
     /if \(streamFailedBeforeDispatch\)[\s\S]*setRunToResume\(\{[\s\S]*runId: responseBody\.runId/,
   );
   assert.match(sessionHook, /transition\("connecting"\)/);
+});
+
+test("an active turn reconnects after a transient event-stream network drop", () => {
+  assert.match(sessionHook, /AgentStreamDisconnectedError/);
+  assert.match(sessionHook, /isRecoverableAgentStreamDisconnect\(streamError\)/);
+  assert.match(sessionHook, /agentStreamReconnectDelay\(reconnectAttempt\)/);
+  assert.match(sessionHook, /waitForAgentStreamReconnect\(delayMs, controller\.signal\)/);
+  assert.match(
+    sessionHook,
+    /return streamEvents\([\s\S]*reconnectAttempt \+ 1,[\s\S]*controller,[\s\S]*seenEventFrames/,
+  );
+  assert.match(sessionHook, /if \(seenEventFrames\.has\(dataLine\)\) continue/);
+  assert.match(sessionHook, /seenEventFrames\.add\(dataLine\)/);
+  assert.match(
+    sessionHook,
+    /failed \|\|[\s\S]*stopRequestedRef\.current \|\|[\s\S]*controller\.signal\.aborted/,
+  );
 });
 
 test("send and stop use one stable responsive button shell", () => {

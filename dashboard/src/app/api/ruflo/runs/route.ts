@@ -10,6 +10,7 @@ import {
 } from "@/lib/agent-edits/snapshot.ts";
 import { resolveCommandMessage } from "@/lib/hermes/commands.ts";
 import { ApiError } from "@/lib/hermes/route-core.ts";
+import { normalizeChatMessageAttachments } from "@/lib/chat-attachments.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -18,13 +19,23 @@ export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
     const text = await request.text();
-    if (text.length > 1024 * 1024) {
+    // Four 10 MiB images expand by roughly one third when encoded as data URLs.
+    if (text.length > 64 * 1024 * 1024) {
       return NextResponse.json({ ok: false, error: "payload_too_large" }, { status: 413 });
     }
     const body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
     const task = typeof body.task === "string" ? body.task.trim() : "";
     const gardenSlug =
       typeof body.gardenSlug === "string" ? body.gardenSlug.trim() : null;
+    if (body.attachments !== undefined && !Array.isArray(body.attachments)) {
+      return NextResponse.json(
+        { ok: false, error: "invalid_attachments" },
+        { status: 400 },
+      );
+    }
+    const attachments = normalizeChatMessageAttachments(body.attachments)
+      .filter((attachment) => attachment.type === "image")
+      .slice(0, 4);
     if (!task) {
       return NextResponse.json({ ok: false, error: "empty_task" }, { status: 400 });
     }
@@ -63,6 +74,7 @@ export async function POST(request: Request) {
       repositoryPath: repository.path,
       repositoryName: repository.name,
       gardenSlug: repository.gardenSlug,
+      attachments,
     });
     rememberRunSnapshot(run.runId, repository.path, snapshotBefore);
     return NextResponse.json(
@@ -98,6 +110,8 @@ export async function POST(request: Request) {
       "repository_not_connected",
       "repository_unavailable",
       "garden_required",
+      "invalid_image_attachment",
+      "image_attachment_too_large",
     ].includes(code)
       ? 400
       : 502;

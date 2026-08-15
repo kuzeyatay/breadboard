@@ -14,6 +14,7 @@ import chokidar from "chokidar"
 import { ProcessedContent } from "./plugins/vfile"
 import { Argv, BuildCtx } from "./util/ctx"
 import { glob, toPosixPath } from "./util/glob"
+import { isQuartzInternalWatchPath } from "./util/watch"
 import { trace } from "./util/trace"
 import { options } from "./util/sourcemap"
 import { Mutex } from "async-mutex"
@@ -127,6 +128,7 @@ async function startWatching(
     contentMap,
     ignored: (fp) => {
       const pathStr = toPosixPath(fp.toString())
+      if (isQuartzInternalWatchPath(pathStr)) return true
       if (pathStr.startsWith(".git/")) return true
       if (gitIgnoredMatcher(pathStr)) return true
       for (const pattern of cfg.configuration.ignorePatterns) {
@@ -144,9 +146,16 @@ async function startWatching(
 
   const watcher = chokidar.watch(".", {
     awaitWriteFinish: { stabilityThreshold: 250 },
+    // Prune internal trees during discovery; filtering emitted events is too
+    // late because chokidar may already hold directory watcher handles.
+    ignored: buildData.ignored,
     persistent: true,
     cwd: argv.directory,
     ignoreInitial: true,
+    // Native recursive watcher handles can keep Learn's garden directory open
+    // during its atomic promotion rename on Windows. Polling observes ordinary
+    // content changes without holding those directory handles.
+    usePolling: process.platform === "win32",
   })
 
   const changes: ChangeEvent[] = []

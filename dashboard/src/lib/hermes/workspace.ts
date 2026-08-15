@@ -99,7 +99,12 @@ export function resolveWorkspace(
     }
   }
 
-  const directory = request.filesystemMode === "full"
+  // Actual-Electron QA runs shared development code but never authorizes that
+  // checkout as a terminal working directory. Even a surface-only probe stays
+  // physically inside the disposable Hermes workspace.
+  const directory = process.env.BREADBOARD_QA_MODE === "1"
+    ? runtimeDirectory
+    : request.filesystemMode === "full"
     ? resolveInitialDirectory(request.previousDirectory, runtimeDirectory)
     : runtimeDirectory;
   return { directory, runtimeDirectory, workspaceKey };

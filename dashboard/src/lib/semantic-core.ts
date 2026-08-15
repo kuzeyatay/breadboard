@@ -93,6 +93,13 @@ export interface ClaimStore {
   gardenId: string;
   sourceSetHash: string;
   claims: ClaimRecord[];
+  /** Present only when active Learn projected claims verbatim from its validated
+   * model-authored Learning Unit Contract. It lets the final gate enforce the
+   * stricter page/contract/store bijection without changing legacy gardens. */
+  projection?: {
+    authority: 'model-authored-learning-unit-contract';
+    contractPath: '.breadboard/learning-unit-contract.json';
+  };
   migration?: {
     fromSchema: string;
     version: number;

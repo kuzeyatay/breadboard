@@ -25,7 +25,8 @@ function createDatabase() {
     );
     CREATE TABLE conversations (
       id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT,
-      default_garden_id INTEGER, created_at TEXT
+      default_garden_id INTEGER, created_at TEXT,
+      temporary INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE conversation_messages (
       id INTEGER PRIMARY KEY, conversation_id INTEGER, role TEXT, surface TEXT,
@@ -145,6 +146,21 @@ test("totals count only the signed-in user's own rows", () => {
   assert.equal(stats.totals.thinkingMs, 90_000);
   assert.equal(stats.totals.measuredReplies, 1);
   assert.deepEqual(stats.invites, { created: 2, redeemed: 1, open: 1 });
+});
+
+test("a temporary chat is not counted or named here either", () => {
+  const db = createDatabase();
+  addConversation(db, 1, { userId: 1, title: "Kept", at: "2026-06-01 08:00:00" });
+  db.prepare(
+    "INSERT INTO conversations (id, user_id, title, default_garden_id, created_at, temporary) VALUES (2, 1, 'Off record', NULL, '2026-01-02 08:00:00', 1)",
+  ).run();
+
+  const stats = readProfileStats(db, 1, { today: "2026-06-02" });
+
+  assert.equal(stats.totals.conversations, 1);
+  // The oldest row is the temporary one, and it must not become "your first
+  // conversation" on a page the chat itself never appears on.
+  assert.equal(stats.firstConversation?.title, "Kept");
 });
 
 // -------------------------------------------------------------- agent runs

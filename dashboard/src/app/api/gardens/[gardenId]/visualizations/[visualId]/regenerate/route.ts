@@ -6,6 +6,8 @@ import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 import { validateVisualSpec } from '@/lib/visual-spec';
+import { buildCanonicalSourceAnchors } from '@/lib/final-garden-state';
+import { normalizeLearningUnits } from '@/lib/learning-unit-contract';
 import {
   appendGardenEvent,
   findVisualBlockById,
@@ -21,7 +23,10 @@ import {
   replaceGeneratedVisualBlock,
   rollbackGeneratedVisualization,
 } from '@/lib/generated-visuals';
-import { loadVisualizationPlan } from '@/lib/visualization-opportunities';
+import {
+  loadVisualizationPlan,
+  persistedVisualizationOpportunityContractProblems,
+} from '@/lib/visualization-opportunities';
 
 export const dynamic = 'force-dynamic';
 
@@ -127,6 +132,55 @@ export async function POST(
         targetHeading: currentManifest.targetHeading,
         insertionAnchor: currentManifest.insertionAnchor,
       };
+      const contractPath = path.join(gardenDir, '.breadboard', 'learning-unit-contract.json');
+      let currentUnit: ReturnType<typeof normalizeLearningUnits>[number] | undefined;
+      try {
+        const persistedContract = JSON.parse(fs.readFileSync(contractPath, 'utf-8'));
+        currentUnit = normalizeLearningUnits(persistedContract, { modelAuthoredOnly: true })
+          .find((unit) => unit.id === opportunity.learningUnitId);
+      } catch {
+        currentUnit = undefined;
+      }
+      if (!currentUnit) {
+        return NextResponse.json(
+          { error: 'The current learning-unit contract is missing; regenerate the Learn plan before replacing this visual.' },
+          { status: 409, headers },
+        );
+      }
+      const contractProblems = persistedVisualizationOpportunityContractProblems({
+        unit: currentUnit,
+        opportunity,
+      });
+      if (contractProblems.length > 0) {
+        return NextResponse.json(
+          {
+            error: 'The saved visualization opportunity is stale and no longer matches the current learning-unit contract.',
+            details: contractProblems,
+          },
+          { status: 409, headers },
+        );
+      }
+      const availableSourceAnchorIds = new Set(
+        Object.keys(buildCanonicalSourceAnchors(gardenDir, { allowInferredFormulaText: false })),
+      );
+      const opportunitySourceAnchorIds = Array.isArray(opportunity.sourceAnchorIds)
+        ? opportunity.sourceAnchorIds
+        : [];
+      const missingSourceAnchorIds = opportunitySourceAnchorIds.filter(
+        (anchorId) => !availableSourceAnchorIds.has(anchorId),
+      );
+      if (
+        !Array.isArray(opportunity.sourceAnchorIds) ||
+        missingSourceAnchorIds.length > 0
+      ) {
+        return NextResponse.json(
+          {
+            error: 'The saved visualization opportunity references source anchors that are not in the canonical registry.',
+            details: missingSourceAnchorIds,
+          },
+          { status: 409, headers },
+        );
+      }
       const surrounding = generatedContent.slice(
         Math.max(0, generatedBlock.index - 4000),
         generatedBlock.index + generatedBlock.fullMatch.length + 2500,
@@ -139,7 +193,7 @@ export async function POST(
         gardenDir,
         opportunity,
         pageMarkdown: surrounding,
-        availableSourceAnchorIds: new Set(opportunity.sourceAnchorIds),
+        availableSourceAnchorIds,
         onEvent: (event) => appendGardenEvent(contentPath, cluster.slug, event.type, {
           ...event.data,
           pageId: relativePage.replace(/\.md$/i, ''),

@@ -30,6 +30,7 @@ import {
   useChatAutoScroll,
 } from "@/app/components/use-chat-auto-scroll";
 import BreadboardLoader from "@/app/components/breadboard-loader";
+import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
 import ActivityPanel from "./activity-panel";
 import InlineBrowserRun from "./inline-browser-run";
 import InlineAgentBrowserRun from "./inline-agent-browser-run";
@@ -729,9 +730,14 @@ export default function AgentRuntimePanel({
   );
   const respondingToInlineSelection =
     activeRun && messages.at(-1)?.textSelection?.mode === "inline";
-  const transcriptScrollRef = useChatAutoScroll<HTMLDivElement>({
-    isResponding:
-      (activeRun || streaming) && !respondingToInlineSelection,
+  const transcriptResponding =
+    (activeRun || streaming) && !respondingToInlineSelection;
+  const {
+    ref: transcriptScrollRef,
+    awayFromBottom: transcriptAwayFromBottom,
+    scrollToBottom: jumpToNewestMessage,
+  } = useChatAutoScroll<HTMLDivElement>({
+    isResponding: transcriptResponding,
     responseKey: visibleResponseKey,
     contentKey: visibleScrollKey,
   });
@@ -1170,6 +1176,10 @@ export default function AgentRuntimePanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {/* Positioning context for the jump control, so it floats at the foot of
+          the transcript rather than below the composer. The transcript keeps
+          its own indentation; only this wrapper is new. */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={transcriptScrollRef} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-4 py-5">
           {messages.length === 0 ? (
@@ -1208,12 +1218,6 @@ export default function AgentRuntimePanel({
                     !isExternalAgentRunMessage(message) &&
                     (message.interrupted ||
                       (failureInline && index === lastAssistantIndex)),
-                );
-                const canRetryResponseState = Boolean(
-                  responseInterrupted &&
-                    onRetryMessage &&
-                    !activeRun &&
-                    !disabled,
                 );
                 const delegatedTurnHasContinuation = Boolean(
                   message.delegatedAgentRun === true &&
@@ -2159,17 +2163,6 @@ export default function AgentRuntimePanel({
                                 : undefined
                           }
                           stateFailed={responseInterrupted}
-                          stateAction={
-                            canRetryResponseState ? (
-                              <button
-                                type="button"
-                                onClick={() => retryAssistantAsBranch(index)}
-                                className="px-1.5 py-1 text-[11px] font-medium text-[var(--botanical)] underline-offset-2 transition hover:underline"
-                              >
-                                Try again
-                              </button>
-                            ) : undefined
-                          }
                         />
                         {message.memoryUpdated ? (
                           <div className="mb-1.5 flex items-center gap-1.5 text-xs text-[var(--ink-muted)]">
@@ -2245,7 +2238,7 @@ export default function AgentRuntimePanel({
                             : undefined;
                         })()}
                         onRetry={
-                          !responseInterrupted &&
+                          (!responseInterrupted || !disabled) &&
                           onRetryMessage &&
                           !activeRun &&
                           (message.interrupted || index === lastAssistantIndex)
@@ -2291,9 +2284,24 @@ export default function AgentRuntimePanel({
                     <button
                       type="button"
                       onClick={() => retryAssistantAsBranch(lastAssistantIndex)}
-                      className="px-1.5 py-1 text-[11px] font-medium text-[var(--botanical)] underline-offset-2 transition hover:underline"
+                      className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] focus:outline-none focus:ring-2 focus:ring-[var(--line-strong)]"
+                      title="Regenerate response"
+                      aria-label="Regenerate response"
                     >
-                      Try again
+                      <svg
+                        className="h-4 w-4"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={1.7}
+                        aria-hidden="true"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M20 6v5h-5M4 18v-5h5m9.7-3A7 7 0 0 0 6.1 7.1L4 11m16 2-2.1 3.9A7 7 0 0 1 5.3 14"
+                        />
+                      </svg>
                     </button>
                   ) : undefined
                 }
@@ -2302,6 +2310,12 @@ export default function AgentRuntimePanel({
             </div>
           ) : null}
         </div>
+      </div>
+        <ChatJumpToBottom
+          visible={transcriptAwayFromBottom}
+          busy={Boolean(transcriptResponding)}
+          onJump={jumpToNewestMessage}
+        />
       </div>
 
       {selectionMenu ? (

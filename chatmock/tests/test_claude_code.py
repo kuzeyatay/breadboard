@@ -151,6 +151,46 @@ class ClaudeCodeBridgeTests(unittest.TestCase):
         self.assertEqual(command[command.index("--effort") + 1], "high")
         self.assertEqual(json.loads(captured["input"]), [{"role": "user", "content": "hello"}])
 
+    def test_one_call_outlasts_a_whole_generated_mini_app(self) -> None:
+        # The in-chat visualizer asks for a complete three-file app as a single
+        # structured tool argument. A replayed generation took 265s at default
+        # effort, and real turns add `--effort high` and a far longer
+        # conversation, so a budget near that measurement cuts finished work off
+        # mid-answer — which is what the old 240s ceiling did.
+        self.assertGreaterEqual(claude_code._request_timeout_seconds(), 480)
+        # ...but it still has to lose to the OpenAI client's own ten-minute
+        # default, or the caller reports a bare read timeout instead of the
+        # explanation below.
+        self.assertLess(claude_code._MAX_REQUEST_TIMEOUT_SECONDS, 600)
+
+    def test_an_unfinished_call_reports_the_limit_it_hit(self) -> None:
+        def fake_run(command, **kwargs):
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        with (
+            patch.object(claude_code, "_claude_executable", return_value="claude"),
+            patch.object(subprocess, "run", side_effect=fake_run),
+            patch.dict("os.environ", {"CHATMOCK_CLAUDE_CODE_TIMEOUT_SECONDS": "300"}),
+        ):
+            with self.assertRaises(claude_code.ProviderError) as caught:
+                claude_code._run_cli({"messages": []}, "claude-sonnet-5")
+
+        # The message is the assistant's answer, so it must say what the limit
+        # was rather than leave "timed out" to be read as a dead end.
+        self.assertIn("300 seconds", str(caught.exception))
+
+    def test_the_timeout_override_is_clamped_to_a_usable_range(self) -> None:
+        for value, expected in (
+            ("900", claude_code._MAX_REQUEST_TIMEOUT_SECONDS),
+            ("1", claude_code._MIN_REQUEST_TIMEOUT_SECONDS),
+            ("not-a-number", claude_code._DEFAULT_REQUEST_TIMEOUT_SECONDS),
+            ("360", 360),
+        ):
+            with patch.dict(
+                "os.environ", {"CHATMOCK_CLAUDE_CODE_TIMEOUT_SECONDS": value}
+            ):
+                self.assertEqual(claude_code._request_timeout_seconds(), expected)
+
     def test_image_parts_become_readable_files_for_the_cli(self) -> None:
         # The conversation reaches the CLI as stdin prompt text, so an inline
         # data URL arrives as tens of thousands of base64 tokens the model can

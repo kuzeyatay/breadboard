@@ -6,6 +6,7 @@ import {
   alignSemanticConceptAliasesWithRegistry,
   aliasConflicts,
   compactSemanticText,
+  conceptId,
   createEmptyClaimStore,
   createEmptyConceptRegistry,
   isGenericFillerClaim,
@@ -25,6 +26,7 @@ import {
   type ClaimRecord,
   type ClaimStore,
   type ConceptAliasRepair,
+  type ConceptRecord,
   type ConceptRegistry,
   type ConceptRole,
   type KnowledgeClaimPlan,
@@ -58,6 +60,23 @@ export interface SemanticMigrationReport {
   ambiguousMappings: string[];
   diagnostics: string[];
   metrics: SemanticHealthMetrics;
+}
+
+export interface ModelAuthoredClaimProjectionUnit {
+  id: string;
+  knowledgeClaims?: readonly KnowledgeClaimPlan[];
+}
+
+export interface ModelAuthoredClaimProjectionPage {
+  learningUnitId: string;
+  relPath: string;
+}
+
+export interface ModelAuthoredClaimProjectionResult {
+  claimCount: number;
+  pageCount: number;
+  changedFiles: string[];
+  backupDir?: string;
 }
 
 export interface ParsedMarkdown {
@@ -430,6 +449,272 @@ export function readGardenSemanticArtifacts(
   };
 }
 
+const MODEL_AUTHORED_CLAIM_AUTHORITY = 'model-authored-learning-unit-contract' as const;
+
+interface ClaimProjectionPageState extends ModelAuthoredClaimProjectionPage {
+  claimIds: string[];
+}
+
+function uniqueInOrder(values: readonly string[]): string[] {
+  return values.filter((value, index) => values.indexOf(value) === index);
+}
+
+function claimIdBijectionProblems(
+  page: ClaimProjectionPageState,
+  expectedIds: readonly string[],
+): string[] {
+  const problems: string[] = [];
+  const duplicateActual = page.claimIds.filter((id, index) => page.claimIds.indexOf(id) !== index);
+  if (duplicateActual.length > 0) {
+    problems.push(`${page.relPath}: duplicate claimIds ${uniqueInOrder(duplicateActual).join(', ')}`);
+  }
+  const expected = new Set(expectedIds);
+  const actual = new Set(page.claimIds);
+  const missing = expectedIds.filter((id) => !actual.has(id));
+  const unexpected = page.claimIds.filter((id) => !expected.has(id));
+  if (missing.length > 0) problems.push(`${page.relPath}: missing model-authored claimIds ${missing.join(', ')}`);
+  if (unexpected.length > 0) problems.push(`${page.relPath}: carries stale or unsupported claimIds ${uniqueInOrder(unexpected).join(', ')}`);
+  return problems;
+}
+
+function buildModelAuthoredClaimProjection(input: {
+  gardenId: string;
+  sourceSetHash: string;
+  registry: ConceptRegistry;
+  units: readonly ModelAuthoredClaimProjectionUnit[];
+  pages: readonly ClaimProjectionPageState[];
+}): { store: ClaimStore; problems: string[] } {
+  const problems: string[] = [];
+  if (input.registry.gardenId && input.registry.gardenId !== input.gardenId) {
+    problems.push(`concept registry gardenId ${input.registry.gardenId} does not match ${input.gardenId}`);
+  }
+  if (input.registry.sourceSetHash && input.registry.sourceSetHash !== input.sourceSetHash) {
+    problems.push('concept registry sourceSetHash does not match the active Learning Unit Contract');
+  }
+
+  const unitIds = new Set<string>();
+  for (const unit of input.units) {
+    if (!unit.id) problems.push('model-authored claim projection encountered a unit without an id');
+    else if (unitIds.has(unit.id)) problems.push(`duplicate Learning Unit Contract id ${unit.id}`);
+    unitIds.add(unit.id);
+  }
+
+  const pagesByUnit = new Map<string, ClaimProjectionPageState[]>();
+  for (const page of input.pages) {
+    const relPath = normalizedRel(page.relPath);
+    const normalizedPage = { ...page, relPath };
+    const list = pagesByUnit.get(page.learningUnitId) ?? [];
+    list.push(normalizedPage);
+    pagesByUnit.set(page.learningUnitId, list);
+    if (!unitIds.has(page.learningUnitId)) {
+      problems.push(`${relPath}: learner page references unknown model-authored unit ${page.learningUnitId}`);
+    }
+  }
+
+  const conceptBySlug = new Map(input.registry.concepts.map((concept) => [concept.slug, concept]));
+  const claims: ClaimRecord[] = [];
+  const seenClaimIds = new Set<string>();
+
+  for (const unit of input.units) {
+    const pages = pagesByUnit.get(unit.id) ?? [];
+    if (pages.length !== 1) {
+      problems.push(
+        pages.length === 0
+          ? `unit ${unit.id}: no final learner page exists for model-authored claims`
+          : `unit ${unit.id}: ${pages.length} final learner pages compete for model-authored claims`,
+      );
+    }
+    const page = pages[0];
+    const expectedIds: string[] = [];
+    for (const claim of unit.knowledgeClaims ?? []) {
+      if (!claim || typeof claim.text !== 'string' || !claim.text) {
+        problems.push(`unit ${unit.id}: model-authored knowledge claim has no text`);
+        continue;
+      }
+      if (isGenericFillerClaim(claim.text)) {
+        problems.push(`unit ${unit.id}: generic model-authored knowledge claim is not persistable: ${claim.text}`);
+        continue;
+      }
+      const subject = conceptBySlug.get(claim.subject);
+      const object = claim.object ? conceptBySlug.get(claim.object) : undefined;
+      if (!subject) problems.push(`unit ${unit.id}: claim subject is not a registered canonical concept: ${claim.subject}`);
+      if (claim.object && !object) problems.push(`unit ${unit.id}: claim object is not a registered canonical concept: ${claim.object}`);
+
+      const authoredConceptSlugs = [claim.subject, ...(claim.object ? [claim.object] : []), ...(claim.conceptIds ?? [])];
+      const projectedConceptIds: string[] = [];
+      for (const slug of authoredConceptSlugs) {
+        const concept = conceptBySlug.get(slug);
+        if (!concept) {
+          problems.push(`unit ${unit.id}: claim concept is not registered: ${slug}`);
+          continue;
+        }
+        if (!projectedConceptIds.includes(concept.id)) projectedConceptIds.push(concept.id);
+      }
+      if (!subject || (claim.object && !object)) continue;
+
+      const id = stableClaimId(unit.id, claim.text);
+      if (seenClaimIds.has(id)) {
+        problems.push(`unit ${unit.id}: duplicate model-authored claim identity ${id}`);
+        continue;
+      }
+      seenClaimIds.add(id);
+      expectedIds.push(id);
+      claims.push({
+        id,
+        // These semantic fields are copied from the validated model contract,
+        // not compacted, normalized, sorted, or inferred from page prose.
+        text: claim.text,
+        subject: subject.id,
+        predicate: claim.predicate,
+        ...(object ? { object: object.id } : {}),
+        conceptIds: projectedConceptIds,
+        learningUnitId: unit.id,
+        pageRelPath: page?.relPath ?? '',
+        evidenceAnchors: [...claim.evidenceAnchors],
+        derivationAnchors: [...(claim.derivationAnchors ?? [])],
+        status: claim.evidenceAnchors.length > 0
+          ? 'source-verified'
+          : (claim.derivationAnchors?.length ?? 0) > 0
+            ? 'synthesized'
+            : 'unverified',
+        connectedClaimIds: [...(claim.connectedClaimIds ?? [])],
+      });
+    }
+    if (page) problems.push(...claimIdBijectionProblems(page, expectedIds));
+  }
+
+  for (const claim of claims) {
+    for (const connectedId of claim.connectedClaimIds) {
+      if (!seenClaimIds.has(connectedId)) {
+        problems.push(`${claim.id}: connectedClaimIds references a non-current model claim ${connectedId}`);
+      }
+    }
+  }
+
+  return {
+    store: {
+      schemaVersion: SEMANTIC_SCHEMA_VERSION,
+      gardenId: input.gardenId,
+      sourceSetHash: input.sourceSetHash,
+      claims,
+      projection: {
+        authority: MODEL_AUTHORED_CLAIM_AUTHORITY,
+        contractPath: LEARNING_UNIT_CONTRACT_REL_PATH,
+      },
+    },
+    problems: [...new Set(problems)],
+  };
+}
+
+function readClaimProjectionPage(gardenDir: string, page: ModelAuthoredClaimProjectionPage): ClaimProjectionPageState {
+  const relPath = normalizedRel(page.relPath);
+  const absPath = path.join(gardenDir, ...relPath.split('/'));
+  if (!fs.existsSync(absPath)) throw new Error(`${relPath}: final learner page does not exist`);
+  const parsed = parseSemanticMarkdown(readFileSyncWithRetry(absPath, 'utf8'));
+  const persistedUnitId = semanticFrontmatterString(parsed.data, 'learningUnitId');
+  if (persistedUnitId !== page.learningUnitId) {
+    throw new Error(`${relPath}: learningUnitId ${persistedUnitId || '(missing)'} does not match ${page.learningUnitId}`);
+  }
+  return {
+    learningUnitId: page.learningUnitId,
+    relPath,
+    claimIds: semanticFrontmatterArray(parsed.data, 'claimIds'),
+  };
+}
+
+/**
+ * Replace the active claim store with an exact structural projection of the
+ * validated model-authored contract after final learner-page paths exist.
+ * This function never derives claims from zettel notes, titles, or prose.
+ */
+export function projectModelAuthoredClaimsToStore(input: {
+  gardenDir: string;
+  gardenId: string;
+  sourceSetHash: string;
+  units: readonly ModelAuthoredClaimProjectionUnit[];
+  pages: readonly ModelAuthoredClaimProjectionPage[];
+}): ModelAuthoredClaimProjectionResult {
+  const { registry } = readGardenSemanticArtifacts(input.gardenDir, input.gardenId, input.sourceSetHash);
+  const pages = input.pages.map((page) => readClaimProjectionPage(input.gardenDir, page));
+  const projection = buildModelAuthoredClaimProjection({ ...input, registry, pages });
+  if (projection.problems.length > 0) {
+    throw new Error(`Model-authored claim projection failed: ${projection.problems.join('; ')}`);
+  }
+  const write = performWritesWithBackup(input.gardenDir, [
+    { relPath: CLAIM_STORE_REL_PATH, content: stableJson(projection.store) },
+  ], 'model-authored-claims');
+  return {
+    claimCount: projection.store.claims.length,
+    pageCount: pages.length,
+    changedFiles: write.changedFiles,
+    ...(write.backupDir ? { backupDir: write.backupDir } : {}),
+  };
+}
+
+/** Strict active-Learn integrity check. Legacy claim stores without the marker
+ * retain their migration validation behavior and are not subjected to this
+ * contract/page/store bijection. */
+export function strictModelAuthoredClaimProjectionProblems(gardenDir: string): string[] {
+  try {
+    const artifacts = readGardenSemanticArtifacts(gardenDir);
+    if (artifacts.claims.projection?.authority !== MODEL_AUTHORED_CLAIM_AUTHORITY) return [];
+    const contract = readJson<Record<string, unknown>>(path.join(gardenDir, LEARNING_UNIT_CONTRACT_REL_PATH), {});
+    if (!Array.isArray(contract.learningUnits)) return ['strict model-authored claim projection: Learning Unit Contract has no learningUnits array'];
+    const units: ModelAuthoredClaimProjectionUnit[] = [];
+    const shapeProblems: string[] = [];
+    for (const [index, value] of contract.learningUnits.entries()) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        shapeProblems.push(`strict model-authored claim projection: learningUnits[${index}] is not an object`);
+        continue;
+      }
+      const record = value as Record<string, unknown>;
+      const id = typeof record.id === 'string' ? record.id : '';
+      if (!id || !Array.isArray(record.knowledgeClaims)) {
+        shapeProblems.push(`strict model-authored claim projection: learningUnits[${index}] has invalid id or knowledgeClaims`);
+        continue;
+      }
+      units.push({ id, knowledgeClaims: record.knowledgeClaims as unknown as KnowledgeClaimPlan[] });
+    }
+
+    const pages: ClaimProjectionPageState[] = [];
+    for (const file of walkMarkdown(gardenDir)) {
+      const parsed = parseSemanticMarkdown(readFileSyncWithRetry(file.absPath, 'utf8'));
+      if (!isLearnerPage(file.relPath, parsed.data)) continue;
+      const learningUnitId = semanticFrontmatterString(parsed.data, 'learningUnitId');
+      if (!learningUnitId) continue;
+      pages.push({
+        learningUnitId,
+        relPath: file.relPath,
+        claimIds: semanticFrontmatterArray(parsed.data, 'claimIds'),
+      });
+    }
+    const expected = buildModelAuthoredClaimProjection({
+      gardenId: artifacts.claims.gardenId,
+      sourceSetHash: String(contract.sourceSetHash ?? artifacts.claims.sourceSetHash),
+      registry: artifacts.registry,
+      units,
+      pages,
+    });
+    const problems = [...shapeProblems, ...expected.problems];
+    const expectedById = new Map(expected.store.claims.map((claim) => [claim.id, claim]));
+    const actualById = new Map(artifacts.claims.claims.map((claim) => [claim.id, claim]));
+    for (const [id, claim] of expectedById) {
+      const actual = actualById.get(id);
+      if (!actual) {
+        problems.push(`strict model-authored claim projection: missing canonical claim ${id}`);
+      } else if (JSON.stringify(actual) !== JSON.stringify(claim)) {
+        problems.push(`strict model-authored claim projection: canonical claim ${id} differs from the model-authored contract`);
+      }
+    }
+    for (const id of actualById.keys()) {
+      if (!expectedById.has(id)) problems.push(`strict model-authored claim projection: stale canonical claim ${id}`);
+    }
+    return [...new Set(problems)];
+  } catch (error) {
+    return [`strict model-authored claim projection could not be validated: ${error instanceof Error ? error.message : String(error)}`];
+  }
+}
+
 export function ensureGardenConceptRegistry(input: {
   gardenDir: string;
   gardenId: string;
@@ -477,6 +762,69 @@ export function ensureGardenConceptRegistry(input: {
     ], 'semantic-registry');
   }
   return registry;
+}
+
+/** Build the active Learn registry from the current model contract only. */
+export function buildModelAuthoredConceptRegistry(input: {
+  gardenId: string;
+  sourceSetHash: string;
+  concepts: readonly SemanticConceptPlan[];
+}): ConceptRegistry {
+  const bySlug = new Map<string, SemanticConceptPlan & { evidenceAnchors: string[] }>();
+  const termOwner = new Map<string, string>();
+  const claimTerm = (term: string, slug: string) => {
+    const key = compactSemanticText(term).toLocaleLowerCase();
+    if (!key) throw new Error(`Concept "${slug}" contains an empty canonical term`);
+    const owner = termOwner.get(key);
+    if (owner && owner !== slug) throw new Error(`Canonical concept term collision "${term}": ${owner}, ${slug}`);
+    termOwner.set(key, slug);
+  };
+  for (const concept of input.concepts) {
+    const canonicalSlug = normalizeConceptSlug(concept.slug);
+    if (canonicalSlug !== concept.slug || !isValidPublicConceptSlug(concept.slug)) {
+      throw new Error(`Invalid model-authored public concept slug: ${concept.slug || '(empty)'}`);
+    }
+    if (!compactSemanticText(concept.preferredLabel)) {
+      throw new Error(`Concept "${concept.slug}" has no model-authored preferredLabel`);
+    }
+    const normalizedAliases = concept.aliases.map((alias) => compactSemanticText(alias));
+    if (normalizedAliases.some((alias) => !alias) || new Set(normalizedAliases.map((alias) => alias.toLocaleLowerCase())).size !== normalizedAliases.length) {
+      throw new Error(`Concept "${concept.slug}" contains empty or duplicate aliases`);
+    }
+    const existing = bySlug.get(concept.slug);
+    if (existing) {
+      if (
+        existing.preferredLabel !== concept.preferredLabel ||
+        JSON.stringify(existing.aliases) !== JSON.stringify(concept.aliases)
+      ) {
+        throw new Error(`Concept "${concept.slug}" has inconsistent model-authored label or aliases across units`);
+      }
+      existing.evidenceAnchors = [...new Set([...existing.evidenceAnchors, ...concept.evidenceAnchors])].sort();
+      continue;
+    }
+    claimTerm(concept.slug.replace(/-/g, ' '), concept.slug);
+    claimTerm(concept.preferredLabel, concept.slug);
+    for (const alias of concept.aliases) claimTerm(alias, concept.slug);
+    bySlug.set(concept.slug, { ...concept, evidenceAnchors: [...new Set(concept.evidenceAnchors)].sort() });
+  }
+  return {
+    schemaVersion: SEMANTIC_SCHEMA_VERSION,
+    gardenId: input.gardenId,
+    sourceSetHash: input.sourceSetHash,
+    concepts: [...bySlug.values()].map((concept): ConceptRecord => ({
+      id: conceptId(concept.slug),
+      slug: concept.slug,
+      preferredLabel: concept.preferredLabel,
+      aliases: [...concept.aliases],
+      description: '',
+      broader: [],
+      narrower: [],
+      related: [],
+      relations: [],
+      evidenceAnchors: [...concept.evidenceAnchors],
+      status: concept.evidenceAnchors.length > 0 ? 'source-verified' : 'unverified',
+    })).sort((left, right) => left.slug.localeCompare(right.slug)),
+  };
 }
 
 export function performWritesWithBackup(
@@ -532,8 +880,11 @@ export function writeGardenConceptRegistryAndContract(input: {
   registry: ConceptRegistry;
   contract: unknown;
   planningMarkdown?: string;
+  strictModelAuthored?: boolean;
 }): { changedFiles: string[]; backupDir?: string } {
-  const reconciled = reconcileConceptRegistryAliases(input.registry);
+  const reconciled = input.strictModelAuthored
+    ? { registry: input.registry, conflicts: [] }
+    : reconcileConceptRegistryAliases(input.registry);
   if (reconciled.conflicts.length > 0) {
     const conflict = reconciled.conflicts[0];
     throw new Error(
@@ -1087,6 +1438,7 @@ export function validateGardenSemantics(gardenDir: string): {
       hardFailures.push(`${claim.id}: referenced page does not exist: ${claim.pageRelPath}`);
     }
   }
+  hardFailures.push(...strictModelAuthoredClaimProjectionProblems(gardenDir));
   const metrics = semanticHealthMetrics({ registry, claims, pages });
   for (const concept of registry.concepts) {
     const occurrences = pages.filter((page) => page.tags.includes(concept.slug)).length;

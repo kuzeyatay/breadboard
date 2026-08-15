@@ -94,7 +94,7 @@ export default function RegisterPage() {
                 required
                 minLength={3}
                 maxLength={30}
-                pattern="[a-zA-Z0-9_-]+"
+                pattern="[a-zA-Z0-9_\-]+"
                 className="neu-control w-full rounded-lg bg-gray-900 border border-gray-800 text-white px-4 py-2.5 text-sm placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
                 placeholder="your-username"
               />

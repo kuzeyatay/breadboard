@@ -104,6 +104,48 @@ test("dashboard env propagates dynamic ports, secrets and data locations", () =>
   assert.notEqual(dashboard.env["NEXTAUTH_SECRET"], "change-me");
 });
 
+test("hot-reload dashboard raises Next's dev heap without changing packaged runtime", () => {
+  const previousNodeOptions = process.env["NODE_OPTIONS"];
+  const previousDashboardMode = process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"];
+  try {
+    process.env["NODE_OPTIONS"] = "--trace-warnings";
+    delete process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"];
+
+    const packaged = fixture("packaged");
+    const devPaths = { ...packaged.paths, mode: "dev" as const };
+    const devDefinitions = buildServiceDefinitions({
+      paths: devPaths,
+      config: packaged.config,
+      binaries: packaged.binaries,
+    });
+    const devDashboard = devDefinitions.find((definition) => definition.id === "dashboard");
+    assert.ok(devDashboard);
+    const totalMemoryMb = Math.floor(os.totalmem() / (1024 * 1024));
+    const expectedHeapMb = Math.min(
+      24 * 1024,
+      Math.max(1024, Math.floor(totalMemoryMb * 0.75)),
+    );
+    assert.equal(
+      devDashboard.env["NODE_OPTIONS"],
+      `--trace-warnings --max-old-space-size=${expectedHeapMb}`,
+    );
+
+    const packagedDashboard = packaged.definitions.find(
+      (definition) => definition.id === "dashboard",
+    );
+    assert.ok(packagedDashboard);
+    assert.equal(packagedDashboard.env["NODE_OPTIONS"], undefined);
+  } finally {
+    if (previousNodeOptions === undefined) delete process.env["NODE_OPTIONS"];
+    else process.env["NODE_OPTIONS"] = previousNodeOptions;
+    if (previousDashboardMode === undefined) {
+      delete process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"];
+    } else {
+      process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"] = previousDashboardMode;
+    }
+  }
+});
+
 test("Voicebox is supervised from its dev environment and remains server-only", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-voicebox-"));
   const savedPython = process.env["VOICEBOX_PYTHON"];
@@ -467,7 +509,7 @@ test("native Scriberr is enabled by default, optional, and bypassed for an exter
 test("quartz receives allocated ports and uses its early readiness endpoint", () => {
   // The Quartz CLI always opens a websocket listener; leaving it on the
   // default 3001 made startup fail with EADDRINUSE next to any other Quartz.
-  const { definitions } = fixture("packaged");
+  const { definitions, paths } = fixture("packaged");
   const quartz = definitions.find((d) => d.id === "quartz");
   assert.ok(quartz);
   const portIndex = quartz.args.indexOf("--port");
@@ -475,6 +517,8 @@ test("quartz receives allocated ports and uses its early readiness endpoint", ()
   assert.ok(portIndex >= 0 && wsIndex >= 0, "both --port and --wsPort must be passed");
   assert.equal(quartz.args[portIndex + 1], "4303");
   assert.equal(quartz.args[wsIndex + 1], "4304");
+  assert.equal(quartz.args[quartz.args.indexOf("--directory") + 1], "content");
+  assert.equal(quartz.args[quartz.args.indexOf("--output") + 1], "public");
   assert.deepEqual(quartz.healthCheck, {
     type: "http",
     url: "http://127.0.0.1:4303/__health",
@@ -512,12 +556,13 @@ test("no secret values leak into non-secret env keys or args", () => {
 });
 
 test("GBrain is absent by default and supervised as a loopback sidecar when enabled", () => {
-  // Off by default: no gbrain service, no GBRAIN_* env on the dashboard.
+  // Off by default: no gbrain service, and the dashboard is explicitly told
+  // not to probe one even if a dev environment happens to enable GBrain.
   const off = fixture("packaged");
   assert.ok(!off.definitions.some((d) => d.id === "gbrain"));
   const dashOff = off.definitions.find((d) => d.id === "dashboard");
   assert.ok(dashOff);
-  assert.equal(dashOff.env["GBRAIN_MODE"], undefined);
+  assert.equal(dashOff.env["GBRAIN_MODE"], "disabled");
 
   // Enabled: a supervised Bun sidecar with a per-install secret, loopback health,
   // and mutable data under the desktop data dir (never in packaged resources).
@@ -541,6 +586,24 @@ test("GBrain is absent by default and supervised as a loopback sidecar when enab
   assert.ok(dashOn);
   assert.equal(dashOn.env["GBRAIN_MODE"], "preferred");
   assert.equal(dashOn.env["GBRAIN_ADAPTER_SECRET"], on.config.persistent.gbrainAdapterSecret);
+});
+
+test("disabled desktop GBrain mode overrides an inherited dev mode", () => {
+  const previous = process.env["GBRAIN_MODE"];
+  try {
+    process.env["GBRAIN_MODE"] = "preferred";
+
+    const off = fixture("packaged", { gbrainMode: "disabled" });
+    const paths = { ...off.paths, mode: "dev" as const };
+    const definitions = buildServiceDefinitions({ paths, config: off.config, binaries: off.binaries });
+    assert.ok(!definitions.some((definition) => definition.id === "gbrain"));
+    const dashboard = definitions.find((definition) => definition.id === "dashboard");
+    assert.ok(dashboard);
+    assert.equal(dashboard.env["GBRAIN_MODE"], "disabled");
+  } finally {
+    if (previous === undefined) delete process.env["GBRAIN_MODE"];
+    else process.env["GBRAIN_MODE"] = previous;
+  }
 });
 
 test("ui-tars adapter is registered (optional default), loopback, secret via env not argv", () => {

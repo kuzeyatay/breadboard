@@ -57,6 +57,8 @@ export interface SourceVisual {
   pageNumber: number;
   type: SourceVisualType;
   caption: string;
+  /** Verbatim model transcription for a detected display equation. */
+  exactText?: string;
   /** Garden-relative URL ("/garden/assets/source-visuals/....png") when cropped. */
   croppedImagePath?: string;
   /** Garden-relative URL of the full page snapshot this visual came from. */
@@ -74,12 +76,13 @@ const LEDGER_RELATIVE_PATH = path.join(".breadboard", "source-visuals.json");
 const SCAN_CACHE_RELATIVE_PATH = path.join(".breadboard", "source-visual-scan-cache.json");
 const CROPPED_ASSETS_FOLDER = path.join("assets", "source-visuals");
 const DEFAULT_DETECTION_TIMEOUT_MS = 45_000;
-const DETECTOR_VERSION = 1;
+const DETECTOR_VERSION = 3;
 const DETECTION_IMAGE_MAX_DIMENSION = 768;
 
 interface SourceVisualDetection {
   type: SourceVisualType;
   caption: string;
+  exactText?: string;
   bbox?: SourceVisualBBox;
 }
 
@@ -137,6 +140,7 @@ Return ONLY a JSON array (no fence, no commentary). Each element:
 {
   "type": "figure" | "graph" | "table" | "equation" | "diagram",
   "caption": "short specific description of what the visual shows, e.g. 'LIF neuron membrane potential model'",
+  "exactText": "for an equation, transcribe its complete displayed mathematical expression verbatim in LaTeX; omit for every other type",
   "bbox": { "x": 0.1, "y": 0.2, "width": 0.8, "height": 0.3 }
 }
 Rules:
@@ -145,6 +149,7 @@ Rules:
 - Do NOT report running body text, headers, footers, page numbers, author blocks, references, or logos.
 - Do NOT report the whole page as one visual.
 - captions must describe content ("Latency comparison across models"), never position ("image at top").
+- Every equation record must include a non-empty exactText transcription. If the expression cannot be read reliably, do not report it as an equation.
 - If the page has no meaningful visuals, return [].`);
 
 export function sourceVisualsLedgerPath(contentPath: string, gardenSlug: string): string {
@@ -386,74 +391,106 @@ export function isFullPageSnapshotUrl(assetUrl: string): boolean {
   return pageNumberFromAssetUrl(assetUrl) !== undefined;
 }
 
-function parseDetections(raw: string): SourceVisualDetection[] {
-  const stripped = raw
-    .trim()
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/i, "");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stripped);
-  } catch {
-    const start = stripped.indexOf("[");
-    const end = stripped.lastIndexOf("]");
-    if (start < 0 || end <= start) return [];
-    try {
-      parsed = JSON.parse(stripped.slice(start, end + 1));
-    } catch {
-      return [];
-    }
+export class SourceVisualDetectionProtocolError extends Error {
+  constructor(message: string) {
+    super(`Source visual detection protocol error: ${message}`);
+    this.name = "SourceVisualDetectionProtocolError";
   }
-  if (!Array.isArray(parsed)) return [];
+}
+
+function validateDetectionRecords(parsed: unknown): SourceVisualDetection[] {
+  if (!Array.isArray(parsed)) {
+    throw new SourceVisualDetectionProtocolError("top level must be a JSON array");
+  }
 
   const valid = new Set(["figure", "graph", "table", "equation", "diagram"]);
-  const detections: SourceVisualDetection[] = [];
-  const normalizeType = (type: SourceVisualType, caption: string): SourceVisualType => {
-    if (type !== "figure" && type !== "diagram") return type;
-    const lower = caption.toLowerCase();
-    if (
-      /\b(graph|plot|curve|chart|bar|axis|axes)\b/.test(lower) ||
-      /\bcomparison\b/.test(lower) ||
-      /\b(training loss|training accuracy|latency|energy consumption|spike count)\b/.test(lower)
-    ) {
-      return "graph";
+  return parsed.map((item, index): SourceVisualDetection => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new SourceVisualDetectionProtocolError(`entry ${index} must be an object`);
     }
-    return type;
-  };
-  for (const item of parsed.slice(0, 12)) {
-    if (!item || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
-    const type = typeof record.type === "string" && valid.has(record.type)
-      ? (record.type as SourceVisualType)
-      : null;
-    const caption = typeof record.caption === "string" ? record.caption.trim() : "";
-    if (!type || !caption) continue;
+    if (typeof record.type !== "string" || !valid.has(record.type)) {
+      throw new SourceVisualDetectionProtocolError(`entry ${index} has an invalid type`);
+    }
+    const type = record.type as SourceVisualType;
+    if (typeof record.caption !== "string" || !record.caption.trim()) {
+      throw new SourceVisualDetectionProtocolError(`entry ${index} caption must be a non-empty string`);
+    }
+    const caption = record.caption.trim();
 
-    let bbox: SourceVisualBBox | undefined;
-    const rawBox = record.bbox;
-    if (rawBox && typeof rawBox === "object") {
-      const box = rawBox as Record<string, unknown>;
-      const nums = [box.x, box.y, box.width, box.height].map((value) =>
-        typeof value === "number" && Number.isFinite(value) ? value : NaN,
+    let exactText: string | undefined;
+    if (type === "equation") {
+      if (typeof record.exactText !== "string" || !record.exactText.trim()) {
+        throw new SourceVisualDetectionProtocolError(
+          `entry ${index} equation exactText must be a non-empty string`,
+        );
+      }
+      exactText = record.exactText.trim();
+    } else if (record.exactText !== undefined) {
+      throw new SourceVisualDetectionProtocolError(
+        `entry ${index} exactText is only valid for equations`,
       );
-      if (nums.every((value) => !Number.isNaN(value))) {
-        const [x, y, width, height] = nums;
-        if (x >= 0 && y >= 0 && width > 0.02 && height > 0.02 && x + width <= 1.05 && y + height <= 1.05) {
-          // A bbox covering ~the whole page is a failed detection, not a figure.
-          if (width * height < 0.9) {
-            bbox = {
-              x: Math.max(0, x),
-              y: Math.max(0, y),
-              width: Math.min(width, 1 - Math.max(0, x)),
-              height: Math.min(height, 1 - Math.max(0, y)),
-            };
-          }
-        }
+    }
+
+    const rawBox = record.bbox;
+    if (!rawBox || typeof rawBox !== "object" || Array.isArray(rawBox)) {
+      throw new SourceVisualDetectionProtocolError(`entry ${index} bbox must be an object`);
+    }
+    const box = rawBox as Record<string, unknown>;
+    const coordinates = ["x", "y", "width", "height"] as const;
+    for (const coordinate of coordinates) {
+      if (typeof box[coordinate] !== "number" || !Number.isFinite(box[coordinate])) {
+        throw new SourceVisualDetectionProtocolError(
+          `entry ${index} bbox.${coordinate} must be a finite number`,
+        );
       }
     }
-    detections.push({ type: normalizeType(type, caption), caption: caption.slice(0, 300), bbox });
+    const bbox: SourceVisualBBox = {
+      x: box.x as number,
+      y: box.y as number,
+      width: box.width as number,
+      height: box.height as number,
+    };
+    if (
+      bbox.x < 0 ||
+      bbox.y < 0 ||
+      bbox.width <= 0 ||
+      bbox.height <= 0 ||
+      bbox.x + bbox.width > 1 ||
+      bbox.y + bbox.height > 1
+    ) {
+      throw new SourceVisualDetectionProtocolError(
+        `entry ${index} bbox must be a positive rectangle fully inside the page`,
+      );
+    }
+    if (bbox.width * bbox.height >= 0.9) {
+      throw new SourceVisualDetectionProtocolError(
+        `entry ${index} bbox covers the whole page instead of one visual`,
+      );
+    }
+
+    return {
+      type,
+      caption,
+      ...(exactText ? { exactText } : {}),
+      bbox,
+    };
+  });
+}
+
+function parseDetections(raw: unknown): SourceVisualDetection[] {
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new SourceVisualDetectionProtocolError("response was empty or missing");
   }
-  return detections;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new SourceVisualDetectionProtocolError(
+      `response was not valid JSON (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+  return validateDetectionRecords(parsed);
 }
 
 async function detectVisualsOnPage(
@@ -486,7 +523,7 @@ async function detectVisualsOnPage(
       },
       { signal: controller.signal },
     );
-    return parseDetections(response.choices[0]?.message?.content ?? "[]");
+    return parseDetections(response.choices[0]?.message?.content);
   } finally {
     clearTimeout(timeout);
   }
@@ -565,7 +602,10 @@ export async function extractSourceVisuals(
     // Legacy ledgers predate the scan cache. An existing page entry still
     // proves that page completed, and must not prevent later pages from being
     // scanned.
-    if (!force && existingOnPage.length > 0) continue;
+    const needsEquationTextUpgrade = existingOnPage.some(
+      (visual) => visual.type === "equation" && !visual.exactText?.trim(),
+    );
+    if (!force && existingOnPage.length > 0 && !needsEquationTextUpgrade) continue;
     const diskPath = assetDiskPath(contentPath, gardenSlug, pageUrl);
     if (!diskPath || !fs.existsSync(diskPath)) continue;
 
@@ -579,16 +619,24 @@ export async function extractSourceVisuals(
     const fingerprint = crypto.createHash("sha256").update(pngBuffer).digest("hex");
     const cached = sourceCache[pageUrl];
     let detections: SourceVisualDetection[] = [];
+    let reusedCachedScan = false;
     if (
       !force &&
       cached?.detectorVersion === DETECTOR_VERSION &&
       cached.fingerprint === fingerprint &&
       Array.isArray(cached.detections)
     ) {
-      detections = cached.detections;
-      consecutiveDetectionFailures = 0;
-      onProgress?.(`Reusing saved visual scan for page ${pageNumber || "?"}...`);
-    } else {
+      try {
+        detections = validateDetectionRecords(cached.detections);
+        reusedCachedScan = true;
+        consecutiveDetectionFailures = 0;
+        onProgress?.(`Reusing saved visual scan for page ${pageNumber || "?"}...`);
+      } catch {
+        // A corrupt or legacy cache entry is never evidence of a completed scan.
+        delete sourceCache[pageUrl];
+      }
+    }
+    if (!reusedCachedScan) {
       try {
         onProgress?.(`Scanning page ${pageNumber || "?"} for figures...`);
         detections = await detectVisualsOnPage(client, model, pngBuffer);
@@ -624,6 +672,7 @@ export async function extractSourceVisuals(
         pageNumber,
         type: detection.type,
         caption: detection.caption,
+        ...(detection.exactText ? { exactText: detection.exactText } : {}),
         pageImagePath: pageUrl,
         bbox: detection.bbox,
         usageStatus: "unused",
@@ -693,11 +742,15 @@ export function recordSourceVisualAssignments(
   gardenSlug: string,
   assignments: Map<string, { pageId: string; sectionId?: string }>,
   skipReasonForUnused: (visual: SourceVisual) => string,
-  options: { conceptAnchorIds?: Iterable<string> } = {},
+  options: { conceptAnchorIds?: Iterable<string>; trackedArtifactIds?: Iterable<string> } = {},
 ): SourceVisual[] {
   const ledger = loadSourceVisuals(contentPath, gardenSlug);
   const conceptAnchorIds = new Set(options.conceptAnchorIds ?? []);
+  const trackedArtifactIds = options.trackedArtifactIds
+    ? new Set(options.trackedArtifactIds)
+    : undefined;
   const next = ledger.map((visual): SourceVisual => {
+    if (trackedArtifactIds && !trackedArtifactIds.has(visual.sourceVisualId)) return visual;
     const assignment = assignments.get(visual.sourceVisualId);
     if (assignment) {
       return {
@@ -723,6 +776,14 @@ export function recordSourceVisualAssignments(
         : visual.croppedImagePath
           ? "available_not_embedded"
           : "missing";
+    const authoredSkipReason = usedAsConceptAnchor
+      ? undefined
+      : skipReasonForUnused(visual).trim();
+    if (!usedAsConceptAnchor && !authoredSkipReason) {
+      throw new Error(
+        `Source visual ${visual.sourceVisualId} has no model-authored assignment or omission reason.`,
+      );
+    }
     return {
       ...visual,
       usageStatus: usedAsConceptAnchor ? "assigned" : "intentionally_skipped",
@@ -730,7 +791,7 @@ export function recordSourceVisualAssignments(
       cropStatus,
       assignedPageId: undefined,
       assignedSectionId: undefined,
-      skipReason: visual.skipReason ?? skipReasonForUnused(visual),
+      skipReason: authoredSkipReason,
     };
   });
   saveSourceVisuals(contentPath, gardenSlug, next);

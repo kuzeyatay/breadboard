@@ -158,6 +158,8 @@ export interface CriticReviewPacket {
     pages: Array<{
       path: string;
       title: string;
+      learningUnitId: string;
+      learningUnitContract?: FinalGardenState["learningUnitContract"]["units"][number];
       openingExcerpt: CriticExcerpt;
       frontmatterSummary: {
         sourceAnchors: string[];
@@ -167,6 +169,9 @@ export interface CriticReviewPacket {
         visuals: string[];
       };
       bodyExcerpts: CriticExcerpt[];
+      /** Complete final Markdown body. Claim fulfillment must never be judged
+       * from a truncated opening excerpt. */
+      bodyText: CriticExcerpt;
     }>;
   }>;
   sourceAnchors: Array<{
@@ -628,6 +633,7 @@ function summarizeAudit(audit: FinalAuditResult): string {
 /** Compact review packet built ONLY from the final exported state. */
 export function buildCriticReviewPacket(state: FinalGardenState, deterministicValidationSummary?: string): CriticReviewPacket {
   const audit = auditFinalGardenState(state);
+  const unitById = new Map(state.learningUnitContract.units.map((unit) => [unit.id, unit]));
   const pagesBySection = new Map<string, FinalGardenState["pages"]>();
   const sectionDir = (rel: string): string => rel.split("/").slice(0, 2).join("/");
   for (const page of state.pages) {
@@ -648,6 +654,8 @@ export function buildCriticReviewPacket(state: FinalGardenState, deterministicVa
         pages: sortedPages.map((page) => ({
           path: page.rel,
           title: page.title,
+          learningUnitId: page.learningUnitId,
+          learningUnitContract: unitById.get(page.learningUnitId),
           openingExcerpt: makeExcerpt(firstProseParagraphs(page.body, 1).join(" "), 400, { sourcePath: page.rel }),
           frontmatterSummary: {
             sourceAnchors: page.sourceAnchors,
@@ -657,6 +665,7 @@ export function buildCriticReviewPacket(state: FinalGardenState, deterministicVa
             visuals: page.visualIds,
           },
           bodyExcerpts: firstProseParagraphs(page.body, 3).map((p) => makeExcerpt(p, 300, { sourcePath: page.rel })),
+          bodyText: makeExcerpt(page.body, Math.max(1, page.body.length), { sourcePath: page.rel }),
         })),
       };
     });
@@ -716,6 +725,7 @@ Deterministic validators already ran; do not re-report anything unless the final
 - A visual grounded to anchors that do not match its title/purpose is mismatched.
 - Debug repair files shipped in the export must be flagged.
 - Repair-log entries attributing a change to the wrong target are provenance errors.
+- Every page must answer its model-authored learningQuestion and actually teach every knowledgeClaims[].text in its learningUnitContract, using the cited canonical source evidence. A claimId or tag in frontmatter is metadata, not proof that the prose fulfilled the claim. Compare against bodyText, which is complete and never truncated. Report an omitted or contradicted model-authored claim as a blocking "other" issue targeting unit_page, and include its evidence anchor ids.
 
 Return ONLY a JSON object: {"issues": CriticIssue[]}. Each issue:
 {
@@ -745,46 +755,97 @@ const VALID_TARGETS = new Set<CriticRepairTarget>([
   "planning_doc", "visual_spec", "repair_log", "global",
 ]);
 
-/** Parse a critic model response into validated issues. Tolerant of fences and
- *  either a bare array or {issues:[...]}. Invalid issues are dropped. */
+/** Parse a critic model response into validated issues.
+ *
+ * This boundary is deliberately all-or-nothing. The critic is a publication
+ * gate, so malformed output must surface as critic unavailability instead of
+ * being indistinguishable from the one valid clean verdict: {"issues": []}.
+ */
 export function parseCriticIssues(text: string): CriticIssue[] {
-  const stripped = String(text ?? "").trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
+  const stripped = String(text ?? "").trim();
+  if (!stripped) {
+    throw new Error("Critic response validation failed: response was empty.");
+  }
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(stripped);
-  } catch {
-    const match = stripped.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-    if (!match) return [];
-    try { parsed = JSON.parse(match[0]); } catch { return []; }
+  } catch (error) {
+    throw new Error(
+      `Critic response validation failed: invalid JSON (${error instanceof Error ? error.message : String(error)}).`,
+    );
   }
-  const raw = Array.isArray(parsed)
-    ? parsed
-    : Array.isArray((parsed as Record<string, unknown>)?.issues)
-      ? (parsed as Record<string, unknown>).issues as unknown[]
-      : [];
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error('Critic response validation failed: top level must be an object with an "issues" array.');
+  }
+  const envelope = parsed as Record<string, unknown>;
+  if (!Array.isArray(envelope.issues)) {
+    throw new Error('Critic response validation failed: top-level "issues" must be an array.');
+  }
+
+  const requiredString = (record: Record<string, unknown>, key: string, index: number): string => {
+    if (typeof record[key] !== "string" || !record[key].trim()) {
+      throw new Error(`Critic response validation failed: issues[${index}].${key} must be a non-empty string.`);
+    }
+    return record[key].trim();
+  };
+  const optionalString = (record: Record<string, unknown>, key: string, index: number): string | undefined => {
+    if (record[key] === undefined) return undefined;
+    if (typeof record[key] !== "string" || !record[key].trim()) {
+      throw new Error(`Critic response validation failed: issues[${index}].${key} must be a non-empty string when present.`);
+    }
+    return record[key].trim();
+  };
+
   const issues: CriticIssue[] = [];
-  for (const [i, item] of raw.entries()) {
-    if (!item || typeof item !== "object") continue;
+  const seenIds = new Set<string>();
+  for (const [i, item] of envelope.issues.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`Critic response validation failed: issues[${i}] must be an object.`);
+    }
     const r = item as Record<string, unknown>;
-    const severity = String(r.severity ?? "").toLowerCase();
-    if (severity !== "blocking" && severity !== "warning" && severity !== "cosmetic") continue;
-    const type = (VALID_TYPES.has(r.type as CriticIssueType) ? r.type : "other") as CriticIssueType;
-    const repairTarget = (VALID_TARGETS.has(r.repairTarget as CriticRepairTarget) ? r.repairTarget : "global") as CriticRepairTarget;
-    const problem = String(r.problem ?? "").trim();
-    if (!problem) continue;
+    const id = requiredString(r, "id", i);
+    if (seenIds.has(id)) {
+      throw new Error(`Critic response validation failed: duplicate issue id "${id}".`);
+    }
+    seenIds.add(id);
+    if (r.severity !== "blocking" && r.severity !== "warning" && r.severity !== "cosmetic") {
+      throw new Error(`Critic response validation failed: issues[${i}].severity is invalid.`);
+    }
+    if (!VALID_TYPES.has(r.type as CriticIssueType)) {
+      throw new Error(`Critic response validation failed: issues[${i}].type is invalid.`);
+    }
+    if (!VALID_TARGETS.has(r.repairTarget as CriticRepairTarget)) {
+      throw new Error(`Critic response validation failed: issues[${i}].repairTarget is invalid.`);
+    }
+
+    let sourceAnchorIds: string[] | undefined;
+    if (r.sourceAnchorIds !== undefined) {
+      if (
+        !Array.isArray(r.sourceAnchorIds) ||
+        r.sourceAnchorIds.some((value) => typeof value !== "string" || !value.trim())
+      ) {
+        throw new Error(
+          `Critic response validation failed: issues[${i}].sourceAnchorIds must contain only non-empty strings.`,
+        );
+      }
+      sourceAnchorIds = r.sourceAnchorIds.map((value) => value.trim());
+    }
+
     issues.push({
-      id: String(r.id ?? `critic-${i + 1}`),
-      severity: severity as CriticSeverity,
-      type,
-      pagePath: r.pagePath ? String(r.pagePath) : undefined,
-      sectionPath: r.sectionPath ? String(r.sectionPath) : undefined,
-      visualId: r.visualId ? String(r.visualId) : undefined,
-      sourceAnchorIds: Array.isArray(r.sourceAnchorIds) ? r.sourceAnchorIds.map(String) : undefined,
-      problem,
-      evidence: String(r.evidence ?? "").trim(),
-      expected: String(r.expected ?? "").trim(),
-      repairTarget,
-      suggestedRepair: String(r.suggestedRepair ?? "").trim(),
+      id,
+      severity: r.severity,
+      type: r.type as CriticIssueType,
+      pagePath: optionalString(r, "pagePath", i),
+      sectionPath: optionalString(r, "sectionPath", i),
+      visualId: optionalString(r, "visualId", i),
+      sourceAnchorIds,
+      problem: requiredString(r, "problem", i),
+      evidence: requiredString(r, "evidence", i),
+      expected: requiredString(r, "expected", i),
+      repairTarget: r.repairTarget as CriticRepairTarget,
+      suggestedRepair: requiredString(r, "suggestedRepair", i),
     });
   }
   return issues;
@@ -1260,15 +1321,34 @@ function adjacentPageSummaries(state: FinalGardenState, rel: string): { previous
 function buildModelRepairInput(state: FinalGardenState, gardenDir: string, request: ArtifactRepairRequest, issue: CriticIssue): ModelRepairInput {
   const abs = request.targetPath ? path.join(gardenDir, request.targetPath) : undefined;
   const currentMarkdown = abs && fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : undefined;
+  const targetPage = request.targetPath
+    ? state.pages.find((page) => page.rel === request.targetPath)
+    : undefined;
+  const learningUnitContract = targetPage
+    ? state.learningUnitContract.units.find((unit) => unit.id === targetPage.learningUnitId)
+    : undefined;
   const anchorIds = new Set(issue.sourceAnchorIds ?? request.affectedAnchorIds ?? []);
-  const relevantAnchors = Object.values(state.sourceAnchors).filter((a) => anchorIds.has(a.id)).slice(0, 8);
+  if (learningUnitContract) {
+    for (const anchorId of learningUnitContract.sourceAnchors) anchorIds.add(anchorId);
+    for (const artifact of learningUnitContract.sourceFigures) anchorIds.add(artifact.id);
+    for (const artifact of learningUnitContract.sourceFormulas) anchorIds.add(artifact.id);
+    for (const artifact of learningUnitContract.sourceTables) anchorIds.add(artifact.id);
+    for (const concept of learningUnitContract.semanticConcepts ?? []) {
+      for (const anchorId of concept.evidenceAnchors) anchorIds.add(anchorId);
+    }
+    for (const claim of learningUnitContract.knowledgeClaims ?? []) {
+      for (const anchorId of claim.evidenceAnchors) anchorIds.add(anchorId);
+      for (const anchorId of claim.derivationAnchors ?? []) anchorIds.add(anchorId);
+    }
+  }
+  const relevantAnchors = Object.values(state.sourceAnchors).filter((a) => anchorIds.has(a.id));
   const adj = request.targetPath ? adjacentPageSummaries(state, request.targetPath) : {};
   return {
     issue,
     repairRequest: request,
     finalGardenStateExcerpt: { pages: state.pages.length, anchors: Object.keys(state.sourceAnchors).length },
     currentMarkdown,
-    learningUnitContract: undefined,
+    learningUnitContract,
     sourceAnchors: relevantAnchors.length ? relevantAnchors : undefined,
     previousPageSummary: adj.previous,
     nextPageSummary: adj.next,

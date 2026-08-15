@@ -60,6 +60,24 @@ function fakeRequest(overrides = {}) {
         { handle: "latency-measures-time-to-decision", claim: "Latency measures time to decision.", connectedTo: [] },
         { handle: "low-latency-can-conflict-with-low-energy", claim: "Low latency can conflict with low energy.", connectedTo: [] },
       ],
+      semanticConcepts: [{
+        slug: "latency",
+        preferredLabel: "Latency",
+        role: "primary",
+        aliases: [],
+        evidenceAnchors: ["S1.P6.E2"],
+      }],
+      knowledgeClaims: [{
+        id: "claim-latency-definition",
+        text: "Latency is decision time minus stimulus time.",
+        subject: "latency",
+        predicate: "equals",
+        object: "decision-time-minus-stimulus-time",
+        conceptIds: ["latency"],
+        evidenceAnchors: ["S1.P6.E2"],
+        derivationAnchors: [],
+        connectedClaimIds: [],
+      }],
       mustNotRepeat: [],
       expectedWordRange: [700, 1100],
     },
@@ -84,6 +102,9 @@ describe("model repair prompt + parsing", () => {
     assert.match(user, /S1\.P6\.E2/);
     assert.match(user, /Validation errors to fix/);
     assert.match(user, /latency-measures-time-to-decision/);
+    assert.match(user, /claim-latency-definition/);
+    assert.match(user, /semanticConcepts/);
+    assert.match(user, /knowledgeClaims/);
     assert.match(user, /Previous unit/);
     assert.match(user, /Next unit/);
     assert.match(user, /Exact source text/);
@@ -91,7 +112,7 @@ describe("model repair prompt + parsing", () => {
     assert.match(user, /L = t_d - t_s/);
   });
 
-  test("parses the ===PAGE=== envelope plus optional visual specs and contract patch", () => {
+  test("parses the ===PAGE=== envelope plus optional visual specs and complete model-authored Zettel patch", () => {
     const response = [
       "===PAGE===",
       '---\ntitle: "2.2 Latency"\nlearningUnitId: "U8"\n---\n\n### Latency\n\nFixed body.\n',
@@ -99,9 +120,9 @@ describe("model repair prompt + parsing", () => {
       "===VISUAL_SPECS===",
       '[{ "id": "vis-latency", "spec": { "id": "vis-latency", "type": "metric_calculator" } }]',
       "===END VISUAL_SPECS===",
-      "===CONTRACT_HANDLE_PATCH===",
-      '{ "unitId": "U8", "handles": ["latency-measures-time-to-decision"] }',
-      "===END CONTRACT_HANDLE_PATCH===",
+      "===CONTRACT_ZETTEL_PATCH===",
+      '{ "unitId": "U8", "zettelNotes": [{ "handle": "latency-measures-time-to-decision", "claim": "Latency measures the elapsed time to a decision.", "connectedTo": ["accuracy-measures-correct-decisions"] }] }',
+      "===END CONTRACT_ZETTEL_PATCH===",
     ].join("\n");
     const candidate = parseModelRepairResponse(response);
     assert.ok(candidate);
@@ -109,8 +130,24 @@ describe("model repair prompt + parsing", () => {
     assert.match(candidate.markdown, /Fixed body/);
     assert.equal(candidate.visualSpecs.length, 1);
     assert.equal(candidate.visualSpecs[0].id, "vis-latency");
-    assert.equal(candidate.contractHandlePatch.unitId, "U8");
-    assert.deepEqual(candidate.contractHandlePatch.handles, ["latency-measures-time-to-decision"]);
+    assert.equal(candidate.contractZettelPatch.unitId, "U8");
+    assert.deepEqual(candidate.contractZettelPatch.zettelNotes, [{
+      handle: "latency-measures-time-to-decision",
+      claim: "Latency measures the elapsed time to a decision.",
+      connectedTo: ["accuracy-measures-correct-decisions"],
+    }]);
+  });
+
+  test("rejects malformed optional side outputs instead of silently using the page", () => {
+    const malformedPatch = [
+      "===PAGE===",
+      '---\ntitle: "2.2 Latency"\nlearningUnitId: "U8"\n---\n\nFixed body.',
+      "===END PAGE===",
+      "===CONTRACT_ZETTEL_PATCH===",
+      '{ "unitId": "U8", "zettelNotes": [{ "handle": "latency", "connectedTo": [] }] }',
+      "===END CONTRACT_ZETTEL_PATCH===",
+    ].join("\n");
+    assert.equal(parseModelRepairResponse(malformedPatch), null);
   });
 
   test("tolerates a bare ```markdown fence and rejects a page without frontmatter", () => {
@@ -254,7 +291,17 @@ describe("model-backed repair executor end-to-end (fake model)", () => {
       // contract handles — out of scope for this page's repair.
       makeModelRepair: (meta) => (request) =>
         request.pagePath === meta.rel
-          ? { markdown: meta.original, contractHandlePatch: { unitId: "U_FOREIGN", handles: ["some-foreign-handle"] } }
+          ? {
+              markdown: meta.original,
+              contractZettelPatch: {
+                unitId: "U_FOREIGN",
+                zettelNotes: [{
+                  handle: "some-foreign-handle",
+                  claim: "A complete claim owned by another unit.",
+                  connectedTo: [],
+                }],
+              },
+            }
           : null,
     });
 

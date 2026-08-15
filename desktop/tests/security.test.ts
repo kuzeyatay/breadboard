@@ -7,11 +7,19 @@ import {
   isSafeExternalUrl,
 } from "../src/main/security";
 
-test("navigation is restricted to owned local origins plus file:", () => {
-  const allowed = allowedOriginsFor(["http://127.0.0.1:4300", "http://127.0.0.1:4303"]);
+test("navigation is restricted to owned origins and exact product local files", () => {
+  const allowed = allowedOriginsFor([
+    "http://127.0.0.1:4300",
+    "http://127.0.0.1:4303",
+    "file:///C:/app/startup/index.html",
+    "file:///C:/app/startup/recovery.html",
+  ]);
   assert.ok(isNavigationAllowed(allowed, "http://127.0.0.1:4300/dashboard"));
   assert.ok(isNavigationAllowed(allowed, "http://127.0.0.1:4303/my-garden/page"));
-  assert.ok(isNavigationAllowed(allowed, "file:///C:/app/startup/index.html"));
+  assert.ok(isNavigationAllowed(allowed, "file:///C:/app/startup/index.html?theme=dark"));
+  assert.ok(isNavigationAllowed(allowed, "file:///C:/app/startup/recovery.html#status"));
+  assert.ok(!isNavigationAllowed(allowed, "file:///C:/app/startup/untrusted.html"));
+  assert.ok(!isNavigationAllowed(allowed, "file:///C:/Windows/System32/drivers/etc/hosts"));
   assert.ok(!isNavigationAllowed(allowed, "http://127.0.0.1:9999/"));
   assert.ok(!isNavigationAllowed(allowed, "http://localhost:4300/")); // origin mismatch by hostname
   assert.ok(!isNavigationAllowed(allowed, "https://example.com/"));

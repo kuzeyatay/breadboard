@@ -1,6 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import { LogManager } from "./log-manager";
 import { ServiceManager, type ServiceStatus } from "./service-manager";
 import {
@@ -42,6 +43,7 @@ import {
 } from "./migration";
 import {
   needsQuartzProvisioning,
+  provisionQaDashboardWorkspace,
   provisionQuartzWorkspace,
 } from "./provisioning";
 import { WindowManager, defaultPreloadPath, defaultStartupHtmlPath } from "./window-manager";
@@ -60,6 +62,8 @@ import {
 import { openMicrophoneSettings } from "./microphone-settings";
 import { stopRecallEngine } from "./recall";
 import { readLastWindowTheme, writeLastWindowTheme } from "./theme-state";
+import { prepareQaServiceDefinitions } from "./qa-mode";
+import type { QaServiceProfile } from "./startup-options";
 
 export interface StartupFailure {
   serviceId: string;
@@ -82,6 +86,53 @@ export interface StartupState {
   failure?: StartupFailure;
 }
 
+export interface UnhandledRejectionActions {
+  writeDiagnostic(line: string): void;
+  killAllNow(): void;
+  exit(code: number): void;
+}
+
+/**
+ * Install the fatal unhandled-rejection path through injectable actions so the
+ * process-level behavior can be covered without terminating the test runner.
+ */
+export function installUnhandledRejectionGuard(
+  subscribe: (listener: (reason: unknown) => void) => void,
+  actions: UnhandledRejectionActions,
+): void {
+  subscribe((reason) => {
+    try {
+      actions.writeDiagnostic(
+        `[desktop] unhandled rejection: ${unhandledRejectionReason(reason)}`,
+      );
+    } catch {
+      // Logging must not block emergency cleanup.
+    }
+    try {
+      actions.killAllNow();
+    } finally {
+      actions.exit(1);
+    }
+  });
+}
+
+function unhandledRejectionReason(reason: unknown): string {
+  if (reason instanceof Error) return reason.stack ?? reason.message;
+  if (
+    reason === null ||
+    reason === undefined ||
+    typeof reason === "string" ||
+    typeof reason === "number" ||
+    typeof reason === "boolean" ||
+    typeof reason === "bigint"
+  ) {
+    return String(reason);
+  }
+  // Do not serialize arbitrary objects: a rejected integration response can
+  // contain credentials that are not part of the desktop's known-secret set.
+  return `non-Error ${Object.prototype.toString.call(reason)}`;
+}
+
 /**
  * The authoritative application lifecycle: prepares data directories, runs
  * migration/provisioning, supervises services, owns the window, and guarantees
@@ -102,10 +153,40 @@ export class AppLifecycle {
   private servicesStopped = false;
   private readonly moduleDir: string;
   private readonly forceDev: boolean;
+  private readonly qaMode: boolean;
+  private readonly qaServiceProfile: QaServiceProfile;
 
-  constructor(moduleDir: string, forceDev: boolean) {
+  constructor(
+    moduleDir: string,
+    forceDev: boolean,
+    qaMode = false,
+    qaServiceProfile: QaServiceProfile = "critical",
+  ) {
     this.moduleDir = moduleDir;
     this.forceDev = forceDev;
+    this.qaMode = qaMode;
+    this.qaServiceProfile = qaServiceProfile;
+    // This must precede run(): startup itself contains several awaited steps,
+    // and Playwright cannot observe a rejection that predates its attachment.
+    installUnhandledRejectionGuard(
+      (listener) => process.on("unhandledRejection", listener),
+      {
+        writeDiagnostic: (line) => {
+          if (this.logs) {
+            // The LogManager applies the existing per-install secret redactor.
+            this.logs.forService("desktop").write(line);
+          } else {
+            // Before config exists there is no safe known-secret set. Preserve
+            // the failure category on stderr without printing its payload.
+            console.error(
+              "[breadboard-desktop] unhandled rejection before desktop logging initialized",
+            );
+          }
+        },
+        killAllNow: () => this.services?.killAllNow(),
+        exit: (code) => process.exit(code),
+      },
+    );
   }
 
   async run(): Promise<void> {
@@ -127,6 +208,7 @@ export class AppLifecycle {
     this.paths = resolvePaths({
       isPackaged: app.isPackaged,
       forceDev: this.forceDev,
+      qaMode: this.qaMode,
       userDataDir: app.getPath("userData"),
       electronResourcesPath: process.resourcesPath,
       moduleDir: this.moduleDir,
@@ -180,17 +262,26 @@ export class AppLifecycle {
     });
     const supervisorLog = this.logs.forService("desktop");
     supervisorLog.write(
-      `[desktop] starting; mode=${this.paths.mode}; config=${JSON.stringify(redactedConfigSummary(this.config))}`,
+      `[desktop] starting; mode=${this.paths.mode}${this.paths.qaMode ? `; qa-profile=${this.qaServiceProfile}` : ""}; config=${JSON.stringify(redactedConfigSummary(this.config))}`,
     );
 
     this.services = new ServiceManager(this.logs);
     const urls = serviceUrls(this.config);
-    const allowed = allowedOriginsFor([urls.dashboard, urls.quartz, n8nServiceUrl(this.config)]);
+    const startupHtmlPath = defaultStartupHtmlPath(this.moduleDir);
+    const recoveryHtmlPath = path.join(path.dirname(startupHtmlPath), "recovery.html");
+    const allowed = allowedOriginsFor([
+      urls.dashboard,
+      urls.quartz,
+      n8nServiceUrl(this.config),
+      pathToFileURL(startupHtmlPath).toString(),
+      pathToFileURL(recoveryHtmlPath).toString(),
+    ]);
     installGlobalSecurity(allowed);
 
     this.windows = new WindowManager({
       allowed,
-      startupHtmlPath: defaultStartupHtmlPath(this.moduleDir),
+      startupHtmlPath,
+      recoveryHtmlPath,
       preloadPath: defaultPreloadPath(this.moduleDir),
       iconPath: this.iconPath(),
       initialTheme: readLastWindowTheme(this.paths.configDir),
@@ -242,8 +333,10 @@ export class AppLifecycle {
     this.writeHermesRuntimeConfig();
     // Before the dev early-return: dev runs the same supervised proxy, and its
     // config must be regenerated for this launch's port either way.
-    await this.prepareCliproxy();
-    if (this.paths.mode === "dev") return;
+    if (!this.paths.qaMode) {
+      await this.prepareCliproxy();
+    }
+    if (this.paths.mode === "dev" && !this.paths.qaMode) return;
 
     // 1. Refresh the Quartz workspace program files when needed.
     if (needsQuartzProvisioning(this.paths, app.getVersion())) {
@@ -256,6 +349,12 @@ export class AppLifecycle {
         this.logs.forService("desktop").write(`[provision] ${message}`),
       );
     }
+    provisionQaDashboardWorkspace(this.paths);
+
+    // QA data is always fresh/disposable. Never detect or copy a developer
+    // checkout into it: doing so would make scenarios non-deterministic and
+    // risks pulling real user content into failure artifacts.
+    if (this.paths.qaMode) return;
 
     // 2. One-time migration from a detected dev checkout (copy, never delete).
     const persistent = this.config.persistent;
@@ -467,11 +566,16 @@ export class AppLifecycle {
         `[whisperx] ffmpeg repair: ${whisperxRepair.reason} (linked ${whisperxRepair.linked})`,
       );
 
-    for (const definition of buildServiceDefinitions({
-      paths: this.paths,
-      config: this.config,
-      binaries,
-    })) {
+    const definitions = prepareQaServiceDefinitions(
+      buildServiceDefinitions({
+        paths: this.paths,
+        config: this.config,
+        binaries,
+      }),
+      this.paths,
+      this.qaServiceProfile,
+    );
+    for (const definition of definitions) {
       this.services.register(definition);
     }
 

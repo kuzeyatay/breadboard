@@ -203,12 +203,17 @@ export function scheduleMemoryProfileSynthesisForConversation(input: {
   if (input.outcome !== "completed") return;
   if (input.conversationId === null || input.conversationId === undefined) return;
   const conversation = database.prepare(`
-    SELECT user_id, surface FROM conversations WHERE id = ?
-  `).get(input.conversationId) as { user_id: number; surface: string } | undefined;
+    SELECT user_id, surface, temporary FROM conversations WHERE id = ?
+  `).get(input.conversationId) as
+    | { user_id: number; surface: string; temporary: number }
+    | undefined;
   if (!conversation) return;
   if (conversation.surface !== "dashboard_terminal" && conversation.surface !== "garden_chat") {
     return;
   }
+  // A temporary chat is not evidence, so finishing one is not a reason to
+  // re-synthesize the portrait either.
+  if (Number(conversation.temporary ?? 0) === 1) return;
   const profile = ensureProfileRow(conversation.user_id, database);
   if (!profile.generation_enabled) return;
 
@@ -441,6 +446,7 @@ function collectProfileEvidence(
     JOIN conversations c ON c.id = m.conversation_id
     WHERE c.user_id = ?
       AND c.surface IN ('dashboard_terminal', 'garden_chat')
+      AND c.temporary = 0
       AND m.role = 'user' AND m.status = 'complete'
       AND m.id > ? AND TRIM(m.content) <> ''
     ORDER BY m.id ${initial ? "DESC" : "ASC"}
@@ -530,6 +536,7 @@ function latestEligibleUserMessageId(
     JOIN conversations c ON c.id = m.conversation_id
     WHERE c.user_id = ?
       AND c.surface IN ('dashboard_terminal', 'garden_chat')
+      AND c.temporary = 0
       AND m.role = 'user' AND m.status = 'complete'
   `).get(userId) as { id: number };
   return row.id;

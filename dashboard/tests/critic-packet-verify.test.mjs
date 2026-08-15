@@ -29,7 +29,32 @@ function tinyGarden(formulaText, extra = {}) {
   fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
   fs.writeFileSync(path.join(dir, ".breadboard", "source-anchors.json"), JSON.stringify({ sourceTextConceptAnchors: [], sourceStructuralAnchors: [] }, null, 2) + "\n");
   fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), "[]\n");
-  fs.writeFileSync(path.join(dir, ".breadboard", "learning-unit-contract.json"), JSON.stringify({ learningUnits: [{ id: "U1", title: "Energy", sourceAnchors: [], sourceFigures: [], sourceFormulas: [], sourceTables: [] }] }, null, 2) + "\n");
+  fs.writeFileSync(path.join(dir, ".breadboard", "learning-unit-contract.json"), JSON.stringify({ learningUnits: [{
+    id: "U1",
+    title: "Energy",
+    sourceAnchors: [],
+    sourceFigures: [],
+    sourceFormulas: [],
+    sourceTables: [],
+    semanticConcepts: [{
+      slug: "energy",
+      preferredLabel: "Energy",
+      role: "primary",
+      aliases: [],
+      evidenceAnchors: [],
+    }],
+    knowledgeClaims: [{
+      id: "claim-energy-sum",
+      text: "Total energy sums spike and synaptic operation energy.",
+      subject: "total-energy",
+      predicate: "sums",
+      object: "operation-energy",
+      conceptIds: ["energy"],
+      evidenceAnchors: [],
+      derivationAnchors: [],
+      connectedClaimIds: [],
+    }],
+  }] }, null, 2) + "\n");
   const opening = extra.longOpening ? "X".repeat(650) + " a very long opening paragraph about energy that exceeds the excerpt limit." : "The total energy of an SNN inference sums spike and synaptic operation energy.";
   fs.writeFileSync(path.join(dir, "learning", "1. Metrics", "1.1 Energy.md"), `---
 title: "Energy"
@@ -76,6 +101,20 @@ describe("critic packet never truncates formula evidence (Fix 1/2)", () => {
     assert.ok(opening.fullLength > opening.text.length);
     assert.equal(opening.truncationReason, "excerpt_limit");
     assert.match(packet.evidenceNote, /packetTruncated:true is only an excerpt/i);
+  });
+
+  test("the critic receives the complete model-authored claim contract and complete final page body", () => {
+    const dir = tinyGarden(E_TOTAL, { longOpening: true });
+    const packet = buildCriticReviewPacket(buildFinalGardenState(dir, "test-2"));
+    const page = packet.sections.flatMap((section) => section.pages)[0];
+    assert.equal(page.learningUnitId, "U1");
+    assert.equal(
+      page.learningUnitContract.knowledgeClaims[0].text,
+      "Total energy sums spike and synaptic operation energy.",
+    );
+    assert.equal(page.bodyText.packetTruncated, false);
+    assert.equal(page.bodyText.text.length, page.bodyText.fullLength);
+    assert.match(page.bodyText.text, /very long opening paragraph about energy/);
   });
 
   test("isFormulaSyntacticallyComplete distinguishes complete vs cut formulas", () => {

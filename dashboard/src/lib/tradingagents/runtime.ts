@@ -65,6 +65,11 @@ export function resolveTradingAgentsRoot(
 ): TradingAgentsRuntime | null {
   const candidates: Array<{ root: string; source: TradingAgentsRuntime["source"] }> = [];
   const explicit = configured(env.TRADINGAGENTS_ROOT);
+  if (env.BREADBOARD_QA_MODE === "1") {
+    return explicit && isClone(explicit)
+      ? { root: explicit, source: "configured" }
+      : null;
+  }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   candidates.push({ root: path.join(repositoryRoot(), "tradingagents"), source: "repository" });
   candidates.push({ root: path.resolve(process.cwd(), "tradingagents"), source: "cwd" });

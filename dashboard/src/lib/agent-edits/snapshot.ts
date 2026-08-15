@@ -67,6 +67,22 @@ function git(repositoryPath: string, args: string[], env?: NodeJS.ProcessEnv): s
   });
 }
 
+function gitWithInput(
+  repositoryPath: string,
+  args: string[],
+  input: string,
+  env: NodeJS.ProcessEnv,
+): void {
+  execFileSync("git", gitArgs(repositoryPath, args), {
+    input,
+    timeout: GIT_TIMEOUT_MS,
+    maxBuffer: MAX_GIT_BUFFER,
+    windowsHide: true,
+    env,
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+}
+
 function gitBlob(repositoryPath: string, snapshot: string, filePath: string): Buffer {
   return execFileSync(
     "git",
@@ -100,6 +116,62 @@ function snapshotEnv(repositoryPath: string): NodeJS.ProcessEnv {
 }
 
 /**
+ * Prepare the reusable private index without carrying ignored runtime files.
+ *
+ * Older Breadboard builds populated this private index with `git add --force`,
+ * which made ignored runtime directories look tracked forever. Merely dropping
+ * `--force` is not enough: Git continues refreshing paths that are already in
+ * an index even after they become ignored. Remove only ignored paths that are
+ * absent from HEAD; files genuinely tracked despite a later ignore rule stay.
+ *
+ * A fresh index is seeded from HEAD once. Reusing it afterwards preserves
+ * Git's stat cache, which matters in the large repositories coding agents are
+ * meant to work in. An unborn repository has no HEAD, so it starts empty.
+ */
+function prepareSnapshotIndex(
+  repositoryPath: string,
+  env: NodeJS.ProcessEnv,
+): void {
+  const indexFile = env.GIT_INDEX_FILE;
+  if (!indexFile || !fs.existsSync(indexFile)) {
+    try {
+      git(repositoryPath, ["read-tree", "HEAD"], env);
+    } catch {
+      git(repositoryPath, ["read-tree", "--empty"], env);
+    }
+    return;
+  }
+
+  const ignored = git(
+    repositoryPath,
+    ["ls-files", "--cached", "--ignored", "--exclude-standard", "-z"],
+    env,
+  )
+    .split("\0")
+    .filter(Boolean);
+  if (ignored.length === 0) return;
+
+  let trackedAtHead = new Set<string>();
+  try {
+    trackedAtHead = new Set(
+      git(repositoryPath, ["ls-tree", "-r", "--name-only", "-z", "HEAD"])
+        .split("\0")
+        .filter(Boolean),
+    );
+  } catch {
+    // An unborn repository has no tracked paths to preserve.
+  }
+  const staleIgnored = ignored.filter((filePath) => !trackedAtHead.has(filePath));
+  if (staleIgnored.length === 0) return;
+  gitWithInput(
+    repositoryPath,
+    ["update-index", "--force-remove", "-z", "--stdin"],
+    `${staleIgnored.join("\0")}\0`,
+    env,
+  );
+}
+
+/**
  * Record the current working tree, including files git does not track yet.
  * Returns null when the repository cannot be snapshotted, which only costs the
  * run its undo button.
@@ -107,7 +179,11 @@ function snapshotEnv(repositoryPath: string): NodeJS.ProcessEnv {
 export function captureSnapshot(repositoryPath: string): string | null {
   try {
     const env = snapshotEnv(repositoryPath);
-    git(repositoryPath, ["add", "--all", "--force", "--"], env);
+    prepareSnapshotIndex(repositoryPath, env);
+    // Respect repository ignore rules. Coding runtimes, dependency trees, and
+    // generated output can be enormous (and may contain incomplete nested Git
+    // repositories); none of them belongs in an undo snapshot.
+    git(repositoryPath, ["add", "--all", "--"], env);
     const tree = git(repositoryPath, ["write-tree"], env).trim();
     if (!isSnapshotId(tree)) return null;
     const commit = git(

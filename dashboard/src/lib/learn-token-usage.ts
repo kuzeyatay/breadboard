@@ -4,8 +4,8 @@ import {
   type ChatTokenUsage,
 } from './chat-token-usage.ts';
 import {
-  retryHttp502,
-  type Http502RetryOptions,
+  retryModelTransport,
+  type ModelTransportRetryOptions,
 } from './http-502-retry.ts';
 
 export interface LearnTokenUsage {
@@ -72,11 +72,19 @@ type CompletionCreate = (...args: unknown[]) => Promise<unknown>;
 
 interface TrackingState {
   listener: LearnTokenUsageListener;
-  retry502: Http502RetryOptions;
+  retryTransport: ModelTransportRetryOptions;
 }
 
 export interface LearnTokenUsageTrackingOptions {
-  retry502?: Http502RetryOptions;
+  retryTransport?: ModelTransportRetryOptions;
+  /** @deprecated Retained for existing Learn callers. */
+  retry502?: ModelTransportRetryOptions;
+}
+
+function transportRetryOptions(
+  options: LearnTokenUsageTrackingOptions,
+): ModelTransportRetryOptions {
+  return options.retryTransport ?? options.retry502 ?? {};
 }
 
 function requestSignal(args: unknown[]): AbortSignal | null | undefined {
@@ -100,7 +108,7 @@ function combineRequestSignals(
   return AbortSignal.any(signals);
 }
 
-/** The explicit six-attempt 502 ladder owns retries for Learn calls. Disable
+/** The explicit six-attempt transport ladder owns retries for Learn calls. Disable
  * the SDK's default two retries so one logical call cannot become 18 HTTP
  * attempts. Existing timeout and signal options remain intact. */
 function withSdkRetriesDisabled(
@@ -147,20 +155,23 @@ export function attachLearnTokenUsageTracking(
   const existing = trackingByCompletionResource.get(resource);
   if (existing) {
     existing.listener = listener;
-    existing.retry502 = options.retry502 ?? {};
+    existing.retryTransport = transportRetryOptions(options);
     return client;
   }
 
   const mutableResource = resource as { create: CompletionCreate };
   const originalCreate = mutableResource.create.bind(resource);
-  const state: TrackingState = { listener, retry502: options.retry502 ?? {} };
+  const state: TrackingState = {
+    listener,
+    retryTransport: transportRetryOptions(options),
+  };
   trackingByCompletionResource.set(resource, state);
 
   mutableResource.create = async (...args: unknown[]) => {
     // Pin both events to the job that owned the client when this request
     // began. A later reattachment must not split one request across jobs.
     const requestListener = state.listener;
-    const requestRetryOptions = state.retry502;
+    const requestRetryOptions = state.retryTransport;
     const signal = combineRequestSignals(
       requestSignal(args),
       requestRetryOptions.signal,
@@ -168,7 +179,7 @@ export function attachLearnTokenUsageTracking(
     const requestArgs = withSdkRetriesDisabled(args, signal);
     notifyListener(requestListener, { type: 'started' });
     try {
-      const response = await retryHttp502(
+      const response = await retryModelTransport(
         () => originalCreate(...requestArgs),
         {
           ...requestRetryOptions,

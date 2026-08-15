@@ -30,6 +30,7 @@ import {
   splitLeadingCommandTokens,
   UserMessageText,
 } from "@/app/components/hermes/command-text";
+import SavePromptDialog from "@/app/components/hermes/save-prompt-dialog";
 import { useLegacyAgentActivity } from "@/app/components/hermes/use-legacy-agent-activity";
 import type {
   ActivityItem,
@@ -38,6 +39,7 @@ import type {
 } from "@/app/components/hermes/use-agent-session";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
+import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
@@ -309,6 +311,7 @@ import {
   type ExternalAgentTerminalResult,
 } from "@/lib/conversations/external-agent-runs";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
+import { gardenDocumentHref } from "@/lib/garden-document-route";
 
 interface Message {
   id?: string;
@@ -920,6 +923,7 @@ interface ChatTranscriptProps {
   connection: ConnectionState;
   pendingPermission: PermissionPrompt | null;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
+  onEditMessage: (messageIndex: number, text: string) => void;
   onRetryAssistant: (messageIndex: number) => void;
   onExternalAgentTerminal: (
     runId: string,
@@ -939,16 +943,62 @@ const ChatTranscript = memo(function ChatTranscript({
   connection,
   pendingPermission,
   onPermissionDecision,
+  onEditMessage,
   onRetryAssistant,
   onExternalAgentTerminal,
   inlineArtifactRetireVersion,
 }: ChatTranscriptProps) {
+  const copiedUserTimerRef = useRef<number | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [messageEditText, setMessageEditText] = useState("");
+  const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
+  const [promptToSave, setPromptToSave] = useState<string | null>(null);
   const lastAssistantIndex = messages.reduce(
     (lastIndex, message, index) =>
       message.role === "assistant" ? index : lastIndex,
     -1,
   );
   const timeSeparators = chatTimeSeparatorLabels(messages);
+
+  useEffect(
+    () => () => {
+      if (copiedUserTimerRef.current !== null) {
+        window.clearTimeout(copiedUserTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  async function copyUserMessage(message: Message, messageId: string) {
+    if (!navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(message.content);
+    } catch {
+      return;
+    }
+    setCopiedUserId(messageId);
+    if (copiedUserTimerRef.current !== null) {
+      window.clearTimeout(copiedUserTimerRef.current);
+    }
+    copiedUserTimerRef.current = window.setTimeout(
+      () => setCopiedUserId(null),
+      1_600,
+    );
+  }
+
+  function beginMessageEdit(message: Message, messageId: string) {
+    setEditingMessageId(messageId);
+    setMessageEditText(message.content);
+  }
+
+  function saveMessageEdit(messageIndex: number) {
+    const text = messageEditText.trim();
+    if (!text) return;
+    setEditingMessageId(null);
+    setMessageEditText("");
+    onEditMessage(messageIndex, text);
+  }
+
   return (
     <InlineArtifactCardsProvider
       legacyChatSessionId={chatSessionId}
@@ -999,6 +1049,7 @@ const ChatTranscript = memo(function ChatTranscript({
               }
             : storedMessage;
         if (msg.internalAgentContinuation === true) return null;
+        const messageInteractionId = msg.id ?? `user-message-${i}`;
         const externalRun =
           msg.agentBrowserRun ??
           msg.deepResearchRun ??
@@ -1043,7 +1094,7 @@ const ChatTranscript = memo(function ChatTranscript({
             />
           ) : null}
           <div
-            className={`flex flex-col gap-2 ${msg.role === "user" ? "items-end" : "items-start"}`}
+            className={`${msg.role === "user" ? "group " : ""}flex flex-col gap-2 ${msg.role === "user" ? "items-end" : "items-start"}`}
           >
             {msg.role === "user" ? (
               <div className="flex flex-col items-end gap-1 max-w-[80%]">
@@ -1051,15 +1102,184 @@ const ChatTranscript = memo(function ChatTranscript({
                 attachments={msg.attachments}
                 attachmentNames={msg.attachmentNames}
               />
-              {msg.content && (
-                <div className="neu-chat-message neu-chat-message-user w-full rounded-2xl rounded-tr-sm px-4 py-3 text-sm">
-                  {splitLeadingCommandTokens(msg.content) ? (
-                    <UserMessageText content={msg.content} />
-                  ) : (
-                    <ChatMarkdown content={msg.content} compact />
-                  )}
-                </div>
-              )}
+              {msg.content ? (
+                editingMessageId === messageInteractionId ? (
+                  <form
+                    className="neu-chat-message neu-chat-message-user min-w-64 rounded-[22px] p-2"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      saveMessageEdit(i);
+                    }}
+                  >
+                    <textarea
+                      value={messageEditText}
+                      onChange={(event) => setMessageEditText(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === "Enter" &&
+                          (event.ctrlKey || event.metaKey)
+                        ) {
+                          event.preventDefault();
+                          event.currentTarget.form?.requestSubmit();
+                        }
+                      }}
+                      rows={Math.min(
+                        6,
+                        Math.max(2, messageEditText.split("\n").length),
+                      )}
+                      className="max-h-40 w-full resize-none bg-transparent px-2 py-1 text-sm leading-6 text-[var(--ink)] outline-none"
+                      aria-label="Edit message"
+                      autoFocus
+                    />
+                    <div className="mt-1 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditingMessageId(null)}
+                        className="rounded-full px-3 py-1 text-xs text-[var(--ink-muted)] hover:bg-[var(--paper-strong)]"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isStreaming || !messageEditText.trim()}
+                        className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] px-3 text-xs font-medium text-[var(--paper-raised)] shadow-sm transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)] disabled:shadow-none"
+                      >
+                        <span>Save &amp; send</span>
+                        <svg
+                          className="h-3.5 w-3.5"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={2.2}
+                          aria-hidden
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M12 19.5v-15m0 0-6 6m6-6 6 6"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <div className="neu-chat-message neu-chat-message-user w-full rounded-2xl rounded-tr-sm px-4 py-3 text-sm">
+                      {splitLeadingCommandTokens(msg.content) ? (
+                        <UserMessageText content={msg.content} />
+                      ) : (
+                        <ChatMarkdown content={msg.content} compact />
+                      )}
+                    </div>
+                    <div className="mt-1 flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void copyUserMessage(
+                            msg,
+                            messageInteractionId,
+                          )
+                        }
+                        className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
+                        title={
+                          copiedUserId === messageInteractionId
+                            ? "Copied"
+                            : "Copy message"
+                        }
+                        aria-label={
+                          copiedUserId === messageInteractionId
+                            ? "Message copied"
+                            : "Copy message"
+                        }
+                      >
+                        {copiedUserId === messageInteractionId ? (
+                          <svg
+                            className="h-4 w-4"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={1.8}
+                            aria-hidden
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="m5 12 4 4L19 6"
+                            />
+                          </svg>
+                        ) : (
+                          <svg
+                            className="h-4 w-4"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={1.7}
+                            aria-hidden
+                          >
+                            <rect x="8" y="8" width="11" height="11" rx="2" />
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"
+                            />
+                          </svg>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPromptToSave(msg.content)}
+                        className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
+                        title="Save to Prompts"
+                        aria-label="Save message to Prompts"
+                      >
+                        <svg
+                          className="h-4 w-4"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth={1.7}
+                          aria-hidden
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M6 4.75A1.75 1.75 0 0 1 7.75 3h8.5A1.75 1.75 0 0 1 18 4.75V21l-6-3.75L6 21V4.75Z"
+                          />
+                          <path strokeLinecap="round" d="M9 7.5h6" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          beginMessageEdit(
+                            msg,
+                            messageInteractionId,
+                          )
+                        }
+                        disabled={isStreaming}
+                        className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] disabled:cursor-not-allowed disabled:opacity-35"
+                        title="Edit message"
+                        aria-label="Edit message and create a branch"
+                      >
+                        <svg
+                          className="h-4 w-4"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={1.7}
+                          aria-hidden
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  </>
+                )
+              ) : null}
             </div>
             ) : (
               <div className="flex w-full flex-col gap-2">
@@ -1606,6 +1826,12 @@ const ChatTranscript = memo(function ChatTranscript({
         <InlineArtifactCards ownerMessageId={null} />
       ) : null}
     </div>
+    {promptToSave !== null ? (
+      <SavePromptDialog
+        content={promptToSave}
+        onClose={() => setPromptToSave(null)}
+      />
+    ) : null}
     </InlineArtifactCardsProvider>
   );
 });
@@ -2326,7 +2552,11 @@ export default function WorkspaceClient({
   const isStreaming =
     (activeChatId !== null && streamingChatIds.has(activeChatId)) ||
     hasRunningExternalAgentInActiveChat;
-  const transcriptScrollRef = useChatAutoScroll<HTMLElement>({
+  const {
+    ref: transcriptScrollRef,
+    awayFromBottom: transcriptAwayFromBottom,
+    scrollToBottom: jumpToNewestMessage,
+  } = useChatAutoScroll<HTMLElement>({
     isResponding: isStreaming,
     responseKey: chatAutoScrollResponseKey(messages),
     contentKey: chatAutoScrollContentKey(messages),
@@ -3951,6 +4181,19 @@ export default function WorkspaceClient({
       previousUser.content,
       messages.slice(0, userIndex),
       retryAttachments,
+    );
+  }
+
+  function handleEditUserMessage(messageIndex: number, text: string) {
+    if (isStreaming || !activeChat) return;
+    const previousUser = messages[messageIndex];
+    if (!previousUser || previousUser.role !== "user") return;
+    const editedAttachments = reusableChatAttachments(previousUser.attachments);
+    setInlineArtifactRetireVersion((current) => current + 1);
+    void handleSubmit(
+      text,
+      messages.slice(0, messageIndex),
+      editedAttachments,
     );
   }
 
@@ -7130,7 +7373,10 @@ export default function WorkspaceClient({
     }
   }
 
-  async function launchRuflo(task: string) {
+  async function launchRuflo(
+    task: string,
+    attachments: readonly ChatAttachment[] = [],
+  ) {
     if (!task || externalAgentLaunchRef.current) {
       if (!task) setExternalAgentStatus("Type an objective for the Ruflo swarm.");
       return;
@@ -7139,6 +7385,13 @@ export default function WorkspaceClient({
     setLaunchingExternalAgent("ruflo");
     setExternalAgentStatus("");
     const userContent = rufloUserMessage(task);
+    const persistedAttachments = chatMessageAttachments(attachments);
+    const userMessageFields = persistedAttachments.length
+      ? {
+          attachmentNames: persistedAttachments.map((attachment) => attachment.name),
+          attachments: persistedAttachments,
+        }
+      : {};
     const prepared = await prepareExternalAgentSession(userContent);
     if (!prepared) {
       externalAgentLaunchRef.current = null;
@@ -7153,6 +7406,7 @@ export default function WorkspaceClient({
           role: "user",
           content: userContent,
           createdAt: new Date().toISOString(),
+          ...userMessageFields,
         },
       ]);
     }
@@ -7160,7 +7414,13 @@ export default function WorkspaceClient({
       const response = await fetch("/api/ruflo/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ task, gardenSlug: clusterSlug }),
+        body: JSON.stringify({
+          task,
+          gardenSlug: clusterSlug,
+          attachments: attachments.filter(
+            (attachment) => attachment.type === "image",
+          ),
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (
@@ -7190,6 +7450,7 @@ export default function WorkspaceClient({
           externalAgentOutcome: "running",
         },
         prepared.title,
+        userMessageFields,
       );
     } catch (error) {
       await commitExternalAgentTurn(
@@ -7202,6 +7463,7 @@ export default function WorkspaceClient({
           }`,
         },
         prepared.title,
+        userMessageFields,
       );
     } finally {
       externalAgentLaunchRef.current = null;
@@ -7352,11 +7614,17 @@ export default function WorkspaceClient({
 
     const rufloTask = taskFromRufloCommand(text);
     if (rufloTask !== null) {
+      const rufloAttachments = pendingAttachments;
       setInput("");
       setChatAttachments([]);
       void (async () => {
         if (!rufloAgent) await selectRuflo();
-        if (rufloTask) await launchRuflo(rufloTask);
+        if (rufloTask || rufloAttachments.length) {
+          await launchRuflo(
+            rufloTask || "Review the attached screenshot and implement the requested fix.",
+            rufloAttachments,
+          );
+        }
       })();
       return;
     }
@@ -7644,7 +7912,10 @@ export default function WorkspaceClient({
     if (rufloAgent) {
       setInput("");
       setChatAttachments([]);
-      void launchRuflo(text);
+      void launchRuflo(
+        text || "Review the attached screenshot and implement the requested fix.",
+        pendingAttachments,
+      );
       return;
     }
     if (codexAgent) {
@@ -9510,7 +9781,7 @@ export default function WorkspaceClient({
               : "");
           const documentHref = isPdfSource
             ? `/gardens/${clusterSlug}/pdf/${encodeURIComponent(doc.slug)}`
-            : `/garden/${clusterSlug}?note=${encodeURIComponent(doc.slug)}`;
+            : gardenDocumentHref(clusterSlug, doc);
           return (
             <li
               key={`${doc.slug}:${doc.type}:${index}`}
@@ -10178,6 +10449,8 @@ export default function WorkspaceClient({
       <div className="border-t border-gray-800 shrink-0">
         <button
           onClick={() => setSourceDocsExpanded((v) => !v)}
+          aria-expanded={sourceDocsExpanded}
+          aria-controls="garden-source-documents"
           className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors ${sourceDocsExpanded ? "bb-neu-accordion-open" : ""}`}
         >
           <div className="flex items-center gap-2">
@@ -10241,7 +10514,10 @@ export default function WorkspaceClient({
           </div>
         </button>
         {sourceDocsExpanded && (
-          <div className="bb-neu-accordion-panel border-t border-gray-800">
+          <div
+            id="garden-source-documents"
+            className="bb-neu-accordion-panel border-t border-gray-800"
+          >
             {!loadingDocs && sourceDocuments.length > 0 && (
               <div className="border-b border-gray-800 px-3 py-2">
                 <div className="relative">
@@ -10680,7 +10956,9 @@ export default function WorkspaceClient({
           </Link>
           <span className="text-gray-700">/</span>
           <Link
-            href={`/garden/${clusterSlug}${primarySourceDocument ? `?note=${encodeURIComponent(primarySourceDocument.slug)}` : ""}`}
+            href={primarySourceDocument
+              ? gardenDocumentHref(clusterSlug, primarySourceDocument)
+              : `/garden/${clusterSlug}`}
             className="text-sm font-semibold text-white truncate max-w-xs hover:text-cyan-100 transition-colors"
             title={
               primarySourceDocument
@@ -11326,7 +11604,10 @@ export default function WorkspaceClient({
             a widened map panel is pushed off-screen (clipped by the root overflow). */}
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-900">
           {renderLearnPanel()}
-          <main ref={transcriptScrollRef} className="flex-1 overflow-y-auto px-4 py-6">
+          {/* Positioning context for the jump control, so it floats at the foot
+              of the transcript rather than below the composer. */}
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            <main ref={transcriptScrollRef} className="flex-1 overflow-y-auto px-4 py-6">
             <ChatTranscript
               clusterName={clusterName}
               clusterSlug={clusterSlug}
@@ -11342,11 +11623,20 @@ export default function WorkspaceClient({
               onPermissionDecision={(decision) =>
                 void agentActivity.respondToPermission(decision)
               }
+              onEditMessage={handleEditUserMessage}
               onRetryAssistant={handleRetryAssistant}
               onExternalAgentTerminal={handleExternalAgentTerminal}
               inlineArtifactRetireVersion={inlineArtifactRetireVersion}
             />
-          </main>
+            </main>
+            <ChatJumpToBottom
+              visible={transcriptAwayFromBottom}
+              busy={
+                isStreaming || agentLaunchQueue.queued || delegatedAgentLaunching
+              }
+              onJump={jumpToNewestMessage}
+            />
+          </div>
 
           {/* Input area */}
           <div className="shrink-0 px-4 py-4">

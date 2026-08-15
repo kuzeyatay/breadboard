@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -84,6 +85,63 @@ function commandVersion(command: string): string | null {
   return (probe.stdout || probe.stderr || "Codex").trim().slice(0, 120);
 }
 
+function extensionTarget(platform: NodeJS.Platform, arch: string): string | null {
+  const platformName =
+    platform === "win32"
+      ? "windows"
+      : platform === "darwin"
+        ? "macos"
+        : platform === "linux"
+          ? "linux"
+          : null;
+  const architecture = arch === "x64" ? "x86_64" : arch === "arm64" ? "aarch64" : null;
+  return platformName && architecture ? `${platformName}-${architecture}` : null;
+}
+
+/**
+ * Codex is commonly installed by the official OpenAI VS Code extension, whose
+ * bundled binary is not necessarily on the desktop server's PATH. Discover it
+ * directly so a bare `CODEX_BIN=codex.exe` does not hide a working install.
+ */
+export function codexExtensionBinaryCandidates(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string[] {
+  const target = extensionTarget(platform, arch);
+  if (!target) return [];
+  const executable = platform === "win32" ? "codex.exe" : "codex";
+  const userHome = env.USERPROFILE?.trim() || env.HOME?.trim() || "";
+  const roots = [
+    env.VSCODE_EXTENSIONS?.trim() ?? "",
+    env.VSCODE_EXTENSIONS_DIR?.trim() ?? "",
+    userHome ? path.join(userHome, ".vscode", "extensions") : "",
+    userHome ? path.join(userHome, ".vscode-insiders", "extensions") : "",
+  ].filter(Boolean);
+
+  const candidates: string[] = [];
+  for (const root of [...new Set(roots.map((entry) => path.resolve(entry)))]) {
+    let extensionNames: string[];
+    try {
+      extensionNames = readdirSync(root, { withFileTypes: true })
+        .filter(
+          (entry) => entry.isDirectory() && /^openai\.chatgpt-/i.test(entry.name),
+        )
+        .map((entry) => entry.name)
+        .sort((left, right) =>
+          right.localeCompare(left, undefined, { numeric: true, sensitivity: "base" }),
+        );
+    } catch {
+      continue;
+    }
+    for (const extensionName of extensionNames) {
+      const candidate = path.join(root, extensionName, "bin", target, executable);
+      if (existsSync(candidate)) candidates.push(candidate);
+    }
+  }
+  return candidates;
+}
+
 function localBinaryCandidates(env: NodeJS.ProcessEnv): string[] {
   const executable = process.platform === "win32" ? "codex.exe" : "codex";
   return [
@@ -92,6 +150,7 @@ function localBinaryCandidates(env: NodeJS.ProcessEnv): string[] {
     path.resolve(process.cwd(), "codex", "codex-rs", "target", "debug", executable),
     path.resolve(process.cwd(), "..", "codex", "codex-rs", "target", "release", executable),
     path.resolve(process.cwd(), "..", "codex", "codex-rs", "target", "debug", executable),
+    ...codexExtensionBinaryCandidates(env),
   ].filter(Boolean);
 }
 
@@ -101,7 +160,11 @@ export function resolveCodexLauncher(env: NodeJS.ProcessEnv = process.env): Laun
 
 function resolveLauncher(env: NodeJS.ProcessEnv = process.env): Launcher | null {
   for (const candidate of localBinaryCandidates(env)) {
-    if (!existsSync(candidate)) continue;
+    // A configured bare command may be resolvable through PATH. Concrete
+    // paths, including extension bundles, must exist before they are probed.
+    if ((path.isAbsolute(candidate) || /[\\/]/.test(candidate)) && !existsSync(candidate)) {
+      continue;
+    }
     const version = commandVersion(candidate);
     if (version) return { command: candidate, version };
   }

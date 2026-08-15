@@ -30,10 +30,10 @@ Only if you changed an embedded interactive visual, also append:
 [{ "id": "<existing visual id>", "spec": { ...the full revised visual spec JSON... } }]
 ===END VISUAL_SPECS===
 
-Only if the failure requires new Zettelkasten handles for THIS unit, also append:
-===CONTRACT_HANDLE_PATCH===
-{ "unitId": "<this unit id>", "handles": ["kebab-case-handle-one", "kebab-case-handle-two", "..."] }
-===END CONTRACT_HANDLE_PATCH===`;
+Only if the failure requires changing the Zettelkasten notes for THIS unit, also append the COMPLETE replacement records (never handles alone):
+===CONTRACT_ZETTEL_PATCH===
+{ "unitId": "<this unit id>", "zettelNotes": [{ "handle": "kebab-case-handle", "claim": "Complete learner-facing claim authored by you.", "connectedTo": ["exact-related-handle"] }] }
+===END CONTRACT_ZETTEL_PATCH===`;
 
 function formatContract(contract: LearningUnitContract): string {
   const lines: string[] = [
@@ -45,6 +45,9 @@ function formatContract(contract: LearningUnitContract): string {
     `newConcepts: ${contract.newConcepts.join(", ") || "(none)"}`,
     `sourceAnchors: ${contract.sourceAnchors.join(", ") || "(none)"}`,
     `expectedWordRange: ${contract.expectedWordRange.join("-")}`,
+    `zettelNotes: ${JSON.stringify(contract.zettelNotes)}`,
+    `semanticConcepts: ${JSON.stringify(contract.semanticConcepts ?? [])}`,
+    `knowledgeClaims: ${JSON.stringify(contract.knowledgeClaims ?? [])}`,
   ];
   if (contract.mustNotRepeat.length) lines.push(`mustNotRepeat: ${contract.mustNotRepeat.join(" | ")}`);
   if (contract.sourceFigures.length) {
@@ -197,28 +200,70 @@ export function parseModelRepairResponse(text: string): RepairCandidate | null {
   if (visualsRaw) {
     try {
       const parsed = JSON.parse(stripCodeFence(visualsRaw));
-      if (Array.isArray(parsed)) {
-        candidate.visualSpecs = parsed
-          .filter((entry) => entry && typeof entry === "object" && typeof entry.id === "string" && entry.spec && typeof entry.spec === "object")
-          .map((entry) => ({ id: String(entry.id), spec: entry.spec as Record<string, unknown> }));
-      }
+      if (
+        !Array.isArray(parsed) ||
+        parsed.some(
+          (entry) =>
+            !entry ||
+            typeof entry !== "object" ||
+            typeof entry.id !== "string" ||
+            entry.id.trim() !== entry.id ||
+            !entry.id ||
+            !entry.spec ||
+            typeof entry.spec !== "object" ||
+            Array.isArray(entry.spec),
+        )
+      ) return null;
+      candidate.visualSpecs = parsed.map((entry) => ({
+        id: entry.id,
+        spec: entry.spec as Record<string, unknown>,
+      }));
     } catch {
-      // ignore malformed side output; the page alone is still usable
+      return null;
     }
   }
 
-  const patchRaw = extractBetween(text, "===CONTRACT_HANDLE_PATCH===", "===END CONTRACT_HANDLE_PATCH===");
+  const patchRaw = extractBetween(text, "===CONTRACT_ZETTEL_PATCH===", "===END CONTRACT_ZETTEL_PATCH===");
   if (patchRaw) {
     try {
       const parsed = JSON.parse(stripCodeFence(patchRaw));
-      if (parsed && typeof parsed === "object" && typeof parsed.unitId === "string" && Array.isArray(parsed.handles)) {
-        candidate.contractHandlePatch = {
-          unitId: String(parsed.unitId),
-          handles: parsed.handles.map((handle: unknown) => String(handle)).filter(Boolean),
-        };
-      }
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        typeof parsed.unitId !== "string" ||
+        parsed.unitId.trim() !== parsed.unitId ||
+        !parsed.unitId ||
+        !Array.isArray(parsed.zettelNotes) ||
+        parsed.zettelNotes.length === 0 ||
+        parsed.zettelNotes.some(
+          (note: unknown) => {
+            if (!note || typeof note !== "object") return true;
+            const record = note as Record<string, unknown>;
+            return (
+              typeof record.handle !== "string" ||
+              record.handle.trim() !== record.handle ||
+              !record.handle ||
+              typeof record.claim !== "string" ||
+              record.claim.trim() !== record.claim ||
+              !record.claim ||
+              !Array.isArray(record.connectedTo) ||
+              record.connectedTo.some(
+                (value) => typeof value !== "string" || value.trim() !== value || !value,
+              )
+            );
+          },
+        )
+      ) return null;
+      candidate.contractZettelPatch = {
+        unitId: parsed.unitId,
+        zettelNotes: parsed.zettelNotes.map((note: Record<string, unknown>) => ({
+          handle: note.handle as string,
+          claim: note.claim as string,
+          connectedTo: [...(note.connectedTo as string[])],
+        })),
+      };
     } catch {
-      // ignore malformed patch
+      return null;
     }
   }
 

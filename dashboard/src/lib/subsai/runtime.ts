@@ -91,6 +91,11 @@ export function isClone(candidate: string): boolean {
 export function resolveSubsAiRoot(env: NodeJS.ProcessEnv = process.env): SubsAiRuntime | null {
   const candidates: Array<{ root: string; source: SubsAiRuntime["source"] }> = [];
   const explicit = configured(env.SUBSAI_ROOT);
+  if (env.BREADBOARD_QA_MODE === "1") {
+    return explicit && isClone(explicit)
+      ? { root: explicit, source: "configured" }
+      : null;
+  }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   const name = "subsai";
   candidates.push({ root: path.join(repositoryRoot(), name), source: "repository" });
@@ -214,7 +219,11 @@ export function subsAiEnv(
     // Model weights are large and shared; keep them out of the clone so a
     // rebuilt environment does not re-download them.
     ...(root
-      ? { HF_HOME: path.join(repositoryRoot(), ".runtime", "subsai", "models") }
+      ? {
+          HF_HOME:
+            env.HF_HOME?.trim() ||
+            path.join(repositoryRoot(), ".runtime", "subsai", "models"),
+        }
       : {}),
     ...extra,
   };

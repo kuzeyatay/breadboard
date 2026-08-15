@@ -100,6 +100,7 @@ export async function POST(request: Request) {
       userId,
       agentId: "legal_agent",
       query: legalRequest.task,
+      conversationPublicId,
     });
 
     const { baseURL } = resolveChatmockBaseUrl(request);

@@ -9,6 +9,8 @@ import { app, shell, session, type BrowserWindow, type Session } from "electron"
  */
 export interface AllowedOrigins {
   origins: Set<string>;
+  /** Exact product-owned file URLs; omitted means no local file is trusted. */
+  localFiles?: Set<string>;
 }
 
 const themeLocationAllowedWebContents = new Set<number>();
@@ -25,24 +27,39 @@ export function revokeThemeLocationFor(webContentsId: number): void {
 
 export function allowedOriginsFor(urls: string[]): AllowedOrigins {
   const origins = new Set<string>();
+  const localFiles = new Set<string>();
   for (const value of urls) {
     try {
-      origins.add(new URL(value).origin);
+      const url = new URL(value);
+      if (url.protocol === "file:") localFiles.add(normalizedLocalFileUrl(url));
+      else origins.add(url.origin);
     } catch {
       // Ignore unparseable entries; they simply are not allowed.
     }
   }
-  return { origins };
+  return { origins, localFiles };
 }
 
 export function isNavigationAllowed(allowed: AllowedOrigins, targetUrl: string): boolean {
   try {
     const url = new URL(targetUrl);
-    if (url.protocol === "file:") return true; // our own startup screen
+    if (url.protocol === "file:") {
+      return allowed.localFiles?.has(normalizedLocalFileUrl(url)) === true;
+    }
     return allowed.origins.has(url.origin);
   } catch {
     return false;
   }
+}
+
+function normalizedLocalFileUrl(url: URL): string {
+  // loadFile adds a theme query to the product-owned startup/recovery pages.
+  // Navigation authority belongs to the exact local file, never its query or
+  // fragment and never every other file on the machine.
+  const normalized = new URL(url.toString());
+  normalized.search = "";
+  normalized.hash = "";
+  return normalized.toString();
 }
 
 export function isSafeExternalUrl(targetUrl: string): boolean {

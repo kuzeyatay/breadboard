@@ -25,6 +25,8 @@ export interface ConversationRow {
   next_order_index: number;
   pinned_at: string | null;
   highlight: string | null;
+  /** 1 for an off-the-record chat. See `conversationIsTemporary`. */
+  temporary: number;
   created_at: string;
   updated_at: string;
 }
@@ -82,11 +84,13 @@ export function createConversation(input: {
   surface?: HermesSurface;
   scopeKind?: ConversationScopeKind;
   defaultGardenId?: number | null;
+  /** Off the record: hidden from history and invisible to memory, for good. */
+  temporary?: boolean;
 }, database: Database.Database = db): ConversationRow {
   const publicId = `conv_${crypto.randomBytes(18).toString("base64url")}`;
   const result = database.prepare(`
-    INSERT INTO conversations(public_id, user_id, title, surface, scope_kind, default_garden_id)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO conversations(public_id, user_id, title, surface, scope_kind, default_garden_id, temporary)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
     publicId,
     input.userId,
@@ -94,6 +98,7 @@ export function createConversation(input: {
     input.surface ?? "dashboard_terminal",
     input.scopeKind ?? "global",
     input.defaultGardenId ?? null,
+    input.temporary ? 1 : 0,
   );
   const id = Number(result.lastInsertRowid);
   database.prepare("INSERT INTO conversation_memory_state(conversation_id) VALUES (?)").run(id);
@@ -227,15 +232,34 @@ export function ensureConversationForLegacyChatSession(
   return ensure();
 }
 
+/**
+ * Whether this chat is off the record.
+ *
+ * One predicate for every caller: the flag is stored as SQLite's 0/1 integer,
+ * and a row read before the column existed can still arrive as null/undefined
+ * from an old cached shape, which must read as "not temporary" rather than
+ * throw.
+ */
+export function conversationIsTemporary(
+  conversation: Pick<ConversationRow, "temporary"> | null | undefined,
+): boolean {
+  return Number(conversation?.temporary ?? 0) === 1;
+}
+
 export function listConversationsForUser(
   userId: number,
   database: Database.Database = db,
 ): ConversationRow[] {
   // Pinned chats sort first so an old-but-pinned conversation survives the
   // limit. The sidebar re-groups them; this only guarantees they are present.
+  //
+  // Temporary chats are excluded here rather than at each rail: this is the one
+  // query behind history and restore-after-reload, so leaving them out is what
+  // makes "it will not appear in your history" true even for the tab that
+  // created it.
   return database.prepare(`
     SELECT * FROM conversations
-    WHERE user_id = ?
+    WHERE user_id = ? AND temporary = 0
     ORDER BY (pinned_at IS NOT NULL) DESC, updated_at DESC, id DESC
     LIMIT 100
   `).all(userId) as ConversationRow[];
@@ -753,6 +777,7 @@ export function presentConversation(row: ConversationRow): {
   pinned: boolean;
   pinnedAt: string | null;
   highlight: string | null;
+  temporary: boolean;
   createdAt: string;
   updatedAt: string;
 } {
@@ -764,6 +789,9 @@ export function presentConversation(row: ConversationRow): {
     activeAgencyAgentSlug: row.active_agency_agent_slug,
     pinned: row.pinned_at !== null,
     pinnedAt: row.pinned_at ?? null,
+    // The client mirrors this rather than remembering what it asked for: a
+    // reopened chat has to be able to say what it is on its own.
+    temporary: conversationIsTemporary(row),
     // An unknown slug (an older palette, a hand-edited row) presents as no
     // highlight rather than as a color the rail cannot paint.
     highlight: isChatHighlight(row.highlight) ? row.highlight : null,

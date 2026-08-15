@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  AgentStreamDisconnectedError,
   AgentStreamTimeoutError,
+  agentStreamReconnectDelay,
   agentStreamTimeout,
+  isRecoverableAgentStreamDisconnect,
   isAgentStreamTurnActivity,
+  waitForAgentStreamReconnect,
   withAgentStreamTimeout,
 } from "../src/app/components/hermes/agent-stream-watchdog.ts";
 
@@ -80,4 +84,31 @@ test("agent stream watchdog returns data received before the deadline", async ()
     kind: "inactivity_timeout",
   });
   assert.equal(result, "event");
+});
+
+test("agent stream reconnects bounded transport failures but not run timeouts", () => {
+  assert.equal(
+    isRecoverableAgentStreamDisconnect(new AgentStreamDisconnectedError()),
+    true,
+  );
+  assert.equal(
+    isRecoverableAgentStreamDisconnect(new TypeError("network error")),
+    true,
+  );
+  assert.equal(
+    isRecoverableAgentStreamDisconnect(
+      new AgentStreamTimeoutError("inactivity_timeout"),
+    ),
+    false,
+  );
+  assert.equal(agentStreamReconnectDelay(0), 500);
+  assert.equal(agentStreamReconnectDelay(5), 16_000);
+  assert.equal(agentStreamReconnectDelay(6), null);
+});
+
+test("agent stream reconnect delay remains abortable", async () => {
+  const controller = new AbortController();
+  const waiting = waitForAgentStreamReconnect(10_000, controller.signal);
+  controller.abort();
+  await assert.rejects(waiting, (error) => error?.name === "AbortError");
 });

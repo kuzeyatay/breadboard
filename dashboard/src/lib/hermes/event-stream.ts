@@ -50,6 +50,7 @@ import { hermesMessageId } from "./message-id.ts";
 import { compactConversationMemoryIfNeeded } from "../conversations/memory.ts";
 import {
   associateArtifactToolCall,
+  hasReadyArtifactForRun,
   listArtifactEventsAfter,
 } from "./artifact-store.ts";
 import { listAgentLaunchRequestsAfter } from "./agent-launch-store.ts";
@@ -246,6 +247,33 @@ function driveSessionEventPump(
     streamRun ??= getActiveRuntimeRun(session.row.id);
     if (!streamRun) return false;
     return parseRuntimeRunDispatch(streamRun).webGrounding?.required === true;
+  };
+  const missingRequiredArtifact = () => {
+    streamRun ??= getActiveRuntimeRun(session.row.id);
+    if (!streamRun) return null;
+    const dispatch = parseRuntimeRunDispatch(streamRun);
+    const requirements = dispatch.requiredArtifacts ?? [];
+    const conversationId = session.row.conversation_id;
+    const assistantClientMessageId = dispatch.clientMessageId?.trim();
+    if (
+      requirements.length > 0 &&
+      (conversationId === null || !assistantClientMessageId)
+    ) {
+      return requirements[0];
+    }
+    return requirements.find(
+      (requirement) =>
+        !hasReadyArtifactForRun({
+          runId: streamRun!.id,
+          conversationId: conversationId!,
+          assistantClientMessageId: assistantClientMessageId!,
+          kind: requirement.kind,
+          rendererId: requirement.rendererId,
+          sourceSkill: requirement.sourceSkill,
+          readyEventType: requirement.readyEventType,
+          previewRequired: requirement.previewRequired,
+        }),
+    ) ?? null;
   };
   let gardenGroundingHydrated = false;
   const hydrateGardenGrounding = () => {
@@ -831,6 +859,61 @@ function driveSessionEventPump(
           ) {
             reconcileSuccessfulMemorySaves();
             reconcileCompletedTerminalCommands();
+            if (sawTurnOutput) {
+              // Tool completion and artifact persistence are synchronous, so a
+              // required product must be durable before Hermes declares idle.
+              // Replaying narration after a restart, or a model claiming it is
+              // done without calling the publisher, must fail closed here.
+              emitArtifactEvents();
+              const missingArtifact = missingRequiredArtifact();
+              if (missingArtifact) {
+                assistantText =
+                  "The required visualizer was not published before this turn ended.";
+                emit({
+                  type: "assistant.completed",
+                  sessionId: session.hermesSessionId,
+                  ...(assistantMessageId
+                    ? { messageId: assistantMessageId }
+                    : {}),
+                  timestamp: new Date().toISOString(),
+                  payload: {
+                    replacementText: assistantText,
+                    usage: tokenUsage,
+                  },
+                });
+                emit({
+                  type: "error",
+                  sessionId: session.hermesSessionId,
+                  timestamp: new Date().toISOString(),
+                  payload: {
+                    code: "required_artifact_missing",
+                    message: assistantText,
+                    recoverable: true,
+                  },
+                });
+                emit({
+                  type: "session.status",
+                  sessionId: session.hermesSessionId,
+                  timestamp: new Date().toISOString(),
+                  payload: { status: "failed" },
+                });
+                recordAuditEvent({
+                  eventType: "artifact.required_missing",
+                  runtimeSessionId: session.row.id,
+                  userId: session.row.user_id,
+                  gardenId: session.row.garden_id,
+                  payload: {
+                    runId: streamRun?.id,
+                    kind: missingArtifact.kind,
+                    rendererId: missingArtifact.rendererId,
+                    sourceSkill: missingArtifact.sourceSkill,
+                  },
+                });
+                finalize("failed");
+                emit({ type: "done" });
+                break;
+              }
+            }
           }
           emit(event);
           emitArtifactEvents();

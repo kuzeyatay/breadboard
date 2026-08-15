@@ -19,6 +19,7 @@ import {
   compileCustomInteractiveVisualizerPackage,
 } from "../src/lib/hermes/interactive-visualizer-custom.ts";
 import {
+  appendBoundedBrowserOutput,
   cancelInteractiveVisualizerWork,
   runInteractiveVisualizerBrowserTests,
 } from "../src/lib/hermes/interactive-visualizer-browser.ts";
@@ -309,6 +310,79 @@ test("schema-2 custom visualizers publish a flat prompt-specific mini-app", asyn
   assert.match(rejected.validation.errors.join("\n"), /external|fetch/i);
 });
 
+test("schema-2 accepts its local stylesheet convention without weakening host isolation", async () => {
+  const fixture = customThreeFixture();
+  fixture.package.files["index.html"] = `<!doctype html><html><head><link rel="stylesheet" href="styles.css"><style>.head-only{color:var(--viz-text)}</style></head><body>${fixture.package.files["index.html"]}</body></html>`;
+  fixture.package.files["main.js"] += `
+const rawTop=14,maxTop=24;
+const top=Math.min(Math.max(7,rawTop),maxTop);
+const tooltip=document.createElement("div");
+tooltip.style.transform=\`translate(0px, \${top}px)\`;
+const threeParent=scene.parent;
+void threeParent;`;
+
+  const compiled = compileCustomInteractiveVisualizerPackage(
+    fixture.plan,
+    fixture.package,
+  );
+  assert.equal(compiled.validation.valid, true, compiled.validation.errors.join("\n"));
+  assert.ok(compiled.package);
+  const bundle = await bundleCustomInteractiveVisualizer(compiled.package);
+  assert.equal((bundle.html.match(/<!doctype html>/gi) ?? []).length, 1);
+  assert.equal((bundle.html.match(/<html\b/gi) ?? []).length, 1);
+  assert.doesNotMatch(bundle.html, /<link\b[^>]*styles\.css/i);
+  assert.match(bundle.html, /#app\{display:grid/);
+  assert.match(bundle.html, /\.head-only\{color:var\(--viz-text\)\}/);
+
+  for (const escape of [
+    "window.parent.document.body",
+    'globalThis["top"].location',
+    "self.opener",
+    "top.location.href",
+  ]) {
+    const unsafe = structuredClone(fixture.package);
+    unsafe.files["main.js"] += `\n${escape};`;
+    const rejected = compileCustomInteractiveVisualizerPackage(fixture.plan, unsafe);
+    assert.equal(rejected.validation.valid, false, escape);
+    assert.match(rejected.validation.errors.join("\n"), /embedding page/i, escape);
+  }
+
+  const otherStylesheet = structuredClone(fixture.package);
+  otherStylesheet.files["index.html"] = otherStylesheet.files["index.html"].replace(
+    'href="styles.css"',
+    'href="other.css"',
+  );
+  assert.match(
+    compileCustomInteractiveVisualizerPackage(fixture.plan, otherStylesheet)
+      .validation.errors.join("\n"),
+    /forbidden embedded or navigational element/i,
+  );
+
+  const unsafeInlineStyle = structuredClone(fixture.package);
+  unsafeInlineStyle.files["index.html"] = unsafeInlineStyle.files["index.html"].replace(
+    ".head-only{color:var(--viz-text)}",
+    ".head-only{background:linear-gradient(red,blue)}",
+  );
+  assert.match(
+    compileCustomInteractiveVisualizerPackage(fixture.plan, unsafeInlineStyle)
+      .validation.errors.join("\n"),
+    /decorative gradients/i,
+  );
+});
+
+test("browser output capture preserves DOM markers when a dump exceeds 750k", () => {
+  const opening = '<html data-breadboard-runtime-tests="passed" data-breadboard-interaction-tests="passed" data-breadboard-webgl="ready">';
+  const output = appendBoundedBrowserOutput(
+    "",
+    `${opening}${"x".repeat(800_000)}</html>`,
+  );
+  assert.match(output, /data-breadboard-runtime-tests="passed"/);
+  assert.match(output, /data-breadboard-interaction-tests="passed"/);
+  assert.match(output, /data-breadboard-webgl="ready"/);
+  assert.match(output, /<\/html>$/);
+  assert.ok(output.length <= 750_000);
+});
+
 test("schema-2 rejects theme-breaking text, ambiguous transport controls, and unreviewed geometry", () => {
   const fixture = customWaveFixture();
 
@@ -344,6 +418,12 @@ test("schema-2 rejects theme-breaking text, ambiguous transport controls, and un
 
 test("schema-2 custom visualizers pass the real responsive browser gate", { timeout: 90_000 }, async () => {
   const fixture = customWaveFixture();
+  fixture.package.files["index.html"] = fixture.package.files["index.html"].replace(
+    '<script src="main.js"></script>',
+    `<p class="sr-only">${"A detailed accessible description. ".repeat(40)}</p><script src="main.js"></script>`,
+  );
+  fixture.package.files["styles.css"] +=
+    ".sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}";
   const compiled = compileCustomInteractiveVisualizerPackage(fixture.plan, fixture.package);
   assert.ok(compiled.package, compiled.validation.errors.join("\n"));
   const bundle = await bundleCustomInteractiveVisualizer(compiled.package);

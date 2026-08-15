@@ -16,6 +16,8 @@ export type DesktopMode = "dev" | "packaged";
 
 export interface ResolvedPaths {
   readonly mode: DesktopMode;
+  /** True only for the explicitly gated Playwright development harness. */
+  readonly qaMode: boolean;
   /** Repo root (dev) or `<resources>/app` (packaged): a directory that mirrors
    * the repo layout for read-only assets (hermes-config, chatmock, ...). */
   readonly appRoot: string;
@@ -57,6 +59,7 @@ export interface ResolvedPaths {
 export interface PathResolverInput {
   readonly isPackaged: boolean;
   readonly forceDev: boolean;
+  readonly qaMode?: boolean;
   /** Electron app.getPath("userData"). */
   readonly userDataDir: string;
   /** process.resourcesPath when packaged. */
@@ -73,32 +76,63 @@ export function repoRootFromModuleDir(moduleDir: string): string {
 
 export function resolvePaths(input: PathResolverInput): ResolvedPaths {
   const mode: DesktopMode = input.isPackaged && !input.forceDev ? "packaged" : "dev";
-  const dataRoot = path.join(input.userDataDir, "Data");
+  const qaMode = mode === "dev" && input.qaMode === true;
+  const userDataRoot = path.join(input.userDataDir, "Data");
 
   if (mode === "dev") {
     const repoRoot = repoRootFromModuleDir(input.moduleDir);
     assertDir(repoRoot, "repository root");
-    const quartzWorkspace = path.join(repoRoot, "quartz");
+    const dataRoot = qaMode ? userDataRoot : repoRoot;
+    const quartzWorkspace = qaMode
+      ? path.join(dataRoot, "quartz")
+      : path.join(repoRoot, "quartz");
     return {
       mode,
+      qaMode,
       appRoot: repoRoot,
       resourcesRoot: repoRoot,
-      dataRoot: repoRoot,
-      databaseDir: path.join(repoRoot, "dashboard", "db"),
+      dataRoot,
+      databaseDir: qaMode
+        ? path.join(dataRoot, "database")
+        : path.join(repoRoot, "dashboard", "db"),
       quartzWorkspace,
       quartzContent: path.join(quartzWorkspace, "content"),
-      hermesWorkspaceRoot: path.join(repoRoot, ".runtime", "hermes-workspaces"),
-      hermesHome: path.join(repoRoot, ".runtime", "hermes"),
-      codexHome: path.join(repoRoot, ".runtime", "codex-desktop"),
-      skillsQuarantine: path.join(repoRoot, ".agents", "skills-quarantine"),
-      skillsApproved: path.join(repoRoot, ".agents", "skills"),
-      skillsConditional: path.join(repoRoot, ".agents", "skills-conditional"),
-      logsDir: path.join(repoRoot, ".runtime", "desktop-logs"),
-      runtimeDir: path.join(repoRoot, ".runtime", "desktop"),
-      configDir: path.join(repoRoot, ".runtime", "desktop-config"),
-      backupsDir: path.join(repoRoot, ".runtime", "desktop-backups"),
-      tempDir: path.join(repoRoot, ".runtime", "desktop-temp"),
-      dashboardServerDir: path.join(repoRoot, "dashboard"),
+      hermesWorkspaceRoot: qaMode
+        ? path.join(dataRoot, "runtime", "hermes-workspaces")
+        : path.join(repoRoot, ".runtime", "hermes-workspaces"),
+      hermesHome: qaMode
+        ? path.join(dataRoot, "runtime", "hermes")
+        : path.join(repoRoot, ".runtime", "hermes"),
+      codexHome: qaMode
+        ? path.join(dataRoot, "runtime", "codex")
+        : path.join(repoRoot, ".runtime", "codex-desktop"),
+      skillsQuarantine: qaMode
+        ? path.join(dataRoot, "skills", "quarantine")
+        : path.join(repoRoot, ".agents", "skills-quarantine"),
+      skillsApproved: qaMode
+        ? path.join(dataRoot, "skills", "approved")
+        : path.join(repoRoot, ".agents", "skills"),
+      skillsConditional: qaMode
+        ? path.join(dataRoot, "skills", "conditional")
+        : path.join(repoRoot, ".agents", "skills-conditional"),
+      logsDir: qaMode
+        ? path.join(dataRoot, "logs")
+        : path.join(repoRoot, ".runtime", "desktop-logs"),
+      runtimeDir: qaMode
+        ? path.join(dataRoot, "runtime")
+        : path.join(repoRoot, ".runtime", "desktop"),
+      configDir: qaMode
+        ? path.join(dataRoot, "config")
+        : path.join(repoRoot, ".runtime", "desktop-config"),
+      backupsDir: qaMode
+        ? path.join(dataRoot, "backups")
+        : path.join(repoRoot, ".runtime", "desktop-backups"),
+      tempDir: qaMode
+        ? path.join(dataRoot, "temp")
+        : path.join(repoRoot, ".runtime", "desktop-temp"),
+      dashboardServerDir: qaMode
+        ? path.join(dataRoot, "dashboard-workspace")
+        : path.join(repoRoot, "dashboard"),
       hermesAppDir: path.join(repoRoot, "hermes-agent"),
       runtimesDir: "",
       binDir: path.join(repoRoot, "desktop", "resources", "bin"),
@@ -110,9 +144,11 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
     throw new Error("Packaged mode requires process.resourcesPath");
   }
   const appRoot = path.join(resources, "app-services");
+  const dataRoot = userDataRoot;
   const quartzWorkspace = path.join(dataRoot, "quartz");
   return {
     mode,
+    qaMode: false,
     appRoot,
     resourcesRoot: resources,
     dataRoot,

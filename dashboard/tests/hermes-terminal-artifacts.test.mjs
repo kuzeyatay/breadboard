@@ -24,11 +24,13 @@ import {
   createArtifact,
   createImportedArtifact,
   getArtifactForUser,
+  hasReadyArtifactForRun,
   listArtifactEventsAfter,
   listArtifactsForUser,
   listArtifactVersions,
   presentArtifact,
   readArtifactSource,
+  recordArtifactPipelineEvent,
   renderArtifact,
   setArtifactHighlight,
   updateArtifactContent,
@@ -441,7 +443,11 @@ function artifactFixture() {
     CREATE TABLE conversations(id INTEGER PRIMARY KEY, public_id TEXT UNIQUE, user_id INTEGER, surface TEXT, default_garden_id INTEGER);
     CREATE TABLE hermes_runtime_sessions(id INTEGER PRIMARY KEY);
     CREATE TABLE hermes_runs(id TEXT PRIMARY KEY, runtime_session_id INTEGER);
-    CREATE TABLE conversation_messages(id INTEGER PRIMARY KEY);
+    CREATE TABLE conversation_messages(
+      id INTEGER PRIMARY KEY,
+      conversation_id INTEGER,
+      client_message_id TEXT
+    );
     INSERT INTO users VALUES (1), (2);
     INSERT INTO clusters VALUES (7, 'physics', 1), (8, 'chemistry', 1);
     INSERT INTO conversations VALUES (10, 'conv_garden', 1, 'garden_chat', 7);
@@ -453,6 +459,9 @@ function artifactFixture() {
     INSERT INTO conversations VALUES (16, 'conv_other_user', 2, 'dashboard_terminal', NULL);
     INSERT INTO hermes_runtime_sessions VALUES (20);
     INSERT INTO hermes_runs VALUES ('run_one', 20), ('run_two', 20);
+    INSERT INTO conversation_messages VALUES
+      (100, 10, 'client_visualizer'),
+      (101, 10, 'client_visualizer_revision');
   `);
   ensureArtifactSchema(database);
   return { root, filename, storage: path.join(root, "storage"), database };
@@ -478,6 +487,114 @@ function createInput(fixture, overrides = {}) {
     ...overrides,
   };
 }
+
+test("required artifact completion is exact to the run, renderer, source skill, and preview", () => {
+  const fixture = artifactFixture();
+  try {
+    const artifact = createArtifact(createInput(fixture, {
+      assistantMessageId: 100,
+      kind: "html",
+      rendererId: "interactive-visualizer",
+      sourceSkill: "interactive-visualizer-in-chat",
+      title: "Spherical coordinates",
+      filename: "spherical-coordinates.html",
+      content: '{"plan":{"mode":"3d"}}',
+    }));
+    const requirement = {
+      runId: "run_one",
+      conversationId: 10,
+      assistantClientMessageId: "client_visualizer",
+      kind: "html",
+      rendererId: "interactive-visualizer",
+      sourceSkill: "interactive-visualizer-in-chat",
+      readyEventType: "artifact.completed",
+      previewRequired: true,
+      database: fixture.database,
+    };
+
+    assert.equal(hasReadyArtifactForRun(requirement), false);
+    fixture.database.prepare(`
+      UPDATE hermes_artifacts
+      SET status = 'ready', preview_location = 'preview/index.html'
+      WHERE id = ?
+    `).run(artifact.id);
+    assert.equal(
+      hasReadyArtifactForRun(requirement),
+      false,
+      "a ready row without this turn's publication event is not completion",
+    );
+    recordArtifactPipelineEvent({
+      artifact: {
+        ...artifact,
+        status: "ready",
+        preview_location: "preview/index.html",
+      },
+      runId: "run_one",
+      assistantMessageId: 100,
+      type: "artifact.failed",
+      status: "ready",
+      version: artifact.current_version,
+      payload: { revisionPreserved: true },
+      database: fixture.database,
+    });
+    assert.equal(
+      hasReadyArtifactForRun(requirement),
+      false,
+      "a failed revision cannot borrow the previous ready version",
+    );
+    recordArtifactPipelineEvent({
+      artifact: {
+        ...artifact,
+        status: "ready",
+        preview_location: "preview/index.html",
+      },
+      runId: "run_one",
+      assistantMessageId: 100,
+      type: "artifact.completed",
+      status: "ready",
+      version: artifact.current_version,
+      payload: {},
+      database: fixture.database,
+    });
+    assert.equal(hasReadyArtifactForRun(requirement), true);
+    assert.equal(hasReadyArtifactForRun({ ...requirement, runId: "run_two" }), false);
+    assert.equal(hasReadyArtifactForRun({
+      ...requirement,
+      assistantClientMessageId: "client_other",
+    }), false);
+    recordArtifactPipelineEvent({
+      artifact: {
+        ...artifact,
+        status: "ready",
+        preview_location: "preview/index.html",
+      },
+      runId: "run_two",
+      assistantMessageId: 101,
+      type: "artifact.completed",
+      status: "ready",
+      version: artifact.current_version,
+      payload: { operation: "revise" },
+      database: fixture.database,
+    });
+    assert.equal(hasReadyArtifactForRun({
+      ...requirement,
+      runId: "run_two",
+      assistantClientMessageId: "client_visualizer_revision",
+    }), true, "a current-run revision of an older artifact satisfies the contract");
+    assert.equal(hasReadyArtifactForRun({
+      ...requirement,
+      sourceSkill: "interactive-visualizer",
+    }), false);
+
+    fixture.database.prepare(`
+      UPDATE hermes_artifacts SET preview_location = NULL WHERE id = ?
+    `).run(artifact.id);
+    assert.equal(hasReadyArtifactForRun(requirement), false);
+  } finally {
+    fixture.database.close();
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
 
 test("marking an artifact stores a palette slug and leaves its place in the archive", () => {
   const fixture = artifactFixture();

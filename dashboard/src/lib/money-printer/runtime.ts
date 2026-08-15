@@ -78,6 +78,11 @@ export function resolveMoneyPrinterRoot(
 ): MoneyPrinterRuntime | null {
   const candidates: Array<{ root: string; source: MoneyPrinterRuntime["source"] }> = [];
   const explicit = configured(env.MONEY_PRINTER_ROOT);
+  if (env.BREADBOARD_QA_MODE === "1") {
+    return explicit && isClone(explicit)
+      ? { root: explicit, source: "configured" }
+      : null;
+  }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   candidates.push({
     root: path.join(repositoryRoot(), "MoneyPrinterTurbo"),

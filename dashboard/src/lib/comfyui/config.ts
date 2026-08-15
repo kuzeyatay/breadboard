@@ -66,6 +66,7 @@ export function resolveComfyUiConfig(env: NodeJS.ProcessEnv = process.env): Comf
   const port = count(env.COMFYUI_PORT, DEFAULT_PORT);
   const baseUrl = (env.COMFYUI_URL?.trim() || `http://127.0.0.1:${port}`).replace(/\/+$/, "");
   const root = repositoryRoot();
+  const runtimeDir = env.COMFYUI_RUNTIME_DIR?.trim() || path.join(root, ".runtime", "comfyui");
 
   return {
     enabled: flag(env.COMFYUI_ENABLED, true),
@@ -74,8 +75,8 @@ export function resolveComfyUiConfig(env: NodeJS.ProcessEnv = process.env): Comf
     autostart: flag(env.COMFYUI_AUTOSTART, true),
     cloneRoot: env.COMFYUI_ROOT?.trim() || path.join(root, "comfyui"),
     envDir: env.COMFYUI_ENV_DIR?.trim() || path.join(root, ".runtime", "comfyui-venv"),
-    statusFile: path.join(root, ".runtime", "comfyui", "startup-status.json"),
-    logFile: path.join(root, ".runtime", "comfyui", "comfyui.log"),
+    statusFile: path.join(runtimeDir, "startup-status.json"),
+    logFile: path.join(runtimeDir, "comfyui.log"),
     port,
     startTimeoutMs: count(env.COMFYUI_START_TIMEOUT_MS, 180_000),
     generateTimeoutMs: count(env.COMFYUI_GENERATE_TIMEOUT_MS, 600_000),

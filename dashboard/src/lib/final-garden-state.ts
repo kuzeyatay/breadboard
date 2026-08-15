@@ -934,11 +934,13 @@ function bestEquationForCaption(caption: string, candidates: EquationCandidate[]
 function canonicalFormulaExactText(
   gardenDir: string,
   visual: Record<string, unknown>,
+  allowInferredFormulaText = true,
 ): string | undefined {
   for (const key of ["exactText", "formulaText", "equationText", "symbolicFormula", "sourceText"]) {
     const value = String(visual[key] ?? "").trim();
     if (value) return value;
   }
+  if (!allowInferredFormulaText) return undefined;
 
   const sourceId = String(visual.sourceId ?? "").trim();
   const pageNumber = Number(visual.pageNumber);
@@ -971,9 +973,13 @@ function canonicalFormulaExactText(
 }
 
 /** Read the persisted anchor ledgers and build the canonical registry. */
-export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, CanonicalSourceAnchor> {
+export function buildCanonicalSourceAnchors(
+  gardenDir: string,
+  options: { allowInferredFormulaText?: boolean } = {},
+): Record<string, CanonicalSourceAnchor> {
   const bd = path.join(gardenDir, ".breadboard");
   const registry: Record<string, CanonicalSourceAnchor> = {};
+  const allowInferredFormulaText = options.allowInferredFormulaText !== false;
 
   const visualLedger = readJson<Array<Record<string, unknown>>>(path.join(bd, "source-visuals.json"), []);
   for (const visual of visualLedger) {
@@ -989,9 +995,13 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
       page: Number.isFinite(Number(visual.pageNumber)) ? Number(visual.pageNumber) : undefined,
       sourceId: String(visual.sourceId ?? "") || undefined,
       origin: "visual_ledger",
-      exactText: kind === "formula" ? canonicalFormulaExactText(gardenDir, visual) : undefined,
-      formulaFamily: kind === "formula"
-        ? (formulaMetricFamily(`${canonicalFormulaExactText(gardenDir, visual) ?? ""} ${caption}`) ?? undefined)
+      exactText: kind === "formula"
+        ? canonicalFormulaExactText(gardenDir, visual, allowInferredFormulaText)
+        : undefined,
+      formulaFamily: kind === "formula" && allowInferredFormulaText
+        ? (formulaMetricFamily(
+            `${canonicalFormulaExactText(gardenDir, visual, allowInferredFormulaText) ?? ""} ${caption}`,
+          ) ?? undefined)
         : undefined,
       semanticSummary: kind === "formula" ? String(visual.semanticSummary ?? caption) : undefined,
     };

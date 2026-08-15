@@ -74,8 +74,16 @@ function firstExisting(candidates: readonly (string | null)[]): string | null {
  * registry, so a directory that merely shares the name is not mistaken for it.
  */
 export function resolveOpenMontageRoot(env: NodeJS.ProcessEnv = process.env): string | null {
+  const explicit = configured(env.OPENMONTAGE_ROOT);
+  if (env.BREADBOARD_QA_MODE === "1") {
+    return explicit &&
+      fs.existsSync(path.join(explicit, "AGENT_GUIDE.md")) &&
+      fs.existsSync(path.join(explicit, "tools", "tool_registry.py"))
+      ? explicit
+      : null;
+  }
   const candidates = [
-    configured(env.OPENMONTAGE_ROOT),
+    explicit,
     path.join(repositoryRoot(), "OpenMontage"),
     path.resolve(process.cwd(), "OpenMontage"),
     path.resolve(process.cwd(), "..", "OpenMontage"),

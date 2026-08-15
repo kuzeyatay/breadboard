@@ -78,6 +78,11 @@ export function resolveDeerFlowRoot(
 ): DeerFlowRuntime | null {
   const candidates: Array<{ root: string; source: DeerFlowRuntime["source"] }> = [];
   const explicit = configured(env.DEER_FLOW_ROOT);
+  if (env.BREADBOARD_QA_MODE === "1") {
+    return explicit && isClone(explicit)
+      ? { root: explicit, source: "configured" }
+      : null;
+  }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   candidates.push({ root: path.join(repositoryRoot(), "deer-flow"), source: "repository" });
   candidates.push({ root: path.resolve(process.cwd(), "deer-flow"), source: "cwd" });

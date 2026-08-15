@@ -8,8 +8,9 @@
  *
  *   1. `normalizeSyllabusPlan` parses the model's reading of the syllabus into
  *      units (weeks/modules) and the materials each one references.
- *   2. `resolveSyllabusMaterials` deterministically matches each referenced
- *      material against the documents actually in the garden.
+ *   2. A source-grounded model authors material availability and unit coverage.
+ *      `syllabusCoverageDecisionProblems` verifies that decision mechanically,
+ *      and `projectModelAuthoredSyllabusCoverage` persists it without guessing.
  *   3. `unavailableCitationProbes` + `detectUnavailableCitations` catch a page
  *      that writes about a material the garden does not have.
  *
@@ -17,8 +18,6 @@
  * the model sees "ch. 3 covers refractory dynamics", has no ch. 3, and writes a
  * plausible summary of it anyway.
  */
-
-import type { LearnSourceSummary } from "./learn-utils.ts";
 
 export type SyllabusMaterialKind =
   | "textbook"
@@ -74,8 +73,8 @@ export interface SyllabusMaterialResolution {
   status: SyllabusMaterialStatus;
   /** Garden documents that satisfy the citation, strongest match first. */
   sourceIds: string[];
+  /** The model's source-grounded explanation for this exact verdict. */
   matchReason: string;
-  score: number;
 }
 
 export interface SyllabusUnitCoverage {
@@ -88,8 +87,26 @@ export interface SyllabusUnitCoverage {
   availableSourceIds: string[];
   /** Citations this unit assigns that the garden does not contain. */
   missingCitations: string[];
-  /** False when every material this unit references is missing. */
+  /** Model-authored verdict after reviewing this unit and the selected sources. */
   teachable: boolean;
+  /** The model's explanation of what the selected sources can or cannot teach. */
+  coverageReason: string;
+}
+
+/**
+ * The complete semantic decision authored by the syllabus-coverage model.
+ * Text copied from the syllabus and all IDs are subsequently checked exactly;
+ * code does not rank documents, decide availability, or infer teachability.
+ */
+export interface ModelAuthoredSyllabusCoverageDecision {
+  resolutions: SyllabusMaterialResolution[];
+  units: Array<{
+    unitId: string;
+    availableSourceIds: string[];
+    missingCitations: string[];
+    teachable: boolean;
+    coverageReason: string;
+  }>;
 }
 
 export interface SyllabusCoverage {
@@ -205,287 +222,371 @@ export function normalizeSyllabusPlan(raw: unknown): SyllabusPlan {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Matching a citation to a garden document
-// ---------------------------------------------------------------------------
-
-/** Words that carry no identifying power in a citation, so they can never be
- * the reason a document is considered a match. */
-const CITATION_STOPWORDS = new Set([
-  "the", "a", "an", "of", "and", "or", "to", "in", "on", "for", "with", "from",
-  "into", "over", "under", "part", "vol", "volume", "no", "pp", "page", "pages",
-  "chapter", "chapters", "chap", "ch", "section", "sections", "sec", "week",
-  "weeks", "module", "modules", "unit", "units", "session", "sessions", "class",
-  "classes", "lecture", "lectures", "lesson", "lessons", "reading", "readings",
-  "slides", "slide", "notes", "note", "handout", "handouts", "textbook", "book",
-  "paper", "papers", "article", "articles", "course", "syllabus", "topic",
-  "topics", "introduction", "intro", "overview", "review", "summary", "basics",
-  "fundamentals", "principles", "tbd", "tba", "optional", "required", "further",
-  "supplementary", "additional", "recommended", "et", "al", "eds", "ed",
-  "edition", "press", "university", "journal", "proceedings", "conference",
-]);
-
-function normalizeForMatch(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+function exactAuthoredString(value: unknown, path: string, problems: string[]): value is string {
+  if (typeof value !== "string" || !value || value.trim() !== value) {
+    problems.push(`${path} must be a non-empty exact string`);
+    return false;
+  }
+  return true;
 }
 
-/** The words in a citation that could actually identify a work. */
-function distinctiveTokens(value: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const word of normalizeForMatch(value).split(" ")) {
-    if (word.length < 4) continue;
-    if (CITATION_STOPWORDS.has(word)) continue;
-    if (/^\d+$/.test(word)) continue;
-    if (seen.has(word)) continue;
-    seen.add(word);
-    out.push(word);
+function exactAuthoredStringArray(value: unknown, path: string, problems: string[]): value is string[] {
+  if (!Array.isArray(value)) {
+    problems.push(`${path} must be an array of exact strings`);
+    return false;
   }
-  return out;
-}
-
-/** A 4-digit year in the citation, used with an author surname as a probe. */
-function citationYear(value: string): string | null {
-  const match = value.match(/\b(1[89]\d{2}|20\d{2})\b/);
-  return match ? match[1] : null;
-}
-
-function authorSurnames(material: SyllabusReferencedMaterial): string[] {
-  const out: string[] = [];
-  for (const author of material.authors ?? []) {
-    // "Smith, J." / "J. Smith" / "Smith" — take the longest word as the surname.
-    const words = normalizeForMatch(author)
-      .split(" ")
-      .filter((word) => word.length >= 3 && !CITATION_STOPWORDS.has(word));
-    if (words.length === 0) continue;
-    const surname = words.reduce((a, b) => (b.length > a.length ? b : a));
-    if (surname) out.push(surname);
-  }
-  return Array.from(new Set(out));
-}
-
-/** The identifying text of a citation: its title if given, else the citation. */
-function materialIdentity(material: SyllabusReferencedMaterial): string {
-  return material.title?.trim() || material.citation;
-}
-
-interface SourceHaystack {
-  slug: string;
-  /** Title, filename, and description — where a real title match should land. */
-  label: string;
-  /** The opening of the document body, for weaker corroboration. */
-  body: string;
-}
-
-function sourceHaystacks(sources: LearnSourceSummary[]): SourceHaystack[] {
-  return sources.map((source) => ({
-    slug: source.slug,
-    label: normalizeForMatch(
-      [source.title, source.sourceFile ?? "", source.description ?? ""].join(" "),
-    ),
-    body: normalizeForMatch((source.body ?? source.excerpt ?? "").slice(0, 4000)),
-  }));
-}
-
-/** Score in 0-100 for how well one garden document satisfies one citation. */
-function scoreMaterialAgainstSource(
-  material: SyllabusReferencedMaterial,
-  tokens: string[],
-  surnames: string[],
-  haystack: SourceHaystack,
-): { score: number; reason: string } {
-  const identity = normalizeForMatch(materialIdentity(material));
-
-  if (identity.length >= 10 && haystack.label.includes(identity)) {
-    return { score: 100, reason: "title matches the document title or filename" };
-  }
-
-  const labelHits = tokens.filter((token) => haystack.label.includes(token));
-  const bodyHits = tokens.filter((token) => haystack.body.includes(token));
-  const surnameInLabel = surnames.some((surname) => haystack.label.includes(surname));
-  const surnameInBody = surnames.some((surname) => haystack.body.includes(surname));
-
-  const labelRatio = tokens.length ? labelHits.length / tokens.length : 0;
-  const bodyRatio = tokens.length ? bodyHits.length / tokens.length : 0;
-
-  if (surnameInLabel && labelHits.length >= 2) {
-    return { score: 90, reason: "author and title words match the document title" };
-  }
-  if (labelRatio >= 0.6 && labelHits.length >= 2) {
-    return { score: 75, reason: `title words match the document title (${labelHits.join(", ")})` };
-  }
-  if (surnameInBody && bodyHits.length >= 2) {
-    return { score: 60, reason: "author and title words appear in the document text" };
-  }
-  if (bodyRatio >= 0.7 && bodyHits.length >= 3) {
-    return { score: 55, reason: `title words appear in the document text (${bodyHits.join(", ")})` };
-  }
-  if (labelHits.length >= 1 && bodyRatio >= 0.5 && bodyHits.length >= 2) {
-    return { score: 50, reason: "title words match partly in the title and partly in the text" };
-  }
-  return { score: 0, reason: "no distinctive overlap" };
-}
-
-/** At or above this, a citation counts as present in the garden. */
-const AVAILABILITY_THRESHOLD = 50;
-/** Fewer distinctive words than this and a citation identifies no real work. */
-const MIN_DISTINCTIVE_TOKENS = 2;
-
-/**
- * Decide, for every material the syllabus references, whether the garden
- * actually contains it. Deterministic — no model call, so the answer cannot be
- * argued with by a confident-sounding generation.
- */
-export function resolveSyllabusMaterials(
-  plan: SyllabusPlan,
-  sources: LearnSourceSummary[],
-): SyllabusMaterialResolution[] {
-  const haystacks = sourceHaystacks(sources);
-
-  return plan.referencedMaterials.map((material) => {
-    const tokens = distinctiveTokens(materialIdentity(material));
-    const surnames = authorSurnames(material);
-
-    if (tokens.length < MIN_DISTINCTIVE_TOKENS && surnames.length === 0) {
-      return {
-        materialId: material.id,
-        citation: material.citation,
-        status: "generic" as const,
-        sourceIds: [],
-        matchReason:
-          "the citation names no identifiable work, so it cannot be matched or missed",
-        score: 0,
-      };
-    }
-
-    const scored = haystacks
-      .map((haystack) => ({
-        slug: haystack.slug,
-        ...scoreMaterialAgainstSource(material, tokens, surnames, haystack),
-      }))
-      .filter((entry) => entry.score >= AVAILABILITY_THRESHOLD)
-      .sort((a, b) => b.score - a.score);
-
-    if (scored.length === 0) {
-      return {
-        materialId: material.id,
-        citation: material.citation,
-        status: "missing" as const,
-        sourceIds: [],
-        matchReason: "no document in this garden matches the citation",
-        score: 0,
-      };
-    }
-
-    return {
-      materialId: material.id,
-      citation: material.citation,
-      status: "available" as const,
-      sourceIds: scored.map((entry) => entry.slug),
-      matchReason: scored[0].reason,
-      score: scored[0].score,
-    };
+  let valid = true;
+  value.forEach((entry, index) => {
+    if (!exactAuthoredString(entry, `${path}[${index}]`, problems)) valid = false;
   });
+  if (value.every((entry) => typeof entry === "string") && new Set(value).size !== value.length) {
+    problems.push(`${path} must not contain duplicates`);
+    valid = false;
+  }
+  return valid;
 }
 
-/** Fold the plan and its resolutions into the shape planning and page writing
- * consume. */
-export function buildSyllabusCoverage(
-  plan: SyllabusPlan,
-  resolutions: SyllabusMaterialResolution[],
-): SyllabusCoverage {
-  const byId = new Map(resolutions.map((entry) => [entry.materialId, entry]));
+/** Strict active-Learn parser boundary. It reports malformed model output but
+ * never trims, truncates, drops, defaults, renames, or de-duplicates semantic
+ * fields before the model receives a repair attempt. */
+export function modelAuthoredSyllabusPlanProblems(value: unknown): string[] {
+  const root = asRecord(value);
+  if (!root) return ["syllabus plan must be a JSON object"];
+  const problems: string[] = [];
+  if (root.courseTitle !== undefined) {
+    exactAuthoredString(root.courseTitle, "courseTitle", problems);
+  }
+  if (!Array.isArray(root.referencedMaterials)) {
+    problems.push("referencedMaterials must be an array");
+  }
+  if (!Array.isArray(root.units)) problems.push("units must be an array");
 
-  const units: SyllabusUnitCoverage[] = plan.units.map((unit) => {
-    const availableSourceIds: string[] = [];
-    const missingCitations: string[] = [];
-    let referencedAnything = false;
-    for (const materialId of unit.materialIds) {
-      const resolution = byId.get(materialId);
-      if (!resolution) continue;
-      if (resolution.status === "available") {
-        referencedAnything = true;
-        for (const sourceId of resolution.sourceIds) {
-          if (!availableSourceIds.includes(sourceId)) availableSourceIds.push(sourceId);
-        }
-      } else if (resolution.status === "missing") {
-        missingCitations.push(resolution.citation);
+  const materialIds = new Set<string>();
+  const materials = Array.isArray(root.referencedMaterials) ? root.referencedMaterials : [];
+  materials.forEach((entry, index) => {
+    const material = asRecord(entry);
+    const prefix = `referencedMaterials[${index}]`;
+    if (!material) {
+      problems.push(`${prefix} must be an object`);
+      return;
+    }
+    if (exactAuthoredString(material.id, `${prefix}.id`, problems)) {
+      if (materialIds.has(material.id)) problems.push(`${prefix}.id duplicates ${material.id}`);
+      materialIds.add(material.id);
+    }
+    exactAuthoredString(material.citation, `${prefix}.citation`, problems);
+    if (material.title !== undefined) exactAuthoredString(material.title, `${prefix}.title`, problems);
+    if (material.locator !== undefined) exactAuthoredString(material.locator, `${prefix}.locator`, problems);
+    exactAuthoredStringArray(material.authors, `${prefix}.authors`, problems);
+    if (typeof material.kind !== "string" || !MATERIAL_KINDS.has(material.kind as SyllabusMaterialKind)) {
+      problems.push(`${prefix}.kind is invalid`);
+    }
+    if (typeof material.required !== "boolean") problems.push(`${prefix}.required must be boolean`);
+  });
+
+  const unitIds = new Set<string>();
+  const units = Array.isArray(root.units) ? root.units : [];
+  units.forEach((entry, index) => {
+    const unit = asRecord(entry);
+    const prefix = `units[${index}]`;
+    if (!unit) {
+      problems.push(`${prefix} must be an object`);
+      return;
+    }
+    if (exactAuthoredString(unit.id, `${prefix}.id`, problems)) {
+      if (unitIds.has(unit.id)) problems.push(`${prefix}.id duplicates ${unit.id}`);
+      unitIds.add(unit.id);
+    }
+    if (unit.label !== undefined) exactAuthoredString(unit.label, `${prefix}.label`, problems);
+    exactAuthoredString(unit.title, `${prefix}.title`, problems);
+    exactAuthoredStringArray(unit.objectives, `${prefix}.objectives`, problems);
+    exactAuthoredStringArray(unit.topics, `${prefix}.topics`, problems);
+    if (exactAuthoredStringArray(unit.materialIds, `${prefix}.materialIds`, problems)) {
+      for (const materialId of unit.materialIds) {
+        if (!materialIds.has(materialId)) problems.push(`${prefix}.materialIds references unknown ${materialId}`);
       }
     }
+  });
+  return [...new Set(problems)];
+}
+
+/** Exact projection of a response that passed modelAuthoredSyllabusPlanProblems. */
+export function projectModelAuthoredSyllabusPlan(value: unknown): SyllabusPlan {
+  const problems = modelAuthoredSyllabusPlanProblems(value);
+  if (problems.length > 0) {
+    throw new Error(`Invalid model-authored syllabus plan: ${problems.join("; ")}`);
+  }
+  const root = value as Record<string, unknown>;
+  return {
+    ...(root.courseTitle !== undefined ? { courseTitle: root.courseTitle as string } : {}),
+    referencedMaterials: (root.referencedMaterials as Array<Record<string, unknown>>).map((material) => ({
+      id: material.id as string,
+      citation: material.citation as string,
+      ...(material.title !== undefined ? { title: material.title as string } : {}),
+      authors: [...(material.authors as string[])],
+      kind: material.kind as SyllabusMaterialKind,
+      ...(material.locator !== undefined ? { locator: material.locator as string } : {}),
+      required: material.required as boolean,
+    })),
+    units: (root.units as Array<Record<string, unknown>>).map((unit) => ({
+      id: unit.id as string,
+      ...(unit.label !== undefined ? { label: unit.label as string } : {}),
+      title: unit.title as string,
+      objectives: [...(unit.objectives as string[])],
+      topics: [...(unit.topics as string[])],
+      materialIds: [...(unit.materialIds as string[])],
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Validating the model-authored syllabus decision
+// ---------------------------------------------------------------------------
+
+const MATERIAL_STATUSES = new Set<SyllabusMaterialStatus>([
+  "available",
+  "missing",
+  "generic",
+]);
+
+function exactStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function duplicateStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) duplicates.add(value);
+    seen.add(value);
+  }
+  return [...duplicates];
+}
+
+function sameStringsInOrder(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/**
+ * Mechanically validate a complete model-authored availability/coverage
+ * decision. This intentionally contains no title matching, token scoring,
+ * chapter inference, or teachability rule.
+ */
+export function syllabusCoverageDecisionProblems(
+  value: unknown,
+  plan: SyllabusPlan,
+  knownSourceIds: readonly string[],
+): string[] {
+  const root = asRecord(value);
+  if (!root) return ["coverage decision must be a JSON object"];
+
+  const problems: string[] = [];
+  const rawResolutions = Array.isArray(root.resolutions) ? root.resolutions : [];
+  const rawUnits = Array.isArray(root.units) ? root.units : [];
+  if (!Array.isArray(root.resolutions)) problems.push("resolutions must be an array");
+  if (!Array.isArray(root.units)) problems.push("units must be an array");
+  if (rawResolutions.length !== plan.referencedMaterials.length) {
+    problems.push(
+      `resolutions must contain exactly ${plan.referencedMaterials.length} entries, one for every referenced material`,
+    );
+  }
+  if (rawUnits.length !== plan.units.length) {
+    problems.push(`units must contain exactly ${plan.units.length} entries, one for every syllabus unit`);
+  }
+
+  const knownSources = new Set(knownSourceIds);
+  const knownMaterials = new Map(plan.referencedMaterials.map((material) => [material.id, material]));
+  const resolutionById = new Map<string, SyllabusMaterialResolution>();
+
+  rawResolutions.forEach((entry, index) => {
+    const record = asRecord(entry);
+    if (!record) {
+      problems.push(`resolutions[${index}] must be an object`);
+      return;
+    }
+    const expected = plan.referencedMaterials[index];
+    const materialId = typeof record.materialId === "string" ? record.materialId : "";
+    if (!materialId) problems.push(`resolutions[${index}].materialId is required`);
+    if (expected && materialId !== expected.id) {
+      problems.push(`resolutions[${index}].materialId must be exact plan id ${expected.id}`);
+    }
+    const material = knownMaterials.get(materialId);
+    if (!material) problems.push(`resolutions[${index}] references unknown material id ${materialId || "(empty)"}`);
+    if (resolutionById.has(materialId)) problems.push(`material resolution ${materialId} is duplicated`);
+
+    const citation = typeof record.citation === "string" ? record.citation : "";
+    if (material && citation !== material.citation) {
+      problems.push(`resolution ${materialId}.citation must exactly equal the extracted syllabus citation`);
+    }
+    const status = typeof record.status === "string" ? record.status : "";
+    if (!MATERIAL_STATUSES.has(status as SyllabusMaterialStatus)) {
+      problems.push(`resolution ${materialId || index}.status must be available, missing, or generic`);
+    }
+    if (!exactStringArray(record.sourceIds)) {
+      problems.push(`resolution ${materialId || index}.sourceIds must be an array of exact source ids`);
+    }
+    const sourceIds = exactStringArray(record.sourceIds) ? record.sourceIds : [];
+    for (const duplicate of duplicateStrings(sourceIds)) {
+      problems.push(`resolution ${materialId || index}.sourceIds duplicates ${duplicate}`);
+    }
+    for (const sourceId of sourceIds) {
+      if (!knownSources.has(sourceId)) {
+        problems.push(`resolution ${materialId || index} references unknown source id ${sourceId}`);
+      }
+    }
+    if (status === "available" && sourceIds.length === 0) {
+      problems.push(`available material ${materialId || index} must select at least one exact source id`);
+    }
+    if ((status === "missing" || status === "generic") && sourceIds.length > 0) {
+      problems.push(`${status} material ${materialId || index} must not select source ids`);
+    }
+    const matchReason = typeof record.matchReason === "string" ? record.matchReason : "";
+    if (!matchReason.trim()) problems.push(`resolution ${materialId || index}.matchReason is required`);
+
+    if (
+      material &&
+      MATERIAL_STATUSES.has(status as SyllabusMaterialStatus) &&
+      exactStringArray(record.sourceIds) &&
+      matchReason.trim()
+    ) {
+      resolutionById.set(materialId, {
+        materialId,
+        citation,
+        status: status as SyllabusMaterialStatus,
+        sourceIds: [...sourceIds],
+        matchReason,
+      });
+    }
+  });
+
+  const seenUnitIds = new Set<string>();
+  rawUnits.forEach((entry, index) => {
+    const record = asRecord(entry);
+    if (!record) {
+      problems.push(`units[${index}] must be an object`);
+      return;
+    }
+    const expected = plan.units[index];
+    const unitId = typeof record.unitId === "string" ? record.unitId : "";
+    if (!unitId) problems.push(`units[${index}].unitId is required`);
+    if (expected && unitId !== expected.id) {
+      problems.push(`units[${index}].unitId must be exact plan id ${expected.id}`);
+    }
+    const unit = plan.units.find((candidate) => candidate.id === unitId);
+    if (!unit) problems.push(`units[${index}] references unknown syllabus unit id ${unitId || "(empty)"}`);
+    if (seenUnitIds.has(unitId)) problems.push(`syllabus unit coverage ${unitId} is duplicated`);
+    seenUnitIds.add(unitId);
+
+    if (!exactStringArray(record.availableSourceIds)) {
+      problems.push(`unit ${unitId || index}.availableSourceIds must be an array of exact source ids`);
+    }
+    const availableSourceIds = exactStringArray(record.availableSourceIds)
+      ? record.availableSourceIds
+      : [];
+    for (const duplicate of duplicateStrings(availableSourceIds)) {
+      problems.push(`unit ${unitId || index}.availableSourceIds duplicates ${duplicate}`);
+    }
+    for (const sourceId of availableSourceIds) {
+      if (!knownSources.has(sourceId)) {
+        problems.push(`unit ${unitId || index} references unknown source id ${sourceId}`);
+      }
+    }
+
+    if (!exactStringArray(record.missingCitations)) {
+      problems.push(`unit ${unitId || index}.missingCitations must be an array of exact citations`);
+    }
+    const missingCitations = exactStringArray(record.missingCitations)
+      ? record.missingCitations
+      : [];
+    for (const duplicate of duplicateStrings(missingCitations)) {
+      problems.push(`unit ${unitId || index}.missingCitations duplicates ${duplicate}`);
+    }
+    if (unit) {
+      const expectedMissing = unit.materialIds.flatMap((materialId) => {
+        const resolution = resolutionById.get(materialId);
+        return resolution?.status === "missing" ? [resolution.citation] : [];
+      });
+      if (!sameStringsInOrder(missingCitations, expectedMissing)) {
+        problems.push(
+          `unit ${unitId}.missingCitations must exactly list, in syllabus order, its materials resolved as missing`,
+        );
+      }
+
+      const assignedAvailableSources = new Set(unit.materialIds.flatMap((materialId) => {
+        const resolution = resolutionById.get(materialId);
+        return resolution?.status === "available" ? resolution.sourceIds : [];
+      }));
+      if (
+        assignedAvailableSources.size > 0 &&
+        !availableSourceIds.some((sourceId) => assignedAvailableSources.has(sourceId))
+      ) {
+        problems.push(
+          `unit ${unitId}.availableSourceIds must include at least one source selected for its available assigned material`,
+        );
+      }
+    }
+
+    if (typeof record.teachable !== "boolean") {
+      problems.push(`unit ${unitId || index}.teachable must be boolean`);
+    } else if (record.teachable && availableSourceIds.length === 0) {
+      problems.push(`teachable unit ${unitId || index} must select at least one exact supporting source id`);
+    } else if (!record.teachable && availableSourceIds.length > 0) {
+      problems.push(`unteachable unit ${unitId || index} must not select supporting source ids`);
+    }
+    if (typeof record.coverageReason !== "string" || !record.coverageReason.trim()) {
+      problems.push(`unit ${unitId || index}.coverageReason is required`);
+    }
+  });
+
+  return [...new Set(problems)];
+}
+
+/** Project a validated model decision into the persisted coverage shape. */
+export function projectModelAuthoredSyllabusCoverage(
+  plan: SyllabusPlan,
+  value: unknown,
+  knownSourceIds: readonly string[],
+): SyllabusCoverage {
+  const problems = syllabusCoverageDecisionProblems(value, plan, knownSourceIds);
+  if (problems.length > 0) {
+    throw new Error(`Invalid model-authored syllabus coverage: ${problems.join("; ")}`);
+  }
+  const decision = value as ModelAuthoredSyllabusCoverageDecision;
+  const authoredUnits = new Map(decision.units.map((unit) => [unit.unitId, unit]));
+  const units: SyllabusUnitCoverage[] = plan.units.map((unit) => {
+    const authored = authoredUnits.get(unit.id)!;
     return {
       unitId: unit.id,
       label: unit.label,
       title: unit.title,
-      objectives: unit.objectives,
-      topics: unit.topics,
-      availableSourceIds,
-      missingCitations,
-      // A unit that assigns no material at all is still teachable from the
-      // garden at large; only one whose every named material is absent is not.
-      teachable: referencedAnything || missingCitations.length === 0,
+      objectives: [...unit.objectives],
+      topics: [...unit.topics],
+      availableSourceIds: [...authored.availableSourceIds],
+      missingCitations: [...authored.missingCitations],
+      teachable: authored.teachable,
+      coverageReason: authored.coverageReason,
     };
   });
-
-  const availableSourceIds: string[] = [];
-  for (const unit of units) {
-    for (const sourceId of unit.availableSourceIds) {
-      if (!availableSourceIds.includes(sourceId)) availableSourceIds.push(sourceId);
-    }
-  }
-
+  const availableSourceIds = [...new Set(units.flatMap((unit) => unit.availableSourceIds))];
   return {
     courseTitle: plan.courseTitle,
     plan,
-    resolutions,
+    resolutions: decision.resolutions.map((resolution) => ({
+      materialId: resolution.materialId,
+      citation: resolution.citation,
+      status: resolution.status,
+      sourceIds: [...resolution.sourceIds],
+      matchReason: resolution.matchReason,
+    })),
     units,
     availableSourceIds,
-    missingCitations: resolutions
-      .filter((entry) => entry.status === "missing")
-      .map((entry) => entry.citation),
+    missingCitations: decision.resolutions
+      .filter((resolution) => resolution.status === "missing")
+      .map((resolution) => resolution.citation),
     untaughtUnitTitles: units
       .filter((unit) => !unit.teachable)
       .map((unit) => `${unit.label ? `${unit.label}: ` : ""}${unit.title}`),
   };
-}
-
-/**
- * Which syllabus unit a generated page serves, by word overlap against the
- * unit's title, topics, and objectives.
- *
- * The learning-unit plan is built from the sources, not from the syllabus, so
- * there is no id to join on — this is a best-effort match used to pick which
- * assigned reading a page should lean on. No match simply means the page is
- * grounded on the garden at large, which is the pre-syllabus behavior.
- */
-export function matchSyllabusUnitForPage(
-  coverage: SyllabusCoverage | null,
-  pageText: string,
-): SyllabusUnitCoverage | null {
-  if (!coverage || coverage.units.length === 0) return null;
-  const pageTokens = new Set(distinctiveTokens(pageText));
-  if (pageTokens.size === 0) return null;
-
-  let best: { unit: SyllabusUnitCoverage; score: number } | null = null;
-  for (const unit of coverage.units) {
-    const unitTokens = distinctiveTokens(
-      [unit.title, ...unit.topics, ...unit.objectives].join(" "),
-    );
-    if (unitTokens.length === 0) continue;
-    const hits = unitTokens.filter((token) => pageTokens.has(token)).length;
-    if (hits === 0) continue;
-    // Normalized so a long objective list cannot outrank a precise title match.
-    const score = hits / Math.sqrt(unitTokens.length);
-    if (!best || score > best.score) best = { unit, score };
-  }
-  // Two shared distinctive words on a short unit, or proportionally more on a
-  // long one. Below that the "match" is coincidence.
-  return best && best.score >= 0.8 ? best.unit : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -501,11 +602,11 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** A phrase probe that tolerates any whitespace/punctuation between words, so
- * "Spiking Networks in Practice" still matches "Spiking  Networks, in Practice". */
-function phrasePattern(tokens: string[]): RegExp {
+/** Exact model-authored citation/title matcher. Layout whitespace may differ,
+ * but punctuation and every authored word must remain present in order. */
+function exactAuthoredPhrasePattern(value: string): RegExp {
   return new RegExp(
-    tokens.map(escapeRegExp).join("[^a-z0-9]{1,4}"),
+    value.trim().split(/\s+/).map(escapeRegExp).join("\\s+"),
     "i",
   );
 }
@@ -514,10 +615,9 @@ function phrasePattern(tokens: string[]): RegExp {
  * Build the probes that decide whether a page wrote about material the garden
  * does not have.
  *
- * Deliberately conservative — a false positive hard-fails a page that may be
- * perfectly good, so a probe is only built when the citation is distinctive
- * enough that its appearance cannot be coincidence: a multi-word title, or an
- * author surname next to a year.
+ * This is an exact mechanical guard, not another material resolver. It checks
+ * only the full citation and full optional title authored in the syllabus
+ * contract. It never infers equivalence from keywords, authors, or years.
  */
 export function unavailableCitationProbes(
   coverage: SyllabusCoverage | null,
@@ -532,26 +632,14 @@ export function unavailableCitationProbes(
 
   for (const material of coverage.plan.referencedMaterials) {
     if (!missingIds.has(material.id)) continue;
-    const identity = materialIdentity(material);
-    const tokens = distinctiveTokens(identity);
+    probes.push({
+      citation: material.citation,
+      pattern: exactAuthoredPhrasePattern(material.citation),
+    });
 
-    // A distinctive multi-word title.
-    if (tokens.length >= 2 && tokens.join("").length >= 12) {
-      probes.push({ citation: material.citation, pattern: phrasePattern(tokens) });
-    }
-
-    // Author + year. Built alongside the title probe, not instead of it: a page
-    // can name a work either way, and catching only one leaves the other open.
-    const year = citationYear(material.citation);
-    const surnames = authorSurnames(material);
-    if (year && surnames.length > 0) {
-      probes.push({
-        citation: material.citation,
-        pattern: new RegExp(
-          `${escapeRegExp(surnames[0])}[^.\\n]{0,30}${escapeRegExp(year)}`,
-          "i",
-        ),
-      });
+    // The exact optional title is also a verbatim authored identifier.
+    if (material.title && material.title !== material.citation) {
+      probes.push({ citation: material.citation, pattern: exactAuthoredPhrasePattern(material.title) });
     }
   }
 

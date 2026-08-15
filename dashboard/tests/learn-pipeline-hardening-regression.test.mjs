@@ -61,6 +61,41 @@ function callsNamed(root, name) {
   return calls;
 }
 
+function declarationsNamed(root, name) {
+  const declarations = [];
+  const visit = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) {
+      declarations.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return declarations;
+}
+
+function objectPropertyInitializer(object, name) {
+  assert.ok(ts.isObjectLiteralExpression(object), `expected an object literal for ${name}`);
+  const property = object.properties.find((candidate) => {
+    if (!ts.isPropertyAssignment(candidate)) return false;
+    if (ts.isIdentifier(candidate.name) || ts.isStringLiteralLike(candidate.name)) {
+      return candidate.name.text === name;
+    }
+    return false;
+  });
+  assert.ok(property && ts.isPropertyAssignment(property), `expected property ${name}`);
+  return unwrapExpression(property.initializer);
+}
+
+function assertBooleanCallOption(call, name, expected) {
+  const options = unwrapExpression(call.arguments[0]);
+  const initializer = objectPropertyInitializer(options, name);
+  assert.equal(
+    initializer.kind,
+    expected ? ts.SyntaxKind.TrueKeyword : ts.SyntaxKind.FalseKeyword,
+    `${name} must be ${expected}`,
+  );
+}
+
 function variableDeclaration(name) {
   for (const statement of learnAst.statements) {
     if (!ts.isVariableStatement(statement)) continue;
@@ -194,9 +229,117 @@ describe("Learn rollback and garden isolation contracts", () => {
       /throw new LearnPipelineConflictError[\s\S]*?isolated workspace/,
     );
   });
+
+  test("generation requires and re-verifies the exact authoritative source-anchor ledger", () => {
+    const generationSource = sourceOf(namedFunction("runTextbookGeneration"));
+    const workspaceIndex = generationSource.indexOf("createLearnBuildWorkspace");
+    const firstLedgerVerificationIndex = generationSource.indexOf(
+      "verifyAuthoritativeSourceAnchorLedger(workspace)",
+    );
+    const canonicalAnchorValidationIndex = generationSource.indexOf(
+      "const selectedCanonicalSourceAnchors",
+    );
+    const visualReviewIndex = generationSource.indexOf(
+      "const generationVisualNecessityReview",
+    );
+    const secondLedgerVerificationIndex = generationSource.indexOf(
+      "verifyAuthoritativeSourceAnchorLedger(workspace)",
+      firstLedgerVerificationIndex + 1,
+    );
+    const contractWriteIndex = generationSource.indexOf(
+      "const contractWrite = writeLearningUnitContractArtifacts",
+    );
+
+    assert.ok(workspaceIndex >= 0);
+    assert.match(
+      generationSource.slice(workspaceIndex, workspaceIndex + 1_000),
+      /requireAuthoritativeSourceAnchorLedger:\s*true/,
+    );
+    assert.ok(
+      firstLedgerVerificationIndex > workspaceIndex &&
+        firstLedgerVerificationIndex < canonicalAnchorValidationIndex,
+      "the exact ledger must be verified before canonical-anchor validation",
+    );
+    assert.ok(
+      secondLedgerVerificationIndex > visualReviewIndex &&
+        secondLedgerVerificationIndex < contractWriteIndex,
+      "the exact ledger must be re-verified after model review and before contract persistence",
+    );
+  });
 });
 
 describe("Learn validation, reads, and publication contracts", () => {
+  test("active Learn keeps semantic repair model-only and disables semantic fallbacks", () => {
+    const generation = namedFunction("runTextbookGeneration");
+
+    for (const forbiddenCall of [
+      "reconcileFinalGardenState",
+      "reconcileFinalFormulaProjections",
+      "runWeakAnchorSelfHealingLoop",
+      "migrateLegacyTextConceptAnchors",
+      "healDanglingReplacementReferences",
+      "ensureQuestionBlock",
+      "embedAssignedSourceVisuals",
+      "scrubAiisms",
+      "scrubLearnerProse",
+      "scrubSourceCommentaryProse",
+    ]) {
+      assert.equal(
+        callsNamed(generation, forbiddenCall).length,
+        0,
+        `${forbiddenCall} must not author or rewrite semantics during active Learn`,
+      );
+    }
+
+    const executorDeclarations = declarationsNamed(generation, "repairExecutorMode");
+    assert.equal(executorDeclarations.length, 1);
+    const executor = unwrapExpression(executorDeclarations[0].initializer);
+    assert.ok(ts.isStringLiteralLike(executor));
+    assert.equal(executor.text, "model");
+
+    const contractRepairs = callsNamed(generation, "repairLearningUnitsFromContract");
+    assert.equal(contractRepairs.length, 1);
+    assertBooleanCallOption(contractRepairs[0], "preserveModelAuthoredVisuals", true);
+    assertBooleanCallOption(contractRepairs[0], "preserveModelAuthoredContent", true);
+    const repairExecutor = objectPropertyInitializer(
+      unwrapExpression(contractRepairs[0].arguments[0]),
+      "repairExecutor",
+    );
+    assert.ok(ts.isIdentifier(repairExecutor));
+    assert.equal(repairExecutor.text, "repairExecutorMode");
+
+    const finalizers = callsNamed(generation, "finalizeGardenExport");
+    assert.equal(finalizers.length, 1);
+    assertBooleanCallOption(finalizers[0], "preserveModelAuthoredContent", true);
+
+    const criticRepairs = callsNamed(generation, "makeCriticArtifactRepair");
+    assert.equal(criticRepairs.length, 1);
+    assertBooleanCallOption(criticRepairs[0], "allowDeterministicRepairs", false);
+  });
+
+  test("source evidence is selected by the model and projected by exact canonical anchors", () => {
+    const planningSource = sourceOf(namedFunction("runLearnPlanning"));
+    assert.match(planningSource, /structuralSourceTextAnchorCatalog\(context\)/);
+    assert.match(planningSource, /canonicalSourceAnchors:\s*canonicalSourceAnchorCatalog/);
+    assert.match(planningSource, /persistSelectedStructuralSourceAnchors/);
+
+    const dossierSource = sourceOf(namedFunction("buildPageDossier"));
+    assert.match(dossierSource, /exactSourceSnippetsForAnchors/);
+    assert.doesNotMatch(dossierSource, /selectRelevantSourceSnippets|fallbackKeywords/);
+
+    const exactProjection = sourceOf(namedFunction("exactSourceSnippetsForAnchors"));
+    assert.match(exactProjection, /input\.anchors/);
+    assert.doesNotMatch(exactProjection, /score|sort\(|keyword|similar/i);
+  });
+
+  test("routed visual persistence requires exact learning-unit identity", () => {
+    const persistence = sourceOf(namedFunction("persistRoutedVisualPlans"));
+    assert.match(persistence, /Learning Unit Contract is missing/);
+    assert.match(persistence, /new Set\(persistedIds\)\.size/);
+    assert.match(persistence, /JSON\.stringify\(persistedIds\) !== JSON\.stringify\(routedIds\)/);
+    assert.doesNotMatch(persistence, /if \(!fs\.existsSync\(filePath\)\) return/);
+  });
+
   test("a non-publish-ready critic result blocks atomic promotion", () => {
     const generationSource = sourceOf(namedFunction("runTextbookGeneration"));
     const criticIndex = generationSource.indexOf("const criticLoop = await runCriticLoop");
@@ -322,10 +465,16 @@ describe("Learn validation, reads, and publication contracts", () => {
     assert.match(contextSource, /sourcePdf:\s*node\.sourcePdf/);
     assert.match(resolverSource, /ensureSourcePdfPageSnapshots\(/);
     assert.match(resolverSource, /extractSourceVisuals\(/);
+    assert.match(resolverSource, /explicitPageHints/);
     assert.match(resolverSource, /unresolvedIds/);
     assert.match(markdownDiscoverySource, /source\.body/);
     assert.match(markdownDiscoverySource, /P\(\\d\+\).*\[FGTE\]/);
     assert.match(planningSource, /reconcilePlannedSourceArtifacts/);
+    assert.match(
+      planningSource,
+      /const selectedSourcePageHints = selectedStructuralSourcePageHints\([\s\S]*?explicitPageHints:\s*selectedSourcePageHints[\s\S]*?const scopeCall/,
+      "exact pages selected by the Source Map must be scanned before scope and spine planning",
+    );
     assert.match(
       planningSource,
       /structuredArtifactIdsMentionedBySources\(context\)[\s\S]*?candidateArtifactIds:\s*mentionedArtifactIds[\s\S]*?const promptSourceContext/,
@@ -342,6 +491,120 @@ describe("Learn validation, reads, and publication contracts", () => {
       /sourceFigures\.slice\(0,\s*40\)/,
       "planning must not discard registered visuals after the first forty",
     );
+  });
+
+  test("learning-spine repair keeps each accepted candidate paired with its own problems", () => {
+    const planningSource = sourceOf(namedFunction("runLearnPlanning"));
+    const repairStart = planningSource.indexOf("let topicMapCall = await callPlanningJsonWithRetry");
+    const repairEnd = planningSource.indexOf("const visualNecessityReview", repairStart);
+    assert.ok(repairStart >= 0 && repairEnd > repairStart);
+    const repairSource = planningSource.slice(repairStart, repairEnd);
+
+    assert.match(
+      repairSource,
+      /const acceptedResponseForRepair = topicMapCall\.parsed \?\? \{\s*unparsedResponse: topicMapCall\.content,?\s*\}/,
+      "the next repair must receive the exact currently accepted response",
+    );
+    assert.match(
+      repairSource,
+      /user: topicMapUser\(\{\s*repairAttempt,\s*invalidResponse: acceptedResponseForRepair,\s*validationProblems: contractProblems,?\s*\}\)/,
+      "the repair prompt must pair the accepted response with its own hard-check failures",
+    );
+    assert.doesNotMatch(
+      repairSource,
+      /\bfeedbackProblems\b/,
+      "problems from a discarded retry must not become feedback for the accepted candidate",
+    );
+
+    const acceptedReplacement = repairSource.match(
+      /if \(retryProblems\.length < contractProblems\.length\) \{[\s\S]*?topicMapCall = retryCall;[\s\S]*?learningUnits = retryUnits;[\s\S]*?sourceArtifactOmissions = retrySourceArtifactOmissions;[\s\S]*?contractProblems = retryProblems;[\s\S]*?\}/,
+    );
+    assert.ok(acceptedReplacement, "candidate state and validation state must advance atomically");
+    assert.doesNotMatch(
+      repairSource.replace(acceptedReplacement[0], ""),
+      /topicMapCall = retryCall|learningUnits = retryUnits|sourceArtifactOmissions = retrySourceArtifactOmissions|contractProblems = retryProblems/,
+      "an equal or worse replacement must not change any accepted-candidate state",
+    );
+    assert.match(repairSource, /for \(let repairAttempt = 1; repairAttempt <= 2/);
+    assert.equal(
+      (repairSource.match(/callPlanningJsonWithRetry\(/g) ?? []).length,
+      3,
+      "the initial/full-replacement call sites stay intact and targeted model repair has its own provider call",
+    );
+    assert.match(repairSource, /runLearningSpineTargetedRepair\([\s\S]*?maxAttempts:\s*2/);
+    assert.match(repairSource, /remained invalid after 3 bounded attempts/);
+    assert.match(repairSource, /No fallback curriculum was written/);
+  });
+
+  test("residual unit/concept failures use complete AI-authored targeted records and full revalidation", () => {
+    const planningSource = sourceOf(namedFunction("runLearnPlanning"));
+    const fullRepair = planningSource.indexOf("for (let repairAttempt = 1; repairAttempt <= 2");
+    const targetedRepair = planningSource.indexOf("runLearningSpineTargetedRepair(");
+    const finalFailure = planningSource.indexOf("if (contractProblems.length > 0)", targetedRepair);
+    assert.ok(fullRepair >= 0 && targetedRepair > fullRepair && finalFailure > targetedRepair);
+    const targetedSource = planningSource.slice(targetedRepair, finalFailure);
+
+    assert.match(targetedSource, /canonicalPlanningPacket:\s*topicMapPlanningPacket\(\)/);
+    assert.match(targetedSource, /canonicalEvidenceByUnit:\s*canonicalLearningSpineEvidenceByUnit\(/);
+    assert.match(targetedSource, /maxAttempts:\s*2/);
+    assert.match(targetedSource, /taskType:\s*"learning_spine_targeted_repair"/);
+    assert.match(targetedSource, /system:\s*withSyllabusRules\(request\.system/);
+    assert.doesNotMatch(targetedSource, /system:[^\n]*TOPIC_MAP_PROMPT/);
+    assert.match(targetedSource, /return result\.parsed/);
+    assert.match(targetedSource, /modelAuthoredLearningUnitParseProblems\(candidate\)/);
+    assert.match(targetedSource, /sourceArtifactOwnershipProblems\(candidateUnits\)/);
+    assert.match(targetedSource, /sourceArtifactCoverageProblems\(/);
+    assert.match(targetedSource, /canonicalSourceAnchorProblems\(/);
+    assert.match(targetedSource, /syllabusUnitAssignmentProblems\(/);
+    assert.match(targetedSource, /conceptRegistryAlignmentProblems\(/);
+    assert.match(targetedSource, /validateLearningUnitContracts\(/);
+    assert.match(targetedSource, /modelAuthoredLearningMapDepthProblems\(/);
+    assert.match(targetedSource, /repairExecutorMode:\s*"model"/);
+    assert.doesNotMatch(targetedSource, /reconcileLearningUnitConceptAliases|alignLearningUnitConceptAliasesWithRegistry/);
+    assert.match(learnSource, /semanticConcept slug appears in multiple units[\s\S]*?same preferredLabel[\s\S]*?same aliases array/);
+  });
+
+  test("shallow or source-shaped learning spines are repaired as hard failures", () => {
+    const depthValidation = sourceOf(namedFunction("modelAuthoredLearningMapDepthProblems"));
+    const candidateProjection = sourceOf(namedFunction("learningMapFromPlanningCandidate"));
+    const planningSource = sourceOf(namedFunction("runLearnPlanning"));
+    const validationStart = planningSource.indexOf("let contractProblems = [");
+    const validationEnd = planningSource.indexOf("const visualNecessityReview", validationStart);
+    assert.ok(validationStart >= 0 && validationEnd > validationStart);
+    const boundedValidation = planningSource.slice(validationStart, validationEnd);
+
+    assert.match(depthValidation, /validateLearningMapDepth\(/);
+    assert.match(depthValidation, /learningMapFromPlanningCandidate\(/);
+    assert.match(candidateProjection, /learningMapFromModelAuthoredUnits\(/);
+    assert.match(candidateProjection, /title: record\.title/);
+    assert.match(candidateProjection, /summary: record\.summary/);
+    assert.doesNotMatch(candidateProjection, /title:[^\n]*\.trim\(|summary:[^\n]*\.trim\(/);
+
+    assert.equal(
+      (boundedValidation.match(/modelAuthoredLearningMapDepthProblems\(/g) ?? []).length,
+      3,
+      "the initial spine, every full replacement, and every targeted merged candidate must receive the depth gate",
+    );
+    assert.match(
+      boundedValidation,
+      /candidate: topicMapCall\.parsed,[\s\S]*?units: learningUnits/,
+    );
+    assert.match(
+      boundedValidation,
+      /candidate: retryCall\.parsed,[\s\S]*?units: retryUnits/,
+    );
+    assert.match(
+      boundedValidation,
+      /validationProblems: contractProblems/,
+      "depth failures must ride the existing bounded model-repair prompt",
+    );
+
+    assert.match(
+      planningSource,
+      /const depthProblems = validateLearningMapDepth\(learningMap, context\);\s*if \(depthProblems\.length > 0\) \{\s*throw new Error\([\s\S]*?Learning spine depth invariant failed after bounded model repair/,
+      "a post-loop depth failure is an invariant violation, never publishable state",
+    );
+    assert.doesNotMatch(planningSource, /Learning spine depth warning/);
   });
 
   test("final repair retries are bounded by progress, rounds, and runtime", () => {
@@ -855,24 +1118,74 @@ describe("cross-process mutation fences", () => {
   });
 });
 
-describe("required generated visual failures", () => {
-  test("use the full bounded repair budget and stop before finalization if a required visual remains missing", () => {
+describe("model-approved generated visual failures", () => {
+  test("use the full bounded repair budget and stop before finalization if any approved visual remains missing", () => {
     const reconcileSource = sourceOf(namedFunction("reconcileInteractiveVisuals"));
+    assert.match(reconcileSource, /maxAttempts:\s*5/);
     assert.match(
       reconcileSource,
-      /maxAttempts:\s*opportunity\.requirement === "required" \? 5 : undefined/,
+      /throw new Error\([\s\S]*?Model-approved \$\{opportunity\.requirement\} interactive visual/,
+    );
+    assert.doesNotMatch(reconcileSource, /Generated visualization (?:garden|page) limit/);
+    assert.doesNotMatch(reconcileSource, /generatedVisualBudget/);
+    assert.match(
+      reconcileSource,
+      /availableSourceAnchorIds:\s*new Set\([\s\S]*?Object\.keys\(buildCanonicalSourceAnchors/,
+    );
+  });
+});
+
+describe("model-authored visual-necessity recovery", () => {
+  test("wires compact targeted decision replacement and lets malformed model output reach semantic validation", () => {
+    const planningSource = sourceOf(namedFunction("planAndReviewVisualNecessity"));
+    assert.match(planningSource, /targetedRepairProvider:\s*async/);
+    assert.match(planningSource, /taskType:\s*"visual_necessity_targeted_repair"/);
+    assert.match(planningSource, /unitIds:\s*request\.unitIds/);
+    assert.match(planningSource, /targetedRepairCalls:\s*run\.targetedRepairCalls/);
+    assert.doesNotMatch(
+      planningSource,
+      /Visual-necessity planner returned no JSON object|Targeted visual-necessity repair returned no JSON object/,
+      "malformed model JSON must consume semantic repair, while transport exceptions propagate",
+    );
+  });
+});
+
+describe("model-authored source artifact coverage", () => {
+  test("generation accepts registry enumeration order without replacing the authored projection", () => {
+    const generation = sourceOf(namedFunction("runTextbookGeneration"));
+
+    assert.match(
+      generation,
+      /sameSourceArtifactAssignmentRecords\(\s*sourceArtifactReconciliation\.assignments,\s*confirmedSourceArtifactAssignments,?\s*\)/,
+    );
+    assert.doesNotMatch(
+      generation,
+      /JSON\.stringify\(sourceArtifactReconciliation\.assignments\)/,
+      "registry order must not masquerade as a semantic assignment rewrite",
     );
     assert.match(
-      reconcileSource,
-      /opportunity\.requirement === "required"[\s\S]*?throw new Error\([\s\S]*?Required interactive visual/,
+      generation,
+      /assignments:\s*confirmedSourceArtifactAssignments/,
+      "the untouched model-authored assignment order must continue into the contract writer",
     );
-    assert.match(
-      reconcileSource,
-      /Generated visualization garden limit[\s\S]*?opportunity\.requirement === "required"[\s\S]*?throw new Error/,
-    );
-    assert.match(
-      reconcileSource,
-      /Generated visualization page limit[\s\S]*?opportunity\.requirement === "required"[\s\S]*?throw new Error/,
+  });
+
+  test("forgotten artifacts enter the bounded full-contract repair loop and omissions persist", () => {
+    const planningStart = learnSource.indexOf("let contractProblems = [");
+    const planningEnd = learnSource.indexOf("const visualNecessityReview", planningStart);
+    assert.ok(planningStart >= 0 && planningEnd > planningStart);
+    const planning = learnSource.slice(planningStart, planningEnd);
+
+    assert.match(planning, /sourceArtifactCoverageProblems\(\s*learningUnits,\s*sourceArtifactOmissions/);
+    assert.match(planning, /for \(let repairAttempt = 1; repairAttempt <= 2/);
+    assert.match(planning, /sourceArtifactCoverageProblems\(\s*retryUnits,\s*retrySourceArtifactOmissions/);
+    assert.match(planning, /sourceArtifactOmissions = retrySourceArtifactOmissions/);
+    assert.match(learnSource, /sourceArtifactOmissions:\s*omissions/);
+    assert.match(learnSource, /sourceArtifactOmissions,\s*buildCanonicalSourceAnchors/);
+    assert.doesNotMatch(
+      learnSource,
+      /Not central to any confirmed subsection of this learning map\./,
+      "closeout must not manufacture a generic omission reason",
     );
   });
 });

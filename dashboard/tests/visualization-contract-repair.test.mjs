@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildVisualizationPlanWithContractRepair,
+  parseVisualizationContractRepairResponse,
   validateVisualizationContractUnitRepair,
 } from "../src/lib/visualization-contract-repair.ts";
 import {
@@ -15,6 +16,19 @@ const QUESTION =
 const CLAIM =
   "Phasor representation replaces sinusoidal time differentiation with algebraic frequency-domain operations.";
 const CLAIM_ANCHOR = "S1.P24.claim-maxwell-waves";
+const CANONICAL_EVIDENCE_BY_UNIT = Object.freeze({
+  U24: Object.freeze([{ anchor: CLAIM_ANCHOR, kind: "source_text", text: CLAIM }]),
+});
+const VISUAL_BUDGET = Object.freeze({
+  targetMinimum: 1,
+  targetMaximum: 1,
+  maximumPerSection: 1,
+  minimumUnitsBetweenSimilarVisuals: 2,
+  requiredVisuals: 1,
+  recommendedVisuals: 0,
+  optionalVisuals: 0,
+  reason: "The model authored one required comparison interaction.",
+});
 
 function requiredU24() {
   const decision = {
@@ -61,6 +75,18 @@ function requiredU24() {
       requirement: "required",
       alternativeCoverage: "uncovered",
       interactionGoal: "compare_cases",
+      visualIntent: {
+        id: "visual-u24-wave-representation",
+        uniqueConcept: "Time-domain and frequency-domain wave representations",
+        visualType: "generated_module",
+        whyStaticSourceFigureIsNotEnough:
+          "The learner must switch representations to compare the source-defined operations.",
+        learnerManipulates: ["time differentiation and frequency-domain operations"],
+        expectedInsight:
+          "Phasor representation replaces sinusoidal time differentiation with algebraic frequency-domain operations",
+        sourceAnchors: [CLAIM_ANCHOR],
+        duplicateSignature: "wave-representation-operation-comparison",
+      },
       observable: {
         label: "Phasor representation",
         representation: "animation",
@@ -125,34 +151,57 @@ function validU24Repair(extra = {}) {
   return {
     repairs: [{
       unitId: "U24",
+      interactionGoal: "compare_cases",
+      learnerAction:
+        "Choose each source-defined operation, compare the resulting representation, and state the difference.",
+      visualIntent: {
+        id: "visual-u24-repaired-wave-representation",
+        uniqueConcept: "Time-domain and frequency-domain wave representations",
+        visualType: "generated_module",
+        whyStaticSourceFigureIsNotEnough:
+          "The learner must switch representations to compare the source-defined operations.",
+        learnerManipulates: ["time differentiation and frequency-domain operations"],
+        expectedInsight:
+          "Phasor representation replaces sinusoidal time differentiation with algebraic frequency-domain operations",
+        sourceAnchors: [CLAIM_ANCHOR],
+        duplicateSignature: "repaired-wave-representation-operation-comparison",
+      },
       controls: [{
+        id: "representation_operation",
         kind: "select_case",
         label: "time differentiation and frequency-domain operations",
+        type: "select",
         options: ["time differentiation", "frequency-domain operations"],
+        defaultValue: "frequency-domain operations",
         evidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
       }],
+      observable: {
+        label: "Phasor representation",
+        representation: "animation",
+        evidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
+      },
       expectedInsight:
         "Phasor representation replaces sinusoidal time differentiation with algebraic frequency-domain operations",
       expectedInsightEvidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
-      // These unsupported fields prove the provider cannot change policy.
-      requirement: "optional",
-      necessity: "not_needed",
-      renderer: "metric_calculator",
       ...extra,
     }],
   };
 }
 
-test("U24 required control is model-repaired, typed, and preserved on generated-module routing", async () => {
+test("U24 complete interaction contract is model-repaired, typed, and preserved on generated routing", async () => {
   const unit = requiredU24();
   let calls = 0;
   const result = await buildVisualizationPlanWithContractRepair({
     gardenId: "electromagnetism-1",
     learningMap: mapFor(unit),
     learningUnits: [unit],
+    visualBudget: VISUAL_BUDGET,
+    canonicalEvidenceByUnit: CANONICAL_EVIDENCE_BY_UNIT,
     repairProvider: async (packet) => {
       calls += 1;
       assert.equal(packet.units[0]?.unitId, "U24");
+      assert.deepEqual(packet.units[0]?.evidence, CANONICAL_EVIDENCE_BY_UNIT.U24);
+      assert.equal(packet.units[0]?.evidence.some((entry) => entry.kind === "learning_question"), false);
       assert.match(packet.problems.join(" "), /validated model-authored learner control contract/i);
       return validU24Repair();
     },
@@ -161,16 +210,21 @@ test("U24 required control is model-repaired, typed, and preserved on generated-
   assert.equal(calls, 1);
   assert.equal(result.repairSource, "model");
   assert.equal(result.learningUnits[0].interactiveVisualPlan.requirement, "required");
+  assert.equal(result.learningUnits[0].interactiveVisualPlan.decision.necessity, "required");
+  assert.equal(
+    result.learningUnits[0].interactiveVisualPlan.visualIntent.id,
+    "visual-u24-repaired-wave-representation",
+  );
   assert.deepEqual(result.learningUnits[0].interactiveVisualPlan.controlContract[0].options, [
     "time differentiation",
     "frequency-domain operations",
   ]);
   assert.deepEqual(result.plan.opportunities[0].requiredInputs[0], {
-    id: "time_differentiation_and_frequency_domain_operations",
+    id: "representation_operation",
     label: "time differentiation and frequency-domain operations",
     type: "select",
     options: ["time differentiation", "frequency-domain operations"],
-    defaultValue: "time differentiation",
+    defaultValue: "frequency-domain operations",
   });
   assert.equal(result.plan.decisions[0].route, "generated_module");
 
@@ -185,6 +239,16 @@ test("U24 required control is model-repaired, typed, and preserved on generated-
     "frequency-domain operations",
   ]);
   const roundTripped = normalizeLearningUnits(JSON.parse(JSON.stringify(routed)));
+  assert.equal(
+    roundTripped[0].interactiveVisualPlan.visualIntent.id,
+    "visual-u24-repaired-wave-representation",
+  );
+  assert.equal(roundTripped[0].interactiveVisualPlan.interactionGoal, "compare_cases");
+  assert.deepEqual(roundTripped[0].interactiveVisualPlan.observable, {
+    label: "Phasor representation",
+    representation: "animation",
+    evidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
+  });
   assert.deepEqual(roundTripped[0].interactiveVisualPlan.controlContract[0].options, [
     "time differentiation",
     "frequency-domain operations",
@@ -194,6 +258,59 @@ test("U24 required control is model-repaired, typed, and preserved on generated-
   ]);
 });
 
+test("a malformed recommended interaction receives the same bounded model repair without deterministic demotion", async () => {
+  const unit = requiredU24();
+  unit.interactiveVisualPlan.requirement = "recommended";
+  unit.interactiveVisualPlan.decision.necessity = "recommended";
+  const visualBudget = {
+    ...VISUAL_BUDGET,
+    requiredVisuals: 0,
+    recommendedVisuals: 1,
+    reason: "The model authored one recommended comparison interaction.",
+  };
+  let calls = 0;
+  const result = await buildVisualizationPlanWithContractRepair({
+    gardenId: "electromagnetism-1",
+    learningMap: mapFor(unit),
+    learningUnits: [unit],
+    visualBudget,
+    canonicalEvidenceByUnit: CANONICAL_EVIDENCE_BY_UNIT,
+    repairProvider: async (packet) => {
+      calls += 1;
+      assert.equal(packet.units[0]?.requirement, "recommended");
+      return validU24Repair();
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.repairSource, "model");
+  assert.equal(result.learningUnits[0].interactiveVisualPlan.requirement, "recommended");
+  assert.equal(result.learningUnits[0].interactiveVisualPlan.decision.necessity, "recommended");
+  assert.equal(result.plan.decisions[0].route, "generated_module");
+});
+
+test("active repair rejects legacy question evidence before invoking the model", async () => {
+  const unit = requiredU24();
+  let calls = 0;
+  await assert.rejects(
+    () => buildVisualizationPlanWithContractRepair({
+      gardenId: "electromagnetism-1",
+      learningMap: mapFor(unit),
+      learningUnits: [unit],
+      visualBudget: VISUAL_BUDGET,
+      canonicalEvidenceByUnit: {
+        U24: [{ anchor: CLAIM_ANCHOR, kind: "learning_question", text: QUESTION }],
+      },
+      repairProvider: async () => {
+        calls += 1;
+        return validU24Repair();
+      },
+    }),
+    /evidence kind learning_question is not canonical extracted-source evidence/i,
+  );
+  assert.equal(calls, 0);
+});
+
 test("hallucinated U24 control is rejected, then a grounded retry sees the rejection", async () => {
   const unit = requiredU24();
   const packets = [];
@@ -201,22 +318,25 @@ test("hallucinated U24 control is rejected, then a grounded retry sees the rejec
     gardenId: "electromagnetism-1",
     learningMap: mapFor(unit),
     learningUnits: [unit],
+    visualBudget: VISUAL_BUDGET,
+    canonicalEvidenceByUnit: CANONICAL_EVIDENCE_BY_UNIT,
     maxRepairAttempts: 2,
     repairProvider: async (packet) => {
       packets.push(packet);
       if (packets.length === 1) {
-        return {
-          repairs: [{
-            unitId: "U24",
-            controls: [{
-              kind: "variable",
-              label: "wave amplitude",
-              evidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
-            }],
-            expectedInsight: "Phasor representation replaces sinusoidal time differentiation",
-            expectedInsightEvidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
-          }],
-        };
+        const invalid = validU24Repair();
+        invalid.repairs[0].controls = [{
+          id: "wave_amplitude",
+          kind: "variable",
+          label: "wave amplitude",
+          type: "slider",
+          min: 0,
+          max: 10,
+          step: 0.1,
+          defaultValue: 1,
+          evidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
+        }];
+        return invalid;
       }
       return validU24Repair();
     },
@@ -224,6 +344,7 @@ test("hallucinated U24 control is rejected, then a grounded retry sees the rejec
 
   assert.equal(result.repairAttempts, 2);
   assert.match(packets[1].previousRejectionReasons.join(" "), /wave amplitude.*not present/i);
+  assert.match(packets[1].previousRejectionReasons.join(" "), /visualIntent/i);
 });
 
 test("persistent generic or unanchored controls exhaust the bounded repair budget", async () => {
@@ -234,6 +355,8 @@ test("persistent generic or unanchored controls exhaust the bounded repair budge
       gardenId: "electromagnetism-1",
       learningMap: mapFor(unit),
       learningUnits: [unit],
+      visualBudget: VISUAL_BUDGET,
+      canonicalEvidenceByUnit: CANONICAL_EVIDENCE_BY_UNIT,
       maxRepairAttempts: 2,
       repairProvider: async () => {
         calls += 1;
@@ -241,8 +364,14 @@ test("persistent generic or unanchored controls exhaust the bounded repair budge
           repairs: [{
             unitId: "U24",
             controls: [{
+              id: "process_position",
               kind: "process_position",
               label: calls === 1 ? "process step" : "time",
+              type: "slider",
+              min: 0,
+              max: 1,
+              step: 0.1,
+              defaultValue: 0,
               evidence: [{ anchor: "S1.P999.invented", quote: "invented time" }],
             }],
             expectedInsight: "observe the response",
@@ -251,7 +380,7 @@ test("persistent generic or unanchored controls exhaust the bounded repair budge
         };
       },
     }),
-    /Automatic required-visual contract repair exhausted 2 bounded attempt/i,
+    /Automatic model-approved visualization contract repair exhausted 2 bounded attempt/i,
   );
   assert.equal(calls, 2);
   assert.equal(unit.interactiveVisualPlan.controlContract, undefined);
@@ -261,12 +390,16 @@ test("wrong-unit and invented select cases fail independent evidence validation"
   const unit = requiredU24();
   const problems = validateVisualizationContractUnitRepair({
     unit,
+    evidence: CANONICAL_EVIDENCE_BY_UNIT.U24,
     repair: {
       unitId: "U25",
       controls: [{
+        id: "representation_operation",
         kind: "select_case",
         label: "time differentiation and frequency-domain operations",
+        type: "select",
         options: ["time differentiation", "spatial operations"],
+        defaultValue: "time differentiation",
         evidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
       }],
       expectedInsight:
@@ -279,12 +412,16 @@ test("wrong-unit and invented select cases fail independent evidence validation"
 
   const duplicateProblems = validateVisualizationContractUnitRepair({
     unit,
+    evidence: CANONICAL_EVIDENCE_BY_UNIT.U24,
     repair: {
       unitId: "U24",
       controls: [{
+        id: "representation_operation",
         kind: "select_case",
         label: "time differentiation and frequency-domain operations",
+        type: "select",
         options: ["time differentiation", "Time Differentiation"],
+        defaultValue: "time differentiation",
         evidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
       }],
       expectedInsight:
@@ -295,12 +432,98 @@ test("wrong-unit and invented select cases fail independent evidence validation"
   assert.match(duplicateProblems.join(" "), /duplicate cases/i);
 });
 
-test("generation rerun restores the validated typed contract without another model call", async () => {
+test("strict repair parsing reports malformed and extra controls without truncating valid records", () => {
+  const control = (index) => ({
+    id: `case_${index}`,
+    kind: "select_case",
+    label: "time differentiation and frequency-domain operations",
+    type: "select",
+    options: ["time differentiation", "frequency-domain operations"],
+    defaultValue: "frequency-domain operations",
+    evidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
+  });
+  const parsed = parseVisualizationContractRepairResponse({
+    repairs: [{
+      unitId: "U24",
+      controls: [control(1), null, control(2), control(3), control(4)],
+      expectedInsight:
+        "Phasor representation replaces sinusoidal time differentiation with algebraic frequency-domain operations",
+      expectedInsightEvidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
+    }],
+  });
+  assert.equal(parsed.repairs[0].controls.length, 4, "valid controls are preserved, not sliced");
+  assert.match(parsed.problems.join(" "), /contains 5 controls; at most 3/i);
+  assert.match(parsed.problems.join(" "), /controls\[1\] must be an object/i);
+});
+
+test("active repair parsing reports an incomplete replacement contract", () => {
+  const parsed = parseVisualizationContractRepairResponse({
+    repairs: [{
+      unitId: "U24",
+      controls: validU24Repair().repairs[0].controls,
+      expectedInsight:
+        "Phasor representation replaces sinusoidal time differentiation with algebraic frequency-domain operations",
+      expectedInsightEvidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
+    }],
+  }, { requireCompleteContract: true });
+  assert.match(parsed.problems.join(" "), /interactionGoal is required/i);
+  assert.match(parsed.problems.join(" "), /visualIntent is required/i);
+  assert.match(parsed.problems.join(" "), /observable is required/i);
+});
+
+test("complete repair validation rejects stale intent fields and non-canonical anchors", () => {
+  const repair = validU24Repair().repairs[0];
+  repair.visualIntent = {
+    ...repair.visualIntent,
+    learnerManipulates: ["stale prior control"],
+    sourceAnchors: ["S1.P999.invented"],
+  };
+  const problems = validateVisualizationContractUnitRepair({
+    unit: requiredU24(),
+    evidence: CANONICAL_EVIDENCE_BY_UNIT.U24,
+    repair,
+    requireCompleteContract: true,
+  });
+  assert.match(problems.join(" "), /learnerManipulates must exactly match/i);
+  assert.match(problems.join(" "), /not canonical evidence/i);
+  assert.match(problems.join(" "), /omits cited evidence anchor/i);
+});
+
+test("numeric control domains and defaults fail closed instead of receiving normalized values", () => {
+  const problems = validateVisualizationContractUnitRepair({
+    unit: requiredU24(),
+    evidence: CANONICAL_EVIDENCE_BY_UNIT.U24,
+    repair: {
+      unitId: "U24",
+      controls: [{
+        id: "time_position",
+        kind: "process_position",
+        label: "time differentiation",
+        type: "slider",
+        min: 10,
+        max: 0,
+        step: 0,
+        defaultValue: 11,
+        evidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
+      }],
+      expectedInsight:
+        "Phasor representation replaces sinusoidal time differentiation with algebraic frequency-domain operations",
+      expectedInsightEvidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
+    },
+  });
+  assert.match(problems.join(" "), /requires min < max/i);
+  assert.match(problems.join(" "), /requires step > 0/i);
+  assert.match(problems.join(" "), /default is outside min\/max/i);
+});
+
+test("a later incomplete contract is repaired by the model, never restored by code", async () => {
   const unit = requiredU24();
   const planned = await buildVisualizationPlanWithContractRepair({
     gardenId: "electromagnetism-1",
     learningMap: mapFor(unit),
     learningUnits: [unit],
+    visualBudget: VISUAL_BUDGET,
+    canonicalEvidenceByUnit: CANONICAL_EVIDENCE_BY_UNIT,
     repairProvider: async () => validU24Repair(),
   });
   const grounded = applyVisualizationRoutesToLearningUnits(planned.learningUnits, planned.plan);
@@ -310,7 +533,9 @@ test("generation rerun restores the validated typed contract without another mod
     interactiveVisualPlan: {
       ...item.interactiveVisualPlan,
       visualIntent: undefined,
+      interactionGoal: undefined,
       controlContract: undefined,
+      observable: undefined,
       expectedInsightEvidence: undefined,
     },
   }));
@@ -319,15 +544,23 @@ test("generation rerun restores the validated typed contract without another mod
     gardenId: "electromagnetism-1",
     learningMap: mapFor(unit),
     learningUnits: cleared,
-    groundingUnits: grounded,
+    visualBudget: VISUAL_BUDGET,
+    canonicalEvidenceByUnit: CANONICAL_EVIDENCE_BY_UNIT,
     repairProvider: async () => {
       extraCalls += 1;
-      throw new Error("generation must reuse the validated planning contract");
+      return validU24Repair();
     },
   });
 
-  assert.equal(extraCalls, 0);
-  assert.equal(regenerated.repairSource, "persisted_contract");
+  assert.equal(extraCalls, 1);
+  assert.equal(regenerated.repairSource, "model");
+  assert.equal(regenerated.learningUnits[0].interactiveVisual.id, "visual-u24-repaired-wave-representation");
+  assert.equal(regenerated.learningUnits[0].interactiveVisualPlan.interactionGoal, "compare_cases");
+  assert.deepEqual(regenerated.learningUnits[0].interactiveVisualPlan.observable, {
+    label: "Phasor representation",
+    representation: "animation",
+    evidence: [{ anchor: CLAIM_ANCHOR, quote: CLAIM }],
+  });
   assert.deepEqual(regenerated.learningUnits[0].interactiveVisualPlan.controlContract[0].options, [
     "time differentiation",
     "frequency-domain operations",

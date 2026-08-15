@@ -5,6 +5,8 @@ import {
   HTTP_502_ATTEMPT_DELAYS_MS,
   HTTP_502_MAX_ATTEMPTS,
   HTTP_502_RETRY_INTERVAL_MS,
+  isRetryableModelTransportError,
+  retryModelTransport,
   retryHttp502,
 } from '../src/lib/http-502-retry.ts';
 import { attachLearnTokenUsageTracking } from '../src/lib/learn-token-usage.ts';
@@ -90,6 +92,74 @@ test('non-502 responses and thrown network errors are not retried', async () => 
   }
 });
 
+test('only the recognized ChatMock restart failures are transport-retryable', () => {
+  const transientFailures = [
+    new Error('Connection error.'),
+    Object.assign(new Error('connect failed'), { code: 'ECONNREFUSED' }),
+    new TypeError('fetch failed', {
+      cause: Object.assign(new Error('socket closed'), { code: 'ECONNRESET' }),
+    }),
+    new Error('socket hang up'),
+    new Error('Response ended prematurely'),
+    errorWithStatus(502),
+    Object.assign(new Error('HTTP 502: upstream timed out'), { status: 502 }),
+    Object.assign(new Error('wrapped'), { response: { status: 502 } }),
+  ];
+  const terminalFailures = [
+    errorWithStatus(503),
+    errorWithStatus(429),
+    new Error('connection failed'),
+    new Error('fetch failed'),
+    Object.assign(new Error('request failed'), { code: 'ENOTFOUND' }),
+    Object.assign(new Error('Request was aborted.'), { name: 'APIUserAbortError' }),
+    Object.assign(new Error('Request timed out.'), { name: 'APIConnectionTimeoutError' }),
+    Object.assign(new Error('Connection error.'), {
+      cause: Object.assign(new Error('aborted'), { code: 'ABORT_ERR' }),
+    }),
+  ];
+
+  for (const failure of transientFailures) {
+    assert.equal(isRetryableModelTransportError(failure), true, failure.message);
+  }
+  for (const failure of terminalFailures) {
+    assert.equal(isRetryableModelTransportError(failure), false, failure.message);
+  }
+});
+
+test('a transient connection failure replays the same operation outside semantic accounting', async () => {
+  let calls = 0;
+  const attempts = [];
+  const result = await retryModelTransport(async (attempt) => {
+    calls += 1;
+    attempts.push(attempt.attempt);
+    if (calls === 1) throw new Error('Connection error.');
+    if (calls === 2) {
+      throw Object.assign(new Error('socket closed'), { code: 'ECONNRESET' });
+    }
+    return 'recovered';
+  });
+
+  assert.equal(result, 'recovered');
+  assert.equal(calls, 3);
+  assert.deepEqual(attempts, [1, 2, 3]);
+});
+
+test('cancellation between a transport failure and retry stops replay immediately', async () => {
+  const controller = new AbortController();
+  const cancellation = new Error('Learn job cancelled');
+  let calls = 0;
+
+  await assert.rejects(
+    () => retryModelTransport(async () => {
+      calls += 1;
+      controller.abort(cancellation);
+      throw Object.assign(new Error('connection dropped'), { code: 'ECONNRESET' });
+    }, { signal: controller.signal }),
+    cancellation,
+  );
+  assert.equal(calls, 1);
+});
+
 test('Learn tracks six transport attempts as one logical model call', async () => {
   const events = [];
   const createOptions = [];
@@ -118,6 +188,30 @@ test('Learn tracks six transport attempts as one logical model call', async () =
   assert.ok(createOptions.every((options) => options.maxRetries === 0));
   assert.ok(createOptions.every((options) => options.timeout === 1234));
   assert.ok(createOptions.every((options) => options.signal === controller.signal));
+});
+
+test('Learn reuses the exact request body and options across connection retries', async () => {
+  const events = [];
+  const received = [];
+  let calls = 0;
+  const client = fakeClient(async (body, options) => {
+    calls += 1;
+    received.push({ body, options });
+    if (calls < 3) throw new Error('Response ended prematurely');
+    return { usage: { input_tokens: 9, output_tokens: 4, total_tokens: 13 } };
+  });
+  const body = { model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'same' }] };
+
+  attachLearnTokenUsageTracking(client, (event) => events.push(event));
+  const response = await client.chat.completions.create(body, { timeout: 4321 });
+
+  assert.equal(response.usage.total_tokens, 13);
+  assert.equal(received.length, 3);
+  assert.ok(received.every(({ body: receivedBody }) => receivedBody === body));
+  assert.ok(received.every(({ options }) => options === received[0].options));
+  assert.ok(received.every(({ options }) => options.timeout === 4321));
+  assert.ok(received.every(({ options }) => options.maxRetries === 0));
+  assert.deepEqual(events.map(({ type }) => type), ['started', 'completed']);
 });
 
 test('aborting a Learn job interrupts the in-flight transport request', async () => {

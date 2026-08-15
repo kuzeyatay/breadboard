@@ -1,6 +1,14 @@
 export const AGENT_STREAM_CONNECT_TIMEOUT_MS = 15_000;
 export const AGENT_STREAM_FIRST_ACTIVITY_TIMEOUT_MS = 90_000;
 export const AGENT_STREAM_INACTIVITY_TIMEOUT_MS = 5 * 60_000;
+export const AGENT_STREAM_RECONNECT_DELAYS_MS = [
+  500,
+  1_000,
+  2_000,
+  4_000,
+  8_000,
+  16_000,
+] as const;
 
 export type AgentStreamTimeoutKind =
   | "connect_timeout"
@@ -26,10 +34,49 @@ export class AgentStreamTimeoutError extends Error {
   }
 }
 
+export class AgentStreamDisconnectedError extends Error {
+  constructor(message = "The agent connection closed before the response completed.") {
+    super(message);
+    this.name = "AgentStreamDisconnectedError";
+  }
+}
+
 export function isAgentStreamTimeoutError(
   value: unknown,
 ): value is AgentStreamTimeoutError {
   return value instanceof AgentStreamTimeoutError;
+}
+
+export function isRecoverableAgentStreamDisconnect(value: unknown): boolean {
+  if (value instanceof AgentStreamDisconnectedError) return true;
+  if (!(value instanceof Error) || value.name === "AbortError") return false;
+  return /failed to fetch|load failed|network error|network request failed/i.test(
+    value.message,
+  );
+}
+
+export function agentStreamReconnectDelay(attempt: number): number | null {
+  if (!Number.isInteger(attempt) || attempt < 0) return null;
+  return AGENT_STREAM_RECONNECT_DELAYS_MS[attempt] ?? null;
+}
+
+export async function waitForAgentStreamReconnect(
+  delayMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export function agentStreamTimeout(input: {

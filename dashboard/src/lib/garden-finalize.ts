@@ -43,6 +43,7 @@ import {
   type RegisteredSourceArtifact,
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
+  type ZettelNote,
 } from "./learning-unit-contract.ts";
 import { buildGardenTopicProfile, generateSectionTitle, type GardenTopicProfile } from "./section-title.ts";
 import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "./learn-utils.ts";
@@ -70,6 +71,11 @@ import {
   planGardenVisualNecessity,
   saveVisualNecessityArtifacts,
 } from "./visual-necessity.ts";
+import { loadVisualizationPlan } from "./visualization-opportunities.ts";
+import {
+  loadVisualContractExecutabilityLedger,
+  visualContractExecutabilityLinkageProblems,
+} from "./visualization-contract-executability.ts";
 
 // ---------------------------------------------------------------------------
 // Frontmatter + fs helpers
@@ -305,12 +311,13 @@ export type RepairExecutorKind = "model" | "deterministic";
 export type RepairExecutorMode = "model" | "deterministic" | "model_with_deterministic_fallback";
 
 /** A model-produced candidate for a single page. `markdown` is the full revised
- * page (frontmatter + body). Visual specs and a contract-handle patch are
- * optional side outputs; both are scope-checked before anything is written. */
+ * page (frontmatter + body). Visual specs and a complete model-authored Zettel
+ * patch are optional side outputs; both are scope-checked before anything is
+ * written. */
 export interface RepairCandidate {
   markdown: string;
   visualSpecs?: Array<{ id: string; spec: Record<string, unknown> }>;
-  contractHandlePatch?: { unitId: string; handles: string[] };
+  contractZettelPatch?: { unitId: string; zettelNotes: ZettelNote[] };
   notes?: string[];
 }
 
@@ -1887,14 +1894,13 @@ export function finalizeGardenExport({
   }
 
   // --- Pass I2: post-structure semantic reconciliation ------------------------
-  // Section/page renames are complete above, so every path is now FINAL. The
-  // final filesystem + final Learning Unit Contract are authoritative: active
-  // claims, the concept registry, and every page concept projection (tags =
-  // primaryConcepts + supportingConcepts, claimIds) are REBUILT from them in
-  // one rollback-backed transaction. Stale records from earlier structures are
+  // Legacy exports rebuild claims, concepts, and page projections after path
+  // changes. Active Learn skips this semantic authoring pass: its model-authored
+  // contract and page metadata must already agree, or the critical gate leaves
+  // the mismatch blocking for the model repair loop. Stale records are
   // archived to claims-history/concept-registry-history — never merged forward
   // into the active registries.
-  {
+  if (!preserveModelAuthoredContent) {
     const semantic = reconcileFinalGardenSemantics(gardenDir, gardenSlug, {
       archiveHistoricalClaims: true,
       archiveUnusedConcepts: true,
@@ -1962,8 +1968,17 @@ export function finalizeGardenExport({
   }
 
   // --- Pass L: validation report + critical gate -----------------------------
-  writeFinalizeValidationReport({ gardenDir, gardenSlug, report });
-  runCriticalGate({ gardenDir, report });
+  writeFinalizeValidationReport({
+    gardenDir,
+    gardenSlug,
+    report,
+    strictModelApprovedVisuals: preserveModelAuthoredContent,
+  });
+  runCriticalGate({
+    gardenDir,
+    report,
+    strictModelApprovedVisuals: preserveModelAuthoredContent,
+  });
 
   return report;
 }
@@ -2886,6 +2901,53 @@ function pageAllowedVisualIds(page: LearnerPage): Set<string> {
   return ids;
 }
 
+function modelAuthoredZettelPatchProblems(
+  request: UnitRepairRequest,
+  patch: NonNullable<RepairCandidate["contractZettelPatch"]>,
+): string[] {
+  const problems: string[] = [];
+  if (
+    !request.failureTypes.some((type) =>
+      type === "zettelkasten_handle" || type === "zettelkasten_handle_support")
+  ) {
+    problems.push("candidate contract Zettel patch is outside this repair request's failure scope");
+  }
+  if (patch.unitId !== request.unitId) {
+    problems.push(`candidate patches unsupported contract unit ${patch.unitId} (request unit ${request.unitId})`);
+  }
+  if (!Array.isArray(patch.zettelNotes) || patch.zettelNotes.length === 0) {
+    problems.push("candidate contract Zettel patch must contain complete zettelNotes");
+    return problems;
+  }
+  const handles = new Set<string>();
+  for (const [index, note] of patch.zettelNotes.entries()) {
+    const prefix = `candidate contract Zettel patch zettelNotes[${index}]`;
+    if (!note || typeof note !== "object") {
+      problems.push(`${prefix} must be an object`);
+      continue;
+    }
+    if (typeof note.handle !== "string" || note.handle.trim() !== note.handle || !isAtomicZettelHandle(note.handle)) {
+      problems.push(`${prefix}.handle must be a complete atomic model-authored handle`);
+    } else if (handles.has(note.handle)) {
+      problems.push(`${prefix}.handle duplicates ${note.handle}`);
+    } else {
+      handles.add(note.handle);
+    }
+    if (typeof note.claim !== "string" || note.claim.trim() !== note.claim || !note.claim) {
+      problems.push(`${prefix}.claim must be non-empty model-authored prose`);
+    }
+    if (
+      !Array.isArray(note.connectedTo) ||
+      note.connectedTo.some((value) => typeof value !== "string" || value.trim() !== value || !value)
+    ) {
+      problems.push(`${prefix}.connectedTo must be an array of non-empty exact identifiers`);
+    } else if (new Set(note.connectedTo).size !== note.connectedTo.length) {
+      problems.push(`${prefix}.connectedTo must not contain duplicates`);
+    }
+  }
+  return problems;
+}
+
 /** Scope violations that disqualify a model candidate before anything is
  * written: missing/renamed frontmatter, wrong unit, or edits to files the page
  * does not own. This is what makes "candidate changes unsupported files" fail. */
@@ -2916,8 +2978,8 @@ function repairCandidateScopeProblems(page: LearnerPage, request: UnitRepairRequ
       problems.push(`candidate writes unsupported visual spec ${entry.id} not owned by ${request.pagePath}`);
     }
   }
-  if (candidate.contractHandlePatch && candidate.contractHandlePatch.unitId !== request.unitId) {
-    problems.push(`candidate patches unsupported contract unit ${candidate.contractHandlePatch.unitId} (request unit ${request.unitId})`);
+  if (candidate.contractZettelPatch) {
+    problems.push(...modelAuthoredZettelPatchProblems(request, candidate.contractZettelPatch));
   }
   return problems;
 }
@@ -2936,7 +2998,7 @@ function restoreFilesFromSnapshot(snap: Map<string, Buffer | null>): void {
 }
 
 /** Write a model candidate to disk (page markdown + owned visual specs +
- * optional contract-handle patch), returning the changed rel paths and a
+ * optional complete model-authored Zettel patch), returning the changed rel paths and a
  * `restore` closure that reverts every touched file to its pre-write bytes. */
 function applyRepairCandidate(
   gardenDir: string,
@@ -2948,7 +3010,7 @@ function applyRepairCandidate(
   for (const entry of candidate.visualSpecs ?? []) {
     touched.push(path.join(gardenDir, ".breadboard", "visuals", `${entry.id}.json`));
   }
-  if (candidate.contractHandlePatch && contractPath) touched.push(contractPath);
+  if (candidate.contractZettelPatch && contractPath) touched.push(contractPath);
   const snap = snapshotFilesForRevert(touched);
 
   const changedFiles: string[] = [];
@@ -2964,15 +3026,15 @@ function applyRepairCandidate(
     changedFiles.push(relOf(target));
   }
 
-  if (candidate.contractHandlePatch && contractPath) {
+  if (candidate.contractZettelPatch && contractPath) {
     const parsed = readJson<Record<string, unknown>>(contractPath, {});
     const rawUnits = Array.isArray(parsed.learningUnits) ? (parsed.learningUnits as Array<Record<string, unknown>>) : [];
-    const unit = rawUnits.find((raw) => cleanText(raw.id) === candidate.contractHandlePatch!.unitId);
+    const unit = rawUnits.find((raw) => cleanText(raw.id) === candidate.contractZettelPatch!.unitId);
     if (unit) {
-      unit.zettelNotes = candidate.contractHandlePatch.handles.map((handle) => ({
-        handle: atomicZettelHandle(handle),
-        claim: handle.replace(/-/g, " "),
-        connectedTo: [],
+      unit.zettelNotes = candidate.contractZettelPatch.zettelNotes.map((note) => ({
+        handle: note.handle,
+        claim: note.claim,
+        connectedTo: [...note.connectedTo],
       }));
       fs.writeFileSync(contractPath, JSON.stringify(parsed, null, 2), "utf-8");
       changedFiles.push(relOf(contractPath));
@@ -3011,8 +3073,8 @@ function dumpFailedRepair(gardenDir: string, request: UnitRepairRequest, candida
   if (candidate?.visualSpecs?.length) {
     lines.push("## Candidate visual specs", "", "```json", JSON.stringify(candidate.visualSpecs, null, 2), "```", "");
   }
-  if (candidate?.contractHandlePatch) {
-    lines.push("## Candidate contract patch", "", "```json", JSON.stringify(candidate.contractHandlePatch, null, 2), "```", "");
+  if (candidate?.contractZettelPatch) {
+    lines.push("## Candidate contract patch", "", "```json", JSON.stringify(candidate.contractZettelPatch, null, 2), "```", "");
   }
   fs.writeFileSync(path.join(gardenDir, ...rel.split("/")), `${lines.join("\n")}\n`, "utf-8");
   return rel;
@@ -3036,12 +3098,14 @@ async function tryModelRepairForPage({
   modelRepair,
   repairReport,
   contractPath,
+  strictModelApprovedVisuals = false,
 }: {
   gardenDir: string;
   request: UnitRepairRequest;
   modelRepair: ModelRepairExecutor;
   repairReport: FinalizeReport;
   contractPath: string | undefined;
+  strictModelApprovedVisuals?: boolean;
 }): Promise<ModelRepairAttempt> {
   const page = loadLearnerPages(gardenDir).find((candidate) => candidate.rel === request.pagePath);
   if (!page) {
@@ -3077,7 +3141,12 @@ async function tryModelRepairForPage({
   }
 
   const applied = applyRepairCandidate(gardenDir, page, candidate, contractPath);
-  const checks = collectFinalizeChecks({ gardenDir, report: emptyFinalizeReport(), includeReportSelfCheck: false });
+  const checks = collectFinalizeChecks({
+    gardenDir,
+    report: emptyFinalizeReport(),
+    includeReportSelfCheck: false,
+    strictModelApprovedVisuals,
+  });
   const problems = unresolvedErrorsForRequest(checks, request);
   if (problems.length > 0) {
     const dumped = dumpFailedRepair(gardenDir, request, candidate, problems);
@@ -3130,7 +3199,12 @@ export async function repairLearningUnitsFromContract({
     replanContractVisualNecessity(gardenDir, gardenSlug, preservedVisualPlans);
   }
   const reportForChecks = emptyFinalizeReport();
-  const firstChecks = collectFinalizeChecks({ gardenDir, report: reportForChecks, includeReportSelfCheck: false });
+  const firstChecks = collectFinalizeChecks({
+    gardenDir,
+    report: reportForChecks,
+    includeReportSelfCheck: false,
+    strictModelApprovedVisuals: preserveModelAuthoredContent,
+  });
   const requests = collectUnitRepairRequests({ gardenDir, checks: firstChecks });
   const repairReport = emptyFinalizeReport();
   const changedBefore = new Set(repairReport.changed);
@@ -3139,7 +3213,12 @@ export async function repairLearningUnitsFromContract({
   const repairedAt = new Date().toISOString();
 
   const wantModel = (repairExecutor === "model" || repairExecutor === "model_with_deterministic_fallback") && typeof modelRepair === "function";
-  const allowDeterministic = repairExecutor === "deterministic" || repairExecutor === "model_with_deterministic_fallback";
+  // `preserveModelAuthoredContent` is a hard authorship boundary, not merely a
+  // preference for the model executor. Even if a caller accidentally requests
+  // the legacy deterministic executor, semantic repair must fail closed rather
+  // than synthesize prose, anchors, formulas, concepts, or claims.
+  const allowDeterministic = !preserveModelAuthoredContent
+    && (repairExecutor === "deterministic" || repairExecutor === "model_with_deterministic_fallback");
 
   const requestByPage = new Map<string, UnitRepairRequest[]>();
   for (const request of requests) {
@@ -3166,7 +3245,14 @@ export async function repairLearningUnitsFromContract({
       for (const [pagePath, pageRequests] of requestByPage) {
         const merged = mergeRequestsForPage(pageRequests);
         attemptedByPage.set(pagePath, ["model"]);
-        const attempt = await tryModelRepairForPage({ gardenDir, request: merged, modelRepair, repairReport, contractPath });
+        const attempt = await tryModelRepairForPage({
+          gardenDir,
+          request: merged,
+          modelRepair,
+          repairReport,
+          contractPath,
+          strictModelApprovedVisuals: preserveModelAuthoredContent,
+        });
         executions.push({
           unitId: merged.unitId,
           pagePath,
@@ -3191,7 +3277,7 @@ export async function repairLearningUnitsFromContract({
     // Runs over pages the model did NOT already repair, so a validated model
     // page is never clobbered. Section-structure passes run over the full tree
     // because they only touch _index files, not learner-page bodies.
-    if (allowDeterministic) {
+    if (allowDeterministic && !preserveModelAuthoredContent) {
       const ledger = readJson<LedgerVisual[]>(ledgerPath, []);
       const semanticMigration = migrateGardenSemantics(gardenDir, { gardenId: gardenSlug });
       for (const rel of semanticMigration.changedFiles) {
@@ -3251,31 +3337,40 @@ export async function repairLearningUnitsFromContract({
   }
 
   const pagesForAnchorSync = loadLearnerPages(gardenDir);
-  const contractForAnchorSync = readLearningUnitContract(gardenDir);
-  const unitsForAnchorSync = new Map(contractForAnchorSync.units.map((unit) => [unit.id, unit]));
-  regroundFormulas(
-    { gardenDir, ledger: readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []), learnerPages: pagesForAnchorSync, report: repairReport },
-  );
-  repairLearnerAcronymGrammar(pagesForAnchorSync, repairReport);
+  if (!preserveModelAuthoredContent) {
+    regroundFormulas(
+      { gardenDir, ledger: readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []), learnerPages: pagesForAnchorSync, report: repairReport },
+    );
+    repairLearnerAcronymGrammar(pagesForAnchorSync, repairReport);
+    repairVisualAnchorRolesAndReasons(gardenDir, pagesForAnchorSync, repairReport);
+    synchronizePageVisualTextAnchors(pagesForAnchorSync, repairReport);
+  }
   repairSourceVisualImagePathCasing(gardenDir, pagesForAnchorSync, repairReport);
-  repairVisualAnchorRolesAndReasons(gardenDir, pagesForAnchorSync, repairReport);
-  synchronizePageVisualTextAnchors(pagesForAnchorSync, repairReport);
   writeDirtyLearnerPages(pagesForAnchorSync, repairReport);
-  registerExistingTextAnchors(gardenDir, pagesForAnchorSync, unitsForAnchorSync, repairReport);
-  synchronizeContractSourceAnchors(gardenDir, contractForAnchorSync, pagesForAnchorSync, repairReport);
+  if (!preserveModelAuthoredContent) {
+    const contractForAnchorSync = readLearningUnitContract(gardenDir);
+    const unitsForAnchorSync = new Map(contractForAnchorSync.units.map((unit) => [unit.id, unit]));
+    registerExistingTextAnchors(gardenDir, pagesForAnchorSync, unitsForAnchorSync, repairReport);
+    synchronizeContractSourceAnchors(gardenDir, contractForAnchorSync, pagesForAnchorSync, repairReport);
+  }
   regenerateSourceCoverageFromFinalState(
     gardenDir,
     readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []),
     repairReport,
   );
-  {
+  if (!preserveModelAuthoredContent) {
     // Preserve rejected-candidate dumps under debug/failed-repairs/ through the
     // repair loop; only the final EXPORT (finalizeGardenExport) strips them.
     const reconcile = reconcileFinalGardenState(gardenDir, gardenSlug, { stripDebugFailedRepairs: false });
     for (const rel of reconcile.changed) if (!repairReport.changed.includes(rel)) repairReport.changed.push(rel);
     for (const note of reconcile.notes) repairReport.notes.push(note);
   }
-  const finalChecks = collectFinalizeChecks({ gardenDir, report: emptyFinalizeReport(), includeReportSelfCheck: false });
+  const finalChecks = collectFinalizeChecks({
+    gardenDir,
+    report: emptyFinalizeReport(),
+    includeReportSelfCheck: false,
+    strictModelApprovedVisuals: preserveModelAuthoredContent,
+  });
   const finalPageByRel = new Map(loadLearnerPages(gardenDir).map((page) => [page.rel, page]));
   const changedFiles = [...new Set(repairReport.changed.filter((file) => !changedBefore.has(file)))].sort();
   const repairs: UnitRepairLogEntry[] = requests.map((request) => {
@@ -3389,13 +3484,22 @@ export function verifyFinalArtifactNoMutation({
   gardenDir,
   gardenSlug,
   updateRepairReport = true,
+  strictModelApprovedVisuals = false,
 }: {
   gardenDir: string;
   gardenSlug: string;
   updateRepairReport?: boolean;
+  /** Re-run the same approved-visual hard gate used by active Learn after any
+   * end-stage critic repair and immediately before promotion. */
+  strictModelApprovedVisuals?: boolean;
 }): FinalArtifactVerification {
   const before = snapshotFiles(gardenDir);
-  const checks = collectFinalizeChecks({ gardenDir, report: emptyFinalizeReport(), includeReportSelfCheck: true });
+  const checks = collectFinalizeChecks({
+    gardenDir,
+    report: emptyFinalizeReport(),
+    includeReportSelfCheck: true,
+    strictModelApprovedVisuals,
+  });
   const after = snapshotFiles(gardenDir);
   const validationFailures = validationFailuresFromChecks(checks);
   // Fix 10: the current deterministic checks are the source of truth. A stale
@@ -5582,10 +5686,12 @@ function writeFinalizeValidationReport({
   gardenDir,
   gardenSlug,
   report,
+  strictModelApprovedVisuals = false,
 }: {
   gardenDir: string;
   gardenSlug: string;
   report: FinalizeReport;
+  strictModelApprovedVisuals?: boolean;
 }): void {
   const bd = path.join(gardenDir, ".breadboard");
   fs.mkdirSync(bd, { recursive: true });
@@ -5655,15 +5761,15 @@ function writeFinalizeValidationReport({
     fs.writeFileSync(reportPath, `${lines.join("\n")}\n`, "utf-8");
   };
 
-  write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: false }));
-  write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: true }));
+  write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: false, strictModelApprovedVisuals }));
+  write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: true, strictModelApprovedVisuals }));
   // Fix 10: report completeness is a SERIALIZER test. If the just-written
   // report cannot serialize every required section, rewrite once from the
   // current audit and block only if the current writer itself is broken —
   // never because an old report from an earlier generation lacked a heading.
   let serialization = verifyValidationReportSerialization(reportPath, REQUIRED_VALIDATION_REPORT_SECTIONS);
   if (!serialization.valid) {
-    write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: true }));
+    write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: true, strictModelApprovedVisuals }));
     serialization = verifyValidationReportSerialization(reportPath, REQUIRED_VALIDATION_REPORT_SECTIONS);
     if (!serialization.valid) {
       report.criticalProblems.push(
@@ -7233,10 +7339,12 @@ function collectFinalizeChecks({
   gardenDir,
   report,
   includeReportSelfCheck = true,
+  strictModelApprovedVisuals = false,
 }: {
   gardenDir: string;
   report: FinalizeReport;
   includeReportSelfCheck?: boolean;
+  strictModelApprovedVisuals?: boolean;
 }): FinalizeCheck[] {
   const checks: FinalizeCheck[] = [];
   const push = (name: string, problems: string[]) => checks.push({ name, status: problems.length ? "FAIL" : "PASS", problems });
@@ -7252,6 +7360,18 @@ function collectFinalizeChecks({
     if (unitId) pagesByUnit.set(unitId, page);
   }
   const ledger = readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []);
+  if (strictModelApprovedVisuals) {
+    push(
+      "Model-authored visual-contract executability linkage",
+      visualContractExecutabilityLinkageProblems({
+        gardenId: path.basename(path.resolve(gardenDir)),
+        ledger: loadVisualContractExecutabilityLedger(gardenDir),
+        finalLearningUnits: contract.units,
+        visualizationPlan: loadVisualizationPlan(gardenDir),
+        requireGenerationPhase: true,
+      }),
+    );
+  }
 
   // A formula anchor is GROUNDABLE only when the source actually yielded an
   // exact formula (a verified identity or recoverable canonical text). When
@@ -7380,6 +7500,7 @@ function collectFinalizeChecks({
         embeddedVisualTypes: types,
         generatedVisualIds: generatedIds,
         intentionallyOmitted: omitted,
+        strictModelApprovedRequirement: strictModelApprovedVisuals,
       });
       const message = `${page.rel}: ${assessment.reason}`;
       if (assessment.severity === "blocker") fulfillmentProblems.push(message);
@@ -7736,9 +7857,11 @@ function collectFinalizeChecks({
 function runCriticalGate({
   gardenDir,
   report,
+  strictModelApprovedVisuals = false,
 }: {
   gardenDir: string;
   report: FinalizeReport;
+  strictModelApprovedVisuals?: boolean;
 }): void {
   const problems: string[] = [];
   // Dirty tree.
@@ -7802,7 +7925,12 @@ function runCriticalGate({
   // Flattened blockers collapse to ONE line per stable issue, annotated with
   // every validator that detected it. Check-level FAILs are not weakened.
   const failEntries: Array<{ check: string; problem: string }> = [];
-  for (const check of collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: true })) {
+  for (const check of collectFinalizeChecks({
+    gardenDir,
+    report,
+    includeReportSelfCheck: true,
+    strictModelApprovedVisuals,
+  })) {
     if (check.status !== "FAIL") continue;
     for (const problem of check.problems) failEntries.push({ check: check.name, problem });
   }

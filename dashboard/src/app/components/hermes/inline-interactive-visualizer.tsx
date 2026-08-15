@@ -26,6 +26,7 @@ function currentTheme(): "dark" | "light" {
 /**
  * The same sandboxed artifact preview used by the full viewer, presented as a
  * natural continuation of the assistant response instead of a nested card.
+ * Its compact artifact card remains a separate sibling below the embed.
  */
 export default function InlineInteractiveVisualizer({ artifact, onOpen }: Props) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);

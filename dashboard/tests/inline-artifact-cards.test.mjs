@@ -94,6 +94,17 @@ test("in-progress artifact builds reserve their finished card with an animated b
   assert.match(cards, /<InlineArtifactLoadingCard key=\{artifact\.id\}/);
 });
 
+test("repairing artifacts keep an accessible status without a visible Repairing badge", () => {
+  const loadingCard = cards.slice(
+    cards.indexOf("function InlineArtifactLoadingCard"),
+    cards.indexOf("function InlineImageArtifact"),
+  );
+  assert.match(cards, /if \(lifecycle === "repairing"\) return "Repairing"/);
+  assert.match(loadingCard, /aria-label=\{`\$\{status\} \$\{artifact\.title\}`\}/);
+  assert.match(loadingCard, /status !== "Repairing" \? \(/);
+  assert.match(loadingCard, /\{status\}/);
+});
+
 test("response actions sit below response-owned artifacts on every artifact chat surface", () => {
   for (const transcript of [runtimePanel, gardenWorkspace]) {
     const messagesStart = transcript.indexOf("messages.map");

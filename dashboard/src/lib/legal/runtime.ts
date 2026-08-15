@@ -79,6 +79,11 @@ export function isClone(candidate: string): boolean {
 export function resolveLegalRoot(env: NodeJS.ProcessEnv = process.env): LegalRuntime | null {
   const candidates: Array<{ root: string; source: LegalRuntime["source"] }> = [];
   const explicit = configured(env.HARVEY_LABS_ROOT);
+  if (env.BREADBOARD_QA_MODE === "1") {
+    return explicit && isClone(explicit)
+      ? { root: explicit, source: "configured" }
+      : null;
+  }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   candidates.push({ root: path.join(repositoryRoot(), "harvey-labs"), source: "repository" });
   candidates.push({ root: path.resolve(process.cwd(), "harvey-labs"), source: "cwd" });

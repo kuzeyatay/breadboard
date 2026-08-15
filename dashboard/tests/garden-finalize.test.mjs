@@ -848,6 +848,120 @@ describe("contract-driven semantic repair loop", () => {
     }
   });
 
+  test("strict active-Learn finalization blocks missing recommended and optional visuals", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-strict-approved-visuals-"));
+    try {
+      const dir = path.join(root, "strict-visuals");
+      const bb = path.join(dir, ".breadboard");
+      const lessonDir = path.join(dir, "learning", "1. Approved Interactions");
+      fs.mkdirSync(bb, { recursive: true });
+      fs.mkdirSync(lessonDir, { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "Strict visuals" }) + "# Strict visuals\n");
+      fs.writeFileSync(
+        path.join(dir, "sources", "_index.md"),
+        fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n",
+      );
+      fs.writeFileSync(path.join(bb, "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(bb, "visual-index.json"), "{}");
+
+      const visualIntent = (id) => ({
+        id,
+        visualType: "generated_module",
+        uniqueConcept: `${id} concept`,
+        whyStaticSourceFigureIsNotEnough: "The learner must manipulate the relationship directly.",
+        learnerManipulates: ["input"],
+        expectedInsight: "Changing the input changes the observed relationship.",
+        sourceAnchors: [],
+        duplicateSignature: `${id}-signature`,
+      });
+      const unit = (id, requirement) => ({
+        id,
+        role: "core_concept",
+        title: `${requirement} interaction`,
+        learningQuestion: `How does the ${requirement} interaction behave?`,
+        prerequisiteConcepts: [],
+        newConcepts: [`${requirement} interaction`],
+        sourceAnchors: [],
+        sourceFigures: [],
+        sourceFormulas: [],
+        sourceTables: [],
+        interactiveVisual: visualIntent(`visual-${id.toLowerCase()}`),
+        interactiveVisualPlan: {
+          decision: {
+            unitId: id,
+            pageId: id,
+            necessity: requirement,
+            preferredMedium: "interactive_visual",
+            learningGoal: `Explore the ${requirement} relationship.`,
+            evidence: {
+              unitRole: "core_concept",
+              concepts: [`${requirement} interaction`],
+              learningQuestion: `How does the ${requirement} interaction behave?`,
+              sourceAnchorIds: [],
+              nearbyVisualIntentIds: [],
+            },
+            reason: "The model approved a source-grounded interaction.",
+            recommendedVisualType: "generated_module",
+          },
+          requirement,
+          alternativeCoverage: "covered",
+          visualIntent: visualIntent(`visual-${id.toLowerCase()}`),
+        },
+        zettelNotes: [],
+        mustNotRepeat: [],
+        expectedWordRange: [700, 900],
+      });
+      fs.writeFileSync(
+        path.join(bb, "learning-unit-contract.json"),
+        JSON.stringify({
+          learningUnits: [unit("U1", "recommended"), unit("U2", "optional")],
+          sourceArtifactAssignments: [],
+        }, null, 2),
+      );
+      fs.writeFileSync(
+        path.join(lessonDir, "_index.md"),
+        fm({ title: "1. Approved Interactions", breadboardType: "textbook_section" }) +
+          "# 1. Approved Interactions\n",
+      );
+      for (const [index, requirement] of ["recommended", "optional"].entries()) {
+        fs.writeFileSync(
+          path.join(lessonDir, `1.${index + 1} ${requirement} interaction.md`),
+          fm({
+            title: `1.${index + 1} ${requirement} interaction`,
+            knowledge_type: "learning-page",
+            breadboardType: "learning_page",
+            learningUnitId: `U${index + 1}`,
+            generatedBy: "learn_button",
+            interactiveVisualOmissionReason: "Alternative prose exists.",
+          }) + lessonBody(`${requirement} interaction`, "basic_def"),
+        );
+      }
+
+      const report = finalizeGardenExport({
+        gardenDir: dir,
+        gardenSlug: "strict-visuals",
+        preserveModelAuthoredContent: true,
+      });
+      const failures = report.criticalProblems.join("\n");
+      assert.match(failures, /model-approved recommended interactive visual is missing/i);
+      assert.match(failures, /model-approved optional interactive visual is missing/i);
+      const verification = verifyFinalArtifactNoMutation({
+        gardenDir: dir,
+        gardenSlug: "strict-visuals",
+        updateRepairReport: false,
+        strictModelApprovedVisuals: true,
+      });
+      assert.equal(verification.accepted, false);
+      assert.match(
+        verification.validationFailures.join("\n"),
+        /model-approved (?:recommended|optional) interactive visual is missing/i,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("regrounds stale formula metadata to the matching source formula", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-reground-"));
     try {

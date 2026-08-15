@@ -17,56 +17,48 @@ import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import {
   auditGardenForFinalization,
   finalizeGardenExport,
-  groundLearnerFormula,
   repairLearningUnitsFromContract,
   verifyFinalArtifactNoMutation,
+  type UnitRepairRequest,
 } from "@/lib/garden-finalize";
 import { createOpenAIRepairExecutor } from "@/lib/repair-executor";
-import { buildCanonicalSourceAnchors, describeMissingAnchorFailure, ingestModelSourceAnchors, missingRegistryAnchorIds } from "@/lib/final-garden-state";
-import { freezeActiveGenerationByVersion } from "@/lib/learn-structure-reconciliation";
-import { buildFormulaIdentityRegistry } from "@/lib/formula-identity";
 import {
-  formulaCandidatesForUnit,
-} from "@/lib/formula-assignment";
+  buildCanonicalSourceAnchors,
+  describeMissingAnchorFailure,
+  missingRegistryAnchorIds,
+  type CanonicalSourceAnchor,
+} from "@/lib/final-garden-state";
+import { freezeActiveGenerationByVersion } from "@/lib/learn-structure-reconciliation";
 import { createChatMockAnchorCritic, createChatMockCritic, createChatMockModelRepair, makeCriticArtifactRepair, runCriticLoop } from "@/lib/critic-loop";
 import {
   appendGardenEvent,
-  buildDeterministicVisual,
-  generateVisualSpec,
   pruneVisualArtifacts,
-  saveVisualSpec,
 } from "@/lib/visuals";
 import {
-  assignSourceArtifacts,
-  alignLearningUnitConceptAliasesWithRegistry,
-  anchorTextCompatibleWithVisualType,
-  conceptTagsForUnit,
-  dedupeSourceArtifactAssignments,
-  knowledgeClaimsForUnit,
   learningMapFromModelAuthoredUnits,
+  modelAuthoredLearningUnitParseProblems,
+  modelAuthoredSourceArtifactOmissionParseProblems,
   normalizeLearningUnits,
+  projectModelAuthoredSourceArtifactAssignments,
+  projectModelAuthoredSourceArtifactOmissions,
   reconcileLearningUnitSourceArtifacts,
-  reconcileLearningUnitConceptAliases,
-  semanticConceptsForUnit,
+  sameSourceArtifactAssignmentRecords,
+  sourceArtifactCoverageProblems,
+  sourceArtifactOwnershipProblems,
   validateLearningUnitContracts,
-  visualTypeCompatibleWithUnit,
   type LearningUnitContract,
   type RegisteredSourceArtifact,
   type SourceArtifactAssignment,
+  type SourceArtifactOmission,
 } from "@/lib/learning-unit-contract";
 import {
+  buildModelAuthoredConceptRegistry,
   claimIdForPlan,
-  ensureGardenConceptRegistry,
+  projectModelAuthoredClaimsToStore,
   writeGardenConceptRegistryAndContract,
 } from "@/lib/garden-semantics";
-import { normalizeConceptSlug, normalizeLookupText } from "@/lib/semantic-core";
-import { reconcileFinalGardenSemantics } from "@/lib/semantic-reconciliation";
 import {
-  IMPLEMENTED_VISUAL_TYPES,
-  buildVisualBlock,
-  validateVisualSpec,
   type SourceFigure,
-  type VisualSpec,
 } from "@/lib/visual-spec";
 import {
   extractSourceVisuals,
@@ -84,12 +76,6 @@ import {
   canonicalizeLearnerWikilinks,
   containsRawVisualPlaceholder,
   excludeSyllabusFromSources,
-  fallbackLearningMapFromSources,
-  formulaMetricFamily,
-  isGroundableFormula,
-  isTrivialFormulaFragment,
-  isWorkedExampleFormula,
-  normalizeLearningMapCandidate,
   parseJsonCandidate,
   publicLearningVersionId,
   removeRawVisualPlaceholders,
@@ -127,12 +113,12 @@ import {
 } from "@/lib/learn-token-usage";
 import { transitionLearnTimer } from "@/lib/learn-timer";
 import {
-  buildSyllabusCoverage,
   detectUnavailableCitations,
-  matchSyllabusUnitForPage,
-  normalizeSyllabusPlan,
-  resolveSyllabusMaterials,
+  modelAuthoredSyllabusPlanProblems,
+  projectModelAuthoredSyllabusPlan,
+  projectModelAuthoredSyllabusCoverage,
   summarizeSyllabusCoverage,
+  syllabusCoverageDecisionProblems,
   unavailableCitationProbes,
   type SyllabusCoverage,
   type UnavailableCitationProbe,
@@ -146,6 +132,13 @@ import {
   buildModelVisualNecessityPacket,
   runModelVisualNecessityPlanning,
 } from "@/lib/model-visual-necessity";
+import { runLearningSpineTargetedRepair } from "@/lib/model-learning-spine-repair";
+import {
+  modelSourcePageAnchors,
+  selectedStructuralSourcePageHints,
+  type ModelSourcePageAnchorRecord,
+  type SelectedStructuralSourcePageHint,
+} from "@/lib/model-source-anchor-ledger";
 import { learnBuildStateMode } from "@/lib/garden-build/mode";
 import { runCanonicalGardenShadowBuild } from "@/lib/garden-build/shadow";
 import {
@@ -159,8 +152,17 @@ import {
 } from "@/lib/visualization-opportunities";
 import {
   buildVisualizationPlanWithContractRepair,
+  type VisualizationContractEvidenceEntry,
   type VisualizationContractRepairPacket,
 } from "@/lib/visualization-contract-repair";
+import {
+  buildVisualContractExecutabilityLedger,
+  buildFinalVisualizationPlanFromRoutedContracts,
+  reviewVisualizationPlanExecutability,
+  saveVisualContractExecutabilityLedger,
+  VISUAL_CONTRACT_EXECUTABILITY_LEDGER_RELATIVE_PATH,
+  type VisualContractExecutabilityProviderRequest,
+} from "@/lib/visualization-contract-executability";
 import {
   buildGeneratedVisualBlock,
   createGeneratedVisualization,
@@ -184,6 +186,7 @@ import {
   defaultWorkspaceRoot,
   disposeLearnBuildWorkspace,
   fingerprintDurableGardenState,
+  verifyAuthoritativeSourceAnchorLedger,
   type LearnBuildWorkspace,
 } from "@/lib/learn-build-workspace";
 import {
@@ -513,6 +516,7 @@ const LEARN_PLANNING_TIMEOUT_MS = envPositiveInt(
   "LEARN_PLANNING_TIMEOUT_MS",
   25 * 60 * 1000,
 );
+const LEARN_VISUAL_MAX_REPEATED_INTERACTION_SIGNATURE = 1;
 /** Council mode for the retry after a planning timeout. A single-model call is
  * far more likely to finish inside the window than another full fan-out, so
  * both attempts fail, planning fails closed without a synthetic curriculum. */
@@ -526,13 +530,10 @@ const MAX_PAGE_ATTEMPTS = Math.max(
   1,
   Math.min(2, envPositiveInt("LEARN_MAX_PAGE_ATTEMPTS", 2)),
 );
-const MAX_SNIPPETS_PER_PAGE = envPositiveInt("LEARN_MAX_SNIPPETS_PER_PAGE", 5);
-const MAX_CHARS_PER_SNIPPET = envPositiveInt("LEARN_MAX_CHARS_PER_SNIPPET", 1200);
 const MAX_TOTAL_SOURCE_CHARS_PER_PAGE = envPositiveInt(
   "LEARN_MAX_TOTAL_SOURCE_CHARS_PER_PAGE",
-  6000,
+  24_000,
 );
-const MAX_VISUALS_PER_PAGE = envPositiveInt("LEARN_MAX_VISUALS_PER_PAGE", 3);
 /** Developer-only escape hatch: revise every page even when the quality gate
  * passes. Off by default — revision is normally hard-fail-only. */
 const LEARN_ENABLE_UNCONDITIONAL_REVISION =
@@ -605,15 +606,16 @@ Return ONLY JSON with this exact top-level shape:
     "teachingValue": "what this registered artifact can teach"
   }],
   "sourceAnchors": [{
-    "id": "stable source-grounding id or exact registered artifact id",
+    "id": "exact id copied from supplied canonicalSourceAnchors",
     "sourceId": "exact supplied source id",
     "title": "short anchor title",
     "summary": "concise supported content"
   }],
   "missingOrUnclear": ["only genuinely missing or unclear content"]
 }
-Return exactly one sources entry for every supplied source id and no unknown source. Keep the map concise: at most 30 central concepts and 20 entries in each other per-source list.
+Return exactly one sources entry for every supplied source id and no unknown source. Keep the map concise: at most 30 central concepts, at most 40 selected sourceAnchors per source, and at most 20 entries in each other per-source list.
 Every figures id must be copied from supplied sourceVisuals; prose mentions do not create registered artifacts.
+Every sourceAnchors id must be copied verbatim from supplied canonicalSourceAnchors and must retain its matching sourceId. The catalog records structural Markdown pages and registered source artifacts; you decide which evidence matters, while code only verifies and projects your choices. Never invent, rewrite, or fuzzy-match an anchor id.
 Availability rule (hard): any formula, equation, figure, table, or graph that has an extracted anchor or caption IS available source material. Never place it in missingOrUnclear, and never write caveats saying formulas/equations/notation/definitions/tables/figures are unavailable, "caption-only", "captions but not exact", or "not present" — pages will ground on those anchors. Caveat ONLY about content that has no extracted anchor at all.
 Stay source-aware. If source-only mode is true, do not add outside facts.`;
 
@@ -635,14 +637,14 @@ Return ONLY JSON with this shape:
       "learningQuestion": "one conceptual learner question this unit answers",
       "prerequisiteConcepts": ["..."],
       "newConcepts": ["..."],
-      "sourceAnchors": ["source anchor ids or source titles"],
+      "syllabusUnitIds": ["exact syllabusCoverage.units[].unitId; empty when no syllabus is supplied"],
+      "sourceAnchors": ["exact canonical source anchor ids"],
       "sourceFigures": [
         {
           "id": "S1.P4.F1",
-          "placement": "inside_concept_explanation | after_formula_introduction | inside_result_interpretation | beside_worked_example | inside_comparison | not_used_with_reason",
+          "placement": "inside_concept_explanation | after_formula_introduction | inside_result_interpretation | beside_worked_example | inside_comparison",
           "mustBeDiscussedWith": "nearby idea or paragraph",
-          "interpretationGoal": "what the learner must notice",
-          "notUsedReason": "only when placement is not_used_with_reason"
+          "interpretationGoal": "what the learner must notice"
         }
       ],
       "sourceFormulas": [
@@ -679,9 +681,16 @@ Return ONLY JSON with this shape:
           "evidenceAnchors": ["source anchor ids"]
         }
       ],
+      "zettelNotes": [
+        {
+          "handle": "canonical-atomic-handle",
+          "claim": "one readable atomic note",
+          "connectedTo": ["another-canonical-handle"]
+        }
+      ],
       "mustNotRepeat": ["motif, framing, or example already used"],
       "expectedWordRange": [700, 1100],
-      "section": {
+      "sectionPlan": {
         "id": "S1",
         "title": "A specific learner-facing section title",
         "purpose": "What this section teaches and why these units belong together",
@@ -689,16 +698,24 @@ Return ONLY JSON with this shape:
       }
     }
   ],
+  "sourceArtifactOmissions": [
+    {
+      "sourceArtifactId": "exact id copied from extractedSourceArtifacts",
+      "reason": "specific source-grounded reason this artifact should not be taught in this garden"
+    }
+  ],
   "warnings": ["..."]
 }
 ${TITLE_RULES}
 Contract rules:
-- Generate learningUnits first and encode their section ownership in each unit's section object. Do not return a separate nested section/subsection map.
+- Generate learningUnits first and encode their section ownership in each unit's sectionPlan object. Do not return a separate nested section/subsection map.
+- Author syllabusUnitIds from exact supplied syllabusCoverage unit IDs. With a syllabus, every learning unit must name at least one syllabus unit it serves; without one, return an empty array. Code never guesses this mapping from title overlap.
 - Author 4-7 sections in learner order. A section normally owns 2-5 contiguous units. If one unit must stand alone, repeat a precise singleSubsectionReason on that section's unit. Reuse the exact same section id, title, purpose, and singleSubsectionReason on every unit assigned to that section.
 - Section titles and purposes are learner-facing semantic content. They must be specific to this garden; code will never synthesize or repair them.
 - A unit is the smallest meaningful teaching step: one learner question, one conceptual move.
 - Normal source-rich gardens need 15-25 units; never produce an 8-section/1-subsection outline.
-- Every important source figure, graph, table, displayed formula, result, example, limitation, or recommendation must be assigned to the one precise unit where it teaches best, or marked unused with a reason.
+- Partition every entry in extractedSourceArtifacts exactly once. Assign it to the one precise unit where it teaches best, or put its exact id in the garden-wide sourceArtifactOmissions array with your specific reason. Never forget an artifact, assign it twice, both assign and omit it, or invent a generic omission reason.
+- sourceArtifactOmissions is required even when empty. Omissions are not learning-unit ownership: do not use sourceFigures.placement="not_used_with_reason" in the active contract.
 - IDs in sourceFigures, sourceTables, and sourceFormulas may ONLY be copied verbatim from extractedSourceArtifacts. A figure-like ID mentioned in source prose is not a registered artifact and must never be used unless that exact ID is present in extractedSourceArtifacts.
 - Every structured artifact ID (Sx.Py.Fn, Sx.Py.Gn, Sx.Py.Tn, or Sx.Py.En) used anywhere in a unit, including sourceAnchors and evidenceAnchors, must be present in extractedSourceArtifacts with the matching kind.
 - Source figures must be planned for inline placement near their interpretation. Never plan a generic "Source Figures" dump.
@@ -706,6 +723,7 @@ Contract rules:
 - Describe each unit's learning question, dynamic behavior, comparisons, parameters, source figures, formulas, tables, and prerequisites precisely enough for that source-grounded model review. Code validates its evidence and behavior but never invents a pedagogical visual decision.
 - Concepts are reusable identities, never complete claims, page-title summaries, filenames, locations, or planner phrases. Reuse an existing canonical slug or alias whenever possible.
 - Every unit must explicitly contain semanticConcepts with one or two primary concepts. Code will never infer missing concepts or claims from titles, roles, or zettel notes.
+- When a semanticConcept slug appears in multiple units, author exactly the same preferredLabel and exactly the same aliases array (the same values in the same order) for every occurrence. The concept registry rejects inconsistent repeated identities; code will never choose or merge a label or alias set for you.
 - Every normalized alias must belong to exactly one concept. Never use another concept's slug or preferred label as an alias, and never assign the same alias to multiple concepts.
 - Mark one or two genuinely central concepts primary. Use supporting concepts only when they materially help retrieval or graph traversal.
 - Plan 1-5 public concepts per learner unit. Never add filler to satisfy a target count.
@@ -748,6 +766,42 @@ Extraction rules:
 - If the document has no unit/week structure, return one unit covering the whole course.
 - If the document is not a syllabus or study guide at all, return empty units and referencedMaterials.`;
 
+const SYLLABUS_COVERAGE_PROMPT = `You decide which exact syllabus materials are present in the user's selected source documents and which syllabus units those sources can teach. This is a semantic evidence review. Code will only validate your JSON, exact IDs, copied citations, completeness, and internal consistency; code will never match titles, infer availability, or decide teachability for you.
+
+Return ONLY JSON with this exact shape:
+{
+  "resolutions": [
+    {
+      "materialId": "exact referencedMaterials id",
+      "citation": "exact citation copied byte-for-byte from referencedMaterials",
+      "status": "available | missing | generic",
+      "sourceIds": ["exact selected source id that satisfies this full citation"],
+      "matchReason": "specific evidence in the supplied source metadata/content for this verdict"
+    }
+  ],
+  "units": [
+    {
+      "unitId": "exact syllabus unit id",
+      "availableSourceIds": ["exact selected source id that can support this unit"],
+      "missingCitations": ["exact citation of each assigned material you resolved missing"],
+      "teachable": true,
+      "coverageReason": "what the selected sources do or do not support for this unit"
+    }
+  ]
+}
+
+Hard rules:
+- Return exactly one resolution for every referenced material and exactly one coverage record for every syllabus unit, in the supplied order. Never omit or add records.
+- Judge each material from the supplied source catalog, excerpts, and content. Use only exact supplied source IDs.
+- "available" requires direct evidence that an uploaded source satisfies the FULL citation. Match title/authors AND any locator such as chapter, section, or page range. A matching book title alone never proves that an assigned chapter or page range is present. Put one or more satisfying source IDs in sourceIds.
+- "missing" means the citation identifies a work or assigned part but the supplied evidence does not establish that it is present. Use an empty sourceIds array. Do not guess from subject overlap.
+- "generic" is only for a reference that identifies no checkable work, such as "Readings TBD". Use an empty sourceIds array.
+- Preserve each citation exactly as supplied. In each unit, missingCitations must contain exactly its assigned materials resolved "missing", in syllabus material order. Generic references are not missing citations.
+- For each unit, independently author whether the selected sources genuinely support its objectives and topics. If teachable is true, select every source the planner should ground it in. If false, use an empty availableSourceIds array.
+- A missing REQUIRED material is strong evidence against teachability, but another uploaded source may support the unit if its supplied content directly covers the objectives and topics; explain that evidence. A missing OPTIONAL material does not by itself make the unit unteachable. Required/optional is semantic input for your verdict, never a code rule.
+- If an assigned material is available, the unit's availableSourceIds must include at least one source selected for that material.
+- Never claim that a source contains a chapter, fact, process, example, or result that is not visible in the supplied evidence.`;
+
 /**
  * Extra planning rules that apply only when the user designated a syllabus.
  * A syllabus is the course's own statement of what must be learned, so it
@@ -762,7 +816,7 @@ Syllabus (hard requirements):
 - Source material that no syllabus unit covers is out of scope. Exclude it rather than adding units for it.
 
 Material availability (hard requirements — this is what stops fabrication):
-- Breadboard has already checked every work the syllabus assigns against the documents in this garden. That check is authoritative. Do not second-guess it.
+- A separate source-grounded model has already reviewed every work the syllabus assigns against the exact selected-source catalog. Its authored coverage decision is authoritative for this run. Do not second-guess it.
 - \`unit.availableSourceIds\` lists the documents that ARE present for that unit. Ground that unit heavily and specifically in those documents: its definitions, figures, formulas, numbers, and examples come from there first, and only then from the rest of the garden.
 - \`unit.missingCitations\` lists works the syllabus assigns that NOBODY UPLOADED. You have never seen their contents. Never plan a unit, anchor, figure, formula, result, or claim that depends on them. Never summarize, paraphrase, characterize, or state what such a work says, argues, shows, or concludes. Never name one in learner-facing text.
 - Cover a syllabus topic whose material is missing ONLY from the source material that IS present, and only as far as that material genuinely supports. If it does not support the topic, leave the topic uncovered and record it in warnings.
@@ -774,7 +828,7 @@ const SYLLABUS_PAGE_RULES = `
 Syllabus:
 - \`dossier.syllabus\` is the course study guide. Use it only to judge what this page must cover and how deep to go.
 - Never mention, quote, cite, or describe the syllabus in the lesson. The learner reads a lesson on the subject, not a walkthrough of their course outline.
-- \`dossier.syllabusUnit.objectives\` are what the learner must be able to do after this page. Teach to them.
+- \`dossier.syllabusUnits[].objectives\` are what the learner must be able to do after this page. Teach to them.
 - \`dossier.unavailableCitations\` lists works the course assigns that are NOT in this garden. You have never read them. Never name, quote, summarize, paraphrase, or state the findings of anything on that list, and never imply the page is based on one. Teach only from the source material provided in this dossier.`;
 
 /** Append syllabus rules to a base prompt only when a syllabus is present, so
@@ -825,6 +879,7 @@ Mechanics:
 - Treat dossier.learningUnit as the contract for this page: answer its learningQuestion, introduce its newConcepts, respect mustNotRepeat, use only its planned source artifacts, and use its zettelNotes as conceptual anchors.
 - The first paragraph must connect to prior ideas unless this is the first unit; later pages must not restart the whole motivation.
 - If assignedSourceVisuals are provided, embed EACH one inline exactly where it supports the prose using its provided markdown snippet, with an interpretation of what the figure shows directly beside it. Never dump images at the end and never repeat a caption without interpreting it.
+- For every source formula in dossier.learningUnit.sourceFormulaContracts, reproduce the canonical equation transcription from relevantSourceSnippets verbatim as a displayed equation, then teach the model-authored teachingGoal and define every listed term. Do not substitute an equivalent formula or invent a different notation.
 - Never create a generic "## Source Figures" section. Every source figure/table/formula belongs inside the explanation where the contract placed it.
 - Do NOT write any \`\`\`breadboard-visual code block yourself — interactive visuals are attached by the pipeline afterwards.
 - Never leave [Interactive visual: ...] or any bracketed placeholder, and never write instructions to yourself (e.g. "use the page 10 materials").
@@ -1259,6 +1314,13 @@ function rowToJob(row: LearnJobRow | undefined): LearnJob | null {
 
 function rowToMap(row: LearnMapRow | undefined): StoredLearningMap | null {
   if (!row) return null;
+  // The learning map is model-authored or it does not exist. A row whose stored
+  // map is missing or unparseable is not a usable plan: reading it back as a
+  // synthesized map would hand the garden a curriculum the model never wrote.
+  const learningMap = parseJson(row.learning_map_json) as ProposedLearningMap | null;
+  if (!learningMap || !Array.isArray(learningMap.sections) || learningMap.sections.length === 0) {
+    return null;
+  }
   return {
     id: row.id,
     gardenId: row.garden_id,
@@ -1266,13 +1328,7 @@ function rowToMap(row: LearnMapRow | undefined): StoredLearningMap | null {
     status: row.status,
     sourceMap: parseJson(row.source_map_json),
     scopeContract: parseJson(row.scope_contract_json),
-    learningMap:
-      (parseJson(row.learning_map_json) as ProposedLearningMap | null) ??
-      fallbackLearningMapFromSources({
-        gardenId: row.garden_id,
-        gardenTitle: row.garden_id,
-        sources: [],
-      }),
+    learningMap,
     proposedOrder:
       (parseJson(row.proposed_order_json) as LearningSectionPlan[] | null) ?? [],
     visualOpportunities:
@@ -1945,8 +2001,7 @@ function sourceFiguresFromVisuals(visuals: SourceVisual[]): SourceFigure[] {
               ? ("formula" as const)
               : ("diagram" as const),
       caption: visual.caption,
-      relevanceNotes: `Extracted from page ${visual.pageNumber}`,
-      suggestedVisualUse: "Embed the cropped source visual near the prose it supports.",
+      ...(visual.exactText ? { ocrText: visual.exactText } : {}),
     }));
 }
 
@@ -1968,7 +2023,7 @@ function registeredArtifactsFromFigures(sourceFigures: SourceFigure[]): Register
 
 function registeredArtifactsForGarden(clusterDir: string): RegisteredSourceArtifact[] {
   const artifacts: RegisteredSourceArtifact[] = [];
-  for (const anchor of Object.values(buildCanonicalSourceAnchors(clusterDir))) {
+  for (const anchor of Object.values(buildCanonicalSourceAnchors(clusterDir, { allowInferredFormulaText: false }))) {
     if (anchor.origin !== "visual_ledger") continue;
     if (anchor.kind === "formula" || anchor.kind === "table" || anchor.kind === "graph" || anchor.kind === "figure") {
       artifacts.push({ id: anchor.id, kind: anchor.kind });
@@ -2038,6 +2093,7 @@ async function ensureReferencedSourceArtifactsExtracted({
   context,
   units,
   candidateArtifactIds = [],
+  explicitPageHints = [],
   checkpoint,
   onProgress,
 }: {
@@ -2048,9 +2104,16 @@ async function ensureReferencedSourceArtifactsExtracted({
   context: LearnSourceContext;
   units: LearningUnitContract[];
   candidateArtifactIds?: readonly string[];
+  explicitPageHints?: readonly Pick<SelectedStructuralSourcePageHint, "sourceIndex" | "pageNumber">[];
   checkpoint?: () => void;
   onProgress?: (step: string) => void;
-}): Promise<{ requestedIds: string[]; unresolvedIds: string[]; scanErrors: string[] }> {
+}): Promise<{
+  requestedIds: string[];
+  requestedPages: Array<{ sourceIndex: number; pageNumber: number }>;
+  discoveredIds: string[];
+  unresolvedIds: string[];
+  scanErrors: string[];
+}> {
   const registeredBefore = new Set(context.sourceFigures.map((figure) => figure.figureId));
   const requestedIds = [...new Set([
     ...structuredArtifactIdsFromUnits(units),
@@ -2058,16 +2121,32 @@ async function ensureReferencedSourceArtifactsExtracted({
   ])].filter((id) => !registeredBefore.has(id));
   const pagesBySourceIndex = new Map<number, Set<number>>();
   const scanErrors: string[] = [];
+  const addRequestedPage = (sourceIndex: number, pageNumber: number) => {
+    if (!Number.isSafeInteger(sourceIndex) || sourceIndex < 1) return;
+    if (!Number.isSafeInteger(pageNumber) || pageNumber < 1) return;
+    const pages = pagesBySourceIndex.get(sourceIndex) ?? new Set<number>();
+    pages.add(pageNumber);
+    pagesBySourceIndex.set(sourceIndex, pages);
+  };
   for (const id of requestedIds) {
     const match = id.match(STRUCTURED_SOURCE_ARTIFACT_RE);
     if (!match) continue;
     const sourceIndex = Number.parseInt(match[1], 10);
     const pageNumber = Number.parseInt(match[2], 10);
-    if (!Number.isInteger(sourceIndex) || !Number.isInteger(pageNumber)) continue;
-    const pages = pagesBySourceIndex.get(sourceIndex) ?? new Set<number>();
-    pages.add(pageNumber);
-    pagesBySourceIndex.set(sourceIndex, pages);
+    addRequestedPage(sourceIndex, pageNumber);
   }
+  for (const hint of explicitPageHints) {
+    addRequestedPage(hint.sourceIndex, hint.pageNumber);
+  }
+
+  const requestedPages = [...pagesBySourceIndex]
+    .flatMap(([sourceIndex, pageNumbers]) => [...pageNumbers].map((pageNumber) => ({
+      sourceIndex,
+      pageNumber,
+    })))
+    .sort((left, right) =>
+      left.sourceIndex - right.sourceIndex || left.pageNumber - right.pageNumber,
+    );
 
   for (const [sourceIndex, pageNumbers] of pagesBySourceIndex) {
     checkpoint?.();
@@ -2127,6 +2206,10 @@ async function ensureReferencedSourceArtifactsExtracted({
   const registeredAfter = new Set(context.sourceFigures.map((figure) => figure.figureId));
   return {
     requestedIds,
+    requestedPages,
+    discoveredIds: context.sourceFigures
+      .map((figure) => figure.figureId)
+      .filter((figureId) => !registeredBefore.has(figureId)),
     unresolvedIds: requestedIds.filter((id) => !registeredAfter.has(id)),
     scanErrors,
   };
@@ -2341,13 +2424,136 @@ function promptSyllabus(
   };
 }
 
+function cleanStructuralAnchorText(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function structuralAnchorTitle(text: string, fallback: string): string {
+  const heading = text
+    .split("\n")
+    .map((line) => line.match(/^#{1,6}\s+(.+?)\s*$/)?.[1]?.trim())
+    .find((value): value is string => Boolean(value));
+  return (heading || fallback).slice(0, 180);
+}
+
+/**
+ * Project Markdown page boundaries into canonical text evidence. Code does not
+ * decide what a page means or where it belongs; the planning model receives
+ * this catalog and authors those semantic choices.
+ */
+function structuralSourceTextAnchorCatalog(context: LearnSourceContext): ModelSourcePageAnchorRecord[] {
+  const anchors: ModelSourcePageAnchorRecord[] = modelSourcePageAnchors(context.sources);
+  const paginatedSourceIds = new Set(anchors.map((anchor) => anchor.sourceId));
+  context.sources.forEach((source) => {
+    if (paginatedSourceIds.has(source.slug)) return;
+    const body = String(source.body ?? "").replace(/\r\n/g, "\n");
+    if (!body.trim()) return;
+
+    // Non-paginated Markdown is divided only at paragraph boundaries and a
+    // fixed transport ceiling. Segment numbers are structural positions.
+    const paragraphs = body.split(/\n{2,}/).map(cleanStructuralAnchorText).filter(Boolean);
+    const segments: string[] = [];
+    let current = "";
+    for (const paragraph of paragraphs) {
+      if (current && current.length + paragraph.length + 2 > 12_000) {
+        segments.push(current);
+        current = paragraph;
+      } else {
+        current = current ? `${current}\n\n${paragraph}` : paragraph;
+      }
+    }
+    if (current) segments.push(current);
+    segments.forEach((exactText, segmentIndex) => {
+      const page = segmentIndex + 1;
+      const title = structuralAnchorTitle(exactText, `${source.title} — segment ${page}`);
+      anchors.push({
+        id: `text-${source.slug.replace(/[^A-Za-z0-9_.-]+/g, "-")}-segment-${page}`,
+        sourceId: source.slug,
+        page,
+        kind: "guidance",
+        title,
+        exactText,
+        provenance: {
+          origin: "selected_source_markdown_page",
+          sourceRelPath: source.relPath,
+          extraction: "exact_markdown_page_block",
+        },
+      });
+    });
+  });
+  return anchors;
+}
+
+function structuralSourceAnchorPromptCatalog(
+  anchors: readonly ModelSourcePageAnchorRecord[],
+): Array<Record<string, unknown>> {
+  return anchors.map((anchor) => ({
+    id: anchor.id,
+    sourceId: anchor.sourceId,
+    page: anchor.page,
+    title: anchor.title,
+    excerpt: compactFallbackText(anchor.exactText).slice(0, 240),
+  }));
+}
+
+function persistSelectedStructuralSourceAnchors(input: {
+  clusterDir: string;
+  sourceMap: unknown;
+  selectedSourceIds: readonly string[];
+  catalog: readonly ModelSourcePageAnchorRecord[];
+}): void {
+  const sourceMap = planningRecord(input.sourceMap);
+  const selectedIds = new Set(
+    (Array.isArray(sourceMap.sourceAnchors) ? sourceMap.sourceAnchors : [])
+      .map((entry) => planningRecord(entry).id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0),
+  );
+  const catalogById = new Map(input.catalog.map((anchor) => [anchor.id, anchor]));
+  const selectedRecords = [...selectedIds]
+    .map((id) => catalogById.get(id))
+    .filter((anchor): anchor is ModelSourcePageAnchorRecord => Boolean(anchor));
+  const selectedRecordIds = new Set(selectedRecords.map((record) => record.id.toLowerCase()));
+  const ledgerPath = path.join(input.clusterDir, ".breadboard", "source-anchors.json");
+  const ledger = fs.existsSync(ledgerPath)
+    ? planningRecord(JSON.parse(fs.readFileSync(ledgerPath, "utf-8")))
+    : {};
+  const selectedSourceIds = new Set(input.selectedSourceIds);
+  const existingStructural = Array.isArray(ledger.sourceStructuralAnchors)
+      ? ledger.sourceStructuralAnchors.filter((entry) => {
+        const sourceId = planningRecord(entry).sourceId;
+        const id = planningRecord(entry).id;
+        const isProjectedPageText =
+          typeof id === "string" && /^text-[A-Za-z0-9_.-]+-(?:page|segment)-\d+$/i.test(id);
+        if (!isProjectedPageText) return true;
+        if (typeof id === "string" && selectedRecordIds.has(id.toLowerCase())) return false;
+        return typeof sourceId !== "string" || !selectedSourceIds.has(sourceId);
+      })
+    : [];
+  fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
+  fs.writeFileSync(ledgerPath, `${JSON.stringify({
+    ...ledger,
+    sourceStructuralAnchors: [...existingStructural, ...selectedRecords],
+  }, null, 2)}\n`, "utf-8");
+}
+
+function sourcePlanningIndex(body: string | undefined, maxChars: number): string {
+  const text = String(body ?? "");
+  const boundary = text.search(/^##\s+Internal planning\s*$/im);
+  return truncate(boundary > 0 ? text.slice(0, boundary) : text, maxChars);
+}
+
 function promptSources(context: LearnSourceContext): unknown {
+  const maxIndexCharsPerSource = Math.max(
+    18_000,
+    Math.floor(120_000 / Math.max(1, context.sources.length)),
+  );
   return {
     gardenId: context.gardenId,
     gardenTitle: context.gardenTitle,
     sourceSetHash: context.sourceSetHash,
-    sources: context.sources.map((source) => ({
+    sources: context.sources.map((source, sourceIndex) => ({
       id: source.slug,
+      sourceNumber: sourceIndex + 1,
       title: source.title,
       description: source.description,
       relPath: source.relPath,
@@ -2355,7 +2561,7 @@ function promptSources(context: LearnSourceContext): unknown {
       sourceFile: source.sourceFile,
       tags: source.tags,
       excerpt: source.excerpt,
-      content: truncate(source.body, 9000),
+      content: sourcePlanningIndex(source.body, maxIndexCharsPerSource),
     })),
     conceptNodes: context.conceptNodes.slice(0, 80),
     sourceFigures: context.sourceFigures,
@@ -2370,6 +2576,26 @@ function promptSources(context: LearnSourceContext): unknown {
   };
 }
 
+/** Exact selected-source evidence for the model-authored syllabus coverage
+ * decision. The per-source bound is transport-only: strings are copied from
+ * the source record, never summarized, ranked, or matched by code. */
+function promptSyllabusCoverageSourceCatalog(context: LearnSourceContext): unknown {
+  const maxContentCharsPerSource = Math.max(
+    18_000,
+    Math.floor(120_000 / Math.max(1, context.sources.length)),
+  );
+  return context.sources.map((source) => ({
+    id: source.slug,
+    title: source.title,
+    description: source.description,
+    relPath: source.relPath,
+    sourceType: source.sourceType,
+    sourceFile: source.sourceFile,
+    excerpt: source.excerpt,
+    content: sourcePlanningIndex(source.body, maxContentCharsPerSource),
+  }));
+}
+
 /** Body-free source context for downstream planning stages. The learning-spine
  * call already receives the source map and scope contract (which digested the
  * full text), so re-sending every 9k-char body only inflates the prompt and the
@@ -2379,8 +2605,9 @@ function promptSourcesCompact(context: LearnSourceContext): unknown {
     gardenId: context.gardenId,
     gardenTitle: context.gardenTitle,
     sourceSetHash: context.sourceSetHash,
-    sources: context.sources.map((source) => ({
+    sources: context.sources.map((source, sourceIndex) => ({
       id: source.slug,
+      sourceNumber: sourceIndex + 1,
       title: source.title,
       description: source.description,
       relPath: source.relPath,
@@ -2514,22 +2741,48 @@ async function requestVisualizationContractRepair(input: {
     taskType: "visualization_generation",
     gardenId: input.gardenId,
     system:
-      "Repair only the missing learner-control contract for each supplied required interactive visual. " +
-      "Return STRICT JSON: {\"repairs\":[{\"unitId\":string,\"controls\":[{\"kind\":\"variable\"|\"select_case\"|\"process_position\",\"label\":string,\"options\"?:string[],\"evidence\":[{\"anchor\":string,\"quote\":string}]}],\"expectedInsight\":string,\"expectedInsightEvidence\":[{\"anchor\":string,\"quote\":string}]}]}. " +
+      "Repair the complete interaction contract for each supplied model-approved interactive visual, whether its immutable requirement is required, recommended, or optional. Every repair must be a complete replacement authored by you even when only one field was missing; code will not merge, restore, or infer omitted fields. " +
+      "Return STRICT JSON: {\"repairs\":[{\"unitId\":string,\"interactionGoal\":\"manipulate_variables\"|\"observe_change_over_time\"|\"compare_cases\"|\"step_through_process\"|\"explore_structure\"|\"test_prediction\"|\"inspect_relationship\"|\"simulate_system\",\"learnerAction\":string,\"visualIntent\":{\"id\":string,\"uniqueConcept\":string,\"visualType\":string,\"whyStaticSourceFigureIsNotEnough\":string,\"learnerManipulates\":string[],\"expectedInsight\":string,\"sourceAnchors\":string[],\"duplicateSignature\":string,\"reuseOf\"?:string},\"controls\":[{\"id\":string,\"kind\":\"variable\"|\"select_case\"|\"process_position\",\"label\":string,\"type\":\"slider\"|\"number\"|\"select\",\"unit\"?:string,\"min\"?:number,\"max\"?:number,\"step\"?:number,\"options\"?:string[],\"defaultValue\":number|string,\"evidence\":[{\"anchor\":string,\"quote\":string}]}],\"observable\":{\"label\":string,\"representation\":\"value\"|\"chart\"|\"diagram\"|\"animation\"|\"timeline\"|\"table\"|\"annotation\",\"evidence\":[{\"anchor\":string,\"quote\":string}]},\"expectedInsight\":string,\"expectedInsightEvidence\":[{\"anchor\":string,\"quote\":string}]}]}. " +
       "Use only the evidence entries supplied for that same unit. Every quote must be an exact substring of the entry with that anchor. " +
-      "A variable must be an explicit formula term or be named in an explicit change/dependency claim. " +
-      "A select_case needs at least two source-named options and every option must occur in its cited quote. " +
-      "A process_position must name an explicit path, time, phase, stage, or process position. " +
-      "The expected insight must be directly supported by its cited quote. Never invent plausible controls, labels, cases, claims, or units. " +
-      "Do not return or change necessity, requirement, renderer, visual type, route, or publication policy. Address every failed unit and use previousRejectionReasons to correct a rejected attempt.",
+      "Author the complete non-empty learnerAction sequence plus every control id, input type, domain, and default; code will validate and project them verbatim. Numeric controls require finite min, max, step, and an in-range numeric default. Select controls require at least two source-named options and an exact declared default. " +
+      "visualIntent.id must be non-empty, visualIntent.visualType must be a lowercase identifier, visualIntent.learnerManipulates must exactly equal the control labels in order, visualIntent.expectedInsight must exactly equal expectedInsight, and visualIntent.sourceAnchors must include every cited evidence anchor and only supplied canonical anchors. The observable label and expected insight must each be directly supported by their cited quotes. Never invent plausible controls, labels, cases, claims, or units. " +
+      "Do not return or change necessity, requirement, renderer, route, or publication policy; visualIntent.visualType cannot change the already-selected route. Address every failed unit and use previousRejectionReasons to correct a rejected attempt.",
     user: JSON.stringify(input.packet),
     sourceContext: input.packet,
     councilModeOverride: "direct_council",
     timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
   });
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error("Visualization contract repair returned no JSON object.");
-  }
+  return parsed;
+}
+
+async function requestVisualizationContractExecutabilityReview(input: {
+  client: OpenAI;
+  model: string;
+  gardenId: string;
+  request: VisualContractExecutabilityProviderRequest;
+}): Promise<unknown> {
+  const { parsed } = await callCouncilJson({
+    client: input.client,
+    model: input.model,
+    taskType: "visual_necessity_review",
+    gardenId: input.gardenId,
+    system: input.request.system,
+    user: input.request.user,
+    // The complete contract and canonical evidence are already present once
+    // in the user payload. Council routing receives only bounded audit metadata.
+    sourceContext: {
+      gardenId: input.gardenId,
+      taskType: "visual_contract_executability_review",
+      attempt: input.request.attempt,
+      unitIds: input.request.unitIds,
+      previousProblemCount: input.request.problems.length,
+    },
+    councilModeOverride: "direct_council",
+    timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+  });
+  // Missing/malformed structured output is a semantic rejection handled by
+  // the bounded model rereview. A true callCouncilJson transport exception is
+  // deliberately not caught here and escapes without consuming that budget.
   return parsed;
 }
 
@@ -2546,12 +2799,13 @@ async function planAndReviewVisualNecessity(input: {
   const packet = buildModelVisualNecessityPacket({
     gardenId: input.gardenId,
     learningUnits: input.learningUnits,
+    canonicalEvidenceByUnit: canonicalVisualizationEvidenceByUnit(gardenDir, input.learningUnits),
     // These are safety ceilings, not targets. Allowing every unit keeps code
     // out of the pedagogical decision; the model must justify the actual set.
     budget: {
       maximumInteractiveUnits: input.learningUnits.length,
       maximumRequiredInteractiveUnits: input.learningUnits.length,
-      maximumRepeatedInteractionSignature: 1,
+      maximumRepeatedInteractionSignature: LEARN_VISUAL_MAX_REPEATED_INTERACTION_SIGNATURE,
     },
     sectionByUnit: Object.fromEntries(
       input.learningUnits.flatMap((unit) =>
@@ -2562,7 +2816,6 @@ async function planAndReviewVisualNecessity(input: {
   const run = await runModelVisualNecessityPlanning({
     packet,
     learningUnits: input.learningUnits,
-    shouldRethrowError: () => jobStatusById(input.jobId) === "cancelled",
     provider: async (request) => {
       throwIfLearnCancelled(input.jobId);
       const { parsed } = await callCouncilJson({
@@ -2584,9 +2837,34 @@ async function planAndReviewVisualNecessity(input: {
         councilModeOverride: "direct_council",
         timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
       });
-      if (!parsed || typeof parsed !== "object") {
-        throw new Error("Visual-necessity planner returned no JSON object.");
-      }
+      // Malformed/absent structured model output is a semantic validation
+      // failure and must enter the bounded model-repair loop. Only an actual
+      // callCouncilJson transport exception escapes this provider.
+      return parsed;
+    },
+    targetedRepairProvider: async (request) => {
+      throwIfLearnCancelled(input.jobId);
+      const { parsed } = await callCouncilJson({
+        client: input.client,
+        model: input.model,
+        taskType: "visual_necessity_review",
+        gardenId: input.gardenId,
+        system: request.system,
+        user: request.user,
+        // The user payload contains only failed unit packets and their exact
+        // canonical evidence. Routing metadata stays compact and never repeats
+        // the complete garden or the untouched decision records.
+        sourceContext: {
+          gardenId: input.gardenId,
+          taskType: "visual_necessity_targeted_repair",
+          attempt: request.attempt,
+          unitIds: request.unitIds,
+        },
+        councilModeOverride: "direct_council",
+        timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+      });
+      // Let the targeted response validator reject malformed model output;
+      // transport exceptions still propagate from callCouncilJson unchanged.
       return parsed;
     },
   });
@@ -2595,6 +2873,7 @@ async function planAndReviewVisualNecessity(input: {
     decisionSource: "model_batch",
     modelCalls: run.calls,
     rejectedReviews: run.repairCalls,
+    targetedRepairCalls: run.targetedRepairCalls,
     required: run.plan.counts.required,
     recommended: run.plan.counts.recommended,
     optional: run.plan.counts.optional,
@@ -2769,6 +3048,7 @@ function sourceMapPlanProblems(input: {
   value: unknown;
   sourceIds: readonly string[];
   registeredArtifacts: readonly Pick<SourceFigure, "figureId" | "kind" | "page">[];
+  canonicalAnchors: readonly { id: string; sourceId: string }[];
 }): string[] {
   const record = planningRecord(input.value);
   const problems: string[] = [];
@@ -2829,13 +3109,27 @@ function sourceMapPlanProblems(input: {
 
   const anchors = Array.isArray(record.sourceAnchors) ? record.sourceAnchors : [];
   if (!Array.isArray(record.sourceAnchors)) problems.push("sourceAnchors must be an array");
+  const canonicalAnchorById = new Map(input.canonicalAnchors.map((anchor) => [anchor.id, anchor]));
+  const seenAnchorIds = new Set<string>();
+  const anchoredSourceIds = new Set<string>();
   anchors.forEach((rawAnchor, index) => {
     const anchor = planningRecord(rawAnchor);
-    if (typeof anchor.id !== "string" || !anchor.id.trim()) {
-      problems.push(`sourceAnchors[${index}].id is required`);
+    const id = typeof anchor.id === "string" ? anchor.id.trim() : "";
+    const canonical = canonicalAnchorById.get(id);
+    if (!id || !canonical) {
+      problems.push(`sourceAnchors[${index}].id must be copied from canonicalSourceAnchors`);
+    } else if (seenAnchorIds.has(id)) {
+      problems.push(`canonical source anchor ${id} appears more than once`);
+    } else {
+      seenAnchorIds.add(id);
     }
-    if (typeof anchor.sourceId !== "string" || !expectedSourceIds.has(anchor.sourceId.trim())) {
+    const sourceId = typeof anchor.sourceId === "string" ? anchor.sourceId.trim() : "";
+    if (!expectedSourceIds.has(sourceId)) {
       problems.push(`sourceAnchors[${index}].sourceId must be an exact supplied source id`);
+    } else if (canonical && canonical.sourceId !== sourceId) {
+      problems.push(`sourceAnchors[${index}].sourceId must match canonical anchor ${id}`);
+    } else {
+      anchoredSourceIds.add(sourceId);
     }
     if (typeof anchor.title !== "string" || !anchor.title.trim()) {
       problems.push(`sourceAnchors[${index}].title is required`);
@@ -2844,6 +3138,11 @@ function sourceMapPlanProblems(input: {
       problems.push(`sourceAnchors[${index}].summary is required`);
     }
   });
+  for (const sourceId of expectedSourceIds) {
+    if (!anchoredSourceIds.has(sourceId)) {
+      problems.push(`source ${sourceId} must have at least one selected canonical source anchor`);
+    }
+  }
   if (!Array.isArray(record.missingOrUnclear) || !record.missingOrUnclear.every((item) => typeof item === "string")) {
     problems.push("missingOrUnclear must be an array of strings");
   }
@@ -2894,62 +3193,6 @@ function scopeContractProblems(value: unknown): string[] {
   if (!Array.isArray(record.sourceEmphasis) || record.sourceEmphasis.length === 0) {
     problems.push("sourceEmphasis must contain at least one model-authored priority");
   }
-  return [...new Set(problems)];
-}
-
-function syllabusPlanProblems(value: unknown): string[] {
-  const record = planningRecord(value);
-  const problems: string[] = [];
-  const materials = Array.isArray(record.referencedMaterials) ? record.referencedMaterials : [];
-  const units = Array.isArray(record.units) ? record.units : [];
-  if (!Array.isArray(record.referencedMaterials)) problems.push("referencedMaterials must be an array");
-  if (!Array.isArray(record.units)) problems.push("units must be an array");
-  const materialIds = new Set<string>();
-  const materialKinds = new Set([
-    "textbook", "chapter", "paper", "reading", "lecture", "slides", "dataset", "video", "other",
-  ]);
-  materials.forEach((rawMaterial, index) => {
-    const material = planningRecord(rawMaterial);
-    const id = typeof material.id === "string" ? material.id.trim() : "";
-    if (!id) problems.push(`referencedMaterials[${index}].id is required`);
-    else if (materialIds.has(id)) problems.push(`referenced material id ${id} is duplicated`);
-    else materialIds.add(id);
-    if (typeof material.citation !== "string" || !material.citation.trim()) {
-      problems.push(`referencedMaterials[${index}].citation is required`);
-    }
-    if (typeof material.kind !== "string" || !materialKinds.has(material.kind)) {
-      problems.push(`referencedMaterials[${index}].kind is invalid`);
-    }
-    if (typeof material.required !== "boolean") {
-      problems.push(`referencedMaterials[${index}].required must be boolean`);
-    }
-    if (!Array.isArray(material.authors) || !material.authors.every((item) => typeof item === "string")) {
-      problems.push(`referencedMaterials[${index}].authors must be an array of strings`);
-    }
-  });
-  const unitIds = new Set<string>();
-  units.forEach((rawUnit, index) => {
-    const unit = planningRecord(rawUnit);
-    const id = typeof unit.id === "string" ? unit.id.trim() : "";
-    if (!id) problems.push(`units[${index}].id is required`);
-    else if (unitIds.has(id)) problems.push(`syllabus unit id ${id} is duplicated`);
-    else unitIds.add(id);
-    if (typeof unit.title !== "string" || !unit.title.trim()) {
-      problems.push(`units[${index}].title is required`);
-    }
-    for (const field of ["objectives", "topics", "materialIds"]) {
-      if (!Array.isArray(unit[field]) || !(unit[field] as unknown[]).every((item) => typeof item === "string")) {
-        problems.push(`units[${index}].${field} must be an array of strings`);
-      }
-    }
-    if (Array.isArray(unit.materialIds)) {
-      for (const materialId of unit.materialIds) {
-        if (typeof materialId === "string" && !materialIds.has(materialId)) {
-          problems.push(`units[${index}] references unknown material id ${materialId}`);
-        }
-      }
-    }
-  });
   return [...new Set(problems)];
 }
 
@@ -3028,28 +3271,88 @@ function planningRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function learningMapFromPlanningCandidate({
+  candidate,
+  units,
+  gardenId,
+  sourceOnly,
+  createdAt,
+  warnings = [],
+}: {
+  candidate: unknown;
+  units: LearningUnitContract[];
+  gardenId: string;
+  sourceOnly: boolean;
+  createdAt: string;
+  warnings?: string[];
+}): ProposedLearningMap {
+  const record = planningRecord(candidate);
+  if (typeof record.title !== "string" || typeof record.summary !== "string") {
+    throw new Error("Model-authored learning-map title and summary are required.");
+  }
+  return learningMapFromModelAuthoredUnits(units, {
+    gardenId,
+    title: record.title,
+    summary: record.summary,
+    sourceOnly,
+    createdAt,
+    warnings,
+  });
+}
+
+function modelAuthoredLearningMapDepthProblems({
+  candidate,
+  units,
+  gardenId,
+  sourceOnly,
+  context,
+}: {
+  candidate: unknown;
+  units: LearningUnitContract[];
+  gardenId: string;
+  sourceOnly: boolean;
+  context: LearnSourceContext;
+}): string[] {
+  try {
+    return validateLearningMapDepth(
+      learningMapFromPlanningCandidate({
+        candidate,
+        units,
+        gardenId,
+        sourceOnly,
+        createdAt: nowIso(),
+      }),
+      context,
+    );
+  } catch {
+    // Exact metadata and section-projection failures are already reported by
+    // their dedicated hard validators in the same candidate evaluation.
+    return [];
+  }
+}
+
 function sourceCoveragePlan(
   context: LearnSourceContext,
   learningMap: ProposedLearningMap,
   learningUnits: LearningUnitContract[] = [],
   sourceArtifactAssignments: SourceArtifactAssignment[] = [],
+  sourceArtifactOmissions: SourceArtifactOmission[] = [],
+  canonicalSourceAnchors: Readonly<Record<string, CanonicalSourceAnchor>> = {},
 ): unknown {
   return {
     sourceSetHash: context.sourceSetHash,
     learningUnitContracts: learningUnits,
     sourceArtifactAssignments,
+    sourceArtifactOmissions,
     sources: context.sources.map((source) => ({
       id: source.slug,
       title: source.title,
       plannedPages: learningMap.sections.flatMap((section) =>
         section.subsections
-          .filter((subsection) =>
-            [...section.sourceAnchors, ...subsection.sourceAnchors]
-              .join(" ")
-              .toLowerCase()
-              .includes(source.title.toLowerCase()) ||
-            [...section.sourceAnchors, ...subsection.sourceAnchors].includes(source.slug),
-          )
+          .filter((subsection) => {
+            const anchorIds = [...section.sourceAnchors, ...subsection.sourceAnchors];
+            return anchorIds.some((anchorId) => canonicalSourceAnchors[anchorId]?.sourceId === source.slug);
+          })
           .map((subsection) => `${section.title} / ${subsection.title}`),
       ),
     })),
@@ -3061,58 +3364,210 @@ function sourceCoveragePlan(
       assignedLearningUnit:
         sourceArtifactAssignments.find((assignment) => assignment.sourceArtifactId === figure.figureId)
           ?.assignedLearningUnitId ?? "",
-      suggestedVisualTreatment: figure.suggestedVisualUse ?? "source_figure_explainer",
+      omissionReason:
+        sourceArtifactOmissions.find((omission) => omission.sourceArtifactId === figure.figureId)
+          ?.reason ?? "",
+      suggestedVisualTreatment: figure.suggestedVisualUse ?? "",
     })),
   };
 }
 
-function registryAlignmentAliasRepairs(
-  before: readonly LearningUnitContract[],
-  after: readonly LearningUnitContract[],
-): Array<{
-  normalizedAlias: string;
-  removedFrom: string[];
-  reason: "registry-ownership";
-}> {
-  const beforeConcepts = before.flatMap((unit) => unit.semanticConcepts ?? []);
-  const afterConcepts = after.flatMap((unit) => unit.semanticConcepts ?? []);
-  const repairs = new Map<string, Set<string>>();
-  beforeConcepts.forEach((concept, index) => {
-    const allowed = new Set(
-      (afterConcepts[index]?.aliases ?? []).map((alias) => normalizeLookupText(alias)),
-    );
-    for (const alias of concept.aliases ?? []) {
-      const normalizedAlias = normalizeLookupText(alias);
-      if (!normalizedAlias || allowed.has(normalizedAlias)) continue;
-      const removedFrom = repairs.get(normalizedAlias) ?? new Set<string>();
-      removedFrom.add(`concept:${normalizeConceptSlug(concept.slug)}`);
-      repairs.set(normalizedAlias, removedFrom);
+function conceptRegistryAlignmentProblems(input: {
+  clusterDir: string;
+  sourceSetHash: string;
+  units: readonly LearningUnitContract[];
+}): string[] {
+  try {
+    buildModelAuthoredConceptRegistry({
+      gardenId: path.basename(input.clusterDir),
+      sourceSetHash: input.sourceSetHash,
+      concepts: input.units.flatMap((unit) => unit.semanticConcepts ?? []),
+    });
+    return [];
+  } catch (error) {
+    return [error instanceof Error ? error.message : String(error)];
+  }
+}
+
+function declaredSourceAnchorIdsForUnit(unit: LearningUnitContract): string[] {
+  return [...new Set([
+    ...unit.sourceAnchors,
+    ...unit.sourceFigures.map((artifact) => artifact.id),
+    ...unit.sourceFormulas.map((artifact) => artifact.id),
+    ...unit.sourceTables.map((artifact) => artifact.id),
+    ...(unit.semanticConcepts ?? []).flatMap((concept) => concept.evidenceAnchors),
+    ...(unit.knowledgeClaims ?? []).flatMap((claim) => [
+      ...claim.evidenceAnchors,
+      ...(claim.derivationAnchors ?? []),
+    ]),
+  ])];
+}
+
+function canonicalLearningSpineEvidenceByUnit(
+  clusterDir: string,
+  units: readonly LearningUnitContract[],
+): Record<string, unknown[]> {
+  const registry = buildCanonicalSourceAnchors(clusterDir, { allowInferredFormulaText: false });
+  return Object.fromEntries(units.map((unit) => [
+    unit.id,
+    declaredSourceAnchorIdsForUnit(unit).flatMap((anchorId) => {
+      const anchor = registry[anchorId];
+      if (!anchor) return [];
+      return [{
+        id: anchor.id,
+        kind: anchor.kind,
+        sourceId: anchor.sourceId,
+        page: anchor.page,
+        title: anchor.title,
+        caption: anchor.caption,
+        semanticSummary: anchor.semanticSummary,
+        exactText: anchor.exactText,
+      }];
+    }),
+  ]));
+}
+
+function canonicalVisualizationEvidenceByUnit(
+  clusterDir: string,
+  units: readonly LearningUnitContract[],
+): Record<string, VisualizationContractEvidenceEntry[]> {
+  const registry = buildCanonicalSourceAnchors(clusterDir, { allowInferredFormulaText: false });
+  return Object.fromEntries(units.map((unit) => {
+    const entries: VisualizationContractEvidenceEntry[] = [];
+    for (const anchorId of declaredSourceAnchorIdsForUnit(unit)) {
+      const anchor = registry[anchorId];
+      if (!anchor) continue;
+      const kind: VisualizationContractEvidenceEntry["kind"] =
+        anchor.kind === "formula"
+          ? "source_formula"
+          : anchor.kind === "table"
+            ? "source_table"
+            : anchor.kind === "figure" || anchor.kind === "graph"
+              ? "source_figure"
+              : "source_text";
+      const texts = anchor.exactText
+        ? [anchor.exactText]
+        : (anchor.kind === "figure" || anchor.kind === "graph" || anchor.kind === "table") && anchor.caption
+          ? [anchor.caption]
+          : [];
+      for (const text of texts) entries.push({ anchor: anchorId, kind, text });
     }
+    return [unit.id, entries];
+  }));
+}
+
+function exactCanonicalRepairSourceText(
+  clusterDir: string,
+  request: UnitRepairRequest,
+): string | undefined {
+  const registry = buildCanonicalSourceAnchors(clusterDir, { allowInferredFormulaText: false });
+  const requestedAnchorIds = request.sourceAnchors.flatMap((anchor) => [
+    anchor.figureId,
+    anchor.tableId,
+    anchor.equationId,
+    anchor.questionId,
+    anchor.textAnchorId,
+  ]).filter((value): value is string => typeof value === "string" && Boolean(value.trim()));
+  const interactionAnchorIds = [
+    ...(request.learningUnitContract.interactiveVisual?.sourceAnchors ?? []),
+    ...(request.learningUnitContract.interactiveVisualPlan?.visualIntent?.sourceAnchors ?? []),
+  ];
+  const anchorIds = [...new Set([
+    ...declaredSourceAnchorIdsForUnit(request.learningUnitContract),
+    ...requestedAnchorIds,
+    ...interactionAnchorIds,
+  ])];
+  const records = anchorIds.flatMap((anchorId) => {
+    const anchor = registry[anchorId];
+    if (!anchor) return [];
+    const exactText = anchor.exactText?.trim();
+    const registeredCaption =
+      (anchor.kind === "figure" || anchor.kind === "graph" || anchor.kind === "table")
+        ? anchor.caption?.trim()
+        : "";
+    const text = exactText || registeredCaption;
+    return text ? [`[${anchorId}]\n${text}`] : [];
   });
-  return [...repairs.entries()]
-    .map(([normalizedAlias, removedFrom]) => ({
-      normalizedAlias,
-      removedFrom: [...removedFrom].sort(),
-      reason: "registry-ownership" as const,
-    }))
-    .sort((left, right) => left.normalizedAlias.localeCompare(right.normalizedAlias));
+  return records.length > 0 ? records.join("\n\n") : undefined;
+}
+
+function canonicalSourceAnchorProblems(
+  clusterDir: string,
+  units: readonly LearningUnitContract[],
+): string[] {
+  const registry = buildCanonicalSourceAnchors(clusterDir, { allowInferredFormulaText: false });
+  return units.flatMap((unit) => {
+    const declared = declaredSourceAnchorIdsForUnit(unit);
+    const problems = declared
+      .filter((anchorId) => !registry[anchorId])
+      .map((anchorId) => `unit "${unit.id}" references unregistered canonical source anchor "${anchorId}"`);
+    if (!declared.some((anchorId) => Boolean(registry[anchorId]?.exactText))) {
+      problems.push(
+        `unit "${unit.id}" has no canonical exact-text source anchor; select at least one supplied Markdown page or verified formula anchor`,
+      );
+    }
+    const exactTextChars = [...new Set(declared)].reduce(
+      (total, anchorId) => total + (registry[anchorId]?.exactText?.trim().length ?? 0),
+      0,
+    );
+    if (exactTextChars > MAX_TOTAL_SOURCE_CHARS_PER_PAGE) {
+      problems.push(
+        `unit "${unit.id}" selects ${exactTextChars} characters of exact source evidence, above the ${MAX_TOTAL_SOURCE_CHARS_PER_PAGE}-character page transport limit; choose fewer, more precise canonical anchors`,
+      );
+    }
+    return problems;
+  });
+}
+
+function syllabusUnitAssignmentProblems(
+  units: readonly LearningUnitContract[],
+  syllabusCoverage: SyllabusCoverage | null,
+): string[] {
+  if (!syllabusCoverage) {
+    return units.flatMap((unit) =>
+      (unit.syllabusUnitIds ?? []).length > 0
+        ? [`unit "${unit.id}" must use an empty syllabusUnitIds array because no syllabus is active`]
+        : []);
+  }
+  const coverageById = new Map(syllabusCoverage.units.map((unit) => [unit.unitId, unit]));
+  return units.flatMap((unit) => {
+    const ids = unit.syllabusUnitIds ?? [];
+    const problems: string[] = [];
+    if (ids.length === 0) {
+      problems.push(`unit "${unit.id}" must select at least one exact syllabus unit id`);
+    }
+    for (const id of ids) {
+      const syllabusUnit = coverageById.get(id);
+      if (!syllabusUnit) {
+        problems.push(`unit "${unit.id}" references unknown syllabus unit "${id}"`);
+      } else if (!syllabusUnit.teachable) {
+        problems.push(`unit "${unit.id}" references unteachable syllabus unit "${id}" with no available source material`);
+      }
+    }
+    return problems;
+  });
 }
 
 function writeLearningUnitContractArtifacts({
   clusterDir,
   units,
   assignments,
+  omissions,
+  registeredArtifacts,
   sourceSetHash,
   visualNecessityReview,
 }: {
   clusterDir: string;
   units: LearningUnitContract[];
   assignments: SourceArtifactAssignment[];
+  omissions: SourceArtifactOmission[];
+  registeredArtifacts: RegisteredSourceArtifact[];
   sourceSetHash: string;
   visualNecessityReview?: GardenVisualNecessityPlan;
 }): {
   units: LearningUnitContract[];
   assignments: SourceArtifactAssignment[];
+  omissions: SourceArtifactOmission[];
   removedArtifactIds: string[];
   semanticAliasRepairs: Array<{
     normalizedAlias: string;
@@ -3120,69 +3575,77 @@ function writeLearningUnitContractArtifacts({
     reason: string;
   }>;
 } {
-  // Fix 7: never attach a raw semantic source anchor the source cannot support.
-  // Codes and first-class structural anchors pass through; unresolvable semantic
-  // anchors are dropped from the contract before they propagate to pages (the
-  // deterministic reconcile enforces the same rule as the final safety net).
   const deferredSourceAnchors: string[] = [];
-  const gateSourceAnchors = (anchors: string[] | undefined): string[] => {
-    if (!Array.isArray(anchors) || anchors.length === 0) return [];
-    const { accepted, deferred } = ingestModelSourceAnchors(clusterDir, anchors);
-    deferredSourceAnchors.push(...deferred);
-    return accepted;
+  const canonicalSourceAnchors = buildCanonicalSourceAnchors(clusterDir, { allowInferredFormulaText: false });
+  const validateSourceAnchors = (anchors: string[] | undefined): void => {
+    if (!Array.isArray(anchors) || anchors.length === 0) return;
+    deferredSourceAnchors.push(...anchors.filter((anchor) => !canonicalSourceAnchors[anchor]));
   };
-  const gatedUnits = units.map((unit) => {
-    const sourceAnchors = gateSourceAnchors(unit.sourceAnchors);
-    const semanticConcepts = semanticConceptsForUnit(unit).map((concept) => ({
-      ...concept,
-      evidenceAnchors: gateSourceAnchors(concept.evidenceAnchors),
-    }));
-    return { ...unit, sourceAnchors, semanticConcepts };
-  });
+  for (const unit of units) {
+    validateSourceAnchors(unit.sourceAnchors);
+    for (const concept of unit.semanticConcepts ?? []) validateSourceAnchors(concept.evidenceAnchors);
+    for (const claim of unit.knowledgeClaims ?? []) {
+      validateSourceAnchors(claim.evidenceAnchors);
+      validateSourceAnchors(claim.derivationAnchors);
+    }
+    validateSourceAnchors(unit.interactiveVisual?.sourceAnchors);
+    validateSourceAnchors(unit.interactiveVisualPlan?.decision.evidence.sourceAnchorIds);
+    validateSourceAnchors(unit.interactiveVisualPlan?.visualIntent?.sourceAnchors);
+    for (const control of unit.interactiveVisualPlan?.controlContract ?? []) {
+      validateSourceAnchors(control.evidence.map((evidence) => evidence.anchor));
+    }
+    validateSourceAnchors(unit.interactiveVisualPlan?.observable?.evidence.map((evidence) => evidence.anchor));
+    validateSourceAnchors(unit.interactiveVisualPlan?.expectedInsightEvidence?.map((evidence) => evidence.anchor));
+    validateSourceAnchors(unit.teachingMediumPlan?.sourceFigureAnchorId ? [unit.teachingMediumPlan.sourceFigureAnchorId] : []);
+    validateSourceAnchors(unit.teachingMediumPlan?.formulaAnchorIds);
+  }
+  if (deferredSourceAnchors.length > 0) {
+    throw new Error(
+      `Model-authored source anchors could not be proven: ${[...new Set(deferredSourceAnchors)].join(", ")}. Repair the contract from registered source evidence.`,
+    );
+  }
+  const ownershipProblems = sourceArtifactOwnershipProblems(units);
+  if (ownershipProblems.length > 0) {
+    throw new Error(`Model-authored source artifact ownership failed: ${ownershipProblems.join("; ")}`);
+  }
+  const artifactCoverageProblems = sourceArtifactCoverageProblems(
+    units,
+    omissions,
+    registeredArtifacts,
+  );
+  if (artifactCoverageProblems.length > 0) {
+    throw new Error(`Model-authored source artifact coverage failed: ${artifactCoverageProblems.join("; ")}`);
+  }
+  const expectedAssignments = projectModelAuthoredSourceArtifactAssignments(units);
+  if (JSON.stringify(assignments) !== JSON.stringify(expectedAssignments)) {
+    throw new Error("Source artifact assignment projection does not exactly match the model-authored Learning Unit Contract.");
+  }
   const sourceArtifactReconciliation = reconcileLearningUnitSourceArtifacts(
-    gatedUnits,
-    assignments,
+    units,
+    expectedAssignments,
     registeredArtifactsForGarden(clusterDir),
   );
-  const aliasReconciliation = reconcileLearningUnitConceptAliases(
-    sourceArtifactReconciliation.units,
-  );
-  let reconciledUnits = aliasReconciliation.units;
-  // Build and validate the registry before writing the contract. This avoids
-  // leaving a newly written, colliding contract paired with an older registry
-  // if a non-repairable canonical conflict is ever encountered.
-  const registry = ensureGardenConceptRegistry({
-    gardenDir: clusterDir,
+  if (sourceArtifactReconciliation.removedArtifactIds.length > 0) {
+    throw new Error(
+      `Model-authored structured source artifacts are not registered: ${sourceArtifactReconciliation.removedArtifactIds.join(", ")}. Repair the contract instead of dropping them.`,
+    );
+  }
+  const registryProblems = conceptRegistryAlignmentProblems({ clusterDir, sourceSetHash, units });
+  if (registryProblems.length > 0) {
+    throw new Error(`Model-authored concept registry alignment failed: ${registryProblems.join("; ")}`);
+  }
+  const registry = buildModelAuthoredConceptRegistry({
     gardenId: path.basename(clusterDir),
     sourceSetHash,
-    concepts: reconciledUnits.flatMap(semanticConceptsForUnit),
-    persist: false,
+    concepts: units.flatMap((unit) => unit.semanticConcepts ?? []),
   });
-  const unitsBeforeRegistryAlignment = reconciledUnits;
-  reconciledUnits = alignLearningUnitConceptAliasesWithRegistry(reconciledUnits, registry);
-  const registryAlignmentRepairs = registryAlignmentAliasRepairs(
-    unitsBeforeRegistryAlignment,
-    reconciledUnits,
-  );
-  const semanticAliasRepairs = [
-    ...aliasReconciliation.repairs,
-    ...registryAlignmentRepairs,
-  ];
-  // Assignments are a projection of the model-authored unit contracts. This
-  // boundary may discard a stale projection, but it never chooses a different
-  // owner or invents a replacement placement.
-  const artifactOwnersByUnit = new Map(
-    reconciledUnits.map((unit) => [
-      unit.id,
-      new Set([
-        ...unit.sourceFigures.map((artifact) => artifact.id),
-        ...unit.sourceFormulas.map((artifact) => artifact.id),
-        ...unit.sourceTables.map((artifact) => artifact.id),
-      ]),
-    ]),
-  );
-  const finalAssignments = sourceArtifactReconciliation.assignments.filter((assignment) =>
-    artifactOwnersByUnit.get(assignment.assignedLearningUnitId)?.has(assignment.sourceArtifactId) ?? false);
+  const reconciledUnits = units;
+  const semanticAliasRepairs: Array<{
+    normalizedAlias: string;
+    removedFrom: string[];
+    reason: string;
+  }> = [];
+  const finalAssignments = expectedAssignments;
   // Pedagogical visual decisions are model-authored before this writer runs.
   // This boundary may reconcile source registries mechanically, but it must
   // never replace those decisions with keyword scores, quotas, or inferred
@@ -3222,6 +3685,7 @@ function writeLearningUnitContractArtifacts({
     generatedAt: nowIso(),
     learningUnits: reconciledUnits,
     sourceArtifactAssignments: finalAssignments,
+    sourceArtifactOmissions: omissions,
     ...(deferredSourceAnchors.length ? { deferredSourceAnchors: [...new Set(deferredSourceAnchors)] } : {}),
     ...(semanticAliasRepairs.length
       ? { semanticAliasRepairs }
@@ -3233,6 +3697,7 @@ function writeLearningUnitContractArtifacts({
     `Source set hash: ${sourceSetHash}`,
     `Learning units: ${reconciledUnits.length}`,
     `Source artifact assignments: ${finalAssignments.length}`,
+    `Source artifact omissions: ${omissions.length}`,
     "",
     "## Units",
     "",
@@ -3255,20 +3720,28 @@ function writeLearningUnitContractArtifacts({
     if (unit.teachingMediumPlan) {
       lines.push(`  - Preferred medium: ${unit.teachingMediumPlan.preferredMedium}`);
     }
-    const concepts = conceptTagsForUnit(unit);
+    const concepts = (unit.semanticConcepts ?? []).map((concept) => concept.slug);
     if (concepts.length > 0) lines.push(`  - Concepts: ${concepts.join(", ")}`);
-    const claims = knowledgeClaimsForUnit(unit);
+    const claims = unit.knowledgeClaims ?? [];
     if (claims.length > 0) lines.push(`  - Claims: ${claims.map((claim) => claim.text).join(" | ")}`);
+  }
+  if (omissions.length > 0) {
+    lines.push("", "## Model-authored omissions", "");
+    for (const omission of omissions) {
+      lines.push(`- ${omission.sourceArtifactId}: ${omission.reason}`);
+    }
   }
   writeGardenConceptRegistryAndContract({
     gardenDir: clusterDir,
     registry,
     contract: payload,
     planningMarkdown: `${lines.join("\n")}\n`,
+    strictModelAuthored: true,
   });
   return {
     units: reconciledUnits,
     assignments: finalAssignments,
+    omissions,
     removedArtifactIds: sourceArtifactReconciliation.removedArtifactIds,
     semanticAliasRepairs,
   };
@@ -3279,11 +3752,26 @@ function persistRoutedVisualPlans(
   units: LearningUnitContract[],
 ): void {
   const filePath = path.join(clusterDir, ".breadboard", "learning-unit-contract.json");
-  if (!fs.existsSync(filePath)) return;
+  if (!fs.existsSync(filePath)) {
+    throw new Error("Cannot persist routed visuals because the Learning Unit Contract is missing.");
+  }
   const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Record<string, unknown>;
-  const rawUnits = Array.isArray(parsed.learningUnits)
-    ? parsed.learningUnits as Array<Record<string, unknown>>
-    : [];
+  if (!Array.isArray(parsed.learningUnits)) {
+    throw new Error("Cannot persist routed visuals because learningUnits is not an array.");
+  }
+  const rawUnits = parsed.learningUnits as Array<Record<string, unknown>>;
+  const persistedIds = rawUnits.map((raw) => typeof raw?.id === "string" ? raw.id : "");
+  const routedIds = units.map((unit) => unit.id);
+  if (
+    persistedIds.some((id) => !id) ||
+    new Set(persistedIds).size !== persistedIds.length ||
+    new Set(routedIds).size !== routedIds.length ||
+    JSON.stringify(persistedIds) !== JSON.stringify(routedIds)
+  ) {
+    throw new Error(
+      "Cannot persist routed visuals because persisted and in-memory learning-unit IDs do not match exactly.",
+    );
+  }
   const byId = new Map(units.map((unit) => [unit.id, unit]));
   parsed.learningUnits = rawUnits.map((raw) => {
     const id = typeof raw.id === "string" ? raw.id : "";
@@ -3303,8 +3791,15 @@ function persistRoutedVisualPlans(
 
 function learningUnitsFromCoveragePlan(plan: unknown): LearningUnitContract[] {
   const record = planningRecord(plan);
+  const raw = { learningUnits: record.learningUnitContracts };
+  const problems = modelAuthoredLearningUnitParseProblems(raw);
+  if (problems.length > 0) {
+    throw new Error(
+      `Stored model-authored Learning Unit Contract is invalid: ${problems.join("; ")}`,
+    );
+  }
   return normalizeLearningUnits(
-    { learningUnits: record.learningUnitContracts },
+    raw,
     { modelAuthoredOnly: true },
   );
 }
@@ -3329,7 +3824,29 @@ function sourceArtifactAssignmentsFromCoveragePlan(plan: unknown): SourceArtifac
   const assignments = raw
     .map((item) => (item && typeof item === "object" ? (item as SourceArtifactAssignment) : null))
     .filter((item): item is SourceArtifactAssignment => Boolean(item));
-  return dedupeSourceArtifactAssignments(assignments, learningUnitsFromCoveragePlan(plan));
+  const units = learningUnitsFromCoveragePlan(plan);
+  const ownershipProblems = sourceArtifactOwnershipProblems(units);
+  if (ownershipProblems.length > 0) {
+    throw new Error(`Stored model-authored source artifact ownership is invalid: ${ownershipProblems.join("; ")}`);
+  }
+  const expected = projectModelAuthoredSourceArtifactAssignments(units);
+  if (JSON.stringify(assignments) !== JSON.stringify(expected)) {
+    throw new Error("Stored source artifact assignments do not exactly match the model-authored Learning Unit Contract.");
+  }
+  return assignments;
+}
+
+function sourceArtifactOmissionsFromCoveragePlan(plan: unknown): SourceArtifactOmission[] {
+  const raw = {
+    sourceArtifactOmissions: planningRecord(plan).sourceArtifactOmissions,
+  };
+  const problems = modelAuthoredSourceArtifactOmissionParseProblems(raw);
+  if (problems.length > 0) {
+    throw new Error(
+      `Stored model-authored source artifact omissions are invalid: ${problems.join("; ")}`,
+    );
+  }
+  return projectModelAuthoredSourceArtifactOmissions(raw);
 }
 
 function learningMapWithConfirmedUnitContracts(
@@ -3355,7 +3872,7 @@ function learningMapWithConfirmedUnitContracts(
         return {
           ...subsection,
           sourceAnchors: unit.sourceAnchors,
-          conceptTags: conceptTagsForUnit(unit),
+          conceptTags: (unit.semanticConcepts ?? []).map((concept) => concept.slug),
           sourceVisualIds: [...new Set([
             ...unit.sourceFigures.filter((figure) => figure.placement !== "not_used_with_reason").map((figure) => figure.id),
             ...unit.sourceFormulas.map((formula) => formula.id),
@@ -3366,12 +3883,13 @@ function learningMapWithConfirmedUnitContracts(
           learningQuestion: unit.learningQuestion,
           prerequisiteConcepts: unit.prerequisiteConcepts,
           newConcepts: unit.newConcepts,
+          syllabusUnitIds: unit.syllabusUnitIds ?? [],
           mustNotRepeat: unit.mustNotRepeat,
           expectedWordRange: unit.expectedWordRange,
           sourceFigureContracts: unit.sourceFigures,
           sourceFormulaContracts: unit.sourceFormulas,
           sourceTableContracts: unit.sourceTables,
-          sourceArtifactAssignments: assignSourceArtifacts([unit]),
+          sourceArtifactAssignments: projectModelAuthoredSourceArtifactAssignments([unit]),
           interactiveVisualContract: unit.interactiveVisual,
           interactiveVisualPlan: unit.interactiveVisualPlan,
           teachingMediumPlan: unit.teachingMediumPlan,
@@ -3593,6 +4111,17 @@ export async function runLearnPlanning({
       onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
     });
 
+    const structuralSourceAnchors = structuralSourceTextAnchorCatalog(context);
+    const canonicalSourceAnchorCatalog = [
+      ...structuralSourceAnchorPromptCatalog(structuralSourceAnchors),
+      ...context.sourceFigures.map((figure) => ({
+        id: figure.figureId,
+        sourceId: figure.sourceId,
+        page: figure.page,
+        title: figure.caption,
+        kind: figure.kind,
+      })),
+    ];
     const promptSourceContext = promptSources(context);
     const hasSyllabus = Boolean(context.syllabus);
     const syllabusPayload = promptSyllabus(context);
@@ -3624,10 +4153,10 @@ export async function runLearnPlanning({
     };
     const planningWarnings: string[] = [];
 
-    // Stage 1b: read the syllabus into units + assigned materials, then check
-    // every assigned work against the documents actually in this garden. The
-    // check is deterministic on purpose — it is the only thing standing between
-    // "the syllabus assigns chapter 3" and a confidently fabricated chapter 3.
+    // Stage 1b: one model reads the syllabus, then a separate source-grounded
+    // model authors every material-availability and unit-teachability verdict.
+    // Code checks exact IDs/citations and completeness but makes no semantic
+    // match or fallback decision.
     let syllabusCoverage: SyllabusCoverage | null = null;
     if (context.syllabus) {
       updateLearnJob(job.id, {
@@ -3646,12 +4175,36 @@ export async function runLearnPlanning({
         contentPath,
         jobId: job.id,
         stageLabel: "Syllabus reading",
-        validate: syllabusPlanProblems,
+        validate: modelAuthoredSyllabusPlanProblems,
       });
-      const syllabusPlan = normalizeSyllabusPlan(syllabusCall.parsed);
-      syllabusCoverage = buildSyllabusCoverage(
+      const syllabusPlan = projectModelAuthoredSyllabusPlan(syllabusCall.parsed);
+      const syllabusSourceIds = context.sources.map((source) => source.slug);
+      updateLearnJob(job.id, {
+        currentStep: "Checking syllabus coverage against selected sources",
+        progressPercent: 4,
+      });
+      throwIfLearnCancelled(job.id);
+      const coverageCall = await callValidatedPlanningJson({
+        client,
+        model,
+        taskType: "source_map",
+        gardenId,
+        system: SYLLABUS_COVERAGE_PROMPT,
+        user: compactJson({
+          syllabusPlan,
+          selectedSourceCatalog: promptSyllabusCoverageSourceCatalog(context),
+        }),
+        sourceContext: { ...planningSourceMeta, taskType: "syllabus_coverage" },
+        contentPath,
+        jobId: job.id,
+        stageLabel: "Syllabus coverage review",
+        validate: (value) =>
+          syllabusCoverageDecisionProblems(value, syllabusPlan, syllabusSourceIds),
+      });
+      syllabusCoverage = projectModelAuthoredSyllabusCoverage(
         syllabusPlan,
-        resolveSyllabusMaterials(syllabusPlan, context.sources),
+        coverageCall.parsed,
+        syllabusSourceIds,
       );
 
       if (syllabusCoverage) {
@@ -3697,6 +4250,7 @@ export async function runLearnPlanning({
         syllabus: syllabusPayload,
         syllabusCoverage: syllabusCoveragePayload,
         sourceContext: promptSourceContext,
+        canonicalSourceAnchors: canonicalSourceAnchorCatalog,
       }),
       sourceContext: { ...planningSourceMeta, taskType: "source_map" },
       contentPath,
@@ -3706,10 +4260,45 @@ export async function runLearnPlanning({
         value,
         sourceIds: context.sources.map((source) => source.slug),
         registeredArtifacts: context.sourceFigures,
+        canonicalAnchors: canonicalSourceAnchorCatalog.map((anchor) => ({
+          id: String(anchor.id),
+          sourceId: String(anchor.sourceId),
+        })),
       }),
     });
     throwIfLearnCancelled(job.id);
     const sourceMap = sourceMapCall.parsed as Record<string, unknown>;
+    persistSelectedStructuralSourceAnchors({
+      clusterDir: clusterPath(contentPath, gardenId),
+      sourceMap,
+      selectedSourceIds: context.sources.map((source) => source.slug),
+      catalog: structuralSourceAnchors,
+    });
+    const selectedSourcePageHints = selectedStructuralSourcePageHints({
+      sourceMap,
+      catalog: structuralSourceAnchors,
+      selectedSources: context.sources,
+    });
+    if (selectedSourcePageHints.length > 0) {
+      const selectedPageDiscovery = await ensureReferencedSourceArtifactsExtracted({
+        client,
+        model,
+        contentPath,
+        gardenId,
+        context,
+        units: [],
+        explicitPageHints: selectedSourcePageHints,
+        checkpoint: () => throwIfLearnCancelled(job.id),
+        onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+      });
+      appendLearnEvent(contentPath, gardenId, "learn_source_map_pages_scanned", {
+        jobId: job.id,
+        selectedAnchorIds: selectedSourcePageHints.map((hint) => hint.anchorId),
+        requestedPages: selectedPageDiscovery.requestedPages,
+        discoveredArtifactIds: selectedPageDiscovery.discoveredIds,
+        scanErrors: selectedPageDiscovery.scanErrors,
+      });
+    }
     appendLearnEvent(contentPath, gardenId, "learn_source_map_created", {
       jobId: job.id,
       councilRunId: sourceMapCall.councilRunId,
@@ -3759,24 +4348,40 @@ export async function runLearnPlanning({
     // Only the duplicate raw-source context is body-free; semantic upstream
     // plans are never sliced into lossy `truncatedJson` strings.
     const spineSourceContext = promptSourcesCompact(context);
-    const topicMapUser = (deepenNote: string) =>
+    const topicMapPlanningPacket = () => ({
+      sourceOnly,
+      syllabus: syllabusPayload,
+      syllabusCoverage: syllabusCoveragePayload,
+      sourceMap,
+      scopeContract,
+      sources: spineSourceContext,
+      extractedSourceArtifacts: context.sourceFigures.map((figure) => ({
+        id: figure.figureId,
+        kind: figure.kind,
+        sourceId: figure.sourceId,
+        page: figure.page,
+        caption: figure.caption,
+        suggestedVisualUse: figure.suggestedVisualUse,
+      })),
+      responseShape: "LearningUnitContract JSON",
+    });
+    const topicMapUser = (repair?: {
+      repairAttempt: number;
+      invalidResponse: unknown;
+      validationProblems: string[];
+    }) =>
       compactJson({
-        sourceOnly,
-        syllabus: syllabusPayload,
-        syllabusCoverage: syllabusCoveragePayload,
-        sourceMap,
-        scopeContract,
-        sources: spineSourceContext,
-        extractedSourceArtifacts: context.sourceFigures.map((figure) => ({
-          id: figure.figureId,
-          kind: figure.kind,
-          sourceId: figure.sourceId,
-          page: figure.page,
-          caption: figure.caption,
-          suggestedVisualUse: figure.suggestedVisualUse,
-        })),
-        responseShape: "LearningUnitContract JSON",
-      }) + deepenNote;
+        ...topicMapPlanningPacket(),
+        ...(repair
+          ? {
+              repair: {
+                ...repair,
+                instruction:
+                  "The accepted candidate below failed these hard checks. Return a complete corrected replacement JSON object, not a patch or prose explanation. Preserve valid source assignments and omission reasons, regenerate 15-25 precise learningUnits, partition every registered artifact exactly once between an owning unit and sourceArtifactOmissions, keep semanticConcepts separate from readable knowledgeClaims, and do not return sections first. If a semanticConcept slug appears in multiple units, every occurrence must use exactly the same preferredLabel and exactly the same aliases array in the same order; author that identity yourself because code will never choose or merge it.",
+              },
+            }
+          : {}),
+      });
 
     throwIfLearnCancelled(job.id);
     let topicMapCall = await callPlanningJsonWithRetry({
@@ -3785,7 +4390,7 @@ export async function runLearnPlanning({
       taskType: "learning_spine",
       gardenId,
       system: withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
-      user: topicMapUser(""),
+      user: topicMapUser(),
       sourceContext: { ...planningSourceMeta, taskType: "learning_spine" },
       contentPath,
       jobId: job.id,
@@ -3812,7 +4417,7 @@ export async function runLearnPlanning({
           onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
         });
       } catch (error) {
-        const warning = `Referenced source-page scan could not finish: ${errorMessage(error)}. Unverified artifact requirements were removed.`;
+        const warning = `Referenced source-page scan could not finish: ${errorMessage(error)}. Unverified artifact requirements remain invalid and must be repaired by the planning model.`;
         planningWarnings.push(warning);
         appendLearnEvent(contentPath, gardenId, "learn_referenced_source_scan_failed", {
           jobId: job.id,
@@ -3839,17 +4444,33 @@ export async function runLearnPlanning({
             `model referenced unregistered structured source artifacts: ${reconciliation.removedArtifactIds.join(", ")}; return a complete replacement contract using only registered extractedSourceArtifacts`,
           ]
         : [];
-      return reconciliation.units;
+      return candidateUnits;
     };
 
     let learningUnits = normalizeLearningUnits(topicMapCall.parsed, { modelAuthoredOnly: true });
+    let sourceArtifactOmissions = projectModelAuthoredSourceArtifactOmissions(topicMapCall.parsed);
     learningUnits = await reconcilePlannedSourceArtifacts(learningUnits, "initial");
     let artifactCount = importantSourceArtifactCount(context);
     let contractProblems = [
       ...modelAuthoredLearningMapMetadataProblems(topicMapCall.parsed),
+      ...modelAuthoredLearningUnitParseProblems(topicMapCall.parsed),
+      ...modelAuthoredSourceArtifactOmissionParseProblems(topicMapCall.parsed),
       ...modelAuthoredUnitTitleProblems(learningUnits),
       ...prematureVisualPlanningProblems(learningUnits),
+      ...sourceArtifactOwnershipProblems(learningUnits),
+      ...sourceArtifactCoverageProblems(
+        learningUnits,
+        sourceArtifactOmissions,
+        registeredArtifactsFromFigures(context.sourceFigures),
+      ),
       ...latestSourceArtifactProblems,
+      ...canonicalSourceAnchorProblems(clusterPath(contentPath, gardenId), learningUnits),
+      ...syllabusUnitAssignmentProblems(learningUnits, syllabusCoverage ?? null),
+      ...conceptRegistryAlignmentProblems({
+        clusterDir: clusterPath(contentPath, gardenId),
+        sourceSetHash: context.sourceSetHash,
+        units: learningUnits,
+      }),
       ...(
       learningUnits.length === 0
         ? ["planner returned no learningUnits"]
@@ -3859,40 +4480,66 @@ export async function runLearnPlanning({
             requireModelAuthoredSections: true,
           })
       ),
+      ...modelAuthoredLearningMapDepthProblems({
+        candidate: topicMapCall.parsed,
+        units: learningUnits,
+        gardenId,
+        sourceOnly,
+        context,
+      }),
     ];
 
     // Invalid pedagogy is repaired by the model that authored it. Keep the
     // strongest complete candidate across two bounded full-contract repairs;
     // code never invents a generic curriculum to make the gate go green.
-    let feedbackProblems = contractProblems;
     for (let repairAttempt = 1; repairAttempt <= 2 && contractProblems.length > 0; repairAttempt += 1) {
-      const deepenNote =
-        `\n\nRepair attempt ${repairAttempt}. The previous Learning Unit Contract failed these hard checks: ${feedbackProblems.join("; ")}. ` +
-        "Return a complete replacement contract, not a patch or prose explanation. Preserve valid source assignments, regenerate 15-25 precise learningUnits, assign every important registered artifact, keep semanticConcepts separate from readable knowledgeClaims, and do not return sections first.";
+      const acceptedResponseForRepair = topicMapCall.parsed ?? {
+        unparsedResponse: topicMapCall.content,
+      };
       const retryCall = await callPlanningJsonWithRetry({
         client,
         model,
         taskType: "learning_spine",
         gardenId,
         system: withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
-        user: topicMapUser(deepenNote),
+        user: topicMapUser({
+          repairAttempt,
+          invalidResponse: acceptedResponseForRepair,
+          validationProblems: contractProblems,
+        }),
         sourceContext: {
           ...planningSourceMeta,
           taskType: "learning_spine_repair",
           repairAttempt,
-          validationProblems: feedbackProblems,
+          validationProblems: contractProblems,
         },
         contentPath,
         jobId: job.id,
       });
       let retryUnits = normalizeLearningUnits(retryCall.parsed, { modelAuthoredOnly: true });
+      const retrySourceArtifactOmissions = projectModelAuthoredSourceArtifactOmissions(retryCall.parsed);
       retryUnits = await reconcilePlannedSourceArtifacts(retryUnits, "repair");
       artifactCount = importantSourceArtifactCount(context);
       const retryProblems = [
         ...modelAuthoredLearningMapMetadataProblems(retryCall.parsed),
+        ...modelAuthoredLearningUnitParseProblems(retryCall.parsed),
+        ...modelAuthoredSourceArtifactOmissionParseProblems(retryCall.parsed),
         ...modelAuthoredUnitTitleProblems(retryUnits),
         ...prematureVisualPlanningProblems(retryUnits),
+        ...sourceArtifactOwnershipProblems(retryUnits),
+        ...sourceArtifactCoverageProblems(
+          retryUnits,
+          retrySourceArtifactOmissions,
+          registeredArtifactsFromFigures(context.sourceFigures),
+        ),
         ...latestSourceArtifactProblems,
+        ...canonicalSourceAnchorProblems(clusterPath(contentPath, gardenId), retryUnits),
+        ...syllabusUnitAssignmentProblems(retryUnits, syllabusCoverage ?? null),
+        ...conceptRegistryAlignmentProblems({
+          clusterDir: clusterPath(contentPath, gardenId),
+          sourceSetHash: context.sourceSetHash,
+          units: retryUnits,
+        }),
         ...(
         retryUnits.length === 0
           ? ["planner returned no learningUnits"]
@@ -3902,57 +4549,160 @@ export async function runLearnPlanning({
               requireModelAuthoredSections: true,
             })
         ),
+        ...modelAuthoredLearningMapDepthProblems({
+          candidate: retryCall.parsed,
+          units: retryUnits,
+          gardenId,
+          sourceOnly,
+          context,
+        }),
       ];
       appendLearnEvent(contentPath, gardenId, "learn_learning_spine_repair_reviewed", {
         jobId: job.id,
         repairAttempt,
-        problemsBefore: feedbackProblems,
+        problemsBefore: contractProblems,
         problemsAfter: retryProblems,
       });
-      feedbackProblems = retryProblems;
       if (retryProblems.length < contractProblems.length) {
         topicMapCall = retryCall;
         learningUnits = retryUnits;
+        sourceArtifactOmissions = retrySourceArtifactOmissions;
         contractProblems = retryProblems;
       }
     }
 
+    // A whole-spine rewrite can leave one local identity failure while
+    // disturbing dozens of already valid units. After the original initial +
+    // two full replacements are exhausted, let the model replace only the
+    // complete unit records explicitly implicated by unit-index/id failures or
+    // concept conflicts. Any global/unscoped problem fails closed. The merge is
+    // structural only; the model authors every field and all semantic choices.
+    if (contractProblems.length > 0) {
+      const acceptedCandidateBeforeTargetedRepair = planningRecord(topicMapCall.parsed);
+      const targetedRepair = await runLearningSpineTargetedRepair({
+        candidate: acceptedCandidateBeforeTargetedRepair,
+        units: learningUnits,
+        validationProblems: contractProblems,
+        canonicalPlanningPacket: topicMapPlanningPacket(),
+        canonicalEvidenceByUnit: canonicalLearningSpineEvidenceByUnit(
+          clusterPath(contentPath, gardenId),
+          learningUnits,
+        ),
+        maxAttempts: 2,
+        provider: async (request) => {
+          throwIfLearnCancelled(job.id);
+          const result = await callPlanningJsonWithRetry({
+            client,
+            model,
+            taskType: "learning_spine",
+            gardenId,
+            system: withSyllabusRules(request.system, SYLLABUS_PLANNING_RULES, hasSyllabus),
+            user: request.user,
+            sourceContext: {
+              ...planningSourceMeta,
+              taskType: "learning_spine_targeted_repair",
+              repairAttempt: request.attempt,
+              unitIds: request.unitIds,
+            },
+            contentPath,
+            jobId: job.id,
+          });
+          // Null/malformed structured output is a semantic failure handled by
+          // the bounded targeted loop. Provider/transport exceptions propagate
+          // from callPlanningJsonWithRetry and consume no semantic attempt.
+          return result.parsed;
+        },
+        validateCandidate: (candidate) => {
+          const candidateUnits = normalizeLearningUnits(candidate, { modelAuthoredOnly: true });
+          const candidateOmissions = projectModelAuthoredSourceArtifactOmissions(candidate);
+          const unregisteredArtifacts = reconcileLearningUnitSourceArtifacts(
+            candidateUnits,
+            [],
+            registeredArtifactsFromFigures(context.sourceFigures),
+          ).removedArtifactIds;
+          const candidateArtifactProblems = unregisteredArtifacts.length > 0
+            ? [
+                `model referenced unregistered structured source artifacts: ${unregisteredArtifacts.join(", ")}; return complete replacement units using only registered extractedSourceArtifacts`,
+              ]
+            : [];
+          const problems = [
+            ...modelAuthoredLearningMapMetadataProblems(candidate),
+            ...modelAuthoredLearningUnitParseProblems(candidate),
+            ...modelAuthoredSourceArtifactOmissionParseProblems(candidate),
+            ...modelAuthoredUnitTitleProblems(candidateUnits),
+            ...prematureVisualPlanningProblems(candidateUnits),
+            ...sourceArtifactOwnershipProblems(candidateUnits),
+            ...sourceArtifactCoverageProblems(
+              candidateUnits,
+              candidateOmissions,
+              registeredArtifactsFromFigures(context.sourceFigures),
+            ),
+            ...candidateArtifactProblems,
+            ...canonicalSourceAnchorProblems(clusterPath(contentPath, gardenId), candidateUnits),
+            ...syllabusUnitAssignmentProblems(candidateUnits, syllabusCoverage ?? null),
+            ...conceptRegistryAlignmentProblems({
+              clusterDir: clusterPath(contentPath, gardenId),
+              sourceSetHash: context.sourceSetHash,
+              units: candidateUnits,
+            }),
+            ...(candidateUnits.length === 0
+              ? ["planner returned no learningUnits"]
+              : validateLearningUnitContracts(candidateUnits, {
+                  artifactCount,
+                  requireModelAuthoredSemantics: true,
+                  requireModelAuthoredSections: true,
+                })),
+            ...modelAuthoredLearningMapDepthProblems({
+              candidate,
+              units: candidateUnits,
+              gardenId,
+              sourceOnly,
+              context,
+            }),
+          ];
+          return { units: candidateUnits, problems };
+        },
+      });
+      for (const review of targetedRepair.reviews) {
+        appendLearnEvent(contentPath, gardenId, "learn_learning_spine_targeted_repair_reviewed", {
+          jobId: job.id,
+          repairExecutorMode: "model",
+          repairAttempt: review.attempt,
+          unitIds: review.unitIds,
+          responseProblems: review.responseProblems,
+          problemsAfter: review.mergedProblems,
+          accepted: review.accepted,
+          introducedUnscopedProblems: review.introducedUnscopedProblems,
+        });
+      }
+      appendLearnEvent(contentPath, gardenId, "learn_learning_spine_targeted_repair_completed", {
+        jobId: job.id,
+        repairExecutorMode: "model",
+        status: targetedRepair.status,
+        modelCalls: targetedRepair.calls,
+        problemsBefore: contractProblems,
+        problemsAfter: targetedRepair.problems,
+        unscopedProblems: targetedRepair.unscopedProblems,
+      });
+      if (targetedRepair.candidate !== acceptedCandidateBeforeTargetedRepair) {
+        topicMapCall = {
+          ...topicMapCall,
+          parsed: targetedRepair.candidate,
+          content: compactJson(targetedRepair.candidate),
+        };
+        learningUnits = targetedRepair.units;
+        sourceArtifactOmissions = projectModelAuthoredSourceArtifactOmissions(targetedRepair.candidate);
+      }
+      contractProblems = targetedRepair.problems;
+    }
+
     if (contractProblems.length > 0) {
       throw new Error(
-        `The AI-authored Learning Unit Contract remained invalid after 3 bounded attempts: ${contractProblems.join("; ")}. No fallback curriculum was written.`,
+        `The AI-authored Learning Unit Contract remained invalid after 3 bounded attempts plus bounded targeted model repair: ${contractProblems.join("; ")}. No fallback curriculum was written.`,
       );
     }
 
     throwIfLearnCancelled(job.id);
-    // Reconcile the final model-authored plan against the garden's existing
-    // canonical concept ownership before deriving either the visible map or
-    // the database coverage plan. The dry run deliberately carries no model
-    // evidence anchors: source gating occurs when the artifacts are written.
-    const planningAliasReconciliation = reconcileLearningUnitConceptAliases(learningUnits);
-    learningUnits = planningAliasReconciliation.units;
-    const planningRegistry = ensureGardenConceptRegistry({
-      gardenDir: clusterPath(contentPath, gardenId),
-      gardenId,
-      sourceSetHash: context.sourceSetHash,
-      concepts: learningUnits.flatMap(semanticConceptsForUnit).map((concept) => ({
-        ...concept,
-        evidenceAnchors: [],
-      })),
-      persist: false,
-    });
-    const unitsBeforeRegistryAlignment = learningUnits;
-    learningUnits = alignLearningUnitConceptAliasesWithRegistry(
-      learningUnits,
-      planningRegistry,
-    );
-    const planningRegistryAlignmentRepairs = registryAlignmentAliasRepairs(
-      unitsBeforeRegistryAlignment,
-      learningUnits,
-    );
-    const planningSemanticAliasRepairs = [
-      ...planningAliasReconciliation.repairs,
-      ...planningRegistryAlignmentRepairs,
-    ];
     const visualNecessityReview = await planAndReviewVisualNecessity({
       client,
       model,
@@ -3967,11 +4717,25 @@ export async function runLearnPlanning({
     throwIfLearnCancelled(job.id);
     learningUnits = visualNecessityReview.learningUnits;
     const planRecord = planningRecord(topicMapCall.parsed);
-    let sourceArtifactAssignments = assignSourceArtifacts(learningUnits);
-    let learningMap = learningMapFromModelAuthoredUnits(learningUnits, {
+    const finalOwnershipProblems = sourceArtifactOwnershipProblems(learningUnits);
+    if (finalOwnershipProblems.length > 0) {
+      throw new Error(`Model-authored source artifact ownership remained invalid: ${finalOwnershipProblems.join("; ")}`);
+    }
+    const finalSourceArtifactCoverageProblems = sourceArtifactCoverageProblems(
+      learningUnits,
+      sourceArtifactOmissions,
+      registeredArtifactsFromFigures(context.sourceFigures),
+    );
+    if (finalSourceArtifactCoverageProblems.length > 0) {
+      throw new Error(
+        `Model-authored source artifact coverage remained invalid: ${finalSourceArtifactCoverageProblems.join("; ")}`,
+      );
+    }
+    let sourceArtifactAssignments = projectModelAuthoredSourceArtifactAssignments(learningUnits);
+    let learningMap = learningMapFromPlanningCandidate({
+      candidate: topicMapCall.parsed,
+      units: learningUnits,
       gardenId,
-      title: String(planRecord.title).trim(),
-      summary: String(planRecord.summary).trim(),
       sourceOnly,
       createdAt: nowIso(),
       warnings: Array.from(
@@ -3983,17 +4747,18 @@ export async function runLearnPlanning({
     });
     const depthProblems = validateLearningMapDepth(learningMap, context);
     if (depthProblems.length > 0) {
-      learningMap = {
-        ...learningMap,
-        warnings: [...learningMap.warnings, `Learning spine depth warning: ${depthProblems.join("; ")}`],
-      };
+      throw new Error(
+        `Learning spine depth invariant failed after bounded model repair: ${depthProblems.join("; ")}`,
+      );
     }
-    const coveragePlan = sourceCoveragePlan(context, learningMap, learningUnits, sourceArtifactAssignments);
-    let artifactSemanticAliasRepairs: Array<{
-      normalizedAlias: string;
-      removedFrom: string[];
-      reason: string;
-    }> = [];
+    const coveragePlan = sourceCoveragePlan(
+      context,
+      learningMap,
+      learningUnits,
+      sourceArtifactAssignments,
+      sourceArtifactOmissions,
+      buildCanonicalSourceAnchors(clusterPath(contentPath, gardenId), { allowInferredFormulaText: false }),
+    );
     const commitContext = collectLearnSourceContext(
       contentPath,
       gardenId,
@@ -4030,18 +4795,22 @@ export async function runLearnPlanning({
         clusterDir: clusterPath(contentPath, gardenId),
         units: learningUnits,
         assignments: sourceArtifactAssignments,
+        omissions: sourceArtifactOmissions,
+        registeredArtifacts: registeredArtifactsFromFigures(context.sourceFigures),
         sourceSetHash: context.sourceSetHash,
         visualNecessityReview,
       });
       learningUnits = contractWrite.units;
       sourceArtifactAssignments = contractWrite.assignments;
-      artifactSemanticAliasRepairs = contractWrite.semanticAliasRepairs;
+      sourceArtifactOmissions = contractWrite.omissions;
       learningMap = learningMapWithConfirmedUnitContracts(learningMap, learningUnits);
       const repairedCoveragePlan = sourceCoveragePlan(
         context,
         learningMap,
         learningUnits,
         sourceArtifactAssignments,
+        sourceArtifactOmissions,
+        buildCanonicalSourceAnchors(clusterPath(contentPath, gardenId), { allowInferredFormulaText: false }),
       );
       db.prepare(
         `UPDATE learn_maps
@@ -4060,15 +4829,17 @@ export async function runLearnPlanning({
         coveragePlan: repairedCoveragePlan,
       };
     })();
-    const persistedSemanticAliasRepairs = [
-      ...planningSemanticAliasRepairs,
-      ...artifactSemanticAliasRepairs,
-    ];
     const visualizationPlanningStartedAt = Date.now();
+    const canonicalVisualEvidence = canonicalVisualizationEvidenceByUnit(
+      clusterPath(contentPath, gardenId),
+      learningUnits,
+    );
     const visualizationPlanning = await buildVisualizationPlanWithContractRepair({
       gardenId,
       learningMap,
       learningUnits,
+      visualBudget: visualNecessityReview.budget,
+      canonicalEvidenceByUnit: canonicalVisualEvidence,
       necessityReviewCalls: visualNecessityReview.reviewCalls,
       rejectedNecessityReviews: visualNecessityReview.rejectedReviews,
       visualDecisionOverrides: visualNecessityReview.overrides,
@@ -4086,9 +4857,36 @@ export async function runLearnPlanning({
         ...data,
       }),
     });
-    learningUnits = visualizationPlanning.learningUnits;
-    const visualizationPlan = visualizationPlanning.plan;
+    const executabilityReview = await reviewVisualizationPlanExecutability({
+      gardenId,
+      learningMap,
+      learningUnits: visualizationPlanning.learningUnits,
+      initialPlan: visualizationPlanning.plan,
+      canonicalEvidenceByUnit: canonicalVisualEvidence,
+      maximumRepeatedInteractionSignature: LEARN_VISUAL_MAX_REPEATED_INTERACTION_SIGNATURE,
+      provider: (request) => requestVisualizationContractExecutabilityReview({
+        client,
+        model,
+        gardenId,
+        request,
+      }),
+      checkCancelled: () => throwIfLearnCancelled(job.id),
+      onEvent: (type, data) => appendLearnEvent(contentPath, gardenId, type, {
+        jobId: job.id,
+        learningMapId: storedMap.id,
+        ...data,
+      }),
+    });
+    learningUnits = executabilityReview.learningUnits;
+    let visualizationPlan = executabilityReview.plan;
     learningUnits = applyVisualizationRoutesToLearningUnits(learningUnits, visualizationPlan);
+    visualizationPlan = buildFinalVisualizationPlanFromRoutedContracts({
+      gardenId,
+      learningMap,
+      finalRoutedLearningUnits: learningUnits,
+      reviewedPlan: visualizationPlan,
+      canonicalEvidenceByUnit: canonicalVisualEvidence,
+    });
     persistRoutedVisualPlans(clusterPath(contentPath, gardenId), learningUnits);
     learningMap = learningMapWithConfirmedUnitContracts(learningMap, learningUnits);
     const routedCoveragePlan = sourceCoveragePlan(
@@ -4096,6 +4894,8 @@ export async function runLearnPlanning({
       learningMap,
       learningUnits,
       sourceArtifactAssignments,
+      sourceArtifactOmissions,
+      buildCanonicalSourceAnchors(clusterPath(contentPath, gardenId), { allowInferredFormulaText: false }),
     );
     db.prepare(
       `UPDATE learn_maps
@@ -4113,6 +4913,32 @@ export async function runLearnPlanning({
       coveragePlan: routedCoveragePlan,
     });
     saveVisualizationPlan(clusterPath(contentPath, gardenId), visualizationPlan);
+    saveVisualContractExecutabilityLedger({
+      gardenDir: clusterPath(contentPath, gardenId),
+      ledger: buildVisualContractExecutabilityLedger({
+        gardenId,
+        context: {
+          phase: "planning",
+          jobId: job.id,
+          model,
+          learningMapId: storedMap.id,
+        },
+        review: executabilityReview,
+        finalRoutedLearningUnits: learningUnits,
+        finalVisualizationPlan: visualizationPlan,
+        structuralContractRepair: {
+          source: visualizationPlanning.repairSource,
+          ...visualizationPlanning.repairAudit,
+        },
+      }),
+    });
+    appendLearnEvent(contentPath, gardenId, "visual_contract_executability_ledger_persisted", {
+      jobId: job.id,
+      learningMapId: storedMap.id,
+      path: VISUAL_CONTRACT_EXECUTABILITY_LEDGER_RELATIVE_PATH,
+      modelCalls: executabilityReview.calls,
+      replacedUnitIds: executabilityReview.replacedUnitIds,
+    });
     appendLearnEvent(contentPath, gardenId, "visual_opportunity_analysis_completed", {
       jobId: job.id,
       learningMapId: storedMap.id,
@@ -4140,13 +4966,6 @@ export async function runLearnPlanning({
         compatibilityScore: decision.compatibilityScore,
         reason: decision.reason,
         duplicateOf: decision.duplicateOf,
-      });
-    }
-    if (persistedSemanticAliasRepairs.length > 0) {
-      appendLearnEvent(contentPath, gardenId, "learn_concept_aliases_reconciled", {
-        jobId: job.id,
-        learningMapId: storedMap.id,
-        repairs: persistedSemanticAliasRepairs,
       });
     }
     appendLearnEvent(contentPath, gardenId, "learn_learning_unit_contract_created", {
@@ -4469,56 +5288,38 @@ function learningSectionFolder(sectionNumber: number, title: string): string {
 }
 
 /**
- * Per-formula grounding is content-based, never positional: each rendered
- * learner formula is matched to a source formula anchor only when their
- * symbols/metric families overlap. A simplified helper or single symbol that
- * matches nothing is honestly labelled a conceptual helper instead of being
- * mapped to whatever source anchor happens to share its array index.
+ * Collapse layout whitespace for exact source-expression verification. No
+ * LaTeX command, symbol, variable, or notation is rewritten or inferred.
  */
 function normalizedFormulaForFrontmatter(text: string): string {
   return text
-    .replace(/\\(?:text|mathrm|operatorname)\{([^}]*)\}/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function formulaGroundingEntries(
-  mathExpressions: ReturnType<typeof extractQuartzMath>,
-  sourceFormulaFigureList: SourceFigure[],
+  contracts: readonly NonNullable<LearningSubsectionPlan["sourceFormulaContracts"]>[number][],
+  canonicalSourceAnchors: Readonly<Record<string, CanonicalSourceAnchor>>,
 ): FormulaGroundingEntry[] {
-  const sources = sourceFormulaFigureList
-    .filter((figure) => figure.figureId)
-    .map((figure) => ({ id: figure.figureId, caption: figure.caption ?? "" }));
-  const captionById = new Map(sources.map((source) => [source.id, source.caption]));
-  return mathExpressions.filter((expr) => isGroundableFormula(expr.formula) && !isTrivialFormulaFragment(expr.formula)).flatMap((expr): FormulaGroundingEntry[] => {
-    const grounded = groundLearnerFormula(expr.formula, sources);
-    if (grounded.groundingStatus === "source-anchored" && grounded.sourceAnchor) {
-      const workedExample = isWorkedExampleFormula(expr.formula);
-      return [{
-        kind: workedExample ? "worked_example" : "source_definition",
-        text: expr.formula,
-        normalizedText: normalizedFormulaForFrontmatter(expr.formula),
-        groundingStatus: workedExample ? "conceptual-helper" : "source-anchored",
-        sourceAnchor: grounded.sourceAnchor,
-        sourceAnchorTitle: captionById.get(grounded.sourceAnchor) ?? "source formula",
-        matchReason: "metric family and source formula caption match",
-        confidence: 0.9,
-        justification: workedExample
-          ? `Worked example applying source formula ${grounded.sourceAnchor} (${captionById.get(grounded.sourceAnchor) ?? "source formula"}).`
-          : `Content matches source metric formula ${grounded.sourceAnchor} (${captionById.get(grounded.sourceAnchor) ?? "source formula"}).`,
-      }];
+  return contracts.map((contract) => {
+    const anchor = canonicalSourceAnchors[contract.id];
+    const exactText = anchor?.kind === "formula" ? anchor.exactText?.trim() : "";
+    if (!exactText) {
+      throw new Error(
+        `Formula projection failed: model-authored formula ${contract.id} has no verbatim canonical equation transcription.`,
+      );
     }
-    if (!formulaMetricFamily(expr.formula)) return [];
-    return [{
-      kind: isWorkedExampleFormula(expr.formula) ? "worked_example" : "conceptual_helper",
-      text: expr.formula,
-      normalizedText: normalizedFormulaForFrontmatter(expr.formula),
-      groundingStatus: "conceptual-helper",
-      matchReason: "no matching source formula anchor",
-      confidence: 0.4,
-      justification:
-        "Compact helper formula used to explain the lesson's mechanism; no direct source equation anchor is claimed.",
-    }];
+    return {
+      kind: "source_definition",
+      text: exactText,
+      normalizedText: normalizedFormulaForFrontmatter(exactText),
+      groundingStatus: "source-anchored",
+      sourceAnchor: contract.id,
+      sourceAnchorTitle: anchor?.caption ?? anchor?.title ?? contract.id,
+      matchReason: "exact model-authored sourceFormula contract projection",
+      confidence: 1,
+      justification: `The model-authored Learning Unit Contract assigns canonical source formula ${contract.id} to this page.`,
+    };
   });
 }
 
@@ -4528,28 +5329,31 @@ function assessModelAuthoredLessonQuality(
     assignedVisualUrls: string[];
     unavailableCitations?: { detect: (prose: string) => string[] };
     subsection: LearningSubsectionPlan;
-    sourceFormulaFigures: SourceFigure[];
+    canonicalSourceAnchors: Readonly<Record<string, CanonicalSourceAnchor>>;
   },
 ): ReturnType<typeof assessLessonQuality> {
   const base = assessLessonQuality(body, {
     assignedVisualUrls: options.assignedVisualUrls,
     unavailableCitations: options.unavailableCitations,
   });
-  const groundedFormulaIds = new Set(
-    formulaGroundingEntries(
-      extractQuartzMath(normalizeQuartzMarkdown(body)),
-      options.sourceFormulaFigures,
-    )
-      .filter((entry) => entry.groundingStatus === "source-anchored" && entry.sourceAnchor)
-      .map((entry) => entry.sourceAnchor as string),
+  const pageFormulas = new Set(
+    extractQuartzMath(normalizeQuartzMarkdown(body))
+      .filter((expression) => expression.display)
+      .map((expression) => normalizedFormulaForFrontmatter(expression.formula))
+      .filter(Boolean),
   );
   const formulaProblems: QualityProblem[] = (options.subsection.sourceFormulaContracts ?? [])
-    .filter((formula) => !groundedFormulaIds.has(formula.id))
+    .filter((formula) => {
+      const anchor = options.canonicalSourceAnchors[formula.id];
+      const exactText = anchor?.kind === "formula" ? anchor.exactText?.trim() : "";
+      return !exactText || !pageFormulas.has(normalizedFormulaForFrontmatter(exactText));
+    })
     .map((formula) => ({
       code: "missing-source-formula",
-      message: `required source formula ${formula.id} is not actually explained in the lesson`,
+      message: `required source formula ${formula.id} is not reproduced verbatim as a displayed equation in the lesson`,
       hard: true,
       evidence: [
+        options.canonicalSourceAnchors[formula.id]?.exactText ?? "canonical equation transcription unavailable",
         formula.teachingGoal,
         ...(formula.termsToDefine ?? []),
       ].filter(Boolean),
@@ -4572,11 +5376,8 @@ function sourceFormulaFiguresForSubsection(
   // grounded to another unit's formula and then rejected by the pre-write
   // family guard. Pages without a formula contract get no source-formula
   // candidates; their math remains honestly conceptual unless reconciled later.
-  const existing = formulaCandidatesForUnit(
-    sourceFormulaFigures(context),
-    subsection.sourceFormulaContracts ?? [],
-  );
-  return existing;
+  const selectedIds = new Set((subsection.sourceFormulaContracts ?? []).map((formula) => formula.id));
+  return sourceFormulaFigures(context).filter((formula) => selectedIds.has(formula.figureId));
 }
 
 function renderLearningMapMarkdown(map: ProposedLearningMap): string {
@@ -4746,6 +5547,15 @@ function sourceCoverageMarkdown({
   const addMode = (mode: string, line: string) => {
     coverageModes.get(mode)?.push(line);
   };
+  const authoredOmissionReason = (artifactId: string): string => {
+    const reason = unusedFigureReasons.get(artifactId)?.trim();
+    if (!reason) {
+      throw new Error(
+        `Source coverage cannot project ${artifactId}: its model-authored omission reason is missing.`,
+      );
+    }
+    return reason;
+  };
   for (const assignment of sourceArtifactAssignments) {
     const page = pageByUnit.get(assignment.assignedLearningUnitId);
     const target = page ? wikilinkForRelPath(page.relPath, page.title) : `unit ${assignment.assignedLearningUnitId}`;
@@ -4776,7 +5586,7 @@ function sourceCoverageMarkdown({
     }
   }
   for (const figure of context.sourceFigures.filter((figure) => !allFulfilledIds.has(figure.figureId) && !assignedIds.has(figure.figureId))) {
-    addMode("Intentionally Omitted", `- ${figure.figureId}: ${unusedFigureReasons.get(figure.figureId) ?? "Not assigned by the Learning Unit Contract."}`);
+    addMode("Intentionally Omitted", `- ${figure.figureId}: ${authoredOmissionReason(figure.figureId)}`);
   }
   const lines = [
     "# Source Coverage",
@@ -4813,7 +5623,7 @@ function sourceCoverageMarkdown({
     for (const formula of formulaFigures) {
       const assignments = assignmentByArtifact.get(formula.figureId) ?? [];
       if (assignments.length === 0) {
-        lines.push(`- ${formula.figureId}: not assigned by the Learning Unit Contract`);
+        lines.push(`- ${formula.figureId}: omitted; ${authoredOmissionReason(formula.figureId)}`);
         continue;
       }
       for (const assignment of assignments) {
@@ -4834,7 +5644,7 @@ function sourceCoverageMarkdown({
               `- ${figure.figureId}: ${
                 assignedIds.has(figure.figureId)
                   ? "assigned by the Learning Unit Contract but not fulfilled in final page metadata"
-                  : unusedFigureReasons.get(figure.figureId) ?? "Not assigned by the Learning Unit Contract."
+                  : authoredOmissionReason(figure.figureId)
               }`,
           )
       : ["- None."]),
@@ -4984,6 +5794,10 @@ const LEARN_RUN_ROLLBACK_PATHS = [
   ".breadboard/semantic-migration.json",
   ".breadboard/source-visuals.json",
   ".breadboard/visual-index.json",
+  ".breadboard/visual-contract-executability-reviews.json",
+  ".breadboard/visual-decision-records.json",
+  ".breadboard/visual-necessity-decisions.json",
+  ".breadboard/visual-necessity-decisions.md",
   ".breadboard/visualization-plan.json",
   ".breadboard/visualization-coverage.json",
   ".breadboard/visualization-report.md",
@@ -5419,6 +6233,10 @@ function clearSourceMapForRegeneration({
   const removedPaths: string[] = [];
   removeClusterPath(clusterDir, ".breadboard/planning", removedPaths);
   removeClusterPath(clusterDir, ".breadboard/learning-unit-contract.json", removedPaths);
+  removeClusterPath(clusterDir, ".breadboard/visual-contract-executability-reviews.json", removedPaths);
+  removeClusterPath(clusterDir, ".breadboard/visual-decision-records.json", removedPaths);
+  removeClusterPath(clusterDir, ".breadboard/visual-necessity-decisions.json", removedPaths);
+  removeClusterPath(clusterDir, ".breadboard/visual-necessity-decisions.md", removedPaths);
   removeClusterPath(clusterDir, ".breadboard/visualization-plan.json", removedPaths);
   removeClusterPath(clusterDir, ".breadboard/visualization-coverage.json", removedPaths);
   removeClusterPath(clusterDir, ".breadboard/visualization-report.md", removedPaths);
@@ -5464,38 +6282,6 @@ async function cleanupLearnArtifactsAfterCancel({
   return result;
 }
 
-function textTokens(value: string): Set<string> {
-  return new Set(
-    value
-      .toLowerCase()
-      .split(/[^a-z0-9]+/g)
-      .filter((word) => word.length > 3),
-  );
-}
-
-function tokenOverlap(a: Set<string>, b: Set<string>): number {
-  let count = 0;
-  for (const item of a) if (b.has(item)) count += 1;
-  return count;
-}
-
-/** Index of the paragraph most related to `text` (for inserting a visual next
- * to the prose it supports). Falls back to just after the intro. */
-function bestParagraphIndex(paragraphs: string[], text: string): number {
-  const target = textTokens(text);
-  let bestIndex = Math.min(1, paragraphs.length - 1);
-  let bestScore = 0;
-  paragraphs.forEach((paragraph, index) => {
-    if (paragraph.startsWith("```") || paragraph.startsWith("![")) return;
-    const score = tokenOverlap(target, textTokens(paragraph));
-    if (score > bestScore) {
-      bestScore = score;
-      bestIndex = index;
-    }
-  });
-  return bestIndex;
-}
-
 function isVisualSourceArtifactId(id: string): boolean {
   return /\.P\d+\.(?:F|G|T)\d+$/i.test(id);
 }
@@ -5511,9 +6297,9 @@ function assignedVisualArtifactIdsForUnit(
 }
 
 /**
- * Stage 3 assignment for one page: the plan's sourceVisualsToEmbed wins; when
- * the plan named none, fall back to caption/token overlap so central visuals
- * still land on a relevant page. `claimed` keeps a visual on exactly one page.
+ * Stage 3 assignment for one page: project only the source visual IDs owned by
+ * the model-authored Learning Unit Contract. `claimed` verifies one-page
+ * ownership; code never ranks, substitutes, or caps the model's selection.
  */
 function assignSourceVisualsForSubsection({
   visuals,
@@ -5543,354 +6329,12 @@ function assignSourceVisualsForSubsection({
     .map((id) => available.find((visual) => visual.sourceVisualId === id))
     .filter((visual): visual is SourceVisual => Boolean(visual));
 
-  let chosen = planned;
-
-  // Semantic assignment belongs to the Learning Unit Contract. If more than
-  // the page cap was planned, keep the first planned items and let validation
-  // reject the contract/page rather than silently broadening the page.
-  if (primaryIds.length === 0) {
-    chosen = chosen.slice(0, MAX_VISUALS_PER_PAGE);
-  }
+  const chosen = planned;
   for (const visual of chosen) claimed.add(visual.sourceVisualId);
   return chosen;
 }
 
-/** Stage 5: guarantee every assigned source visual appears in the body as a
- * real Markdown image near its most relevant paragraph. The model is asked to
- * weave them in; this is the deterministic backstop. */
 const EMBEDDED_VISUAL_BLOCK_RE = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
-
-function stripEmbeddedVisualBlocks(markdown: string): string {
-  return markdown.replace(EMBEDDED_VISUAL_BLOCK_RE, "").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-// Hard dynamic concepts that genuinely need an interactive visual, each mapped
-// to the interactive renderer type that teaches it. When a lesson body/title
-// mentions one of these, the pipeline attempts to generate that visual (the
-// model may still decline, but for these concepts it should not).
-interface HardConcept {
-  test: RegExp;
-  visualType: string;
-  concept: string;
-  reason: string;
-}
-const HARD_CONCEPTS: HardConcept[] = [
-  {
-    test: /\bleaky integrate[- ]and[- ]fire\b|\blif neuron\b|\bmembrane potential\b|\bfiring threshold\b|\brefractory\b/i,
-    visualType: "lif_neuron",
-    concept: "leaky integrate-and-fire membrane dynamics",
-    reason: "Learners need to watch the potential accumulate, leak, cross threshold, spike, and reset over time.",
-  },
-  {
-    test: /\brate coding\b|\btemporal coding\b|\bspike timing\b(?!.*plasticity)|\bfirst[- ]spike latency\b/i,
-    visualType: "neural_coding",
-    concept: "rate coding versus temporal coding",
-    reason: "Learners need to compare spike count against spike timing for the same stimulus.",
-  },
-  {
-    test: /\bspike[- ]timing[- ]dependent plasticity\b|\bstdp\b/i,
-    visualType: "stdp_window",
-    concept: "the STDP timing window",
-    reason: "Learners need to drag the pre/post timing difference and see the synaptic weight change sign.",
-  },
-  {
-    test: /\baccuracy[- ,].*\b(latency|energy)\b|\btradeoff\b|\btrade[- ]off\b|\benergy per inference\b|\bspike count\b/i,
-    visualType: "tradeoff_explorer",
-    concept: "the accuracy / latency / energy tradeoff across model families",
-    reason: "Learners need to change the deployment priority and see which model family wins.",
-  },
-];
-
-/** First hard concept referenced by this page, or null. */
-function detectHardConcept(subsection: LearningSubsectionPlan, body: string): HardConcept | null {
-  const haystack = [subsection.title, subsection.purpose, body].join("\n");
-  return HARD_CONCEPTS.find((concept) => concept.test.test(haystack)) ?? null;
-}
-
-type VisualSourceAnchor = VisualSpec["sourceAnchors"][number];
-
-function sourceAnchorFromId(anchorId: string, sourceFigures: SourceFigure[]): VisualSourceAnchor | null {
-  const clean = anchorId.trim();
-  if (!/^S\d+\.P\d+\.[A-Z]\d+$/i.test(clean)) return null;
-  const figure = sourceFigures.find((item) => item.figureId === clean);
-  // A code-shaped label copied from source prose is only a candidate. It may
-  // become a visual anchor after its PDF page is materialized into the
-  // SourceVisual ledger, never merely because the string looks canonical.
-  if (!figure) return null;
-  const page = figure.page;
-  const anchor: VisualSourceAnchor = {
-    description: figure.caption?.trim() || clean,
-  };
-  if (figure.sourceId) anchor.sourceId = figure.sourceId;
-  if (page !== undefined && Number.isFinite(page)) anchor.page = page;
-  if (/\.E\d+$/i.test(clean)) anchor.equationId = clean;
-  else if (/\.T\d+$/i.test(clean)) anchor.tableId = clean;
-  else anchor.figureId = clean;
-  return anchor;
-}
-
-function anchorCompatibleWithVisual(type: string, anchor: VisualSourceAnchor): boolean {
-  const id = String(anchor.figureId ?? anchor.tableId ?? anchor.equationId ?? "");
-  return anchorTextCompatibleWithVisualType(type, [id, anchor.description, anchor.sourceTitle].filter(Boolean).join(" "));
-}
-
-function uniqueSourceAnchors(anchors: VisualSourceAnchor[]): VisualSourceAnchor[] {
-  const seen = new Set<string>();
-  const out: VisualSourceAnchor[] = [];
-  for (const anchor of anchors) {
-    const key = anchor.equationId ?? anchor.tableId ?? anchor.figureId ?? anchor.textAnchorId ?? `${anchor.sourceId ?? ""}:${anchor.page ?? ""}:${anchor.description}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(anchor);
-  }
-  return out;
-}
-
-type MetricCalculatorFamily = "accuracy" | "latency" | "spike-count" | "energy" | "efficiency" | "convergence";
-
-const METRIC_CALCULATOR_FAMILIES: MetricCalculatorFamily[] = [
-  "accuracy",
-  "latency",
-  "spike-count",
-  "energy",
-  "efficiency",
-  "convergence",
-];
-
-const METRIC_CALCULATOR_LABELS: Record<MetricCalculatorFamily, string> = {
-  accuracy: "accuracy",
-  latency: "latency",
-  "spike-count": "spike count",
-  energy: "energy",
-  efficiency: "normalized efficiency",
-  convergence: "convergence time",
-};
-
-function titleCaseMetricLabel(label: string): string {
-  return label
-    .split(/\s+/)
-    .map((word) => word.toUpperCase() === word ? word : `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`)
-    .join(" ");
-}
-
-const METRIC_CALCULATOR_PATTERNS: Record<MetricCalculatorFamily, RegExp> = {
-  accuracy: /\baccuracy\b|\bcorrect predictions?\b|\.E1\b/i,
-  latency: /\blatency\b|\bdecision time\b|\.E2\b/i,
-  "spike-count": /\bspike[- ]?count\b|\btotal spikes?\b|\.E3\b/i,
-  energy: /\benergy\b|\benergy per spike\b|\.E4\b/i,
-  efficiency: /\befficien|\bnormalized\b|accuracy over energy|\.E5\b/i,
-  convergence: /\bconvergence\b|\btarget accuracy\b|\bepochs?\b|\.E6\b/i,
-};
-
-const METRIC_CALCULATOR_CONTROLS: Record<MetricCalculatorFamily, NonNullable<VisualSpec["controls"]>> = {
-  accuracy: [
-    { name: "correct", label: "Correct predictions", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 920 },
-    { name: "total", label: "Total predictions", type: "slider", min: 100, max: 2000, step: 50, defaultValue: 1000 },
-  ],
-  latency: [
-    { name: "decisionTime", label: "Decision time", type: "slider", min: 1, max: 100, step: 1, defaultValue: 24 },
-  ],
-  "spike-count": [
-    { name: "spikeCount", label: "Spike count", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 180 },
-  ],
-  energy: [
-    { name: "spikeCount", label: "Spike count", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 180 },
-    { name: "energyPerSpike", label: "Energy per spike", type: "slider", min: 0.0005, max: 0.01, step: 0.0005, defaultValue: 0.002 },
-  ],
-  efficiency: [
-    { name: "correct", label: "Correct predictions", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 920 },
-    { name: "total", label: "Total predictions", type: "slider", min: 100, max: 2000, step: 50, defaultValue: 1000 },
-    { name: "spikeCount", label: "Spike count", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 180 },
-    { name: "energyPerSpike", label: "Energy per spike", type: "slider", min: 0.0005, max: 0.01, step: 0.0005, defaultValue: 0.002 },
-  ],
-  convergence: [
-    { name: "correct", label: "Correct predictions", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 920 },
-    { name: "total", label: "Total predictions", type: "slider", min: 100, max: 2000, step: 50, defaultValue: 1000 },
-    { name: "decisionTime", label: "Decision time", type: "slider", min: 1, max: 100, step: 1, defaultValue: 24 },
-  ],
-};
-
-function metricCalculatorFamiliesForSubsection(subsection: LearningSubsectionPlan): MetricCalculatorFamily[] {
-  const formulaText = (subsection.sourceFormulaContracts ?? [])
-    .map((formula) => [formula.id, formula.teachingGoal, ...(formula.termsToDefine ?? [])].join(" "))
-    .join(" ");
-  const text = [
-    subsection.title,
-    subsection.purpose,
-    subsection.learningQuestion,
-    ...(subsection.newConcepts ?? []),
-    ...(subsection.conceptTags ?? []),
-    ...(subsection.sourceAnchors ?? []),
-    formulaText,
-  ].join(" ");
-  return METRIC_CALCULATOR_FAMILIES.filter((family) => METRIC_CALCULATOR_PATTERNS[family].test(text));
-}
-
-function focusMetricCalculatorSpec(spec: VisualSpec, subsection: LearningSubsectionPlan): VisualSpec {
-  if (spec.type !== "metric_calculator") return spec;
-  const families = metricCalculatorFamiliesForSubsection(subsection);
-  if (families.length === 0) return spec;
-  const controlsByName = new Map<string, NonNullable<VisualSpec["controls"]>[number]>();
-  for (const family of families) {
-    for (const control of METRIC_CALCULATOR_CONTROLS[family]) {
-      controlsByName.set(control.name, { ...control });
-    }
-  }
-  const labels = families.map((family) => METRIC_CALCULATOR_LABELS[family]);
-  const titleLabels = labels.map(titleCaseMetricLabel);
-  spec.title = titleLabels.length === 1 ? `${titleLabels[0]} Calculator` : `${titleLabels.join(" and ")} Calculator`;
-  spec.controls = [...controlsByName.values()];
-  spec.inputs = spec.controls.map((control) => control.label.toLowerCase());
-  spec.outputs = labels;
-  spec.conceptTargets = labels;
-  spec.pedagogicalPurpose = `Let the learner manipulate inputs for ${labels.join(", ")} and observe how the selected metric responds.`;
-  spec.caption = `Adjust the controls to see how ${labels.join(", ")} changes with the chosen inputs.`;
-  spec.regenerationPrompt = `Regenerate this metric calculator so its controls and readouts focus only on ${labels.join(", ")}.`;
-  return spec;
-}
-
-function formulaFamilyForVisualSourceAnchor(anchor: VisualSourceAnchor): string | null {
-  return formulaMetricFamily([anchor.equationId, anchor.description, anchor.sourceTitle].filter(Boolean).join(" "));
-}
-
-function roleForMetricAnchorFamily(family: string | null, targetFamilies: Set<string>): "input" | "output_formula" | "comparison_basis" | "context" {
-  if (family && targetFamilies.has(family)) return "output_formula";
-  if (family === "accuracy" || family === "energy" || family === "spike-count") return "input";
-  return "context";
-}
-
-function filterMetricCalculatorAnchors(spec: VisualSpec): VisualSpec {
-  if (spec.type !== "metric_calculator" || !spec.sourceAnchors || spec.sourceAnchors.length === 0) return spec;
-  const labels = [
-    ...(spec.outputs ?? []),
-    ...(spec.conceptTargets ?? []),
-    spec.title,
-    spec.caption,
-    spec.pedagogicalPurpose,
-  ].join(" ");
-  const expected = new Set(
-    METRIC_CALCULATOR_FAMILIES.filter((family) => METRIC_CALCULATOR_PATTERNS[family].test(labels)),
-  );
-  if (expected.size === 0) return spec;
-  if (expected.has("efficiency")) {
-    expected.add("accuracy");
-    expected.add("energy");
-  }
-  if (expected.has("energy")) expected.add("spike-count");
-  spec.sourceAnchors = spec.sourceAnchors.filter((anchor) => {
-    const family = formulaFamilyForVisualSourceAnchor(anchor);
-    return !family || expected.has(family as MetricCalculatorFamily);
-  }).map((anchor) => {
-    const family = formulaFamilyForVisualSourceAnchor(anchor);
-    const role = roleForMetricAnchorFamily(family, new Set(METRIC_CALCULATOR_FAMILIES.filter((candidate) => METRIC_CALCULATOR_PATTERNS[candidate].test(labels))));
-    return {
-      ...anchor,
-      role: anchor.role ?? role,
-      reason: anchor.reason ?? (
-        role === "output_formula"
-          ? `This is the metric formula the calculator teaches for ${family ?? "the target metric"}.`
-          : role === "input"
-            ? `This formula supplies an input needed to compute ${spec.outputs?.join(", ") || "the target metric"}.`
-            : `This source anchor provides context for ${spec.outputs?.join(", ") || "the target metric"}.`
-      ),
-    };
-  });
-  return spec;
-}
-
-function proseConceptForVisual(type: string): { label: string; pattern: RegExp } | null {
-  switch (type) {
-    case "lif_neuron":
-      return { label: "lif membrane threshold dynamics", pattern: /\blif\b|leaky integrate|integrate[- ]and[- ]fire|membrane potential.*threshold|threshold.*reset/i };
-    case "neural_coding":
-      return { label: "rate and temporal spike coding", pattern: /rate coding|temporal coding|spike trains? encode|encoding information/i };
-    case "stdp_window":
-      return { label: "spike timing dependent plasticity", pattern: /\bstdp\b|spike[- ]timing dependent plasticity|pre.*post.*(?:weight|synaptic)|synaptic plasticity/i };
-    case "tradeoff_explorer":
-      return { label: "metric tradeoff reasoning", pattern: /accuracy.*latency.*energy|latency.*energy.*accuracy|spike count.*energy|trade[- ]off/i };
-    case "metric_calculator":
-      return { label: "metric definition", pattern: /metric|formula|accuracy|latency|energy|spike count|convergence/i };
-    case "training_curve":
-      return { label: "training curve behavior", pattern: /training curve|learning curve|convergence|epoch|training loss|target accuracy/i };
-    default:
-      return null;
-  }
-}
-
-function sourceTextAnchorForVisual({
-  visualType,
-  sourceContext,
-}: {
-  visualType: string;
-  sourceContext: unknown;
-}): VisualSourceAnchor | null {
-  const concept = proseConceptForVisual(visualType);
-  if (!concept) return null;
-  const dossier = sourceContext && typeof sourceContext === "object" && "dossier" in sourceContext
-    ? (sourceContext as { dossier?: unknown }).dossier
-    : sourceContext;
-  const snippets = dossier && typeof dossier === "object" && Array.isArray((dossier as { relevantSourceSnippets?: unknown }).relevantSourceSnippets)
-    ? ((dossier as { relevantSourceSnippets: Array<Record<string, unknown>> }).relevantSourceSnippets)
-    : [];
-  for (const snippet of snippets) {
-    const excerpt = String(snippet.excerpt ?? "").replace(/\s+/g, " ").trim();
-    const title = String(snippet.title ?? "").trim();
-    const sourceId = String(snippet.sourceId ?? "").trim();
-    if (!excerpt || !concept.pattern.test(`${title} ${excerpt}`)) continue;
-    const sourcePart = safeLearnFileSegment(sourceId || "source", "source").replace(/\s+/g, "-").toLowerCase();
-    const conceptPart = safeLearnFileSegment(concept.label, "concept").replace(/\s+/g, "-").toLowerCase();
-    const anchor: VisualSourceAnchor = {
-      textAnchorId: `text-${sourcePart}-${conceptPart}`,
-      description: `Source prose explains ${concept.label}: ${excerpt.slice(0, 220)}`,
-    };
-    if (sourceId) anchor.sourceId = sourceId;
-    if (title) anchor.sourceTitle = title;
-    return anchor;
-  }
-  return null;
-}
-
-function visualAnchorIdsForPage({
-  subsection,
-  sourceFigures,
-}: {
-  subsection: LearningSubsectionPlan;
-  sourceFigures: SourceFigure[];
-}): string[] {
-  const ids = [
-    ...sourceFigures.map((figure) => figure.figureId),
-    ...(subsection.sourceAnchors ?? []).filter((anchor) => /^S\d+\.P\d+\.[A-Z]\d+$/i.test(anchor)),
-  ];
-  return [...new Set(ids)];
-}
-
-type PageVisualIntent = {
-  spec: VisualSpec | null;
-  suppressGeneric: boolean;
-  reason?: string;
-};
-
-function pageVisualIntent({
-  gardenId,
-  pageSlug,
-  sectionTitle,
-  subsection,
-}: {
-  gardenId: string;
-  pageSlug: string;
-  sectionTitle: string;
-  subsection: LearningSubsectionPlan;
-}): PageVisualIntent {
-  const pageText = [sectionTitle, subsection.title, subsection.purpose, ...(subsection.conceptTags ?? [])].join(" ");
-  if (/open challenges?|unresolved|limitations?|future work|remaining/i.test(pageText)) {
-    return {
-      spec: null,
-      suppressGeneric: true,
-      reason: "This page discusses unresolved challenges rather than a concrete dynamic mechanism with a supported renderer.",
-    };
-  }
-  return { spec: null, suppressGeneric: false };
-}
 
 /**
  * Stage 6 reconciliation: one stable ID everywhere.
@@ -5916,13 +6360,11 @@ async function reconcileInteractiveVisuals({
   pageId,
   pageRelPath,
   markdown,
-  sectionTitle,
   subsection,
   sourceContext,
   sourceFigures,
   visualizationPlan,
   visualizationOutcomes,
-  generatedVisualBudget,
 }: {
   client: OpenAI;
   model: string;
@@ -5933,18 +6375,13 @@ async function reconcileInteractiveVisuals({
   pageId: string;
   pageRelPath: string;
   markdown: string;
-  sectionTitle: string;
   subsection: LearningSubsectionPlan;
   sourceContext: unknown;
   sourceFigures: SourceFigure[];
   visualizationPlan: VisualizationPlan;
   visualizationOutcomes: VisualizationPublicationOutcome[];
-  generatedVisualBudget: { published: number; max: number; maxPerPage: number; perPage: Map<string, number> };
 }): Promise<{ markdown: string; visualIds: string[] }> {
-  const pageSlug = pageRelPath.replace(/\.md$/i, "");
   const keptIds: string[] = [];
-  const intent = pageVisualIntent({ gardenId, pageSlug, sectionTitle, subsection });
-  const pageAnchorIds = visualAnchorIdsForPage({ subsection, sourceFigures });
   const opportunity = visualizationPlan.opportunities.find(
     (candidate) => candidate.learningUnitId === subsection.learningUnitId,
   );
@@ -5962,91 +6399,6 @@ async function reconcileInteractiveVisuals({
     else visualizationOutcomes.push(outcome);
   };
 
-  const enrichVisualSpec = (spec: VisualSpec): VisualSpec => {
-    spec = focusMetricCalculatorSpec(spec, subsection);
-    spec.gardenId = gardenId;
-    spec.pageId = pageSlug;
-    spec.pagePath = pageRelPath;
-    spec.learningGoal = spec.learningGoal || subsection.purpose || sectionTitle;
-    spec.inputs =
-      spec.inputs && spec.inputs.length > 0
-        ? spec.inputs
-        : (spec.controls ?? []).map((control) => `${control.label} control`).slice(0, 6);
-    if (!spec.inputs || spec.inputs.length === 0) spec.inputs = ["Learner-adjusted interactive controls"];
-    spec.outputs =
-      spec.outputs && spec.outputs.length > 0
-        ? spec.outputs
-        : [spec.caption || spec.pedagogicalPurpose || "Interactive comparison output"];
-
-    const existingAnchors = spec.sourceAnchors ?? [];
-    const derivedAnchors = pageAnchorIds
-      .map((anchorId) => sourceAnchorFromId(anchorId, sourceFigures))
-      .filter((anchor): anchor is VisualSourceAnchor => Boolean(anchor));
-    // Type-compatibility gate: a LIF simulator must never be "grounded" in
-    // energy/latency/result anchors just because they were assigned to the
-    // page, and a tradeoff explorer must ground in metric/result figures. This
-    // prevents fake grounding where sourceAnchors is non-empty but semantically
-    // wrong for the renderer.
-    const compatibleConcreteAnchors = uniqueSourceAnchors([...existingAnchors, ...derivedAnchors]).filter((anchor) =>
-      anchorCompatibleWithVisual(spec.type, anchor),
-    );
-    // Apply the metric-calculator anchor filter BEFORE deciding the grounding
-    // status. That filter can strip anchors that pass the generic compatibility
-    // gate but do not match this calculator's metric families, so the status
-    // must reflect the anchors that actually survive onto the spec — never a
-    // pre-filter set. Deciding "source-grounded" from the pre-filter list is
-    // exactly what produced a metric_calculator claiming grounding with an empty
-    // sourceAnchors array.
-    spec.sourceAnchors = uniqueSourceAnchors(compatibleConcreteAnchors);
-    spec = filterMetricCalculatorAnchors(spec);
-    const survivingConcreteAnchors = spec.sourceAnchors ?? [];
-    if (survivingConcreteAnchors.length > 0) {
-      spec.sourceGroundingStatus = "source-grounded";
-      spec.justification = spec.justification || "This interactive visual is tied to source visuals or formula anchors assigned to the same lesson page.";
-    } else {
-      const proseAnchor = sourceTextAnchorForVisual({ visualType: spec.type, sourceContext });
-      if (proseAnchor) {
-        spec.sourceAnchors = uniqueSourceAnchors([proseAnchor]);
-        spec.sourceGroundingStatus = "source-derived-conceptual";
-        spec.justification =
-          spec.justification ||
-          "The source explains this concept in prose but does not provide a dedicated figure, so the visual is derived from the source text anchor.";
-      } else {
-        spec.sourceAnchors = [];
-        spec.sourceGroundingStatus = "conceptual-no-direct-source-figure";
-        spec.justification =
-          spec.justification ||
-          "This visual teaches a dynamic concept discussed on the page; no directly matching source figure was assigned to this lesson.";
-      }
-    }
-    return spec;
-  };
-
-  const recordVisual = (spec: VisualSpec) => {
-    spec = enrichVisualSpec(spec);
-    saveVisualSpec(contentPath, gardenId, spec, pageSlug);
-    keptIds.push(spec.id);
-    appendLearnEvent(contentPath, gardenId, "learn_visual_created", {
-      jobId,
-      textbookVersionId,
-      pageId,
-      visualId: spec.id,
-      sourceIds: [...new Set(spec.sourceAnchors.map((anchor) => anchor.sourceId).filter(Boolean))],
-    });
-    for (const anchor of spec.sourceAnchors) {
-      const figureId = anchor.figureId ?? anchor.tableId ?? anchor.equationId;
-      if (!figureId) continue;
-      appendLearnEvent(contentPath, gardenId, "learn_source_figure_linked", {
-        jobId,
-        textbookVersionId,
-        pageId,
-        visualId: spec.id,
-        figureId,
-        sourceId: anchor.sourceId,
-      });
-    }
-  };
-
   // 1) Reconcile blocks the model wrote inline despite instructions. Only
   //    genuinely interactive types survive — there is no static-card fallback
   //    in the renderer, so anything else is removed rather than embedded.
@@ -6057,106 +6409,35 @@ async function reconcileInteractiveVisuals({
     nextMarkdown = removeRawVisualPlaceholders(nextMarkdown, "");
   }
 
-  if (!opportunity || !routeDecision || routeDecision.route === "intentional_omission") {
-    if (intent.reason) {
-      appendLearnEvent(contentPath, gardenId, "learn_visual_skipped", {
-        jobId,
-        textbookVersionId,
-        pageId,
-        reason: intent.reason,
-      });
-    }
-    if (opportunity) {
-      recordOutcome({
-        opportunityId: opportunity.id,
-        status: "intentional_omission",
-        reason: routeDecision?.reason ?? intent.reason ?? "No pedagogically useful interaction was planned.",
-      });
-    }
+  if (!opportunity) {
     return { markdown: nextMarkdown, visualIds: keptIds };
   }
-
-  // 3) Decide which interactive visual this page should get. Only the
-  //    Learning Unit Contract may request one; there is no page-role default
-  //    and no hard-concept auto-add.
-  const contractVisual = subsection.interactiveVisualContract;
-  if (contractVisual && subsection.learningUnitRole) {
-    const compatibilityUnit: LearningUnitContract = {
-      id: subsection.learningUnitId ?? pageSlug,
-      title: subsection.title,
-      role: subsection.learningUnitRole,
-      learningQuestion: subsection.learningQuestion ?? subsection.purpose,
-      prerequisiteConcepts: subsection.prerequisiteConcepts ?? [],
-      newConcepts: subsection.newConcepts ?? [],
-      sourceAnchors: subsection.sourceAnchors ?? [],
-      sourceFigures: subsection.sourceFigureContracts ?? [],
-      sourceFormulas: subsection.sourceFormulaContracts ?? [],
-      sourceTables: subsection.sourceTableContracts ?? [],
-      interactiveVisual: contractVisual,
-      zettelNotes: subsection.zettelNotes ?? [],
-      mustNotRepeat: subsection.mustNotRepeat ?? [],
-      expectedWordRange: subsection.expectedWordRange ?? [700, 1100],
-    };
-    const compat = visualTypeCompatibleWithUnit(contractVisual.visualType, compatibilityUnit);
-    if (!compat.ok) {
-      throw new Error(`Interactive visual "${contractVisual.visualType}" is incompatible with ${pageSlug}: ${compat.reason}`);
-    }
+  if (!routeDecision) {
+    throw new Error(`Visualization plan is missing a route decision for model-authored opportunity "${opportunity.id}".`);
   }
-  const opportunities: Array<{ concept: string; reason: string; preferredType?: string }> = contractVisual
-    ? [
-        {
-          concept: contractVisual.uniqueConcept,
-          reason: contractVisual.whyStaticSourceFigureIsNotEnough,
-          preferredType: routeDecision.selectedRenderer ?? contractVisual.visualType,
-        },
-      ]
-    : (subsection.interactiveVisuals ?? []).map((plan) => ({
-        concept: plan.concept,
-        reason: plan.reason,
-        preferredType: HARD_CONCEPTS.find((c) => c.test.test(`${plan.concept} ${plan.reason}`))?.visualType,
-      }));
-  if (opportunities.length === 0) {
-    opportunities.push({
-      concept: opportunity.learningObjective,
-      reason: opportunity.pedagogicalReason,
-      preferredType: routeDecision.selectedRenderer,
+  if (routeDecision.route === "intentional_omission") {
+    recordOutcome({
+      opportunityId: opportunity.id,
+      status: "intentional_omission",
+      reason: routeDecision.reason,
     });
+    appendLearnEvent(contentPath, gardenId, "learn_visual_skipped", {
+      jobId,
+      textbookVersionId,
+      pageId,
+      visualizationId: opportunity.id,
+      reason: routeDecision.reason,
+    });
+    return { markdown: nextMarkdown, visualIds: keptIds };
+  }
+  if (routeDecision.route !== "generated_module") {
+    throw new Error(
+      `Visualization opportunity "${opportunity.id}" selected unsupported route "${routeDecision.route}"; ` +
+        "active Learn visuals must use the model-authored generated-module contract.",
+    );
   }
 
-  if (routeDecision.route === "generated_module") {
-    if (generatedVisualBudget.published >= generatedVisualBudget.max) {
-      const reason = `Generated visualization garden limit (${generatedVisualBudget.max}) reached.`;
-      recordOutcome({ opportunityId: opportunity.id, status: "failed_validation", reason });
-      appendLearnEvent(contentPath, gardenId, "visual_resource_limit_reached", {
-        jobId,
-        textbookVersionId,
-        pageId,
-        visualizationId: opportunity.id,
-        limit: generatedVisualBudget.max,
-      });
-      if (opportunity.requirement === "required") {
-        throw new Error(`Required interactive visual "${opportunity.id}" could not be generated: ${reason}`);
-      }
-      return { markdown: nextMarkdown, visualIds: keptIds };
-    }
-    const publishedOnPage = generatedVisualBudget.perPage.get(pageRelPath) ?? 0;
-    if (publishedOnPage >= generatedVisualBudget.maxPerPage) {
-      const reason = `Generated visualization page limit (${generatedVisualBudget.maxPerPage}) reached.`;
-      recordOutcome({ opportunityId: opportunity.id, status: "failed_validation", reason });
-      appendLearnEvent(contentPath, gardenId, "visual_resource_limit_reached", {
-        jobId,
-        textbookVersionId,
-        pageId,
-        visualizationId: opportunity.id,
-        limitScope: "page",
-        limit: generatedVisualBudget.maxPerPage,
-      });
-      if (opportunity.requirement === "required") {
-        throw new Error(`Required interactive visual "${opportunity.id}" could not be generated: ${reason}`);
-      }
-      return { markdown: nextMarkdown, visualIds: keptIds };
-    }
-
+  {
     const marker = `<!-- ${opportunity.insertionAnchor} -->`;
     if (!nextMarkdown.includes(marker)) {
       const blocks = nextMarkdown.trim().split(/\n{2,}/);
@@ -6178,15 +6459,13 @@ async function reconcileInteractiveVisuals({
       sourceContext,
       sourceFigureSummaries: sourceFigures,
       formulaDefinitions: subsection.sourceFormulaContracts ?? [],
-      // Required interactions get the generator's full bounded repair budget.
-      // This is much cheaper than discovering the missing visual after every
-      // learner page has been written and rerunning garden-wide repair passes.
-      maxAttempts: opportunity.requirement === "required" ? 5 : undefined,
-      availableSourceAnchorIds: new Set([
-        ...(subsection.sourceAnchors ?? []),
-        ...pageAnchorIds,
-        ...sourceFigures.map((figure) => figure.figureId),
-      ]),
+      // Every interaction in this plan was explicitly selected by the model.
+      // Give each one the same bounded repair budget; code may not silently
+      // demote a recommended or optional model decision after planning.
+      maxAttempts: 5,
+      availableSourceAnchorIds: new Set(
+        Object.keys(buildCanonicalSourceAnchors(path.join(contentPath, gardenId), { allowInferredFormulaText: false })),
+      ),
       onEvent: (event) => appendLearnEvent(contentPath, gardenId, event.type, {
         ...event.data,
         jobId,
@@ -6199,34 +6478,8 @@ async function reconcileInteractiveVisuals({
       const block = buildGeneratedVisualBlock(result.manifest.id, result.manifest.version);
       nextMarkdown = nextMarkdown.replace(marker, `${marker}\n\n${block}`);
       keptIds.push(result.manifest.id);
-      generatedVisualBudget.published += 1;
-      generatedVisualBudget.perPage.set(pageRelPath, publishedOnPage + 1);
       recordOutcome({ opportunityId: opportunity.id, status: "generated_published" });
     } else {
-      const fallbackType = routeDecision.selectedRenderer;
-      const fallback = fallbackType
-        ? buildDeterministicVisual(fallbackType, { gardenId, pageSlug })
-        : null;
-      if (fallback) {
-        recordVisual(fallback);
-        nextMarkdown = nextMarkdown.replace(marker, `${marker}\n\n${buildVisualBlock(fallback)}`);
-        recordOutcome({
-          opportunityId: opportunity.id,
-          status: "trusted_published",
-          reason: `Generated module attempts were exhausted; used compatible trusted renderer ${fallbackType}.`,
-        });
-        appendLearnEvent(contentPath, gardenId, "visual_fallback_used", {
-          jobId,
-          textbookVersionId,
-          pageId,
-          visualizationId: opportunity.id,
-          route: "trusted_renderer",
-          renderer: fallbackType,
-          failureCategory: result.failureCategory,
-          reason: result.errors.join("; "),
-        });
-        return { markdown: nextMarkdown, visualIds: keptIds };
-      }
       const status: VisualizationPublicationOutcome["status"] =
         result.failureCategory === "runtime"
           ? "failed_runtime_tests"
@@ -6236,158 +6489,24 @@ async function reconcileInteractiveVisuals({
               ? "failed_compilation"
               : "failed_validation";
       recordOutcome({ opportunityId: opportunity.id, status, reason: result.errors.join("; ") });
-      if (opportunity.requirement === "required") {
-        const criticReviewDidNotComplete =
-          result.failureCategory === "critic" &&
-          result.errors.some((error) => /^Critic review could not complete\b/i.test(error));
-        if (criticReviewDidNotComplete) {
-          throw new Error(
-            `Required interactive visual "${opportunity.id}" compiled and passed its deterministic gates, ` +
-              `but critic review could not complete: ${result.errors.join("; ")}.`,
-          );
-        }
+      const criticReviewDidNotComplete =
+        result.failureCategory === "critic" &&
+        result.errors.some((error) => /^Critic review could not complete\b/i.test(error));
+      if (criticReviewDidNotComplete) {
         throw new Error(
-          `Required interactive visual "${opportunity.id}" could not be generated after its bounded repair attempts` +
-            `${result.failureCategory ? ` (${result.failureCategory})` : ""}: ${result.errors.join("; ") || "no valid visual was produced"}.`,
+          `Model-approved ${opportunity.requirement} interactive visual "${opportunity.id}" compiled and passed its validation and runtime gates, ` +
+            `but critic review could not complete: ${result.errors.join("; ")}.`,
         );
       }
+      throw new Error(
+        `Model-approved ${opportunity.requirement} interactive visual "${opportunity.id}" could not be generated after its bounded repair attempts` +
+          `${result.failureCategory ? ` (${result.failureCategory})` : ""}: ${result.errors.join("; ") || "no valid visual was produced"}.`,
+      );
     }
     return { markdown: nextMarkdown, visualIds: keptIds };
   }
 
-  const embedSpec = (spec: VisualSpec, near: string) => {
-    recordVisual(spec);
-    const paragraphs = nextMarkdown.trim().split(/\n{2,}/);
-    const index = bestParagraphIndex(paragraphs, near);
-    nextMarkdown = [
-      ...paragraphs.slice(0, index + 1),
-      buildVisualBlock(spec),
-      ...paragraphs.slice(index + 1),
-    ].join("\n\n");
-  };
-
-  for (const visualRequest of opportunities.slice(0, 2)) {
-    if (keptIds.length > 0) break; // page already has a working interactive
-
-    // Deterministic builder first for hard dynamic concepts: guaranteed valid,
-    // never declines. Only fall back to the model when no builder matches.
-    if (visualRequest.preferredType) {
-      const built = buildDeterministicVisual(visualRequest.preferredType, { gardenId, pageSlug });
-      if (built) {
-        embedSpec(built, `${visualRequest.concept} ${visualRequest.reason}`);
-        recordOutcome({ opportunityId: opportunity.id, status: "trusted_published" });
-        continue;
-      }
-    }
-
-    const typeHint = visualRequest.preferredType
-      ? ` Use the interactive visual type "${visualRequest.preferredType}".`
-      : "";
-    try {
-      const generated = await generateVisualSpec(client, model, {
-        gardenId,
-        pageId: pageSlug,
-        sectionTitle,
-        subsectionTitle: subsection.title,
-        pageMarkdown: nextMarkdown,
-        sourceContext,
-        sourceFigures,
-        visualOpportunity: `${visualRequest.concept}${visualRequest.reason ? ` — ${visualRequest.reason}` : ""}.${typeHint}`,
-        councilModeOverride: sourceFigures.length > 0 ? "full_council" : "lite_council",
-      });
-      const spec = generated.spec;
-      if (!spec) continue;
-      embedSpec(spec, `${visualRequest.concept} ${visualRequest.reason}`);
-      recordOutcome({ opportunityId: opportunity.id, status: "trusted_published" });
-    } catch {
-      // Model visual failed; a hard concept still gets its deterministic builder
-      // below, other opportunities may simply produce no visual.
-    }
-  }
-
-  if (keptIds.length === 0) {
-    recordOutcome({
-      opportunityId: opportunity.id,
-      status: "failed_validation",
-      reason: `The selected trusted renderer ${routeDecision.selectedRenderer ?? ""} did not produce a valid interactive spec.`,
-    });
-  }
-
   return { markdown: nextMarkdown, visualIds: keptIds };
-}
-
-// Debug-only draft. This is NEVER learner-facing: it is written to
-// .breadboard/debug/failed-pages/ when every generation attempt fails quality
-// gates, so a human can inspect what the model produced. It intentionally
-// carries fallback fingerprints ("The durable concept", "Relevant details:")
-// precisely so the quality critic and validator reject it if it ever leaks.
-function debugFailedSubsectionDraft({
-  sectionNumber,
-  subsectionNumber,
-  subsection,
-  sectionTitle,
-  anchors,
-  sources,
-  assignedVisuals,
-}: {
-  sectionNumber: number;
-  subsectionNumber: number;
-  subsection: LearningSubsectionPlan;
-  sectionTitle: string;
-  anchors: string[];
-  sources: LearnSourceSummary[];
-  assignedVisuals: SourceVisual[];
-}): string {
-  const cleanTitle = subsection.title;
-  const title = `${sectionNumber}.${subsectionNumber} ${cleanTitle}`;
-  const purpose = subsection.purpose || `${cleanTitle} connects the section topic to the concrete ideas a learner needs next.`;
-  const details = fallbackRelevantDetails({ sources, subsection, anchors });
-  const conceptList = (subsection.conceptTags ?? [])
-    .map((tag) => tag.split("/").at(-1)?.replace(/-/g, " "))
-    .filter((value): value is string => Boolean(value))
-    .slice(0, 4);
-  const visualCaptions = assignedVisuals
-    .map((visual) => visual.caption)
-    .filter(Boolean)
-    .slice(0, 3);
-  const topicLower = `${cleanTitle} ${purpose}`.toLowerCase();
-  const snnFraming =
-    /\bsnn|spik|neural network|neuron\b/i.test(topicLower)
-      ? "A conventional neural network usually carries information as continuously changing activation values from layer to layer. A spiking neural network changes the representation: a unit stays quiet until its state crosses a threshold, then it sends a discrete spike at a particular time. That shift makes timing, silence, and event count part of the computation, which is why energy use and latency become central design questions."
-      : `${cleanTitle} is best understood as a bridge between the broad goal of ${sectionTitle} and the smaller mechanism this lesson focuses on. The useful habit is to ask what information has to be represented, what operation changes it, and what constraint makes that operation necessary.`;
-  const relevantDetails =
-    details.length > 0
-      ? details.map((detail) => `- ${detail}`).join("\n")
-      : "- The confirmed learning map did not provide enough local detail for a deeper automatic explanation. The lesson therefore stays close to the section purpose and avoids adding unsupported claims.";
-  const concepts =
-    conceptList.length > 0
-      ? `The durable concepts to keep active are ${conceptList.join(", ")}.`
-      : "The durable concept is the relation between the starting representation, the mechanism that changes it, and the practical tradeoff that follows.";
-  const visuals =
-    visualCaptions.length > 0
-      ? `The visual material attached to this lesson should be read as evidence for the mechanism: ${visualCaptions.join("; ")}.`
-      : "When no figure is attached, read the lesson by tracking the chain from representation to mechanism to consequence.";
-  return [
-    `# ${title}`,
-    "",
-    purpose,
-    "",
-    snnFraming,
-    "",
-    `${concepts} For example, compare two systems that receive mostly unchanged input over time. A dense continuous system still tends to move values through many layers on each update. An event-driven system can let silence mean "nothing important changed" and spend work only when a spike occurs. That example gives the transition a practical meaning: the representation is tied to cost, timing, and the kind of hardware that can run the computation efficiently.`,
-    "",
-    visuals,
-    "",
-    "Relevant details:",
-    "",
-    relevantDetails,
-    "",
-    "Read these details as a sequence. First identify the representation being used. Then ask what event, threshold, formula, or comparison changes that representation. Finally, connect that change to a consequence such as accuracy, latency, energy, convergence, or interpretability. This sequence keeps the lesson from becoming a list of facts: each detail earns its place by explaining why the next detail is needed.",
-    "",
-    `**Question.** Why does ${cleanTitle} matter before reading the later lessons in this section?`,
-    "",
-    `**Answer.** It fixes the mental model for the rest of the section. Once you know what is being represented and why the representation changes, later details become easier to place: a neuron rule describes how an event is produced, a learning rule describes how behavior improves, and an evaluation metric describes the cost of the choice. The lesson is therefore a starting chain that links mechanism to consequence.`,
-  ].join("\n");
 }
 
 function cleanCouncilMarkdown(value: string, fallback: string): string {
@@ -6406,56 +6525,11 @@ function compactFallbackText(value: string): string {
     .trim();
 }
 
-function fallbackKeywords(subsection: LearningSubsectionPlan, anchors: string[]): Set<string> {
-  return new Set(
-    [subsection.title, subsection.purpose, ...anchors, ...(subsection.conceptTags ?? [])]
-      .join(" ")
-      .toLowerCase()
-      .split(/[^a-z0-9]+/g)
-      .filter((word) => word.length > 3 && !["overview", "source", "paper", "textbook"].includes(word)),
-  );
-}
-
-function fallbackRelevantDetails({
-  sources,
-  subsection,
-  anchors,
-}: {
-  sources: LearnSourceSummary[];
-  subsection: LearningSubsectionPlan;
-  anchors: string[];
-}): string[] {
-  const keywords = fallbackKeywords(subsection, anchors);
-  const candidates: Array<{ text: string; score: number }> = [];
-  for (const source of sources) {
-    const rawBlocks = [source.excerpt ?? "", ...(source.body ?? "").split(/\n{2,}/)];
-    for (const block of rawBlocks) {
-      const text = compactFallbackText(block);
-      if (text.length < 80) continue;
-      const words = text.toLowerCase().split(/[^a-z0-9]+/g);
-      const score = words.reduce((sum, word) => sum + (keywords.has(word) ? 1 : 0), 0);
-      candidates.push({ text: text.slice(0, 360), score });
-    }
-  }
-  const seen = new Set<string>();
-  return candidates
-    .sort((a, b) => b.score - a.score || b.text.length - a.text.length)
-    .map((candidate) => candidate.text)
-    .filter((text) => {
-      const key = text.slice(0, 80).toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .slice(0, 3);
-}
-
 // --- PageDossier: compact per-page context for subsection writing -----------
 // A subsection prompt no longer receives the full source map, scope contract,
-// and learning spine. It receives one curated local packet: what this exact
-// page must teach, the source excerpts that ground it, and the visuals
-// assigned to it. Selection is deterministic keyword matching — no extra
-// model calls.
+// and learning spine. It receives one exact local projection of the
+// model-authored contract, its cited canonical source excerpts, and its
+// assigned visuals. Code does not choose semantically similar source text.
 
 type PageDossier = {
   gardenTitle: string;
@@ -6469,6 +6543,7 @@ type PageDossier = {
     learningQuestion?: string;
     prerequisiteConcepts?: string[];
     newConcepts?: string[];
+    syllabusUnitIds?: string[];
     sourceFigures?: LearningSubsectionPlan["sourceFigureContracts"];
     sourceFormulas?: LearningSubsectionPlan["sourceFormulaContracts"];
     sourceTables?: LearningSubsectionPlan["sourceTableContracts"];
@@ -6477,6 +6552,8 @@ type PageDossier = {
     interactiveVisualPlan?: LearningSubsectionPlan["interactiveVisualPlan"];
     teachingMediumPlan?: LearningSubsectionPlan["teachingMediumPlan"];
     zettelNotes?: LearningSubsectionPlan["zettelNotes"];
+    semanticConcepts?: LearningSubsectionPlan["semanticConcepts"];
+    knowledgeClaims?: LearningSubsectionPlan["knowledgeClaims"];
     mustNotRepeat?: string[];
     expectedWordRange?: [number, number];
   };
@@ -6491,13 +6568,14 @@ type PageDossier = {
     outline: string;
   };
 
-  /** The syllabus unit this page serves, when one maps to it. */
-  syllabusUnit?: {
+  /** Exact syllabus units selected for this page by the learning-spine model. */
+  syllabusUnits?: Array<{
+    unitId: string;
     label?: string;
     title: string;
     objectives: string[];
     topics: string[];
-  };
+  }>;
 
   /** Works the course assigns that this garden does not contain. The page must
    * not name, summarize, or teach from any of them. */
@@ -6522,94 +6600,6 @@ type PageDossier = {
   sourceOnly: boolean;
 };
 
-/** Blocks worth quoting: formulas, definitions, examples, figure/table talk. */
-function snippetLooksHighValue(text: string): boolean {
-  return (
-    /[=\u2248\u2264\u2265\u2211\u222b]/.test(text) ||
-    /\b(defin\w*|formula|equation|for example|for instance|figure|table|means that|is called)\b/i.test(text)
-  );
-}
-
-/**
- * Deterministic snippet selector: score source paragraphs against the
- * subsection's keywords, prefer definition/formula/example/figure blocks,
- * deduplicate near-identical blocks, and stop at the per-page budgets.
- */
-function selectRelevantSourceSnippets({
-  sources,
-  keywords,
-  preferredSourceIds,
-}: {
-  sources: LearnSourceSummary[];
-  keywords: Set<string>;
-  /** Documents the syllabus assigns for this page's unit. Their blocks win ties
-   * and outrank equally-scoring blocks elsewhere, so the page is genuinely
-   * built on the assigned reading rather than merely consistent with it. */
-  preferredSourceIds?: ReadonlySet<string>;
-}): Array<{ sourceId: string; title: string; excerpt: string }> {
-  const candidates: Array<{
-    sourceId: string;
-    title: string;
-    excerpt: string;
-    score: number;
-  }> = [];
-  for (const source of sources) {
-    const blocks = [source.excerpt ?? "", ...(source.body ?? "").split(/\n{2,}/)];
-    for (const block of blocks) {
-      const text = compactFallbackText(block);
-      if (text.length < 80) continue;
-      const words = text.toLowerCase().split(/[^a-z0-9]+/g);
-      let score = words.reduce((sum, word) => sum + (keywords.has(word) ? 1 : 0), 0);
-      if (score === 0) continue;
-      if (snippetLooksHighValue(text)) score += 2;
-      if (preferredSourceIds?.has(source.slug)) score += 5;
-      candidates.push({
-        sourceId: source.slug,
-        title: source.title,
-        excerpt: text.slice(0, MAX_CHARS_PER_SNIPPET),
-        score,
-      });
-    }
-  }
-
-  const seen = new Set<string>();
-  const selected: Array<{ sourceId: string; title: string; excerpt: string }> = [];
-  let totalChars = 0;
-  for (const candidate of candidates.sort((a, b) => b.score - a.score)) {
-    if (selected.length >= MAX_SNIPPETS_PER_PAGE) break;
-    const key = `${candidate.sourceId}:${candidate.excerpt.slice(0, 80).toLowerCase()}`;
-    if (seen.has(key)) continue;
-    if (totalChars + candidate.excerpt.length > MAX_TOTAL_SOURCE_CHARS_PER_PAGE) continue;
-    seen.add(key);
-    totalChars += candidate.excerpt.length;
-    selected.push({
-      sourceId: candidate.sourceId,
-      title: candidate.title,
-      excerpt: candidate.excerpt,
-    });
-  }
-
-  // No keyword hit anywhere (very short sources, odd titles): still ground the
-  // page with each source's opening so source-awareness never drops to zero.
-  if (selected.length === 0) {
-    const openingOrder = preferredSourceIds
-      ? [
-          ...sources.filter((source) => preferredSourceIds.has(source.slug)),
-          ...sources.filter((source) => !preferredSourceIds.has(source.slug)),
-        ]
-      : sources;
-    for (const source of openingOrder.slice(0, MAX_SNIPPETS_PER_PAGE)) {
-      const text = compactFallbackText(source.excerpt ?? source.body ?? "");
-      if (text.length < 40) continue;
-      const excerpt = text.slice(0, MAX_CHARS_PER_SNIPPET);
-      if (totalChars + excerpt.length > MAX_TOTAL_SOURCE_CHARS_PER_PAGE) break;
-      totalChars += excerpt.length;
-      selected.push({ sourceId: source.slug, title: source.title, excerpt });
-    }
-  }
-  return selected;
-}
-
 /** Short scope reminders for the dossier's avoid list. */
 function scopeAvoidList(scopeContract: unknown): string[] {
   if (!scopeContract || typeof scopeContract !== "object") return [];
@@ -6619,6 +6609,32 @@ function scopeAvoidList(scopeContract: unknown): string[] {
     .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
     .map((entry) => entry.trim().slice(0, 200))
     .slice(0, 5);
+}
+
+function exactSourceSnippetsForAnchors(input: {
+  anchors: readonly string[];
+  canonicalSourceAnchors: Readonly<Record<string, CanonicalSourceAnchor>>;
+  sources: readonly LearnSourceSummary[];
+}): Array<{ sourceId: string; title: string; excerpt: string }> {
+  const sourceById = new Map(input.sources.map((source) => [source.slug, source]));
+  const snippets: Array<{ sourceId: string; title: string; excerpt: string }> = [];
+  let projectedChars = 0;
+  for (const anchorId of input.anchors) {
+    const anchor = input.canonicalSourceAnchors[anchorId];
+    if (!anchor?.exactText || !anchor.sourceId) continue;
+    const source = sourceById.get(anchor.sourceId);
+    if (!source) continue;
+    const excerpt = anchor.exactText.trim();
+    if (!excerpt) continue;
+    projectedChars += excerpt.length;
+    if (projectedChars > MAX_TOTAL_SOURCE_CHARS_PER_PAGE) {
+      throw new Error(
+        `Model-authored source evidence for this page exceeds the ${MAX_TOTAL_SOURCE_CHARS_PER_PAGE}-character transport limit. Repair the Learning Unit Contract with fewer, more precise canonical anchors.`,
+      );
+    }
+    snippets.push({ sourceId: source.slug, title: source.title, excerpt });
+  }
+  return snippets;
 }
 
 function buildPageDossier({
@@ -6633,6 +6649,7 @@ function buildPageDossier({
   syllabusCoverage,
   assignedVisuals,
   sourceArtifactAssignments,
+  canonicalSourceAnchors,
   sourceOnly,
 }: {
   gardenTitle: string;
@@ -6646,34 +6663,31 @@ function buildPageDossier({
   syllabusCoverage?: SyllabusCoverage | null;
   assignedVisuals: SourceVisual[];
   sourceArtifactAssignments?: SourceArtifactAssignment[];
+  canonicalSourceAnchors: Readonly<Record<string, CanonicalSourceAnchor>>;
   sourceOnly: boolean;
 }): PageDossier {
   const subsectionTitle = subsection.title;
-  const keywords = fallbackKeywords(subsection, anchors);
   const assignedArtifactsForUnit = subsection.learningUnitId && sourceArtifactAssignments
     ? sourceArtifactAssignments.filter((assignment) => assignment.assignedLearningUnitId === subsection.learningUnitId)
     : (subsection.sourceArtifactAssignments ?? []);
-  for (const word of [sectionTitle, ...assignedVisuals.map((visual) => visual.caption)]
-    .join(" ")
-    .toLowerCase()
-    .split(/[^a-z0-9]+/g)) {
-    if (word.length > 3) keywords.add(word);
-  }
 
-  // Which syllabus unit this page serves, and therefore which uploaded reading
-  // the course actually assigns for it.
-  const matchedSyllabusUnit = matchSyllabusUnitForPage(
-    syllabusCoverage ?? null,
-    [
-      subsectionTitle,
-      subsection.purpose ?? "",
-      subsection.learningQuestion ?? "",
-      ...(subsection.conceptTags ?? []),
-      ...(subsection.newConcepts ?? []),
-    ].join(" "),
+  const syllabusCoverageById = new Map(
+    (syllabusCoverage?.units ?? []).map((unit) => [unit.unitId, unit]),
   );
-  const assignedSourceIds = new Set(matchedSyllabusUnit?.availableSourceIds ?? []);
-
+  const matchedSyllabusUnits = (subsection.syllabusUnitIds ?? [])
+    .map((unitId) => syllabusCoverageById.get(unitId))
+    .filter((unit): unit is NonNullable<typeof unit> => Boolean(unit));
+  const dossierSourceAnchorIds = [...new Set([
+    ...anchors,
+    ...(subsection.semanticConcepts ?? []).flatMap((concept) => concept.evidenceAnchors),
+    ...(subsection.knowledgeClaims ?? []).flatMap((claim) => [
+      ...claim.evidenceAnchors,
+      ...(claim.derivationAnchors ?? []),
+    ]),
+    ...(subsection.sourceFigureContracts ?? []).map((figure) => figure.id),
+    ...(subsection.sourceFormulaContracts ?? []).map((formula) => formula.id),
+    ...(subsection.sourceTableContracts ?? []).map((table) => table.id),
+  ])];
   return {
     gardenTitle,
     sectionTitle,
@@ -6687,6 +6701,7 @@ function buildPageDossier({
           learningQuestion: subsection.learningQuestion,
           prerequisiteConcepts: subsection.prerequisiteConcepts,
           newConcepts: subsection.newConcepts,
+          syllabusUnitIds: subsection.syllabusUnitIds,
           sourceFigures: subsection.sourceFigureContracts,
           sourceFormulas: subsection.sourceFormulaContracts,
           sourceTables: subsection.sourceTableContracts,
@@ -6695,6 +6710,8 @@ function buildPageDossier({
           interactiveVisualPlan: subsection.interactiveVisualPlan,
           teachingMediumPlan: subsection.teachingMediumPlan,
           zettelNotes: subsection.zettelNotes,
+          semanticConcepts: subsection.semanticConcepts,
+          knowledgeClaims: subsection.knowledgeClaims,
           mustNotRepeat: subsection.mustNotRepeat,
           expectedWordRange: subsection.expectedWordRange,
         }
@@ -6710,24 +6727,24 @@ function buildPageDossier({
           outline: truncate(syllabus.body, MAX_SYLLABUS_DOSSIER_CHARS),
         }
       : undefined,
-    syllabusUnit: matchedSyllabusUnit
-      ? {
-          label: matchedSyllabusUnit.label,
-          title: matchedSyllabusUnit.title,
-          objectives: matchedSyllabusUnit.objectives,
-          topics: matchedSyllabusUnit.topics,
-        }
+    syllabusUnits: matchedSyllabusUnits.length > 0
+      ? matchedSyllabusUnits.map((unit) => ({
+          unitId: unit.unitId,
+          label: unit.label,
+          title: unit.title,
+          objectives: unit.objectives,
+          topics: unit.topics,
+        }))
       : undefined,
-    unavailableCitations: syllabusCoverage?.missingCitations.length
-      ? syllabusCoverage.missingCitations
+    unavailableCitations: matchedSyllabusUnits.some((unit) => unit.missingCitations.length > 0)
+      ? [...new Set(matchedSyllabusUnits.flatMap((unit) => unit.missingCitations))]
       : undefined,
-    relevantSourceSnippets: selectRelevantSourceSnippets({
+    relevantSourceSnippets: exactSourceSnippetsForAnchors({
+      anchors: dossierSourceAnchorIds,
+      canonicalSourceAnchors,
       sources,
-      keywords,
-      preferredSourceIds: assignedSourceIds,
     }),
     assignedSourceVisuals: assignedVisuals
-      .slice(0, MAX_VISUALS_PER_PAGE)
       .map((visual) => ({
         sourceVisualId: visual.sourceVisualId,
         sourceId: visual.sourceId,
@@ -7013,6 +7030,7 @@ export async function runTextbookGeneration({
         .digest("hex"),
       sourceSetFingerprint: context.sourceSetHash,
       stagingDirectoryName: gardenId,
+      requireAuthoritativeSourceAnchorLedger: true,
     });
     throwIfLearnCancelled(job.id);
     if (!lease.heartbeat()) {
@@ -7069,8 +7087,9 @@ export async function runTextbookGeneration({
   const unavailableCitationGate = missingCitationProbes.length
     ? { detect: (prose: string) => detectUnavailableCitations(prose, missingCitationProbes) }
     : undefined;
-  let confirmedLearningUnits = learningUnitsFromCoveragePlan(map.coveragePlan);
-  let confirmedSourceArtifactAssignments = sourceArtifactAssignmentsFromCoveragePlan(map.coveragePlan);
+  let confirmedLearningUnits: LearningUnitContract[] = [];
+  let confirmedSourceArtifactAssignments: SourceArtifactAssignment[] = [];
+  let confirmedSourceArtifactOmissions: SourceArtifactOmission[] = [];
   // Version ids are learning_* so nothing named "textbook" can leak into a
   // visible file name, event, or frontmatter value.
   const textbookVersionId = makeId("learning");
@@ -7083,18 +7102,20 @@ export async function runTextbookGeneration({
   const claimedVisualIds = new Set<string>();
   let visualizationPlan: VisualizationPlan | null = null;
   const visualizationOutcomes: VisualizationPublicationOutcome[] = [];
-  const generatedVisualBudget = {
-    published: 0,
-    max: Math.max(1, Math.min(50, Number(
-      process.env.LEARN_GENERATED_VISUAL_MAX_PER_GARDEN ??
-      process.env.LEARN_MAX_GENERATED_VISUALS_PER_GARDEN ??
-      12,
-    ) || 12)),
-    maxPerPage: Math.max(1, Math.min(6, Number(process.env.LEARN_GENERATED_VISUAL_MAX_PER_PAGE ?? 3) || 3)),
-    perPage: new Map<string, number>(),
-  };
 
   try {
+    confirmedLearningUnits = learningUnitsFromCoveragePlan(map.coveragePlan);
+    confirmedSourceArtifactAssignments = sourceArtifactAssignmentsFromCoveragePlan(map.coveragePlan);
+    confirmedSourceArtifactOmissions = sourceArtifactOmissionsFromCoveragePlan(map.coveragePlan);
+    const storedSyllabusAssignmentProblems = syllabusUnitAssignmentProblems(
+      confirmedLearningUnits,
+      map.syllabusCoverage ?? null,
+    );
+    if (storedSyllabusAssignmentProblems.length > 0) {
+      throw new Error(
+        `The confirmed Learning Unit Contract needs model replanning before generation: ${storedSyllabusAssignmentProblems.join("; ")}`,
+      );
+    }
     appendLearnEvent(contentPath, gardenId, "learn_generation_started", {
       jobId: job.id,
       textbookVersionId,
@@ -7165,8 +7186,29 @@ export async function runTextbookGeneration({
       confirmedSourceArtifactAssignments,
       registeredArtifactsFromFigures(context.sourceFigures),
     );
-    confirmedLearningUnits = sourceArtifactReconciliation.units;
-    confirmedSourceArtifactAssignments = sourceArtifactReconciliation.assignments;
+    if (sourceArtifactReconciliation.removedArtifactIds.length > 0) {
+      throw new Error(
+        `The confirmed model-authored contract references source artifacts that could not be registered after targeted extraction: ${sourceArtifactReconciliation.removedArtifactIds.join(", ")}. The contract was not rewritten; rerun planning so the model can repair it.`,
+      );
+    }
+    if (!sameSourceArtifactAssignmentRecords(
+      sourceArtifactReconciliation.assignments,
+      confirmedSourceArtifactAssignments,
+    )) {
+      throw new Error(
+        "Source artifact registry reconciliation attempted to rewrite the model-authored assignment projection. Repair the contract instead.",
+      );
+    }
+    const confirmedArtifactCoverageProblems = sourceArtifactCoverageProblems(
+      confirmedLearningUnits,
+      confirmedSourceArtifactOmissions,
+      registeredArtifactsFromFigures(context.sourceFigures),
+    );
+    if (confirmedArtifactCoverageProblems.length > 0) {
+      throw new Error(
+        `The confirmed model-authored artifact partition is invalid: ${confirmedArtifactCoverageProblems.join("; ")}. Rerun planning so the authoring model can repair it.`,
+      );
+    }
     appendLearnEvent(contentPath, gardenId, "learn_source_artifacts_reconciled", {
       jobId: job.id,
       textbookVersionId,
@@ -7176,24 +7218,20 @@ export async function runTextbookGeneration({
       removedArtifactIds: sourceArtifactReconciliation.removedArtifactIds,
     });
     const selectedSourceIds = new Set(context.sources.map((source) => source.slug));
+    verifyAuthoritativeSourceAnchorLedger(workspace);
     const selectedCanonicalSourceAnchors = Object.fromEntries(
-      Object.entries(buildCanonicalSourceAnchors(clusterDir)).filter(([, anchor]) =>
+      Object.entries(buildCanonicalSourceAnchors(clusterDir, { allowInferredFormulaText: false })).filter(([, anchor]) =>
         typeof anchor.sourceId === "string" && selectedSourceIds.has(anchor.sourceId),
       ),
     );
-    const sourceFormulaIdentities = buildFormulaIdentityRegistry(
-      selectedCanonicalSourceAnchors,
-      clusterDir,
-    );
     const sourceFormulaIdentityById = new Map(
-      sourceFormulaIdentities.map((identity) => [identity.anchorId, identity]),
+      Object.values(selectedCanonicalSourceAnchors)
+        .filter((anchor) => anchor.kind === "formula" && Boolean(anchor.exactText?.trim()))
+        .map((anchor) => [anchor.id, anchor]),
     );
-    // Verified, family-constrained global assignment plan. Deterministic
-    // first; ONLY a genuine tie between compatible candidates goes to
-    // ChatMock, whose decision is independently re-verified against the
-    // compatibility matrix. An unavailable/refused critic leaves the unit
-    // source-formula-free — it never blocks generation and never lets an
-    // incompatible family through.
+    // Formula ownership and placement remain exactly as authored in the
+    // confirmed contract. This gate verifies only that each claimed identity
+    // exists in the canonical source registry.
     for (const unit of confirmedLearningUnits) {
       for (const formula of unit.sourceFormulas) {
         if (!sourceFormulaIdentityById.has(formula.id)) {
@@ -7205,10 +7243,6 @@ export async function runTextbookGeneration({
     }
     // Rerun the whole-garden model decision against the post-formula contract;
     // every unit and every active interaction are independently validated.
-    // Keep the previously validated typed control contract as grounding
-    // evidence. Necessity deliberately clears renderer intent, but generation
-    // must not discard the model-authored learner action and request it again.
-    const preNecessityVisualGroundingUnits = confirmedLearningUnits;
     const generationVisualNecessityReview = await planAndReviewVisualNecessity({
       client,
       model,
@@ -7218,21 +7252,26 @@ export async function runTextbookGeneration({
       learningUnits: confirmedLearningUnits,
     });
     confirmedLearningUnits = generationVisualNecessityReview.learningUnits;
+    verifyAuthoritativeSourceAnchorLedger(workspace);
     // Persist the model-authored visual plan. The writer may still reconcile
     // source/formula registry integrity, but it cannot replace visual pedagogy.
     const contractWrite = writeLearningUnitContractArtifacts({
       clusterDir,
       units: confirmedLearningUnits,
       assignments: confirmedSourceArtifactAssignments,
+      omissions: confirmedSourceArtifactOmissions,
+      registeredArtifacts: registeredArtifactsFromFigures(context.sourceFigures),
       sourceSetHash: context.sourceSetHash,
       visualNecessityReview: generationVisualNecessityReview,
     });
     confirmedLearningUnits = contractWrite.units;
     confirmedSourceArtifactAssignments = contractWrite.assignments;
+    confirmedSourceArtifactOmissions = contractWrite.omissions;
     let repairedCoveragePlan = {
       ...planningRecord(map.coveragePlan),
       learningUnitContracts: confirmedLearningUnits,
       sourceArtifactAssignments: confirmedSourceArtifactAssignments,
+      sourceArtifactOmissions: confirmedSourceArtifactOmissions,
     };
     let repairedLearningMap = learningMapWithConfirmedUnitContracts(
       map.learningMap,
@@ -7249,11 +7288,16 @@ export async function runTextbookGeneration({
     // will use. The saved plan is the auditable routing control plane for this
     // run; page-specific target paths are filled as each unit is written.
     const visualizationPlanningStartedAt = Date.now();
+    const generationCanonicalVisualEvidence = canonicalVisualizationEvidenceByUnit(
+      clusterDir,
+      confirmedLearningUnits,
+    );
     const generationVisualizationPlanning = await buildVisualizationPlanWithContractRepair({
       gardenId,
       learningMap: repairedLearningMap,
       learningUnits: confirmedLearningUnits,
-      groundingUnits: preNecessityVisualGroundingUnits,
+      visualBudget: generationVisualNecessityReview.budget,
+      canonicalEvidenceByUnit: generationCanonicalVisualEvidence,
       necessityReviewCalls: generationVisualNecessityReview.reviewCalls,
       rejectedNecessityReviews: generationVisualNecessityReview.rejectedReviews,
       visualDecisionOverrides: generationVisualNecessityReview.overrides,
@@ -7271,12 +7315,39 @@ export async function runTextbookGeneration({
         ...data,
       }),
     });
-    visualizationPlan = generationVisualizationPlanning.plan;
-    confirmedLearningUnits = generationVisualizationPlanning.learningUnits;
+    const generationExecutabilityReview = await reviewVisualizationPlanExecutability({
+      gardenId,
+      learningMap: repairedLearningMap,
+      learningUnits: generationVisualizationPlanning.learningUnits,
+      initialPlan: generationVisualizationPlanning.plan,
+      canonicalEvidenceByUnit: generationCanonicalVisualEvidence,
+      maximumRepeatedInteractionSignature: LEARN_VISUAL_MAX_REPEATED_INTERACTION_SIGNATURE,
+      provider: (request) => requestVisualizationContractExecutabilityReview({
+        client,
+        model,
+        gardenId,
+        request,
+      }),
+      checkCancelled: () => throwIfLearnCancelled(job.id),
+      onEvent: (type, data) => appendLearnEvent(contentPath, gardenId, type, {
+        jobId: job.id,
+        textbookVersionId,
+        ...data,
+      }),
+    });
+    visualizationPlan = generationExecutabilityReview.plan;
+    confirmedLearningUnits = generationExecutabilityReview.learningUnits;
     confirmedLearningUnits = applyVisualizationRoutesToLearningUnits(
       confirmedLearningUnits,
       visualizationPlan,
     );
+    visualizationPlan = buildFinalVisualizationPlanFromRoutedContracts({
+      gardenId,
+      learningMap: repairedLearningMap,
+      finalRoutedLearningUnits: confirmedLearningUnits,
+      reviewedPlan: visualizationPlan,
+      canonicalEvidenceByUnit: generationCanonicalVisualEvidence,
+    });
     persistRoutedVisualPlans(clusterDir, confirmedLearningUnits);
     repairedCoveragePlan = {
       ...repairedCoveragePlan,
@@ -7294,6 +7365,33 @@ export async function runTextbookGeneration({
       proposedOrder: repairedLearningMap.sections,
     };
     saveVisualizationPlan(clusterDir, visualizationPlan);
+    saveVisualContractExecutabilityLedger({
+      gardenDir: clusterDir,
+      ledger: buildVisualContractExecutabilityLedger({
+        gardenId,
+        context: {
+          phase: "generation",
+          jobId: job.id,
+          model,
+          learningMapId: map.id,
+          textbookVersionId,
+        },
+        review: generationExecutabilityReview,
+        finalRoutedLearningUnits: confirmedLearningUnits,
+        finalVisualizationPlan: visualizationPlan,
+        structuralContractRepair: {
+          source: generationVisualizationPlanning.repairSource,
+          ...generationVisualizationPlanning.repairAudit,
+        },
+      }),
+    });
+    appendLearnEvent(contentPath, gardenId, "visual_contract_executability_ledger_persisted", {
+      jobId: job.id,
+      textbookVersionId,
+      path: VISUAL_CONTRACT_EXECUTABILITY_LEDGER_RELATIVE_PATH,
+      modelCalls: generationExecutabilityReview.calls,
+      replacedUnitIds: generationExecutabilityReview.replacedUnitIds,
+    });
     appendLearnEvent(contentPath, gardenId, "visual_opportunity_analysis_completed", {
       jobId: job.id,
       textbookVersionId,
@@ -7557,6 +7655,7 @@ export async function runTextbookGeneration({
           syllabusCoverage: map.syllabusCoverage,
           assignedVisuals,
           sourceArtifactAssignments: confirmedSourceArtifactAssignments,
+          canonicalSourceAnchors: selectedCanonicalSourceAnchors,
           sourceOnly,
         });
         // sourceContext carries small routing metadata only during page
@@ -7687,7 +7786,7 @@ export async function runTextbookGeneration({
             assignedVisualUrls,
             unavailableCitations: unavailableCitationGate,
             subsection,
-            sourceFormulaFigures: pageSourceFormulaFigures,
+            canonicalSourceAnchors: selectedCanonicalSourceAnchors,
           });
 
           // Hard-fail-only repair: one focused call that fixes the listed
@@ -7743,7 +7842,7 @@ export async function runTextbookGeneration({
                 assignedVisualUrls,
                 unavailableCitations: unavailableCitationGate,
                 subsection,
-                sourceFormulaFigures: pageSourceFormulaFigures,
+                canonicalSourceAnchors: selectedCanonicalSourceAnchors,
               });
             } catch {
               // Keep the model draft and let the hard gate decide.
@@ -7763,17 +7862,7 @@ export async function runTextbookGeneration({
           // No fallback learner page is ever written.
           try {
             const debugRelPath = `.breadboard/debug/failed-pages/${safeLearnFileSegment(pageId, "page").replace(/\s+/g, "-")}.md`;
-            const debugContent =
-              lastAttemptBody ||
-              debugFailedSubsectionDraft({
-                sectionNumber,
-                subsectionNumber,
-                subsection,
-                sectionTitle,
-                anchors,
-                sources: context.sources,
-                assignedVisuals,
-              });
+            const debugContent = lastAttemptBody ?? "";
             writeMarkdownWithBackup({
               clusterDir,
               relPath: debugRelPath,
@@ -7812,13 +7901,11 @@ export async function runTextbookGeneration({
           pageId,
           pageRelPath,
           markdown: pageBody,
-          sectionTitle,
           subsection,
           sourceContext: pageDossier,
           sourceFigures: interactiveSourceFigures,
           visualizationPlan,
           visualizationOutcomes,
-          generatedVisualBudget,
         });
         pageBody = visualized.markdown;
         throwIfLearnCancelled(job.id);
@@ -7838,8 +7925,10 @@ export async function runTextbookGeneration({
           claimIdForPlan(subsection.learningUnitId ?? pageId, claim),
         );
         const assignedVisualIds = assignedVisuals.map((visual) => visual.sourceVisualId);
-        const pageMathExpressions = extractQuartzMath(normalizeQuartzMarkdown(pageBody));
-        const formulas = formulaGroundingEntries(pageMathExpressions, pageSourceFormulaFigures);
+        const formulas = formulaGroundingEntries(
+          subsection.sourceFormulaContracts ?? [],
+          selectedCanonicalSourceAnchors,
+        );
         for (const formula of formulas) {
           if (!formula.sourceAnchor) continue;
           if (!sourceFormulaIdentityById.has(formula.sourceAnchor)) {
@@ -7908,6 +7997,30 @@ export async function runTextbookGeneration({
       }
     }
 
+    // The contract owns claim semantics; once every final page path exists,
+    // project those claims verbatim into the canonical store and require each
+    // page's claimIds to match. No claim is derived from prose or zettel notes.
+    const claimProjectionPages = generatedPages.map((page) => {
+      if (!page.learningUnitId) {
+        throw new Error(`Model-authored claim projection failed: ${page.relPath} has no learningUnitId.`);
+      }
+      return { learningUnitId: page.learningUnitId, relPath: page.relPath };
+    });
+    const claimProjection = projectModelAuthoredClaimsToStore({
+      gardenDir: clusterDir,
+      gardenId,
+      sourceSetHash: context.sourceSetHash,
+      units: confirmedLearningUnits,
+      pages: claimProjectionPages,
+    });
+    appendLearnEvent(contentPath, gardenId, "learn_model_authored_claims_projected", {
+      jobId: job.id,
+      textbookVersionId,
+      claimCount: claimProjection.claimCount,
+      pageCount: claimProjection.pageCount,
+      changedFiles: claimProjection.changedFiles,
+    });
+
     // Stale-artifact cleanup: the visual index merges on every save, so IDs
     // from earlier runs linger. Rewrite it to exactly the interactive visuals
     // this run embedded, and delete orphan spec files, so the index never
@@ -7954,17 +8067,27 @@ export async function runTextbookGeneration({
     }
 
     // Stage 3 closeout: every extracted visual is either assigned to the page
-    // that embedded it, or intentionally skipped with a recorded reason.
+    // that embedded it, taught from its canonical text identity, or omitted
+    // with the planning model's exact reason. This is an exact projection of
+    // the validated partition; closeout never authors a fallback rationale.
+    const authoredArtifactDispositionReason = new Map<string, string>();
+    for (const assignment of confirmedSourceArtifactAssignments) {
+      authoredArtifactDispositionReason.set(
+        assignment.sourceArtifactId,
+        assignment.requiredInterpretation || assignment.reason,
+      );
+    }
+    for (const omission of confirmedSourceArtifactOmissions) {
+      authoredArtifactDispositionReason.set(omission.sourceArtifactId, omission.reason);
+    }
     const finalLedger = recordSourceVisualAssignments(
       artifactContentPath,
       gardenId,
       visualAssignments,
-      (visual) =>
-        visual.type === "equation"
-          ? "Central source formula is taught from source markdown and linked through sourceFormulaAnchors; no reliable crop was available for this equation."
-          : "Not central to any confirmed subsection of this learning map.",
+      (visual) => authoredArtifactDispositionReason.get(visual.sourceVisualId) ?? "",
       {
         conceptAnchorIds: generatedPages.flatMap((page) => page.sourceFormulaIds),
+        trackedArtifactIds: context.sourceFigures.map((figure) => figure.figureId),
       },
     );
     for (const visual of finalLedger) {
@@ -8063,48 +8186,6 @@ export async function runTextbookGeneration({
       });
     }
 
-    // Stage 7b (post-structure semantic reconciliation): section titles and page
-    // paths are frozen by now, so the final learner-page filesystem + the final
-    // Learning Unit Contract are authoritative. Rebuild every derived semantic
-    // artifact from them in one atomic transaction BEFORE self-healing, the
-    // critic, and the terminal gate: page primary/supporting concepts, page tags
-    // (= primary + supporting), page claimIds, contract semanticConcepts, the
-    // active claim registry, and the active concept registry. Claims from a
-    // previous page structure are archived, never carried forward pointing at
-    // pages that no longer exist. Fully deterministic: no ChatMock (Fix 14).
-    try {
-      const semantic = reconcileFinalGardenSemantics(clusterDir, gardenId, {
-        archiveHistoricalClaims: true,
-        archiveUnusedConcepts: true,
-        strictMode: false,
-      });
-      appendLearnEvent(contentPath, gardenId, "learn_semantic_reconciliation_completed", {
-        jobId: job.id,
-        textbookVersionId,
-        stoppedReason: semantic.stoppedReason,
-        projectionsBuilt: semantic.projectionsBuilt,
-        pagesUpdated: semantic.pagesUpdated.length,
-        contractUnitsUpdated: semantic.contractUnitsUpdated.length,
-        activeClaims: semantic.activeClaims,
-        archivedClaims: semantic.archivedClaims,
-        staleClaimsRemoved: semantic.staleClaimsRemoved,
-        claimsRemappedToNewPaths: semantic.claimsRemappedToNewPaths,
-        activeConcepts: semantic.activeConcepts,
-        archivedConcepts: semantic.archivedConcepts,
-        issuesBefore: semantic.issuesBefore.length,
-        issuesAfter: semantic.issuesAfter.length,
-        stateFingerprintAfter: semantic.stateFingerprintAfter,
-      });
-    } catch (reconciliationError) {
-      appendLearnEvent(contentPath, gardenId, "learn_semantic_reconciliation_failed", {
-        jobId: job.id,
-        reason:
-          reconciliationError instanceof Error
-            ? reconciliationError.message
-            : String(reconciliationError),
-      });
-    }
-
     // Canonical build-state migration is opt-in and diagnostic. Both `shadow`
     // and the reserved `canonical` value keep the legacy pipeline authoritative
     // in this phase: canonical state is imported, repaired in memory, rendered
@@ -8186,10 +8267,15 @@ export async function runTextbookGeneration({
         repairExecutor: repairExecutorMode,
         preserveModelAuthoredVisuals: true,
         preserveModelAuthoredContent: true,
-        modelRepair:
-          repairExecutorMode === "deterministic"
-            ? undefined
-            : createOpenAIRepairExecutor({ client, model, gardenId, timeoutMs: LEARN_PLANNING_TIMEOUT_MS }),
+        // Repair is model-only: there is no deterministic executor to fall back
+        // to, so the repair pass always carries a live model executor.
+        modelRepair: createOpenAIRepairExecutor({
+          client,
+          model,
+          gardenId,
+          timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+          sourceTextForRequest: (request) => exactCanonicalRepairSourceText(clusterDir, request),
+        }),
       });
       appendLearnEvent(contentPath, gardenId, "learn_semantic_repair_completed", {
         jobId: job.id,
@@ -8220,7 +8306,11 @@ export async function runTextbookGeneration({
         criticalProblems: finalizeReport.criticalProblems,
         warnings: finalizeReport.warnings,
       });
-      verification = verifyFinalArtifactNoMutation({ gardenDir: clusterDir, gardenSlug: gardenId });
+      verification = verifyFinalArtifactNoMutation({
+        gardenDir: clusterDir,
+        gardenSlug: gardenId,
+        strictModelApprovedVisuals: true,
+      });
       appendLearnEvent(contentPath, gardenId, "learn_final_artifact_verified", {
         jobId: job.id,
         textbookVersionId,
@@ -8412,7 +8502,11 @@ export async function runTextbookGeneration({
         return true;
       },
       verifyManifest: (candidateDir) =>
-        verifyFinalArtifactNoMutation({ gardenDir: candidateDir, gardenSlug: gardenId }).accepted,
+        verifyFinalArtifactNoMutation({
+          gardenDir: candidateDir,
+          gardenSlug: gardenId,
+          strictModelApprovedVisuals: true,
+        }).accepted,
     });
     previousPromotedGardenDir = promotion.previousPreservedAt;
     if (!promotion.promoted) {
@@ -9532,6 +9626,8 @@ const STATIC_LEARN_CLEAR_REMOVAL_ROOTS = [
   ".breadboard/validation-report.md",
   ".breadboard/visual-necessity-decisions.json",
   ".breadboard/visual-necessity-decisions.md",
+  ".breadboard/visual-decision-records.json",
+  ".breadboard/visual-contract-executability-reviews.json",
   ".breadboard/visualization-plan.json",
   ".breadboard/visualization-coverage.json",
   ".breadboard/visualization-coverage.md",

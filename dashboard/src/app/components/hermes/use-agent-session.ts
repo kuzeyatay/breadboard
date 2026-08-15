@@ -58,9 +58,13 @@ import type {
 import { externalAgentAbortUrl } from "@/lib/conversations/external-agent-runs";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
 import {
+  AgentStreamDisconnectedError,
+  agentStreamReconnectDelay,
   agentStreamTimeout,
+  isRecoverableAgentStreamDisconnect,
   isAgentStreamTurnActivity,
   isAgentStreamTimeoutError,
+  waitForAgentStreamReconnect,
   withAgentStreamTimeout,
 } from "./agent-stream-watchdog";
 import { primeInlineArtifacts } from "./inline-artifact-cards";
@@ -668,6 +672,13 @@ interface CreateOptions {
   gardenSlug?: string;
   pageSlug?: string;
   title?: string;
+  /**
+   * Create the next conversation off the record: kept out of history and out
+   * of memory, both ways, for as long as it exists. Read at creation time, so
+   * flipping it only affects chats started afterwards — never the one on
+   * screen.
+   */
+  temporary?: boolean;
 }
 
 function activeConversationStorageKey(
@@ -836,6 +847,22 @@ export function useAgentSession(
   const [yoloMode] = useYoloMode();
   const yoloSyncRef = useRef<Promise<void>>(Promise.resolve());
   const storageKey = activeConversationStorageKey(surface, createOptions);
+  const temporaryChats = createOptions?.temporary === true;
+
+  /**
+   * Remember where the reader was, so a reload comes back to it — unless this
+   * is a temporary chat, which is deliberately not somewhere you can come back
+   * to. The server already keeps temporary chats out of the restore list; not
+   * writing the id keeps the browser from holding a pointer to one either.
+   */
+  const rememberActiveConversation = useCallback(
+    (id: string) => {
+      if (temporaryChats) return;
+      window.localStorage.setItem(storageKey, id);
+      window.localStorage.setItem("breadboard-active-conversation", id);
+    },
+    [storageKey, temporaryChats],
+  );
 
   const transition = useCallback((next: AgentRunState) => {
     runStateRef.current = next;
@@ -958,30 +985,21 @@ export function useAgentSession(
       commit: (message: AgentMessage) => void,
       onConnected: () => void,
       responseStartedAtMs: number,
+      reconnectAttempt = 0,
+      controller = new AbortController(),
+      seenEventFrames = new Set<string>(),
     ): Promise<"completed" | "cancelled" | "failed"> => {
-      const controller = new AbortController();
       abortRef.current = controller;
       const streamContext = new URLSearchParams({ surface });
       if (createOptions?.gardenSlug) streamContext.set("gardenSlug", createOptions.gardenSlug);
       if (createOptions?.pageSlug) streamContext.set("pageSlug", createOptions.pageSlug);
-      const response = await fetch(
-        `/api/hermes/sessions/${activeSessionId}/events?${streamContext.toString()}`,
-        {
-          method: "GET",
-          headers: { Accept: "text/event-stream" },
-          signal: controller.signal,
-        },
-      );
-      if (!response.ok || !response.body) {
-        throw new Error("Could not open the agent event stream.");
-      }
-      const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
       let failed = false;
       let connected = false;
       let sawTurnActivity = false;
       const tools = new Map<string, ToolActivity>();
+      for (const tool of assistant.tools ?? []) tools.set(tool.toolCallId, tool);
       // Mid-turn narration sealed off the answer bubble (text the model wrote
       // before/between tool calls). Kept so an aborted or answerless turn can
       // fall back to its last words instead of an empty message.
@@ -1017,7 +1035,50 @@ export function useAgentSession(
         commit(assistant);
       };
 
+      const retryAfterDisconnect = async (
+        streamError: unknown,
+      ): Promise<"completed" | "cancelled" | "failed"> => {
+        const delayMs = agentStreamReconnectDelay(reconnectAttempt);
+        if (
+          failed ||
+          stopRequestedRef.current ||
+          controller.signal.aborted ||
+          delayMs === null ||
+          !isRecoverableAgentStreamDisconnect(streamError)
+        ) {
+          throw streamError;
+        }
+        transition("connecting");
+        await waitForAgentStreamReconnect(delayMs, controller.signal);
+        return streamEvents(
+          activeSessionId,
+          assistant,
+          commit,
+          onConnected,
+          responseStartedAtMs,
+          reconnectAttempt + 1,
+          controller,
+          seenEventFrames,
+        );
+      };
+
       try {
+        const response = await fetch(
+          `/api/hermes/sessions/${activeSessionId}/events?${streamContext.toString()}`,
+          {
+            method: "GET",
+            headers: { Accept: "text/event-stream" },
+            signal: controller.signal,
+          },
+        );
+        if (!response.ok || !response.body) {
+          throw response.status >= 500
+            ? new AgentStreamDisconnectedError(
+                `The agent event stream returned ${response.status}.`,
+              )
+            : new Error("Could not open the agent event stream.");
+        }
+        const reader = response.body.getReader();
         for (;;) {
           const timeout = agentStreamTimeout({
             connected,
@@ -1030,9 +1091,7 @@ export function useAgentSession(
             timeout,
           );
           if (done) {
-            throw new Error(
-              "The agent connection closed before the response completed. Please try again.",
-            );
+            throw new AgentStreamDisconnectedError();
           }
           buffer += decoder.decode(value, { stream: true });
           const frames = buffer.split("\n\n");
@@ -1053,6 +1112,12 @@ export function useAgentSession(
               .map((line) => line.slice(5).trim())
               .join("");
             if (!dataLine) continue;
+            // A surviving server-side pump replays its buffered chunks to a
+            // replacement SSE viewer. Ignore byte-identical frames already
+            // handled by this turn so reconnecting cannot duplicate answer
+            // deltas or tool activity in the transcript.
+            if (seenEventFrames.has(dataLine)) continue;
+            seenEventFrames.add(dataLine);
             let event: Record<string, unknown>;
             try {
               event = JSON.parse(dataLine);
@@ -1062,6 +1127,7 @@ export function useAgentSession(
             const payload = (event.payload ?? {}) as Record<string, unknown>;
             if (isAgentStreamTurnActivity(event.type, payload)) {
               sawTurnActivity = true;
+              reconnectAttempt = 0;
             }
             if (
               typeof event.type === "string" &&
@@ -1436,6 +1502,12 @@ export function useAgentSession(
         if ((streamError as Error).name === "AbortError") {
           throw streamError;
         }
+        if (
+          isRecoverableAgentStreamDisconnect(streamError) &&
+          !failed
+        ) {
+          return retryAfterDisconnect(streamError);
+        }
         commitResponseDuration();
         setActivities((current) =>
           current.map((item) =>
@@ -1655,8 +1727,7 @@ export function useAgentSession(
     ) {
       sessionRef.current = ensured.id;
       setSessionId(ensured.id);
-      window.localStorage.setItem("breadboard-active-conversation", ensured.id);
-      window.localStorage.setItem(storageKey, ensured.id);
+      rememberActiveConversation(ensured.id);
       setActiveDirectory(ensured.activeDirectory);
       setFilesystemMode(ensured.filesystemMode);
     }
@@ -1667,7 +1738,13 @@ export function useAgentSession(
       unboundExternalTurnIdsRef.current.delete(externalTurnId);
     }
     return ensured.id;
-  }, [activeDirectory, createOptions, filesystemMode, storageKey, surface]);
+  }, [
+    activeDirectory,
+    createOptions,
+    filesystemMode,
+    rememberActiveConversation,
+    surface,
+  ]);
 
   const beginDelegatedExternalAgentTurn = useCallback(
     (clientMessageId: string) => {
@@ -2164,8 +2241,7 @@ export function useAgentSession(
         }
         sessionRef.current = activeSessionId;
         setSessionId(activeSessionId);
-        window.localStorage.setItem("breadboard-active-conversation", activeSessionId);
-        window.localStorage.setItem(storageKey, activeSessionId);
+        rememberActiveConversation(activeSessionId);
         setActiveDirectory(ensured.activeDirectory);
         setFilesystemMode(ensured.filesystemMode);
         // Agent mode off: the message goes to the provider instead of the
@@ -2491,9 +2567,9 @@ export function useAgentSession(
       createOptions,
       filesystemMode,
       messages,
+      rememberActiveConversation,
       streamDirectTurn,
       streamEvents,
-      storageKey,
       surface,
       transition,
     ],

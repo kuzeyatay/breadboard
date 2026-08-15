@@ -25,6 +25,8 @@ const AGENT: DeepResearchAgent = { id: "deep-research", name: "Deep Research" };
 interface SessionLike {
   sessionId?: string | null;
   messages?: readonly AgentMessage[];
+  /** Materializes the launching chat, whose id decides the run's memory. */
+  ensureConversation: (clientMessageId?: string) => Promise<string>;
   previewExternalAgentTurn: (input: {
     clientMessageId: string;
     userContent: string;
@@ -184,10 +186,14 @@ export function useDeepResearchAgent(session: SessionLike, onStatus?: (message: 
 
       let runStarted = false;
       try {
+        // The launching chat decides whether this run may be given memory, so
+        // the conversation is materialized before the run starts rather than
+        // when its turn is saved. The call is idempotent.
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/deep-research/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(request),
+          body: JSON.stringify({ ...request, conversationPublicId }),
         });
         const data = (await response.json().catch(() => ({}))) as {
           error?: string;

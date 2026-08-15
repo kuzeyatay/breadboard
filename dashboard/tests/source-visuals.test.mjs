@@ -29,6 +29,15 @@ function fakeClient(create) {
   return { chat: { completions: { create } } };
 }
 
+function validDetection(overrides = {}) {
+  return {
+    type: "figure",
+    caption: "Source figure",
+    bbox: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 },
+    ...overrides,
+  };
+}
+
 test("recordSourceVisualAssignments splits formula concept usage from crop status", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-source-visuals-"));
   try {
@@ -56,6 +65,46 @@ test("recordSourceVisualAssignments splits formula concept usage from crop statu
     assert.equal(visual.usageStatus, "assigned");
     assert.equal(visual.conceptUsage, "explained_as_text_formula");
     assert.equal(visual.cropStatus, "omitted_unreliable");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("recordSourceVisualAssignments preserves the current model-authored omission reason, never a stale canned reason", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-source-visual-reason-"));
+  try {
+    const garden = "garden";
+    fs.mkdirSync(path.join(root, garden), { recursive: true });
+    saveSourceVisuals(root, garden, [{
+      sourceVisualId: "S1.P4.F1",
+      sourceId: "src",
+      pageNumber: 4,
+      type: "figure",
+      caption: "Field direction",
+      usageStatus: "intentionally_skipped",
+      skipReason: "Not central to any confirmed subsection of this learning map.",
+    }]);
+
+    const exactReason = "Its arrow convention conflicts with the convention selected for the lesson.";
+    const [visual] = recordSourceVisualAssignments(
+      root,
+      garden,
+      new Map(),
+      () => exactReason,
+      { trackedArtifactIds: ["S1.P4.F1"] },
+    );
+    assert.equal(visual.skipReason, exactReason);
+
+    assert.throws(
+      () => recordSourceVisualAssignments(
+        root,
+        garden,
+        new Map(),
+        () => "",
+        { trackedArtifactIds: ["S1.P4.F1"] },
+      ),
+      /no model-authored assignment or omission reason/,
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -109,6 +158,154 @@ test("extractSourceVisuals treats a successful empty detection as genuinely no f
     const retried = await extractSourceVisuals({ client, model: "m", contentPath: root, gardenSlug: garden, sourceId: "src", sourceIndex: 1, pageImageUrls: urls });
     assert.deepEqual(retried, []);
     assert.equal(calls, 2);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const invalid of [
+  { name: "missing response content", content: undefined },
+  { name: "malformed JSON", content: "not-json" },
+  { name: "the wrong top-level shape", content: '{"detections":[]}' },
+  {
+    name: "a mixed valid and invalid detection array",
+    content: JSON.stringify([validDetection(), { ...validDetection({ caption: "Invalid type" }), type: "logo" }]),
+  },
+  {
+    name: "an invalid thirteenth entry after twelve valid detections",
+    content: JSON.stringify([
+      ...Array.from({ length: 12 }, (_, index) => validDetection({ caption: `Valid ${index + 1}` })),
+      { ...validDetection({ caption: "Invalid thirteenth entry" }), type: "logo" },
+    ]),
+  },
+  {
+    name: "an equation without exactText",
+    content: JSON.stringify([validDetection({ type: "equation", caption: "Unreadable equation" })]),
+  },
+  {
+    name: "an out-of-page bbox",
+    content: JSON.stringify([validDetection({ bbox: { x: 0.9, y: 0.1, width: 0.2, height: 0.2 } })]),
+  },
+  {
+    name: "a missing bbox",
+    content: JSON.stringify([{ type: "figure", caption: "No location" }]),
+  },
+]) {
+  test(`extractSourceVisuals rejects ${invalid.name} without caching an empty or partial scan`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-extract-invalid-protocol-"));
+    try {
+      const garden = "garden";
+      const [page] = seedPageImages(root, garden, 1);
+      const invalidClient = fakeClient(async () => ({
+        choices: [{ message: { ...(invalid.content === undefined ? {} : { content: invalid.content }) } }],
+      }));
+
+      await assert.rejects(
+        () => extractSourceVisuals({
+          client: invalidClient,
+          model: "m",
+          contentPath: root,
+          gardenSlug: garden,
+          sourceId: "src",
+          sourceIndex: 1,
+          pageImageUrls: [page],
+        }),
+        /vision detection failed.*Source visual detection protocol error/s,
+      );
+      const cachePath = path.join(root, garden, ".breadboard", "source-visual-scan-cache.json");
+      assert.equal(fs.existsSync(cachePath), false, "an invalid response must not create a scan cache entry");
+
+      let retryCalls = 0;
+      const validClient = fakeClient(async () => {
+        retryCalls += 1;
+        return { choices: [{ message: { content: "[]" } }] };
+      });
+      assert.deepEqual(await extractSourceVisuals({
+        client: validClient,
+        model: "m",
+        contentPath: root,
+        gardenSlug: garden,
+        sourceId: "src",
+        sourceIndex: 1,
+        pageImageUrls: [page],
+      }), []);
+      assert.equal(retryCalls, 1, "Retry must call the detector again instead of reusing an invalid scan");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("extractSourceVisuals preserves every valid detection beyond the old first-12 cap", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-extract-more-than-twelve-"));
+  try {
+    const garden = "garden";
+    const [page] = seedPageImages(root, garden, 1);
+    const detections = Array.from({ length: 13 }, (_, index) =>
+      validDetection({ caption: `Source figure ${index + 1}` }));
+    const client = fakeClient(async () => ({
+      choices: [{ message: { content: JSON.stringify(detections) } }],
+    }));
+
+    const found = await extractSourceVisuals({
+      client,
+      model: "m",
+      contentPath: root,
+      gardenSlug: garden,
+      sourceId: "src",
+      sourceIndex: 1,
+      pageImageUrls: [page],
+    });
+
+    assert.equal(found.length, 13);
+    const thirteenth = found.find((visual) => visual.sourceVisualId === "S1.P1.F13");
+    assert.equal(thirteenth?.caption, "Source figure 13");
+    const cache = JSON.parse(fs.readFileSync(
+      path.join(root, garden, ".breadboard", "source-visual-scan-cache.json"),
+      "utf-8",
+    ));
+    assert.equal(cache.sources.src[page].detections.length, 13);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("equation detections require and preserve the model-authored exact LaTeX transcription", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-extract-equation-text-"));
+  try {
+    const garden = "garden";
+    const urls = seedPageImages(root, garden, 1);
+    let calls = 0;
+    const client = fakeClient(async () => {
+      calls += 1;
+      return {
+        choices: [{
+          message: {
+            content: JSON.stringify([{
+              type: "equation",
+              caption: "Gauss's law",
+              exactText: "\\nabla \\cdot \\mathbf{D} = \\rho_v",
+              bbox: { x: 0.1, y: 0.2, width: 0.7, height: 0.15 },
+            }]),
+          },
+        }],
+      };
+    });
+
+    const found = await extractSourceVisuals({
+      client,
+      model: "m",
+      contentPath: root,
+      gardenSlug: garden,
+      sourceId: "src",
+      sourceIndex: 1,
+      pageImageUrls: urls,
+    });
+
+    assert.equal(calls, 1);
+    assert.deepEqual(found.map((visual) => visual.sourceVisualId), ["S1.P1.E1"]);
+    assert.equal(found[0].exactText, "\\nabla \\cdot \\mathbf{D} = \\rho_v");
+    assert.equal(loadSourceVisuals(root, garden)[0].exactText, "\\nabla \\cdot \\mathbf{D} = \\rho_v");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -206,6 +403,7 @@ test("extractSourceVisuals adds a newly supplied page without losing an existing
             content: JSON.stringify([{
               type: "figure",
               caption: calls === 1 ? "First-page figure" : "Second-page figure",
+              bbox: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 },
             }]),
           },
         }],

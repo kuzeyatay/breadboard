@@ -3,6 +3,7 @@ import { DEFAULT_MODEL, normalizeAssistantModelId } from "../ai-models.ts";
 import { localChatmockBaseUrl, normalizeChatmockBaseUrl } from "../chatmock-server.ts";
 import db from "../db.ts";
 import {
+  conversationIsTemporary,
   getConversationById,
   type ConversationRow,
 } from "./store.ts";
@@ -172,6 +173,9 @@ export async function generateAndApplyConversationTitle(input: {
   fetcher?: ConversationTitleFetcher;
   timeoutMs?: number;
 }, database: Database.Database = db): Promise<ConversationRow | null> {
+  // A temporary chat is never listed anywhere its title could be read, so
+  // naming it would only send the transcript to one more model for nothing.
+  if (conversationIsTemporary(input.conversation)) return null;
   const generatedTitle = await generateConversationTitle(input);
   if (!generatedTitle) return null;
   return applyGeneratedConversationTitle({

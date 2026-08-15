@@ -10,7 +10,11 @@ import type {
   ExternalAgentOutcome,
   ExternalAgentRun,
 } from "@/lib/conversations/external-agent-runs.ts";
-import type { ChatMessageAttachment } from "@/lib/chat-attachments.ts";
+import {
+  chatMessageAttachments,
+  type ChatAttachment,
+  type ChatMessageAttachment,
+} from "@/lib/chat-attachments.ts";
 
 interface SessionLike {
   previewExternalAgentTurn: (input: {
@@ -87,20 +91,32 @@ export function useRufloAgent(
   const clear = useCallback(() => setAgent(null), []);
 
   const launch = useCallback(
-    async (task: string) => {
+    async (task: string, attachments: readonly ChatAttachment[] = []) => {
       const trimmed = task.trim();
       if (!trimmed || launching) return;
       setLaunching(true);
       onStatus?.("");
       let clientMessageId = crypto.randomUUID();
       const userContent = rufloUserMessage(trimmed);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      const persistedAttachments = chatMessageAttachments(attachments);
+      const imageAttachments = attachments.filter(
+        (attachment) => attachment.type === "image",
+      );
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+        attachments: persistedAttachments,
+      });
       let runStarted = false;
       try {
         const response = await fetch("/api/ruflo/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task: trimmed, gardenSlug }),
+          body: JSON.stringify({
+            task: trimmed,
+            gardenSlug,
+            attachments: imageAttachments,
+          }),
         });
         const data = (await response.json().catch(() => ({}))) as {
           error?: string;
@@ -128,6 +144,7 @@ export function useRufloAgent(
             gardenSlug: data.run.gardenSlug,
             repository: data.run.repository,
           },
+          attachments: persistedAttachments,
         });
       } catch (cause) {
         if (runStarted) {
@@ -148,6 +165,7 @@ export function useRufloAgent(
             userContent,
             assistantContent,
             outcome: "failed",
+            attachments: persistedAttachments,
           });
         } catch (persistenceError) {
           onStatus?.(

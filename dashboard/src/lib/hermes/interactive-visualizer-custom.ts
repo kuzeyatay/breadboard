@@ -56,6 +56,8 @@ export interface CompiledCustomInteractiveVisualizerPackage {
 
 const EXTERNAL_URL = /(?:https?:|wss?:|file:|ftp:|javascript:|data:)/i;
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9/_-]{0,299}$/;
+const LOCAL_STYLESHEET_LINK =
+  /<link\s+rel\s*=\s*["']stylesheet["']\s+href\s*=\s*["']styles\.css["']\s*\/?>/gi;
 const ESCAPE_PATTERNS: Array<{ pattern: RegExp; message: string }> = [
   { pattern: /\bfetch\s*\(/, message: "main.js cannot call fetch" },
   { pattern: /\bXMLHttpRequest\b/, message: "main.js cannot use XMLHttpRequest" },
@@ -64,7 +66,10 @@ const ESCAPE_PATTERNS: Array<{ pattern: RegExp; message: string }> = [
   { pattern: /\bWebAssembly\b/, message: "main.js cannot execute WebAssembly" },
   { pattern: /\b(?:eval|Function)\s*\(/, message: "main.js cannot evaluate generated code" },
   { pattern: /\b(?:import\s*\(|importScripts\s*\(|require\s*\()/, message: "main.js cannot load modules" },
-  { pattern: /\b(?:window\s*\.\s*)?(?:parent|top|opener)\b/, message: "main.js cannot reach the embedding page" },
+  {
+    pattern: /\b(?:window|globalThis|self)\s*(?:(?:\?\.|\.)\s*(?:parent|top|opener)\b|\[\s*["'](?:parent|top|opener)["']\s*\])|(?:^|[^.\w$])(?:parent|top|opener)\s*(?:\?\.|\.|\[)/m,
+    message: "main.js cannot reach the embedding page",
+  },
   { pattern: /\bpostMessage\s*\(/, message: "main.js cannot send arbitrary host messages" },
   { pattern: /\bdocument\s*\.\s*cookie\b/, message: "main.js cannot access cookies" },
   { pattern: /\b(?:localStorage|sessionStorage|indexedDB|cookieStore|caches)\b/, message: "main.js cannot use browser storage" },
@@ -283,6 +288,10 @@ export function compileCustomInteractiveVisualizerPackage(
   const html = typeof files["index.html"] === "string" ? files["index.html"] : "";
   const css = typeof files["styles.css"] === "string" ? files["styles.css"] : "";
   const script = typeof files["main.js"] === "string" ? files["main.js"] : "";
+  const inlineCss = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi)]
+    .map((match) => match[1])
+    .join("\n");
+  const reviewedCss = `${css}\n${inlineCss}`;
   if (!html) errors.push("index.html is required");
   if (!css) errors.push("styles.css is required");
   if (!script) errors.push("main.js is required");
@@ -303,23 +312,24 @@ export function compileCustomInteractiveVisualizerPackage(
   if (!/<script\b[^>]*\bsrc\s*=\s*["']main\.js["'][^>]*>\s*<\/script>/i.test(html)) {
     errors.push('index.html must load <script src="main.js"></script>');
   }
-  if (/<\s*(?:iframe|object|embed|form|base|link|audio|video)\b/i.test(html)) {
+  const htmlWithoutLocalStylesheet = html.replace(LOCAL_STYLESHEET_LINK, "");
+  if (/<\s*(?:iframe|object|embed|form|base|link|audio|video)\b/i.test(htmlWithoutLocalStylesheet)) {
     errors.push("index.html contains a forbidden embedded or navigational element");
   }
   if (/\son[a-z]+\s*=/i.test(html)) errors.push("index.html cannot contain inline event handlers");
   if (/<script\b(?![^>]*\bsrc\s*=\s*["']main\.js["'])/i.test(html)) {
     errors.push("index.html cannot contain inline scripts");
   }
-  if (/@import\b|\burl\s*\(|\bexpression\s*\(|\bbehavior\s*:/i.test(css)) {
+  if (/@import\b|\burl\s*\(|\bexpression\s*\(|\bbehavior\s*:/i.test(reviewedCss)) {
     errors.push("styles.css cannot import or load external capabilities");
   }
-  if (/\bbox-shadow\s*:/i.test(css)) {
+  if (/\bbox-shadow\s*:/i.test(reviewedCss)) {
     errors.push("styles.css must use Gemini-style flat surfaces, not card shadows");
   }
-  if (/\b(?:linear|radial|conic)-gradient\s*\(/i.test(css)) {
+  if (/\b(?:linear|radial|conic)-gradient\s*\(/i.test(reviewedCss)) {
     errors.push("styles.css must use flat fills, not decorative gradients");
   }
-  validateThemeColorDeclarations(css, errors);
+  validateThemeColorDeclarations(reviewedCss, errors);
   for (const entry of ESCAPE_PATTERNS) {
     if (entry.pattern.test(script)) errors.push(entry.message);
   }
@@ -350,7 +360,7 @@ export function compileCustomInteractiveVisualizerPackage(
   if (plan.animation?.canReset) {
     validateTransportButton(html, "reset", errors);
   }
-  if (!/prefers-reduced-motion/.test(script + css) && plan.animation?.enabled) {
+  if (!/prefers-reduced-motion/.test(script + reviewedCss) && plan.animation?.enabled) {
     warnings.push("animated visualizer should explicitly respect prefers-reduced-motion");
   }
 
@@ -420,10 +430,19 @@ export async function bundleCustomInteractiveVisualizer(
 ): Promise<{ html: string; hash: string }> {
   const mode = visualizer.manifest.mode;
   const bootstrap = await customBootstrap(mode);
-  const body = visualizer.files["index.html"].replace(
-    /<script\b[^>]*\bsrc\s*=\s*["']main\.js["'][^>]*>\s*<\/script>/gi,
-    "",
-  );
+  const sourceHtml = visualizer.files["index.html"];
+  const documentHead = sourceHtml.match(/<head\b[^>]*>([\s\S]*?)<\/head\s*>/i)?.[1] ?? "";
+  const inlineHeadStyles = [...documentHead.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi)]
+    .map((match) => match[1])
+    .join("\n");
+  const documentBody = sourceHtml.match(/<body\b[^>]*>([\s\S]*?)<\/body\s*>/i)?.[1] ??
+    sourceHtml;
+  const body = documentBody
+    .replace(LOCAL_STYLESHEET_LINK, "")
+    .replace(
+      /<script\b[^>]*\bsrc\s*=\s*["']main\.js["'][^>]*>\s*<\/script>/gi,
+      "",
+    );
   const generated = visualizer.files["main.js"];
   const needsWebgl = mode !== "2d";
   const runner = `
@@ -435,7 +454,7 @@ export async function bundleCustomInteractiveVisualizer(
   else{try{${scriptSafe(generated)}}catch(error){html.dataset.breadboardRuntimeTests="failed";app.replaceChildren(Object.assign(document.createElement("p"),{className:"viz-fallback",textContent:"This visualization could not start."}));console.error(error)}}
   const inspectOverflow=()=>{
     const viewport=html.clientWidth;
-    const overflowing=[...document.body.querySelectorAll("*")].some(node=>{const rect=node.getBoundingClientRect();return rect.right>viewport+2||rect.left<-2||node.scrollWidth>node.clientWidth+2});
+    const overflowing=[...document.body.querySelectorAll("*")].some(node=>{const rect=node.getBoundingClientRect(),style=getComputedStyle(node);return rect.right>viewport+2||rect.left<-2||(style.overflowX==="visible"&&node.scrollWidth>node.clientWidth+2)});
     html.dataset.breadboardOverflow=overflowing?"true":"false";
   };
   requestAnimationFrame(()=>{
@@ -459,7 +478,7 @@ export async function bundleCustomInteractiveVisualizer(
     '<meta name="color-scheme" content="light dark">',
     `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
     `<title>${escapeHtml(visualizer.manifest.title)}</title>`,
-    `<style>${BASE_STYLE}\n${visualizer.files["styles.css"]}</style>`,
+    `<style>${BASE_STYLE}\n${visualizer.files["styles.css"]}\n${inlineHeadStyles}</style>`,
     "</head><body>",
     body,
     `<script>${scriptSafe(bootstrap)}</script>`,

@@ -114,7 +114,7 @@ test("acceptsAttachments matches which run routes actually take files", () => {
       `${agent.id}: route ${takesFiles ? "takes" : "ignores"} attachments but the profile says acceptsAttachments=${agent.acceptsAttachments}`,
     );
   }
-  // Codex and OpenCode take whatever is attached; Video Use takes exactly one
+  // Codex, OpenCode, and Ruflo take whatever is attached; Video Use takes exactly one
   // kind, a video, and that video is its entire input rather than context for a
   // message. The Legal Agent is the fourth shape: the attachments are the
   // documents it works on, written into its workspace before the run starts.
@@ -124,7 +124,7 @@ test("acceptsAttachments matches which run routes actually take files", () => {
   // launch it with nothing but a sentence.
   assert.deepEqual(
     attachmentRuntimeAgents().map((agent) => agent.id),
-    ["codex", "opencode", "meeting-notes", "video-use", "legal"],
+    ["codex", "opencode", "ruflo", "meeting-notes", "video-use", "legal"],
   );
 });
 
@@ -218,7 +218,7 @@ test("attachments are allowed only for the agents whose route forwards them", ()
     assert.match(conflict.message, /Remove the 2 attached files/);
     assert.match(
       conflict.message,
-      /Codex, OpenCode, Meeting Notes, Video Use, and Legal Agent/,
+      /Codex, OpenCode, Ruflo, Meeting Notes, Video Use, and Legal Agent/,
     );
   }
 });

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { DesktopServiceDefinition } from "./service-manager";
 import type { ResolvedPaths } from "./path-resolver";
@@ -359,6 +360,26 @@ function baseEnv(paths: ResolvedPaths): Record<string, string> {
   return env;
 }
 
+/**
+ * Give the supervised development dashboard enough heap for long, in-process
+ * Learn runs. Next dev otherwise caps its server child at half of physical RAM
+ * and deliberately restarts it at 80% of that cap. A valid large curriculum
+ * run can cross that threshold and be mistaken for an abandoned worker.
+ *
+ * Seventy-five percent raises the watchdog boundary from roughly 40% to 60%
+ * of physical RAM, while still leaving headroom for Electron and sidecars. The
+ * cap prevents unusually large developer machines from granting an unbounded
+ * heap. This is dev-only: packaged/standalone servers do not use Next's dev
+ * restart watchdog.
+ */
+function dashboardDevNodeOptions(inherited: string | undefined): string {
+  const totalMemoryMb = Math.floor(os.totalmem() / (1024 * 1024));
+  const maxOldSpaceMb = Math.min(24 * 1024, Math.max(1024, Math.floor(totalMemoryMb * 0.75)));
+  return [inherited?.trim(), `--max-old-space-size=${maxOldSpaceMb}`]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+}
+
 export interface BuildDefinitionsInput {
   paths: ResolvedPaths;
   config: DesktopRuntimeConfig;
@@ -670,9 +691,20 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       }
     : null;
 
+  const quartzDirectory = path.relative(paths.quartzWorkspace, paths.quartzContent)
+    .split(path.sep)
+    .join("/") || ".";
+  const quartzOutput = path.relative(
+    paths.quartzWorkspace,
+    path.join(paths.quartzWorkspace, "public"),
+  ).split(path.sep).join("/") || ".";
   const quartzArgs = [
     path.join(paths.quartzWorkspace, "quartz", "bootstrap-cli.mjs"),
     "build",
+    "--directory",
+    quartzDirectory,
+    "--output",
+    quartzOutput,
     "--serve",
     "--port",
     String(config.ports.quartz),
@@ -754,6 +786,9 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     env: {
       ...shared,
       NODE_ENV: dashboardProduction ? "production" : "development",
+      ...(paths.mode === "dev" && !dashboardProduction
+        ? { NODE_OPTIONS: dashboardDevNodeOptions(shared["NODE_OPTIONS"]) }
+        : {}),
       PORT: String(config.ports.dashboard),
       HOSTNAME: "127.0.0.1",
       // --- Data + content locations (single source of truth: path-resolver) ---
@@ -882,10 +917,13 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       FFMPEG_PATH: ffmpeg,
       FFPROBE_PATH: ffprobe,
       YTDLP_PATH: ytdlp,
-      // --- GBrain (garden knowledge retrieval; only when enabled) ---
+      // --- GBrain (garden knowledge retrieval) ---
+      // The desktop config is the lifecycle source of truth. Set the mode even
+      // when disabled so a GBRAIN_MODE inherited from a dev `.env.local` cannot
+      // make the dashboard probe a sidecar the supervisor intentionally omitted.
+      GBRAIN_MODE: persistent.gbrainMode,
       ...(gbrainEnabled
         ? {
-            GBRAIN_MODE: persistent.gbrainMode,
             GBRAIN_ADAPTER_URL: gbrainUrl,
             GBRAIN_ADAPTER_SECRET: persistent.gbrainAdapterSecret,
           }

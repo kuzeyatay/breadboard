@@ -45,11 +45,18 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC_CHANNELS.getStartupState, () => ({ phase: "preparing", message: "Preparing", services: [] }));
   ipcMain.handle(IPC_CHANNELS.setTheme, () => true);
   const manager = new WindowManager({
-    allowed: { origins: new Set() },
     startupHtmlPath: ${JSON.stringify(htmlFile)},
     recoveryHtmlPath: ${JSON.stringify(recoveryFile)},
     preloadPath: ${JSON.stringify(preload)},
     initialTheme: "dark",
+    allowed: {
+      origins: new Set(),
+      localFiles: new Set([
+        require("node:url").pathToFileURL(${JSON.stringify(htmlFile)}).toString(),
+        require("node:url").pathToFileURL(${JSON.stringify(recoveryFile)}).toString(),
+        require("node:url").pathToFileURL(${JSON.stringify(dashboardFile)}).toString(),
+      ]),
+    },
   });
   await manager.showStartupScreen();
   const window = manager.window;

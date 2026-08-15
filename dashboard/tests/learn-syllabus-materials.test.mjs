@@ -2,43 +2,30 @@ import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
-  buildSyllabusCoverage,
   detectUnavailableCitations,
-  matchSyllabusUnitForPage,
+  modelAuthoredSyllabusPlanProblems,
   normalizeSyllabusPlan,
-  resolveSyllabusMaterials,
+  projectModelAuthoredSyllabusPlan,
+  projectModelAuthoredSyllabusCoverage,
   summarizeSyllabusCoverage,
+  syllabusCoverageDecisionProblems,
   unavailableCitationProbes,
 } from "../src/lib/learn-syllabus.ts";
 import { assessLessonQuality } from "../src/lib/learn-utils.ts";
 
-const learnSource = fs.readFileSync(
-  new URL("../src/lib/learn.ts", import.meta.url),
+const learnSource = fs.readFileSync(new URL("../src/lib/learn.ts", import.meta.url), "utf8");
+const syllabusSource = fs.readFileSync(
+  new URL("../src/lib/learn-syllabus.ts", import.meta.url),
   "utf8",
 );
 
-/** Assert against learn.ts without dumping its 8k lines into the failure. */
 function assertSource(pattern, description) {
   assert.ok(
-    typeof pattern === "string"
-      ? learnSource.includes(pattern)
-      : pattern.test(learnSource),
+    typeof pattern === "string" ? learnSource.includes(pattern) : pattern.test(learnSource),
     `learn.ts should ${description}`,
   );
 }
 
-function doc(slug, title, body = "", extra = {}) {
-  return {
-    id: slug,
-    slug,
-    title,
-    relPath: `sources/${slug}.md`,
-    body,
-    ...extra,
-  };
-}
-
-/** A syllabus that assigns three works: two uploaded, one not. */
 function courseFixture() {
   const plan = normalizeSyllabusPlan({
     courseTitle: "Spiking Neural Networks",
@@ -76,6 +63,7 @@ function courseFixture() {
         authors: ["Maass"],
         kind: "chapter",
         locator: "ch. 1",
+        required: true,
       },
       {
         id: "R2",
@@ -84,6 +72,7 @@ function courseFixture() {
         authors: ["Gerstner"],
         kind: "chapter",
         locator: "ch. 4",
+        required: true,
       },
       {
         id: "R3",
@@ -91,29 +80,102 @@ function courseFixture() {
         title: "Loihi Architecture Review",
         authors: ["Davies"],
         kind: "paper",
+        required: true,
       },
     ],
   });
-
-  const sources = [
-    doc(
-      "networks-of-spiking-neurons",
-      "Networks of Spiking Neurons",
-      "Spikes carry information in their timing.",
-    ),
-    doc(
-      "neuronal-dynamics-ch4",
-      "Neuronal Dynamics",
-      "The membrane potential integrates input until it crosses threshold.",
-      { sourceFile: "gerstner-neuronal-dynamics.pdf" },
-    ),
-  ];
-
-  const resolutions = resolveSyllabusMaterials(plan, sources);
-  return { plan, sources, coverage: buildSyllabusCoverage(plan, resolutions) };
+  const sourceIds = ["networks-of-spiking-neurons", "neuronal-dynamics-ch4"];
+  const decision = {
+    resolutions: [
+      {
+        materialId: "R1",
+        citation: "Maass, Networks of Spiking Neurons, ch. 1",
+        status: "available",
+        sourceIds: ["networks-of-spiking-neurons"],
+        matchReason: "The selected source contents explicitly list and contain chapter 1.",
+      },
+      {
+        materialId: "R2",
+        citation: "Gerstner, Neuronal Dynamics, ch. 4",
+        status: "available",
+        sourceIds: ["neuronal-dynamics-ch4"],
+        matchReason: "The selected source excerpt is explicitly from chapter 4.",
+      },
+      {
+        materialId: "R3",
+        citation: "Davies et al., Loihi Architecture Review (2021)",
+        status: "missing",
+        sourceIds: [],
+        matchReason: "No selected source is the cited paper.",
+      },
+    ],
+    units: [
+      {
+        unitId: "SU1",
+        availableSourceIds: ["networks-of-spiking-neurons"],
+        missingCitations: [],
+        teachable: true,
+        coverageReason: "The uploaded chapter directly supports the objectives.",
+      },
+      {
+        unitId: "SU2",
+        availableSourceIds: ["neuronal-dynamics-ch4"],
+        missingCitations: [],
+        teachable: true,
+        coverageReason: "The uploaded chapter directly supports the derivation.",
+      },
+      {
+        unitId: "SU3",
+        availableSourceIds: [],
+        missingCitations: ["Davies et al., Loihi Architecture Review (2021)"],
+        teachable: false,
+        coverageReason: "The only assigned work is absent and no selected source supports deployment targets.",
+      },
+    ],
+  };
+  return {
+    plan,
+    sourceIds,
+    decision,
+    coverage: projectModelAuthoredSyllabusCoverage(plan, decision, sourceIds),
+  };
 }
 
 describe("reading a syllabus", () => {
+  test("active model-authored reading is projected exactly and malformed fields are repaired instead of normalized", () => {
+    const exact = {
+      courseTitle: "Electromagnetism",
+      units: [{
+        id: "SU1",
+        label: "Week 1",
+        title: "Electrostatic fields",
+        objectives: ["Relate flux and charge"],
+        topics: ["Gauss's law"],
+        materialIds: ["R1"],
+      }],
+      referencedMaterials: [{
+        id: "R1",
+        citation: "Engineering Electromagnetics, chapter 3",
+        title: "Engineering Electromagnetics",
+        authors: ["William Hayt"],
+        kind: "chapter",
+        locator: "chapter 3",
+        required: true,
+      }],
+    };
+    assert.deepEqual(modelAuthoredSyllabusPlanProblems(exact), []);
+    assert.deepEqual(projectModelAuthoredSyllabusPlan(exact), exact);
+
+    const padded = structuredClone(exact);
+    padded.referencedMaterials[0].locator = " chapter 3 ";
+    assert.match(modelAuthoredSyllabusPlanProblems(padded).join("; "), /locator.*exact string/i);
+    assert.throws(() => projectModelAuthoredSyllabusPlan(padded), /Invalid model-authored syllabus plan/);
+
+    const unknown = structuredClone(exact);
+    unknown.units[0].materialIds = ["R_UNKNOWN"];
+    assert.match(modelAuthoredSyllabusPlanProblems(unknown).join("; "), /unknown R_UNKNOWN/);
+  });
+
   test("extracts units and the materials they assign", () => {
     const { plan } = courseFixture();
     assert.equal(plan.courseTitle, "Spiking Neural Networks");
@@ -121,6 +183,7 @@ describe("reading a syllabus", () => {
     assert.equal(plan.referencedMaterials.length, 3);
     assert.deepEqual(plan.units[0].materialIds, ["R1"]);
     assert.equal(plan.referencedMaterials[0].locator, "ch. 1");
+    assert.equal(plan.referencedMaterials[0].required, true);
   });
 
   test("a malformed reading degrades to no structure instead of throwing", () => {
@@ -140,91 +203,133 @@ describe("reading a syllabus", () => {
   });
 });
 
-describe("resolving assigned materials against the garden", () => {
-  test("an uploaded work is found by title", () => {
-    const { coverage } = courseFixture();
-    const maass = coverage.resolutions.find((r) => r.materialId === "R1");
-    assert.equal(maass.status, "available");
-    assert.deepEqual(maass.sourceIds, ["networks-of-spiking-neurons"]);
-  });
-
-  test("an uploaded work is found through its filename", () => {
-    const { coverage } = courseFixture();
-    const gerstner = coverage.resolutions.find((r) => r.materialId === "R2");
-    assert.equal(gerstner.status, "available");
-    assert.deepEqual(gerstner.sourceIds, ["neuronal-dynamics-ch4"]);
-  });
-
-  test("a work nobody uploaded is reported missing, never guessed at", () => {
-    const { coverage } = courseFixture();
-    const loihi = coverage.resolutions.find((r) => r.materialId === "R3");
-    assert.equal(loihi.status, "missing");
-    assert.deepEqual(loihi.sourceIds, []);
-    assert.deepEqual(coverage.missingCitations, [
-      "Davies et al., Loihi Architecture Review (2021)",
-    ]);
-  });
-
-  test("a citation naming no identifiable work is generic, not missing", () => {
-    // "Lecture 4 slides" cannot be matched OR hallucinated about, so treating it
-    // as missing would produce a warning the user can never resolve.
-    const plan = normalizeSyllabusPlan({
-      units: [],
-      referencedMaterials: [
-        { id: "R1", citation: "Lecture 4 slides" },
-        { id: "R2", citation: "Readings TBD" },
-        { id: "R3", citation: "Course notes, week 2" },
-      ],
-    });
-    const resolutions = resolveSyllabusMaterials(plan, []);
-    assert.deepEqual(
-      resolutions.map((r) => r.status),
-      ["generic", "generic", "generic"],
-    );
-    assert.deepEqual(buildSyllabusCoverage(plan, resolutions).missingCitations, []);
-  });
-
-  test("a unit whose every assigned work is absent is flagged untaught", () => {
-    const { coverage } = courseFixture();
-    assert.deepEqual(coverage.untaughtUnitTitles, [
-      "Week 3: Neuromorphic hardware deployment",
-    ]);
-    const week3 = coverage.units.find((u) => u.unitId === "SU3");
-    assert.equal(week3.teachable, false);
-    assert.deepEqual(week3.availableSourceIds, []);
-  });
-
-  test("units carry the documents they should be taught from", () => {
-    const { coverage } = courseFixture();
-    assert.deepEqual(coverage.units[0].availableSourceIds, [
-      "networks-of-spiking-neurons",
-    ]);
+describe("validating model-authored syllabus coverage", () => {
+  test("projects every semantic verdict verbatim", () => {
+    const { plan, sourceIds, decision, coverage } = courseFixture();
+    assert.deepEqual(syllabusCoverageDecisionProblems(decision, plan, sourceIds), []);
+    assert.equal(coverage.resolutions[2].status, "missing");
+    assert.equal(coverage.units[2].teachable, false);
+    assert.equal(coverage.units[2].coverageReason, decision.units[2].coverageReason);
     assert.deepEqual(coverage.availableSourceIds, [
       "networks-of-spiking-neurons",
       "neuronal-dynamics-ch4",
     ]);
+    assert.deepEqual(coverage.untaughtUnitTitles, [
+      "Week 3: Neuromorphic hardware deployment",
+    ]);
   });
 
-  test("a coincidental word overlap does not count as the assigned work", () => {
+  test("requires a complete ordered decision", () => {
+    const { plan, sourceIds, decision } = courseFixture();
+    const incomplete = {
+      resolutions: decision.resolutions.slice(1),
+      units: decision.units.slice(0, 2),
+    };
+    const problems = syllabusCoverageDecisionProblems(incomplete, plan, sourceIds);
+    assert.ok(problems.some((problem) => problem.includes("exactly 3 entries")));
+    assert.ok(problems.some((problem) => problem.includes("must be exact plan id R1")));
+  });
+
+  test("rejects changed citations and unknown source ids", () => {
+    const { plan, sourceIds, decision } = courseFixture();
+    const invalid = structuredClone(decision);
+    invalid.resolutions[0].citation = "similar but not exact";
+    invalid.resolutions[0].sourceIds = ["made-up-source"];
+    invalid.units[0].availableSourceIds = ["made-up-source"];
+    const problems = syllabusCoverageDecisionProblems(invalid, plan, sourceIds);
+    assert.ok(problems.some((problem) => problem.includes("exactly equal")));
+    assert.ok(problems.some((problem) => problem.includes("unknown source id made-up-source")));
+  });
+
+  test("rejects contradictory status and source selections", () => {
+    const { plan, sourceIds, decision } = courseFixture();
+    const invalid = structuredClone(decision);
+    invalid.resolutions[0].status = "missing";
+    const problems = syllabusCoverageDecisionProblems(invalid, plan, sourceIds);
+    assert.ok(problems.some((problem) => problem.includes("missing material R1 must not select source ids")));
+    assert.ok(problems.some((problem) => problem.includes("missingCitations must exactly list")));
+  });
+
+  test("a matching book title cannot auto-promote an unverified chapter", () => {
     const plan = normalizeSyllabusPlan({
-      units: [],
+      units: [{ id: "SU1", title: "Boundary conditions", materialIds: ["R1"] }],
+      referencedMaterials: [{
+        id: "R1",
+        citation: "Engineering Electromagnetics, chapter 9",
+        title: "Engineering Electromagnetics",
+        locator: "chapter 9",
+        kind: "chapter",
+        required: true,
+      }],
+    });
+    const decision = {
+      resolutions: [{
+        materialId: "R1",
+        citation: "Engineering Electromagnetics, chapter 9",
+        status: "missing",
+        sourceIds: [],
+        matchReason: "The book title is present, but supplied evidence does not establish chapter 9 is present.",
+      }],
+      units: [{
+        unitId: "SU1",
+        availableSourceIds: [],
+        missingCitations: ["Engineering Electromagnetics, chapter 9"],
+        teachable: false,
+        coverageReason: "The required chapter locator is not supported by the supplied evidence.",
+      }],
+    };
+    assert.deepEqual(
+      syllabusCoverageDecisionProblems(decision, plan, ["engineering-electromagnetics"]),
+      [],
+    );
+    assert.equal(
+      projectModelAuthoredSyllabusCoverage(plan, decision, ["engineering-electromagnetics"])
+        .resolutions[0].status,
+      "missing",
+    );
+  });
+
+  test("required and optional materials inform, but do not compute, teachability", () => {
+    const plan = normalizeSyllabusPlan({
+      units: [
+        { id: "SU1", title: "Required case", materialIds: ["R1"] },
+        { id: "SU2", title: "Optional extension", materialIds: ["R2"] },
+      ],
       referencedMaterials: [
-        {
-          id: "R1",
-          citation: "Hodgkin & Huxley, Quantitative Description of Membrane Current",
-          title: "Quantitative Description of Membrane Current",
-          authors: ["Hodgkin"],
-        },
+        { id: "R1", citation: "Required Case Study", kind: "paper", required: true },
+        { id: "R2", citation: "Optional Worked Examples", kind: "reading", required: false },
       ],
     });
-    // Mentions "membrane" but is a different work by different authors.
-    const sources = [doc("lecture-notes", "Course Overview", "membrane basics")];
-    assert.equal(resolveSyllabusMaterials(plan, sources)[0].status, "missing");
+    const decision = {
+      resolutions: [
+        { materialId: "R1", citation: "Required Case Study", status: "missing", sourceIds: [], matchReason: "Not present." },
+        { materialId: "R2", citation: "Optional Worked Examples", status: "missing", sourceIds: [], matchReason: "Not present." },
+      ],
+      units: [
+        {
+          unitId: "SU1",
+          availableSourceIds: [],
+          missingCitations: ["Required Case Study"],
+          teachable: false,
+          coverageReason: "No source supports the required case.",
+        },
+        {
+          unitId: "SU2",
+          availableSourceIds: ["uploaded-notes"],
+          missingCitations: ["Optional Worked Examples"],
+          teachable: true,
+          coverageReason: "The optional reading is absent, but uploaded notes directly support the unit topic.",
+        },
+      ],
+    };
+    assert.deepEqual(syllabusCoverageDecisionProblems(decision, plan, ["uploaded-notes"]), []);
+    const coverage = projectModelAuthoredSyllabusCoverage(plan, decision, ["uploaded-notes"]);
+    assert.equal(coverage.units[0].teachable, false);
+    assert.equal(coverage.units[1].teachable, true);
   });
 
-  test("the summary counts each status", () => {
-    const { coverage } = courseFixture();
-    assert.deepEqual(summarizeSyllabusCoverage(coverage), {
+  test("summarizes authored material statuses", () => {
+    assert.deepEqual(summarizeSyllabusCoverage(courseFixture().coverage), {
       unitCount: 3,
       materialCount: 3,
       availableCount: 2,
@@ -234,214 +339,91 @@ describe("resolving assigned materials against the garden", () => {
   });
 });
 
-describe("the anti-hallucination gate", () => {
-  test("a page teaching from a work nobody uploaded hard-fails", () => {
+describe("the unavailable-citation safety gate", () => {
+  test("a page teaching from a model-authored missing work hard-fails", () => {
     const { coverage } = courseFixture();
     const probes = unavailableCitationProbes(coverage);
-    assert.ok(probes.length > 0, "the missing work should produce a probe");
-
     const fabricated =
       "The Loihi Architecture Review shows that event-driven cores cut energy by an order of magnitude.";
     assert.deepEqual(detectUnavailableCitations(fabricated, probes), [
       "Davies et al., Loihi Architecture Review (2021)",
     ]);
+    const assessment = assessLessonQuality(fabricated, {
+      unavailableCitations: { detect: (prose) => detectUnavailableCitations(prose, probes) },
+    });
+    assert.equal(
+      assessment.problems.find((problem) => problem.code === "unavailable-citation")?.hard,
+      true,
+    );
   });
 
-  test("author-and-year phrasing is caught too", () => {
-    const { coverage } = courseFixture();
-    const probes = unavailableCitationProbes(coverage);
+  test("available works and no-syllabus flows stay outside the gate", () => {
+    const probes = unavailableCitationProbes(courseFixture().coverage);
     assert.deepEqual(
-      detectUnavailableCitations("As Davies and colleagues reported in 2021, ...", probes),
+      detectUnavailableCitations("Neuronal Dynamics derives the membrane equation.", probes),
+      [],
+    );
+    assert.deepEqual(unavailableCitationProbes(null), []);
+    assert.deepEqual(detectUnavailableCitations("anything", []), []);
+  });
+
+  test("uses exact authored identifiers instead of fuzzy citation inference", () => {
+    const probes = unavailableCitationProbes(courseFixture().coverage);
+    assert.deepEqual(
+      detectUnavailableCitations(
+        "Davies et al.,   Loihi Architecture Review (2021) is assigned here.",
+        probes,
+      ),
       ["Davies et al., Loihi Architecture Review (2021)"],
     );
-  });
-
-  test("works that ARE uploaded never trip the gate", () => {
-    const { coverage } = courseFixture();
-    const probes = unavailableCitationProbes(coverage);
-    const legitimate =
-      "Neuronal Dynamics builds the membrane equation step by step, and Networks of Spiking Neurons motivates it.";
-    assert.deepEqual(detectUnavailableCitations(legitimate, probes), []);
-  });
-
-  test("ordinary teaching prose never trips the gate", () => {
-    const { coverage } = courseFixture();
-    const probes = unavailableCitationProbes(coverage);
-    const lesson =
-      "A neuron accumulates charge until it crosses threshold, then emits a spike and resets. " +
-      "Neuromorphic hardware exploits this: silence costs nothing, so a mostly still scene is nearly free to process.";
-    assert.deepEqual(detectUnavailableCitations(lesson, probes), []);
-  });
-
-  test("generic citations produce no probes, so they can never false-positive", () => {
-    const plan = normalizeSyllabusPlan({
-      units: [],
-      referencedMaterials: [{ id: "R1", citation: "Lecture 4 slides" }],
-    });
-    const coverage = buildSyllabusCoverage(plan, resolveSyllabusMaterials(plan, []));
-    assert.deepEqual(unavailableCitationProbes(coverage), []);
-  });
-
-  test("no syllabus means no gate at all", () => {
-    assert.deepEqual(unavailableCitationProbes(null), []);
-    assert.deepEqual(detectUnavailableCitations("anything at all", []), []);
-  });
-
-  test("the lesson quality gate reports a fabricated citation as a hard failure", () => {
-    const { coverage } = courseFixture();
-    const probes = unavailableCitationProbes(coverage);
-    const body = [
-      "# Energy in spiking systems",
-      "",
-      "Imagine a sensor watching a still scene. A dense network keeps recomputing.",
-      "The Loihi Architecture Review reports a tenfold energy reduction on this workload.",
-      "For example, a spike costs a single synaptic operation.",
-      "",
-      "**Question.** Why does silence matter?",
-      "**Answer.** Because no spike means no computation.",
-    ].join("\n");
-
-    const assessment = assessLessonQuality(body, {
-      unavailableCitations: {
-        detect: (prose) => detectUnavailableCitations(prose, probes),
-      },
-    });
-    const problem = assessment.problems.find(
-      (entry) => entry.code === "unavailable-citation",
+    assert.deepEqual(
+      detectUnavailableCitations("Davies and colleagues reported this in 2021.", probes),
+      [],
     );
-    assert.ok(problem, "the gate should raise an unavailable-citation problem");
-    assert.equal(problem.hard, true);
-    assert.equal(assessment.hardFail, true);
-    assert.deepEqual(problem.evidence, [
-      "Davies et al., Loihi Architecture Review (2021)",
-    ]);
-  });
-
-  test("the gate is inert when no citation detector is supplied", () => {
-    const body = "The Loihi Architecture Review reports a tenfold reduction.";
-    const problems = assessLessonQuality(body).problems;
-    assert.equal(
-      problems.some((entry) => entry.code === "unavailable-citation"),
-      false,
+    assert.deepEqual(
+      detectUnavailableCitations("A Loihi review discusses architecture.", probes),
+      [],
     );
   });
 });
 
-describe("pointing a page at its assigned reading", () => {
-  test("a page matches the syllabus unit it teaches", () => {
-    const { coverage } = courseFixture();
-    const matched = matchSyllabusUnitForPage(
-      coverage,
-      "The Leaky Integrate-and-Fire Neuron — membrane potential accumulation and threshold firing",
-    );
-    assert.equal(matched?.unitId, "SU2");
-    assert.deepEqual(matched?.availableSourceIds, ["neuronal-dynamics-ch4"]);
-  });
-
-  test("an unrelated page matches nothing rather than guessing", () => {
-    const { coverage } = courseFixture();
-    assert.equal(
-      matchSyllabusUnitForPage(coverage, "Choosing a text editor for coursework"),
-      null,
-    );
-  });
-
-  test("no coverage means no match", () => {
-    assert.equal(matchSyllabusUnitForPage(null, "anything"), null);
-  });
-});
-
-describe("pipeline wiring for material availability", () => {
-  test("the syllabus is read and its materials resolved before planning", () => {
+describe("pipeline wiring for model-authored syllabus coverage", () => {
+  test("uses a second bounded validated model call before source planning", () => {
     assertSource("SYLLABUS_READING_PROMPT", "have a syllabus-reading prompt");
-    assertSource(
-      "normalizeSyllabusPlan(syllabusCall.parsed)",
-      "parse the syllabus reading",
-    );
-    assertSource(
-      "resolveSyllabusMaterials(syllabusPlan, context.sources)",
-      "resolve assigned materials against the garden's documents",
-    );
+    assertSource("SYLLABUS_COVERAGE_PROMPT", "have a separate syllabus-coverage prompt");
+    assertSource("stageLabel: \"Syllabus coverage review\"", "route coverage through bounded schema repair");
+    assertSource("syllabusCoverageDecisionProblems(", "validate the complete model decision");
+    assertSource("projectModelAuthoredSyllabusCoverage(", "project the validated decision");
   });
 
-  test("a failed syllabus reading says so instead of pretending it checked", () => {
-    assertSource(
-      "Assigned readings were not checked against this garden's documents",
-      "warn when the availability check could not run",
-    );
+  test("supplies exact material semantics and selected source evidence", () => {
+    assertSource("selectedSourceCatalog: promptSyllabusCoverageSourceCatalog(context)", "send selected sources");
+    assertSource("sourceFile: source.sourceFile", "send exact source filenames");
+    assertSource("content: sourcePlanningIndex(source.body", "send exact bounded source content");
+    assertSource("Match title/authors AND any locator", "require locator-level evidence");
+    assertSource("A missing REQUIRED material", "tell the model how required status matters");
+    assertSource("A missing OPTIONAL material", "tell the model how optional status matters");
   });
 
-  test("missing works become planning warnings naming the citation", () => {
-    assertSource(
-      "work(s) that are not in this garden",
-      "warn about assigned works that are not uploaded",
-    );
+  test("contains no active deterministic material matcher or teachability fallback", () => {
+    assert.equal(learnSource.includes("resolveSyllabusMaterials("), false);
+    assert.equal(learnSource.includes("buildSyllabusCoverage("), false);
+    assert.equal(syllabusSource.includes("scoreMaterialAgainstSource"), false);
+    assert.equal(syllabusSource.includes("AVAILABILITY_THRESHOLD"), false);
+    assert.equal(syllabusSource.includes("referencedAnything || missingCitations.length"), false);
+  });
+
+  test("preserves the none/no-syllabus flow and carries coverage to planning", () => {
+    assertSource("if (context.syllabus) {", "only invoke syllabus models when selected");
+    const hits = (learnSource.match(/syllabusCoverage: syllabusCoveragePayload/g) ?? []).length;
+    assert.equal(hits, 3, `expected coverage in all 3 planning payloads, found ${hits}`);
+  });
+
+  test("missing works become explicit warnings", () => {
+    assertSource("work(s) that are not in this garden", "warn about missing-material verdicts");
     assertSource(
       "has no available material in this garden and was left uncovered",
-      "warn about syllabus items it cannot cover",
-    );
-  });
-
-  test("the availability verdict reaches every planning stage", () => {
-    const hits = (learnSource.match(/syllabusCoverage: syllabusCoveragePayload/g) ?? []).length;
-    assert.equal(hits, 3, `expected the coverage in all 3 planning payloads, found ${hits}`);
-  });
-
-  test("the planner is told to ground units in available material and never in missing work", () => {
-    assertSource(
-      "lists the documents that ARE present for that unit",
-      "point the planner at the available documents",
-    );
-    assertSource("NOBODY UPLOADED", "mark missing works unmistakably");
-    assertSource(
-      "Never summarize, paraphrase, characterize, or state what such a work says",
-      "forbid writing about a missing work",
-    );
-    assertSource(
-      "Ground that unit heavily and specifically in those documents",
-      "require heavy grounding in the assigned reading",
-    );
-  });
-
-  test("page generation gates on the confirmed map's own availability check", () => {
-    assertSource(
-      "unavailableCitationProbes(",
-      "build citation probes for the run",
-    );
-    assertSource("map.syllabusCoverage ?? null", "build them from the confirmed map");
-    assertSource(
-      "unavailableCitations: unavailableCitationGate",
-      "pass the gate into the page quality check",
-    );
-  });
-
-  test("the page prompt forbids naming an unavailable work", () => {
-    assertSource(
-      "dossier.unavailableCitations",
-      "tell the page writer which works are unavailable",
-    );
-    assertSource(
-      "You have never read them",
-      "state plainly that the unavailable works were never read",
-    );
-  });
-
-  test("assigned documents are prioritized in the page's source snippets", () => {
-    assertSource(
-      "preferredSourceIds: assignedSourceIds",
-      "prefer the syllabus-assigned documents for the page",
-    );
-    assertSource(
-      "if (preferredSourceIds?.has(source.slug)) score += 5;",
-      "boost snippets from the assigned documents",
-    );
-  });
-
-  test("the coverage is persisted so generation cannot resolve differently", () => {
-    assertSource("syllabus_coverage_json", "persist the coverage on the map");
-    assertSource(
-      "ALTER TABLE learn_maps ADD COLUMN syllabus_coverage_json TEXT",
-      "migrate existing databases",
+      "warn about model-authored unteachable units",
     );
   });
 });
