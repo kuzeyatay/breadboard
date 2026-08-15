@@ -61,3 +61,23 @@ test("Garden Chat rename updates the canonical conversation without reordering R
     /SET title = \?, updated_at = datetime\('now'\)/,
   );
 });
+
+test("Garden Chat sent messages match Terminal hover actions", () => {
+  const transcript = workspace.slice(
+    workspace.indexOf("const ChatTranscript"),
+    workspace.indexOf("// â”€â”€ Prompts"),
+  );
+
+  assert.match(transcript, /group-hover:opacity-100/);
+  assert.match(transcript, /group-focus-within:opacity-100/);
+  assert.match(transcript, /navigator\.clipboard\.writeText\(message\.content\)/);
+  assert.match(transcript, /title="Save to Prompts"/);
+  assert.match(transcript, /aria-label="Edit message and create a branch"/);
+  assert.match(transcript, /<SavePromptDialog/);
+  assert.match(transcript, /Save &amp; send/);
+  assert.match(workspace, /onEditMessage=\{handleEditUserMessage\}/);
+  assert.match(
+    workspace,
+    /reusableChatAttachments\(previousUser\.attachments\)/,
+  );
+});

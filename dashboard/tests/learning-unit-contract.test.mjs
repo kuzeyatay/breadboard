@@ -2,6 +2,9 @@ import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   normalizeLearningUnits,
+  modelAuthoredLearningUnitParseProblems,
+  modelAuthoredSourceArtifactOmissionParseProblems,
+  projectModelAuthoredSourceArtifactOmissions,
   sectionSemanticProfile,
   sectionTitleGrammarProblems,
   clusterUnitsIntoSections,
@@ -23,6 +26,10 @@ import {
   semanticConceptsForUnit,
   knowledgeClaimsForUnit,
   reconcileLearningUnitSourceArtifacts,
+  projectModelAuthoredSourceArtifactAssignments,
+  sameSourceArtifactAssignmentRecords,
+  sourceArtifactOwnershipProblems,
+  sourceArtifactCoverageProblems,
 } from "../src/lib/learning-unit-contract.ts";
 import { sanitizeLearnerTitle } from "../src/lib/learn-utils.ts";
 import { isValidPublicConceptSlug } from "../src/lib/semantic-core.ts";
@@ -58,7 +65,7 @@ function modelAuthoredSpine() {
       knowledgeClaims: [],
       mustNotRepeat: [],
       expectedWordRange: [700, 900],
-      section: { id, title, purpose },
+      sectionPlan: { id, title, purpose },
     };
   }));
 }
@@ -105,6 +112,67 @@ test("model-only normalization never invents concepts, roles, word ranges, or se
   assert.match(problems.join("\n"), /invalid or missing model-authored role/);
   assert.match(problems.join("\n"), /missing model-authored semanticConcepts/);
   assert.match(problems.join("\n"), /missing model-authored section/);
+});
+
+test("strict model-authored parsing rejects aliases and malformed values before normalization", () => {
+  assert.deepEqual(modelAuthoredLearningUnitParseProblems(modelAuthoredSpine()), []);
+
+  const aliased = structuredClone(modelAuthoredSpine());
+  const first = aliased[0];
+  first.name = first.title;
+  delete first.title;
+  first.question = first.learningQuestion;
+  delete first.learningQuestion;
+  first.role = "core-concept";
+  first.wordRange = first.expectedWordRange;
+  delete first.expectedWordRange;
+  first.section = first.sectionPlan;
+  delete first.sectionPlan;
+  first.semanticConcepts[0].slug = "Concept One";
+  aliased[1].id = first.id;
+
+  const problems = modelAuthoredLearningUnitParseProblems(aliased).join("\n");
+  assert.match(problems, /learningUnits\[0\]\.title must be a non-empty string/);
+  assert.match(problems, /learningUnits\[0\]\.learningQuestion must be a non-empty string/);
+  assert.match(problems, /learningUnits\[0\]\.role must be one of/);
+  assert.match(problems, /learningUnits\[0\]\.expectedWordRange must be exactly/);
+  assert.match(problems, /learningUnits\[0\]\.sectionPlan must be an object/);
+  assert.match(problems, /semanticConcepts\[0\]\.slug must already be a canonical public concept slug/);
+  assert.match(problems, /duplicates model-authored unit id/);
+});
+
+test("model-only normalization preserves invalid authored identities for rejection", () => {
+  const units = normalizeLearningUnits([
+    { ...modelAuthoredSpine()[0], id: "duplicate", role: "core-concept" },
+    { ...modelAuthoredSpine()[1], id: "duplicate", role: "core-concept" },
+  ], { modelAuthoredOnly: true });
+
+  assert.deepEqual(units.map((unit) => unit.id), ["duplicate", "duplicate"]);
+  assert.match(
+    validateLearningUnitContracts(units, {
+      requireModelAuthoredSemantics: true,
+      requireModelAuthoredSections: true,
+    }).join("\n"),
+    /duplicate model-authored learning unit id "duplicate"/,
+  );
+});
+
+test("explicit model concepts remain exact and suppress concept inference", () => {
+  const raw = {
+    ...modelAuthoredSpine()[0],
+    newConcepts: ["A different phrase that must not become a registry concept"],
+    prerequisiteConcepts: ["Another phrase that must not become a registry concept"],
+    semanticConcepts: [{
+      slug: "electric-field",
+      preferredLabel: "Electric field",
+      role: "primary",
+      aliases: ["E-field"],
+      evidenceAnchors: ["S1.P1"],
+    }],
+  };
+  const [unit] = normalizeLearningUnits([raw], { modelAuthoredOnly: true });
+
+  assert.deepEqual(semanticConceptsForUnit(unit), raw.semanticConcepts);
 });
 
 // A realistic set of learning units for an SNN source (used generically — the
@@ -412,6 +480,210 @@ describe("Learning Unit Contract — visual/unit compatibility (Fix 5)", () => {
 });
 
 describe("Learning Unit Contract — source artifact assignment (Fix 3/8)", () => {
+  test("registered artifacts form an exhaustive assigned-or-model-omitted partition", () => {
+    const units = normalizeLearningUnits([{
+      id: "U-exact",
+      role: "formula",
+      title: "Exact authored placements",
+      sourceFigures: [{
+        id: "S1.P4.F1",
+        placement: "inside_concept_explanation",
+        mustBeDiscussedWith: "the field direction",
+        interpretationGoal: "read the direction of every arrow",
+      }],
+      sourceFormulas: [],
+      sourceTables: [],
+    }]);
+    const raw = {
+      learningUnits: units,
+      sourceArtifactOmissions: [{
+        sourceArtifactId: "S1.P6.E1",
+        reason: "The same relation is already taught from the source's clearer vector form.",
+      }],
+    };
+
+    assert.deepEqual(modelAuthoredSourceArtifactOmissionParseProblems(raw), []);
+    const omissions = projectModelAuthoredSourceArtifactOmissions(raw);
+    assert.deepEqual(omissions, raw.sourceArtifactOmissions, "authored omission prose must survive exactly");
+    assert.deepEqual(sourceArtifactCoverageProblems(units, omissions, [
+      { id: "S1.P4.F1", kind: "figure" },
+      { id: "S1.P6.E1", kind: "formula" },
+    ]), []);
+    const malformed = {
+      sourceArtifactOmissions: [
+        ...raw.sourceArtifactOmissions,
+        { ...raw.sourceArtifactOmissions[0], explanation: "alias" },
+      ],
+    };
+    assert.match(
+      modelAuthoredSourceArtifactOmissionParseProblems(malformed).join("\n"),
+      /duplicates omission|unsupported fields/,
+    );
+  });
+
+  test("a forgotten registered artifact is a repairable contract failure", () => {
+    const units = normalizeLearningUnits([{
+      id: "U1",
+      role: "core_concept",
+      title: "Fields",
+      sourceFigures: [],
+      sourceFormulas: [],
+      sourceTables: [],
+    }]);
+    assert.match(
+      sourceArtifactCoverageProblems(
+        units,
+        [],
+        [{ id: "S1.P24.F1", kind: "figure" }],
+      ).join("\n"),
+      /S1\.P24\.F1.*forgotten.*assign it.*or explicitly omit it/i,
+    );
+  });
+
+  test("assignment plus omission and duplicate ownership are rejected without choosing for the model", () => {
+    const units = normalizeLearningUnits([
+      {
+        id: "U1",
+        role: "formula",
+        title: "First",
+        sourceFigures: [],
+        sourceFormulas: [{
+          id: "S1.P6.E1",
+          teachingGoal: "derive the relation",
+          termsToDefine: ["E"],
+          placement: "before_example",
+        }],
+        sourceTables: [],
+      },
+      {
+        id: "U2",
+        role: "worked_example",
+        title: "Second",
+        sourceFigures: [],
+        sourceFormulas: [{
+          id: "S1.P6.E1",
+          teachingGoal: "apply the relation",
+          termsToDefine: ["E"],
+          placement: "before_example",
+        }],
+        sourceTables: [],
+      },
+    ]);
+    const omissions = [{ sourceArtifactId: "S1.P6.E1", reason: "Do not teach this relation." }];
+    assert.match(sourceArtifactOwnershipProblems(units).join("\n"), /exactly one model-authored owner/);
+    assert.match(
+      sourceArtifactCoverageProblems(
+        units,
+        omissions,
+        [{ id: "S1.P6.E1", kind: "formula" }],
+      ).join("\n"),
+      /assigned.*assigned.*omitted/,
+    );
+  });
+
+  test("model-authored artifact projection preserves exact ownership, prose, and order", () => {
+    const units = normalizeLearningUnits([{
+      id: "U-exact",
+      role: "formula",
+      title: "Exact authored placements",
+      learningQuestion: "How are the registered artifacts used?",
+      sourceFigures: [
+        {
+          id: "S1.P4.F1",
+          placement: "beside_worked_example",
+          mustBeDiscussedWith: "the authored worked example",
+          interpretationGoal: "notice the authored field direction",
+        },
+        {
+          id: "S1.P5.F1",
+          placement: "not_used_with_reason",
+          mustBeDiscussedWith: "nothing",
+          interpretationGoal: "nothing",
+          notUsedReason: "the model explicitly found this redundant",
+        },
+      ],
+      sourceFormulas: [{
+        id: "S1.P6.E1",
+        teachingGoal: "derive the exact source relation",
+        termsToDefine: ["E", "q"],
+        placement: "before_example",
+      }],
+      sourceTables: [{
+        id: "S1.P7.T1",
+        teachingGoal: "compare the exact source cases",
+        rowsOrColumnsToExplain: ["case", "energy"],
+        placement: "inside_comparison",
+      }],
+    }]);
+
+    assert.deepEqual(sourceArtifactOwnershipProblems(units), []);
+    assert.deepEqual(projectModelAuthoredSourceArtifactAssignments(units), [
+      {
+        sourceArtifactId: "S1.P4.F1",
+        assignedLearningUnitId: "U-exact",
+        placement: "beside_worked_example",
+        reason: "the authored worked example",
+        requiredInterpretation: "notice the authored field direction",
+      },
+      {
+        sourceArtifactId: "S1.P6.E1",
+        assignedLearningUnitId: "U-exact",
+        placement: "after_formula_introduction",
+        reason: "derive the exact source relation",
+        requiredInterpretation: "E, q",
+      },
+      {
+        sourceArtifactId: "S1.P7.T1",
+        assignedLearningUnitId: "U-exact",
+        placement: "inside_comparison",
+        reason: "compare the exact source cases",
+        requiredInterpretation: "case, energy",
+      },
+    ]);
+  });
+
+  test("ambiguous model-authored artifact ownership is rejected without ranking an owner", () => {
+    const units = normalizeLearningUnits([
+      {
+        id: "U-first",
+        role: "core_concept",
+        title: "First candidate",
+        sourceTables: [{
+          id: "S1.P7.T1",
+          teachingGoal: "the first authored purpose",
+          rowsOrColumnsToExplain: ["first column"],
+          placement: "inside_comparison",
+        }],
+      },
+      {
+        id: "U-second",
+        role: "result_interpretation",
+        title: "Second candidate",
+        sourceTables: [{
+          id: "S1.P7.T1",
+          teachingGoal: "the second authored purpose",
+          rowsOrColumnsToExplain: ["second column"],
+          placement: "inside_result_interpretation",
+        }],
+      },
+    ]);
+
+    assert.deepEqual(sourceArtifactOwnershipProblems(units), [
+      'source artifact "S1.P7.T1" must have exactly one model-authored owner; found U-first, U-second',
+    ]);
+    assert.deepEqual(
+      projectModelAuthoredSourceArtifactAssignments(units).map((assignment) => [
+        assignment.assignedLearningUnitId,
+        assignment.reason,
+      ]),
+      [
+        ["U-first", "the first authored purpose"],
+        ["U-second", "the second authored purpose"],
+      ],
+      "projection must expose both authored claims instead of silently selecting one",
+    );
+  });
+
   test("reconciles every projection and assignment against registered source artifacts", () => {
     const knownId = "S1.P24.F1";
     const bogusId = "S1.P197.F1";
@@ -492,6 +764,37 @@ describe("Learning Unit Contract — source artifact assignment (Fix 3/8)", () =
     assert.equal(byId.get("S1.P9.T1").assignedLearningUnitId, "U11");
     assert.equal(byId.get("S1.P9.T1").placement, "inside_comparison");
     assert.ok(byId.get("S1.P6.E1").requiredInterpretation.length > 0);
+  });
+
+  test("compares registry reconciliation as an exact order-independent assignment multiset", () => {
+    const first = {
+      sourceArtifactId: "S1.P1.F1",
+      assignedLearningUnitId: "U1",
+      placement: "inside_concept_explanation",
+      reason: "Teach the field diagram",
+      requiredInterpretation: "Read its direction",
+    };
+    const second = {
+      sourceArtifactId: "S1.P2.E1",
+      assignedLearningUnitId: "U2",
+      placement: "after_formula_introduction",
+      reason: "Teach the field equation",
+      requiredInterpretation: "Define every term",
+    };
+
+    assert.equal(sameSourceArtifactAssignmentRecords([first, second], [second, first]), true);
+    assert.equal(
+      sameSourceArtifactAssignmentRecords(
+        [first, second],
+        [second, { ...first, reason: "A model-authored change" }],
+      ),
+      false,
+    );
+    assert.equal(
+      sameSourceArtifactAssignmentRecords([first, second], [first, first]),
+      false,
+      "duplicates must not be mistaken for the same projection",
+    );
   });
 
   test("dedupes duplicate source artifacts to one primary teaching unit", () => {

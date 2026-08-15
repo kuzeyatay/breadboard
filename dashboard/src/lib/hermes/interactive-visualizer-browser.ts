@@ -13,6 +13,24 @@ const activeWork = new Map<number, {
   child: ChildProcess | null;
 }>();
 
+const MAX_BROWSER_OUTPUT_CHARS = 750_000;
+const BROWSER_OUTPUT_HEAD_CHARS = 375_000;
+const BROWSER_OUTPUT_TRUNCATION_MARKER = "\n...[browser output truncated]...\n";
+
+export function appendBoundedBrowserOutput(
+  current: string,
+  chunk: Buffer | string,
+): string {
+  const next = current + (typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+  if (next.length <= MAX_BROWSER_OUTPUT_CHARS) return next;
+  const tailChars = MAX_BROWSER_OUTPUT_CHARS -
+    BROWSER_OUTPUT_HEAD_CHARS -
+    BROWSER_OUTPUT_TRUNCATION_MARKER.length;
+  return next.slice(0, BROWSER_OUTPUT_HEAD_CHARS) +
+    BROWSER_OUTPUT_TRUNCATION_MARKER +
+    next.slice(-tailChars);
+}
+
 function executable(env: NodeJS.ProcessEnv = process.env): string | null {
   const configured = String(env.BREADBOARD_VISUAL_BROWSER_PATH ?? "").trim();
   return [
@@ -74,10 +92,12 @@ async function runBrowser(input: {
     input.active.child = child;
     let stdout = "";
     let stderr = "";
-    const append = (current: string, chunk: Buffer) =>
-      (current + chunk.toString("utf8")).slice(-750_000);
-    child.stdout?.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
-    child.stderr?.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout = appendBoundedBrowserOutput(stdout, chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr = appendBoundedBrowserOutput(stderr, chunk);
+    });
     let settled = false;
     const finish = (exitCode: number | null, aborted: boolean) => {
       if (settled) return;
@@ -92,11 +112,11 @@ async function runBrowser(input: {
     };
     input.active.controller.signal.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => {
-      stderr = append(stderr, Buffer.from("\nBrowser test timed out."));
+      stderr = appendBoundedBrowserOutput(stderr, "\nBrowser test timed out.");
       void terminate(child).finally(() => finish(child.exitCode, false));
     }, input.timeoutMs);
     child.once("error", (error) => {
-      stderr = append(stderr, Buffer.from(error.message));
+      stderr = appendBoundedBrowserOutput(stderr, error.message);
       finish(null, false);
     });
     child.once("close", (code) => finish(code, input.active.controller.signal.aborted));

@@ -149,6 +149,111 @@ export interface StatusScene {
   description?: string;
 }
 
+/** A numeric spatial field may be fixed or derived from learner controls. */
+export type SpatialScalar = number | VisualExpression;
+
+/** Cartesian coordinates in the model-authored scene's local coordinate space. */
+export type SpatialVector3 = [SpatialScalar, SpatialScalar, SpatialScalar];
+
+export type SpatialPaletteColor =
+  | "green"
+  | "blue"
+  | "amber"
+  | "violet"
+  | "red"
+  | "cyan"
+  | "gray";
+
+export type SpatialSurfacePattern = "solid" | "striped" | "dotted" | "crosshatch";
+
+interface SpatialPrimitiveBase {
+  id: string;
+  label: string;
+  color?: SpatialPaletteColor;
+  pattern?: SpatialSurfacePattern;
+  opacity?: number;
+  visibleWhen?: VisualExpression;
+}
+
+export interface SpatialPlanePrimitive extends SpatialPrimitiveBase {
+  kind: "plane";
+  center: SpatialVector3;
+  normal: SpatialVector3;
+  size: SpatialScalar;
+}
+
+/** A bounded, model-authored planar patch with ordered coplanar vertices. */
+export interface SpatialPolygonPrimitive extends SpatialPrimitiveBase {
+  kind: "polygon";
+  points: SpatialVector3[];
+}
+
+export interface SpatialSpherePrimitive extends SpatialPrimitiveBase {
+  kind: "sphere";
+  center: SpatialVector3;
+  radius: SpatialScalar;
+}
+
+export interface SpatialCylinderPrimitive extends SpatialPrimitiveBase {
+  kind: "cylinder";
+  center: SpatialVector3;
+  axis: SpatialVector3;
+  radius: SpatialScalar;
+  height: SpatialScalar;
+}
+
+export interface SpatialConePrimitive extends SpatialPrimitiveBase {
+  kind: "cone";
+  apex: SpatialVector3;
+  axis: SpatialVector3;
+  radius: SpatialScalar;
+  height: SpatialScalar;
+}
+
+export interface SpatialPointPrimitive extends SpatialPrimitiveBase {
+  kind: "point";
+  position: SpatialVector3;
+  size?: SpatialScalar;
+}
+
+export interface SpatialVectorPrimitive extends SpatialPrimitiveBase {
+  kind: "vector";
+  from: SpatialVector3;
+  to: SpatialVector3;
+  headSize?: SpatialScalar;
+}
+
+export type SpatialPrimitive =
+  | SpatialPlanePrimitive
+  | SpatialPolygonPrimitive
+  | SpatialSpherePrimitive
+  | SpatialCylinderPrimitive
+  | SpatialConePrimitive
+  | SpatialPointPrimitive
+  | SpatialVectorPrimitive;
+
+export interface SpatialGroup {
+  id: string;
+  label: string;
+  visibleWhen?: VisualExpression;
+  primitives: SpatialPrimitive[];
+}
+
+/**
+ * A bounded, declarative three-dimensional scene. The isolated runtime owns
+ * projection and rendering; the model authors every object and relationship.
+ */
+export interface SpatialScene {
+  kind: "spatial";
+  title: string;
+  view?: {
+    azimuthDegrees?: number;
+    elevationDegrees?: number;
+    scale?: number;
+  };
+  groups: SpatialGroup[];
+}
+
 export type GeneratedVisualScene =
   | PlotScene
   | DiagramScene
@@ -157,7 +262,8 @@ export type GeneratedVisualScene =
   | TableScene
   | AnnotationScene
   | AnimatedMarkerScene
-  | StatusScene;
+  | StatusScene
+  | SpatialScene;
 
 export interface GeneratedVisualizationDefinition {
   schemaVersion: 1;

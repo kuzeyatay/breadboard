@@ -28,8 +28,9 @@ interface ConversationRow {
  * GET: find past chats by word or by description.
  *
  * The ranking lives in lib/conversations/search.ts; this route only decides
- * whose chats may be read. A conversation is never returned across users, and
- * the surface filter keeps a Terminal search out of Garden transcripts.
+ * whose chats may be read. A conversation is never returned across users, the
+ * surface filter keeps a Terminal search out of Garden transcripts, and a
+ * temporary chat is never a candidate — search is history by another name.
  */
 export async function GET(request: Request) {
   try {
@@ -48,7 +49,7 @@ export async function GET(request: Request) {
       .prepare(
         `SELECT id, public_id, title, updated_at, pinned_at
          FROM conversations
-         WHERE user_id = ?${surface ? " AND surface = ?" : ""}
+         WHERE user_id = ? AND temporary = 0${surface ? " AND surface = ?" : ""}
          ORDER BY updated_at DESC, id DESC
          LIMIT ${MAX_CONVERSATIONS}`,
       )

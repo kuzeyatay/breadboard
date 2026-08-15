@@ -28,8 +28,34 @@ import requests
 from .store import ResolvedCredentials
 from .types import ModelCall, ProviderError
 
-_REQUEST_TIMEOUT_SECONDS = 240
+# One Claude Code call has to cover everything Breadboard asks a model for, so
+# the budget is set by the slowest legitimate turn rather than the common one.
+# The in-chat visualizer is that turn: it asks for a complete three-file mini-app
+# as a single structured tool argument. Replaying one end to end took 265s and
+# 25.7k output tokens for a short conversation at default effort, and real turns
+# are heavier still — tens of thousands of input tokens and ``--effort high``.
+#
+# The previous 240s ceiling stopped that generation roughly twenty seconds from
+# done. Nothing downstream can tell a cut-off answer from a broken one, so Hermes
+# spent all three of its retries re-running the same doomed call: one visualizer
+# request became thirteen minutes of silence and then the timeout as the answer.
+#
+# The ceiling stays below the OpenAI client's own ten-minute default — Hermes
+# configures no provider timeout — so a CLI that really is stuck still comes back
+# as the explanation below instead of the client's bare read timeout.
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 540
+_MIN_REQUEST_TIMEOUT_SECONDS = 30
+_MAX_REQUEST_TIMEOUT_SECONDS = 570
 _MAX_TOOL_CALLS = 16
+
+
+def _request_timeout_seconds() -> int:
+    """The wall-clock budget for one CLI call, overridable for slower machines."""
+    try:
+        value = int(os.environ.get("CHATMOCK_CLAUDE_CODE_TIMEOUT_SECONDS", ""))
+    except (TypeError, ValueError):
+        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
+    return max(_MIN_REQUEST_TIMEOUT_SECONDS, min(_MAX_REQUEST_TIMEOUT_SECONDS, value))
 
 
 def is_claude_model(model: object) -> bool:
@@ -342,6 +368,7 @@ def _run_cli(payload: Dict[str, Any], model: str) -> Dict[str, Any]:
         env = os.environ.copy()
         env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         env["NO_COLOR"] = "1"
+        budget = _request_timeout_seconds()
         try:
             completed = subprocess.run(
                 command,
@@ -352,11 +379,18 @@ def _run_cli(payload: Dict[str, Any], model: str) -> Dict[str, Any]:
                 capture_output=True,
                 cwd=temp_dir,
                 env=env,
-                timeout=_REQUEST_TIMEOUT_SECONDS,
+                timeout=budget,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise ProviderError("Claude Code timed out before returning a response.") from exc
+            # This sentence becomes the assistant's answer, so it names the limit
+            # that was actually hit: a reader who sees only "timed out" cannot
+            # tell a request that needs more room from one that will never finish.
+            raise ProviderError(
+                f"Claude Code was still working after {budget} seconds and had to be "
+                "stopped. Ask for a smaller piece of work, or allow more time with "
+                "CHATMOCK_CLAUDE_CODE_TIMEOUT_SECONDS."
+            ) from exc
         except OSError as exc:
             raise ProviderError(f"Claude Code could not be started: {exc}") from exc
 

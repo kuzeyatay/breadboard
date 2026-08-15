@@ -39,6 +39,19 @@
     "desktop:verify": "npm --prefix desktop run verify:package",
     "desktop:dist:win": "npm --prefix desktop run dist:win",
     "desktop:smoke:installed": "node desktop/scripts/installed-smoke-test.mjs",
+    "qa:electron": "node qa/electron/run-qa.mjs",
+    "qa:electron:critical": "node qa/electron/run-qa.mjs --project=critical",
+    "qa:electron:explore": "node qa/electron/run-qa.mjs --project=exploratory",
+    "qa:electron:packaged": "node qa/electron/run-qa.mjs --project=packaged --skip-desktop-build",
+    "qa:electron:headed": "node qa/electron/run-qa.mjs --project=critical --headed --preserve-runtime",
+    "qa:electron:trace": "node qa/electron/run-qa.mjs --project=critical --trace --preserve-runtime",
+    "qa:electron:typecheck": "tsc --noEmit -p qa/electron/tsconfig.json",
     "cliproxy": "node scripts/start-cliproxy.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^24.13.3",
+    "playwright": "^1.62.1",
+    "typescript": "^5.9.3"
   }
 }

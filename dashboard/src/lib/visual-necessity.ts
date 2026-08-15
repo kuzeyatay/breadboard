@@ -605,10 +605,16 @@ export function decideInteractiveVisualNecessity(
       nearbyVisualIntentIds: duplication.nearbyIds,
     },
     reason: "",
+    // Both are derived from the finished decision, so they are filled in once
+    // the literal above is complete.
+    confidence: 0,
   };
   base.reason = decisionReason(base.necessity, base.preferredMedium, unit, base);
   const override = (context.overrides ?? []).find((item) => item.unitId === unit.id);
-  return applyOverride(base, override, supportedTypes);
+  const decided = applyOverride(base, override, supportedTypes);
+  // An override can change the necessity, so confidence is derived last, from
+  // whichever decision actually stands.
+  return { ...decided, confidence: decisionConfidence(decided) };
 }
 
 export function deriveTeachingMediumPlan(
@@ -1255,6 +1261,7 @@ export interface VisualFulfillmentAssessment {
   code:
     | "required_missing"
     | "recommended_missing"
+    | "model_approved_missing"
     | "required_type_mismatch"
     | "unexpected_visual"
     | "harmful_visual"
@@ -1267,6 +1274,10 @@ export function assessInteractiveVisualFulfillment(input: {
   embeddedVisualTypes?: string[];
   generatedVisualIds?: string[];
   intentionallyOmitted?: boolean;
+  /** Active Learn freezes the model-authored visual plan. Once its dedicated
+   * reviewer approves an interaction, finalization may not reinterpret an
+   * omission marker or alternative medium as permission to drop it. */
+  strictModelApprovedRequirement?: boolean;
 }): VisualFulfillmentAssessment {
   const plan = input.unit.interactiveVisualPlan;
   const requirement = plan?.requirement ?? (input.unit.interactiveVisual ? "recommended" : "none");
@@ -1279,6 +1290,21 @@ export function assessInteractiveVisualFulfillment(input: {
     plan?.visualIntent?.visualType ??
     plan?.decision.recommendedVisualType ??
     input.unit.interactiveVisual?.visualType;
+
+  if (
+    input.strictModelApprovedRequirement === true &&
+    plan &&
+    (requirement === "required" || requirement === "recommended" || requirement === "optional") &&
+    absent
+  ) {
+    return {
+      severity: "blocker",
+      code: "model_approved_missing",
+      reason:
+        `A model-approved ${requirement} interactive visual is missing. ` +
+        "Strict Learn finalization does not allow omission metadata or alternative coverage to demote an approved interaction.",
+    };
+  }
 
   if (requirement === "required" && absent) {
     return { severity: "blocker", code: "required_missing", reason: "A required interactive visual is missing." };
@@ -1621,6 +1647,13 @@ export function saveVisualNecessityArtifacts(
     schemaVersion: 1,
     gardenId,
     generatedAt: new Date().toISOString(),
+    artifactRole: "pre_executability_model_necessity_and_teaching_medium_source",
+    interactionContractsAreAuthoritative: false,
+    supersededBy: {
+      learningUnitContract: ".breadboard/learning-unit-contract.json",
+      visualizationPlan: ".breadboard/visualization-plan.json",
+      executabilityReviewLedger: ".breadboard/visual-contract-executability-reviews.json",
+    },
     budget: plan.budget,
     decisions: plan.decisions,
     teachingMedia: plan.teachingMedia,
@@ -1635,7 +1668,16 @@ export function saveVisualNecessityArtifacts(
   fs.writeFileSync(visualNecessityArtifactPath(gardenDir), `${JSON.stringify(artifact, null, 2)}\n`, "utf-8");
   fs.writeFileSync(
     path.join(breadboardDir, "visual-decision-records.json"),
-    `${JSON.stringify({ schemaVersion: 1, gardenId, generatedAt: artifact.generatedAt, zeroVisualSafeguard, decisionRecords }, null, 2)}\n`,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      gardenId,
+      generatedAt: artifact.generatedAt,
+      artifactRole: artifact.artifactRole,
+      interactionContractsAreAuthoritative: false,
+      supersededBy: artifact.supersededBy,
+      zeroVisualSafeguard,
+      decisionRecords,
+    }, null, 2)}\n`,
     "utf-8",
   );
 
@@ -1648,6 +1690,8 @@ export function saveVisualNecessityArtifacts(
   ];
   const lines = [
     "# Interactive Visual Decisions",
+    "",
+    "> **Artifact role:** Pre-executability necessity and teaching-medium source. Any nested interaction contract here is not authoritative after review. Use `.breadboard/learning-unit-contract.json` and `.breadboard/visualization-plan.json`; audit replacements in `.breadboard/visual-contract-executability-reviews.json`.",
     "",
     "| Unit | Decision | Preferred Medium | Reason |",
     "|---|---|---|---|",

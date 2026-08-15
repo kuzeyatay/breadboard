@@ -193,6 +193,23 @@ describe("contract behavior", () => {
     assert.equal(assessInteractiveVisualFulfillment({ unit: withPlan(comparison, optionalDecision, "optional") }).severity, "none");
   });
 
+  test("strict Learn finalization blocks every missing model-approved interaction", () => {
+    for (const [requirement, decision] of [
+      ["required", requiredDecision],
+      ["recommended", recommendedDecision],
+      ["optional", optionalDecision],
+    ]) {
+      const assessment = assessInteractiveVisualFulfillment({
+        unit: withPlan(comparison, decision, requirement),
+        intentionallyOmitted: true,
+        strictModelApprovedRequirement: true,
+      });
+      assert.equal(assessment.severity, "blocker", `${requirement} must remain blocking`);
+      assert.equal(assessment.code, "model_approved_missing");
+      assert.match(assessment.reason, new RegExp(`model-approved ${requirement}`, "i"));
+    }
+  });
+
   test("13. No-visual unit does not trigger fulfillment failure", () => {
     assert.equal(assessInteractiveVisualFulfillment({ unit: withPlan(comparison, noneDecision, "none") }).severity, "none");
   });

@@ -28,7 +28,10 @@ import {
   type DurableMemoryRow,
   type RankedDurableMemory,
 } from "../conversations/memory.ts";
-import type { ConversationRow } from "../conversations/store.ts";
+import {
+  conversationIsTemporary,
+  type ConversationRow,
+} from "../conversations/store.ts";
 import { reciprocalRankFusion } from "../semantic-retrieval.ts";
 import { semanticMemoryClient, type SemanticMemoryHit } from "./client.ts";
 import { mem0Config } from "./config.ts";
@@ -158,6 +161,9 @@ export async function loadConversationMemoryBundleHybrid(input: {
   projectScopeId?: string | null;
 }, database: Database.Database = db): Promise<ConversationMemoryBundle> {
   const bundle = loadConversationMemoryBundle(input, database);
+  // A temporary chat gets no cross-chat memory through either channel. The
+  // lexical half already returned nothing; the semantic half is not asked.
+  if (conversationIsTemporary(input.conversation)) return bundle;
   const hybrid = await hybridDurableMemories({
     userId: input.conversation.user_id,
     currentConversationId: input.conversation.id,

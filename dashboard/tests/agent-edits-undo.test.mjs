@@ -23,8 +23,10 @@ git("config", "user.email", "test@example.test");
 git("config", "user.name", "Test");
 write("tracked.ts", "export const kept = 1;\n");
 write("deleted-by-agent.ts", "export const gone = 1;\n");
-write(".gitignore", "ignored/\n");
+write("tracked-but-ignored.env", "committed configuration\n");
+write(".gitignore", "ignored/\ntracked-but-ignored.env\n");
 git("add", "-A");
+git("add", "--force", "tracked-but-ignored.env");
 git("commit", "-m", "initial");
 
 test("a coding agent run is bracketed by snapshots of any repository", () => {
@@ -32,11 +34,46 @@ test("a coding agent run is bracketed by snapshots of any repository", () => {
   write("tracked.ts", "export const kept = 1;\nexport const wip = 2;\n");
   write("untracked-note.md", "my own scratch file\n");
   write("ignored/huge.bin", "x".repeat(1024));
+  // `git add --force` attempts to index an ignored nested repository and fails
+  // when it has no checked-out commit. Real runtime directories can contain this
+  // exact shape while dependencies are being installed or updated.
+  git("init", "ignored/broken-runtime");
+  write("ignored/broken-runtime/runtime-state.txt", "transient\n");
   git("add", "tracked.ts");
   const stagedBefore = git("diff", "--cached", "--name-only").trim();
 
   const before = snapshot.captureSnapshot(repo);
   assert.ok(snapshot.isSnapshotId(before));
+  const capturedPaths = git("ls-tree", "-r", "--name-only", before)
+    .split("\n")
+    .filter(Boolean);
+  assert.equal(capturedPaths.some((file) => file.startsWith("ignored/")), false);
+  assert.equal(capturedPaths.includes("tracked-but-ignored.env"), true);
+
+  // Simulate a private index poisoned by a pre-fix Breadboard build. A plain
+  // `git add` would keep refreshing this cached path despite its ignore rule.
+  const privateIndex = git(
+    "rev-parse",
+    "--git-path",
+    "breadboard-agent-edits-index",
+  ).trim();
+  const privateIndexPath = path.isAbsolute(privateIndex)
+    ? privateIndex
+    : path.join(repo, privateIndex);
+  execFileSync(
+    "git",
+    ["-C", repo, "add", "--force", "--", "ignored/huge.bin"],
+    {
+      env: { ...process.env, GIT_INDEX_FILE: privateIndexPath },
+      windowsHide: true,
+    },
+  );
+  const migrated = snapshot.captureSnapshot(repo);
+  assert.ok(snapshot.isSnapshotId(migrated));
+  assert.doesNotMatch(
+    git("ls-tree", "-r", "--name-only", migrated),
+    /^ignored\//m,
+  );
   snapshot.rememberRunSnapshot("run-1", repo, before);
 
   // The agent edits, adds, and deletes.

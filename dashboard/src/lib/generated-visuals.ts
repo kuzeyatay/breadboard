@@ -6,24 +6,29 @@ import { spawnSync } from "child_process";
 import ts from "typescript";
 import type OpenAI from "openai";
 import { withCouncil } from "./council.ts";
+import { GENERATED_VISUAL_CAPABILITY_MANIFEST } from "./generated-visual-capabilities.ts";
 import {
   VISUAL_SDK_VERSION,
   type GeneratedVisualizationDefinition,
   type GeneratedVisualControl,
-  type GeneratedVisualOutput,
-  type GeneratedVisualScene,
+  type SpatialPrimitive,
+  type SpatialScalar,
+  type SpatialScene,
+  type SpatialVector3,
   type VisualExpression,
 } from "./visual-sdk.ts";
 import type {
   SourceVisualRelationship,
   VisualizationOpportunity,
 } from "./visualization-opportunities.ts";
+import { isRetryableModelTransportError } from "./http-502-retry.ts";
 
 export const GENERATED_VISUAL_BLOCK_LANG = "breadboard-generated-visual";
-export const GENERATED_VISUAL_SCHEMA_VERSION = 1;
-export const GENERATED_VISUAL_MAX_SOURCE_CHARS = 60_000;
+export const GENERATED_VISUAL_SCHEMA_VERSION = GENERATED_VISUAL_CAPABILITY_MANIFEST.definitionSchemaVersion;
+export const GENERATED_VISUAL_MAX_SOURCE_CHARS = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.sourceCharacters;
+export const GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS = 3;
 
-const SDK_IMPORT = "@breadboard/visual-sdk";
+const SDK_IMPORT = GENERATED_VISUAL_CAPABILITY_MANIFEST.sourceForm.importModule;
 const IMPORT_ALLOWLIST = new Set([SDK_IMPORT, "react"]);
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{1,79}$/;
 const FORBIDDEN_IDENTIFIERS = new Set([
@@ -61,12 +66,30 @@ const FORBIDDEN_PROPERTIES = new Set([
   "sendBeacon",
 ]);
 const EXTERNAL_URL_RE = /(?:https?:|wss?:|file:|javascript:|data:text\/html)/i;
-const MAX_AST_NODES = 2_500;
-const MAX_LITERAL_DEPTH = 24;
-const MAX_EXPRESSION_NODES = 300;
-const MAX_SCENES = 24;
-const MAX_CONTROLS = 12;
-const MAX_OUTPUTS = 16;
+const MAX_AST_NODES = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.astNodes;
+const MAX_LITERAL_DEPTH = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.literalDepth;
+const MAX_EXPRESSION_NODES = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.expressionNodes;
+const MAX_SCENES = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.scenes;
+const MAX_CONTROLS = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.controls;
+const MAX_OUTPUTS = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.outputs;
+const MAX_SELECT_OPTIONS = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.selectOptions;
+const MAX_SPATIAL_GROUPS = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.spatialGroups;
+const MAX_SPATIAL_PRIMITIVES_PER_GROUP = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.spatialPrimitivesPerGroup;
+const MAX_SPATIAL_PRIMITIVES = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.spatialPrimitives;
+const MAX_SPATIAL_POLYGON_POINTS = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.spatialPolygonPoints;
+const MAX_SPATIAL_MAGNITUDE = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.spatialMagnitude;
+const SPATIAL_PRIMITIVE_KINDS = new Set<string>(
+  GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.primitiveKinds,
+);
+const SPATIAL_PALETTE = new Set<string>(GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.palette);
+const SPATIAL_PATTERNS = new Set<string>(GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.patterns);
+const GENERATED_CONTROL_TYPES = new Set<string>(GENERATED_VISUAL_CAPABILITY_MANIFEST.runtimeControls.types);
+const GENERATED_OUTPUT_REPRESENTATIONS = new Set<string>(GENERATED_VISUAL_CAPABILITY_MANIFEST.outputs.representations);
+const GENERATED_EXPRESSION_KINDS = new Set<string>(GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.kinds);
+const GENERATED_BINARY_OPERATORS = new Set<string>(GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.binaryOperators);
+const GENERATED_UNARY_OPERATORS = new Set<string>(GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.unaryOperators);
+const GENERATED_COMPARISONS = new Set<string>(GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.comparisons);
+const GENERATED_SCENE_KINDS = new Set<string>(GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.kinds);
 const GENERATED_COMPILATION_CACHE = new Map<string, GeneratedVisualCompilation>();
 
 export interface GeneratedVisualizationTestCase {
@@ -432,6 +455,10 @@ function validateExpression(
     return false;
   }
   const kind = expression.kind;
+  if (!GENERATED_EXPRESSION_KINDS.has(String(kind))) {
+    errors.push(`${pathLabel}: unsupported expression kind ${String(kind ?? "(missing)")}`);
+    return false;
+  }
   if (kind === "constant") {
     if (asFiniteNumber(expression.value) === undefined) errors.push(`${pathLabel}: constant must be finite`);
     return asFiniteNumber(expression.value) !== undefined;
@@ -442,7 +469,7 @@ function validateExpression(
     return knownInputs.has(id);
   }
   if (kind === "binary") {
-    if (!["add", "subtract", "multiply", "divide", "power", "min", "max"].includes(String(expression.op))) {
+    if (!GENERATED_BINARY_OPERATORS.has(String(expression.op))) {
       errors.push(`${pathLabel}: unsupported binary operator`);
     }
     const left = validateExpression(expression.left, knownInputs, errors, `${pathLabel}.left`, depth + 1, counter);
@@ -450,7 +477,7 @@ function validateExpression(
     return left && right;
   }
   if (kind === "unary") {
-    if (!["negate", "abs", "sqrt", "sin", "cos", "tan", "exp", "log"].includes(String(expression.op))) {
+    if (!GENERATED_UNARY_OPERATORS.has(String(expression.op))) {
       errors.push(`${pathLabel}: unsupported unary operator`);
     }
     return validateExpression(expression.argument, knownInputs, errors, `${pathLabel}.argument`, depth + 1, counter);
@@ -461,7 +488,7 @@ function validateExpression(
     );
   }
   if (kind === "conditional") {
-    if (!["lt", "lte", "gt", "gte", "eq"].includes(String(expression.comparison))) {
+    if (!GENERATED_COMPARISONS.has(String(expression.comparison))) {
       errors.push(`${pathLabel}: unsupported comparison`);
     }
     return ["left", "right", "whenTrue", "whenFalse"].every((field) =>
@@ -482,7 +509,7 @@ function validateControl(value: unknown, errors: string[], index: number): value
   const type = typeof value.type === "string" ? value.type : "";
   if (!ID_PATTERN.test(id)) errors.push(`controls[${index}].id is invalid`);
   if (!label) errors.push(`controls[${index}] needs an accessible label`);
-  if (!["slider", "number", "select", "toggle", "button"].includes(type)) {
+  if (!GENERATED_CONTROL_TYPES.has(type)) {
     errors.push(`controls[${index}].type is invalid`);
   }
   if ((type === "slider" || type === "number") && asFiniteNumber(value.defaultValue) === undefined) {
@@ -499,7 +526,9 @@ function validateControl(value: unknown, errors: string[], index: number): value
     const options = Array.isArray(value.options)
       ? value.options.filter((option): option is string => typeof option === "string" && option.trim().length > 0)
       : [];
-    if (options.length < 2) errors.push(`controls[${index}] select needs at least two options`);
+    if (options.length < 2 || options.length > MAX_SELECT_OPTIONS) {
+      errors.push(`controls[${index}] select needs 2-${MAX_SELECT_OPTIONS} options`);
+    }
     if (new Set(options).size !== options.length) errors.push(`controls[${index}] select options must be unique`);
     if (typeof value.defaultValue !== "string" || !options.includes(value.defaultValue)) {
       errors.push(`controls[${index}] select defaultValue must match one declared option`);
@@ -508,8 +537,371 @@ function validateControl(value: unknown, errors: string[], index: number): value
   return true;
 }
 
+function validateSpatialScalar(
+  value: unknown,
+  knownInputs: Set<string>,
+  errors: string[],
+  pathLabel: string,
+  options: { positive?: boolean; max?: number } = {},
+): boolean {
+  const numeric = asFiniteNumber(value);
+  if (numeric !== undefined) {
+    const max = options.max ?? MAX_SPATIAL_MAGNITUDE;
+    let valid = true;
+    if (Math.abs(numeric) > max) {
+      errors.push(`${pathLabel} must stay within +/-${max}`);
+      valid = false;
+    }
+    if (options.positive && numeric <= 0) {
+      errors.push(`${pathLabel} must be positive`);
+      valid = false;
+    }
+    return valid;
+  }
+  if (!isRecord(value)) {
+    errors.push(`${pathLabel} must be a finite number or expression`);
+    return false;
+  }
+  return validateExpression(value, knownInputs, errors, pathLabel);
+}
+
+function validateSpatialVector3(
+  value: unknown,
+  knownInputs: Set<string>,
+  errors: string[],
+  pathLabel: string,
+): boolean {
+  if (!Array.isArray(value) || value.length !== 3) {
+    errors.push(`${pathLabel} must contain exactly three spatial scalars`);
+    return false;
+  }
+  return value.every((component, index) =>
+    validateSpatialScalar(component, knownInputs, errors, `${pathLabel}[${index}]`));
+}
+
+function literalSpatialVectorLength(value: unknown): number | undefined {
+  if (!Array.isArray(value) || value.length !== 3) return undefined;
+  const components = value.map(asFiniteNumber);
+  if (components.some((component) => component === undefined)) return undefined;
+  return Math.hypot(...(components as number[]));
+}
+
+function spatialPolygonShapeDiagnostics(
+  points: Array<[number, number, number]>,
+  pathLabel: string,
+): string[] {
+  if (points.length < 3) return [`${pathLabel}.points needs at least three points`];
+  const scale = Math.max(1, ...points.flatMap((point) => point.map(Math.abs)));
+  const tolerance = Math.max(1e-7, scale * 1e-9);
+  const subtract = (
+    left: [number, number, number],
+    right: [number, number, number],
+  ): [number, number, number] => left.map((value, index) => value - right[index]) as [number, number, number];
+  const cross = (
+    left: [number, number, number],
+    right: [number, number, number],
+  ): [number, number, number] => [
+    left[1] * right[2] - left[2] * right[1],
+    left[2] * right[0] - left[0] * right[2],
+    left[0] * right[1] - left[1] * right[0],
+  ];
+  const errors: string[] = [];
+  for (let leftIndex = 0; leftIndex < points.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < points.length; rightIndex += 1) {
+      if (Math.hypot(...subtract(points[leftIndex], points[rightIndex])) <= tolerance) {
+        errors.push(`${pathLabel}.points must be distinct`);
+        leftIndex = points.length;
+        break;
+      }
+    }
+  }
+  const origin = points[0];
+  const firstEdge = points
+    .slice(1)
+    .map((point) => subtract(point, origin))
+    .find((edge) => Math.hypot(...edge) > tolerance);
+  if (!firstEdge) return [...errors, `${pathLabel}.points must contain at least three non-collinear points`];
+  const firstLength = Math.hypot(...firstEdge);
+  const normal = points
+    .slice(1)
+    .map((point) => cross(firstEdge, subtract(point, origin)))
+    .find((candidate) => Math.hypot(...candidate) / firstLength > tolerance);
+  if (!normal) return [...errors, `${pathLabel}.points must contain at least three non-collinear points`];
+  const normalLength = Math.hypot(...normal);
+  const unitNormal = normal.map((component) => component / normalLength);
+  const nonCoplanar = points.some((point) => {
+    const delta = subtract(point, origin);
+    return Math.abs(delta.reduce((sum, component, index) => sum + component * unitNormal[index], 0)) > tolerance;
+  });
+  if (nonCoplanar) return [...errors, `${pathLabel}.points must be coplanar`];
+
+  const dominantAxis = unitNormal
+    .map((component, index) => ({ index, magnitude: Math.abs(component) }))
+    .sort((left, right) => right.magnitude - left.magnitude)[0].index;
+  const projected = points.map((point) =>
+    point.filter((_, index) => index !== dominantAxis) as [number, number]);
+  const projectedScale = Math.max(1, ...projected.flatMap((point) => point.map(Math.abs)));
+  const areaTolerance = tolerance * projectedScale;
+  const orientation = (first: [number, number], second: [number, number], third: [number, number]) =>
+    (second[0] - first[0]) * (third[1] - first[1])
+    - (second[1] - first[1]) * (third[0] - first[0]);
+  const onSegment = (first: [number, number], second: [number, number], point: [number, number]) =>
+    point[0] >= Math.min(first[0], second[0]) - tolerance
+    && point[0] <= Math.max(first[0], second[0]) + tolerance
+    && point[1] >= Math.min(first[1], second[1]) - tolerance
+    && point[1] <= Math.max(first[1], second[1]) + tolerance;
+  const segmentsIntersect = (
+    firstStart: [number, number],
+    firstEnd: [number, number],
+    secondStart: [number, number],
+    secondEnd: [number, number],
+  ) => {
+    const firstSideStart = orientation(firstStart, firstEnd, secondStart);
+    const firstSideEnd = orientation(firstStart, firstEnd, secondEnd);
+    const secondSideStart = orientation(secondStart, secondEnd, firstStart);
+    const secondSideEnd = orientation(secondStart, secondEnd, firstEnd);
+    if (
+      Math.abs(firstSideStart) <= areaTolerance && onSegment(firstStart, firstEnd, secondStart)
+      || Math.abs(firstSideEnd) <= areaTolerance && onSegment(firstStart, firstEnd, secondEnd)
+      || Math.abs(secondSideStart) <= areaTolerance && onSegment(secondStart, secondEnd, firstStart)
+      || Math.abs(secondSideEnd) <= areaTolerance && onSegment(secondStart, secondEnd, firstEnd)
+    ) return true;
+    return (firstSideStart > areaTolerance) !== (firstSideEnd > areaTolerance)
+      && (secondSideStart > areaTolerance) !== (secondSideEnd > areaTolerance);
+  };
+  const edgeCount = projected.length;
+  for (let firstIndex = 0; firstIndex < edgeCount; firstIndex += 1) {
+    const firstNext = (firstIndex + 1) % edgeCount;
+    for (let secondIndex = firstIndex + 1; secondIndex < edgeCount; secondIndex += 1) {
+      const secondNext = (secondIndex + 1) % edgeCount;
+      if (
+        firstIndex === secondIndex
+        || firstIndex === secondNext
+        || firstNext === secondIndex
+        || firstNext === secondNext
+      ) continue;
+      if (segmentsIntersect(
+        projected[firstIndex],
+        projected[firstNext],
+        projected[secondIndex],
+        projected[secondNext],
+      )) {
+        errors.push(`${pathLabel}.points must form a non-self-intersecting boundary`);
+        return errors;
+      }
+    }
+  }
+  return errors;
+}
+
+function validateSpatialPrimitive(
+  value: unknown,
+  knownInputs: Set<string>,
+  errors: string[],
+  pathLabel: string,
+  primitiveIds: Set<string>,
+): value is SpatialPrimitive {
+  if (!isRecord(value)) {
+    errors.push(`${pathLabel} must be an object`);
+    return false;
+  }
+  const kind = typeof value.kind === "string" ? value.kind : "";
+  if (!SPATIAL_PRIMITIVE_KINDS.has(kind)) {
+    errors.push(`${pathLabel}.kind must be plane, polygon, sphere, cylinder, cone, point, or vector`);
+    return false;
+  }
+  const id = typeof value.id === "string" ? value.id : "";
+  if (!ID_PATTERN.test(id) || primitiveIds.has(id)) {
+    errors.push(`${pathLabel}.id is invalid or duplicate within the spatial scene`);
+  } else {
+    primitiveIds.add(id);
+  }
+  const label = typeof value.label === "string" ? value.label.trim() : "";
+  if (!label || label.length > 72) errors.push(`${pathLabel}.label must contain 1-72 characters`);
+  if (value.color !== undefined && !SPATIAL_PALETTE.has(String(value.color))) {
+    errors.push(`${pathLabel}.color must use a safe spatial palette token`);
+  }
+  if (value.pattern !== undefined && !SPATIAL_PATTERNS.has(String(value.pattern))) {
+    errors.push(`${pathLabel}.pattern must be solid, striped, dotted, or crosshatch`);
+  }
+  if (value.opacity !== undefined) {
+    const opacity = asFiniteNumber(value.opacity);
+    if (opacity === undefined || opacity < 0.1 || opacity > 1) {
+      errors.push(`${pathLabel}.opacity must be between 0.1 and 1`);
+    }
+  }
+  if (value.visibleWhen !== undefined) {
+    validateExpression(value.visibleWhen, knownInputs, errors, `${pathLabel}.visibleWhen`);
+  }
+
+  const commonFields = ["kind", "id", "label", "color", "pattern", "opacity", "visibleWhen"];
+  const fieldsByKind: Record<string, string[]> = {
+    plane: ["center", "normal", "size"],
+    polygon: ["points"],
+    sphere: ["center", "radius"],
+    cylinder: ["center", "axis", "radius", "height"],
+    cone: ["apex", "axis", "radius", "height"],
+    point: ["position", "size"],
+    vector: ["from", "to", "headSize"],
+  };
+  const allowedFields = new Set([...commonFields, ...fieldsByKind[kind]]);
+  for (const field of Object.keys(value)) {
+    if (!allowedFields.has(field)) errors.push(`${pathLabel}.${field} is not supported for a ${kind}`);
+  }
+
+  if (kind === "plane") {
+    validateSpatialVector3(value.center, knownInputs, errors, `${pathLabel}.center`);
+    validateSpatialVector3(value.normal, knownInputs, errors, `${pathLabel}.normal`);
+    validateSpatialScalar(value.size, knownInputs, errors, `${pathLabel}.size`, { positive: true });
+    if (literalSpatialVectorLength(value.normal) === 0) errors.push(`${pathLabel}.normal must be non-zero`);
+  } else if (kind === "polygon") {
+    if (!Array.isArray(value.points) || value.points.length < 3 || value.points.length > MAX_SPATIAL_POLYGON_POINTS) {
+      errors.push(`${pathLabel}.points must contain 3-${MAX_SPATIAL_POLYGON_POINTS} spatial vectors`);
+    } else {
+      value.points.forEach((point, pointIndex) => {
+        validateSpatialVector3(point, knownInputs, errors, `${pathLabel}.points[${pointIndex}]`);
+      });
+      const literalPoints = value.points.map((point) =>
+        Array.isArray(point) ? point.map(asFiniteNumber) : []);
+      if (literalPoints.every((point) => point.length === 3 && point.every((component) => component !== undefined))) {
+        errors.push(...spatialPolygonShapeDiagnostics(
+          literalPoints.map((point) => point.map(Number) as [number, number, number]),
+          pathLabel,
+        ));
+      }
+    }
+  } else if (kind === "sphere") {
+    validateSpatialVector3(value.center, knownInputs, errors, `${pathLabel}.center`);
+    validateSpatialScalar(value.radius, knownInputs, errors, `${pathLabel}.radius`, { positive: true });
+  } else if (kind === "cylinder") {
+    validateSpatialVector3(value.center, knownInputs, errors, `${pathLabel}.center`);
+    validateSpatialVector3(value.axis, knownInputs, errors, `${pathLabel}.axis`);
+    validateSpatialScalar(value.radius, knownInputs, errors, `${pathLabel}.radius`, { positive: true });
+    validateSpatialScalar(value.height, knownInputs, errors, `${pathLabel}.height`, { positive: true });
+    if (literalSpatialVectorLength(value.axis) === 0) errors.push(`${pathLabel}.axis must be non-zero`);
+  } else if (kind === "cone") {
+    validateSpatialVector3(value.apex, knownInputs, errors, `${pathLabel}.apex`);
+    validateSpatialVector3(value.axis, knownInputs, errors, `${pathLabel}.axis`);
+    validateSpatialScalar(value.radius, knownInputs, errors, `${pathLabel}.radius`, { positive: true });
+    validateSpatialScalar(value.height, knownInputs, errors, `${pathLabel}.height`, { positive: true });
+    if (literalSpatialVectorLength(value.axis) === 0) errors.push(`${pathLabel}.axis must be non-zero`);
+  } else if (kind === "point") {
+    validateSpatialVector3(value.position, knownInputs, errors, `${pathLabel}.position`);
+    if (value.size !== undefined) {
+      validateSpatialScalar(value.size, knownInputs, errors, `${pathLabel}.size`, { positive: true, max: 40 });
+    }
+  } else if (kind === "vector") {
+    validateSpatialVector3(value.from, knownInputs, errors, `${pathLabel}.from`);
+    validateSpatialVector3(value.to, knownInputs, errors, `${pathLabel}.to`);
+    if (value.headSize !== undefined) {
+      validateSpatialScalar(value.headSize, knownInputs, errors, `${pathLabel}.headSize`, { positive: true, max: 40 });
+    }
+    const from = Array.isArray(value.from) ? value.from.map(asFiniteNumber) : [];
+    const to = Array.isArray(value.to) ? value.to.map(asFiniteNumber) : [];
+    if (from.length === 3 && to.length === 3 && [...from, ...to].every((component) => component !== undefined)) {
+      const distance = Math.hypot(...from.map((component, index) => Number(to[index]) - Number(component)));
+      if (distance === 0) errors.push(`${pathLabel} must have distinct from and to points`);
+    }
+  }
+  return true;
+}
+
+function validateSpatialScene(
+  scene: Record<string, unknown>,
+  knownInputs: Set<string>,
+  errors: string[],
+  sceneIndex: number,
+): void {
+  const pathLabel = `scenes[${sceneIndex}]`;
+  if (typeof scene.title !== "string" || !scene.title.trim()) errors.push(`${pathLabel} spatial scene needs a title`);
+  if (scene.view !== undefined) {
+    if (!isRecord(scene.view)) {
+      errors.push(`${pathLabel}.view must be an object`);
+    } else {
+      for (const field of Object.keys(scene.view)) {
+        if (!new Set(["azimuthDegrees", "elevationDegrees", "scale"]).has(field)) {
+          errors.push(`${pathLabel}.view.${field} is not supported`);
+        }
+      }
+      if (scene.view.azimuthDegrees !== undefined) {
+        const value = asFiniteNumber(scene.view.azimuthDegrees);
+        if (value === undefined || value < -180 || value > 180) {
+          errors.push(`${pathLabel}.view.azimuthDegrees must be between -180 and 180`);
+        }
+      }
+      if (scene.view.elevationDegrees !== undefined) {
+        const value = asFiniteNumber(scene.view.elevationDegrees);
+        if (value === undefined || value < -85 || value > 85) {
+          errors.push(`${pathLabel}.view.elevationDegrees must be between -85 and 85`);
+        }
+      }
+      if (scene.view.scale !== undefined) {
+        const value = asFiniteNumber(scene.view.scale);
+        if (value === undefined || value < 0.25 || value > 2) {
+          errors.push(`${pathLabel}.view.scale must be between 0.25 and 2`);
+        }
+      }
+    }
+  }
+  if (!Array.isArray(scene.groups) || scene.groups.length === 0 || scene.groups.length > MAX_SPATIAL_GROUPS) {
+    errors.push(`${pathLabel} spatial scene needs 1-${MAX_SPATIAL_GROUPS} groups`);
+    return;
+  }
+  const groupIds = new Set<string>();
+  const primitiveIds = new Set<string>();
+  let primitiveCount = 0;
+  scene.groups.forEach((group, groupIndex) => {
+    const groupPath = `${pathLabel}.groups[${groupIndex}]`;
+    if (!isRecord(group)) {
+      errors.push(`${groupPath} must be an object`);
+      return;
+    }
+    for (const field of Object.keys(group)) {
+      if (!new Set(["id", "label", "visibleWhen", "primitives"]).has(field)) {
+        errors.push(`${groupPath}.${field} is not supported`);
+      }
+    }
+    const id = typeof group.id === "string" ? group.id : "";
+    if (!ID_PATTERN.test(id) || groupIds.has(id)) errors.push(`${groupPath}.id is invalid or duplicate`);
+    else groupIds.add(id);
+    const label = typeof group.label === "string" ? group.label.trim() : "";
+    if (!label || label.length > 72) errors.push(`${groupPath}.label must contain 1-72 characters`);
+    if (group.visibleWhen !== undefined) {
+      validateExpression(group.visibleWhen, knownInputs, errors, `${groupPath}.visibleWhen`);
+    }
+    if (
+      !Array.isArray(group.primitives)
+      || group.primitives.length === 0
+      || group.primitives.length > MAX_SPATIAL_PRIMITIVES_PER_GROUP
+    ) {
+      errors.push(`${groupPath} needs 1-${MAX_SPATIAL_PRIMITIVES_PER_GROUP} primitives`);
+      return;
+    }
+    primitiveCount += group.primitives.length;
+    group.primitives.forEach((primitive, primitiveIndex) => {
+      validateSpatialPrimitive(
+        primitive,
+        knownInputs,
+        errors,
+        `${groupPath}.primitives[${primitiveIndex}]`,
+        primitiveIds,
+      );
+    });
+  });
+  if (primitiveCount > MAX_SPATIAL_PRIMITIVES) {
+    errors.push(`${pathLabel} spatial scene has more than ${MAX_SPATIAL_PRIMITIVES} primitives`);
+  }
+}
+
 function expressionFieldsFromScene(scene: Record<string, unknown>): Array<[string, unknown]> {
   const fields: Array<[string, unknown]> = [];
+  const addSpatialScalar = (pathLabel: string, value: unknown) => {
+    if (isRecord(value)) fields.push([pathLabel, value]);
+  };
+  const addSpatialVector = (pathLabel: string, value: unknown) => {
+    if (!Array.isArray(value)) return;
+    value.forEach((component, index) => addSpatialScalar(`${pathLabel}[${index}]`, component));
+  };
   if (scene.kind === "plot" && Array.isArray(scene.series)) {
     scene.series.forEach((series, index) => {
       if (isRecord(series)) fields.push([`series[${index}].expression`, series.expression]);
@@ -547,6 +939,49 @@ function expressionFieldsFromScene(scene: Record<string, unknown>): Array<[strin
     fields.push(["x", scene.x], ["y", scene.y]);
   }
   if (scene.kind === "status") fields.push(["value", scene.value]);
+  if (scene.kind === "spatial" && Array.isArray(scene.groups)) {
+    scene.groups.forEach((group, groupIndex) => {
+      if (!isRecord(group)) return;
+      if (group.visibleWhen !== undefined) {
+        addSpatialScalar(`groups[${groupIndex}].visibleWhen`, group.visibleWhen);
+      }
+      if (!Array.isArray(group.primitives)) return;
+      group.primitives.forEach((primitive, primitiveIndex) => {
+        if (!isRecord(primitive)) return;
+        const base = `groups[${groupIndex}].primitives[${primitiveIndex}]`;
+        if (primitive.visibleWhen !== undefined) addSpatialScalar(`${base}.visibleWhen`, primitive.visibleWhen);
+        if (primitive.kind === "plane") {
+          addSpatialVector(`${base}.center`, primitive.center);
+          addSpatialVector(`${base}.normal`, primitive.normal);
+          addSpatialScalar(`${base}.size`, primitive.size);
+        } else if (primitive.kind === "polygon" && Array.isArray(primitive.points)) {
+          primitive.points.forEach((point, pointIndex) => {
+            addSpatialVector(`${base}.points[${pointIndex}]`, point);
+          });
+        } else if (primitive.kind === "sphere") {
+          addSpatialVector(`${base}.center`, primitive.center);
+          addSpatialScalar(`${base}.radius`, primitive.radius);
+        } else if (primitive.kind === "cylinder") {
+          addSpatialVector(`${base}.center`, primitive.center);
+          addSpatialVector(`${base}.axis`, primitive.axis);
+          addSpatialScalar(`${base}.radius`, primitive.radius);
+          addSpatialScalar(`${base}.height`, primitive.height);
+        } else if (primitive.kind === "cone") {
+          addSpatialVector(`${base}.apex`, primitive.apex);
+          addSpatialVector(`${base}.axis`, primitive.axis);
+          addSpatialScalar(`${base}.radius`, primitive.radius);
+          addSpatialScalar(`${base}.height`, primitive.height);
+        } else if (primitive.kind === "point") {
+          addSpatialVector(`${base}.position`, primitive.position);
+          if (primitive.size !== undefined) addSpatialScalar(`${base}.size`, primitive.size);
+        } else if (primitive.kind === "vector") {
+          addSpatialVector(`${base}.from`, primitive.from);
+          addSpatialVector(`${base}.to`, primitive.to);
+          if (primitive.headSize !== undefined) addSpatialScalar(`${base}.headSize`, primitive.headSize);
+        }
+      });
+    });
+  }
   return fields;
 }
 
@@ -596,11 +1031,7 @@ export function validateGeneratedVisualizationDefinition(
     if (!ID_PATTERN.test(id) || outputIds.has(id)) errors.push(`outputs[${index}].id is invalid or duplicate`);
     outputIds.add(id);
     if (typeof output.label !== "string" || !output.label.trim()) errors.push(`outputs[${index}] needs a label`);
-    if (
-      !["value", "chart", "diagram", "animation", "timeline", "table", "annotation"].includes(
-        String(output.representation),
-      )
-    ) {
+    if (!GENERATED_OUTPUT_REPRESENTATIONS.has(String(output.representation))) {
       errors.push(`outputs[${index}].representation is invalid`);
     }
     if (output.expression) {
@@ -612,19 +1043,8 @@ export function validateGeneratedVisualizationDefinition(
   if (scenes.length === 0 || scenes.length > MAX_SCENES) {
     errors.push(`definition needs 1-${MAX_SCENES} scene nodes`);
   }
-  const sceneKinds = new Set([
-    "plot",
-    "diagram",
-    "timeline",
-    "value",
-    "table",
-    "annotation",
-    "formula",
-    "animated_marker",
-    "status",
-  ]);
   scenes.forEach((scene, index) => {
-    if (!isRecord(scene) || !sceneKinds.has(String(scene.kind))) {
+    if (!isRecord(scene) || !GENERATED_SCENE_KINDS.has(String(scene.kind))) {
       errors.push(`scenes[${index}] has an unsupported kind`);
       return;
     }
@@ -681,6 +1101,7 @@ export function validateGeneratedVisualizationDefinition(
         }
       }
     }
+    if (scene.kind === "spatial") validateSpatialScene(scene, controlIds, errors, index);
     for (const [field, expression] of expressionFieldsFromScene(scene)) {
       validateExpression(expression, controlIds, errors, `scenes[${index}].${field}`);
     }
@@ -695,8 +1116,17 @@ export function validateGeneratedVisualizationDefinition(
 
   if (opportunity) {
     for (const requiredOutput of opportunity.requiredOutputs) {
-      if (!outputs.some((output) => isRecord(output) && output.id === requiredOutput.id)) {
+      const output = outputs.find((candidate) => isRecord(candidate) && candidate.id === requiredOutput.id);
+      if (!isRecord(output)) {
         errors.push(`opportunity requires output ${requiredOutput.id}, but the module does not declare it`);
+        continue;
+      }
+      for (const field of ["label", "representation"] as const) {
+        if (output[field] !== requiredOutput[field]) {
+          errors.push(
+            `opportunity output ${requiredOutput.id} must preserve ${field} ${JSON.stringify(requiredOutput[field])}, not ${JSON.stringify(output[field])}`,
+          );
+        }
       }
     }
     const controlsById = new Map(
@@ -715,28 +1145,24 @@ export function validateGeneratedVisualizationDefinition(
           `opportunity control ${requiredInput.id} must use type ${requiredInput.type}, not ${String(control.type ?? "(missing)")}`,
         );
       }
-      if (requiredInput.type === "select" && control.type === "select") {
-        if (Array.isArray(requiredInput.options)) {
-          const actualOptions = Array.isArray(control.options)
-            ? control.options.filter((option): option is string => typeof option === "string")
-            : [];
-          if (
-            actualOptions.length !== requiredInput.options.length
-            || actualOptions.some((option, index) => option !== requiredInput.options?.[index])
-          ) {
-            errors.push(
-              `opportunity select control ${requiredInput.id} must preserve its declared option order`,
-            );
-          }
-        }
-        if (
-          requiredInput.defaultValue !== undefined
-          && control.defaultValue !== requiredInput.defaultValue
-        ) {
+      const requiredInputRecord = requiredInput as unknown as Record<string, unknown>;
+      for (const field of ["label", "unit", "min", "max", "step", "defaultValue"] as const) {
+        if (control[field] !== requiredInputRecord[field]) {
           errors.push(
-            `opportunity select control ${requiredInput.id} must use defaultValue ${JSON.stringify(requiredInput.defaultValue)}`,
+            `opportunity control ${requiredInput.id} must preserve ${field} ${JSON.stringify(requiredInputRecord[field])}, not ${JSON.stringify(control[field])}`,
           );
         }
+      }
+      const requiredOptions = requiredInput.options;
+      const actualOptions = control.options;
+      const optionsMatch = requiredOptions === undefined && actualOptions === undefined
+        || Array.isArray(requiredOptions) && Array.isArray(actualOptions)
+          && actualOptions.length === requiredOptions.length
+          && actualOptions.every((option, index) => option === requiredOptions[index]);
+      if (!optionsMatch) {
+        errors.push(
+          `opportunity control ${requiredInput.id} must preserve options ${JSON.stringify(requiredOptions)}, not ${JSON.stringify(actualOptions)}`,
+        );
       }
     }
   }
@@ -905,6 +1331,162 @@ function alternateControlStates(
   return [];
 }
 
+function evaluateSpatialScalar(value: SpatialScalar | undefined, state: Record<string, number>): number {
+  if (typeof value === "number") return value;
+  return value ? evaluateVisualExpression(value, state) : Number.NaN;
+}
+
+function evaluateSpatialVector(value: SpatialVector3, state: Record<string, number>): [number, number, number] {
+  return value.map((component) => evaluateSpatialScalar(component, state)) as [number, number, number];
+}
+
+function spatialVectorDiagnostics(
+  value: SpatialVector3,
+  state: Record<string, number>,
+  pathLabel: string,
+): { value: [number, number, number]; errors: string[] } {
+  const evaluated = evaluateSpatialVector(value, state);
+  const errors = evaluated.every((component) => Number.isFinite(component) && Math.abs(component) <= MAX_SPATIAL_MAGNITUDE)
+    ? []
+    : [`${pathLabel} is non-finite or outside +/-${MAX_SPATIAL_MAGNITUDE}`];
+  return { value: evaluated, errors };
+}
+
+function spatialPositiveScalarDiagnostics(
+  value: SpatialScalar | undefined,
+  state: Record<string, number>,
+  pathLabel: string,
+  max: number = MAX_SPATIAL_MAGNITUDE,
+): { value: number; errors: string[] } {
+  const evaluated = evaluateSpatialScalar(value, state);
+  return {
+    value: evaluated,
+    errors: Number.isFinite(evaluated) && evaluated > 0 && evaluated <= max
+      ? []
+      : [`${pathLabel} must evaluate to a finite positive value no greater than ${max}`],
+  };
+}
+
+function spatialPrimitiveGeometryDiagnostics(
+  primitive: SpatialPrimitive,
+  state: Record<string, number>,
+  pathLabel: string,
+): string[] {
+  const errors: string[] = [];
+  if (primitive.kind === "plane") {
+    const center = spatialVectorDiagnostics(primitive.center, state, `${pathLabel}.center`);
+    const normal = spatialVectorDiagnostics(primitive.normal, state, `${pathLabel}.normal`);
+    const size = spatialPositiveScalarDiagnostics(primitive.size, state, `${pathLabel}.size`);
+    errors.push(...center.errors, ...normal.errors, ...size.errors);
+    if (normal.errors.length === 0 && Math.hypot(...normal.value) <= 1e-9) {
+      errors.push(`${pathLabel}.normal evaluates to a zero-length vector`);
+    }
+  } else if (primitive.kind === "polygon") {
+    const points = primitive.points.map((point, pointIndex) =>
+      spatialVectorDiagnostics(point, state, `${pathLabel}.points[${pointIndex}]`));
+    errors.push(...points.flatMap((point) => point.errors));
+    if (points.every((point) => point.errors.length === 0)) {
+      errors.push(...spatialPolygonShapeDiagnostics(points.map((point) => point.value), pathLabel));
+    }
+  } else if (primitive.kind === "sphere") {
+    const center = spatialVectorDiagnostics(primitive.center, state, `${pathLabel}.center`);
+    const radius = spatialPositiveScalarDiagnostics(primitive.radius, state, `${pathLabel}.radius`);
+    errors.push(...center.errors, ...radius.errors);
+  } else if (primitive.kind === "cylinder") {
+    const center = spatialVectorDiagnostics(primitive.center, state, `${pathLabel}.center`);
+    const axis = spatialVectorDiagnostics(primitive.axis, state, `${pathLabel}.axis`);
+    const radius = spatialPositiveScalarDiagnostics(primitive.radius, state, `${pathLabel}.radius`);
+    const height = spatialPositiveScalarDiagnostics(primitive.height, state, `${pathLabel}.height`);
+    errors.push(...center.errors, ...axis.errors, ...radius.errors, ...height.errors);
+    if (axis.errors.length === 0 && Math.hypot(...axis.value) <= 1e-9) {
+      errors.push(`${pathLabel}.axis evaluates to a zero-length vector`);
+    }
+  } else if (primitive.kind === "cone") {
+    const apex = spatialVectorDiagnostics(primitive.apex, state, `${pathLabel}.apex`);
+    const axis = spatialVectorDiagnostics(primitive.axis, state, `${pathLabel}.axis`);
+    const radius = spatialPositiveScalarDiagnostics(primitive.radius, state, `${pathLabel}.radius`);
+    const height = spatialPositiveScalarDiagnostics(primitive.height, state, `${pathLabel}.height`);
+    errors.push(...apex.errors, ...axis.errors, ...radius.errors, ...height.errors);
+    if (axis.errors.length === 0 && Math.hypot(...axis.value) <= 1e-9) {
+      errors.push(`${pathLabel}.axis evaluates to a zero-length vector`);
+    }
+  } else if (primitive.kind === "point") {
+    const position = spatialVectorDiagnostics(primitive.position, state, `${pathLabel}.position`);
+    errors.push(...position.errors);
+    if (primitive.size !== undefined) {
+      errors.push(...spatialPositiveScalarDiagnostics(primitive.size, state, `${pathLabel}.size`, 40).errors);
+    }
+  } else {
+    const from = spatialVectorDiagnostics(primitive.from, state, `${pathLabel}.from`);
+    const to = spatialVectorDiagnostics(primitive.to, state, `${pathLabel}.to`);
+    errors.push(...from.errors, ...to.errors);
+    if (primitive.headSize !== undefined) {
+      errors.push(...spatialPositiveScalarDiagnostics(primitive.headSize, state, `${pathLabel}.headSize`, 40).errors);
+    }
+    if (
+      from.errors.length === 0
+      && to.errors.length === 0
+      && Math.hypot(...from.value.map((component, index) => to.value[index] - component)) <= 1e-9
+    ) {
+      errors.push(`${pathLabel} evaluates to a zero-length vector`);
+    }
+  }
+  return errors;
+}
+
+function spatialSceneGeometryDiagnostics(
+  scene: SpatialScene,
+  definition: GeneratedVisualizationDefinition,
+  defaults: Record<string, number>,
+): string[] {
+  const states: Array<Record<string, number>> = [
+    { ...defaults, t: 0 },
+    { ...defaults, t: 0.371 },
+    { ...defaults, t: 1 },
+  ];
+  for (const control of definition.controls) {
+    for (const alternate of alternateControlStates(control, defaults[control.id] ?? 0)) {
+      states.push({ ...defaults, [control.id]: alternate });
+      if (states.length >= 48) break;
+    }
+    if (states.length >= 48) break;
+  }
+  const errors: string[] = [];
+  states.forEach((state, stateIndex) => {
+    let visiblePrimitiveCount = 0;
+    scene.groups.forEach((group, groupIndex) => {
+      const groupVisibility = group.visibleWhen === undefined
+        ? 1
+        : evaluateVisualExpression(group.visibleWhen, state);
+      if (!Number.isFinite(groupVisibility)) {
+        errors.push(`state ${stateIndex} groups[${groupIndex}].visibleWhen is non-finite`);
+        return;
+      }
+      if (groupVisibility <= 0) return;
+      group.primitives.forEach((primitive, primitiveIndex) => {
+        const primitiveVisibility = primitive.visibleWhen === undefined
+          ? 1
+          : evaluateVisualExpression(primitive.visibleWhen, state);
+        if (!Number.isFinite(primitiveVisibility)) {
+          errors.push(
+            `state ${stateIndex} groups[${groupIndex}].primitives[${primitiveIndex}].visibleWhen is non-finite`,
+          );
+          return;
+        }
+        if (primitiveVisibility <= 0) return;
+        visiblePrimitiveCount += 1;
+        errors.push(...spatialPrimitiveGeometryDiagnostics(
+          primitive,
+          state,
+          `state ${stateIndex} groups[${groupIndex}].primitives[${primitiveIndex}]`,
+        ));
+      });
+    });
+    if (visiblePrimitiveCount === 0) errors.push(`state ${stateIndex} has no visible spatial primitives`);
+  });
+  return [...new Set(errors)];
+}
+
 function numericExpressionSamples(
   definition: GeneratedVisualizationDefinition,
   state: Record<string, number>,
@@ -1044,16 +1626,24 @@ export function runGeneratedVisualDeterministicTests(input: {
   }
 
   for (const scene of input.definition.scenes) {
-    if (scene.kind !== "plot") continue;
-    let finite = true;
-    for (let index = 0; index < scene.samples; index += 1) {
-      const x = scene.xMin + ((scene.xMax - scene.xMin) * index) / Math.max(1, scene.samples - 1);
-      for (const series of scene.series) {
-        const value = evaluateVisualExpression(series.expression, { ...defaults, x });
-        if (!Number.isFinite(value)) finite = false;
+    if (scene.kind === "plot") {
+      let finite = true;
+      for (let index = 0; index < scene.samples; index += 1) {
+        const x = scene.xMin + ((scene.xMax - scene.xMin) * index) / Math.max(1, scene.samples - 1);
+        for (const series of scene.series) {
+          const value = evaluateVisualExpression(series.expression, { ...defaults, x });
+          if (!Number.isFinite(value)) finite = false;
+        }
       }
+      runtimeTests.push({ name: `${scene.title} plot remains finite`, passed: finite });
+    } else if (scene.kind === "spatial") {
+      const diagnostics = spatialSceneGeometryDiagnostics(scene, input.definition, defaults);
+      runtimeTests.push({
+        name: `${scene.title} spatial geometry remains finite, visible, and non-degenerate`,
+        passed: diagnostics.length === 0,
+        detail: diagnostics.slice(0, 20).join("; "),
+      });
     }
-    runtimeTests.push({ name: `${scene.title} plot remains finite`, passed: finite });
   }
   if (input.definition.animation) {
     runtimeTests.push({
@@ -1151,6 +1741,32 @@ export function runGeneratedVisualBrowserTests(input: {
   const viewports = scenarios.map((scenario) => scenario.name);
   const tests: GeneratedVisualTestsRecord["runtimeTests"] = [];
   const htmlPaths: string[] = [];
+  const browserProfileRoot = path.resolve(input.outputDir);
+  let browserProfileCounter = 0;
+  const spawnIsolatedBrowser = (slug: string, args: string[]) => {
+    browserProfileCounter += 1;
+    const profilePath = path.resolve(
+      browserProfileRoot,
+      `.browser-profile-${slug}-${process.pid}-${browserProfileCounter}`,
+    );
+    if (!profilePath.startsWith(`${browserProfileRoot}${path.sep}`)) {
+      throw new Error("Generated visual browser profile escaped its disposable output directory");
+    }
+    fs.mkdirSync(profilePath, { recursive: true });
+    try {
+      return spawnSync(
+        executable,
+        [`--user-data-dir=${profilePath}`, ...args],
+        { encoding: "utf-8", timeout, windowsHide: true },
+      );
+    } finally {
+      try {
+        fs.rmSync(profilePath, { recursive: true, force: true });
+      } catch {
+        // A timed-out browser may still hold its disposable profile briefly.
+      }
+    }
+  };
   for (const scenario of scenarios) {
     const [width, height] = scenario.viewport.split("x");
     const scenarioSlug = scenario.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
@@ -1158,8 +1774,8 @@ export function runGeneratedVisualBrowserTests(input: {
     htmlPaths.push(htmlPath);
     fs.writeFileSync(htmlPath, previewHtml(input.definition, runtime, scenario.theme), "utf-8");
     const url = pathToFileURL(htmlPath).href;
-    const result = spawnSync(
-      executable,
+    const result = spawnIsolatedBrowser(
+      scenarioSlug,
       [
         "--headless=new",
         "--disable-gpu",
@@ -1172,7 +1788,6 @@ export function runGeneratedVisualBrowserTests(input: {
         "--dump-dom",
         url,
       ],
-      { encoding: "utf-8", timeout, windowsHide: true },
     );
     const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
     const browserPassed =
@@ -1194,8 +1809,8 @@ export function runGeneratedVisualBrowserTests(input: {
   fs.writeFileSync(screenshotHtmlPath, previewHtml(input.definition, runtime, "light"), "utf-8");
   const screenshotUrl = pathToFileURL(screenshotHtmlPath).href;
   const captureScreenshot = () =>
-    spawnSync(
-      executable,
+    spawnIsolatedBrowser(
+      "screenshot",
       [
         "--headless=new",
         "--disable-gpu",
@@ -1208,7 +1823,6 @@ export function runGeneratedVisualBrowserTests(input: {
         `--screenshot=${screenshotPath}`,
         screenshotUrl,
       ],
-      { encoding: "utf-8", timeout, windowsHide: true },
     );
   let screenshot = captureScreenshot();
   let screenshotCreated = screenshot.status === 0 && fs.existsSync(screenshotPath);
@@ -1541,6 +2155,113 @@ function generatedCandidateSchema() {
   };
 }
 
+export function validateGeneratedVisualizationCandidateEnvelope(
+  value: unknown,
+  tokenUsage?: GeneratedVisualTokenUsage,
+): { candidate: GeneratedVisualizationCandidate | null; errors: string[] } {
+  const errors: string[] = [];
+  if (!isRecord(value)) return { candidate: null, errors: ["candidate must be one JSON object"] };
+  const requiredFields = [
+    "title",
+    "explanation",
+    "sourceCode",
+    "testCases",
+    "accessibilityDescription",
+    "pedagogicalClaims",
+  ];
+  for (const field of Object.keys(value)) {
+    if (!requiredFields.includes(field)) errors.push(`candidate.${field} is not supported`);
+  }
+  for (const field of ["title", "explanation", "sourceCode", "accessibilityDescription"] as const) {
+    if (typeof value[field] !== "string" || !value[field].trim()) errors.push(`candidate.${field} is required`);
+  }
+  const pedagogicalClaims = Array.isArray(value.pedagogicalClaims) ? value.pedagogicalClaims : [];
+  if (!Array.isArray(value.pedagogicalClaims)) errors.push("candidate.pedagogicalClaims must be an array");
+  else {
+    if (pedagogicalClaims.length > 20) errors.push("candidate.pedagogicalClaims supports at most 20 items");
+    pedagogicalClaims.forEach((claim, index) => {
+      if (typeof claim !== "string" || !claim.trim()) {
+        errors.push(`candidate.pedagogicalClaims[${index}] must be a non-empty string`);
+      }
+    });
+  }
+  const rawTestCases = Array.isArray(value.testCases) ? value.testCases : [];
+  if (!Array.isArray(value.testCases)) errors.push("candidate.testCases must be an array");
+  else if (rawTestCases.length > 20) errors.push("candidate.testCases supports at most 20 items");
+  const testCases: GeneratedVisualizationTestCase[] = [];
+  rawTestCases.slice(0, 20).forEach((item, testIndex) => {
+    const pathLabel = `candidate.testCases[${testIndex}]`;
+    if (!isRecord(item)) {
+      errors.push(`${pathLabel} must be an object`);
+      return;
+    }
+    for (const field of Object.keys(item)) {
+      if (!["name", "inputs", "expected", "tolerance"].includes(field)) {
+        errors.push(`${pathLabel}.${field} is not supported`);
+      }
+    }
+    if (typeof item.name !== "string" || !item.name.trim()) errors.push(`${pathLabel}.name is required`);
+    if (!(item.tolerance === null || asFiniteNumber(item.tolerance) !== undefined)) {
+      errors.push(`${pathLabel}.tolerance must be a finite number or null`);
+    }
+    const parseEntries = (field: "inputs" | "expected"): Record<string, unknown> => {
+      const entries = item[field];
+      if (!Array.isArray(entries)) {
+        errors.push(`${pathLabel}.${field} must be an array`);
+        return {};
+      }
+      if (entries.length > 20) errors.push(`${pathLabel}.${field} supports at most 20 items`);
+      const ids = new Set<string>();
+      const pairs: Array<[string, unknown]> = [];
+      entries.slice(0, 20).forEach((entry, entryIndex) => {
+        const entryPath = `${pathLabel}.${field}[${entryIndex}]`;
+        if (!isRecord(entry)) {
+          errors.push(`${entryPath} must be an object`);
+          return;
+        }
+        for (const key of Object.keys(entry)) {
+          if (!["id", "value"].includes(key)) errors.push(`${entryPath}.${key} is not supported`);
+        }
+        const id = typeof entry.id === "string" ? entry.id.trim() : "";
+        if (!id || ids.has(id)) errors.push(`${entryPath}.id is missing or duplicate`);
+        else ids.add(id);
+        if (
+          typeof entry.value !== "number"
+          && typeof entry.value !== "string"
+          && typeof entry.value !== "boolean"
+        ) {
+          errors.push(`${entryPath}.value must be a number, string, or boolean`);
+        } else if (typeof entry.value === "number" && !Number.isFinite(entry.value)) {
+          errors.push(`${entryPath}.value must be finite`);
+        }
+        if (id) pairs.push([id, entry.value]);
+      });
+      return Object.fromEntries(pairs);
+    };
+    const inputs = parseEntries("inputs");
+    const expected = parseEntries("expected");
+    testCases.push({
+      name: typeof item.name === "string" ? item.name : "",
+      inputs,
+      expected,
+      ...(typeof item.tolerance === "number" ? { tolerance: item.tolerance } : {}),
+    });
+  });
+  if (errors.length > 0) return { candidate: null, errors: [...new Set(errors)] };
+  return {
+    candidate: {
+      title: String(value.title),
+      explanation: String(value.explanation),
+      sourceCode: String(value.sourceCode),
+      testCases,
+      accessibilityDescription: String(value.accessibilityDescription),
+      pedagogicalClaims: pedagogicalClaims as string[],
+      ...(tokenUsage ? { tokenUsage } : {}),
+    },
+    errors: [],
+  };
+}
+
 export async function generateVisualizationCandidate(input: {
   client: OpenAI;
   model: string;
@@ -1551,12 +2272,13 @@ export async function generateVisualizationCandidate(input: {
   formulaDefinitions?: unknown[];
   previousSourceCode?: string;
   errors?: string[];
+  timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<GeneratedVisualizationCandidate> {
   const validModuleTemplate = `import { defineVisualization } from "@breadboard/visual-sdk";
 export default defineVisualization({
-  schemaVersion: 1,
-  sdkVersion: "1.0.0",
+  schemaVersion: ${GENERATED_VISUAL_CAPABILITY_MANIFEST.definitionSchemaVersion},
+  sdkVersion: "${GENERATED_VISUAL_CAPABILITY_MANIFEST.sdkVersion}",
   title: "Parameter relationship",
   description: "Move the parameter to inspect the source-backed relationship.",
   accessibilityDescription: "A labelled slider changes a finite value and a plotted curve. Reset restores the documented default.",
@@ -1569,28 +2291,68 @@ export default defineVisualization({
     { kind: "formula", title: "Relationship", text: "result = 2 × gain" }
   ]
 });`;
+  const spatialModuleTemplate = `import { defineVisualization } from "@breadboard/visual-sdk";
+export default defineVisualization({
+  schemaVersion: ${GENERATED_VISUAL_CAPABILITY_MANIFEST.definitionSchemaVersion},
+  sdkVersion: "${GENERATED_VISUAL_CAPABILITY_MANIFEST.sdkVersion}",
+  title: "Spatial case comparison",
+  description: "Choose a case to inspect model-authored geometry in one stable spatial frame.",
+  accessibilityDescription: "A labelled selector changes which spatial construction is visible. Every object also appears in a text legend with its geometric type and pattern.",
+  controls: [{ id: "case_mode", label: "Case", type: "select", options: ["Case A", "Case B"], defaultValue: "Case A" }],
+  outputs: [{ id: "case_view", label: "Selected construction", representation: "diagram" }],
+  scenes: [{
+    kind: "spatial",
+    title: "Construction",
+    view: { azimuthDegrees: 35, elevationDegrees: 24, scale: 1 },
+    groups: [
+      { id: "fixed-items", label: "Common", primitives: [
+        { kind: "point", id: "fixed-point", label: "Fixed point", position: [1, 1, 1], color: "red" },
+        { kind: "vector", id: "direction-vector", label: "Direction", from: [0, 0, 0], to: [1, 1, 1], color: "gray" }
+      ] },
+      { id: "case-a", label: "Case A", visibleWhen: { kind: "conditional", comparison: "eq", left: { kind: "input", id: "case_mode" }, right: { kind: "constant", value: 0 }, whenTrue: { kind: "constant", value: 1 }, whenFalse: { kind: "constant", value: 0 } }, primitives: [
+        { kind: "plane", id: "sample-plane", label: "Plane", center: [0, 0, 0], normal: [0, 0, 1], size: 4, color: "blue", pattern: "striped" },
+        { kind: "polygon", id: "sample-patch", label: "Clipped surface patch", points: [[0, 0, -1], [3, 0, -1], [3, 0, 1], [0, 0, 1]], color: "cyan", pattern: "dotted" }
+      ] },
+      { id: "case-b", label: "Case B", visibleWhen: { kind: "conditional", comparison: "eq", left: { kind: "input", id: "case_mode" }, right: { kind: "constant", value: 1 }, whenTrue: { kind: "constant", value: 1 }, whenFalse: { kind: "constant", value: 0 } }, primitives: [
+        { kind: "sphere", id: "sample-sphere", label: "Sphere", center: [0, 0, 0], radius: 2, color: "green", pattern: "dotted" },
+        { kind: "cylinder", id: "sample-cylinder", label: "Cylinder", center: [0, 0, 0], axis: [0, 0, 1], radius: 1, height: 4, color: "amber", pattern: "crosshatch" },
+        { kind: "cone", id: "sample-cone", label: "Cone", apex: [0, 0, -2], axis: [0, 0, 1], radius: 1.5, height: 4, color: "violet", pattern: "solid" }
+      ] }
+    ]
+  }]
+});`;
   const system =
     `Create one declarative Breadboard generated visualization using SDK ${VISUAL_SDK_VERSION}. ` +
-    `Return the strict structured object requested by the response schema. sourceCode must contain exactly ` +
+    "Reply with one JSON object and nothing else. It must have exactly these six fields: " +
+    '{"title":<non-empty string>,"explanation":<non-empty string>,"sourceCode":<complete module string>,"testCases":[{"name":<non-empty string>,"inputs":[{"id":<string>,"value":<number|string|boolean>}],"expected":[{"id":<string>,"value":<number|string|boolean>}],"tolerance":<finite number|null>}],"accessibilityDescription":<non-empty string>,"pedagogicalClaims":[<non-empty string>,...]}. ' +
+    "Do not omit title, explanation, accessibilityDescription, or pedagogicalClaims even when a Council wrapper does not enforce response_format. " +
+    `sourceCode must contain exactly ` +
     `import { defineVisualization } from "${SDK_IMPORT}"; followed by export default defineVisualization({...}). ` +
     "The argument must be one JSON-compatible object literal: no functions, variables, JSX, spreads, computed properties, callbacks, loops, classes, timers, browser globals, HTML, URLs, or package imports. " +
-    "Use schemaVersion 1 and sdkVersion 1.0.0. The definition needs title, description, accessibilityDescription, controls, outputs, and scenes. " +
+    `Use schemaVersion ${GENERATED_VISUAL_CAPABILITY_MANIFEST.definitionSchemaVersion} and sdkVersion ${GENERATED_VISUAL_CAPABILITY_MANIFEST.sdkVersion}. The definition needs title, description, accessibilityDescription, controls, outputs, and scenes. ` +
     "Every expression uses the field kind (never type); binary and unary expressions use op (never operator), and a unary expression stores its child in argument (never value). " +
-    "Every output uses representation (never type or value). Its optional expression is the derived value. " +
+    `Every output uses representation (never type or value). Its optional expression is the derived value. output.representation is metadata and does not force scene.kind: a spatial scene may satisfy a diagram or animation output. ${GENERATED_VISUAL_CAPABILITY_MANIFEST.outputs.numericExpressionOptionalFor.join(", ")} outputs may omit output.expression when their observable is nonnumeric; never expose a select option index as an output merely to satisfy influence. ` +
     "A plot uses xMin, xMax, samples, xLabel, yLabel and series[].expression; it never uses axes or explicit point arrays. " +
-    "A diagram node requires id, label, x, and y; node.value is either omitted or a valid expression. " +
+    "A diagram is only a 2D node-link graph. A diagram node requires id, label, x, and y; node.value is omitted unless it represents a genuinely meaningful numeric quantity. Never use node.value for selection styling or visibility, and never use diagram nodes as substitutes for physical surfaces or solids. " +
     "A value scene contains kind and outputId. A formula/annotation scene contains kind, title, and text. " +
-    "Expression kinds are constant, input, binary(add/subtract/multiply/divide/power/min/max), unary(negate/abs/sqrt/sin/cos/tan/exp/log), clamp, or conditional. A conditional is exactly {kind, comparison, left, right, whenTrue, whenFalse}; comparison is one of lt/lte/gt/gte/eq. Never use condition/then/else. " +
-    "Scene kinds are plot, diagram, timeline, value, table, annotation, formula, animated_marker, and status. Use only these exact field names. " +
+    `Expression kinds are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.kinds.join(", ")}. Binary operators are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.binaryOperators.join("/")}; unary operators are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.unaryOperators.join("/")}. A conditional is exactly {kind, comparison, left, right, whenTrue, whenFalse}; comparison is one of ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.comparisons.join("/")}. Never use condition/then/else. ` +
+    `Scene kinds are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.kinds.join(", ")}. Use only these exact field names. ` +
+    `Use spatial for physical geometry. A spatial scene is exactly {kind:"spatial",title,view?:{azimuthDegrees?,elevationDegrees?,scale?},groups:[{id,label,visibleWhen?,primitives:[...]}]}; it supports 1-${MAX_SPATIAL_GROUPS} groups, 1-${MAX_SPATIAL_PRIMITIVES_PER_GROUP} primitives per group, and ${MAX_SPATIAL_PRIMITIVES} total. ` +
+    `A spatial primitive has kind,id,label,color?,pattern?,opacity?,visibleWhen? plus kind fields: plane(center,normal,size), polygon(points with 3-${MAX_SPATIAL_POLYGON_POINTS} coplanar non-collinear SpatialVectors in boundary order), sphere(center,radius), cylinder(center,axis,radius,height), cone(apex,axis,radius,height), point(position,size?), or vector(from,to,headSize?). ` +
+    "A plane is a centered full rectangular patch extending to both sides of its center. A polygon is a bounded filled surface patch whose points trace one non-self-intersecting boundary. Use ordered polygon vertices, not plane, whenever the visible surface must be clipped, sector-shaped, one-sided, triangular, or a half-plane patch; never describe a plane primitive as a half-plane or clipped patch. " +
+    "Every spatial vector is exactly three SpatialScalars. A SpatialScalar is a finite number or any valid expression, including input or t for dynamic geometry. visibleWhen is an expression; the group or primitive is visible only when it evaluates above zero. Normals, axes, and vectors must be non-zero; sizes, radii, heights, point sizes, and head sizes must stay positive. " +
+    `Spatial colors are only ${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.palette.join(", ")}. Patterns are only ${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.patterns.join(", ")}. The runtime supplies a stable orthographic projection, safe patterns, object labels, and an accessible text legend; author the actual geometry and relationships in the module. Use group visibleWhen for selector cases so all cases share one stable frame. ` +
     "A status scene is exactly {kind:\"status\",title,value,threshold,belowLabel,equalLabel,aboveLabel,description?}; use it for a current textual state instead of numeric status codes. " +
     "A plot may include markers:[{id,label,x,y,color?}] with expression-valued x/y; use a marker for the selected point and never fake a point as a sparse line series. " +
     "Diagram node coordinates must remain within x=40-600 and y=40-320 and labels must be concise. " +
     "Each testCases item represents inputs and expected as arrays of {id,value} pairs and includes tolerance (number or null). " +
-    "Use the exact required input IDs, input types, and output IDs from the opportunity. Use only source-backed relationships. Label illustrative or normalized values clearly. Every required control must materially change a numeric output or scene expression. " +
-    "A select control is exposed to expressions as the stable zero-based index of its option in the declared options array (0 for the first option, 1 for the second, and so on), while the interface displays the option label; use conditional expressions against those numeric indices. " +
-    "Keep sourceCode below 8,000 bytes and use at most five scenes; prefer the smallest expression tree that teaches the objective. testCases should cover only simple derived outputs with numeric expectations you can compute exactly (an empty testCases array is allowed because Breadboard adds deterministic tests). " +
+    "Implement opportunity.interactionGoal and opportunity.learnerAction as the artifact's actual interaction sequence, not merely as labels or explanatory prose. For test_prediction, require the learner to commit a prediction before the artifact reveals or evaluates the outcome. Every decisive condition named by the reviewed interaction contract must be directly manipulable or evaluated by the artifact. " +
+    "Copy every required input contract from the opportunity verbatim: id, label, type, unit, min, max, step, options in order, and defaultValue. Do not add a field the contract omits. Copy every required output id, label, and representation verbatim. Use only source-backed relationships. Label illustrative or normalized values clearly. Every required control must materially change a numeric output or scene expression. " +
+    "A select control is exposed to expressions as the stable zero-based index of its option in the declared options array (0 for the first option, 1 for the second, and so on), while the interface displays the option label; use conditional expressions against those numeric indices. Group or primitive visibleWhen counts as scene influence, so do not add a meaningless numeric output for the select. " +
+    "Keep sourceCode below 16,000 bytes and use at most five scenes; prefer the smallest expression tree that teaches the objective. testCases should cover only simple derived outputs with numeric expectations you can compute exactly (an empty testCases array is allowed because Breadboard adds deterministic tests). " +
     "sourceCode must end immediately after the final ASCII semicolon; do not append Markdown fences, commentary, or non-ASCII punctuation. " +
-    `This is a complete syntactically valid module template; follow its schema exactly:\n${validModuleTemplate}`;
+    `This is a complete syntactically valid scalar/plot module template; follow its schema exactly:\n${validModuleTemplate}\n` +
+    `This is a complete syntactically valid spatial module template; replace its generic labels and geometry with source-grounded content:\n${spatialModuleTemplate}`;
   const response = await input.client.chat.completions.create(
     withCouncil(
       {
@@ -1606,15 +2368,21 @@ export default defineVisualization({
                sourceFigureSummaries: boundedGeneratedVisualEvidence(input.sourceFigureSummaries?.slice(0, 10), 8_000),
                formulaDefinitions: boundedGeneratedVisualEvidence(input.formulaDefinitions?.slice(0, 12), 6_000),
               sdkDocumentation: {
-                version: VISUAL_SDK_VERSION,
-                controlTypes: ["slider", "number", "select", "toggle", "button"],
-                outputTypes: ["value", "chart", "diagram", "animation", "timeline", "table", "annotation"],
+                version: GENERATED_VISUAL_CAPABILITY_MANIFEST.sdkVersion,
+                controlTypes: [...GENERATED_VISUAL_CAPABILITY_MANIFEST.runtimeControls.types],
+                outputTypes: [...GENERATED_VISUAL_CAPABILITY_MANIFEST.outputs.representations],
+                sceneTypes: [...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.kinds],
+                spatialPrimitiveTypes: [...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.primitiveKinds],
                 maxControls: MAX_CONTROLS,
+                maxSelectOptions: MAX_SELECT_OPTIONS,
                 maxScenes: MAX_SCENES,
+                maxSpatialGroups: MAX_SPATIAL_GROUPS,
+                maxSpatialPrimitives: MAX_SPATIAL_PRIMITIVES,
+                maxSpatialPolygonPoints: MAX_SPATIAL_POLYGON_POINTS,
               },
               repairContext: input.errors?.length
                  ? {
-                     previousSourceCode: input.previousSourceCode?.slice(0, 10_000),
+                     previousSourceCode: input.previousSourceCode?.slice(0, GENERATED_VISUAL_MAX_SOURCE_CHARS),
                      exactErrors: input.errors.slice(0, 20).map((error) => error.slice(0, 1_000)),
                    }
                 : undefined,
@@ -1635,34 +2403,27 @@ export default defineVisualization({
         councilModeOverride: "direct_council",
       },
     ),
-    { signal: input.signal },
+    {
+      signal: input.signal,
+      ...(input.timeoutMs ? { timeout: input.timeoutMs } : {}),
+      maxRetries: 0,
+    },
   );
   const content = response.choices[0]?.message?.content ?? "";
   const tokenUsage = generatedVisualTokenUsage(response.usage);
-  const parsed = JSON.parse(content);
-  if (!isRecord(parsed) || typeof parsed.sourceCode !== "string") {
-    throw new Error("ChatMock did not return a structured generated visualization candidate");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    throw new Error(
+      `generated visualization candidate is not valid JSON: ${error instanceof Error ? error.message : "parse failed"}`,
+    );
   }
-  const testCases = Array.isArray(parsed.testCases)
-    ? parsed.testCases.flatMap((item) => {
-        if (!isRecord(item) || !Array.isArray(item.inputs) || !Array.isArray(item.expected)) return [];
-        const record = (entries: unknown[]) => Object.fromEntries(
-          entries.flatMap((entry) =>
-            isRecord(entry) && typeof entry.id === "string" ? [[entry.id, entry.value]] : []),
-        );
-        return [{
-          name: typeof item.name === "string" ? item.name : "generated test",
-          inputs: record(item.inputs),
-          expected: record(item.expected),
-          ...(typeof item.tolerance === "number" ? { tolerance: item.tolerance } : {}),
-        }];
-      })
-    : [];
-  return {
-    ...(parsed as unknown as GeneratedVisualizationCandidate),
-    testCases,
-    ...(tokenUsage ? { tokenUsage } : {}),
-  };
+  const envelope = validateGeneratedVisualizationCandidateEnvelope(parsed, tokenUsage);
+  if (!envelope.candidate) {
+    throw new Error(`generated visualization candidate envelope is invalid: ${envelope.errors.join("; ")}`);
+  }
+  return envelope.candidate;
 }
 
 /** Score groups a rubric-shaped approval must fill in. Each group is one
@@ -1679,6 +2440,7 @@ const DETAILED_CRITIC_SCORE_GROUPS: readonly (readonly string[])[] = [
     "sourceClaimAndUnitPreservation",
     "sourceClaimPreservation",
   ],
+  ["primitiveTopologyAndDomain"],
   ["avoidsDuplication"],
   ["complexityDiscipline", "avoidsUnnecessaryComplexity", "complexityRestraint"],
   ["accessibility"],
@@ -1760,13 +2522,22 @@ export function normalizeDetailedGeneratedVisualCriticRecord(
     return reject('the reply carries no boolean "approved" and no recognized "decision"');
   }
 
-  const optionalScore = (key: string): number | undefined => {
+  for (const key of [...new Set(DETAILED_CRITIC_SCORE_GROUPS.flat()), "overall"] as const) {
     const value = asFiniteNumber(visualScores[key]);
-    return value === undefined ? undefined : Math.max(0, Math.min(1, value));
-  };
+    if (value !== undefined && (value < 0 || value > 1)) {
+      return reject(`score "${key}" must be between 0 and 1`);
+    }
+  }
+  for (const key of ["overallScore", "overall"] as const) {
+    const value = asFiniteNumber(parsed[key]);
+    if (value !== undefined && (value < 0 || value > 1)) {
+      return reject(`score "${key}" must be between 0 and 1`);
+    }
+  }
+
+  const optionalScore = (key: string): number | undefined => asFiniteNumber(visualScores[key]);
   const topLevelOverall = asFiniteNumber(parsed.overallScore ?? parsed.overall);
-  const overall = optionalScore("overall")
-    ?? (topLevelOverall === undefined ? 0 : Math.max(0, Math.min(1, topLevelOverall)));
+  const overall = optionalScore("overall") ?? topLevelOverall ?? 0;
   const firstReported = (keys: string[], fallback = overall) => {
     for (const key of keys) {
       const value = optionalScore(key);
@@ -1781,18 +2552,19 @@ export function normalizeDetailedGeneratedVisualCriticRecord(
   const controlMeaningfulness = firstReported(["controlMeaningfulness", "meaningfulControls"]);
   const defaultStateUsefulness = firstReported(["defaultStateUsefulness", "usefulDefaultState"]);
   const variableIntroduction = optionalScore("variableIntroduction");
-  const sourceFidelity = firstReported([
+  const sourceClaimsAndUnits = firstReported([
     "sourceClaimsAndUnits",
     "sourceClaimsAndUnitsPreserved",
     "sourceClaimAndUnitPreservation",
     "sourceClaimPreservation",
   ]);
-  if (providerApproved) {
-    // An approval is only trustworthy when every dimension was actually scored.
-    const unscored = unscoredDetailedCriticDimensions(visualScores);
-    if (unscored.length) {
-      return reject(`the reply approved the visual without scoring ${unscored.join(", ")}`);
-    }
+  const primitiveTopologyAndDomain = optionalScore("primitiveTopologyAndDomain") ?? overall;
+  const sourceFidelity = Math.min(sourceClaimsAndUnits, primitiveTopologyAndDomain);
+  // Every verdict must use the same complete protocol. Otherwise an old score
+  // shape could bypass a required publication dimension simply by approving.
+  const unscored = unscoredDetailedCriticDimensions(visualScores);
+  if (unscored.length) {
+    return reject(`the reply gave a verdict without scoring ${unscored.join(", ")}`);
   }
   const scores = {
     pedagogicalValue: minimumReported([
@@ -1829,6 +2601,9 @@ export function normalizeDetailedGeneratedVisualCriticRecord(
   for (const key of ["requestedChanges", "requiredChanges", "recommendations", "issues"] as const) {
     if (Array.isArray(parsed[key])) parsed[key].forEach(addChange);
   }
+  if (providerApproved && requestedChanges.length > 0) {
+    return reject("the reply approved the visual while requesting changes");
+  }
   if ((optionalScore("interactionImprovesUnderstanding") ?? overall) < 0.75) {
     addChange("Make the interaction teach the stated learning objective more directly.");
   }
@@ -1844,8 +2619,13 @@ export function normalizeDetailedGeneratedVisualCriticRecord(
   if (variableIntroduction !== undefined && variableIntroduction < 0.65) {
     addChange("Introduce and label every variable and unit before the learner manipulates it.");
   }
-  if (sourceFidelity < 0.75) {
+  if (sourceClaimsAndUnits < 0.75) {
     addChange("Ground every relationship, claim, and unit in the supplied source evidence.");
+  }
+  if (primitiveTopologyAndDomain < 0.75) {
+    addChange(
+      "Make each rendered primitive's actual topology and domain match its labels, explanation, interaction contract, and source evidence; relabeling a mismatched shape is not a correction.",
+    );
   }
   if ((optionalScore("avoidsDuplication") ?? 1) < 0.75) {
     addChange("Remove duplicated explanation or interaction and keep only the distinct learning contribution.");
@@ -1869,7 +2649,7 @@ export function normalizeDetailedGeneratedVisualCriticRecord(
     ["overallScore", parsed.overallScore],
   ].flatMap(([key, value]) => {
     const numeric = asFiniteNumber(value);
-    return numeric === undefined ? [] : [[key, Math.max(0, Math.min(1, numeric))]];
+    return numeric === undefined ? [] : [[key, numeric]];
   }));
   return {
     approved:
@@ -1902,6 +2682,7 @@ async function reviewGeneratedVisualization(input: {
   /** Why the previous critic reply was unusable, quoted back so a retry
    * corrects the shape instead of repeating the identical prompt. */
   priorCriticFailure?: string;
+  timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<GeneratedVisualCriticRecord> {
   const evidence = {
@@ -1949,7 +2730,8 @@ async function reviewGeneratedVisualization(input: {
               `{"approved": <boolean>, "reason": <string>, "requestedChanges": [<string>, ...], "scores": {${CRITIC_RUBRIC_KEYS.map((key) => `"${key}": <0-1 number>`).join(", ")}}}\n` +
               "Score every one of those dimensions as a number from 0 to 1 — an approval that leaves any dimension unscored is discarded. " +
               "Leave requestedChanges empty when you approve; otherwise list the specific revisions. " +
-              "Approve only if interaction improves understanding, belongs in this subsection, uses meaningful controls, has a useful default state, introduces every variable, preserves source claims and units, avoids duplication and unnecessary complexity, and is accessible.",
+              "Compare every rendered primitive's actual topology and domain against its labels, explanation, interaction contract, and source evidence. Explicitly distinguish centered/full from bounded/clipped/one-sided/sector geometry and open from closed geometry. Reject any mismatch even when a label or prose renames the rendered shape; relabeling does not change topology or domain. " +
+              "Approve only if interaction improves understanding, belongs in this subsection, uses meaningful controls, has a useful default state, introduces every variable, preserves source claims and units, matches primitive topology and domain, avoids duplication and unnecessary complexity, and is accessible.",
           },
           {
             role: "user",
@@ -1990,7 +2772,11 @@ async function reviewGeneratedVisualization(input: {
                   additionalProperties: false,
                   required: [...CRITIC_RUBRIC_KEYS],
                   properties: Object.fromEntries(
-                    CRITIC_RUBRIC_KEYS.map((key) => [key, { type: "number" }]),
+                    CRITIC_RUBRIC_KEYS.map((key) => [key, {
+                      type: "number",
+                      minimum: 0,
+                      maximum: 1,
+                    }]),
                   ),
                 },
               },
@@ -2010,7 +2796,11 @@ async function reviewGeneratedVisualization(input: {
         councilModeOverride: "direct_council",
       },
     ),
-    { signal: input.signal },
+    {
+      signal: input.signal,
+      ...(input.timeoutMs ? { timeout: input.timeoutMs } : {}),
+      maxRetries: 0,
+    },
   );
   const content = response.choices[0]?.message?.content ?? "";
   const tokenUsage = generatedVisualTokenUsage(response.usage);
@@ -2028,78 +2818,11 @@ async function reviewGeneratedVisualization(input: {
     criticDiagnostics,
   );
   if (detailedCritic) return detailedCritic;
-  // A rubric-shaped reply that will not normalize is the detailed path's failure
-  // to explain — say what is wrong so the retry can ask the critic to fix it.
-  if (criticDiagnostics.detailed && criticDiagnostics.reason) {
-    throw new Error(`critic returned an unusable rubric verdict: ${criticDiagnostics.reason}`);
-  }
-  if (isRecord(parsed) && isRecord(parsed.scores) && typeof parsed.scores.pedagogy === "number") {
-    const legacy = parsed.scores;
-    const score = (key: string, fallback = 0) => Math.max(0, Math.min(1, Number(legacy[key]) || fallback));
-    const sourceCoverage = score("source_coverage");
-    const correctness = score("correctness");
-    const hallucinationRisk = score("hallucination_risk", 1);
-    const scores = {
-      pedagogicalValue: score("pedagogy"),
-      sourceFidelity: Math.min(sourceCoverage, correctness, 1 - hallucinationRisk),
-      usability: score("interaction_quality"),
-      accessibility: score("accessibility"),
-    };
-    const requestedChanges: string[] = [];
-    if (sourceCoverage < 0.75) requestedChanges.push("Tie every pedagogical claim explicitly to the supplied source evidence.");
-    if (correctness < 0.75) requestedChanges.push("Correct the relationship, units, defaults, or boundary behavior.");
-    if (hallucinationRisk > 0.25) requestedChanges.push("Remove or clearly label any derived or illustrative claim not stated by the source.");
-    if (scores.pedagogicalValue < 0.75) requestedChanges.push("Make the interaction teach the stated learning objective more directly.");
-    if (scores.usability < 0.65) requestedChanges.push("Simplify the controls and make their effect on the output clearer.");
-    if (scores.accessibility < 0.65) requestedChanges.push("Improve labels, descriptions, keyboard use, or non-visual explanation.");
-    return {
-      approved:
-        scores.pedagogicalValue >= 0.75 &&
-        scores.sourceFidelity >= 0.75 &&
-        scores.usability >= 0.65 &&
-        scores.accessibility >= 0.65,
-      checkedAt: nowIso(),
-      reason: `ChatMock critic scores: pedagogy ${scores.pedagogicalValue.toFixed(2)}, source fidelity ${scores.sourceFidelity.toFixed(2)}, usability ${scores.usability.toFixed(2)}, accessibility ${scores.accessibility.toFixed(2)}.`,
-      requestedChanges,
-      scores,
-      ...(tokenUsage ? { tokenUsage } : {}),
-    };
-  }
-  // `reason` and `requestedChanges` are both defaulted below, so a verdict that
-  // carries a decision and at least one recognized score is usable without them.
-  if (
-    !isRecord(parsed) ||
-    !isRecord(parsed.scores) ||
-    typeof parsed.approved !== "boolean" ||
-    !["pedagogicalValue", "sourceFidelity", "usability", "accessibility"].some(
-      (key) => asFiniteNumber((parsed.scores as Record<string, unknown>)[key]) !== undefined,
-    )
-  ) {
-    throw new Error(`critic returned an invalid record: ${content.slice(0, 500) || "(empty response)"}`);
-  }
-  const parsedScores = parsed.scores;
-  const score = (key: string) => Math.max(0, Math.min(1, Number(parsedScores[key]) || 0));
-  const scores = {
-    pedagogicalValue: score("pedagogicalValue"),
-    sourceFidelity: score("sourceFidelity"),
-    usability: score("usability"),
-    accessibility: score("accessibility"),
-  };
-  return {
-    approved:
-      parsed.approved === true &&
-      scores.pedagogicalValue >= 0.75 &&
-      scores.sourceFidelity >= 0.75 &&
-      scores.usability >= 0.65 &&
-      scores.accessibility >= 0.65,
-    checkedAt: nowIso(),
-    reason: typeof parsed.reason === "string" ? parsed.reason : "Critic supplied no reason",
-    requestedChanges: Array.isArray(parsed.requestedChanges)
-      ? parsed.requestedChanges.filter((item): item is string => typeof item === "string").slice(0, 12)
-      : [],
-    scores,
-    ...(tokenUsage ? { tokenUsage } : {}),
-  };
+  // Active publication has one critic protocol. Legacy/compact score records
+  // cannot approve by bypassing a required topology/domain comparison.
+  throw new Error(
+    `critic returned an unusable rubric verdict: ${criticDiagnostics.reason ?? "the reply did not score every required critic dimension, including primitiveTopologyAndDomain"}`,
+  );
 }
 
 function nextGeneratedVisualVersion(gardenDir: string, id: string): number {
@@ -2110,22 +2833,237 @@ function emit(sink: EventSink | undefined, type: string, data: Record<string, un
   sink?.({ type, data });
 }
 
+const GENERATED_VISUAL_REQUEST_TIMEOUT_CODE = "BREADBOARD_GENERATED_VISUAL_REQUEST_TIMEOUT";
+
+class GeneratedVisualRequestTimeoutError extends Error {
+  readonly code = GENERATED_VISUAL_REQUEST_TIMEOUT_CODE;
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number, cause?: unknown) {
+    super(`generated visualization provider request timed out after ${timeoutMs}ms`);
+    this.name = "GeneratedVisualRequestTimeoutError";
+    this.timeoutMs = timeoutMs;
+    if (cause !== undefined) (this as Error & { cause?: unknown }).cause = cause;
+  }
+}
+
+class GeneratedVisualProviderTransportExhaustedError extends Error {
+  readonly transportAttempts: number;
+  readonly lastError: unknown;
+  readonly retryOwner: "generated_visual_timeout" | "upstream_client";
+
+  constructor(
+    transportAttempts: number,
+    lastError: unknown,
+    retryOwner: "generated_visual_timeout" | "upstream_client",
+  ) {
+    const detail = lastError instanceof Error && lastError.message.trim()
+      ? lastError.message.trim()
+      : String(lastError || "provider transport failed");
+    super(
+      retryOwner === "generated_visual_timeout"
+        ? `generated visualization provider transport exhausted ${transportAttempts} identical-request attempts: ${detail}`
+        : `generated visualization upstream provider transport retries were exhausted before a model response: ${detail}`,
+    );
+    this.name = "GeneratedVisualProviderTransportExhaustedError";
+    this.transportAttempts = transportAttempts;
+    this.lastError = lastError;
+    this.retryOwner = retryOwner;
+    (this as Error & { cause?: unknown }).cause = lastError;
+  }
+}
+
+interface GeneratedVisualProviderErrorDetail {
+  code: string;
+  name: string;
+  message: string;
+  status?: number;
+}
+
+function generatedVisualProviderErrorDetails(error: unknown): GeneratedVisualProviderErrorDetail[] {
+  const pending: unknown[] = [error];
+  const seen = new Set<object>();
+  const details: GeneratedVisualProviderErrorDetail[] = [];
+  while (pending.length > 0 && details.length < 24) {
+    const current = pending.shift();
+    if (typeof current === "string") {
+      details.push({ code: "", name: "", message: current });
+      continue;
+    }
+    if (!current || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
+    const record = current as {
+      cause?: unknown;
+      code?: unknown;
+      errors?: unknown;
+      message?: unknown;
+      name?: unknown;
+      response?: unknown;
+      status?: unknown;
+    };
+    const responseStatus = isRecord(record.response) ? asFiniteNumber(record.response.status) : undefined;
+    details.push({
+      code: typeof record.code === "string" ? record.code : "",
+      name: typeof record.name === "string" ? record.name : "",
+      message: typeof record.message === "string" ? record.message : "",
+      status: asFiniteNumber(record.status) ?? responseStatus,
+    });
+    if (record.cause !== undefined) pending.push(record.cause);
+    if (Array.isArray(record.errors)) pending.push(...record.errors);
+  }
+  return details;
+}
+
+function isGeneratedVisualProviderCancellation(error: unknown): boolean {
+  return generatedVisualProviderErrorDetails(error).some(({ code, name, message }) => {
+    const normalizedCode = code.toUpperCase();
+    const normalizedName = name.toLowerCase();
+    return (
+      normalizedCode === "ABORT_ERR"
+      || normalizedCode === "ERR_CANCELED"
+      || normalizedCode === "ERR_CANCELLED"
+      || normalizedName.includes("abort")
+      || normalizedName.includes("cancel")
+      || /\b(?:request|operation|job|generated visualization) (?:was )?(?:cancelled|canceled|aborted)\b/i.test(message)
+    );
+  });
+}
+
+/** Generated-visual requests own only their deadline. Learn's tracked client
+ * separately owns 502/restart/connection retries, preventing multiplicative
+ * retry schedules while caller-owned aborts remain terminal. */
+export function isGeneratedVisualProviderTransportError(error: unknown): boolean {
+  if (error instanceof GeneratedVisualRequestTimeoutError) return true;
+  const details = generatedVisualProviderErrorDetails(error);
+  if (details.length === 0 || isGeneratedVisualProviderCancellation(error)) return false;
+  // Do not reinterpret an ordinary HTTP/model response as a transport timeout.
+  if (details.some(({ status }) => status !== undefined)) return false;
+  return details.some(({ code, name, message }) => {
+    const normalizedCode = code.toUpperCase();
+    return (
+      [
+        "ETIMEDOUT",
+        "UND_ERR_CONNECT_TIMEOUT",
+        "UND_ERR_HEADERS_TIMEOUT",
+        "UND_ERR_BODY_TIMEOUT",
+      ].includes(normalizedCode)
+      || /(?:api|connection|request|provider).*timeout/i.test(name)
+      || /\b(?:request|connection|response|provider) (?:timed out|timeout)\b/i.test(message)
+    );
+  });
+}
+
+function generatedVisualAbortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+}
+
 async function withGeneratedVisualTimeout<T>(input: {
   timeoutMs: number;
   externalSignal?: AbortSignal;
   work: (signal: AbortSignal) => Promise<T>;
 }): Promise<T> {
-  if (input.externalSignal?.aborted) throw new Error("generated visualization was cancelled");
+  if (input.externalSignal?.aborted) throw generatedVisualAbortReason(input.externalSignal);
   const controller = new AbortController();
-  const abortFromExternal = () => controller.abort(input.externalSignal?.reason);
+  let timeoutFailure: GeneratedVisualRequestTimeoutError | undefined;
+  let externalFailure: unknown;
+  let rejectBoundary: (reason?: unknown) => void = () => undefined;
+  const boundary = new Promise<never>((_resolve, reject) => {
+    rejectBoundary = reject;
+  });
+  const abortFromExternal = () => {
+    externalFailure = generatedVisualAbortReason(input.externalSignal!);
+    controller.abort(externalFailure);
+    rejectBoundary(externalFailure);
+  };
   input.externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
-  const timer = setTimeout(() => controller.abort(new Error(`generated visualization request timed out after ${input.timeoutMs}ms`)), input.timeoutMs);
+  const timer = setTimeout(() => {
+    timeoutFailure = new GeneratedVisualRequestTimeoutError(input.timeoutMs);
+    controller.abort(timeoutFailure);
+    rejectBoundary(timeoutFailure);
+  }, input.timeoutMs);
   try {
-    return await input.work(controller.signal);
+    return await Promise.race([
+      Promise.resolve().then(() => input.work(controller.signal)),
+      boundary,
+    ]);
+  } catch (error) {
+    if (externalFailure !== undefined) throw externalFailure;
+    if (timeoutFailure) {
+      if (error !== timeoutFailure) {
+        (timeoutFailure as Error & { cause?: unknown }).cause = error;
+      }
+      throw timeoutFailure;
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
     input.externalSignal?.removeEventListener("abort", abortFromExternal);
   }
+}
+
+export async function retryGeneratedVisualProviderRequest<T>(input: {
+  timeoutMs: number;
+  /** The built-in OpenAI provider applies `timeoutMs` to each raw SDK call so
+   * an upstream connection-retry delay is never aborted by this boundary. */
+  timeoutOwner?: "boundary" | "provider";
+  externalSignal?: AbortSignal;
+  checkCancelled?: () => void;
+  maxTransportAttempts?: number;
+  work: (signal: AbortSignal, transportAttempt: number) => Promise<T>;
+  onRetry?: (event: {
+    error: unknown;
+    transportAttempt: number;
+    transportMaxAttempts: number;
+  }) => void;
+}): Promise<T> {
+  const maxTransportAttempts = Math.max(
+    1,
+    Math.min(
+      GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS,
+      input.maxTransportAttempts ?? GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS,
+    ),
+  );
+  for (let transportAttempt = 1; transportAttempt <= maxTransportAttempts; transportAttempt += 1) {
+    input.checkCancelled?.();
+    if (input.externalSignal?.aborted) throw generatedVisualAbortReason(input.externalSignal);
+    try {
+      if (input.timeoutOwner === "provider") {
+        const requestSignal = input.externalSignal ?? new AbortController().signal;
+        return await input.work(requestSignal, transportAttempt);
+      }
+      return await withGeneratedVisualTimeout({
+        timeoutMs: input.timeoutMs,
+        externalSignal: input.externalSignal,
+        work: (signal) => input.work(signal, transportAttempt),
+      });
+    } catch (error) {
+      if (input.externalSignal?.aborted) throw generatedVisualAbortReason(input.externalSignal);
+      input.checkCancelled?.();
+      if (isGeneratedVisualProviderTransportError(error)) {
+        if (transportAttempt === maxTransportAttempts) {
+          throw new GeneratedVisualProviderTransportExhaustedError(
+            transportAttempt,
+            error,
+            "generated_visual_timeout",
+          );
+        }
+        input.onRetry?.({ error, transportAttempt, transportMaxAttempts: maxTransportAttempts });
+        continue;
+      }
+      // `attachLearnTokenUsageTracking` already gave these narrow failures its
+      // six-attempt schedule. Treat final exhaustion as infrastructure-terminal
+      // for this logical request; never multiply it or spend a semantic attempt.
+      if (isRetryableModelTransportError(error)) {
+        throw new GeneratedVisualProviderTransportExhaustedError(
+          transportAttempt,
+          error,
+          "upstream_client",
+        );
+      }
+      throw error;
+    }
+  }
+  throw new Error("generated visualization provider transport retry schedule did not run");
 }
 
 function writeRejectedAttempt(
@@ -2258,6 +3196,7 @@ async function createGeneratedVisualizationWithSlot(input: CreateGeneratedVisual
   let previousSourceCode = "";
   let repairErrors: string[] = [];
   let lastFailure: GeneratedVisualResult["failureCategory"] = "generation";
+  let transportExhaustedWithoutFallback = false;
   const requestTimeoutMs = Math.max(
     5_000,
     Math.min(300_000, input.timeoutMs ?? (Number(process.env.LEARN_GENERATED_VISUAL_TIMEOUT_MS ?? 90_000) || 90_000)),
@@ -2280,26 +3219,64 @@ async function createGeneratedVisualizationWithSlot(input: CreateGeneratedVisual
     });
     let candidate: GeneratedVisualizationCandidate;
     const generationStartedAt = Date.now();
+    const candidateRequest = {
+      client: input.client,
+      model: input.model,
+      opportunity: input.opportunity,
+      pageMarkdown: input.pageMarkdown,
+      sourceContext: input.sourceContext,
+      sourceFigureSummaries: input.sourceFigureSummaries,
+      formulaDefinitions: input.formulaDefinitions,
+      previousSourceCode: previousSourceCode || undefined,
+      errors: repairErrors.length ? repairErrors : undefined,
+      timeoutMs: requestTimeoutMs,
+    };
     try {
-      candidate = await withGeneratedVisualTimeout({
+      candidate = await retryGeneratedVisualProviderRequest({
         timeoutMs: requestTimeoutMs,
+        timeoutOwner: candidateProvider === generateVisualizationCandidate ? "provider" : "boundary",
         externalSignal: input.abortSignal,
-        work: (signal) => candidateProvider({
-          client: input.client,
-          model: input.model,
-          opportunity: input.opportunity,
-          pageMarkdown: input.pageMarkdown,
-          sourceContext: input.sourceContext,
-          sourceFigureSummaries: input.sourceFigureSummaries,
-          formulaDefinitions: input.formulaDefinitions,
-          previousSourceCode: previousSourceCode || undefined,
-          errors: repairErrors.length ? repairErrors : undefined,
-          signal,
-        }),
+        checkCancelled: input.checkCancelled,
+        work: (signal) => candidateProvider({ ...candidateRequest, signal }),
+        onRetry: ({ error, transportAttempt, transportMaxAttempts }) => {
+          emit(input.onEvent, "visual_generation_transport_retry", {
+            visualizationId: id,
+            attempt,
+            transportAttempt,
+            transportMaxAttempts,
+            reason: error instanceof Error ? error.message : "provider transport failed",
+          });
+        },
       });
     } catch (error) {
+      if (input.abortSignal?.aborted) throw generatedVisualAbortReason(input.abortSignal);
+      input.checkCancelled?.();
+      if (isGeneratedVisualProviderCancellation(error)) throw error;
       lastFailure = "generation";
       repairErrors = [error instanceof Error ? error.message : "candidate generation failed"];
+      if (error instanceof GeneratedVisualProviderTransportExhaustedError) {
+        transportExhaustedWithoutFallback = true;
+        writeRejectedAttempt(
+          input.gardenDir,
+          id,
+          runId,
+          attempt,
+          null,
+          "generation_transport",
+          repairErrors,
+          lifecycle,
+        );
+        emit(input.onEvent, "visual_generation_transport_exhausted", {
+          visualizationId: id,
+          attempt,
+          transportAttempts: error.transportAttempts,
+          transportRetryOwner: error.retryOwner,
+          failureCategory: "generation",
+          reason: repairErrors.join("; "),
+          durationMs: Date.now() - startedAt,
+        });
+        break;
+      }
       writeRejectedAttempt(input.gardenDir, id, runId, attempt, null, "generation", repairErrors, lifecycle);
       emit(input.onEvent, "visual_generation_failed", {
         visualizationId: id,
@@ -2432,30 +3409,60 @@ async function createGeneratedVisualizationWithSlot(input: CreateGeneratedVisual
     );
     const criticStartedAt = Date.now();
     let priorCriticFailure: string | undefined;
+    let criticTransportExhausted: GeneratedVisualProviderTransportExhaustedError | undefined;
     for (let criticAttempt = 1; criticAttempt <= criticAttempts; criticAttempt += 1) {
+      const criticRequest = {
+        client: input.client,
+        model: String(process.env.LEARN_GENERATED_VISUAL_CRITIC_MODEL ?? input.model),
+        opportunity: input.opportunity,
+        candidate,
+        definition,
+        sourceContext: input.sourceContext,
+        sourceFigureSummaries: input.sourceFigureSummaries,
+        formulaDefinitions: input.formulaDefinitions,
+        previewPath: browser.browser?.screenshotCreated ? path.join(stagingDir, "preview.png") : undefined,
+        tests: deterministicTests,
+        priorCriticFailure,
+        timeoutMs: requestTimeoutMs,
+      };
       try {
-        critic = await withGeneratedVisualTimeout({
+        critic = await retryGeneratedVisualProviderRequest({
           timeoutMs: requestTimeoutMs,
+          timeoutOwner: criticProvider === reviewGeneratedVisualization ? "provider" : "boundary",
           externalSignal: input.abortSignal,
-          work: (signal) => criticProvider({
-            client: input.client,
-            model: String(process.env.LEARN_GENERATED_VISUAL_CRITIC_MODEL ?? input.model),
-            opportunity: input.opportunity,
-            candidate,
-            definition,
-            sourceContext: input.sourceContext,
-            sourceFigureSummaries: input.sourceFigureSummaries,
-            formulaDefinitions: input.formulaDefinitions,
-            previewPath: browser.browser?.screenshotCreated ? path.join(stagingDir, "preview.png") : undefined,
-            tests: deterministicTests,
-            priorCriticFailure,
-            signal,
-          }),
+          checkCancelled: input.checkCancelled,
+          work: (signal) => criticProvider({ ...criticRequest, signal }),
+          onRetry: ({ error, transportAttempt, transportMaxAttempts }) => {
+            emit(input.onEvent, "visual_critic_transport_retry", {
+              visualizationId: id,
+              attempt,
+              criticAttempt,
+              transportAttempt,
+              transportMaxAttempts,
+              reason: error instanceof Error ? error.message : "provider transport failed",
+            });
+          },
         });
         break;
       } catch (error) {
         if (input.abortSignal?.aborted) throw error;
         input.checkCancelled?.();
+        if (isGeneratedVisualProviderCancellation(error)) throw error;
+        if (error instanceof GeneratedVisualProviderTransportExhaustedError) {
+          criticTransportExhausted = error;
+          criticFailure = error.message;
+          emit(input.onEvent, "visual_critic_transport_exhausted", {
+            visualizationId: id,
+            attempt,
+            criticAttempt,
+            transportAttempts: error.transportAttempts,
+            transportRetryOwner: error.retryOwner,
+            failureCategory: "critic",
+            reason: error.message,
+            durationMs: Date.now() - criticStartedAt,
+          });
+          break;
+        }
         criticFailure = error instanceof Error ? error.message : "critic failed";
         priorCriticFailure = criticFailure;
         if (criticAttempt < criticAttempts) {
@@ -2470,6 +3477,15 @@ async function createGeneratedVisualizationWithSlot(input: CreateGeneratedVisual
     }
     if (!critic) {
       lastFailure = "critic";
+      if (criticTransportExhausted) {
+        transportExhaustedWithoutFallback = true;
+        repairErrors = [criticTransportExhausted.message];
+        writeRejectedAttempt(input.gardenDir, id, runId, attempt, candidate, "critic_transport", repairErrors, lifecycle, {
+          validation: compilation.validation,
+          tests: deterministicTests,
+        });
+        break;
+      }
       repairErrors = [
         `Critic review could not complete after ${criticAttempts} attempt${criticAttempts === 1 ? "" : "s"}: ${criticFailure}`,
       ];
@@ -2576,14 +3592,16 @@ async function createGeneratedVisualizationWithSlot(input: CreateGeneratedVisual
     return { manifest, definition, errors: [] };
   }
 
-  emit(input.onEvent, "visual_fallback_used", {
-    gardenId: input.opportunity.gardenId,
-    learningUnitId: input.opportunity.learningUnitId,
-    visualizationId: id,
-    failureCategory: lastFailure,
-    reason: repairErrors.join("; ") || "generated visualization attempts exhausted",
-    resultingStatus: "rejected",
-  });
+  if (!transportExhaustedWithoutFallback) {
+    emit(input.onEvent, "visual_fallback_used", {
+      gardenId: input.opportunity.gardenId,
+      learningUnitId: input.opportunity.learningUnitId,
+      visualizationId: id,
+      failureCategory: lastFailure,
+      reason: repairErrors.join("; ") || "generated visualization attempts exhausted",
+      resultingStatus: "rejected",
+    });
+  }
   return {
     manifest: null,
     definition: null,

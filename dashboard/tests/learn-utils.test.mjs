@@ -5,9 +5,7 @@ import path from "node:path";
 import {
   buildLearningPageFrontmatter,
   containsRawVisualPlaceholder,
-  fallbackLearningMapFromSources,
   formulaMetricFamily,
-  normalizeLearningMapCandidate,
   normalizeZettelTags,
   sanitizeLearnerTitle,
   validateLearningMapDepth,
@@ -23,65 +21,23 @@ import {
 } from "../src/lib/learn-utils.ts";
 
 describe("learn utilities", () => {
-  test("creates a fallback learning map from source material", () => {
-    const map = fallbackLearningMapFromSources({
-      gardenId: "garden",
-      gardenTitle: "Garden",
-      sources: [
-        {
-          id: "lecture-1",
-          slug: "lecture-1",
-          title: "Lecture 1",
-          relPath: "sources/lecture-1.md",
-          body: "## Force\n\nContent",
-        },
-      ],
-      concepts: [
-        {
-          title: "Restoring Force",
-          sourceDocument: "lecture-1",
-          excerpt: "Force points toward equilibrium.",
-          locations: ["Page 2"],
-          tags: ["restoring-force"],
-        },
-      ],
-    });
-
-    assert.equal(map.status, undefined);
-    assert.equal(map.sections.length, 1);
-    assert.equal(map.sections[0].title, "Lecture 1");
-    assert.equal(map.sections[0].subsections[0].title, "Restoring Force");
-  });
-
-  test("normalizes council topic-map JSON into the proposed textbook order", () => {
-    const map = normalizeLearningMapCandidate(
-      {
-        title: "Physics Textbook",
-        sections: [
-          {
-            title: "Waves",
-            subsections: [
-              {
-                title: "Wave Speed",
-                sourceAnchors: ["Lecture 2"],
-                visualOpportunities: ["speed plot"],
-              },
-            ],
-          },
-        ],
-        warnings: ["Missing lab data"],
-      },
-      {
-        gardenId: "garden",
-        gardenTitle: "Garden",
-        sources: [],
-      },
+  // A learning map is model-authored or it does not exist. There is no builder
+  // that synthesizes sections, subsection titles, or purposes from source
+  // headings, and no normalizer that substitutes one when the model returns
+  // nothing — either would hand the garden a curriculum no model wrote.
+  test("exposes no deterministic learning-map synthesizer", () => {
+    const utilsSource = fs.readFileSync(
+      path.join(process.cwd(), "src/lib/learn-utils.ts"),
+      "utf8",
     );
+    assert.doesNotMatch(utilsSource, /fallbackLearningMapFromSources/);
+    assert.doesNotMatch(utilsSource, /normalizeLearningMapCandidate/);
+    assert.doesNotMatch(utilsSource, /conceptPlansForSource|headingPlansForSource/);
 
-    assert.equal(map.title, "Physics Textbook");
-    assert.equal(map.sections[0].subsections[0].title, "Wave Speed");
-    assert.deepEqual(map.sections[0].subsections[0].visualOpportunities, ["speed plot"]);
-    assert.ok(map.warnings.includes("Missing lab data"));
+    const learnSource = fs.readFileSync(path.join(process.cwd(), "src/lib/learn.ts"), "utf8");
+    assert.doesNotMatch(learnSource, /fallbackLearningMapFromSources/);
+    // A stored row whose learning map is missing reads back as no map at all.
+    assert.match(learnSource, /learningMap\.sections\.length === 0[\s\S]{0,40}return null/);
   });
 
   test("writes learning page frontmatter with clean tags and no textbook terms", () => {

@@ -69,6 +69,11 @@ desktop/release/
 dashboard/test-results/
 dashboard/playwright-report/
 
+# Isolated desktop QA runs and their diagnostic evidence. These can contain
+# local account state, screenshots and traces, so they are never committed.
+/.qa-runtime/
+/.qa-results/
+
 # ---------------------------------------------------------------------------
 # Databases and runtime state
 # ---------------------------------------------------------------------------

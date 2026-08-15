@@ -108,7 +108,7 @@ test("a finished turn says Thought, and only the default label changes tense", (
   // A caller's own label already describes a state ("Interrupted", an
   // artifact's) and must be shown exactly as given.
   assert.match(activity, /stateLabel \?\? artifactState\?\.label \?\? "Thinking"/);
-  assert.match(runtime, /stateLabel=\{responseInterrupted \? "Interrupted" : undefined\}/);
+  assert.match(runtime, /stateLabel=\{\s*responseInterrupted\s*\?\s*"Interrupted"/);
   // The accessible name follows the visible one instead of saying "thinking"
   // under a row that reads Thought.
   assert.match(responseMeta, /\$\{displayLabel\.toLowerCase\(\)\}/);
@@ -346,10 +346,14 @@ test("user messages accent only the leading slash command", () => {
 });
 
 test("stalled agent turns render a recoverable in-chat error", () => {
-  assert.match(runtime, /stateLabel=\{responseInterrupted \? "Interrupted" : undefined\}/);
-  assert.match(runtime, /stateAction=/);
+  assert.match(runtime, /stateLabel=\{\s*responseInterrupted\s*\?\s*"Interrupted"/);
   assert.match(runtime, /role="alert"/);
-  assert.match(runtime, /Try again/);
+  const stateRow = runtime.search(
+    /stateLabel=\{\s*responseInterrupted\s*\?\s*"Interrupted"/,
+  );
+  const stateBlock = runtime.slice(stateRow, stateRow + 900);
+  assert.doesNotMatch(stateBlock, /stateAction=/);
+  assert.doesNotMatch(stateBlock, />\s*Try again\s*</);
   assert.doesNotMatch(runtime, />\s*Response interrupted\s*</);
   assert.doesNotMatch(activity, /Response stopped/);
   assert.match(agentSession, /agentStreamTimeout/);
@@ -368,12 +372,13 @@ test("interrupted assistant turns retain their message actions and retry control
     runtime,
     /message\.content \|\|[\s\S]{0,240}message\.interrupted/,
   );
-  assert.match(runtime, /stateLabel=\{responseInterrupted \? "Interrupted" : undefined\}/);
-  assert.match(runtime, /canRetryResponseState[\s\S]*?Try again/);
+  assert.match(runtime, /stateLabel=\{\s*responseInterrupted\s*\?\s*"Interrupted"/);
+  assert.doesNotMatch(runtime, /canRetryResponseState/);
   assert.match(
     runtime,
-    /message\.interrupted \|\|\s*index === lastAssistantIndex/,
+    /onRetry=\{[\s\S]*?\(!responseInterrupted \|\| !disabled\)[\s\S]*?message\.interrupted \|\|\s*index === lastAssistantIndex/,
   );
   assert.match(runtime, /!activeRun/);
   assert.match(runtime, /\(\) => retryAssistantAsBranch\(index\)/);
+  assert.match(actions, /aria-label="Regenerate response"/);
 });

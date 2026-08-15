@@ -7,6 +7,7 @@
 // by paths that do not depend on this one.
 
 import {
+  conversationIsTemporary,
   getConversationById,
   listConversationMessages,
 } from "../conversations/store.ts";
@@ -30,6 +31,8 @@ export function scheduleDurableExtractionForConversation(input: {
     return;
   }
   if (!conversation) return;
+  // A temporary chat is the one transcript the extractor never reads.
+  if (conversationIsTemporary(conversation)) return;
   // Same surfaces that own the save_memory tool. Anonymous Quartz never
   // reaches durable memory at all.
   if (

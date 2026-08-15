@@ -23,10 +23,26 @@ export interface InteractiveVisualControlEvidence {
   quote: string;
 }
 
+export type InteractiveVisualControlInputType = "slider" | "number" | "select";
+
 export interface InteractiveVisualControlContract {
+  /** Stable model-authored identifier used by the generated module contract. */
+  id: string;
   kind: "variable" | "select_case" | "process_position";
   label: string;
+  /** Input widget semantics are authored by the model, never inferred downstream. */
+  type: InteractiveVisualControlInputType;
+  unit?: string;
+  /** Required for slider and number controls. */
+  min?: number;
+  /** Required for slider and number controls. */
+  max?: number;
+  /** Required for slider and number controls. */
+  step?: number;
+  /** Required for select controls and forbidden for numeric controls. */
   options?: string[];
+  /** Must be a finite in-range number, or one of the declared select options. */
+  defaultValue: number | string;
   evidence: InteractiveVisualControlEvidence[];
 }
 
@@ -43,6 +59,23 @@ export interface InteractiveVisualObservableContract {
   label: string;
   representation: InteractiveVisualOutputRepresentation;
   evidence: InteractiveVisualControlEvidence[];
+}
+
+/**
+ * The complete model-authored interaction semantics shared by necessity,
+ * executability review, routing, and generation. Keeping one typed record
+ * prevents a post-review control set from diverging from decision.interaction.
+ */
+export interface InteractiveVisualPedagogyContract {
+  interactionGoal: VisualizationInteractionGoal;
+  uniqueConcept: string;
+  whyStaticSourceFigureIsNotEnough: string;
+  learnerAction: string;
+  controls: InteractiveVisualControlContract[];
+  observable: InteractiveVisualObservableContract;
+  expectedInsight: string;
+  expectedInsightEvidence: InteractiveVisualControlEvidence[];
+  duplicateSignature: string;
 }
 
 export interface InteractiveVisualIntent {
@@ -75,6 +108,10 @@ export interface VisualNecessityDecision {
   cognitiveLoadRisk: number;
   duplicationRisk: number;
   implementationRisk: number;
+  /** How sure the decision is, 0..1. The model authors this in the whole-garden
+   * pass; the deterministic scorer derives it from its own margins. Consumers
+   * read it rather than inventing a confidence of their own. */
+  confidence: number;
   recommendedVisualType?: string;
   evidence: {
     unitRole: string;
@@ -84,6 +121,9 @@ export interface VisualNecessityDecision {
     nearbyVisualIntentIds: string[];
   };
   reason: string;
+  /** Present for active model-authored decisions and synchronized atomically
+   * with the top-level interaction plan after executability review. */
+  interaction?: InteractiveVisualPedagogyContract;
 }
 
 export interface ContractInteractiveVisualPlan {
@@ -94,6 +134,8 @@ export interface ContractInteractiveVisualPlan {
   controlContract?: InteractiveVisualControlContract[];
   /** Model-authored interaction behavior. Routing must not infer this from prose or roles. */
   interactionGoal?: VisualizationInteractionGoal;
+  /** Exact learner sequence; generation projects it without interpreting it. */
+  learnerAction?: string;
   /** Model-authored learner-visible response and its presentation form. */
   observable?: InteractiveVisualObservableContract;
   expectedInsightEvidence?: InteractiveVisualControlEvidence[];
@@ -232,6 +274,13 @@ export interface VisualNecessityArtifact {
   schemaVersion: 1;
   gardenId: string;
   generatedAt: string;
+  artifactRole: "pre_executability_model_necessity_and_teaching_medium_source";
+  interactionContractsAreAuthoritative: false;
+  supersededBy: {
+    learningUnitContract: ".breadboard/learning-unit-contract.json";
+    visualizationPlan: ".breadboard/visualization-plan.json";
+    executabilityReviewLedger: ".breadboard/visual-contract-executability-reviews.json";
+  };
   budget: GardenVisualBudget;
   decisions: VisualNecessityDecision[];
   teachingMedia: TeachingMediumPlan[];

@@ -429,6 +429,75 @@ test("Hermes recovers a correlated terminal result when the live completion fram
   assert.equal(recoveryRequest.params.expected_user_text, "delete the listed files");
 });
 
+test("Hermes preserves an interrupted recovered turn as failed", async () => {
+  const fakeClient = {
+    async request(method, params) {
+      if (method === "session.create") {
+        return { session_id: "live-interrupted", stored_session_id: "stored-interrupted" };
+      }
+      if (method === "session.turn_result") {
+        return {
+          state: "failed",
+          turn_id: params.turn_id,
+          payload: {
+            text: "This turn was interrupted before it finished.",
+            status: "error",
+            recovered_from_history: true,
+            failure_reason: "interrupted_tool_turn",
+          },
+        };
+      }
+      return { status: "streaming" };
+    },
+    async *events(_liveSessionId, signal, onConnected) {
+      onConnected?.();
+      await new Promise((resolve) => {
+        if (signal?.aborted) return resolve();
+        signal?.addEventListener("abort", resolve, { once: true });
+      });
+    },
+    clearSession() {},
+  };
+  const adapter = new HermesRuntimeAdapter({
+    baseUrl: "http://127.0.0.1:9119",
+    sessionToken: "test",
+    requestTimeoutMs: 5_000,
+  });
+  adapter.client = fakeClient;
+
+  const session = await adapter.createSession({
+    surface: "dashboard_terminal",
+    sessionKey: "interrupted-visualizer",
+    filesystemMode: "restricted",
+  });
+  await adapter.startRun({
+    ...session,
+    agentName: session.agentName,
+    text: "please visualize spherical coordinates",
+    messageId: "msg_visualizer",
+  });
+  const events = adapter.streamSession({
+    externalSessionId: session.externalSessionId,
+    liveSessionId: session.liveSessionId,
+    workspaceKey: session.workspaceKey,
+    directory: session.directory,
+    messageId: "msg_visualizer",
+    instruction: "please visualize spherical coordinates",
+  })[Symbol.asyncIterator]();
+  const recovered = [];
+  for (let index = 0; index < 3; index += 1) {
+    recovered.push((await events.next()).value);
+  }
+  await events.return();
+
+  assert.deepEqual(
+    recovered.map((event) => event.type),
+    ["assistant.delta", "assistant.completed", "session.status"],
+  );
+  assert.match(recovered[0].payload.text, /interrupted/i);
+  assert.equal(recovered[2].payload.status, "failed");
+});
+
 test("a terminal tool journal does not duplicate lifecycle frames already seen live", async () => {
   const fakeClient = {
     async request(method) {

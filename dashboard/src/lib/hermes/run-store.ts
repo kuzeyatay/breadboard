@@ -16,6 +16,14 @@ export interface RuntimeRunRow {
   heartbeat_at: string | null;
 }
 
+export interface RuntimeArtifactRequirement {
+  kind: string;
+  rendererId: string;
+  sourceSkill: string;
+  readyEventType: string;
+  previewRequired?: boolean;
+}
+
 export interface RuntimeRunDispatch {
   conversationPublicId?: string;
   clientMessageId?: string;
@@ -25,6 +33,8 @@ export interface RuntimeRunDispatch {
   variant?: string;
   system?: string;
   tools?: Record<string, boolean>;
+  /** Durable products that must exist before this run may report completion. */
+  requiredArtifacts?: RuntimeArtifactRequirement[];
   /** Written only after the runtime acknowledges prompt submission. */
   submittedAt?: string;
   gardenGrounding?: {

@@ -1,25 +1,27 @@
-import { createHash } from "node:crypto";
-
 import type { LearningUnitContract } from "./learning-unit-contract.ts";
 import type { ProposedLearningMap } from "./learn-utils.ts";
-import type { VisualDecisionOverride } from "./visual-necessity-types.ts";
+import type { GardenVisualBudget, VisualDecisionOverride } from "./visual-necessity-types.ts";
 import {
   analyzeVisualizationOpportunities,
   buildVisualizationPlan,
-  requiredGeneratedVisualizationContractProblems,
+  canonicalVisualizationEvidenceProblems,
+  generatedVisualizationContractProblems,
   selectVisualizationRoutes,
   type VisualizationOpportunity,
+  type VisualizationCanonicalEvidenceByUnit,
   type VisualizationPlan,
 } from "./visualization-opportunities.ts";
 import {
-  normalizeVisualizationContractRepairResponse,
+  parseVisualizationContractRepairResponse,
+  pedagogyContractFromCompleteRepair,
   validateVisualizationContractUnitRepair,
-  visualizationContractEvidenceForUnit,
+  type CompleteVisualizationContractUnitRepair,
   type VisualizationContractEvidenceEntry,
   type VisualizationContractUnitRepair,
 } from "./visualization-contract-validation.ts";
 
 export type {
+  CompleteVisualizationContractUnitRepair,
   VisualizationContractControlKind,
   VisualizationContractControlRepair,
   VisualizationContractEvidenceEntry,
@@ -27,6 +29,7 @@ export type {
   VisualizationContractUnitRepair,
 } from "./visualization-contract-validation.ts";
 export {
+  parseVisualizationContractRepairResponse,
   validateVisualizationContractUnitRepair,
   visualizationContractEvidenceForUnit,
 } from "./visualization-contract-validation.ts";
@@ -37,8 +40,9 @@ export interface VisualizationContractRepairPacket {
     unitId: string;
     title: string;
     role: string;
-    requirement: "required";
+    requirement: "required" | "recommended" | "optional";
     interactionGoal: string;
+    learnerAction: string;
     learningObjective: string;
     evidence: VisualizationContractEvidenceEntry[];
   }>;
@@ -49,7 +53,8 @@ export interface VisualizationPlanRepairInput {
   gardenId: string;
   learningMap: ProposedLearningMap;
   learningUnits: LearningUnitContract[];
-  groundingUnits?: LearningUnitContract[];
+  visualBudget: GardenVisualBudget;
+  canonicalEvidenceByUnit: VisualizationCanonicalEvidenceByUnit;
   necessityReviewCalls?: number;
   rejectedNecessityReviews?: number;
   visualDecisionOverrides?: VisualDecisionOverride[];
@@ -64,67 +69,78 @@ export interface VisualizationPlanRepairResult {
   learningUnits: LearningUnitContract[];
   repairAttempts: number;
   repairedUnitIds: string[];
-  repairSource: "none" | "persisted_contract" | "model";
+  repairSource: "none" | "model";
+  repairAudit: {
+    attempts: VisualizationContractRepairAttempt[];
+    acceptedResponse?: unknown;
+  };
 }
 
-function repairIntent(
-  unit: LearningUnitContract,
-  repair: VisualizationContractUnitRepair,
-) {
-  const previous = unit.interactiveVisualPlan?.visualIntent ?? unit.interactiveVisual;
-  const controls = repair.controls.map((control) => control.label);
-  const uniqueConcept =
-    previous?.uniqueConcept ||
-    unit.semanticConcepts?.find((concept) => concept.role === "primary")?.preferredLabel ||
-    unit.newConcepts[0] ||
-    unit.title;
-  const sourceAnchors = [...new Set([
-    ...(previous?.sourceAnchors ?? []),
-    ...unit.sourceAnchors,
-    ...unit.sourceFigures.map((item) => item.id),
-    ...unit.sourceFormulas.map((item) => item.id),
-    ...unit.sourceTables.map((item) => item.id),
-  ])];
-  const duplicateSignature = createHash("sha256")
-    .update(JSON.stringify({ unitId: unit.id, controls, insight: repair.expectedInsight }))
-    .digest("hex")
-    .slice(0, 20);
-  return {
-    id: previous?.id || `visual-contract-${unit.id.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
-    uniqueConcept,
-    visualType: previous?.visualType || unit.interactiveVisualPlan?.decision.recommendedVisualType || "generated_module",
-    whyStaticSourceFigureIsNotEnough:
-      previous?.whyStaticSourceFigureIsNotEnough ||
-      unit.interactiveVisualPlan?.decision.reason ||
-      `Interaction is required to expose ${uniqueConcept}.`,
-    learnerManipulates: controls,
-    expectedInsight: repair.expectedInsight,
-    sourceAnchors,
-    duplicateSignature: previous?.duplicateSignature || duplicateSignature,
-  };
+export interface VisualizationContractRepairAttempt {
+  attempt: number;
+  accepted: boolean;
+  responseEncoding: "json" | "undefined";
+  response: unknown;
+  rejectionReasons: string[];
+  appliedUnitIds: string[];
+}
+
+function auditResponse(value: unknown): {
+  responseEncoding: "json" | "undefined";
+  response: unknown;
+} {
+  return value === undefined
+    ? { responseEncoding: "undefined", response: null }
+    : { responseEncoding: "json", response: value };
 }
 
 function applyRepairs(input: {
   units: LearningUnitContract[];
   repairs: VisualizationContractUnitRepair[];
   affectedUnitIds: Set<string>;
+  canonicalEvidenceByUnit: VisualizationCanonicalEvidenceByUnit;
 }): { units: LearningUnitContract[]; appliedUnitIds: string[]; problems: string[] } {
-  const repairByUnit = new Map(input.repairs.map((repair) => [repair.unitId, repair]));
   const appliedUnitIds: string[] = [];
   const problems: string[] = [];
+  const repairIds = input.repairs.map((repair) => repair.unitId);
+  const duplicateRepairIds = repairIds.filter(
+    (unitId, index) => unitId && repairIds.indexOf(unitId) !== index,
+  );
+  for (const unitId of new Set(duplicateRepairIds)) {
+    problems.push(`repair response duplicates affected unit ${unitId}`);
+  }
   for (const repair of input.repairs) {
     if (!input.affectedUnitIds.has(repair.unitId)) {
       problems.push(`repair targets unaffected or unknown unit ${repair.unitId}`);
     }
   }
+  for (const unitId of input.affectedUnitIds) {
+    if (!repairIds.includes(unitId)) {
+      problems.push(`${unitId}: repair response omitted this failed model-approved unit`);
+    }
+  }
+  if (input.repairs.length !== input.affectedUnitIds.size) {
+    problems.push(
+      `repair response must contain exactly ${input.affectedUnitIds.size} affected unit repair(s), received ${input.repairs.length}`,
+    );
+  }
+  if (problems.length > 0) {
+    return { units: input.units, appliedUnitIds, problems: [...new Set(problems)] };
+  }
+  const repairByUnit = new Map(input.repairs.map((repair) => [repair.unitId, repair]));
   const units = input.units.map((unit) => {
     if (!input.affectedUnitIds.has(unit.id)) return unit;
     const repair = repairByUnit.get(unit.id);
     if (!repair) {
-      problems.push(`${unit.id}: repair response omitted this failed required unit`);
+      problems.push(`${unit.id}: validated complete repair response became incomplete`);
       return unit;
     }
-    const validation = validateVisualizationContractUnitRepair({ repair, unit });
+    const validation = validateVisualizationContractUnitRepair({
+      repair,
+      unit,
+      evidence: input.canonicalEvidenceByUnit[unit.id] ?? [],
+      requireCompleteContract: true,
+    });
     if (validation.length > 0) {
       problems.push(...validation);
       return unit;
@@ -132,19 +148,38 @@ function applyRepairs(input: {
     const plan = unit.interactiveVisualPlan!;
     const requirement = plan.requirement;
     const necessity = plan.decision.necessity;
-    const intent = repairIntent(unit, repair);
+    // Complete-contract validation above proves these model-authored fields
+    // exist. Application only copies them; it never restores or invents any
+    // part from the prior unit.
+    const completeRepair = repair as CompleteVisualizationContractUnitRepair;
+    const authoredIntent = completeRepair.visualIntent;
+    const intent = {
+      ...authoredIntent,
+      learnerManipulates: [...authoredIntent.learnerManipulates],
+      sourceAnchors: [...authoredIntent.sourceAnchors],
+    };
+    const observable = {
+      ...completeRepair.observable,
+      evidence: completeRepair.observable.evidence.map((item) => ({ ...item })),
+    };
     const next: LearningUnitContract = {
       ...unit,
       interactiveVisual: intent,
       interactiveVisualPlan: {
         ...plan,
+        decision: {
+          ...plan.decision,
+          interaction: pedagogyContractFromCompleteRepair(completeRepair),
+        },
         visualIntent: intent,
+        interactionGoal: completeRepair.interactionGoal,
+        learnerAction: completeRepair.learnerAction,
         controlContract: repair.controls.map((control) => ({
-          kind: control.kind,
-          label: control.label,
-          ...(control.kind === "select_case" ? { options: [...(control.options ?? [])] } : {}),
+          ...control,
+          ...(control.options ? { options: [...control.options] } : {}),
           evidence: control.evidence.map((item) => ({ ...item })),
         })),
+        observable,
         expectedInsightEvidence: repair.expectedInsightEvidence.map((item) => ({ ...item })),
       },
     };
@@ -165,11 +200,13 @@ function selectedContractState(input: {
   gardenId: string;
   learningMap: ProposedLearningMap;
   learningUnits: LearningUnitContract[];
+  canonicalEvidenceByUnit: VisualizationCanonicalEvidenceByUnit;
 }) {
   const opportunities = analyzeVisualizationOpportunities({
     gardenId: input.gardenId,
     learningMap: input.learningMap,
     learningUnits: input.learningUnits,
+    canonicalEvidenceByUnit: input.canonicalEvidenceByUnit,
   });
   const selected = selectVisualizationRoutes({
     opportunities,
@@ -178,7 +215,7 @@ function selectedContractState(input: {
   });
   return {
     ...selected,
-    problems: requiredGeneratedVisualizationContractProblems(selected),
+    problems: generatedVisualizationContractProblems(selected),
   };
 }
 
@@ -190,93 +227,48 @@ function affectedOpportunities(
   return opportunities.filter((opportunity) => ids.has(opportunity.id));
 }
 
-function persistedRepairs(input: {
-  units: LearningUnitContract[];
-  affectedUnitIds: Set<string>;
-}): VisualizationContractUnitRepair[] {
-  return input.units.flatMap((unit) => {
-    if (!input.affectedUnitIds.has(unit.id)) return [];
-    const intent = unit.interactiveVisualPlan?.visualIntent ?? unit.interactiveVisual;
-    const controlContract = unit.interactiveVisualPlan?.controlContract ?? [];
-    const insightEvidence = unit.interactiveVisualPlan?.expectedInsightEvidence ?? [];
-    if (!intent?.expectedInsight || controlContract.length === 0 || insightEvidence.length === 0) return [];
-    return [{
-      unitId: unit.id,
-      controls: controlContract.map((control) => ({
-        kind: control.kind,
-        label: control.label,
-        ...(control.options ? { options: [...control.options] } : {}),
-        evidence: control.evidence.map((item) => ({ ...item })),
-      })),
-      expectedInsight: intent.expectedInsight,
-      expectedInsightEvidence: insightEvidence.map((item) => ({ ...item })),
-    }];
-  });
-}
-
 export async function buildVisualizationPlanWithContractRepair(
   input: VisualizationPlanRepairInput,
 ): Promise<VisualizationPlanRepairResult> {
-  let learningUnits = input.learningUnits;
-  let persistedRestoredUnitIds: string[] = [];
-  if (input.groundingUnits?.length) {
-    const currentById = new Map(learningUnits.map((unit) => [unit.id, unit]));
-    const persistedCandidateIds = new Set(
-      input.groundingUnits
-        .filter((unit) =>
-          (unit.interactiveVisualPlan?.controlContract?.length ?? 0) > 0 &&
-          currentById.get(unit.id)?.interactiveVisualPlan?.requirement === "required" &&
-          (currentById.get(unit.id)?.interactiveVisualPlan?.controlContract?.length ?? 0) === 0,
-        )
-        .map((unit) => unit.id),
+  const canonicalEvidenceProblems = input.learningUnits.flatMap((unit) => {
+    if (unit.interactiveVisualPlan?.requirement === "none") return [];
+    return canonicalVisualizationEvidenceProblems({
+      unit,
+      evidence: input.canonicalEvidenceByUnit?.[unit.id],
+    });
+  });
+  if (canonicalEvidenceProblems.length > 0) {
+    throw new Error(
+      `Canonical visualization evidence validation failed: ${[...new Set(canonicalEvidenceProblems)].join("; ")}`,
     );
-    if (persistedCandidateIds.size > 0) {
-      const restored = applyRepairs({
-        units: learningUnits,
-        repairs: persistedRepairs({
-          units: input.groundingUnits,
-          affectedUnitIds: persistedCandidateIds,
-        }),
-        affectedUnitIds: persistedCandidateIds,
-      });
-      if (
-        restored.problems.length === 0 &&
-        restored.appliedUnitIds.length === persistedCandidateIds.size
-      ) {
-        learningUnits = restored.units;
-        persistedRestoredUnitIds = restored.appliedUnitIds;
-      }
-    }
   }
-  const build = () => buildVisualizationPlan({
+  let learningUnits = input.learningUnits;
+  const build = (candidateUnits: LearningUnitContract[] = learningUnits) => buildVisualizationPlan({
     gardenId: input.gardenId,
     learningMap: input.learningMap,
-    learningUnits,
+    learningUnits: candidateUnits,
+    visualBudget: input.visualBudget,
+    canonicalEvidenceByUnit: input.canonicalEvidenceByUnit,
     necessityReviewCalls: input.necessityReviewCalls,
     rejectedNecessityReviews: input.rejectedNecessityReviews,
     visualDecisionOverrides: input.visualDecisionOverrides,
   });
   try {
     const plan = build();
-    if (persistedRestoredUnitIds.length > 0) {
-      input.onEvent?.("visual_opportunity_contract_repair_completed", {
-        source: "persisted_contract",
-        attempt: 0,
-        unitIds: persistedRestoredUnitIds,
-      });
-    }
     return {
       plan,
       learningUnits,
       repairAttempts: 0,
-      repairedUnitIds: persistedRestoredUnitIds,
-      repairSource: persistedRestoredUnitIds.length > 0 ? "persisted_contract" : "none",
+      repairedUnitIds: [],
+      repairSource: "none",
+      repairAudit: { attempts: [] },
     };
   } catch (initialError) {
     let state = selectedContractState({
       gardenId: input.gardenId,
       learningMap: input.learningMap,
       learningUnits,
+      canonicalEvidenceByUnit: input.canonicalEvidenceByUnit,
     });
     if (state.problems.length === 0) throw initialError;
     const affected = affectedOpportunities(state.problems, state.opportunities);
@@ -290,17 +282,19 @@ export async function buildVisualizationPlanWithContractRepair(
 
     const maxAttempts = Math.max(1, Math.min(3, input.maxRepairAttempts ?? 2));
     let rejectionReasons: string[] = [];
+    const repairAttempts: VisualizationContractRepairAttempt[] = [];
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       input.checkCancelled?.();
       state = selectedContractState({
         gardenId: input.gardenId,
         learningMap: input.learningMap,
         learningUnits,
+        canonicalEvidenceByUnit: input.canonicalEvidenceByUnit,
       });
       const failed = affectedOpportunities(state.problems, state.opportunities);
       if (failed.length === 0) {
         throw new Error(
-          `Required-visual contract repair stopped because no failed unit matched: ${state.problems.join("; ")}`,
+          `Visualization contract repair stopped because no failed model-approved unit matched: ${state.problems.join("; ")}`,
         );
       }
       const unitById = new Map(learningUnits.map((unit) => [unit.id, unit]));
@@ -308,15 +302,20 @@ export async function buildVisualizationPlanWithContractRepair(
         problems: state.problems,
         units: failed.flatMap((opportunity) => {
           const unit = unitById.get(opportunity.learningUnitId);
-          if (!unit || unit.interactiveVisualPlan?.requirement !== "required") return [];
+          const visualPlan = unit?.interactiveVisualPlan;
+          const requirement = visualPlan?.requirement;
+          if (!unit || !visualPlan || !requirement || requirement === "none") return [];
           return [{
             unitId: unit.id,
             title: unit.title,
             role: unit.role,
-            requirement: "required" as const,
-            interactionGoal: opportunity.interactionGoal,
+            requirement,
+            // A missing goal is exactly what repair is being asked to supply,
+            // so it reaches the model as empty rather than as a guess.
+            interactionGoal: opportunity.interactionGoal ?? "",
+            learnerAction: visualPlan.learnerAction ?? "",
             learningObjective: opportunity.learningObjective,
-            evidence: visualizationContractEvidenceForUnit(unit),
+            evidence: (input.canonicalEvidenceByUnit[unit.id] ?? []).map((entry) => ({ ...entry })),
           }];
         }),
         previousRejectionReasons: rejectionReasons,
@@ -325,7 +324,48 @@ export async function buildVisualizationPlanWithContractRepair(
       try {
         response = await input.repairProvider(packet);
       } catch (error) {
-        rejectionReasons = [error instanceof Error ? error.message : String(error)];
+        try {
+          input.checkCancelled?.();
+        } catch (cancelled) {
+          input.onEvent?.("visual_opportunity_contract_repair_cancelled", {
+            attempt,
+            unitIds: [...affectedUnitIds],
+            reason: cancelled instanceof Error ? cancelled.message : String(cancelled),
+          });
+          throw cancelled;
+        }
+        input.onEvent?.("visual_opportunity_contract_repair_transport_aborted", {
+          attempt,
+          unitIds: [...affectedUnitIds],
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+      try {
+        input.checkCancelled?.();
+      } catch (error) {
+        input.onEvent?.("visual_opportunity_contract_repair_cancelled", {
+          attempt,
+          unitIds: [...affectedUnitIds],
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+      const exactResponse = structuredClone(response);
+      const failedUnitIds = failed.map((opportunity) => opportunity.learningUnitId);
+      const parsedResponse = parseVisualizationContractRepairResponse(response, {
+        requireCompleteContract: true,
+        expectedUnitIds: failedUnitIds,
+      });
+      if (parsedResponse.problems.length > 0) {
+        rejectionReasons = [...parsedResponse.problems];
+        repairAttempts.push({
+          attempt,
+          accepted: false,
+          ...auditResponse(exactResponse),
+          rejectionReasons: [...rejectionReasons],
+          appliedUnitIds: [],
+        });
         input.onEvent?.("visual_opportunity_contract_repair_rejected", {
           attempt,
           reasons: rejectionReasons,
@@ -334,20 +374,35 @@ export async function buildVisualizationPlanWithContractRepair(
       }
       const applied = applyRepairs({
         units: learningUnits,
-        repairs: normalizeVisualizationContractRepairResponse(response),
-        affectedUnitIds: new Set(failed.map((opportunity) => opportunity.learningUnitId)),
+        repairs: parsedResponse.repairs,
+        affectedUnitIds: new Set(failedUnitIds),
+        canonicalEvidenceByUnit: input.canonicalEvidenceByUnit,
       });
-      rejectionReasons = applied.problems;
-      if (applied.appliedUnitIds.length === 0 || applied.problems.length > 0) {
+      rejectionReasons = [...new Set(applied.problems)];
+      if (applied.appliedUnitIds.length === 0 || rejectionReasons.length > 0) {
+        repairAttempts.push({
+          attempt,
+          accepted: false,
+          ...auditResponse(exactResponse),
+          rejectionReasons: [...rejectionReasons],
+          appliedUnitIds: [...applied.appliedUnitIds],
+        });
         input.onEvent?.("visual_opportunity_contract_repair_rejected", {
           attempt,
           reasons: rejectionReasons,
         });
         continue;
       }
-      learningUnits = applied.units;
       try {
-        const plan = build();
+        const plan = build(applied.units);
+        learningUnits = applied.units;
+        repairAttempts.push({
+          attempt,
+          accepted: true,
+          ...auditResponse(exactResponse),
+          rejectionReasons: [],
+          appliedUnitIds: [...applied.appliedUnitIds],
+        });
         input.onEvent?.("visual_opportunity_contract_repair_completed", {
           source: "model",
           attempt,
@@ -359,15 +414,27 @@ export async function buildVisualizationPlanWithContractRepair(
           repairAttempts: attempt,
           repairedUnitIds: applied.appliedUnitIds,
           repairSource: "model",
+          repairAudit: {
+            attempts: repairAttempts,
+            acceptedResponse: exactResponse,
+          },
         };
       } catch (error) {
-        state = selectedContractState({
+        const candidateState = selectedContractState({
           gardenId: input.gardenId,
           learningMap: input.learningMap,
-          learningUnits,
+          learningUnits: applied.units,
+          canonicalEvidenceByUnit: input.canonicalEvidenceByUnit,
         });
-        if (state.problems.length === 0) throw error;
-        rejectionReasons = state.problems;
+        if (candidateState.problems.length === 0) throw error;
+        rejectionReasons = candidateState.problems;
+        repairAttempts.push({
+          attempt,
+          accepted: false,
+          ...auditResponse(exactResponse),
+          rejectionReasons: [...rejectionReasons],
+          appliedUnitIds: [...applied.appliedUnitIds],
+        });
       }
     }
     input.onEvent?.("visual_opportunity_contract_repair_exhausted", {
@@ -377,7 +444,7 @@ export async function buildVisualizationPlanWithContractRepair(
     });
     const initialMessage = initialError instanceof Error ? initialError.message : String(initialError);
     throw new Error(
-      `${initialMessage}. Automatic required-visual contract repair exhausted ${maxAttempts} bounded attempt(s): ${rejectionReasons.join("; ") || "no valid grounded repair was returned"}`,
+      `${initialMessage}. Automatic model-approved visualization contract repair exhausted ${maxAttempts} bounded attempt(s): ${rejectionReasons.join("; ") || "no valid grounded repair was returned"}`,
     );
   }
 }

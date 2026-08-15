@@ -29,6 +29,7 @@ import {
 } from "./section-title.ts";
 import { semanticTagsFromText } from "./tags.ts";
 import {
+  SUPPORTED_RELATION_PREDICATES,
   alignSemanticConceptAliasesWithRegistry,
   isGenericFillerClaim,
   isValidPublicConceptSlug,
@@ -47,6 +48,7 @@ import type {
   InteractiveVisualIntent,
   InteractiveVisualNecessity,
   InteractiveVisualOutputRepresentation,
+  InteractiveVisualPedagogyContract,
   PreferredTeachingMedium,
   TeachingMediumPlan,
   VisualNecessityDecision,
@@ -145,6 +147,8 @@ export interface LearningUnitContract {
   learningQuestion: string;
   prerequisiteConcepts: string[];
   newConcepts: string[];
+  /** Exact syllabus unit IDs selected by the planning model; empty without a syllabus. */
+  syllabusUnitIds?: string[];
 
   sourceAnchors: string[];
 
@@ -188,6 +192,55 @@ export interface SourceArtifactAssignment {
   reason: string;
   requiredInterpretation: string;
   forbiddenSections?: string[];
+}
+
+function sourceArtifactAssignmentRecordKey(assignment: SourceArtifactAssignment): string {
+  return JSON.stringify([
+    assignment.sourceArtifactId,
+    assignment.assignedLearningUnitId,
+    assignment.placement,
+    assignment.reason,
+    assignment.requiredInterpretation,
+    assignment.forbiddenSections ?? null,
+  ]);
+}
+
+/**
+ * Validation-only equality for an authored assignment projection. Registry
+ * reconciliation may enumerate the same records in a different order, but it
+ * must not add, remove, duplicate, or change any record. This helper never
+ * normalizes, deduplicates, or rewrites either projection.
+ */
+export function sameSourceArtifactAssignmentRecords(
+  left: readonly SourceArtifactAssignment[],
+  right: readonly SourceArtifactAssignment[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const remaining = new Map<string, number>();
+  for (const assignment of left) {
+    const key = sourceArtifactAssignmentRecordKey(assignment);
+    remaining.set(key, (remaining.get(key) ?? 0) + 1);
+  }
+  for (const assignment of right) {
+    const key = sourceArtifactAssignmentRecordKey(assignment);
+    const count = remaining.get(key) ?? 0;
+    if (count === 0) return false;
+    if (count === 1) remaining.delete(key);
+    else remaining.set(key, count - 1);
+  }
+  return remaining.size === 0;
+}
+
+/**
+ * A model-authored decision not to teach one registered source artifact.
+ *
+ * Omissions are garden-wide rather than attached to a learning unit: attaching
+ * an unused artifact to a unit would falsely imply pedagogical ownership. The
+ * active Learn path persists these records verbatim beside assignments.
+ */
+export interface SourceArtifactOmission {
+  sourceArtifactId: string;
+  reason: string;
 }
 
 /** The dedupe fingerprint for an interactive visual. */
@@ -1347,10 +1400,10 @@ function normalizeInteractiveVisualEvidence(raw: unknown): Array<{ anchor: strin
   return raw.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
-    const anchor = compact(record.anchor);
-    const quote = compact(record.quote);
+    const anchor = typeof record.anchor === "string" ? record.anchor : "";
+    const quote = typeof record.quote === "string" ? record.quote : "";
     return anchor && quote ? [{ anchor, quote }] : [];
-  }).slice(0, 6);
+  });
 }
 
 function normalizeInteractiveVisualControls(raw: unknown) {
@@ -1358,20 +1411,37 @@ function normalizeInteractiveVisualControls(raw: unknown) {
   return raw.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
-    const kind = compact(record.kind);
-    const label = compact(record.label);
-    if (!label || !["variable", "select_case", "process_position"].includes(kind)) return [];
-    const options = asStringArray(record.options).slice(0, 8);
+    const id = typeof record.id === "string" ? record.id : "";
+    const kind = typeof record.kind === "string" ? record.kind : "";
+    const label = typeof record.label === "string" ? record.label : "";
+    const type = typeof record.type === "string" ? record.type : "";
+    if (
+      !id ||
+      !label ||
+      !["variable", "select_case", "process_position"].includes(kind) ||
+      !["slider", "number", "select"].includes(type) ||
+      (typeof record.defaultValue !== "number" && typeof record.defaultValue !== "string")
+    ) return [];
+    const options = Array.isArray(record.options) && record.options.every((option) => typeof option === "string")
+      ? [...record.options] as string[]
+      : undefined;
     return [{
+      id,
       kind: kind as "variable" | "select_case" | "process_position",
       label,
-      ...(kind === "select_case" && options.length > 0 ? { options } : {}),
+      type: type as "slider" | "number" | "select",
+      ...(typeof record.unit === "string" ? { unit: record.unit } : {}),
+      ...(typeof record.min === "number" ? { min: record.min } : {}),
+      ...(typeof record.max === "number" ? { max: record.max } : {}),
+      ...(typeof record.step === "number" ? { step: record.step } : {}),
+      ...(options ? { options } : {}),
+      defaultValue: record.defaultValue,
       evidence: normalizeInteractiveVisualEvidence(record.evidence),
     }];
-  }).slice(0, 3);
+  });
 }
 
-function normalizeInteractiveVisual(raw: unknown): InteractiveVisualContract | undefined {
+function normalizeInteractiveVisual(raw: unknown, modelAuthoredOnly = false): InteractiveVisualContract | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const record = raw as Record<string, unknown>;
   const visualType = normalizeInteractiveVisualType(compact(record.visualType ?? record.type));
@@ -1395,7 +1465,7 @@ function normalizeInteractiveVisual(raw: unknown): InteractiveVisualContract | u
     duplicateSignature: declaredSignature,
     ...(compact(record.reuseOf) ? { reuseOf: compact(record.reuseOf) } : {}),
   };
-  if (!provisional.duplicateSignature) {
+  if (!modelAuthoredOnly && !provisional.duplicateSignature) {
     provisional.duplicateSignature = signatureKey(interactiveVisualSignature(provisional));
   }
   return provisional;
@@ -1439,14 +1509,71 @@ const OUTPUT_REPRESENTATIONS: readonly InteractiveVisualOutputRepresentation[] =
   "annotation",
 ];
 
-function normalizedScore(value: unknown): number {
+function normalizeInteractivePedagogyContract(
+  raw: unknown,
+): InteractiveVisualPedagogyContract | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const interactionGoal = compact(record.interactionGoal) as VisualizationInteractionGoal;
+  const uniqueConcept = compact(record.uniqueConcept);
+  const whyStaticSourceFigureIsNotEnough = compact(record.whyStaticSourceFigureIsNotEnough);
+  const learnerAction = compact(record.learnerAction);
+  const controls = normalizeInteractiveVisualControls(record.controls);
+  const observableRecord = record.observable && typeof record.observable === "object" && !Array.isArray(record.observable)
+    ? record.observable as Record<string, unknown>
+    : undefined;
+  const observableLabel = compact(observableRecord?.label);
+  const observableRepresentation = compact(
+    observableRecord?.representation,
+  ) as InteractiveVisualOutputRepresentation;
+  const observableEvidence = normalizeInteractiveVisualEvidence(observableRecord?.evidence);
+  const expectedInsight = compact(record.expectedInsight);
+  const expectedInsightEvidence = normalizeInteractiveVisualEvidence(record.expectedInsightEvidence);
+  const duplicateSignature = compact(record.duplicateSignature);
+  if (
+    !INTERACTION_GOALS.includes(interactionGoal) ||
+    !uniqueConcept ||
+    !whyStaticSourceFigureIsNotEnough ||
+    !learnerAction ||
+    controls.length === 0 ||
+    !observableLabel ||
+    !OUTPUT_REPRESENTATIONS.includes(observableRepresentation) ||
+    observableEvidence.length === 0 ||
+    !expectedInsight ||
+    expectedInsightEvidence.length === 0 ||
+    !duplicateSignature
+  ) return undefined;
+  return {
+    interactionGoal,
+    uniqueConcept,
+    whyStaticSourceFigureIsNotEnough,
+    learnerAction,
+    controls,
+    observable: {
+      label: observableLabel,
+      representation: observableRepresentation,
+      evidence: observableEvidence,
+    },
+    expectedInsight,
+    expectedInsightEvidence,
+    duplicateSignature,
+  };
+}
+
+function normalizedScore(value: unknown, modelAuthoredOnly = false): number {
   const numeric = Number(value);
+  if (modelAuthoredOnly) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+      ? value
+      : Number.NaN;
+  }
   return Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : 0;
 }
 
 function normalizeVisualNecessityDecision(
   raw: unknown,
   fallbackUnitId: string,
+  modelAuthoredOnly = false,
 ): VisualNecessityDecision | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const record = raw as Record<string, unknown>;
@@ -1459,24 +1586,26 @@ function normalizeVisualNecessityDecision(
     record.evidence && typeof record.evidence === "object"
       ? (record.evidence as Record<string, unknown>)
       : {};
+  const interaction = normalizeInteractivePedagogyContract(record.interaction);
   return {
-    unitId: compact(record.unitId) || fallbackUnitId,
-    pageId: compact(record.pageId) || fallbackUnitId,
+    unitId: compact(record.unitId) || (modelAuthoredOnly ? "" : fallbackUnitId),
+    pageId: compact(record.pageId) || (modelAuthoredOnly ? "" : fallbackUnitId),
     necessity,
     preferredMedium,
     learningGoal: compact(record.learningGoal),
-    manipulationValue: normalizedScore(record.manipulationValue),
-    dynamicBehaviorValue: normalizedScore(record.dynamicBehaviorValue),
-    comparisonValue: normalizedScore(record.comparisonValue),
-    spatialValue: normalizedScore(record.spatialValue),
-    parameterSensitivityValue: normalizedScore(record.parameterSensitivityValue),
-    sourceFigureSufficiency: normalizedScore(record.sourceFigureSufficiency),
-    proseSufficiency: normalizedScore(record.proseSufficiency),
-    formulaSufficiency: normalizedScore(record.formulaSufficiency),
-    workedExampleSufficiency: normalizedScore(record.workedExampleSufficiency),
-    cognitiveLoadRisk: normalizedScore(record.cognitiveLoadRisk),
-    duplicationRisk: normalizedScore(record.duplicationRisk),
-    implementationRisk: normalizedScore(record.implementationRisk),
+    manipulationValue: normalizedScore(record.manipulationValue, modelAuthoredOnly),
+    dynamicBehaviorValue: normalizedScore(record.dynamicBehaviorValue, modelAuthoredOnly),
+    comparisonValue: normalizedScore(record.comparisonValue, modelAuthoredOnly),
+    spatialValue: normalizedScore(record.spatialValue, modelAuthoredOnly),
+    parameterSensitivityValue: normalizedScore(record.parameterSensitivityValue, modelAuthoredOnly),
+    sourceFigureSufficiency: normalizedScore(record.sourceFigureSufficiency, modelAuthoredOnly),
+    proseSufficiency: normalizedScore(record.proseSufficiency, modelAuthoredOnly),
+    formulaSufficiency: normalizedScore(record.formulaSufficiency, modelAuthoredOnly),
+    workedExampleSufficiency: normalizedScore(record.workedExampleSufficiency, modelAuthoredOnly),
+    cognitiveLoadRisk: normalizedScore(record.cognitiveLoadRisk, modelAuthoredOnly),
+    duplicationRisk: normalizedScore(record.duplicationRisk, modelAuthoredOnly),
+    implementationRisk: normalizedScore(record.implementationRisk, modelAuthoredOnly),
+    confidence: normalizedScore(record.confidence, modelAuthoredOnly),
     ...(compact(record.recommendedVisualType)
       ? { recommendedVisualType: compact(record.recommendedVisualType) }
       : {}),
@@ -1488,6 +1617,7 @@ function normalizeVisualNecessityDecision(
       nearbyVisualIntentIds: asStringArray(evidenceRecord.nearbyVisualIntentIds),
     },
     reason: compact(record.reason),
+    ...(interaction ? { interaction } : {}),
   };
 }
 
@@ -1495,17 +1625,20 @@ function normalizeContractInteractiveVisualPlan(
   raw: unknown,
   unitId: string,
   fallbackIntent?: InteractiveVisualContract,
+  modelAuthoredOnly = false,
 ): ContractInteractiveVisualPlan | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const record = raw as Record<string, unknown>;
-  const decision = normalizeVisualNecessityDecision(record.decision, unitId);
+  const decision = normalizeVisualNecessityDecision(record.decision, unitId, modelAuthoredOnly);
   const requirement = compact(record.requirement) as ContractInteractiveVisualPlan["requirement"];
   if (!decision || !["required", "recommended", "optional", "none"].includes(requirement)) {
     return undefined;
   }
-  const visualIntent = normalizeInteractiveVisual(record.visualIntent) ?? fallbackIntent;
+  const visualIntent = normalizeInteractiveVisual(record.visualIntent, modelAuthoredOnly) ??
+    (modelAuthoredOnly ? undefined : fallbackIntent);
   const controlContract = normalizeInteractiveVisualControls(record.controlContract);
   const interactionGoal = compact(record.interactionGoal) as VisualizationInteractionGoal;
+  const learnerAction = compact(record.learnerAction);
   const observableRecord =
     record.observable && typeof record.observable === "object"
       ? (record.observable as Record<string, unknown>)
@@ -1524,6 +1657,7 @@ function normalizeContractInteractiveVisualPlan(
     ...(requirement !== "none" && INTERACTION_GOALS.includes(interactionGoal)
       ? { interactionGoal }
       : {}),
+    ...(requirement !== "none" && learnerAction ? { learnerAction } : {}),
     ...(requirement !== "none" &&
     observableLabel &&
     OUTPUT_REPRESENTATIONS.includes(observableRepresentation) &&
@@ -1553,13 +1687,14 @@ function normalizeContractInteractiveVisualPlan(
 function normalizeTeachingMediumPlan(
   raw: unknown,
   unitId: string,
+  modelAuthoredOnly = false,
 ): TeachingMediumPlan | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const record = raw as Record<string, unknown>;
   const preferredMedium = compact(record.preferredMedium) as PreferredTeachingMedium;
   if (!TEACHING_MEDIA.includes(preferredMedium)) return undefined;
   return {
-    unitId: compact(record.unitId) || unitId,
+    unitId: compact(record.unitId) || (modelAuthoredOnly ? "" : unitId),
     preferredMedium,
     ...(compact(record.sourceFigureAnchorId)
       ? { sourceFigureAnchorId: compact(record.sourceFigureAnchorId) }
@@ -1642,6 +1777,276 @@ export interface NormalizeLearningUnitOptions {
   modelAuthoredOnly?: boolean;
 }
 
+/**
+ * Validate the model's canonical Learning Unit JSON before normalization.
+ * Normalization is a projection convenience, never a semantic repair step in
+ * active Learn. Every malformed or aliased field is reported so the authoring
+ * model must return a complete replacement contract.
+ */
+export function modelAuthoredLearningUnitParseProblems(raw: unknown): string[] {
+  const root = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : undefined;
+  const list = Array.isArray(raw) ? raw : root?.learningUnits;
+  if (!Array.isArray(list)) return ["response.learningUnits must be an array"];
+
+  const problems: string[] = [];
+  const seenIds = new Set<string>();
+  const requireString = (record: Record<string, unknown>, key: string, at: string) => {
+    if (typeof record[key] !== "string" || !String(record[key]).trim()) {
+      problems.push(`${at}.${key} must be a non-empty string`);
+    }
+  };
+  const requireStringArray = (record: Record<string, unknown>, key: string, at: string) => {
+    const value = record[key];
+    if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim())) {
+      problems.push(`${at}.${key} must be an array of non-empty strings`);
+    }
+  };
+  const requireObjectArray = (
+    record: Record<string, unknown>,
+    key: string,
+    at: string,
+    validate: (item: Record<string, unknown>, itemAt: string) => void,
+  ) => {
+    const value = record[key];
+    if (!Array.isArray(value)) {
+      problems.push(`${at}.${key} must be an array`);
+      return;
+    }
+    value.forEach((item, index) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        problems.push(`${at}.${key}[${index}] must be an object`);
+        return;
+      }
+      validate(item as Record<string, unknown>, `${at}.${key}[${index}]`);
+    });
+  };
+
+  list.forEach((item, index) => {
+    const at = `learningUnits[${index}]`;
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      problems.push(`${at} must be an object`);
+      return;
+    }
+    const unit = item as Record<string, unknown>;
+    requireString(unit, "id", at);
+    const id = typeof unit.id === "string" ? unit.id : "";
+    if (id && (!/^[A-Za-z0-9_.-]+$/.test(id) || id.trim() !== id)) {
+      problems.push(`${at}.id must already be a canonical identifier`);
+    }
+    if (id && seenIds.has(id)) problems.push(`${at}.id duplicates model-authored unit id "${id}"`);
+    if (id) seenIds.add(id);
+    requireString(unit, "title", at);
+    if (!(LEARNING_UNIT_ROLES as readonly unknown[]).includes(unit.role)) {
+      problems.push(`${at}.role must be one of ${LEARNING_UNIT_ROLES.join(", ")}`);
+    }
+    requireString(unit, "learningQuestion", at);
+    for (const key of ["prerequisiteConcepts", "newConcepts", "sourceAnchors", "mustNotRepeat"] as const) {
+      requireStringArray(unit, key, at);
+    }
+    if (unit.syllabusUnitIds !== undefined) requireStringArray(unit, "syllabusUnitIds", at);
+    if (Array.isArray(unit.sourceAnchors) && unit.sourceAnchors.length === 0) {
+      problems.push(`${at}.sourceAnchors must select at least one canonical exact-text source anchor`);
+    }
+    const wordRange = unit.expectedWordRange;
+    if (
+      !Array.isArray(wordRange) || wordRange.length !== 2 ||
+      !wordRange.every((value) => typeof value === "number" && Number.isInteger(value)) ||
+      Number(wordRange[0]) <= 0 || Number(wordRange[1]) < Number(wordRange[0])
+    ) {
+      problems.push(`${at}.expectedWordRange must be exactly [positiveMin, max>=min]`);
+    }
+
+    const section = unit.sectionPlan;
+    if (!section || typeof section !== "object" || Array.isArray(section)) {
+      problems.push(`${at}.sectionPlan must be an object authored with the learning spine`);
+    } else {
+      const sectionRecord = section as Record<string, unknown>;
+      for (const key of ["id", "title", "purpose"] as const) requireString(sectionRecord, key, `${at}.sectionPlan`);
+      if (
+        sectionRecord.singleSubsectionReason !== undefined &&
+        (typeof sectionRecord.singleSubsectionReason !== "string" || !sectionRecord.singleSubsectionReason.trim())
+      ) {
+        problems.push(`${at}.sectionPlan.singleSubsectionReason must be a non-empty string when present`);
+      }
+    }
+
+    requireObjectArray(unit, "sourceFigures", at, (figure, figureAt) => {
+      requireString(figure, "id", figureAt);
+      if (!(FIGURE_PLACEMENTS as readonly unknown[]).includes(figure.placement)) {
+        problems.push(`${figureAt}.placement must be an exact source-figure placement enum`);
+      }
+      requireString(figure, "mustBeDiscussedWith", figureAt);
+      requireString(figure, "interpretationGoal", figureAt);
+      if (figure.placement === "not_used_with_reason") requireString(figure, "notUsedReason", figureAt);
+    });
+    requireObjectArray(unit, "sourceFormulas", at, (formula, formulaAt) => {
+      requireString(formula, "id", formulaAt);
+      requireString(formula, "teachingGoal", formulaAt);
+      requireStringArray(formula, "termsToDefine", formulaAt);
+      if (!["before_example", "inside_metric_definition", "inside_result_interpretation"].includes(String(formula.placement))) {
+        problems.push(`${formulaAt}.placement must be an exact source-formula placement enum`);
+      }
+    });
+    requireObjectArray(unit, "sourceTables", at, (table, tableAt) => {
+      requireString(table, "id", tableAt);
+      requireString(table, "teachingGoal", tableAt);
+      requireStringArray(table, "rowsOrColumnsToExplain", tableAt);
+      if (!["inside_comparison", "inside_result_interpretation"].includes(String(table.placement))) {
+        problems.push(`${tableAt}.placement must be an exact source-table placement enum`);
+      }
+    });
+    requireObjectArray(unit, "zettelNotes", at, (note, noteAt) => {
+      requireString(note, "handle", noteAt);
+      if (typeof note.handle === "string" && atomicZettelHandle(note.handle) !== note.handle) {
+        problems.push(`${noteAt}.handle must already be a canonical atomic handle`);
+      }
+      requireString(note, "claim", noteAt);
+      requireStringArray(note, "connectedTo", noteAt);
+    });
+    requireObjectArray(unit, "semanticConcepts", at, (concept, conceptAt) => {
+      requireString(concept, "slug", conceptAt);
+      if (
+        typeof concept.slug === "string" &&
+        (normalizeConceptSlug(concept.slug) !== concept.slug || !isValidPublicConceptSlug(concept.slug))
+      ) {
+        problems.push(`${conceptAt}.slug must already be a canonical public concept slug`);
+      }
+      requireString(concept, "preferredLabel", conceptAt);
+      if (concept.role !== "primary" && concept.role !== "supporting") {
+        problems.push(`${conceptAt}.role must be "primary" or "supporting"`);
+      }
+      requireStringArray(concept, "aliases", conceptAt);
+      requireStringArray(concept, "evidenceAnchors", conceptAt);
+    });
+    requireObjectArray(unit, "knowledgeClaims", at, (claim, claimAt) => {
+      requireString(claim, "text", claimAt);
+      if (typeof claim.text === "string" && isGenericFillerClaim(claim.text)) {
+        problems.push(`${claimAt}.text must be a concrete model-authored claim, not generic filler`);
+      }
+      requireString(claim, "subject", claimAt);
+      if (
+        typeof claim.subject === "string" &&
+        (normalizeConceptSlug(claim.subject) !== claim.subject || !isValidPublicConceptSlug(claim.subject))
+      ) {
+        problems.push(`${claimAt}.subject must already be a canonical public concept slug`);
+      }
+      if (!(SUPPORTED_RELATION_PREDICATES as readonly unknown[]).includes(claim.predicate)) {
+        problems.push(`${claimAt}.predicate must be a supported relation predicate`);
+      }
+      if (claim.object !== undefined && (typeof claim.object !== "string" || !claim.object.trim())) {
+        problems.push(`${claimAt}.object must be a non-empty string when present`);
+      } else if (
+        typeof claim.object === "string" &&
+        (normalizeConceptSlug(claim.object) !== claim.object || !isValidPublicConceptSlug(claim.object))
+      ) {
+        problems.push(`${claimAt}.object must already be a canonical public concept slug`);
+      }
+      requireStringArray(claim, "evidenceAnchors", claimAt);
+      for (const key of ["conceptIds", "derivationAnchors", "connectedClaimIds"] as const) {
+        if (claim[key] !== undefined) requireStringArray(claim, key, claimAt);
+      }
+      if (
+        Array.isArray(claim.conceptIds) &&
+        claim.conceptIds.some((value) =>
+          typeof value !== "string" || normalizeConceptSlug(value) !== value || !isValidPublicConceptSlug(value))
+      ) {
+        problems.push(`${claimAt}.conceptIds must contain only canonical public concept slugs`);
+      }
+    });
+
+    const authoredConceptSlugs = new Set(
+      Array.isArray(unit.semanticConcepts)
+        ? unit.semanticConcepts.flatMap((concept) => {
+            const record = concept && typeof concept === "object" && !Array.isArray(concept)
+              ? concept as Record<string, unknown>
+              : undefined;
+            return typeof record?.slug === "string" ? [record.slug] : [];
+          })
+        : [],
+    );
+    if (Array.isArray(unit.knowledgeClaims)) {
+      unit.knowledgeClaims.forEach((claim, claimIndex) => {
+        if (!claim || typeof claim !== "object" || Array.isArray(claim)) return;
+        const record = claim as Record<string, unknown>;
+        for (const [field, endpoint] of [["subject", record.subject], ["object", record.object]] as const) {
+          if (typeof endpoint === "string" && endpoint && !authoredConceptSlugs.has(endpoint)) {
+            problems.push(`${at}.knowledgeClaims[${claimIndex}].${field} must reference semanticConcepts from the same unit`);
+          }
+        }
+      });
+    }
+  });
+  return [...new Set(problems)];
+}
+
+/** Validate the garden-wide omission records in a model-authored spine. */
+export function modelAuthoredSourceArtifactOmissionParseProblems(raw: unknown): string[] {
+  const root = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : undefined;
+  if (!root || !Array.isArray(root.sourceArtifactOmissions)) {
+    return ["response.sourceArtifactOmissions must be an array"];
+  }
+  const problems: string[] = [];
+  const seenIds = new Set<string>();
+  root.sourceArtifactOmissions.forEach((item, index) => {
+    const at = `sourceArtifactOmissions[${index}]`;
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      problems.push(`${at} must be an object`);
+      return;
+    }
+    const record = item as Record<string, unknown>;
+    const extraKeys = Object.keys(record).filter(
+      (key) => key !== "sourceArtifactId" && key !== "reason",
+    );
+    if (extraKeys.length > 0) {
+      problems.push(`${at} contains unsupported fields: ${extraKeys.join(", ")}`);
+    }
+    const sourceArtifactId = record.sourceArtifactId;
+    const reason = record.reason;
+    if (
+      typeof sourceArtifactId !== "string" ||
+      !sourceArtifactId.trim() ||
+      sourceArtifactId !== sourceArtifactId.trim()
+    ) {
+      problems.push(`${at}.sourceArtifactId must be a non-empty exact registered artifact id`);
+    } else if (seenIds.has(sourceArtifactId)) {
+      problems.push(`${at}.sourceArtifactId duplicates omission for "${sourceArtifactId}"`);
+    } else {
+      seenIds.add(sourceArtifactId);
+    }
+    if (typeof reason !== "string" || !reason.trim() || reason !== reason.trim()) {
+      problems.push(`${at}.reason must be non-empty model-authored prose without surrounding whitespace`);
+    }
+  });
+  return [...new Set(problems)];
+}
+
+/**
+ * Exact projection of omission records after
+ * `modelAuthoredSourceArtifactOmissionParseProblems` succeeds. This does not
+ * invent, trim, deduplicate, rank, or otherwise repair the model's decisions.
+ */
+export function projectModelAuthoredSourceArtifactOmissions(
+  raw: unknown,
+): SourceArtifactOmission[] {
+  const root = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const list = Array.isArray(root.sourceArtifactOmissions)
+    ? root.sourceArtifactOmissions
+    : [];
+  return list.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    return typeof record.sourceArtifactId === "string" && typeof record.reason === "string"
+      ? [{ sourceArtifactId: record.sourceArtifactId, reason: record.reason }]
+      : [];
+  });
+}
+
 export function normalizeLearningUnits(
   raw: unknown,
   options: NormalizeLearningUnitOptions = {},
@@ -1663,20 +2068,23 @@ export function normalizeLearningUnits(
     const title =
       compact(record.title ?? record.name) ||
       (options.modelAuthoredOnly ? "" : `Learning unit ${index + 1}`);
-    let id = compact(record.id) || `U${index + 1}`;
-    id = id.replace(/[^A-Za-z0-9_.-]/g, "-");
-    while (usedIds.has(id)) id = `${id}x`;
+    let id = options.modelAuthoredOnly ? compact(record.id) : compact(record.id) || `U${index + 1}`;
+    if (!options.modelAuthoredOnly) {
+      id = id.replace(/[^A-Za-z0-9_.-]/g, "-");
+      while (usedIds.has(id)) id = `${id}x`;
+    }
     usedIds.add(id);
-    const interactiveVisual = normalizeInteractiveVisual(record.interactiveVisual);
+    const interactiveVisual = normalizeInteractiveVisual(record.interactiveVisual, options.modelAuthoredOnly === true);
     const unit: LearningUnitContract = {
       id,
       title,
       role: options.modelAuthoredOnly
-        ? (compact(record.role).toLowerCase().replace(/[\s-]+/g, "_") as LearningUnitRole)
+        ? (compact(record.role) as LearningUnitRole)
         : asRole(record.role),
       learningQuestion: compact(record.learningQuestion ?? record.question),
       prerequisiteConcepts: asStringArray(record.prerequisiteConcepts ?? record.prerequisites),
       newConcepts: asStringArray(record.newConcepts ?? record.concepts),
+      syllabusUnitIds: asStringArray(record.syllabusUnitIds),
       sourceAnchors: asStringArray(record.sourceAnchors ?? record.anchors),
       sourceFigures: asArray(record.sourceFigures).map(normalizeFigure).filter(Boolean) as SourceFigureContract[],
       sourceFormulas: asArray(record.sourceFormulas).map(normalizeFormula).filter(Boolean) as SourceFormulaContract[],
@@ -1686,8 +2094,9 @@ export function normalizeLearningUnits(
         record.interactiveVisualPlan,
         id,
         interactiveVisual,
+        options.modelAuthoredOnly === true,
       ),
-      teachingMediumPlan: normalizeTeachingMediumPlan(record.teachingMediumPlan, id),
+      teachingMediumPlan: normalizeTeachingMediumPlan(record.teachingMediumPlan, id, options.modelAuthoredOnly === true),
       zettelNotes: asArray(record.zettelNotes).map(normalizeZettelNote).filter(Boolean) as ZettelNote[],
       semanticConcepts: asArray(record.semanticConcepts)
         .map(normalizedConceptPlan)
@@ -1867,6 +2276,173 @@ export function assignSourceArtifacts(units: LearningUnitContract[]): SourceArti
     }
   }
   return dedupeSourceArtifactAssignments(assignments, units);
+}
+
+/** Reject ambiguous artifact ownership; active Learn never scores competing owners. */
+export function sourceArtifactOwnershipProblems(units: readonly LearningUnitContract[]): string[] {
+  const owners = new Map<string, string[]>();
+  const register = (artifactId: string, unitId: string) => {
+    if (!artifactId) return;
+    const current = owners.get(artifactId) ?? [];
+    current.push(unitId);
+    owners.set(artifactId, current);
+  };
+  for (const unit of units) {
+    for (const figure of unit.sourceFigures) {
+      if (figure.placement !== "not_used_with_reason") register(figure.id, unit.id);
+    }
+    for (const formula of unit.sourceFormulas) register(formula.id, unit.id);
+    for (const table of unit.sourceTables) register(table.id, unit.id);
+  }
+  return [...owners.entries()].flatMap(([artifactId, unitIds]) => {
+    const uniqueOwners = [...new Set(unitIds)];
+    return uniqueOwners.length === 1 && unitIds.length === 1
+      ? []
+      : [`source artifact "${artifactId}" must have exactly one model-authored owner; found ${unitIds.join(", ")}`];
+  });
+}
+
+/**
+ * Prove that the model partitioned the complete registered artifact catalog.
+ * Every artifact must occur exactly once: either in the correctly typed field
+ * of exactly one learning unit, or in the garden-wide omission list. This gate
+ * checks identity and cardinality only; it never decides whether an artifact
+ * ought to be taught or supplies an omission reason.
+ */
+export function sourceArtifactCoverageProblems(
+  units: readonly LearningUnitContract[],
+  omissions: readonly SourceArtifactOmission[],
+  registeredArtifacts: Iterable<RegisteredSourceArtifact>,
+): string[] {
+  const registered = new Map<string, RegisteredSourceArtifactKind>();
+  const problems: string[] = [];
+  for (const artifact of registeredArtifacts) {
+    if (!artifact.id) continue;
+    const prior = registered.get(artifact.id);
+    if (prior && prior !== artifact.kind) {
+      problems.push(
+        `registered source artifact "${artifact.id}" has conflicting kinds ${prior} and ${artifact.kind}`,
+      );
+    } else {
+      registered.set(artifact.id, artifact.kind);
+    }
+  }
+
+  type Appearance = { mode: "assigned" | "omitted"; location: string };
+  const appearances = new Map<string, Appearance[]>();
+  const registerAppearance = (
+    id: string,
+    expectedKinds: readonly RegisteredSourceArtifactKind[],
+    appearance: Appearance,
+  ) => {
+    if (!id) return;
+    const actualKind = registered.get(id);
+    if (!actualKind) {
+      problems.push(`${appearance.location} references unregistered source artifact "${id}"`);
+    } else if (!expectedKinds.includes(actualKind)) {
+      problems.push(
+        `${appearance.location} places ${actualKind} artifact "${id}" in the wrong contract field`,
+      );
+    }
+    const current = appearances.get(id) ?? [];
+    current.push(appearance);
+    appearances.set(id, current);
+  };
+
+  for (const unit of units) {
+    for (const figure of unit.sourceFigures) {
+      if (figure.placement === "not_used_with_reason") {
+        problems.push(
+          `unit "${unit.id}" uses legacy inline omission for "${figure.id}"; move it to response.sourceArtifactOmissions with the exact model-authored reason`,
+        );
+        continue;
+      }
+      registerAppearance(figure.id, ["figure", "graph"], {
+        mode: "assigned",
+        location: `unit "${unit.id}" sourceFigures`,
+      });
+    }
+    for (const formula of unit.sourceFormulas) {
+      registerAppearance(formula.id, ["formula"], {
+        mode: "assigned",
+        location: `unit "${unit.id}" sourceFormulas`,
+      });
+    }
+    for (const table of unit.sourceTables) {
+      registerAppearance(table.id, ["table"], {
+        mode: "assigned",
+        location: `unit "${unit.id}" sourceTables`,
+      });
+    }
+  }
+  omissions.forEach((omission, index) => {
+    if (!omission.reason.trim()) {
+      problems.push(`sourceArtifactOmissions[${index}].reason must be non-empty model-authored prose`);
+    }
+    registerAppearance(
+      omission.sourceArtifactId,
+      ["figure", "graph", "table", "formula"],
+      { mode: "omitted", location: `sourceArtifactOmissions[${index}]` },
+    );
+  });
+
+  for (const id of registered.keys()) {
+    const entries = appearances.get(id) ?? [];
+    if (entries.length === 0) {
+      problems.push(
+        `registered source artifact "${id}" is forgotten; assign it to exactly one learning unit or explicitly omit it with a model-authored reason`,
+      );
+    } else if (entries.length > 1) {
+      problems.push(
+        `registered source artifact "${id}" must be assigned or omitted exactly once; found ${entries.map((entry) => `${entry.mode} at ${entry.location}`).join(", ")}`,
+      );
+    }
+  }
+  return [...new Set(problems)];
+}
+
+/**
+ * Mechanically project authored placements and goals into the durable ledger.
+ * Callers must run sourceArtifactOwnershipProblems first. This function never
+ * ranks owners, invents prose, or silently drops a competing assignment.
+ */
+export function projectModelAuthoredSourceArtifactAssignments(
+  units: readonly LearningUnitContract[],
+): SourceArtifactAssignment[] {
+  const assignments: SourceArtifactAssignment[] = [];
+  for (const unit of units) {
+    for (const figure of unit.sourceFigures) {
+      if (figure.placement === "not_used_with_reason") continue;
+      assignments.push({
+        sourceArtifactId: figure.id,
+        assignedLearningUnitId: unit.id,
+        placement: figure.placement,
+        reason: figure.mustBeDiscussedWith,
+        requiredInterpretation: figure.interpretationGoal,
+      });
+    }
+    for (const formula of unit.sourceFormulas) {
+      assignments.push({
+        sourceArtifactId: formula.id,
+        assignedLearningUnitId: unit.id,
+        placement: formula.placement === "inside_result_interpretation"
+          ? "inside_result_interpretation"
+          : "after_formula_introduction",
+        reason: formula.teachingGoal,
+        requiredInterpretation: formula.termsToDefine.join(", "),
+      });
+    }
+    for (const table of unit.sourceTables) {
+      assignments.push({
+        sourceArtifactId: table.id,
+        assignedLearningUnitId: unit.id,
+        placement: table.placement,
+        reason: table.teachingGoal,
+        requiredInterpretation: table.rowsOrColumnsToExplain.join(", "),
+      });
+    }
+  }
+  return assignments;
 }
 
 // ---------------------------------------------------------------------------
@@ -2077,29 +2653,30 @@ function subsectionFromUnit(unit: LearningUnitContract): LearningSubsectionPlan 
     : [];
   return {
     title: unit.title,
-    purpose: unit.learningQuestion || `Teach ${unit.title} directly.`,
+    purpose: unit.learningQuestion,
     sourceAnchors: unit.sourceAnchors,
     visualOpportunities: unit.interactiveVisual ? [unit.interactiveVisual.uniqueConcept] : [],
-    conceptTags: conceptTagsForUnit(unit),
-    sourceVisualIds: [...new Set(sourceVisualIds)],
+    conceptTags: (unit.semanticConcepts ?? []).map((concept) => concept.slug),
+    sourceVisualIds,
     interactiveVisuals,
     learningUnitId: unit.id,
     learningUnitRole: unit.role,
     learningQuestion: unit.learningQuestion,
     prerequisiteConcepts: unit.prerequisiteConcepts,
     newConcepts: unit.newConcepts,
+    syllabusUnitIds: unit.syllabusUnitIds ?? [],
     mustNotRepeat: unit.mustNotRepeat,
     expectedWordRange: unit.expectedWordRange,
     sourceFigureContracts: unit.sourceFigures,
     sourceFormulaContracts: unit.sourceFormulas,
     sourceTableContracts: unit.sourceTables,
-    sourceArtifactAssignments: assignSourceArtifacts([unit]),
+    sourceArtifactAssignments: projectModelAuthoredSourceArtifactAssignments([unit]),
     interactiveVisualContract: unit.interactiveVisual,
     interactiveVisualPlan: unit.interactiveVisualPlan,
     teachingMediumPlan: unit.teachingMediumPlan,
     zettelNotes: unit.zettelNotes,
-    semanticConcepts: semanticConceptsForUnit(unit),
-    knowledgeClaims: knowledgeClaimsForUnit(unit),
+    semanticConcepts: unit.semanticConcepts ?? [],
+    knowledgeClaims: unit.knowledgeClaims ?? [],
   };
 }
 
@@ -2407,6 +2984,17 @@ export function validateLearningUnitContracts(
   const artifactCount = options.artifactCount ?? 0;
   const minUnits = options.minUnitsForRichSource ?? 12;
 
+  const unitIds = new Set<string>();
+  for (const unit of units) {
+    if (!unit.id || !/^[A-Za-z0-9_.-]+$/.test(unit.id)) {
+      problems.push("learning unit is missing a canonical model-authored id");
+    } else if (unitIds.has(unit.id)) {
+      problems.push(`duplicate model-authored learning unit id "${unit.id}"`);
+    } else {
+      unitIds.add(unit.id);
+    }
+  }
+
   // Unit count for artifact-rich sources.
   if (units.length < minUnits && artifactCount >= minUnits) {
     problems.push(
@@ -2480,7 +3068,9 @@ export function validateLearningUnitContracts(
         problems.push(`unit "${unit.id}": invalid or claim-shaped public concept "${concept.slug}"`);
       }
     }
-    const concepts = semanticConceptsForUnit(unit);
+    const concepts = options.requireModelAuthoredSemantics
+      ? (unit.semanticConcepts ?? [])
+      : semanticConceptsForUnit(unit);
     const primaryConcepts = concepts.filter((concept) => concept.role === "primary");
     if (primaryConcepts.length === 0) {
       problems.push(`unit "${unit.id}": no primary semantic concept`);
@@ -2494,7 +3084,10 @@ export function validateLearningUnitContracts(
         problems.push(`unit "${unit.id}": invalid or claim-shaped public concept "${concept.slug}"`);
       }
     }
-    for (const claim of knowledgeClaimsForUnit(unit)) {
+    const claims = options.requireModelAuthoredSemantics
+      ? (unit.knowledgeClaims ?? [])
+      : knowledgeClaimsForUnit(unit);
+    for (const claim of claims) {
       if (isGenericFillerClaim(claim.text)) {
         problems.push(`unit "${unit.id}": generic fallback claim "${claim.text}"`);
       }

@@ -19,8 +19,14 @@ function configured(value: string | undefined): string | null {
 }
 
 export function resolveResource2SkillRoot(env: NodeJS.ProcessEnv = process.env): string | null {
+  const explicit = configured(env.RESOURCE2SKILL_ROOT);
+  if (env.BREADBOARD_QA_MODE === "1") {
+    return explicit && fs.existsSync(path.join(explicit, "core", "agent_executor.py"))
+      ? explicit
+      : null;
+  }
   const candidates = [
-    configured(env.RESOURCE2SKILL_ROOT),
+    explicit,
     path.join(repositoryRoot(), "Resource2Skill"),
     path.resolve(process.cwd(), "Resource2Skill"),
     path.resolve(process.cwd(), "..", "Resource2Skill"),

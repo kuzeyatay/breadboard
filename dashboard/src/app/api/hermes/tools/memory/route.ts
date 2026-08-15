@@ -19,6 +19,10 @@ import {
   type DurableMemoryKind,
   type DurableMemoryScope,
 } from "@/lib/conversations/memory.ts";
+import {
+  conversationIsTemporary,
+  getConversationById,
+} from "@/lib/conversations/store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -86,9 +90,15 @@ export async function POST(request: Request) {
 
     // Check both the proposed fact and the user's actual instruction. A model
     // must not be able to erase an opt-out by paraphrasing the text it submits.
-    const exclusionReason =
-      durableMemoryExclusionReason(run.instruction) ??
-      durableMemoryExclusionReason(content);
+    // A temporary chat outranks both: it is a property of the conversation the
+    // tool was called from, so no wording of the call can get past it.
+    const temporaryChat = conversationIsTemporary(
+      getConversationById(session.conversation_id),
+    );
+    const exclusionReason = temporaryChat
+      ? "temporary_chat"
+      : durableMemoryExclusionReason(run.instruction) ??
+        durableMemoryExclusionReason(content);
     const saved = exclusionReason
       ? null
       : saveDurableMemory({
@@ -126,11 +136,13 @@ export async function POST(request: Request) {
         data: {
           saved: false,
           reason:
-            exclusionReason === "user_opt_out"
-              ? "Not saved: the user opted out of memory for this request."
-              : exclusionReason === "temporary_deliberation"
-                ? "Not saved: unresolved personal deliberations are excluded from durable memory."
-                : "Not saved: the text was empty or looked like a secret and was rejected.",
+            exclusionReason === "temporary_chat"
+              ? "Not saved: this is a temporary chat, and nothing said in one is ever kept as memory."
+              : exclusionReason === "user_opt_out"
+                ? "Not saved: the user opted out of memory for this request."
+                : exclusionReason === "temporary_deliberation"
+                  ? "Not saved: unresolved personal deliberations are excluded from durable memory."
+                  : "Not saved: the text was empty or looked like a secret and was rejected.",
         },
       });
     }

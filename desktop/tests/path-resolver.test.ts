@@ -24,12 +24,39 @@ test("dev mode resolves everything inside the repository", () => {
     moduleDir,
   });
   assert.equal(paths.mode, "dev");
+  assert.equal(paths.qaMode, false);
   assert.equal(paths.appRoot, fakeRepo);
   assert.equal(paths.databaseDir, path.join(fakeRepo, "dashboard", "db"));
   assert.equal(paths.quartzContent, path.join(fakeRepo, "quartz", "content"));
   assert.equal(paths.dashboardServerDir, path.join(fakeRepo, "dashboard"));
   assert.equal(paths.codexHome, path.join(fakeRepo, ".runtime", "codex-desktop"));
   assert.equal(paths.runtimesDir, "");
+});
+
+test("QA dev mode uses repo programs and isolates every mutable path", () => {
+  const userData = path.join(os.tmpdir(), "bb-qa-userdata");
+  const paths = resolvePaths({
+    isPackaged: false,
+    forceDev: true,
+    qaMode: true,
+    userDataDir: userData,
+    electronResourcesPath: undefined,
+    moduleDir,
+  });
+  assert.equal(paths.mode, "dev");
+  assert.equal(paths.qaMode, true);
+  assert.equal(paths.appRoot, fakeRepo);
+  assert.equal(
+    paths.dashboardServerDir,
+    path.join(userData, "Data", "dashboard-workspace"),
+  );
+  assert.equal(paths.hermesAppDir, path.join(fakeRepo, "hermes-agent"));
+  for (const dir of mutableDirectories(paths)) {
+    assert.ok(isInside(userData, dir), `${dir} must stay inside QA userData`);
+    assert.ok(!isInside(fakeRepo, dir), `${dir} must not mutate the checkout`);
+  }
+  assert.ok(isInside(userData, paths.quartzWorkspace));
+  assert.ok(isInside(userData, paths.databaseDir));
 });
 
 test("packaged mode separates resources from user data", () => {
@@ -43,6 +70,7 @@ test("packaged mode separates resources from user data", () => {
     moduleDir,
   });
   assert.equal(paths.mode, "packaged");
+  assert.equal(paths.qaMode, false);
   assert.equal(paths.appRoot, path.join(resources, "app-services"));
   assert.ok(isInside(userData, paths.databaseDir));
   assert.ok(isInside(userData, paths.quartzContent));

@@ -79,6 +79,28 @@ test("full mode uses an existing previous directory without moving runtime metad
   }
 });
 
+test("QA mode forces a full-mode terminal into its disposable runtime workspace", (t) => {
+  const previous = process.env.BREADBOARD_QA_MODE;
+  process.env.BREADBOARD_QA_MODE = "1";
+  t.after(() => {
+    if (previous === undefined) delete process.env.BREADBOARD_QA_MODE;
+    else process.env.BREADBOARD_QA_MODE = previous;
+  });
+  const previousDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "bb-qa-forbidden-cwd-"));
+  t.after(() => fs.rmSync(previousDirectory, { recursive: true, force: true }));
+
+  const resolved = resolveWorkspace(config, {
+    surface: "dashboard_terminal",
+    sessionKey: "qa-isolated",
+    filesystemMode: "full",
+    previousDirectory,
+  });
+
+  assert.equal(resolved.directory, resolved.runtimeDirectory);
+  assert.notEqual(resolved.directory, fs.realpathSync(previousDirectory));
+  assert.ok(resolved.directory.startsWith(path.resolve(config.root)));
+});
+
 test("directoryForWorkspaceKey rejects escaping keys", () => {
   assert.throws(() => directoryForWorkspaceKey(config, "../../../etc"));
 });

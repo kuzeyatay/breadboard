@@ -361,6 +361,34 @@ describe("tag projection", () => {
 });
 
 describe("concept registry rebuild", () => {
+  test("unregistered model concept references are reported, never synthesized", () => {
+    const registry = createEmptyConceptRegistry("g", "");
+    const projections = [{
+      unitId: "U1",
+      pagePath: "learning/a/b.md",
+      primaryConcepts: ["model-authored-but-unregistered"],
+      supportingConcepts: [],
+      tags: ["model-authored-but-unregistered"],
+      claimIds: [],
+      source: "contract",
+      problems: [],
+    }];
+
+    const result = rebuildActiveConceptRegistry(
+      [],
+      projections,
+      [],
+      registry,
+      new Set(),
+    );
+
+    assert.deepEqual(result.concepts, []);
+    assert.deepEqual(result.newConceptIds, []);
+    assert.deepEqual(result.unresolvedReferences, [
+      'concept "model-authored-but-unregistered" is not registered',
+    ]);
+  });
+
   test("a concept referenced only by an obsolete page is archived, not active", (t) => {
     const { root, dir } = buildDriftedGarden();
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));

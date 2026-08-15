@@ -1,0 +1,354 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Breadboard autonomous Electron QA finding",
+  "description": "Machine-readable template for a genuine scenario result. This schema is documentation, not evidence that a run occurred.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "scenario",
+    "status",
+    "classification",
+    "severity",
+    "expected",
+    "actual",
+    "environment",
+    "reproduction",
+    "evidence",
+    "diagnosis",
+    "repair",
+    "verification",
+    "stopReason",
+    "startedAt",
+    "completedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scenario": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "status": {
+      "enum": ["passed", "failed", "blocked", "flaky"]
+    },
+    "classification": {
+      "oneOf": [
+        {
+          "enum": [
+            "PRODUCT_BUG",
+            "TEST_ENVIRONMENT",
+            "EXTERNAL_DEPENDENCY",
+            "EXPECTED_BEHAVIOR",
+            "FLAKY",
+            "MISSING_FEATURE"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "severity": {
+      "oneOf": [
+        {
+          "enum": ["P0", "P1", "P2", "P3"]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expected": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actual": {
+      "type": "string",
+      "minLength": 1
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "runtimeVersions", "launchMode", "qaDataRoot", "repositoryRevision"],
+      "properties": {
+        "os": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runtimeVersions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "launchMode": {
+          "enum": ["development", "development-fast", "packaged"]
+        },
+        "qaDataRoot": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repositoryRevision": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "reproduction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exactTask", "attempts", "reproduced", "preconditionsReset"],
+      "properties": {
+        "exactTask": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "reproduced": {
+          "type": "boolean"
+        },
+        "preconditionsReset": {
+          "type": "boolean"
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace",
+        "screenshot",
+        "diagnostics",
+        "mainProcessErrors",
+        "rendererErrors",
+        "networkErrors",
+        "serviceLogs"
+      ],
+      "properties": {
+        "trace": {
+          "type": ["string", "null"]
+        },
+        "screenshot": {
+          "type": ["string", "null"]
+        },
+        "diagnostics": {
+          "type": ["string", "null"]
+        },
+        "mainProcessErrors": {
+          "$ref": "#/$defs/evidenceEntries"
+        },
+        "rendererErrors": {
+          "$ref": "#/$defs/evidenceEntries"
+        },
+        "networkErrors": {
+          "$ref": "#/$defs/evidenceEntries"
+        },
+        "serviceLogs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "diagnosis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["responsibleCodePath", "rootCause", "causalEvidence"],
+      "properties": {
+        "responsibleCodePath": {
+          "type": ["string", "null"]
+        },
+        "rootCause": {
+          "type": ["string", "null"]
+        },
+        "causalEvidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "repair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eligible",
+        "attempted",
+        "summary",
+        "changedFiles",
+        "regressionTest",
+        "rollback"
+      ],
+      "properties": {
+        "eligible": {
+          "type": "boolean"
+        },
+        "attempted": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": ["string", "null"]
+        },
+        "changedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "regressionTest": {
+          "type": ["string", "null"]
+        },
+        "rollback": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline", "relevantChecks", "replayed", "cleanShutdown", "reviewer"],
+      "properties": {
+        "baseline": {
+          "$ref": "#/$defs/checkResults"
+        },
+        "relevantChecks": {
+          "$ref": "#/$defs/checkResults"
+        },
+        "replayed": {
+          "type": "boolean"
+        },
+        "cleanShutdown": {
+          "type": "boolean"
+        },
+        "reviewer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "notes"],
+          "properties": {
+            "status": {
+              "enum": ["approved", "rejected", "not-required", "not-completed"]
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "stopReason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "evidenceEntries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["message"],
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "checkResults": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "status", "exitCode", "evidence"],
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": ["PASS", "FAIL", "SKIPPED", "ENVIRONMENT_BLOCKED"]
+          },
+          "exitCode": {
+            "type": ["integer", "null"]
+          },
+          "evidence": {
+            "type": ["string", "null"]
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "passed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "classification": {
+            "type": "null"
+          },
+          "severity": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": ["failed", "blocked", "flaky"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "classification": {
+            "enum": [
+              "PRODUCT_BUG",
+              "TEST_ENVIRONMENT",
+              "EXTERNAL_DEPENDENCY",
+              "EXPECTED_BEHAVIOR",
+              "FLAKY",
+              "MISSING_FEATURE"
+            ]
+          },
+          "severity": {
+            "enum": ["P0", "P1", "P2", "P3"]
+          }
+        }
+      }
+    }
+  ]
+}

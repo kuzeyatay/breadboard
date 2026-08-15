@@ -111,7 +111,9 @@ Submit schema version 2 with no assets and exactly three files:
 
 `index.html` is semantic markup with one `#app`, one visible `h1`, a primary
 `canvas` or inline `svg`, native labelled controls, and exactly
-`<script src="main.js"></script>`. Put no inline handlers or scripts in HTML.
+`<script src="main.js"></script>`. It may include exactly
+`<link rel="stylesheet" href="styles.css">`; publication inlines that local
+stylesheet and removes the link. Put no inline handlers or scripts in HTML.
 
 `styles.css` owns the prompt-specific layout. It must be responsive and may use
 the host tokens above. Flat fills only: the publication gate rejects shadows,

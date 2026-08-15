@@ -116,6 +116,13 @@ export async function health(): Promise<{
   return { mode: currentMode, runtimeState, health: serviceHealth };
 }
 
+/** The launching chat, when the caller sent one. Never required. */
+function conversationPublicIdFrom(body: unknown): string | null {
+  if (typeof body !== "object" || body === null) return null;
+  const value = (body as Record<string, unknown>).conversationPublicId;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function requireEnabled(): void {
   if (deepResearchMode() === "disabled") throw new DeepResearchError(409, "deep_research_disabled");
   if (!resolveDeepResearchConfig().secret) {
@@ -140,6 +147,9 @@ export async function startRun(userId: number, body: unknown): Promise<RunSummar
     userId,
     agentId: "deep_research",
     query: validated.value.query,
+    // Carried alongside the validated request rather than inside it: the run
+    // itself has no use for the chat id, only the memory gate does.
+    conversationPublicId: conversationPublicIdFrom(body),
   });
   try {
     return await client().createRun({

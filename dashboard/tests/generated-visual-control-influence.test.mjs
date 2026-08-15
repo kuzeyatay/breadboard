@@ -28,6 +28,9 @@ const requiredInputs = controls.map((control) => ({
   type: control.type,
   defaultValue: control.defaultValue,
   ...(control.options ? { options: control.options } : {}),
+  ...(control.min !== undefined ? { min: control.min } : {}),
+  ...(control.max !== undefined ? { max: control.max } : {}),
+  ...(control.step !== undefined ? { step: control.step } : {}),
 }));
 
 const opportunity = {
@@ -162,7 +165,10 @@ test("definition validation preserves required select option indices and default
       }
       : control);
   let validation = validateGeneratedVisualizationDefinition(reordered, opportunity);
-  assert.match(validation.errors.join("; "), /representation must preserve its declared option order/i);
+  assert.match(
+    validation.errors.join("; "),
+    /representation must preserve options \["time domain","frequency domain"\], not \["frequency domain","time domain"\]/i,
+  );
 
   const changedDefault = definitionWithExpressions();
   changedDefault.controls = changedDefault.controls.map((control) =>
@@ -170,7 +176,10 @@ test("definition validation preserves required select option indices and default
       ? { ...control, defaultValue: "time domain" }
       : control);
   validation = validateGeneratedVisualizationDefinition(changedDefault, opportunity);
-  assert.match(validation.errors.join("; "), /representation must use defaultValue "frequency domain"/i);
+  assert.match(
+    validation.errors.join("; "),
+    /representation must preserve defaultValue "frequency domain", not "time domain"/i,
+  );
 });
 
 test("definition validation requires every opportunity output ID", () => {

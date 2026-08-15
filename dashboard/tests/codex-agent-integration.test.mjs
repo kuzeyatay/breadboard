@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 const root = path.resolve(import.meta.dirname, "..");
 const source = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
 const identity = await import("../src/lib/codex/identity.ts");
+const runManager = await import("../src/lib/codex/run-manager.ts");
 const externalRuns = await import("../src/lib/conversations/external-agent-runs.ts");
 
 test("Codex has a canonical Agents command", () => {
@@ -61,6 +63,43 @@ test("Codex runs per task in the connected repository with ChatMock pinned", () 
   assert.match(route, /resolveChatmockBaseUrl\(request\)/);
 });
 
+test("Codex discovers the official VS Code extension binary outside PATH", () => {
+  const extensions = fs.mkdtempSync(
+    path.join(os.tmpdir(), "breadboard-codex-extension-"),
+  );
+  try {
+    const oldBinary = path.join(
+      extensions,
+      "openai.chatgpt-26.700.1-win32-x64",
+      "bin",
+      "windows-x86_64",
+      "codex.exe",
+    );
+    const newBinary = path.join(
+      extensions,
+      "openai.chatgpt-26.810.41047-win32-x64",
+      "bin",
+      "windows-x86_64",
+      "codex.exe",
+    );
+    for (const binary of [oldBinary, newBinary]) {
+      fs.mkdirSync(path.dirname(binary), { recursive: true });
+      fs.writeFileSync(binary, "fixture");
+    }
+
+    assert.deepEqual(
+      runManager.codexExtensionBinaryCandidates(
+        { VSCODE_EXTENSIONS: extensions, USERPROFILE: "", HOME: "" },
+        "win32",
+        "x64",
+      ),
+      [newBinary, oldBinary],
+    );
+  } finally {
+    fs.rmSync(extensions, { recursive: true, force: true });
+  }
+});
+
 test("ChatMock adapts subscription models to the Responses-only Codex CLI", () => {
   const routes = source("../chatmock/chatmock/routes_openai.py");
   const adapter = source("../chatmock/chatmock/external_responses.py");
@@ -105,7 +144,10 @@ test("Codex Garden turns are durable before the launch response and finish witho
   assert.match(route, /finishExternalAgentTurn\(\{/);
   assert.match(route, /turnPersisted: Boolean\(conversation\)/);
   assert.match(manager, /if \(run\.terminalResult\) handler\(run\.terminalResult\)/);
-  assert.match(codexHook, /conversationId = await session\.ensureConversation\(\)/);
+  assert.match(
+    codexHook,
+    /conversationId = await session\.ensureConversation\(clientMessageId\)/,
+  );
   assert.match(codexHook, /conversationId,[\s\S]*?clientMessageId,/);
   assert.match(workspace, /chatSessionId: prepared\.session\.id/);
   assert.match(workspace, /clientMessageId,/);

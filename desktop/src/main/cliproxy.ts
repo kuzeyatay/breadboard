@@ -53,7 +53,9 @@ export const CLIPROXY_DEFAULT_PORT = 8317;
 export function cliproxyHome(paths: ResolvedPaths): string {
   const configured = process.env["CLIPROXY_HOME"]?.trim();
   if (configured) return path.resolve(configured);
-  if (paths.mode === "packaged") return path.join(paths.dataRoot, "cliproxy");
+  if (paths.mode === "packaged" || paths.qaMode) {
+    return path.join(paths.dataRoot, "cliproxy");
+  }
   return path.join(os.homedir(), ".breadboard", "cliproxy");
 }
 

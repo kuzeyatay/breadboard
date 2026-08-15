@@ -7,6 +7,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -615,7 +616,21 @@ function RuntimeTerminal({
     [],
   );
 
-  const session = useAgentSession("dashboard_terminal", { title: "Assistant conversation" });
+  // Temporary chat. While this is on, every chat started here is off the
+  // record: kept out of history and search, given none of the memory the
+  // assistant has about the person, and unable to leave any behind. It is a
+  // property of the conversation, fixed when that conversation is created, so
+  // turning it on or off always means starting a different chat rather than
+  // changing the one on screen — the same bargain ChatGPT's toggle makes.
+  const [temporaryChat, setTemporaryChat] = useState(false);
+  // The chat to come back to when the reader leaves temporary mode, so the
+  // toggle behaves like a detour rather than a reset.
+  const chatBeforeTemporary = useRef<string | null>(null);
+  const sessionCreateOptions = useMemo(
+    () => ({ title: "Assistant conversation", temporary: temporaryChat }),
+    [temporaryChat],
+  );
+  const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
   const runWorkflowAutomation = useWorkflowAutomation(session);
   const deepResearch = useDeepResearchAgent(session, setAttachmentStatus);
   const { clear: clearDeepResearch } = deepResearch;
@@ -2285,10 +2300,15 @@ function RuntimeTerminal({
       clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
       let runStarted = false;
       try {
+        // The launching chat decides whether this run may be given memory, so
+        // the conversation is materialized before the run starts rather than
+        // when its turn is saved. The call is idempotent and the turn binds to
+        // the same conversation either way.
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/stock-analyst/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, model }),
+          body: JSON.stringify({ task, model, conversationPublicId }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
@@ -4083,11 +4103,18 @@ function RuntimeTerminal({
     const rufloTask = taskFromRufloCommand(text);
     if (rufloTask !== null) {
       if (ruflo.launching) return;
+      const pendingAttachments = chatAttachments;
       setInput("");
+      setChatAttachments([]);
       setAttachmentStatus("");
       void (async () => {
         const selected = ruflo.agent ?? (await selectRuflo());
-        if (selected && rufloTask) await launchRufloRun(rufloTask);
+        if (selected && (rufloTask || pendingAttachments.length)) {
+          await launchRufloRun(
+            rufloTask || "Review the attached screenshot and implement the requested fix.",
+            pendingAttachments,
+          );
+        }
       })();
       return;
     }
@@ -4352,10 +4379,15 @@ function RuntimeTerminal({
       return;
     }
     if (ruflo.agent) {
-      if (!text || ruflo.launching) return;
+      if ((!text && chatAttachments.length === 0) || ruflo.launching) return;
+      const pendingAttachments = chatAttachments;
       setInput("");
+      setChatAttachments([]);
       setAttachmentStatus("");
-      void launchRufloRun(text);
+      void launchRufloRun(
+        text || "Review the attached screenshot and implement the requested fix.",
+        pendingAttachments,
+      );
       return;
     }
     if (openCode.agent) {
@@ -5246,10 +5278,45 @@ function RuntimeTerminal({
     setFormsmithAgent(null);
     setStockAnalystAgent(null);
     setPaperTraderAgent(null);
+    // Only chats that are on the record can be reopened at all, so arriving at
+    // one always ends temporary mode.
+    setTemporaryChat(false);
+    chatBeforeTemporary.current = null;
     // The selected transcript loads independently from the lightweight rail.
     void session.openSession(sessionId);
     setChatAttachments([]);
     setAttachmentStatus("");
+  }
+
+  /**
+   * Turn temporary chat on or off. Either direction starts or restores a
+   * different conversation, because the promise is made when a chat is created
+   * and cannot be added to or taken from one that has already spoken.
+   */
+  function toggleTemporaryChat() {
+    if (temporaryChat) {
+      const previous = chatBeforeTemporary.current;
+      chatBeforeTemporary.current = null;
+      setTemporaryChat(false);
+      // Back to where the detour started, or to a blank ordinary chat if that
+      // one is gone (or if temporary mode was entered from a blank one).
+      if (previous) openHistorySession(previous);
+      else startNewChat();
+      return;
+    }
+    chatBeforeTemporary.current = session.sessionId;
+    setTemporaryChat(true);
+    startNewChat();
+  }
+
+  /**
+   * The rail's New chat. It always makes an ordinary, saved chat: asking for a
+   * new chat from inside a temporary one is how you leave.
+   */
+  function startNewSavedChat() {
+    chatBeforeTemporary.current = null;
+    setTemporaryChat(false);
+    startNewChat();
   }
 
   // Deleting a chat stops it: the route cancels the turn, the terminal command
@@ -5637,7 +5704,8 @@ function RuntimeTerminal({
               <GBrainStatusBadge />
             </div>
             {/* Artifacts, Uploads and Scheduled all live in the left rail now;
-                the header keeps only the rail toggle and the runtime state. */}
+                the header keeps only the rail toggle and the runtime state.
+                Temporary chat sits in the chat itself, below this bar. */}
           </>
         ) : null}
       </header>
@@ -5663,7 +5731,7 @@ function RuntimeTerminal({
               error={historyError}
               activeChatId={session.sessionId}
               openPanel={sidePanel}
-              onNewChat={startNewChat}
+              onNewChat={startNewSavedChat}
               onTogglePanel={togglePanel}
               onOpenSearch={() => setSearchOpen(true)}
               onOpenChat={(chat) => openHistorySession(chat.id)}
@@ -5689,7 +5757,7 @@ function RuntimeTerminal({
             />
           ) : null}
 
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className="relative flex min-w-0 flex-1 flex-col">
             <input
               ref={attachmentInputRef}
               type="file"
@@ -5698,6 +5766,76 @@ function RuntimeTerminal({
               onChange={handleAttachmentInput}
               className="hidden"
             />
+            {/* Temporary chat lives in the corner of the chat itself rather than
+                in the toolbar, because it is about this conversation and not
+                about the terminal. Floated, so an ordinary chat pays no vertical
+                space for a switch it is not using. */}
+            <button
+              type="button"
+              onClick={toggleTemporaryChat}
+              aria-pressed={temporaryChat}
+              className={`absolute right-3 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+                temporaryChat
+                  ? "text-[#2F5C41]"
+                  : "text-[#9AAAA1] hover:text-[#172A22]"
+              }`}
+              title={
+                temporaryChat
+                  ? "Temporary chat is on — click to leave it. This chat is not in your history and is not used or saved as memory."
+                  : "Temporary chat: start a chat that is kept out of your history and out of memory, both ways"
+              }
+              aria-label={
+                temporaryChat ? "Turn off temporary chat" : "Turn on temporary chat"
+              }
+            >
+              {/* A message bubble drawn as a broken line: the shape of a chat,
+                  without the part that lasts. */}
+              <svg
+                className="h-[18px] w-[18px]"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.8}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  strokeDasharray="3.6 3"
+                  d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
+                />
+              </svg>
+            </button>
+            {/* The mode is a promise about what happens to what you type, so it
+                says so in words rather than only through a lit-up icon. The
+                right padding is the seat the floating switch occupies. */}
+            {temporaryChat ? (
+              <div
+                role="status"
+                className="flex shrink-0 items-center gap-2 border-b border-[rgba(169,193,177,0.45)] bg-[rgba(169,193,177,0.14)] py-2 pl-4 pr-12 text-[11px] text-[#2F5C41]"
+              >
+                <svg
+                  className="h-3.5 w-3.5 shrink-0"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.8}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeDasharray="3.6 3"
+                    d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
+                  />
+                </svg>
+                <span>
+                  <strong className="font-semibold">Temporary chat.</strong> It stays out
+                  of your history and out of memory: nothing you have saved is used here,
+                  and nothing said here is kept or learned from.
+                </span>
+              </div>
+            ) : null}
             <AgentRuntimePanel
                 sessionId={session.sessionId}
                 surface="dashboard_terminal"

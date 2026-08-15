@@ -65,10 +65,14 @@ export async function POST(request: Request) {
       ? body.gardenSlug.trim()
       : undefined;
     const garden = gardenSlug ? authorizeGardenAccess(userId, gardenSlug) : null;
+    // Temporary is fixed at creation, like the surface: a chat that has already
+    // spoken can neither claim the promise retroactively nor lose it. The
+    // toggle in the UI therefore always starts a new conversation.
     const conversation = createConversation({
       userId,
       title,
       surface,
+      temporary: body.temporary === true,
       scopeKind: surface === "quartz_ai" && garden
         ? "page"
         : garden

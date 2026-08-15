@@ -4,6 +4,7 @@ import type {
   GardenVisualBudget,
   GardenZeroVisualSafeguard,
   InteractiveVisualOutputRepresentation,
+  InteractiveVisualPedagogyContract,
   InteractiveVisualNecessity,
   PreferredTeachingMedium,
   TeachingMediumPlan,
@@ -13,9 +14,8 @@ import type {
 } from "./visual-necessity-types.ts";
 import type { VisualizationInteractionGoal } from "./visualization-registry.ts";
 import {
-  normalizeVisualizationContractRepairResponse,
+  parseVisualizationContractRepairResponse,
   validateVisualizationContractUnitRepair,
-  visualizationContractEvidenceForUnit,
   type VisualizationContractControlRepair,
   type VisualizationContractEvidenceEntry,
   type VisualizationContractEvidenceRef,
@@ -35,6 +35,11 @@ export const MODEL_VISUAL_NECESSITY_CALL_BUDGET = Object.freeze({
   initialCalls: 1,
   maximumRepairCalls: 2,
   maximumTotalCalls: 3,
+});
+
+/** Unit-scoped repair is separate from the whole-batch semantic budget. */
+export const MODEL_VISUAL_NECESSITY_TARGETED_REPAIR_CALL_BUDGET = Object.freeze({
+  maximumRepairCalls: 2,
 });
 
 export type ModelVisualEvidenceItem = VisualizationContractEvidenceEntry;
@@ -74,17 +79,7 @@ export interface ModelLearnerObservableDraft {
   evidence: VisualizationContractEvidenceRef[];
 }
 
-export interface ModelInteractionContractDraft {
-  interactionGoal: VisualizationInteractionGoal;
-  uniqueConcept: string;
-  whyStaticSourceFigureIsNotEnough: string;
-  learnerAction: string;
-  controls: VisualizationContractControlRepair[];
-  observable: ModelLearnerObservableDraft;
-  expectedInsight: string;
-  expectedInsightEvidence: VisualizationContractEvidenceRef[];
-  duplicateSignature: string;
-}
+export type ModelInteractionContractDraft = InteractiveVisualPedagogyContract;
 
 export interface ModelAuthoredVisualNecessityDecision extends VisualNecessityDecision {
   confidence: number;
@@ -97,6 +92,7 @@ export interface ModelVisualNecessityBatchResponse {
   schemaVersion: typeof MODEL_VISUAL_NECESSITY_SCHEMA_VERSION;
   gardenId: string;
   gardenRationale: string;
+  visualBudget: GardenVisualBudget;
   decisions: ModelAuthoredVisualNecessityDecision[];
 }
 
@@ -146,7 +142,47 @@ export interface ModelVisualNecessityRunResult {
   plan: ValidatedModelVisualNecessityPlan;
   calls: number;
   repairCalls: number;
+  targetedRepairCalls: number;
 }
+
+export interface ModelVisualNecessityTargetedRepairUnit {
+  unit: ModelVisualNecessityUnitPacket;
+  invalidDecision: unknown;
+  problems: ModelVisualNecessityProblem[];
+}
+
+export interface ModelVisualNecessityTargetedRepairPacket {
+  schemaVersion: typeof MODEL_VISUAL_NECESSITY_SCHEMA_VERSION;
+  gardenId: string;
+  units: ModelVisualNecessityTargetedRepairUnit[];
+  wholeGardenConstraints: {
+    requestBudget: ModelVisualNecessityBudgetPolicy;
+    currentVisualBudget: unknown;
+    overrides: VisualDecisionOverride[];
+    reservedDuplicateSignatures: string[];
+    untouchedDecisionIndex: Array<{
+      unitId: string;
+      sectionId?: string;
+      necessity: string;
+      preferredMedium: string;
+      duplicateSignature?: string;
+    }>;
+  };
+  previousRejectionReasons: ModelVisualNecessityProblem[];
+}
+
+export interface ModelVisualNecessityTargetedRepairProviderRequest {
+  system: string;
+  user: string;
+  sourceContext: unknown;
+  attempt: number;
+  problems: ModelVisualNecessityProblem[];
+  unitIds: string[];
+}
+
+export type ModelVisualNecessityTargetedRepairProvider = (
+  request: ModelVisualNecessityTargetedRepairProviderRequest,
+) => Promise<unknown>;
 
 export class ModelVisualNecessityPlanningError extends Error {
   readonly calls: number;
@@ -233,10 +269,6 @@ function stringArray(value: unknown): string[] | null {
   return value.map((item) => compact(item)).filter(Boolean);
 }
 
-function evidenceForUnit(unit: LearningUnitContract): ModelVisualEvidenceItem[] {
-  return visualizationContractEvidenceForUnit(unit);
-}
-
 function validateBudgetPolicy(policy: ModelVisualNecessityBudgetPolicy): void {
   for (const [name, value] of Object.entries(policy)) {
     if (value === undefined) continue;
@@ -254,6 +286,7 @@ function validateBudgetPolicy(policy: ModelVisualNecessityBudgetPolicy): void {
 export function buildModelVisualNecessityPacket(input: {
   gardenId: string;
   learningUnits: LearningUnitContract[];
+  canonicalEvidenceByUnit: Record<string, ModelVisualEvidenceItem[]>;
   budget: ModelVisualNecessityBudgetPolicy;
   sectionByUnit?: Record<string, string>;
   overrides?: VisualDecisionOverride[];
@@ -289,10 +322,32 @@ export function buildModelVisualNecessityPacket(input: {
   ) {
     throw new Error("sectionByUnit is required when a per-section visual budget is configured.");
   }
-  return {
-    schemaVersion: MODEL_VISUAL_NECESSITY_SCHEMA_VERSION,
-    gardenId,
-    units: input.learningUnits.map((unit) => ({
+  const units = input.learningUnits.map((unit) => {
+    const sourceAnchorIds = unique([
+      ...unit.sourceAnchors,
+      ...unit.sourceFigures.map((item) => item.id),
+      ...unit.sourceFormulas.map((item) => item.id),
+      ...unit.sourceTables.map((item) => item.id),
+      ...(unit.semanticConcepts ?? []).flatMap((item) => item.evidenceAnchors),
+      ...(unit.knowledgeClaims ?? []).flatMap((item) => [
+        ...item.evidenceAnchors,
+        ...(item.derivationAnchors ?? []),
+      ]),
+    ]);
+    const allowedAnchors = new Set(sourceAnchorIds);
+    const evidence = input.canonicalEvidenceByUnit[unit.id];
+    if (!Array.isArray(evidence)) {
+      throw new Error(`Canonical source evidence is missing for model visual unit ${unit.id}.`);
+    }
+    for (const [index, entry] of evidence.entries()) {
+      if (!entry || typeof entry.anchor !== "string" || !entry.anchor || typeof entry.text !== "string" || !entry.text) {
+        throw new Error(`Canonical source evidence ${unit.id}[${index}] is malformed.`);
+      }
+      if (!allowedAnchors.has(entry.anchor)) {
+        throw new Error(`Canonical source evidence ${unit.id}[${index}] references undeclared anchor ${entry.anchor}.`);
+      }
+    }
+    return {
       unitId: unit.id,
       pageId: unit.id,
       ...(input.sectionByUnit?.[unit.id]
@@ -309,19 +364,14 @@ export function buildModelVisualNecessityPacket(input: {
           concept.preferredLabel,
         ]),
       ]),
-      sourceAnchorIds: unique([
-        ...unit.sourceAnchors,
-        ...unit.sourceFigures.map((item) => item.id),
-        ...unit.sourceFormulas.map((item) => item.id),
-        ...unit.sourceTables.map((item) => item.id),
-        ...(unit.semanticConcepts ?? []).flatMap((item) => item.evidenceAnchors),
-        ...(unit.knowledgeClaims ?? []).flatMap((item) => [
-          ...item.evidenceAnchors,
-          ...(item.derivationAnchors ?? []),
-        ]),
-      ]),
-      evidence: evidenceForUnit(unit),
-    })),
+      sourceAnchorIds,
+      evidence: evidence.map((entry) => ({ ...entry })),
+    };
+  });
+  return {
+    schemaVersion: MODEL_VISUAL_NECESSITY_SCHEMA_VERSION,
+    gardenId,
+    units,
     budget: { ...input.budget },
     overrides: overrides.map((override) => ({ ...override })),
   };
@@ -331,12 +381,13 @@ export function modelVisualNecessitySystemPrompt(): string {
   return [
     "You are the sole pedagogical decision-maker for interactive-visual necessity across an entire learning garden.",
     "Return strict JSON and exactly one decision for every supplied unit.",
-    "Use this exact response shape: {\"schemaVersion\":1,\"gardenId\":string,\"gardenRationale\":string,\"decisions\":[{\"unitId\":string,\"pageId\":string,\"necessity\":\"required\"|\"recommended\"|\"optional\"|\"not_needed\"|\"harmful_or_distracting\",\"preferredMedium\":\"interactive_visual\"|\"source_figure\"|\"generated_static_diagram\"|\"formula_derivation\"|\"worked_example\"|\"comparison_table\"|\"timeline\"|\"prose\"|\"no_additional_visual\",\"learningGoal\":string,\"manipulationValue\":number,\"dynamicBehaviorValue\":number,\"comparisonValue\":number,\"spatialValue\":number,\"parameterSensitivityValue\":number,\"sourceFigureSufficiency\":number,\"proseSufficiency\":number,\"formulaSufficiency\":number,\"workedExampleSufficiency\":number,\"cognitiveLoadRisk\":number,\"duplicationRisk\":number,\"implementationRisk\":number,\"confidence\":number,\"evidence\":{\"unitRole\":string,\"learningQuestion\":string,\"concepts\":string[],\"sourceAnchorIds\":string[],\"nearbyVisualIntentIds\":string[]},\"reason\":string,\"alternativeCoverage\":\"covered\"|\"uncovered\"|\"unverified\",\"teachingMediumReason\":string,\"interaction\"?:{\"interactionGoal\":\"manipulate_variables\"|\"observe_change_over_time\"|\"compare_cases\"|\"step_through_process\"|\"explore_structure\"|\"test_prediction\"|\"inspect_relationship\"|\"simulate_system\",\"uniqueConcept\":string,\"whyStaticSourceFigureIsNotEnough\":string,\"learnerAction\":string,\"controls\":[{\"kind\":\"variable\"|\"select_case\"|\"process_position\",\"label\":string,\"options\"?:string[],\"evidence\":[{\"anchor\":string,\"quote\":string}]}],\"observable\":{\"label\":string,\"representation\":\"value\"|\"chart\"|\"diagram\"|\"animation\"|\"timeline\"|\"table\"|\"annotation\",\"evidence\":[{\"anchor\":string,\"quote\":string}]},\"expectedInsight\":string,\"expectedInsightEvidence\":[{\"anchor\":string,\"quote\":string}],\"duplicateSignature\":string}}]}.",
+    "Use this exact response shape: {\"schemaVersion\":1,\"gardenId\":string,\"gardenRationale\":string,\"visualBudget\":{\"targetMinimum\":integer,\"targetMaximum\":integer,\"maximumPerSection\":integer,\"minimumUnitsBetweenSimilarVisuals\":integer,\"requiredVisuals\":integer,\"recommendedVisuals\":integer,\"optionalVisuals\":integer,\"reason\":string},\"decisions\":[{\"unitId\":string,\"pageId\":string,\"necessity\":\"required\"|\"recommended\"|\"optional\"|\"not_needed\"|\"harmful_or_distracting\",\"preferredMedium\":\"interactive_visual\"|\"source_figure\"|\"generated_static_diagram\"|\"formula_derivation\"|\"worked_example\"|\"comparison_table\"|\"timeline\"|\"prose\"|\"no_additional_visual\",\"learningGoal\":string,\"manipulationValue\":number,\"dynamicBehaviorValue\":number,\"comparisonValue\":number,\"spatialValue\":number,\"parameterSensitivityValue\":number,\"sourceFigureSufficiency\":number,\"proseSufficiency\":number,\"formulaSufficiency\":number,\"workedExampleSufficiency\":number,\"cognitiveLoadRisk\":number,\"duplicationRisk\":number,\"implementationRisk\":number,\"confidence\":number,\"evidence\":{\"unitRole\":string,\"learningQuestion\":string,\"concepts\":string[],\"sourceAnchorIds\":string[],\"nearbyVisualIntentIds\":string[]},\"reason\":string,\"alternativeCoverage\":\"covered\"|\"uncovered\"|\"unverified\",\"teachingMediumReason\":string,\"interaction\"?:{\"interactionGoal\":\"manipulate_variables\"|\"observe_change_over_time\"|\"compare_cases\"|\"step_through_process\"|\"explore_structure\"|\"test_prediction\"|\"inspect_relationship\"|\"simulate_system\",\"uniqueConcept\":string,\"whyStaticSourceFigureIsNotEnough\":string,\"learnerAction\":string,\"controls\":[{\"id\":string,\"kind\":\"variable\"|\"select_case\"|\"process_position\",\"label\":string,\"type\":\"slider\"|\"number\"|\"select\",\"unit\"?:string,\"min\"?:number,\"max\"?:number,\"step\"?:number,\"options\"?:string[],\"defaultValue\":number|string,\"evidence\":[{\"anchor\":string,\"quote\":string}]}],\"observable\":{\"label\":string,\"representation\":\"value\"|\"chart\"|\"diagram\"|\"animation\"|\"timeline\"|\"table\"|\"annotation\",\"evidence\":[{\"anchor\":string,\"quote\":string}]},\"expectedInsight\":string,\"expectedInsightEvidence\":[{\"anchor\":string,\"quote\":string}],\"duplicateSignature\":string}}]}.",
     "Every score and confidence field is a JSON number from 0 through 1. Copy unitId, pageId, learningGoal, evidence concepts, and evidence sourceAnchorIds only from the request.",
     "Judge every unit from its supplied learning question, concepts, claims, source artifacts, and garden context; code will not classify or repair your pedagogical choices.",
-    "The budget contains maximums, not quotas. Do not add interaction merely to fill a budget and do not omit a necessary interaction merely to create variety.",
+    "The request budget contains safety maximums, not quotas. Author visualBudget as your whole-garden plan, keep it within those maximums, and make its required/recommended/optional counts exactly match your decisions. Do not add interaction merely to fill a budget and do not omit a necessary interaction merely to create variety.",
     "For every required, recommended, or optional interaction, author the interactionGoal, uniqueConcept, whyStaticSourceFigureIsNotEnough, concrete learnerAction, at least one typed learner control whose kind is variable, select_case, or process_position, a learner-visible observable and its representation, an expected insight, and a garden-unique duplicateSignature.",
-    "Every control, observable, and expected insight must cite exact anchor-and-quote evidence from that same unit. Do not invent variables, cases, claims, or units absent from the packet.",
+    "Every control must author its stable id, exact input type, complete domain, and default. Slider/number controls require finite min, max, step, and numeric default with min < max, step > 0, and the default in range. Select controls require at least two unique options and a string default exactly equal to one option. Every control, observable, and expected insight must cite exact anchor-and-quote evidence from that same unit. Do not invent variables, cases, claims, or units absent from the packet.",
+    "Grounding is literal: every meaningful normalized token in each control label, each select option, the observable label, and the expected insight must occur in the exact quote text cited for that field. Exact source symbols and formulas are valid when they occur with identifier boundaries in the cited quote (for example, t in E_x(z,t)); a character embedded inside a larger identifier or LaTeX command is not. Every quote must itself be an exact substring of the canonical evidence text at its anchor, and evidence.sourceAnchorIds must include every anchor cited anywhere in the interaction contract. The safest construction is to reuse concise exact source wording; do not introduce synonyms, expanded labels, or inferred conclusions that are absent from the quote.",
     "Use a non-interactive preferredMedium when a source figure, derivation, worked example, table, timeline, static diagram, or prose teaches the goal adequately.",
     "Honor every explicit user override exactly. Coordinate the whole batch to avoid redundant interactions.",
     "Do not emit renderer code or silently downgrade a required interaction because implementation may be difficult; record implementationRisk and keep the pedagogical judgment independent.",
@@ -348,6 +399,16 @@ export const MODEL_VISUAL_NECESSITY_RESPONSE_CONTRACT = Object.freeze({
   schemaVersion: 1,
   gardenId: "copy request.gardenId exactly",
   gardenRationale: "model-authored whole-garden rationale",
+  visualBudget: {
+    targetMinimum: "model-authored non-negative integer",
+    targetMaximum: "model-authored non-negative integer within request maximumInteractiveUnits",
+    maximumPerSection: "model-authored non-negative integer within the request's section maximum",
+    minimumUnitsBetweenSimilarVisuals: "model-authored non-negative integer",
+    requiredVisuals: "exact count of required decisions",
+    recommendedVisuals: "exact count of recommended decisions",
+    optionalVisuals: "exact count of optional decisions",
+    reason: "model-authored whole-garden budget rationale",
+  },
   decisions: [{
     unitId: "copy one request unitId",
     pageId: "copy that unit pageId",
@@ -386,9 +447,16 @@ export const MODEL_VISUAL_NECESSITY_RESPONSE_CONTRACT = Object.freeze({
       whyStaticSourceFigureIsNotEnough: "source-grounded explanation",
       learnerAction: "specific learner action",
       controls: [{
+        id: "stable snake_case model-authored input id",
         kind: "variable | select_case | process_position",
         label: "specific source-grounded input",
+        type: "slider | number | select",
+        unit: "optional source-supported display unit",
+        min: "required finite number for slider or number",
+        max: "required finite number for slider or number",
+        step: "required positive finite number for slider or number",
         options: ["required for select_case: at least two source-grounded cases"],
+        defaultValue: "in-range number or exact declared select option",
         evidence: [{ anchor: "exact evidence anchor", quote: "exact evidence substring" }],
       }],
       observable: {
@@ -430,6 +498,57 @@ function addProblem(
   unitId?: string,
 ): void {
   problems.push({ code, path, message, ...(unitId ? { unitId } : {}) });
+}
+
+function parseVisualBudget(input: {
+  raw: unknown;
+  problems: ModelVisualNecessityProblem[];
+}): GardenVisualBudget | undefined {
+  const path = "visualBudget";
+  const record = asRecord(input.raw);
+  if (!record) {
+    addProblem(input.problems, "missing_visual_budget", path, "visualBudget must be an object");
+    return undefined;
+  }
+  const numericFields = [
+    "targetMinimum",
+    "targetMaximum",
+    "maximumPerSection",
+    "minimumUnitsBetweenSimilarVisuals",
+    "requiredVisuals",
+    "recommendedVisuals",
+    "optionalVisuals",
+  ] as const;
+  const values = {} as Record<(typeof numericFields)[number], number>;
+  for (const field of numericFields) {
+    const value = record[field];
+    if (!Number.isInteger(value) || Number(value) < 0) {
+      addProblem(
+        input.problems,
+        "invalid_visual_budget",
+        `${path}.${field}`,
+        `${field} must be a non-negative integer`,
+      );
+    }
+    values[field] = typeof value === "number" ? value : Number.NaN;
+  }
+  const reason = typeof record.reason === "string" ? record.reason : "";
+  if (!reason.trim()) {
+    addProblem(input.problems, "invalid_visual_budget", `${path}.reason`, "reason is required");
+  }
+  if (
+    Number.isFinite(values.targetMinimum) &&
+    Number.isFinite(values.targetMaximum) &&
+    values.targetMinimum > values.targetMaximum
+  ) {
+    addProblem(
+      input.problems,
+      "invalid_visual_budget",
+      path,
+      "targetMinimum cannot exceed targetMaximum",
+    );
+  }
+  return { ...values, reason };
 }
 
 function parseEvidenceRefs(value: unknown): VisualizationContractEvidenceRef[] {
@@ -485,7 +604,7 @@ function parseInteraction(input: {
   if (!expectedInsight) addProblem(input.problems, "missing_expected_insight", `${input.path}.expectedInsight`, "expectedInsight is required", input.unit.unitId);
   if (!duplicateSignature) addProblem(input.problems, "missing_duplicate_signature", `${input.path}.duplicateSignature`, "duplicateSignature is required", input.unit.unitId);
 
-  const repairs = normalizeVisualizationContractRepairResponse({
+  const parsedContract = parseVisualizationContractRepairResponse({
     repairs: [{
       unitId: input.unit.unitId,
       controls: record.controls,
@@ -493,8 +612,17 @@ function parseInteraction(input: {
       expectedInsightEvidence: record.expectedInsightEvidence,
     }],
   });
-  const controls = repairs[0]?.controls ?? [];
-  const expectedInsightEvidence = repairs[0]?.expectedInsightEvidence ?? [];
+  for (const message of parsedContract.problems) {
+    addProblem(
+      input.problems,
+      "invalid_interaction_contract_shape",
+      input.path,
+      message,
+      input.unit.unitId,
+    );
+  }
+  const controls = parsedContract.repairs[0]?.controls ?? [];
+  const expectedInsightEvidence = parsedContract.repairs[0]?.expectedInsightEvidence ?? [];
   if (controls.length === 0) addProblem(input.problems, "missing_learner_input", `${input.path}.controls`, "at least one typed model-authored learner control is required", input.unit.unitId);
   if (expectedInsightEvidence.length === 0) addProblem(input.problems, "missing_expected_insight_evidence", `${input.path}.expectedInsightEvidence`, "expectedInsightEvidence is required", input.unit.unitId);
 
@@ -615,6 +743,35 @@ function parseDecision(input: {
   if (!active && preferredMedium === "interactive_visual") addProblem(input.problems, "inactive_medium_mismatch", `${path}.preferredMedium`, "an inactive decision must use a non-interactive medium", input.unit.unitId);
   if (active && !interaction) addProblem(input.problems, "missing_interaction_contract", `${path}.interaction`, "an active decision requires a model-authored interaction contract", input.unit.unitId);
   if (!active && interaction) addProblem(input.problems, "unexpected_interaction_contract", `${path}.interaction`, "a non-interactive decision must not include an interaction contract", input.unit.unitId);
+  if (active && sourceAnchorIds.length === 0) {
+    addProblem(
+      input.problems,
+      "missing_interaction_source_anchors",
+      `${path}.evidence.sourceAnchorIds`,
+      "an active interaction must cite at least one canonical source anchor",
+      input.unit.unitId,
+    );
+  }
+  if (active && interaction) {
+    const declaredInteractionAnchors = new Set(sourceAnchorIds);
+    const citedInteractionAnchors = unique([
+      ...interaction.controls.flatMap((control) =>
+        control.evidence.map((reference) => reference.anchor)),
+      ...interaction.observable.evidence.map((reference) => reference.anchor),
+      ...interaction.expectedInsightEvidence.map((reference) => reference.anchor),
+    ]);
+    for (const anchor of citedInteractionAnchors) {
+      if (!declaredInteractionAnchors.has(anchor)) {
+        addProblem(
+          input.problems,
+          "interaction_source_anchor_omission",
+          `${path}.evidence.sourceAnchorIds`,
+          `evidence.sourceAnchorIds omits interaction evidence anchor ${anchor}`,
+          input.unit.unitId,
+        );
+      }
+    }
+  }
 
   return {
     unitId,
@@ -701,6 +858,7 @@ function projectionFromValidatedBatch(input: {
         ...(authored.interaction
           ? {
               interactionGoal: authored.interaction.interactionGoal,
+              learnerAction: authored.interaction.learnerAction,
               controlContract: authored.interaction.controls,
               observable: authored.interaction.observable,
               expectedInsightEvidence: authored.interaction.expectedInsightEvidence,
@@ -725,19 +883,7 @@ function projectionFromValidatedBatch(input: {
     optional: input.response.decisions.filter((decision) => decision.necessity === "optional").length,
     nonInteractive: input.response.decisions.filter((decision) => !ACTIVE_NECESSITIES.has(decision.necessity)).length,
   };
-  const budget: GardenVisualBudget = {
-    targetMinimum: 0,
-    targetMaximum: input.packet.budget.maximumInteractiveUnits,
-    maximumPerSection:
-      input.packet.budget.maximumInteractiveUnitsPerSection ??
-      input.packet.budget.maximumInteractiveUnits,
-    minimumUnitsBetweenSimilarVisuals: 0,
-    requiredVisuals: counts.required,
-    recommendedVisuals: counts.recommended,
-    optionalVisuals: counts.optional,
-    reason:
-      "Configured maximums validated against model-authored decisions; no minimum quota or automatic promotion is applied.",
-  };
+  const budget: GardenVisualBudget = { ...input.response.visualBudget };
   const decisionRecords: VisualDecisionRecord[] = input.response.decisions.map((decision) => {
     const active = ACTIVE_NECESSITIES.has(decision.necessity);
     const recordDecision: VisualDecisionRecord["decision"] =
@@ -801,6 +947,7 @@ export function validateModelVisualNecessityBatch(input: {
   if (compact(responseRecord.gardenId) !== input.packet.gardenId) addProblem(problems, "garden_mismatch", "gardenId", `gardenId must equal ${input.packet.gardenId}`);
   const gardenRationale = compact(responseRecord.gardenRationale);
   if (!gardenRationale) addProblem(problems, "missing_garden_rationale", "gardenRationale", "gardenRationale is required");
+  const visualBudget = parseVisualBudget({ raw: responseRecord.visualBudget, problems });
   const rawDecisions = Array.isArray(responseRecord.decisions) ? responseRecord.decisions : [];
   if (!Array.isArray(responseRecord.decisions)) addProblem(problems, "missing_decisions", "decisions", "decisions must be an array");
 
@@ -857,23 +1004,16 @@ export function validateModelVisualNecessityBatch(input: {
     };
     const contractProblems = validateVisualizationContractUnitRepair({
       unit: validationUnit,
+      evidence: expectedUnits.get(decision.unitId)?.evidence,
       repair: {
         unitId: decision.unitId,
         controls: decision.interaction.controls,
+        observable: decision.interaction.observable,
         expectedInsight: decision.interaction.expectedInsight,
         expectedInsightEvidence: decision.interaction.expectedInsightEvidence,
       },
     });
-    const observableProblems = validateVisualizationContractUnitRepair({
-      unit: validationUnit,
-      repair: {
-        unitId: decision.unitId,
-        controls: decision.interaction.controls,
-        expectedInsight: decision.interaction.observable.label,
-        expectedInsightEvidence: decision.interaction.observable.evidence,
-      },
-    });
-    for (const message of [...new Set([...contractProblems, ...observableProblems])]) {
+    for (const message of contractProblems) {
       addProblem(
         problems,
         "invalid_interaction_grounding",
@@ -902,15 +1042,76 @@ export function validateModelVisualNecessityBatch(input: {
   const required = parsedDecisions.filter((decision) => decision.necessity === "required");
   if (active.length > input.packet.budget.maximumInteractiveUnits) addProblem(problems, "garden_budget_exceeded", "decisions", `model selected ${active.length} interactive units; maximum is ${input.packet.budget.maximumInteractiveUnits}`);
   if (required.length > input.packet.budget.maximumRequiredInteractiveUnits) addProblem(problems, "required_budget_exceeded", "decisions", `model selected ${required.length} required interactions; maximum is ${input.packet.budget.maximumRequiredInteractiveUnits}`);
-  if (input.packet.budget.maximumInteractiveUnitsPerSection !== undefined) {
-    const sectionByUnit = new Map(input.packet.units.map((unit) => [unit.unitId, unit.sectionId]));
-    const sectionCounts = new Map<string, number>();
-    for (const decision of active) {
-      const section = sectionByUnit.get(decision.unitId);
-      if (!section) continue;
-      sectionCounts.set(section, (sectionCounts.get(section) ?? 0) + 1);
+  if (visualBudget) {
+    const recommendedCount = parsedDecisions.filter((decision) =>
+      decision.necessity === "recommended").length;
+    const optionalCount = parsedDecisions.filter((decision) =>
+      decision.necessity === "optional").length;
+    const authoredCounts = [
+      ["requiredVisuals", visualBudget.requiredVisuals, required.length],
+      ["recommendedVisuals", visualBudget.recommendedVisuals, recommendedCount],
+      ["optionalVisuals", visualBudget.optionalVisuals, optionalCount],
+    ] as const;
+    for (const [field, authored, actual] of authoredCounts) {
+      if (authored !== actual) {
+        addProblem(
+          problems,
+          "visual_budget_count_mismatch",
+          `visualBudget.${field}`,
+          `${field} must equal the ${actual} matching decisions`,
+        );
+      }
     }
+    if (visualBudget.targetMaximum > input.packet.budget.maximumInteractiveUnits) {
+      addProblem(
+        problems,
+        "visual_budget_exceeded",
+        "visualBudget.targetMaximum",
+        `targetMaximum cannot exceed request maximum ${input.packet.budget.maximumInteractiveUnits}`,
+      );
+    }
+    if (active.length < visualBudget.targetMinimum || active.length > visualBudget.targetMaximum) {
+      addProblem(
+        problems,
+        "visual_budget_decision_mismatch",
+        "visualBudget",
+        `${active.length} interactive decisions must fall within the authored target range ${visualBudget.targetMinimum}..${visualBudget.targetMaximum}`,
+      );
+    }
+    const configuredSectionMaximum = input.packet.budget.maximumInteractiveUnitsPerSection;
+    if (
+      configuredSectionMaximum !== undefined &&
+      visualBudget.maximumPerSection > configuredSectionMaximum
+    ) {
+      addProblem(
+        problems,
+        "visual_budget_exceeded",
+        "visualBudget.maximumPerSection",
+        `maximumPerSection cannot exceed request maximum ${configuredSectionMaximum}`,
+      );
+    }
+  }
+  const sectionByUnit = new Map(input.packet.units.map((unit) => [unit.unitId, unit.sectionId]));
+  const sectionCounts = new Map<string, number>();
+  for (const decision of active) {
+    const section = sectionByUnit.get(decision.unitId);
+    if (!section) continue;
+    sectionCounts.set(section, (sectionCounts.get(section) ?? 0) + 1);
+  }
+  if (input.packet.budget.maximumInteractiveUnitsPerSection !== undefined) {
     for (const [section, count] of sectionCounts) if (count > input.packet.budget.maximumInteractiveUnitsPerSection) addProblem(problems, "section_budget_exceeded", `section:${section}`, `model selected ${count} interactive units in section ${section}; maximum is ${input.packet.budget.maximumInteractiveUnitsPerSection}`);
+  }
+  if (visualBudget) {
+    for (const [section, count] of sectionCounts) {
+      if (count > visualBudget.maximumPerSection) {
+        addProblem(
+          problems,
+          "visual_budget_section_mismatch",
+          `section:${section}`,
+          `model selected ${count} interactive units in section ${section}; authored maximumPerSection is ${visualBudget.maximumPerSection}`,
+        );
+      }
+    }
   }
   const signatures = new Map<string, string[]>();
   for (const decision of active) {
@@ -920,12 +1121,30 @@ export function validateModelVisualNecessityBatch(input: {
   }
   const signatureMaximum = input.packet.budget.maximumRepeatedInteractionSignature ?? 1;
   for (const [signature, unitIds] of signatures) if (unitIds.length > signatureMaximum) addProblem(problems, "duplicate_interaction_signature", "decisions", `interaction signature ${signature} is repeated by ${unitIds.join(", ")}; maximum is ${signatureMaximum}`);
+  if (visualBudget && visualBudget.minimumUnitsBetweenSimilarVisuals > 0) {
+    const unitIndex = new Map(input.packet.units.map((unit, index) => [unit.unitId, index]));
+    for (const [signature, unitIds] of signatures) {
+      const indices = unitIds.map((unitId) => unitIndex.get(unitId) ?? -1).sort((a, b) => a - b);
+      for (let index = 1; index < indices.length; index += 1) {
+        const unitsBetween = indices[index] - indices[index - 1] - 1;
+        if (unitsBetween < visualBudget.minimumUnitsBetweenSimilarVisuals) {
+          addProblem(
+            problems,
+            "visual_budget_spacing_mismatch",
+            "visualBudget.minimumUnitsBetweenSimilarVisuals",
+            `interaction signature ${signature} has ${unitsBetween} unit(s) between uses; authored minimum is ${visualBudget.minimumUnitsBetweenSimilarVisuals}`,
+          );
+        }
+      }
+    }
+  }
 
   if (problems.length > 0) return { ok: false, problems };
   const response: ModelVisualNecessityBatchResponse = {
     schemaVersion: MODEL_VISUAL_NECESSITY_SCHEMA_VERSION,
     gardenId: input.packet.gardenId,
     gardenRationale,
+    visualBudget: visualBudget!,
     decisions: parsedDecisions,
   };
   return {
@@ -973,21 +1192,361 @@ export function buildModelVisualNecessityRepairPrompt(input: {
   };
 }
 
+const TARGETED_REPAIR_EVIDENCE_KINDS = new Set<ModelVisualEvidenceItem["kind"]>([
+  "source_text",
+  "source_formula",
+  "source_figure",
+  "source_table",
+]);
+
+export const MODEL_VISUAL_NECESSITY_TARGETED_REPAIR_RESPONSE_CONTRACT = Object.freeze({
+  schemaVersion: 1,
+  gardenId: "copy request.gardenId exactly",
+  decisions: [MODEL_VISUAL_NECESSITY_RESPONSE_CONTRACT.decisions[0]],
+});
+
+function rawDecisionRecords(response: unknown): Record<string, unknown>[] | null {
+  const record = asRecord(response);
+  if (!record || !Array.isArray(record.decisions)) return null;
+  const decisions = record.decisions.map(asRecord);
+  return decisions.every((decision): decision is Record<string, unknown> => Boolean(decision))
+    ? decisions
+    : null;
+}
+
+function targetedRepairUnitIds(input: {
+  packet: ModelVisualNecessityPacket;
+  invalidResponse: unknown;
+  problems: ModelVisualNecessityProblem[];
+}): string[] {
+  if (input.problems.length === 0) return [];
+  const knownUnitIds = new Set(input.packet.units.map((unit) => unit.unitId));
+  const problemUnitIds = new Set<string>();
+  for (const problem of input.problems) {
+    if (!problem.unitId || !knownUnitIds.has(problem.unitId)) return [];
+    problemUnitIds.add(problem.unitId);
+  }
+  const decisions = rawDecisionRecords(input.invalidResponse);
+  if (!decisions) return [];
+  for (const unitId of problemUnitIds) {
+    if (decisions.filter((decision) => compact(decision.unitId) === unitId).length !== 1) {
+      return [];
+    }
+  }
+  return input.packet.units
+    .map((unit) => unit.unitId)
+    .filter((unitId) => problemUnitIds.has(unitId));
+}
+
+function assertTargetedRepairCanonicalEvidence(
+  unit: ModelVisualNecessityUnitPacket,
+): void {
+  if (unit.evidence.length === 0) {
+    throw new Error(
+      `Targeted visual-necessity repair for ${unit.unitId} requires non-empty canonical source evidence.`,
+    );
+  }
+  const declaredAnchors = new Set(unit.sourceAnchorIds);
+  unit.evidence.forEach((entry, index) => {
+    if (!TARGETED_REPAIR_EVIDENCE_KINDS.has(entry.kind)) {
+      throw new Error(
+        `Targeted visual-necessity repair evidence ${unit.unitId}[${index}] has non-canonical kind ${entry.kind}.`,
+      );
+    }
+    if (!declaredAnchors.has(entry.anchor)) {
+      throw new Error(
+        `Targeted visual-necessity repair evidence ${unit.unitId}[${index}] uses undeclared anchor ${entry.anchor}.`,
+      );
+    }
+    if (!compact(entry.text)) {
+      throw new Error(
+        `Targeted visual-necessity repair evidence ${unit.unitId}[${index}] has empty source text.`,
+      );
+    }
+  });
+}
+
 /**
- * Runs the complete model-authored decision loop. Invalid model output is sent
- * back to the model for a full-batch repair; it is never replaced by a
- * deterministic plan or an all-zero/all-one quota safeguard.
+ * Builds a compact repair request containing only failed units and their exact
+ * canonical evidence. The model must return complete decisions; application
+ * code never fills, restores, or rewrites a semantic field within those units.
+ */
+export function buildModelVisualNecessityTargetedRepairPrompt(input: {
+  packet: ModelVisualNecessityPacket;
+  invalidResponse: unknown;
+  problems: ModelVisualNecessityProblem[];
+  targetUnitIds: string[];
+  repairAttempt: number;
+}): { system: string; user: string; sourceContext: ModelVisualNecessityTargetedRepairPacket & {
+  responseContract: typeof MODEL_VISUAL_NECESSITY_TARGETED_REPAIR_RESPONSE_CONTRACT;
+  repairAttempt: number;
+} } {
+  if (
+    !Number.isInteger(input.repairAttempt) ||
+    input.repairAttempt < 1 ||
+    input.repairAttempt > MODEL_VISUAL_NECESSITY_TARGETED_REPAIR_CALL_BUDGET.maximumRepairCalls
+  ) {
+    throw new Error(
+      `Targeted visual-necessity repairAttempt must be between 1 and ${MODEL_VISUAL_NECESSITY_TARGETED_REPAIR_CALL_BUDGET.maximumRepairCalls}.`,
+    );
+  }
+  const targetUnitIds = unique(input.targetUnitIds);
+  if (targetUnitIds.length === 0 || targetUnitIds.length !== input.targetUnitIds.length) {
+    throw new Error("Targeted visual-necessity repair requires unique affected unit ids.");
+  }
+  const targetSet = new Set(targetUnitIds);
+  const unitsById = new Map(input.packet.units.map((unit) => [unit.unitId, unit]));
+  const decisions = rawDecisionRecords(input.invalidResponse);
+  if (!decisions) {
+    throw new Error("Targeted visual-necessity repair requires a prior response with decision records.");
+  }
+  const units = targetUnitIds.map((unitId) => {
+    const unit = unitsById.get(unitId);
+    if (!unit) throw new Error(`Targeted visual-necessity repair references unknown unit ${unitId}.`);
+    assertTargetedRepairCanonicalEvidence(unit);
+    const matchingDecisions = decisions.filter((decision) => compact(decision.unitId) === unitId);
+    if (matchingDecisions.length !== 1) {
+      throw new Error(
+        `Targeted visual-necessity repair requires exactly one prior decision for ${unitId}.`,
+      );
+    }
+    return {
+      unit,
+      invalidDecision: matchingDecisions[0],
+      problems: input.problems.filter((problem) => problem.unitId === unitId),
+    };
+  });
+  const invalidRecord = asRecord(input.invalidResponse)!;
+  const reservedDuplicateSignatures = unique(decisions.flatMap((decision) => {
+    if (targetSet.has(compact(decision.unitId))) return [];
+    const signature = compact(asRecord(decision.interaction)?.duplicateSignature);
+    return signature ? [signature] : [];
+  }));
+  const sectionByUnit = new Map(input.packet.units.map((unit) => [unit.unitId, unit.sectionId]));
+  const untouchedDecisionIndex = decisions.flatMap((decision) => {
+    const unitId = compact(decision.unitId);
+    if (!unitId || targetSet.has(unitId)) return [];
+    const duplicateSignature = compact(asRecord(decision.interaction)?.duplicateSignature);
+    const sectionId = sectionByUnit.get(unitId);
+    return [{
+      unitId,
+      ...(sectionId ? { sectionId } : {}),
+      necessity: compact(decision.necessity),
+      preferredMedium: compact(decision.preferredMedium),
+      ...(duplicateSignature ? { duplicateSignature } : {}),
+    }];
+  });
+  const packet: ModelVisualNecessityTargetedRepairPacket = {
+    schemaVersion: MODEL_VISUAL_NECESSITY_SCHEMA_VERSION,
+    gardenId: input.packet.gardenId,
+    units,
+    wholeGardenConstraints: {
+      requestBudget: { ...input.packet.budget },
+      currentVisualBudget: invalidRecord.visualBudget,
+      overrides: input.packet.overrides.map((override) => ({ ...override })),
+      reservedDuplicateSignatures,
+      untouchedDecisionIndex,
+    },
+    previousRejectionReasons: input.problems.map((problem) => ({ ...problem })),
+  };
+  const sourceContext = {
+    ...packet,
+    responseContract: MODEL_VISUAL_NECESSITY_TARGETED_REPAIR_RESPONSE_CONTRACT,
+    repairAttempt: input.repairAttempt,
+  };
+  return {
+    system: [
+      "You repair model-authored visual-necessity decisions that failed strict validation.",
+      "Return strict JSON with schemaVersion 1, the supplied gardenId, and exactly one complete replacement decision record for every supplied unit in decisions.",
+      "Each replacement is atomic: author every decision field in the response contract, even when only one interaction field failed. The application will replace the entire prior decision and will not merge, restore, infer, normalize, or rewrite any semantic field inside it.",
+      "Do not return decisions for unaffected units. Their previously validated records are immutable and will be preserved exactly by the application.",
+      "Copy unitId, pageId, learningGoal, evidence.unitRole, evidence.learningQuestion, evidence.concepts, and evidence.sourceAnchorIds only from that unit packet. Honor every supplied override and the whole-garden budget. When the reported defects are limited to interaction grounding, preserve the prior necessity and preferredMedium so the accepted whole-garden allocation remains coherent.",
+      "Use only that unit's supplied canonical source evidence. Every evidence quote must be a non-empty exact substring of the text at the same anchor.",
+      "Grounding is literal: every meaningful normalized token in each control label, each select option, the observable label, and the expected insight must occur in the exact quote text cited for that field. Exact source symbols and formulas are valid when they occur with identifier boundaries in the cited quote (for example, t in E_x(z,t)); a character embedded inside a larger identifier or LaTeX command is not. evidence.sourceAnchorIds must be non-empty and include every anchor cited by the controls, observable, or expectedInsightEvidence. The safest construction is to reuse concise exact source wording. Do not use synonyms, inferred labels, or expanded conclusions.",
+      "For every active interaction, author the complete interactionGoal, uniqueConcept, whyStaticSourceFigureIsNotEnough, learnerAction, controls, observable, expectedInsight, expectedInsightEvidence, and a duplicateSignature that does not reuse a reserved signature. Numeric and select control domains must satisfy the response contract exactly.",
+      "For a non-interactive decision, use a non-interactive preferredMedium and omit interaction entirely. Never emit a partial patch, prose, renderer code, or a deterministic fallback.",
+    ].join(" "),
+    user: JSON.stringify(sourceContext),
+    sourceContext,
+  };
+}
+
+export type ModelVisualNecessityTargetedMergeResult =
+  | { ok: true; response: unknown }
+  | { ok: false; problems: ModelVisualNecessityProblem[] };
+
+/** Atomically swaps complete model-authored decisions for the requested units. */
+export function applyModelVisualNecessityTargetedRepairs(input: {
+  packet: ModelVisualNecessityPacket;
+  invalidResponse: unknown;
+  repairResponse: unknown;
+  targetUnitIds: string[];
+}): ModelVisualNecessityTargetedMergeResult {
+  const problems: ModelVisualNecessityProblem[] = [];
+  const targetUnitIds = unique(input.targetUnitIds);
+  const targetSet = new Set(targetUnitIds);
+  const knownUnitIds = new Set(input.packet.units.map((unit) => unit.unitId));
+  if (targetUnitIds.length === 0 || targetUnitIds.length !== input.targetUnitIds.length) {
+    return {
+      ok: false,
+      problems: [{
+        code: "invalid_targeted_repair_scope",
+        path: "targetUnitIds",
+        message: "targeted repair requires unique affected unit ids",
+      }],
+    };
+  }
+  for (const unitId of targetUnitIds) {
+    if (!knownUnitIds.has(unitId)) {
+      addProblem(
+        problems,
+        "invalid_targeted_repair_scope",
+        "targetUnitIds",
+        `targeted repair references unknown unit ${unitId}`,
+        unitId,
+      );
+    }
+  }
+  const invalidRecord = asRecord(input.invalidResponse);
+  const invalidDecisions = rawDecisionRecords(input.invalidResponse);
+  if (!invalidRecord || !invalidDecisions) {
+    addProblem(
+      problems,
+      "invalid_targeted_repair_base",
+      "$",
+      "prior whole-garden response must contain decision records",
+    );
+  }
+  const repairRecord = asRecord(input.repairResponse);
+  if (!repairRecord) {
+    addProblem(problems, "invalid_targeted_repair_response", "$", "repair response must be an object");
+  } else {
+    if (repairRecord.schemaVersion !== MODEL_VISUAL_NECESSITY_SCHEMA_VERSION) {
+      addProblem(
+        problems,
+        "invalid_targeted_repair_response",
+        "schemaVersion",
+        `schemaVersion must be numeric ${MODEL_VISUAL_NECESSITY_SCHEMA_VERSION}`,
+      );
+    }
+    if (compact(repairRecord.gardenId) !== input.packet.gardenId) {
+      addProblem(
+        problems,
+        "invalid_targeted_repair_response",
+        "gardenId",
+        `gardenId must equal ${input.packet.gardenId}`,
+      );
+    }
+    if (!Array.isArray(repairRecord.decisions)) {
+      addProblem(
+        problems,
+        "invalid_targeted_repair_response",
+        "decisions",
+        "decisions must be an array",
+      );
+    }
+  }
+  const repairs = Array.isArray(repairRecord?.decisions)
+    ? repairRecord.decisions.map(asRecord)
+    : [];
+  const repairByUnit = new Map<string, Record<string, unknown>>();
+  repairs.forEach((repair, index) => {
+    if (!repair) {
+      addProblem(
+        problems,
+        "invalid_targeted_repair_response",
+        `decisions[${index}]`,
+        "replacement decision must be an object",
+      );
+      return;
+    }
+    const unitId = compact(repair.unitId);
+    if (!targetSet.has(unitId)) {
+      addProblem(
+        problems,
+        "invalid_targeted_repair_response",
+        `decisions[${index}].unitId`,
+        `replacement decision targets unaffected or unknown unit ${unitId || "(empty)"}`,
+        unitId || undefined,
+      );
+      return;
+    }
+    if (repairByUnit.has(unitId)) {
+      addProblem(
+        problems,
+        "invalid_targeted_repair_response",
+        `decisions[${index}].unitId`,
+        `replacement response contains more than one decision for ${unitId}`,
+        unitId,
+      );
+      return;
+    }
+    repairByUnit.set(unitId, repair);
+  });
+  for (const unitId of targetUnitIds) {
+    if (!repairByUnit.has(unitId)) {
+      addProblem(
+        problems,
+        "invalid_targeted_repair_response",
+        "decisions",
+        `replacement response omitted affected unit ${unitId}`,
+        unitId,
+      );
+    }
+    if (invalidDecisions?.filter((decision) => compact(decision.unitId) === unitId).length !== 1) {
+      addProblem(
+        problems,
+        "invalid_targeted_repair_base",
+        "decisions",
+        `prior response must contain exactly one decision for ${unitId}`,
+        unitId,
+      );
+    }
+  }
+  if (repairs.length !== targetUnitIds.length) {
+    addProblem(
+      problems,
+      "invalid_targeted_repair_response",
+      "decisions",
+      `replacement response must contain exactly ${targetUnitIds.length} decision record(s)`,
+    );
+  }
+  if (problems.length > 0 || !invalidRecord || !invalidDecisions) {
+    return { ok: false, problems: [...new Map(problems.map((problem) => [
+      `${problem.code}\u0000${problem.path}\u0000${problem.message}\u0000${problem.unitId ?? ""}`,
+      problem,
+    ])).values()] };
+  }
+  const decisions = invalidDecisions.map((decision) => {
+    const unitId = compact(decision.unitId);
+    return targetSet.has(unitId) ? repairByUnit.get(unitId)! : decision;
+  });
+  return {
+    ok: true,
+    response: {
+      ...invalidRecord,
+      decisions,
+    },
+  };
+}
+
+/**
+ * Runs the complete model-authored decision loop. Unit-scoped failures may be
+ * returned to the model as compact, complete-decision replacement requests;
+ * unscoped failures stay on the bounded whole-batch path. Provider/transport
+ * failures are rethrown because their retry budget belongs to the transport,
+ * never to this semantic-repair loop.
  */
 export async function runModelVisualNecessityPlanning(input: {
   packet: ModelVisualNecessityPacket;
   learningUnits: LearningUnitContract[];
   provider: ModelVisualNecessityProvider;
-  /** Cancellation/abort errors may bypass the repair loop. */
-  shouldRethrowError?: (error: unknown) => boolean;
+  targetedRepairProvider?: ModelVisualNecessityTargetedRepairProvider;
 }): Promise<ModelVisualNecessityRunResult> {
   let problems: ModelVisualNecessityProblem[] = [];
   let lastResponse: unknown;
   let calls = 0;
+  let targetedRepairCalls = 0;
   for (
     let attempt = 0;
     attempt < MODEL_VISUAL_NECESSITY_CALL_BUDGET.maximumTotalCalls;
@@ -1002,24 +1561,14 @@ export async function runModelVisualNecessityPlanning(input: {
           repairAttempt: attempt,
         });
     calls += 1;
-    try {
-      lastResponse = await input.provider({
-        ...prompt,
-        attempt,
-        problems: [...problems],
-      });
-    } catch (error) {
-      if (input.shouldRethrowError?.(error)) throw error;
-      const message = error instanceof Error ? error.message : compact(error) || "unknown provider error";
-      problems = [{
-        code: "provider_error",
-        path: "$",
-        message: `visual-necessity model call failed: ${message}`,
-      }];
-      lastResponse = undefined;
-      continue;
-    }
-    const validation = validateModelVisualNecessityBatch({
+    // callCouncilText owns bounded transport retry. If it ultimately throws,
+    // propagate that error without consuming another semantic model attempt.
+    lastResponse = await input.provider({
+      ...prompt,
+      attempt,
+      problems: [...problems],
+    });
+    let validation = validateModelVisualNecessityBatch({
       packet: input.packet,
       learningUnits: input.learningUnits,
       response: lastResponse,
@@ -1029,9 +1578,72 @@ export async function runModelVisualNecessityPlanning(input: {
         plan: validation.plan,
         calls,
         repairCalls: Math.max(0, calls - 1),
+        targetedRepairCalls,
       };
     }
     problems = validation.problems;
+
+    let targetUnitIds = targetedRepairUnitIds({
+      packet: input.packet,
+      invalidResponse: lastResponse,
+      problems,
+    });
+    let targetedFeedback = problems;
+    while (
+      input.targetedRepairProvider &&
+      targetUnitIds.length > 0 &&
+      targetedRepairCalls < MODEL_VISUAL_NECESSITY_TARGETED_REPAIR_CALL_BUDGET.maximumRepairCalls
+    ) {
+      targetedRepairCalls += 1;
+      const targetedPrompt = buildModelVisualNecessityTargetedRepairPrompt({
+        packet: input.packet,
+        invalidResponse: lastResponse,
+        problems: targetedFeedback,
+        targetUnitIds,
+        repairAttempt: targetedRepairCalls,
+      });
+      calls += 1;
+      const repairResponse = await input.targetedRepairProvider({
+        ...targetedPrompt,
+        attempt: targetedRepairCalls,
+        problems: targetedFeedback.map((problem) => ({ ...problem })),
+        unitIds: [...targetUnitIds],
+      });
+      const merged = applyModelVisualNecessityTargetedRepairs({
+        packet: input.packet,
+        invalidResponse: lastResponse,
+        repairResponse,
+        targetUnitIds,
+      });
+      if (!("response" in merged)) {
+        // Preserve the currently accepted whole response. The next bounded AI
+        // attempt sees both the original unit failures and this response-shape
+        // rejection; code never applies a partial replacement.
+        targetedFeedback = [...problems, ...merged.problems];
+        continue;
+      }
+      lastResponse = merged.response;
+      validation = validateModelVisualNecessityBatch({
+        packet: input.packet,
+        learningUnits: input.learningUnits,
+        response: lastResponse,
+      });
+      if (!("problems" in validation)) {
+        return {
+          plan: validation.plan,
+          calls,
+          repairCalls: Math.max(0, calls - 1),
+          targetedRepairCalls,
+        };
+      }
+      problems = validation.problems;
+      targetedFeedback = problems;
+      targetUnitIds = targetedRepairUnitIds({
+        packet: input.packet,
+        invalidResponse: lastResponse,
+        problems,
+      });
+    }
   }
   throw new ModelVisualNecessityPlanningError({ calls, problems, lastResponse });
 }

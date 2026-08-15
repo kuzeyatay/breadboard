@@ -47,6 +47,8 @@ export async function POST(request: Request) {
       userId,
       agentId: "stock_analyst",
       query: task,
+      conversationPublicId:
+        typeof body.conversationPublicId === "string" ? body.conversationPublicId : null,
     });
 
     const { baseURL } = resolveChatmockBaseUrl(request);

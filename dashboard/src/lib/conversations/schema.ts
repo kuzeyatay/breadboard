@@ -162,6 +162,16 @@ export function ensureConversationSchema(database: Database.Database): void {
   // the row rather than a place in the list, and is not activity either.
   ensureColumn(database, "conversations", "pinned_at", "pinned_at TEXT");
   ensureColumn(database, "conversations", "highlight", "highlight TEXT");
+  // A temporary chat is off the record: it never appears in history or search,
+  // it reads no cross-chat memory, and nothing it says can become memory. The
+  // flag is set once at creation and never edited afterwards, so a chat cannot
+  // retroactively acquire (or shed) that promise once it has said anything.
+  ensureColumn(
+    database,
+    "conversations",
+    "temporary",
+    "temporary INTEGER NOT NULL DEFAULT 0 CHECK (temporary IN (0, 1))",
+  );
   ensureColumn(database, "hermes_runtime_sessions", "conversation_id", "conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL");
   ensureColumn(database, "hermes_runtime_sessions", "allowed_garden_ids", "allowed_garden_ids TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(database, "chat_messages", "canonical_message_id", "canonical_message_id INTEGER REFERENCES conversation_messages(id) ON DELETE SET NULL");

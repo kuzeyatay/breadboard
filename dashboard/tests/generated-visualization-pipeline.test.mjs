@@ -11,6 +11,7 @@ import {
   buildVisualizationPlan as buildVisualizationPlanRaw,
 } from "../src/lib/visualization-opportunities.ts";
 import { planGardenVisualNecessity } from "../src/lib/visual-necessity.ts";
+import { pedagogyContractFromCompleteRepair } from "../src/lib/visualization-contract-validation.ts";
 import {
   buildGeneratedVisualBlock,
   compileGeneratedVisualization,
@@ -93,7 +94,11 @@ function buildVisualizationPlan(input) {
   });
   const originalById = new Map(input.learningUnits.map((candidate) => [candidate.id, candidate]));
   const repairedUnits = necessity.learningUnits.map((planned) => {
-    if (planned.interactiveVisualPlan?.requirement !== "required") return planned;
+    // The gate demands a full model-authored contract from every active
+    // requirement, not just the required ones.
+    if (!planned.interactiveVisualPlan || planned.interactiveVisualPlan.requirement === "none") {
+      return planned;
+    }
     const original = originalById.get(planned.id) ?? planned;
     const question = original.learningQuestion.replace(/\s+/g, " ").trim();
     const relationship = question.match(/\bchanging\s+(.+?)\s+alter\s+(.+?)[?.]?$/i);
@@ -101,17 +106,15 @@ function buildVisualizationPlan(input) {
       .find((term) => !/^(?:parameter|value|variable)$/i.test(term));
     const controlLabel = relationship?.[1]?.trim() || formulaTerm || original.newConcepts[0];
     const expectedInsight = relationship?.[2]?.trim() || original.newConcepts[0] || original.title;
-    const controlEvidence = relationship
-      ? { anchor: `unit:${planned.id}:learning-question`, quote: question }
-      : formulaTerm
-        ? {
-            anchor: original.sourceFormulas.find((formula) => formula.termsToDefine.includes(formulaTerm))?.id,
-            quote: formulaTerm,
-          }
-        : { anchor: `unit:${planned.id}:concept`, quote: original.newConcepts[0] };
-    const insightEvidence = relationship
-      ? { anchor: `unit:${planned.id}:learning-question`, quote: question }
-      : { anchor: `unit:${planned.id}:concept`, quote: original.newConcepts[0] };
+    const evidenceAnchor = original.sourceAnchors[0]
+      ?? original.sourceFormulas[0]?.id
+      ?? original.sourceFigures[0]?.id
+      ?? original.sourceTables[0]?.id;
+    const evidenceQuote = [question, controlLabel, expectedInsight, formulaTerm, ...original.newConcepts]
+      .filter(Boolean)
+      .join(" ");
+    const controlEvidence = { anchor: evidenceAnchor, quote: evidenceQuote };
+    const insightEvidence = { anchor: evidenceAnchor, quote: evidenceQuote };
     const previous = original.interactiveVisual;
     const visualIntent = {
       id: previous?.id ?? `test-contract-${planned.id.toLowerCase()}`,
@@ -124,22 +127,89 @@ function buildVisualizationPlan(input) {
       sourceAnchors: previous?.sourceAnchors ?? original.sourceAnchors,
       duplicateSignature: previous?.duplicateSignature ?? `test-${planned.id.toLowerCase()}`,
     };
+    const learnerAction = `Move the ${controlLabel} control and compare how ${expectedInsight} changes.`;
+    const controlContract = [{
+      id: controlLabel
+        .normalize("NFKD")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 80),
+      kind: "variable",
+      label: controlLabel,
+      type: "slider",
+      min: 0,
+      max: 3,
+      step: 0.1,
+      defaultValue: 1,
+      evidence: [controlEvidence],
+    }];
+    const observable = {
+      label: expectedInsight,
+      representation: "chart",
+      evidence: [insightEvidence],
+    };
+    const expectedInsightEvidence = [insightEvidence];
+    const authoritativeInteraction = pedagogyContractFromCompleteRepair({
+      unitId: planned.id,
+      interactionGoal: "manipulate_variables",
+      learnerAction,
+      visualIntent,
+      controls: controlContract,
+      observable,
+      expectedInsight,
+      expectedInsightEvidence,
+    });
     return {
       ...planned,
       interactiveVisual: visualIntent,
       interactiveVisualPlan: {
         ...planned.interactiveVisualPlan,
         visualIntent,
-        controlContract: [{
-          kind: "variable",
-          label: controlLabel,
-          evidence: [controlEvidence],
-        }],
-        expectedInsightEvidence: [insightEvidence],
+        interactionGoal: "manipulate_variables",
+        learnerAction,
+        controlContract,
+        observable,
+        expectedInsightEvidence,
+        decision: {
+          ...planned.interactiveVisualPlan.decision,
+          interaction: authoritativeInteraction,
+        },
       },
     };
   });
-  return buildVisualizationPlanRaw({ ...input, learningUnits: repairedUnits });
+  const canonicalEvidenceByUnit = Object.fromEntries(repairedUnits.map((candidate) => {
+    const evidence = candidate.interactiveVisualPlan?.controlContract?.[0]?.evidence?.[0];
+    if (!evidence?.anchor || !evidence.quote) return [candidate.id, []];
+    const formulaIds = new Set(candidate.sourceFormulas.map((formula) => formula.id));
+    const figureIds = new Set(candidate.sourceFigures.map((figure) => figure.id));
+    const tableIds = new Set(candidate.sourceTables.map((table) => table.id));
+    const anchors = [...new Set([
+      ...candidate.sourceAnchors,
+      ...figureIds,
+      ...formulaIds,
+      ...tableIds,
+      ...(candidate.interactiveVisualPlan?.decision.evidence.sourceAnchorIds ?? []),
+      ...(candidate.interactiveVisualPlan?.visualIntent?.sourceAnchors ?? []),
+    ])];
+    return [candidate.id, anchors.map((anchor) => ({
+      anchor,
+      kind: formulaIds.has(anchor)
+        ? "source_formula"
+        : figureIds.has(anchor)
+          ? "source_figure"
+          : tableIds.has(anchor)
+            ? "source_table"
+            : "source_text",
+      text: evidence.quote,
+    }))];
+  }));
+  return buildVisualizationPlanRaw({
+    ...input,
+    learningUnits: repairedUnits,
+    visualBudget: necessity.budget,
+    canonicalEvidenceByUnit,
+  });
 }
 
 test("opportunity analysis covers every unit and routes a non-catalog interaction to generation", () => {
@@ -147,6 +217,10 @@ test("opportunity analysis covers every unit and routes a non-catalog interactio
   const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap(units), learningUnits: units });
   assert.equal(plan.opportunities.length, 1);
   assert.equal(plan.opportunities[0].learningUnitId, "U1");
+  assert.match(
+    plan.opportunities[0].learnerAction,
+    /move the gain control and compare how coupled-state propagation under intervention changes/i,
+  );
   assert.equal(plan.decisions[0].route, "generated_module");
   assert.equal(plan.opportunities[0].requiresGeneratedModule, true);
 });
@@ -159,7 +233,7 @@ test("representative fixtures route only the units that pass visual necessity", 
     whyStaticSourceFigureIsNotEnough: "The learner must manipulate or step through the relationship.",
     learnerManipulates: ["parameter"],
     expectedInsight: `Understand ${concept} by experimentation`,
-    sourceAnchors: [`S1.${id}.E1`],
+    sourceAnchors: [`S1.${id.toUpperCase()}.E1`],
     duplicateSignature: id,
   });
   const fixture = (id, title, role, extra = {}) => unit({
@@ -270,6 +344,7 @@ test("detailed council critic rejection is normalized with actionable feedback",
       usefulDefaultState: 0.84,
       variableIntroduction: 0.55,
       sourceClaimsAndUnitsPreserved: 0.68,
+      primitiveTopologyAndDomain: 0.86,
       avoidsDuplication: 0.98,
       avoidsUnnecessaryComplexity: 0.9,
       accessibility: 0.94,
@@ -303,6 +378,7 @@ test("detailed council critic approval still enforces normalized score threshold
       usefulDefaultState: 0.9,
       variableIntroduction: 0.86,
       sourceClaimsAndUnitsPreserved: 0.93,
+      primitiveTopologyAndDomain: 0.94,
       avoidsDuplication: 0.94,
       avoidsUnnecessaryComplexity: 0.89,
       accessibility: 0.91,
@@ -367,7 +443,7 @@ test("an under-scored rubric approval names the dimensions the critic skipped", 
   assert.equal(critic, null);
   assert.equal(diagnostics.detailed, true);
   assert.match(diagnostics.reason, /without scoring/i);
-  for (const dimension of ["sourceClaimsAndUnits", "avoidsDuplication", "complexityDiscipline", "accessibility"]) {
+  for (const dimension of ["sourceClaimsAndUnits", "primitiveTopologyAndDomain", "avoidsDuplication", "complexityDiscipline", "accessibility"]) {
     assert.match(diagnostics.reason, new RegExp(dimension));
   }
 });
@@ -390,10 +466,10 @@ export default defineVisualization({
   title: "Coupled state intervention",
   description: "Change the gain and inspect how the propagated state changes.",
   accessibilityDescription: "A gain slider updates a numeric propagated-state result and a plotted response curve.",
-  controls: [{ id: "gain", label: "Gain", type: "slider", min: 0, max: 3, step: 0.1, defaultValue: 1 }],
+  controls: [{ id: "gain", label: "gain", type: "slider", min: 0, max: 3, step: 0.1, defaultValue: 1 }],
   outputs: [{
     id: "coupled_state_propagation_under_intervention",
-    label: "Propagated state",
+    label: "coupled-state propagation under intervention",
     representation: "chart",
     expression: { kind: "binary", op: "add", left: { kind: "input", id: "gain" }, right: { kind: "input", id: "x" } }
   }],
@@ -427,6 +503,80 @@ test("strict AST compiler emits only the fixed JSON envelope and deterministic t
   assert.equal(tests.passed, true, JSON.stringify(tests));
 });
 
+test("generated numeric controls must preserve every model-authored contract field", () => {
+  const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = plan.opportunities[0];
+  const drifts = [
+    ["label", validSource.replace('label: "gain"', 'label: "Gain"')],
+    ["type", validSource.replace('type: "slider"', 'type: "number"')],
+    ["unit", validSource.replace('type: "slider",', 'type: "slider", unit: "V",')],
+    ["min", validSource.replace("min: 0", "min: -1")],
+    ["max", validSource.replace("max: 3", "max: 4")],
+    ["step", validSource.replace("step: 0.1", "step: 0.2")],
+    ["defaultValue", validSource.replace("defaultValue: 1", "defaultValue: 2")],
+    ["options", validSource.replace("defaultValue: 1", 'defaultValue: 1, options: ["low", "high"]')],
+  ];
+
+  for (const [field, source] of drifts) {
+    const compiled = compileGeneratedVisualization(source, opportunity);
+    assert.equal(compiled.validation.valid, false, `${field}: ${compiled.validation.errors.join("; ")}`);
+    assert.match(compiled.validation.errors.join("; "), new RegExp(field, "i"));
+  }
+});
+
+test("generated select controls preserve option order, default, and absence of numeric fields", () => {
+  const selectSource = validSource
+    .replace(
+      'controls: [{ id: "gain", label: "gain", type: "slider", min: 0, max: 3, step: 0.1, defaultValue: 1 }]',
+      'controls: [{ id: "case", label: "Boundary case", type: "select", options: ["closed", "open"], defaultValue: "closed" }]',
+    )
+    .replaceAll('id: "gain"', 'id: "case"');
+  const opportunity = {
+    id: "select-contract-opportunity",
+    similarityFingerprint: "select-contract-fingerprint",
+    requiredInputs: [{
+      id: "case",
+      label: "Boundary case",
+      type: "select",
+      options: ["closed", "open"],
+      defaultValue: "closed",
+    }],
+    requiredOutputs: [{
+      id: "coupled_state_propagation_under_intervention",
+      label: "coupled-state propagation under intervention",
+      representation: "chart",
+    }],
+  };
+  const valid = compileGeneratedVisualization(selectSource, opportunity);
+  assert.equal(valid.validation.valid, true, valid.validation.errors.join("; "));
+
+  for (const [field, source] of [
+    ["options", selectSource.replace('["closed", "open"]', '["open", "closed"]')],
+    ["defaultValue", selectSource.replace('defaultValue: "closed"', 'defaultValue: "open"')],
+    ["min", selectSource.replace('type: "select",', 'type: "select", min: 0,')],
+  ]) {
+    const compiled = compileGeneratedVisualization(source, opportunity);
+    assert.equal(compiled.validation.valid, false, `${field}: ${compiled.validation.errors.join("; ")}`);
+    assert.match(compiled.validation.errors.join("; "), new RegExp(field, "i"));
+  }
+});
+
+test("generated outputs must preserve the model-authored label and representation", () => {
+  const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = plan.opportunities[0];
+  for (const [field, source] of [
+    ["label", validSource.replace(
+      'label: "coupled-state propagation under intervention"',
+      'label: "Different response"',
+    )],
+    ["representation", validSource.replace('representation: "chart"', 'representation: "diagram"')],
+  ]) {
+    const compiled = compileGeneratedVisualization(source, opportunity);
+    assert.equal(compiled.validation.valid, false, `${field}: ${compiled.validation.errors.join("; ")}`);
+    assert.match(compiled.validation.errors.join("; "), new RegExp(field, "i"));
+  }
+});
+
 test("AST validator rejects network calls, callbacks, and extra executable statements", () => {
   const malicious = `import { defineVisualization } from "@breadboard/visual-sdk";
 fetch("https://example.com");
@@ -458,7 +608,7 @@ test("compilation cache is source-, opportunity-, and SDK-version aware", () => 
     similarityFingerprint: "stable-semantic-fingerprint",
     requiredInputs: [{
       id: "gain",
-      label: "Gain",
+      label: "gain",
       type: "slider",
       min: 0,
       max: 3,
@@ -467,7 +617,7 @@ test("compilation cache is source-, opportunity-, and SDK-version aware", () => 
     }],
     requiredOutputs: [{
       id: "coupled_state_propagation_under_intervention",
-      label: "Propagated state",
+      label: "coupled-state propagation under intervention",
       representation: "chart",
     }],
   };
@@ -628,6 +778,7 @@ test("a detailed council rejection repairs with its real feedback before approva
         usefulDefaultState: 0.84,
         variableIntroduction: 0.55,
         sourceClaimsAndUnitsPreserved: 0.68,
+        primitiveTopologyAndDomain: 0.86,
         avoidsDuplication: 0.98,
         avoidsUnnecessaryComplexity: 0.9,
         accessibility: 0.94,
@@ -645,6 +796,7 @@ test("a detailed council rejection repairs with its real feedback before approva
         usefulDefaultState: 0.9,
         variableIntroduction: 0.86,
         sourceClaimsAndUnitsPreserved: 0.93,
+        primitiveTopologyAndDomain: 0.94,
         avoidsDuplication: 0.94,
         avoidsUnnecessaryComplexity: 0.89,
         accessibility: 0.91,

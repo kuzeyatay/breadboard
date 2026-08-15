@@ -1198,6 +1198,53 @@ export function getArtifactById(id: string, database: Database.Database = db): A
   return row ?? null;
 }
 
+export function hasReadyArtifactForRun(input: {
+  runId: string;
+  conversationId: number;
+  assistantClientMessageId: string;
+  kind: string;
+  rendererId: string;
+  sourceSkill: string;
+  readyEventType: string;
+  previewRequired?: boolean;
+  database?: Database.Database;
+}): boolean {
+  const database = input.database ?? db;
+  const row = database.prepare(`
+    SELECT 1
+    FROM hermes_artifacts AS artifact
+    JOIN hermes_artifact_events AS event
+      ON event.artifact_id = artifact.id
+      AND event.version = artifact.current_version
+    JOIN conversation_messages AS message
+      ON message.id = event.assistant_message_id
+    WHERE event.run_id = ?
+      AND event.event_type = ?
+      AND event.status = 'ready'
+      AND message.conversation_id = ?
+      AND message.client_message_id = ?
+      AND artifact.status = 'ready'
+      AND artifact.kind = ?
+      AND artifact.renderer_id = ?
+      AND artifact.source_skill = ?
+      AND (? = 0 OR (
+        artifact.preview_location IS NOT NULL
+        AND artifact.preview_location <> ''
+      ))
+    LIMIT 1
+  `).get(
+    input.runId,
+    input.readyEventType,
+    input.conversationId,
+    input.assistantClientMessageId,
+    input.kind,
+    input.rendererId,
+    input.sourceSkill,
+    input.previewRequired === true ? 1 : 0,
+  );
+  return Boolean(row);
+}
+
 export function getArtifactForUser(input: {
   artifactId: string;
   userId: number;

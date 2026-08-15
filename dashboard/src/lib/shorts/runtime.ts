@@ -81,6 +81,11 @@ export function isClone(candidate: string): boolean {
 export function resolveShortsRoot(env: NodeJS.ProcessEnv = process.env): ShortsRuntime | null {
   const candidates: Array<{ root: string; source: ShortsRuntime["source"] }> = [];
   const explicit = configured(env.SHORTS_ROOT);
+  if (env.BREADBOARD_QA_MODE === "1") {
+    return explicit && isClone(explicit)
+      ? { root: explicit, source: "configured" }
+      : null;
+  }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   const name = "AI-Youtube-Shorts-Generator";
   candidates.push({ root: path.join(repositoryRoot(), name), source: "repository" });

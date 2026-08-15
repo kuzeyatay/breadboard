@@ -295,6 +295,56 @@ Original body.
   });
 });
 
+describe("strict ChatMock critic response parsing", () => {
+  test("accepts only the explicit issues envelope, including the clean verdict", () => {
+    assert.deepEqual(parseCriticIssues('{"issues":[]}'), []);
+    const parsed = parseCriticIssues(JSON.stringify({
+      issues: [issue({ id: "stale-caveat-1", type: "stale_caveat", repairTarget: "planning_doc" })],
+    }));
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].id, "stale-caveat-1");
+  });
+
+  test("malformed JSON and wrong top-level shapes fail closed", () => {
+    assert.throws(
+      () => parseCriticIssues('{"issues":['),
+      /Critic response validation failed: invalid JSON/,
+    );
+    assert.throws(
+      () => parseCriticIssues("[]"),
+      /top level must be an object with an "issues" array/,
+    );
+    assert.throws(
+      () => parseCriticIssues('{"issues":"none"}'),
+      /top-level "issues" must be an array/,
+    );
+  });
+
+  test("a mixed valid and invalid issue array rejects the whole response", () => {
+    const response = JSON.stringify({
+      issues: [
+        issue({ id: "valid-issue" }),
+        { ...issue({ id: "invalid-issue" }), severity: "nope" },
+      ],
+    });
+    assert.throws(
+      () => parseCriticIssues(response),
+      /issues\[1\]\.severity is invalid/,
+    );
+  });
+
+  test("the ChatMock critic propagates malformed output as critic unavailability", async () => {
+    const fakeClient = {
+      chat: { completions: { create: async () => ({ choices: [{ message: { content: '{"issues":[' } }] }) } },
+    };
+    const critic = createChatMockCritic({ client: fakeClient, model: "chatmock" });
+    await assert.rejects(
+      () => critic({ gardenTitle: "test" }),
+      /Critic response validation failed: invalid JSON/,
+    );
+  });
+});
+
 describe("ChatMock critic loop", { skip }, () => {
   const opts = { maxRounds: 3, maxIssuesPerRound: 12, maxTotalRepairAttempts: 25, strictPublish: true };
 
@@ -438,20 +488,17 @@ describe("ChatMock critic loop", { skip }, () => {
     assert.ok(typeof packet.deterministicValidationSummary === "string" && packet.deterministicValidationSummary.length > 0);
   });
 
-  // ChatMock adapter: parses model JSON (fenced, {issues:[]}, bad items dropped).
-  test("parseCriticIssues tolerates fences and drops invalid items", () => {
-    const text = "```json\n{\"issues\":[{\"severity\":\"blocking\",\"type\":\"stale_caveat\",\"problem\":\"p\",\"repairTarget\":\"planning_doc\"},{\"severity\":\"nope\"},{\"problem\":\"\"}]}\n```";
-    const parsed = parseCriticIssues(text);
-    assert.equal(parsed.length, 1);
-    assert.equal(parsed[0].type, "stale_caveat");
-    assert.equal(parsed[0].severity, "blocking");
+  // ChatMock adapter: malformed records fail the publication critic closed.
+  test("parseCriticIssues rejects a mixed valid and invalid response", () => {
+    const text = JSON.stringify({ issues: [issue({ id: "valid" }), { ...issue({ id: "invalid" }), severity: "nope" }] });
+    assert.throws(() => parseCriticIssues(text), /issues\[1\]\.severity is invalid/);
   });
 
   test("createChatMockCritic sends the packet and parses the response", async () => {
     const dir = freshCopy();
     const state = buildFinalGardenState(dir, "test-2");
     let sent = null;
-    const fakeClient = { chat: { completions: { create: async (body) => { sent = body; return { choices: [{ message: { content: '{"issues":[{"severity":"warning","type":"repeated_opening","problem":"x","repairTarget":"unit_page","pagePath":"learning/a.md"}]}' } }] }; } } } };
+    const fakeClient = { chat: { completions: { create: async (body) => { sent = body; return { choices: [{ message: { content: JSON.stringify({ issues: [issue({ id: "repeated-opening-1", severity: "warning", type: "repeated_opening", problem: "x", repairTarget: "unit_page", pagePath: "learning/a.md" })] }) } }] }; } } } };
     const critic = createChatMockCritic({ client: fakeClient, model: "chatmock" });
     const issues = await critic(buildCriticReviewPacket(state));
     assert.equal(issues.length, 1);

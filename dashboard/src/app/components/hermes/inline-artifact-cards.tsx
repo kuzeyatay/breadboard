@@ -2,6 +2,7 @@
 
 import {
   createContext,
+  Fragment,
   type ReactNode,
   useCallback,
   useContext,
@@ -233,9 +234,11 @@ function InlineArtifactLoadingCard({ artifact }: { artifact: PresentedArtifact }
           Your artifact is taking shape
         </span>
       </span>
-      <span className="shrink-0 rounded-full bg-[var(--paper-strong)] px-2.5 py-1 text-xs text-[var(--ink-muted)]">
-        {status}
-      </span>
+      {status !== "Repairing" ? (
+        <span className="shrink-0 rounded-full bg-[var(--paper-strong)] px-2.5 py-1 text-xs text-[var(--ink-muted)]">
+          {status}
+        </span>
+      ) : null}
     </article>
   );
 }
@@ -586,6 +589,91 @@ export function InlineArtifactCardsProvider({
   );
 }
 
+function InlineArtifactFileCard({
+  artifact,
+  context,
+}: {
+  artifact: PresentedArtifact;
+  context: ArtifactCardsContextValue;
+}) {
+  const downloadUrl = artifactUrl(artifact, "download");
+  const pdfHref = artifactPdfHref(artifact);
+  const openClasses =
+    "flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]";
+  const fileContent = (
+    <>
+      <span className="bb-neu-artifact-preview inline-flex h-14 w-12 shrink-0 -rotate-3 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--paper-strong)] text-[var(--botanical)] shadow-sm [&_svg]:h-5 [&_svg]:w-5 [&_svg]:stroke-current [&_svg]:[stroke-linecap:round] [&_svg]:[stroke-linejoin:round] [&_svg]:[stroke-width:1.6]">
+        <ArtifactFileIcon kind={artifact.kind} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium text-[var(--ink-heading)]">
+          {artifact.title}
+        </span>
+        <span className="mt-0.5 block text-xs text-[var(--ink-muted)]">
+          {artifactDescription(artifact)}
+        </span>
+      </span>
+    </>
+  );
+
+  return (
+    <article className="bb-neu-artifact-card flex min-h-[5.25rem] items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2.5 shadow-[0_8px_24px_rgba(28,45,36,0.06)]">
+      {pdfHref ? (
+        <a href={pdfHref} className={openClasses} title={`Open ${artifact.title} in the PDF viewer`}>
+          {fileContent}
+        </a>
+      ) : artifact.previewAvailable ? (
+        <button
+          type="button"
+          onClick={() => context.setOpenId(artifact.id)}
+          className={openClasses}
+          title={`Open ${artifact.title}`}
+        >
+          {fileContent}
+        </button>
+      ) : (
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          {fileContent}
+        </div>
+      )}
+
+      <div className="flex shrink-0 items-center gap-1.5">
+        {artifact.downloadAvailable ? (
+          <a
+            href={downloadUrl}
+            className="neu-button rounded-lg border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2 text-sm font-medium text-[var(--ink-heading)] transition-colors hover:bg-[var(--paper-raised)]"
+          >
+            Download
+          </a>
+        ) : (
+          <span
+            className={`rounded-full px-2.5 py-1 text-xs ${
+              artifact.status === "failed"
+                ? "bg-red-50 text-[var(--danger)]"
+                : "bg-[var(--paper-strong)] text-[var(--ink-muted)]"
+            }`}
+            role="status"
+          >
+            {artifactStatusLabel(artifact)}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => void context.handleDelete(artifact)}
+          disabled={context.deletingId === artifact.id}
+          aria-label={`Delete ${artifact.title}`}
+          title="Delete artifact"
+          className="neu-button-icon rounded-lg p-2 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-strong)] hover:text-[var(--danger)] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 7.5h12M9.5 7.5V6a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 6v1.5m-6 0 .5 11a1.5 1.5 0 0 0 1.5 1.4h3a1.5 1.5 0 0 0 1.5-1.4l.5-11" />
+          </svg>
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function ArtifactCardList({
   ownerMessageId,
 }: Pick<Props, "ownerMessageId">) {
@@ -624,13 +712,19 @@ function ArtifactCardList({
         if (artifact.status === "draft" || artifact.status === "generating") {
           return <InlineArtifactLoadingCard key={artifact.id} artifact={artifact} />;
         }
-        if (shouldRenderInteractiveVisualizerInline(artifact)) {
+        if (
+          shouldRenderInteractiveVisualizerInline(artifact) &&
+          artifact.status === "ready" &&
+          artifact.previewAvailable
+        ) {
           return (
-            <InlineInteractiveVisualizer
-              key={artifact.id}
-              artifact={artifact}
-              onOpen={() => context.setOpenId(artifact.id)}
-            />
+            <Fragment key={artifact.id}>
+              <InlineInteractiveVisualizer
+                artifact={artifact}
+                onOpen={() => context.setOpenId(artifact.id)}
+              />
+              <InlineArtifactFileCard artifact={artifact} context={context} />
+            </Fragment>
           );
         }
         if (
@@ -646,84 +740,12 @@ function ArtifactCardList({
             />
           );
         }
-        const downloadUrl = artifactUrl(artifact, "download");
-        const pdfHref = artifactPdfHref(artifact);
-        const openClasses =
-          "flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]";
-        const fileContent = (
-          <>
-            <span className="bb-neu-artifact-preview inline-flex h-14 w-12 shrink-0 -rotate-3 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--paper-strong)] text-[var(--botanical)] shadow-sm [&_svg]:h-5 [&_svg]:w-5 [&_svg]:stroke-current [&_svg]:[stroke-linecap:round] [&_svg]:[stroke-linejoin:round] [&_svg]:[stroke-width:1.6]">
-              <ArtifactFileIcon kind={artifact.kind} />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-medium text-[var(--ink-heading)]">
-                {artifact.title}
-              </span>
-              <span className="mt-0.5 block text-xs text-[var(--ink-muted)]">
-                {artifactDescription(artifact)}
-              </span>
-            </span>
-          </>
-        );
-
         return (
-          <article
+          <InlineArtifactFileCard
             key={artifact.id}
-            className="bb-neu-artifact-card flex min-h-[5.25rem] items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2.5 shadow-[0_8px_24px_rgba(28,45,36,0.06)]"
-          >
-            {pdfHref ? (
-              <a href={pdfHref} className={openClasses} title={`Open ${artifact.title} in the PDF viewer`}>
-                {fileContent}
-              </a>
-            ) : artifact.previewAvailable ? (
-              <button
-                type="button"
-                onClick={() => context.setOpenId(artifact.id)}
-                className={openClasses}
-                title={`Open ${artifact.title}`}
-              >
-                {fileContent}
-              </button>
-            ) : (
-              <div className="flex min-w-0 flex-1 items-center gap-3">
-                {fileContent}
-              </div>
-            )}
-
-            <div className="flex shrink-0 items-center gap-1.5">
-              {artifact.downloadAvailable ? (
-                <a
-                  href={downloadUrl}
-                  className="neu-button rounded-lg border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2 text-sm font-medium text-[var(--ink-heading)] transition-colors hover:bg-[var(--paper-raised)]"
-                >
-                  Download
-                </a>
-              ) : (
-                <span
-                  className={`rounded-full px-2.5 py-1 text-xs ${
-                    artifact.status === "failed"
-                      ? "bg-red-50 text-[var(--danger)]"
-                      : "bg-[var(--paper-strong)] text-[var(--ink-muted)]"
-                  }`}
-                  role="status"
-                >
-                  {artifactStatusLabel(artifact)}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={() => void context.handleDelete(artifact)}
-                disabled={context.deletingId === artifact.id}
-                aria-label={`Delete ${artifact.title}`}
-                title="Delete artifact"
-                className="neu-button-icon rounded-lg p-2 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-strong)] hover:text-[var(--danger)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 7.5h12M9.5 7.5V6a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 6v1.5m-6 0 .5 11a1.5 1.5 0 0 0 1.5 1.4h3a1.5 1.5 0 0 0 1.5-1.4l.5-11" />
-                </svg>
-              </button>
-            </div>
-          </article>
+            artifact={artifact}
+            context={context}
+          />
         );
       })}
     </section>

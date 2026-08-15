@@ -76,6 +76,11 @@ export function resolveCareerOpsRoot(
 ): CareerOpsRuntime | null {
   const candidates: Array<{ root: string; source: CareerOpsRuntime["source"] }> = [];
   const explicit = configured(env.CAREER_OPS_ROOT);
+  if (env.BREADBOARD_QA_MODE === "1") {
+    return explicit && isClone(explicit)
+      ? { root: explicit, source: "configured" }
+      : null;
+  }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   candidates.push({ root: path.join(repositoryRoot(), "career-ops"), source: "repository" });
   candidates.push({ root: path.resolve(process.cwd(), "career-ops"), source: "cwd" });

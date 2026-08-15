@@ -55,8 +55,14 @@ function configured(value: string | undefined): string | null {
 export function resolveAgentReachRoot(
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
+  const explicit = configured(env.AGENT_REACH_ROOT);
+  if (env.BREADBOARD_QA_MODE === "1") {
+    return explicit && fs.existsSync(path.join(explicit, "agent_reach", "cli.py"))
+      ? explicit
+      : null;
+  }
   const candidates = [
-    configured(env.AGENT_REACH_ROOT),
+    explicit,
     path.join(repositoryRoot(), "agent-reach"),
     path.resolve(process.cwd(), "agent-reach"),
     path.resolve(process.cwd(), "..", "agent-reach"),

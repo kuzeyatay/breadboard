@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,7 +10,9 @@ import {
   createLearnBuildWorkspace,
   fingerprintDurableGardenState,
   seedDurableInputs,
+  verifyAuthoritativeSourceAnchorLedger,
 } from "../src/lib/learn-build-workspace.ts";
+import { buildCanonicalSourceAnchors } from "../src/lib/final-garden-state.ts";
 import {
   createActiveBuildManifest,
   contractFingerprint,
@@ -155,6 +158,107 @@ test("1/2. workspace seeds durable inputs and never copies the old learning tree
   assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "claims.json")), false);
 });
 
+test("1c. generation workspace preserves the authoritative source-anchor ledger byte-for-byte", () => {
+  const repo = tmp("repo-anchor-ledger");
+  const breadboard = path.join(repo, ".breadboard");
+  fs.mkdirSync(breadboard, { recursive: true });
+  const ledgerBytes = Buffer.from([
+    "{\r\n",
+    '  "sourceStructuralAnchors": [\r\n',
+    "    {\r\n",
+    '      "id": "text-engineering-electromagnetics-page-406",\r\n',
+    '      "kind": "guidance",\r\n',
+    '      "sourceId": "engineering-electromagnetics",\r\n',
+    '      "page": 406,\r\n',
+    '      "title": "Late-page boundary condition",\r\n',
+    '      "exactText": "E_t is continuous across the boundary."\r\n',
+    "    }\r\n",
+    "  ]\r\n",
+    "}\r\n",
+  ].join(""), "utf8");
+  fs.writeFileSync(path.join(breadboard, "source-anchors.json"), ledgerBytes);
+
+  const ws = createLearnBuildWorkspace({
+    gardenSlug: "g-ledger",
+    jobId: "job-ledger",
+    mode: "generate",
+    repositoryGardenDir: repo,
+    contractFingerprint: "cf-ledger",
+    sourceSetFingerprint: "sf-ledger",
+    workspaceRoot: path.join(tmp("workspace-anchor-ledger"), "workspace"),
+    requireAuthoritativeSourceAnchorLedger: true,
+  });
+  const stagedLedger = fs.readFileSync(
+    path.join(ws.stagingGardenDir, ".breadboard", "source-anchors.json"),
+  );
+
+  assert.deepEqual(stagedLedger, ledgerBytes);
+  assert.deepEqual(ws.authoritativeSourceAnchorLedger, {
+    relativePath: ".breadboard/source-anchors.json",
+    byteLength: ledgerBytes.byteLength,
+    sha256: crypto.createHash("sha256").update(ledgerBytes).digest("hex"),
+  });
+  assert.equal(
+    buildCanonicalSourceAnchors(ws.stagingGardenDir)[
+      "text-engineering-electromagnetics-page-406"
+    ]?.origin,
+    "structural_ledger",
+  );
+  assert.doesNotThrow(() => verifyAuthoritativeSourceAnchorLedger(ws));
+});
+
+test("1d. required authoritative source-anchor ledger fails closed when missing", () => {
+  const repo = tmp("repo-anchor-ledger-missing");
+  const workspaceRoot = path.join(tmp("workspace-anchor-ledger-missing"), "workspace");
+
+  assert.throws(
+    () => createLearnBuildWorkspace({
+      gardenSlug: "g-ledger-missing",
+      jobId: "job-ledger-missing",
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-ledger-missing",
+      sourceSetFingerprint: "sf-ledger-missing",
+      workspaceRoot,
+      requireAuthoritativeSourceAnchorLedger: true,
+    }),
+    /Authoritative source-anchor ledger is missing/,
+  );
+  assert.equal(fs.existsSync(workspaceRoot), false);
+});
+
+test("1e. source-anchor ledger verification rejects staged or authoritative mutation", () => {
+  const repo = tmp("repo-anchor-ledger-mutation");
+  const authoritativePath = path.join(repo, ".breadboard", "source-anchors.json");
+  fs.mkdirSync(path.dirname(authoritativePath), { recursive: true });
+  const original = Buffer.from('{"sourceTextConceptAnchors":[]}\n');
+  fs.writeFileSync(authoritativePath, original);
+  const ws = createLearnBuildWorkspace({
+    gardenSlug: "g-ledger-mutation",
+    jobId: "job-ledger-mutation",
+    mode: "generate",
+    repositoryGardenDir: repo,
+    contractFingerprint: "cf-ledger-mutation",
+    sourceSetFingerprint: "sf-ledger-mutation",
+    workspaceRoot: path.join(tmp("workspace-anchor-ledger-mutation"), "workspace"),
+    requireAuthoritativeSourceAnchorLedger: true,
+  });
+  const stagedPath = path.join(ws.stagingGardenDir, ".breadboard", "source-anchors.json");
+
+  fs.writeFileSync(stagedPath, '{"sourceTextConceptAnchors":[{"id":"changed"}]}\n');
+  assert.throws(
+    () => verifyAuthoritativeSourceAnchorLedger(ws),
+    /not byte-for-byte identical/,
+  );
+
+  fs.writeFileSync(stagedPath, original);
+  fs.writeFileSync(authoritativePath, '{"sourceTextConceptAnchors":[{"id":"changed"}]}\n');
+  assert.throws(
+    () => verifyAuthoritativeSourceAnchorLedger(ws),
+    /not byte-for-byte identical/,
+  );
+});
+
 test("4. seeding leaves the repository garden unchanged", () => {
   const repo = tmp("repo2");
   fs.mkdirSync(path.join(repo, "sources"), { recursive: true });
@@ -204,7 +308,7 @@ test("1b. mixed-case Windows names cannot seed stale Learn projections", () => {
   );
 });
 
-test("2b. all-caps disposable paths never affect the durable fingerprint", () => {
+test("2b. all-caps disposable paths stay excluded while canonical ledgers affect the durable fingerprint", () => {
   const garden = tmp("repo-case-fingerprint");
   fs.writeFileSync(path.join(garden, "note.md"), "durable note");
   const before = fingerprintDurableGardenState(garden);
@@ -222,8 +326,11 @@ test("2b. all-caps disposable paths never affect the durable fingerprint", () =>
   fs.writeFileSync(path.join(breadboard, "LEARN-BUILD.LOCK.JSON"), "{}");
 
   assert.equal(fingerprintDurableGardenState(garden), before);
+  fs.writeFileSync(path.join(breadboard, "SOURCE-ANCHORS.JSON"), "{}");
+  const withSourceAnchors = fingerprintDurableGardenState(garden);
+  assert.notEqual(withSourceAnchors, before);
   fs.writeFileSync(path.join(breadboard, "SOURCE-VISUALS.JSON"), "[]");
-  assert.notEqual(fingerprintDurableGardenState(garden), before);
+  assert.notEqual(fingerprintDurableGardenState(garden), withSourceAnchors);
 });
 
 // ---------------------------------------------------------------------------

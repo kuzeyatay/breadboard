@@ -16,7 +16,13 @@
 //                 run cards consume.
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -27,6 +33,7 @@ import {
   type RufloLauncher,
 } from "./runtime.ts";
 import { finalizeRunSnapshot } from "../agent-edits/snapshot.ts";
+import type { ChatMessageAttachment } from "../chat-attachments.ts";
 
 export interface RufloEvent {
   sequenceNumber: number;
@@ -83,6 +90,8 @@ const MAX_STDERR = 32_000;
 const MAX_OUTPUT_PARTS = 200;
 const MAX_PLAN_STDOUT = 200_000;
 const PLAN_TIMEOUT_MS = 10 * 60_000;
+const MAX_IMAGE_ATTACHMENTS = 4;
+const MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_WORKER_COUNT = 6;
 export const MIN_WORKER_COUNT = 1;
 export const MAX_WORKER_COUNT = 12;
@@ -159,6 +168,79 @@ function pick<T extends string>(
   return (allowed as readonly string[]).includes(normalized)
     ? (normalized as T)
     : fallback;
+}
+
+export type RufloImageAttachment = Extract<
+  ChatMessageAttachment,
+  { type: "image" }
+>;
+
+export function materializeRufloImageAttachments(
+  repositoryPath: string,
+  attachments: readonly RufloImageAttachment[],
+): { paths: string[]; cleanup: () => void } {
+  if (attachments.length === 0) {
+    return { paths: [], cleanup: () => undefined };
+  }
+
+  const repositoryRoot = path.resolve(repositoryPath);
+  const temporaryDirectory = mkdtempSync(
+    path.join(repositoryRoot, ".breadboard-ruflo-"),
+  );
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    const resolved = path.resolve(temporaryDirectory);
+    const expectedPrefix = `${repositoryRoot}${path.sep}.breadboard-ruflo-`;
+    if (resolved.startsWith(expectedPrefix)) {
+      rmSync(resolved, { recursive: true, force: true });
+    }
+  };
+
+  try {
+    const paths = attachments
+      .slice(0, MAX_IMAGE_ATTACHMENTS)
+      .map((attachment, index) => {
+        const match = attachment.dataUrl.match(
+          /^data:image\/(png|jpeg|webp|gif);base64,([a-z0-9+/=\s]+)$/i,
+        );
+        if (!match) throw new Error("invalid_image_attachment");
+        const bytes = Buffer.from(match[2].replace(/\s/g, ""), "base64");
+        if (bytes.length === 0 || bytes.length > MAX_IMAGE_ATTACHMENT_BYTES) {
+          throw new Error("image_attachment_too_large");
+        }
+        const extension =
+          match[1].toLowerCase() === "jpeg" ? "jpg" : match[1].toLowerCase();
+        const filePath = path.join(
+          temporaryDirectory,
+          `screenshot-${index + 1}.${extension}`,
+        );
+        writeFileSync(filePath, bytes, { flag: "wx" });
+        return filePath;
+      });
+    return { paths, cleanup };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+}
+
+/** Add the materialized screenshots to the objective Ruflo gives its queen. */
+export function rufloImageInstruction(
+  repositoryPath: string,
+  paths: readonly string[],
+): string {
+  if (paths.length === 0) return "";
+  const relativePaths = paths.map((filePath) =>
+    path.relative(repositoryPath, filePath),
+  );
+  return [
+    "The user attached screenshot images for this task.",
+    "Before making changes, use Claude Code's Read tool to inspect each image:",
+    ...relativePaths.map((filePath) => `- ${filePath}`),
+    "Treat these files as read-only run inputs. Breadboard removes them automatically when the run finishes.",
+  ].join("\n");
 }
 
 /**
@@ -348,6 +430,7 @@ export interface StartRunInput {
   repositoryPath: string;
   repositoryName: string;
   gardenSlug: string;
+  attachments?: readonly RufloImageAttachment[];
 }
 
 export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
@@ -362,7 +445,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   const queenType = pick(QUEEN_TYPES, input.queenType, "strategic");
   const consensus = pick(CONSENSUS_STRATEGIES, input.consensus, "byzantine");
   const topology = pick(TOPOLOGIES, input.topology, "hierarchical-mesh");
-  const objective = input.instruction?.trim() || input.objective.trim();
+  const baseObjective = input.instruction?.trim() || input.objective.trim();
 
   const runId = `rfrun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
@@ -390,8 +473,42 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
   };
   runs.set(runId, run);
 
-  const mcp = writeMcpConfig(runId, launcher);
-  run.cleanup = mcp.cleanup;
+  let materialized: ReturnType<typeof materializeRufloImageAttachments>;
+  try {
+    materialized = materializeRufloImageAttachments(
+      input.repositoryPath,
+      input.attachments ?? [],
+    );
+  } catch (error) {
+    runs.delete(runId);
+    throw error;
+  }
+  const attachmentContext = rufloImageInstruction(
+    input.repositoryPath,
+    materialized.paths,
+  );
+  // Ruflo 3.34 reads only the first line of a multiline `--objective`. Keep the
+  // planner copy on one line, then append the full readable form directly to
+  // Claude's prompt below so this does not depend on the CLI preserving it.
+  const objective = attachmentContext
+    ? [baseObjective, attachmentContext]
+        .map((part) => part.replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .join(" ")
+    : baseObjective;
+
+  let mcp: ReturnType<typeof writeMcpConfig>;
+  try {
+    mcp = writeMcpConfig(runId, launcher);
+  } catch (error) {
+    materialized.cleanup();
+    runs.delete(runId);
+    throw error;
+  }
+  run.cleanup = () => {
+    mcp.cleanup();
+    materialized.cleanup();
+  };
   const cleanup = () => {
     run.cleanup?.();
     run.cleanup = null;
@@ -419,6 +536,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
     consensus,
     topology,
     requestedWorkers: workers,
+    attachmentCount: materialized.paths.length,
     ...(input.skill
       ? {
           skill: {
@@ -597,7 +715,10 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
           workerCount: run.plan.workerCount,
           workerTypes: run.plan.workerTypes,
         });
-        spawnExecutor(prompt);
+        const executorPrompt = [prompt, attachmentContext]
+          .filter(Boolean)
+          .join("\n\n");
+        spawnExecutor(executorPrompt);
       },
     );
   };

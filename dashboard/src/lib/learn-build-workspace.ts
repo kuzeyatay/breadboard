@@ -39,7 +39,18 @@ export interface LearnBuildWorkspace {
    * is refused when it changes while generation is running. */
   durableInputFingerprint: string;
 
+  /** Byte-level identity captured from the authoritative source-anchor ledger
+   * while this isolated workspace was seeded. Generation re-verifies it before
+   * any canonical-anchor validation or contract write. */
+  authoritativeSourceAnchorLedger?: AuthoritativeSourceAnchorLedgerSnapshot;
+
   createdAt: string;
+}
+
+export interface AuthoritativeSourceAnchorLedgerSnapshot {
+  relativePath: ".breadboard/source-anchors.json";
+  byteLength: number;
+  sha256: string;
 }
 
 /** Directory / top-level names that are DISPOSABLE build output, never seeded
@@ -58,6 +69,7 @@ const DISPOSABLE_TOP_LEVEL = new Set([
  * `.breadboard` is disposable projection output. */
 const DURABLE_BREADBOARD_ENTRIES = new Set([
   "source-visuals.json", // canonical source extraction ledger
+  "source-anchors.json", // canonical model-selected source-anchor ledger
   "sources", // extracted per-source markdown, if present here
   "events.jsonl", // append-only operational history; merged before promotion
 ]);
@@ -104,6 +116,10 @@ const DISPOSABLE_BREADBOARD_ENTRIES = new Set([
   "source-anchors.json",
   "validation-report.md",
   "visual-index.json",
+  "visual-contract-executability-reviews.json",
+  "visual-decision-records.json",
+  "visual-necessity-decisions.json",
+  "visual-necessity-decisions.md",
   "visualization-coverage.json",
   "visualization-coverage.md",
   "visualization-events.json",
@@ -141,6 +157,99 @@ function copyFileResilient(src: string, dest: string): void {
   fs.copyFileSync(src, dest);
 }
 
+const SOURCE_ANCHOR_LEDGER_RELATIVE_PATH = ".breadboard/source-anchors.json" as const;
+
+function sourceAnchorLedgerPath(gardenDir: string): string {
+  return path.join(gardenDir, ".breadboard", "source-anchors.json");
+}
+
+function readRequiredRegularFile(absolutePath: string, label: string): Buffer {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(absolutePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`${label} is missing: ${SOURCE_ANCHOR_LEDGER_RELATIVE_PATH}`);
+    }
+    throw error;
+  }
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(
+      `${label} must be a regular file: ${SOURCE_ANCHOR_LEDGER_RELATIVE_PATH}`,
+    );
+  }
+  return fs.readFileSync(absolutePath);
+}
+
+function captureExactSourceAnchorLedger(
+  repositoryGardenDir: string,
+  stagingGardenDir: string,
+): AuthoritativeSourceAnchorLedgerSnapshot {
+  const authoritativePath = sourceAnchorLedgerPath(repositoryGardenDir);
+  const stagedPath = sourceAnchorLedgerPath(stagingGardenDir);
+  const authoritativeBefore = readRequiredRegularFile(
+    authoritativePath,
+    "Authoritative source-anchor ledger",
+  );
+  const stagedBefore = readRequiredRegularFile(stagedPath, "Staged source-anchor ledger");
+  const authoritativeAfter = readRequiredRegularFile(
+    authoritativePath,
+    "Authoritative source-anchor ledger",
+  );
+  const stagedAfter = readRequiredRegularFile(stagedPath, "Staged source-anchor ledger");
+
+  if (!authoritativeBefore.equals(authoritativeAfter)) {
+    throw new Error(
+      `Authoritative source-anchor ledger changed while Learn was verifying ${SOURCE_ANCHOR_LEDGER_RELATIVE_PATH}.`,
+    );
+  }
+  if (!stagedBefore.equals(stagedAfter)) {
+    throw new Error(
+      `Staged source-anchor ledger changed while Learn was verifying ${SOURCE_ANCHOR_LEDGER_RELATIVE_PATH}.`,
+    );
+  }
+  if (!authoritativeAfter.equals(stagedAfter)) {
+    throw new Error(
+      `Staged source-anchor ledger is not byte-for-byte identical to the authoritative ${SOURCE_ANCHOR_LEDGER_RELATIVE_PATH}.`,
+    );
+  }
+
+  return {
+    relativePath: SOURCE_ANCHOR_LEDGER_RELATIVE_PATH,
+    byteLength: authoritativeAfter.byteLength,
+    sha256: crypto.createHash("sha256").update(authoritativeAfter).digest("hex"),
+  };
+}
+
+/**
+ * Fail closed unless the authoritative and staged source-anchor ledgers still
+ * match the exact bytes captured during workspace creation. This deliberately
+ * does not parse, normalize, infer, or rewrite any anchor record.
+ */
+export function verifyAuthoritativeSourceAnchorLedger(
+  workspace: LearnBuildWorkspace,
+): void {
+  const expected = workspace.authoritativeSourceAnchorLedger;
+  if (!expected) {
+    throw new Error(
+      `Learn workspace has no authoritative source-anchor ledger snapshot for ${SOURCE_ANCHOR_LEDGER_RELATIVE_PATH}.`,
+    );
+  }
+  const current = captureExactSourceAnchorLedger(
+    workspace.repositoryGardenDir,
+    workspace.stagingGardenDir,
+  );
+  if (
+    current.relativePath !== expected.relativePath ||
+    current.byteLength !== expected.byteLength ||
+    current.sha256 !== expected.sha256
+  ) {
+    throw new Error(
+      `Authoritative source-anchor ledger changed after Learn seeded ${SOURCE_ANCHOR_LEDGER_RELATIVE_PATH}; generation cannot continue safely.`,
+    );
+  }
+}
+
 function copyTree(srcDir: string, destDir: string, filter?: (rel: string) => boolean): void {
   const walk = (rel: string) => {
     const absSrc = path.join(srcDir, rel);
@@ -173,6 +282,9 @@ export function createLearnBuildWorkspace(input: {
   sourceSetFingerprint: string;
   workspaceRoot?: string;
   previousPublishedGardenDir?: string;
+  /** Require and snapshot the canonical source-anchor ledger. Production
+   * generation enables this so a missing ledger fails before model work. */
+  requireAuthoritativeSourceAnchorLedger?: boolean;
   /** Defaults to `staging`. Production uses the real garden slug so helpers
    * receiving a content root continue to resolve `<root>/<gardenSlug>`. */
   stagingDirectoryName?: string;
@@ -187,6 +299,9 @@ export function createLearnBuildWorkspace(input: {
   const durableInputFingerprint = fingerprintDurableGardenState(
     input.repositoryGardenDir,
   );
+  let authoritativeSourceAnchorLedger:
+    | AuthoritativeSourceAnchorLedgerSnapshot
+    | undefined;
 
   // Start from a clean staging garden. A stale workspace directory from a
   // previous crashed run of the same job id is removed first.
@@ -207,6 +322,12 @@ export function createLearnBuildWorkspace(input: {
         "Garden inputs changed while Learn was creating its isolated workspace. No published files were changed; retry the operation.",
       );
     }
+    if (input.requireAuthoritativeSourceAnchorLedger) {
+      authoritativeSourceAnchorLedger = captureExactSourceAnchorLedger(
+        input.repositoryGardenDir,
+        stagingGardenDir,
+      );
+    }
   } catch (error) {
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
     throw error;
@@ -225,6 +346,7 @@ export function createLearnBuildWorkspace(input: {
     contractFingerprint: input.contractFingerprint,
     sourceSetFingerprint: input.sourceSetFingerprint,
     durableInputFingerprint,
+    authoritativeSourceAnchorLedger,
     createdAt: new Date().toISOString(),
   };
   writeWorkspaceDescriptor(workspace);
@@ -315,6 +437,7 @@ function durableFingerprintIncludes(relPath: string): boolean {
   if (normalizedSecond === "events.jsonl" || normalizedSecond === "learn-build.lock.json") {
     return false;
   }
+  if (DURABLE_BREADBOARD_ENTRIES.has(normalizedSecond)) return true;
   return !DISPOSABLE_BREADBOARD_ENTRIES.has(normalizedSecond);
 }
 

@@ -9,6 +9,7 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -161,6 +162,17 @@ test("configuration points at the vendored clone but can be sent elsewhere", () 
   assert.equal(external.managed, false);
   assert.equal(resolveComfyUiConfig({}).autostart, true);
   assert.equal(resolveComfyUiConfig({ COMFYUI_AUTOSTART: "false" }).autostart, false);
+  const isolatedRuntime = resolveComfyUiConfig({
+    COMFYUI_RUNTIME_DIR: path.resolve("qa-comfy-runtime"),
+  });
+  assert.equal(
+    isolatedRuntime.statusFile,
+    path.resolve("qa-comfy-runtime", "startup-status.json"),
+  );
+  assert.equal(
+    isolatedRuntime.logFile,
+    path.resolve("qa-comfy-runtime", "comfyui.log"),
+  );
 });
 
 test("Advanced is a fourth image mode in the post studio, not a separate window", () => {

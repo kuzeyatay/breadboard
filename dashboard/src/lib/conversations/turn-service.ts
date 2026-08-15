@@ -65,6 +65,7 @@ import {
 } from "./reference-resolution.ts";
 import { runtimeMessagesForBranch } from "./branch-history.ts";
 import { visualizerCommandText } from "../hermes/interactive-visualizer-intent.ts";
+import { selectedInteractiveVisualizerSkill } from "../hermes/interactive-visualizer-skills.ts";
 import { premortemCommandText } from "../hermes/premortem-intent.ts";
 import { agentLoopCommandText } from "../hermes/agent-loop-intent.ts";
 import { messagingCommandText } from "../hermes/messaging-intent.ts";
@@ -963,6 +964,13 @@ export async function startConversationTurn(
   const runtimeText = input.textSelection
     ? chatTextSelectionQuestionPrompt(defaultRuntimeText, input.textSelection)
     : defaultRuntimeText;
+  const requiredVisualizerSkill = selectedInteractiveVisualizerSkill(
+    new Set(
+      resolved.invocations
+        .filter((invocation) => invocation.kind === "skill")
+        .map((invocation) => invocation.slug),
+    ),
+  );
   const run = beginRuntimeRun({
     runtimeSessionId: session.row.id,
     instruction: resolved.userText || input.text,
@@ -975,6 +983,19 @@ export async function startConversationTurn(
       variant: engine.variant,
       tools,
       system: baseSystem,
+      ...(requiredVisualizerSkill
+        ? {
+            requiredArtifacts: [
+              {
+                kind: "html",
+                rendererId: "interactive-visualizer",
+                sourceSkill: requiredVisualizerSkill,
+                readyEventType: "artifact.completed",
+                previewRequired: true,
+              },
+            ],
+          }
+        : {}),
       ...(gardenGrounding.attempted
         ? {
             gardenGrounding: {

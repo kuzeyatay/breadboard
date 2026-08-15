@@ -74,7 +74,8 @@ export type AgentMemorySkipReason =
   | "not_enrolled"
   | "empty_query"
   | "no_memories"
-  | "retrieval_failed";
+  | "retrieval_failed"
+  | "temporary_chat";
 
 /**
  * Off by setting BREADBOARD_AGENT_MEMORY=off. On for enrolled agents otherwise:
@@ -139,6 +140,13 @@ export async function composeAgentMemoryContext(
     agentId: AgentMemoryAgentId;
     /** The task text, used for relevance ranking. */
     query: string;
+    /**
+     * The chat the run was launched from, when the launcher knows it. A
+     * temporary chat gets no injection: an external run started from one is
+     * still work done off the record, and this is the last door memory could
+     * otherwise walk through.
+     */
+    conversationPublicId?: string | null;
     limit?: number;
     env?: NodeJS.ProcessEnv;
   },
@@ -167,6 +175,9 @@ export async function composeAgentMemoryContext(
   if (injectionKillSwitchOn(env)) return log("disabled", null);
   if (!agentMemoryInjectionEnabled(input.agentId, env)) return log("not_enrolled", null);
   if (!query) return log("empty_query", null);
+  if (launchedFromTemporaryChat(input.conversationPublicId, input.userId, database)) {
+    return log("temporary_chat", null);
+  }
 
   const limit = Math.max(1, Math.min(MAX_MEMORIES, input.limit ?? MAX_MEMORIES));
   // Retrieval asks for the widest window the shared policy allows, because the
@@ -238,6 +249,28 @@ export async function composeAgentMemoryContext(
     },
     selection,
   );
+}
+
+/**
+ * True only when the launcher named a chat and that chat is temporary. An
+ * unknown or foreign id is not treated as temporary — it is treated as no
+ * chat at all, which is the pilot's normal case.
+ */
+function launchedFromTemporaryChat(
+  conversationPublicId: string | null | undefined,
+  userId: number,
+  database: Database.Database,
+): boolean {
+  const publicId = conversationPublicId?.trim();
+  if (!publicId) return false;
+  try {
+    const row = database
+      .prepare("SELECT temporary FROM conversations WHERE public_id = ? AND user_id = ?")
+      .get(publicId, userId) as { temporary: number } | undefined;
+    return Number(row?.temporary ?? 0) === 1;
+  } catch {
+    return false;
+  }
 }
 
 /** Where the ranked rows went. Logged so a starved run is legible as one. */

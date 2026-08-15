@@ -47,6 +47,11 @@ export function isShapeRClone(candidate: string): boolean {
 export function resolveShapeRRoot(env: NodeJS.ProcessEnv = process.env): ShapeRRuntime | null {
   const candidates: ShapeRRuntime[] = [];
   const explicit = configured(env.SHAPER_ROOT);
+  if (env.BREADBOARD_QA_MODE === "1") {
+    return explicit && isShapeRClone(explicit)
+      ? { root: explicit, source: "configured" }
+      : null;
+  }
   if (explicit) candidates.push({ root: explicit, source: "configured" });
   candidates.push({ root: path.join(repositoryRoot(), "ShapeR"), source: "repository" });
   candidates.push({ root: path.resolve(process.cwd(), "ShapeR"), source: "cwd" });

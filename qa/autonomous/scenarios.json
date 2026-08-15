@@ -1,0 +1,1106 @@
+[
+  {
+    "id": "qa-state-isolation",
+    "priority": "P0",
+    "task": "Resolve and record every mutable desktop and service path for a fresh QA run root, launch the actual Electron app only after isolation is proven, and create one uniquely named garden.",
+    "successCriteria": [
+      "Electron userData, Breadboard database, Quartz content, conversations, artifacts, skills, logs, caches, and agent state resolve below the QA run root",
+      "the uniquely named garden is present only in isolated QA state",
+      "no normal Breadboard user-data path or unrelated repository data is read or modified",
+      "no secret or capability token is captured in diagnostics"
+    ],
+    "dependencies": {
+      "required": ["actual Electron launch entrypoint", "absolute disposable QA run root", "runtime path diagnostics"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": false,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "desktop-navigation-security",
+    "priority": "P0",
+    "task": "From the Electron renderer, exercise an allowed dashboard-to-Quartz navigation and attempt an untrusted external navigation while the QA harness intercepts OS external-open actions.",
+    "successCriteria": [
+      "dashboard and configured Quartz loopback origins remain usable",
+      "untrusted content cannot replace the Electron renderer",
+      "an allowed external link is delegated through the restricted external-open path rather than loaded with privileged renderer access",
+      "no privileged popup or unexpected BrowserWindow is created"
+    ],
+    "dependencies": {
+      "required": ["Electron QA external-open interceptor", "dashboard and Quartz readiness"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": false,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "desktop-preload-least-privilege",
+    "priority": "P0",
+    "task": "Inspect the renderer-visible desktop bridge in the launched application and exercise its documented harmless methods without importing Node modules or accessing filesystem, process, or secret values.",
+    "successCriteria": [
+      "the narrow typed Breadboard desktop API is available where expected",
+      "Node integration, arbitrary filesystem access, and command execution are unavailable to renderer content",
+      "service secrets and capability tokens are absent from the bridge",
+      "the renderer remains sandboxed and context-isolated"
+    ],
+    "dependencies": {
+      "required": ["actual Electron renderer", "desktop preload bridge"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": false,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "desktop-startup-welcome-gate",
+    "priority": "P1",
+    "task": "Launch Breadboard from a cold isolated state, observe the local startup window and progress, continue through the welcome gate like a user, and reach the dashboard window.",
+    "successCriteria": [
+      "Electron launches and shows a visible startup or recovery surface",
+      "startup progress does not freeze or become a blank page",
+      "the welcome continuation swaps to the preloaded dashboard window",
+      "the primary dashboard becomes interactable without a fatal main-process or renderer error"
+    ],
+    "dependencies": {
+      "required": ["built desktop shell", "required local runtime assets", "isolated QA state"],
+      "optional": ["startup intro audio device"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "SKIP_OPTIONAL_ASSERTIONS",
+      "optionalClassification": "TEST_ENVIRONMENT",
+      "continueInventory": false,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "desktop-required-service-readiness",
+    "priority": "P1",
+    "task": "Launch Electron and wait on product readiness signals for the required ChatMock, Quartz, and dashboard service graph before using initial navigation.",
+    "successCriteria": [
+      "each required service reaches its meaningful health condition within its bounded startup timeout",
+      "dependency ordering does not surface a false ready state",
+      "initial dashboard navigation succeeds",
+      "an optional unavailable service does not make the whole application unusable"
+    ],
+    "dependencies": {
+      "required": ["ChatMock runtime", "Quartz runtime", "dashboard runtime", "desktop supervisor"],
+      "optional": ["Hermes conversational runtime", "GBrain", "UI-TARS", "CAD", "Scriberr"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE_WITH_DEGRADED_ASSERTIONS",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": false,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "desktop-clean-exit-process-tree",
+    "priority": "P1",
+    "task": "After reaching the dashboard and performing a harmless navigation, close Breadboard through the supported Electron lifecycle and inspect only processes and ports owned by the QA run.",
+    "successCriteria": [
+      "the main and renderer processes exit cleanly",
+      "supervised child services stop in dependency-safe order",
+      "no QA-owned child or grandchild process remains orphaned",
+      "QA-owned ports are released and unrelated processes remain untouched"
+    ],
+    "dependencies": {
+      "required": ["desktop supervisor", "QA process ownership diagnostics"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": false,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "desktop-relaunch-durable-state",
+    "priority": "P1",
+    "task": "Create a QA garden, close the Electron application cleanly, relaunch it with the same isolated QA data root, sign in if required, and return to that garden.",
+    "successCriteria": [
+      "the second launch uses the same isolated QA state and fresh service processes",
+      "the garden and intended account/session state survive application restart",
+      "the garden opens and its durable content is intact",
+      "no stale child process or port conflict prevents relaunch"
+    ],
+    "dependencies": {
+      "required": ["isolated persistent QA data root", "local QA account", "garden creation UI"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "desktop-renderer-refresh-persistence",
+    "priority": "P1",
+    "task": "Create durable garden and conversation state, reload the Electron renderer, and verify that the application returns to a usable surface without losing persisted state.",
+    "successCriteria": [
+      "renderer reload does not crash or strand a blank window",
+      "the garden remains available",
+      "completed conversation state remains available",
+      "controls are enabled and the user can continue working"
+    ],
+    "dependencies": {
+      "required": ["created QA garden", "completed QA conversation", "Electron renderer reload control"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "desktop-required-service-recovery",
+    "priority": "P1",
+    "task": "After the dashboard is ready, terminate one QA-owned required service through the harness, observe the desktop supervisor's bounded recovery, and then navigate in the recovered application.",
+    "successCriteria": [
+      "the failure is visible in structured diagnostics rather than silent",
+      "the supervisor applies its configured bounded restart policy",
+      "the recovered service reaches a meaningful health state",
+      "the dashboard becomes usable again without spawning duplicate service trees"
+    ],
+    "dependencies": {
+      "required": ["QA process ownership map", "desktop service supervisor", "restartable required service"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "windows-paths-with-spaces",
+    "priority": "P1",
+    "task": "Launch Breadboard with the QA data root and fixture directory nested under paths containing spaces, then create a garden and ingest a small Markdown file.",
+    "successCriteria": [
+      "Electron and every required service launch successfully from the spaced paths",
+      "the data-directory override is parsed as one absolute path",
+      "the fixture is ingested and visible in the garden",
+      "shutdown leaves no stale process caused by quoting or path-separator errors"
+    ],
+    "dependencies": {
+      "required": ["Windows host", "spaced disposable QA path", "deterministic Markdown fixture"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "local-account-onboarding",
+    "priority": "P1",
+    "task": "In a first-run isolated desktop profile, use the local registration and login UI with QA-only credentials and reach the authenticated dashboard.",
+    "successCriteria": [
+      "the invite-only local registration flow is discoverable in the desktop experience",
+      "a QA account can be created without exposing generated secrets",
+      "login succeeds and redirects to the dashboard",
+      "refresh preserves the intended authenticated session"
+    ],
+    "dependencies": {
+      "required": ["fresh isolated database", "desktop-provided initial invite flow", "QA-only credentials"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "garden-create-rename-return",
+    "priority": "P1",
+    "task": "Create a uniquely named QA garden from the dashboard, enter it, rename it and update its description, navigate away, and return from the dashboard.",
+    "successCriteria": [
+      "the garden is created once and opens successfully",
+      "the new name and description are visible after editing",
+      "the garden remains listed after navigating away and back",
+      "returning to the garden shows the updated durable state"
+    ],
+    "dependencies": {
+      "required": ["authenticated dashboard", "garden creation and edit controls"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "garden-folder-nesting-move",
+    "priority": "P2",
+    "task": "Create a top-level garden folder and a nested folder, move a QA garden into the nested folder using the visible dashboard controls, collapse and expand the tree, then refresh.",
+    "successCriteria": [
+      "both folder levels are created without duplicate or malformed paths",
+      "the garden appears under the intended nested folder",
+      "collapse and expand preserve the correct tree relationships",
+      "folder placement survives renderer refresh"
+    ],
+    "dependencies": {
+      "required": ["existing QA garden", "dashboard folder controls"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "dashboard-garden-search-and-view",
+    "priority": "P3",
+    "task": "Create two distinct QA gardens, use the dashboard search to isolate one by name, clear the search, and switch between the implemented garden display modes.",
+    "successCriteria": [
+      "search returns the matching garden and hides the non-match",
+      "clearing search restores both gardens",
+      "each implemented view mode renders the same underlying gardens",
+      "view switching does not duplicate or lose garden state"
+    ],
+    "dependencies": {
+      "required": ["two QA gardens", "dashboard search", "garden view switch"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "garden-export-import-roundtrip",
+    "priority": "P2",
+    "task": "Export a QA garden containing a deterministic note through the dashboard, import that export into isolated QA state under a new name, and open the imported garden.",
+    "successCriteria": [
+      "export produces a non-empty garden transfer file in the QA output directory",
+      "import completes without writing outside isolated state",
+      "the imported garden is distinct from the source",
+      "the deterministic note and its content survive the round trip"
+    ],
+    "dependencies": {
+      "required": ["garden export/import controls", "QA save/download capture", "garden with deterministic note"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "garden-fork-isolation",
+    "priority": "P2",
+    "task": "Enable the implemented fork permission on a QA garden, fork it through the visible UI, edit content in the fork, and verify the source garden remains unchanged.",
+    "successCriteria": [
+      "the fork action creates a distinct garden with copied initial content",
+      "the fork has a unique slug and opens successfully",
+      "an edit in the fork is durable",
+      "the corresponding source-garden content is unchanged"
+    ],
+    "dependencies": {
+      "required": ["QA garden with deterministic content", "fork controls", "fork permission control"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "markdown-upload-ingestion",
+    "priority": "P1",
+    "task": "Upload a small Markdown fixture containing a unique deterministic fact into a QA garden and wait on the product's ingestion state rather than sleeping.",
+    "successCriteria": [
+      "the upload progresses through visible bounded states and completes",
+      "the document appears in the garden source/library UI",
+      "the extracted Markdown retains the unique deterministic fact",
+      "no silent ingestion, renderer, or service error occurs"
+    ],
+    "dependencies": {
+      "required": ["QA Markdown fixture", "garden upload UI", "ingestion service path"],
+      "optional": ["GBrain indexing"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE_WITH_DEGRADED_ASSERTIONS",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "pdf-upload-ingestion",
+    "priority": "P1",
+    "task": "Upload a small deterministic PDF fixture into a QA garden, wait for parsing and ingestion, then open the resulting document representation.",
+    "successCriteria": [
+      "the PDF is accepted and reaches a terminal ingestion state",
+      "the document appears in the garden",
+      "known fixture text is available in the extracted content or PDF reading surface",
+      "fallback behavior is truthful if an optional parser is unavailable"
+    ],
+    "dependencies": {
+      "required": ["small QA PDF fixture", "garden upload UI", "built-in PDF ingestion path"],
+      "optional": ["Anydoc parser", "VLM OCR provider"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE_WITH_DEGRADED_ASSERTIONS",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "unsupported-upload-visible-error",
+    "priority": "P2",
+    "task": "Attempt to upload a harmless tiny fixture with an unsupported extension, dismiss the resulting feedback, and then upload a supported Markdown fixture.",
+    "successCriteria": [
+      "the unsupported file is rejected with a clear user-visible reason",
+      "no false success state or infinite spinner appears",
+      "the upload control returns to an enabled state after dismissal",
+      "a subsequent supported upload completes successfully"
+    ],
+    "dependencies": {
+      "required": ["harmless unsupported-extension fixture", "supported Markdown fixture", "garden upload UI"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "upload-background-dismissal",
+    "priority": "P2",
+    "task": "Start ingestion of a deterministic fixture, dismiss or navigate away from the upload panel while work continues, return to the garden, and observe the final state.",
+    "successCriteria": [
+      "dismissing the panel does not silently cancel the upload unless the UI promises cancellation",
+      "progress or final state can be recovered after returning",
+      "the document is either successfully ingested or has a clear terminal error",
+      "no permanent disabled control or orphan spinner remains"
+    ],
+    "dependencies": {
+      "required": ["deterministic ingestion fixture", "garden upload UI", "background upload state"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "garden-link-ingestion",
+    "priority": "P2",
+    "task": "Use the Links panel to import a controlled public URL with a unique fact, wait for the Reader-to-Markdown ingestion path, and open the stored source in the garden.",
+    "successCriteria": [
+      "the link job reaches a terminal visible state",
+      "a Markdown source is stored in isolated garden content",
+      "the known page fact is present in the stored source",
+      "network or Reader failure is surfaced honestly and remains retryable"
+    ],
+    "dependencies": {
+      "required": ["controlled public fixture URL", "outbound network", "Reader endpoint", "garden Links panel"],
+      "optional": ["GBrain indexing"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "EXTERNAL_DEPENDENCY",
+      "onMissingOptional": "CONTINUE_WITH_DEGRADED_ASSERTIONS",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "garden-chat-document-grounding",
+    "priority": "P1",
+    "task": "After ingesting the deterministic Markdown fixture, ask Garden Chat a question whose answer is the fixture's unique fact.",
+    "successCriteria": [
+      "the user message appears once",
+      "the response reaches a completed non-empty state",
+      "the answer or deterministic evidence references the ingested fact without requiring exact prose",
+      "no fatal renderer, Hermes, ChatMock, or retrieval error occurs"
+    ],
+    "dependencies": {
+      "required": ["ingested deterministic garden source", "Hermes runtime", "configured local model path"],
+      "optional": ["GBrain retrieval"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE_WITH_DEGRADED_ASSERTIONS",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "garden-chat-follow-up-context",
+    "priority": "P1",
+    "task": "In the completed grounded conversation, ask a follow-up that refers to the prior answer without repeating the document subject.",
+    "successCriteria": [
+      "the follow-up is added to the same conversation",
+      "the response completes and uses the prior turn's subject correctly",
+      "the original grounded context remains available",
+      "the composer stays usable after completion"
+    ],
+    "dependencies": {
+      "required": ["completed grounded Garden Chat turn", "Hermes conversation session"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "conversation-isolation",
+    "priority": "P1",
+    "task": "Create conversation A with a unique chat-only passphrase, create conversation B and ask for that passphrase, then return to A and ask for it there.",
+    "successCriteria": [
+      "conversation B does not expose chat-specific context from A",
+      "conversation A retains its own context",
+      "switching sessions does not duplicate or overwrite messages",
+      "both conversations remain independently usable"
+    ],
+    "dependencies": {
+      "required": ["Hermes session creation", "conversation switcher", "configured local model path"],
+      "optional": ["durable memory feature, which must not treat the passphrase as durable profile memory"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE_WITH_DEGRADED_ASSERTIONS",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "conversation-history-search-reopen",
+    "priority": "P2",
+    "task": "Create two conversations with distinct searchable text, open chat history search, locate one by its unique text, reopen it, and continue the conversation.",
+    "successCriteria": [
+      "history search returns the correct conversation",
+      "opening the result restores its messages in order",
+      "sending a new turn appends to the restored session",
+      "refresh preserves the updated history"
+    ],
+    "dependencies": {
+      "required": ["two persisted Hermes sessions", "chat history search UI"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "conversation-branch-independence",
+    "priority": "P2",
+    "task": "Branch an existing Garden Chat conversation from a completed assistant turn, send different follow-ups on the original and branch, and switch between their histories.",
+    "successCriteria": [
+      "the branch starts from the selected turn",
+      "new branch messages do not appear in the original branch",
+      "new original-branch messages do not overwrite the fork",
+      "both branches survive renderer refresh"
+    ],
+    "dependencies": {
+      "required": ["completed multi-turn Hermes session", "conversation branching UI"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "chat-document-attachment",
+    "priority": "P2",
+    "task": "Attach a small deterministic text document to a chat message through the composer, send a question about it, and reopen the conversation after refresh.",
+    "successCriteria": [
+      "the attachment preview shows the correct file and can be removed before send",
+      "the sent message owns exactly one attachment",
+      "the assistant response completes with useful attachment-grounded evidence",
+      "the attachment remains accessible after refresh without leaking outside QA storage"
+    ],
+    "dependencies": {
+      "required": ["small text attachment fixture", "chat attachment upload route", "Hermes runtime"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "chat-cancel-and-recover",
+    "priority": "P1",
+    "task": "Start a deliberately bounded long-running chat request, use the visible stop control while it is active, then submit a small follow-up request.",
+    "successCriteria": [
+      "active progress is visible before cancellation",
+      "the stop control transitions the run to a terminal cancelled or stopped state",
+      "the composer is re-enabled and no background response continues mutating the cancelled turn",
+      "a subsequent request completes normally"
+    ],
+    "dependencies": {
+      "required": ["Hermes runtime", "bounded cancellable QA prompt", "chat stop control"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "chat-empty-submission",
+    "priority": "P3",
+    "task": "Focus the Garden Chat composer with no text or attachment, attempt submission through keyboard and button paths, then enter a valid short message.",
+    "successCriteria": [
+      "empty input does not create a blank conversation turn or server request",
+      "the UI remains stable and communicates disabled/ignored behavior semantically",
+      "the composer is not permanently disabled",
+      "the subsequent valid message can be sent"
+    ],
+    "dependencies": {
+      "required": ["Garden Chat composer"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "terminal-command-completion",
+    "priority": "P1",
+    "task": "Open the dashboard terminal through the Electron UI, submit a harmless deterministic local task that writes only inside the QA workspace, observe progress, and wait for completion.",
+    "successCriteria": [
+      "the terminal task starts exactly once",
+      "progress or activity is visible while it runs",
+      "a terminal completion state and useful output appear",
+      "the output provides evidence of the requested QA-only result without direct implementation invocation"
+    ],
+    "dependencies": {
+      "required": ["Hermes runtime", "dashboard terminal UI", "QA-only workspace grant"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "terminal-cancel-and-reuse",
+    "priority": "P1",
+    "task": "Start a bounded cancellable terminal task from the UI, stop it with the visible control, and then run a short deterministic terminal task.",
+    "successCriteria": [
+      "the first task exposes an active state and stop control",
+      "cancellation reaches a terminal state without a stuck spinner",
+      "no cancelled child task remains active",
+      "the second terminal task starts and completes successfully"
+    ],
+    "dependencies": {
+      "required": ["Hermes runtime", "cancellable QA terminal task", "terminal stop control"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "terminal-error-recovery",
+    "priority": "P2",
+    "task": "Submit a harmless terminal task that deterministically returns a non-zero result inside the QA workspace, inspect the visible failure, then submit a valid task.",
+    "successCriteria": [
+      "the failed task has a clear terminal error state and useful redacted evidence",
+      "the UI does not claim success or remain indefinitely active",
+      "the terminal input and controls recover",
+      "the subsequent valid task completes"
+    ],
+    "dependencies": {
+      "required": ["Hermes runtime", "QA-only workspace grant", "deterministic failing task"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "terminal-refresh-run-state",
+    "priority": "P1",
+    "task": "Start a bounded terminal task, reload the Electron renderer while it is active, and inspect the recovered run card until the task reaches a terminal state.",
+    "successCriteria": [
+      "renderer reload does not create a duplicate task",
+      "the in-progress or recovered run card communicates truthful state",
+      "the final output or error remains attached to the original task",
+      "the terminal can be used again after the recovered task ends"
+    ],
+    "dependencies": {
+      "required": ["Hermes runtime", "bounded terminal task", "persisted terminal run state"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "skills-catalog-search-detail",
+    "priority": "P2",
+    "task": "Open the Skills surface from chat, search the available catalog for a known harmless entry, open its detail/audit information, clear the search, and return to chat.",
+    "successCriteria": [
+      "the skills surface opens without blocking the conversation",
+      "search returns a stable matching skill from the cached or live catalog",
+      "detail and audit/provenance information are readable",
+      "closing the surface returns to an intact chat"
+    ],
+    "dependencies": {
+      "required": ["Hermes skills UI", "local cached skills catalog"],
+      "optional": ["live skills catalog endpoint"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE_WITH_CACHED_DATA",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "skill-install-and-invoke",
+    "priority": "P2",
+    "task": "Install a reviewed harmless public QA skill into isolated skill roots through the Skills UI, verify its state, and invoke its deterministic non-destructive capability from chat.",
+    "successCriteria": [
+      "the selected skill's provenance and compatibility are visible before installation",
+      "installation writes only to isolated quarantine/approved/conditional skill roots",
+      "the UI reports the durable installed state after refresh",
+      "invocation produces the skill's deterministic effect rather than only showing an installed badge"
+    ],
+    "dependencies": {
+      "required": ["reviewed harmless QA skill", "Hermes runtime", "isolated skill roots", "skill install UI"],
+      "optional": ["live public catalog network"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "EXTERNAL_DEPENDENCY",
+      "onMissingOptional": "USE_CACHED_REVIEWED_SKILL_OR_BLOCK",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "agent-safe-run-completion",
+    "priority": "P2",
+    "task": "Select one configured harmless agent exposed by the Garden Chat agent picker, launch a bounded QA-only task, observe its run card, and wait for a terminal result.",
+    "successCriteria": [
+      "the selected agent and task are shown before launch",
+      "exactly one run starts and progress is visible",
+      "the run reaches completed or a clear useful error state within its bound",
+      "any output/artifact belongs to the initiating conversation and stays inside QA state"
+    ],
+    "dependencies": {
+      "required": ["one configured harmless agent runtime", "agent picker", "isolated agent workspace"],
+      "optional": ["agent-specific external provider"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "EXTERNAL_DEPENDENCY",
+      "onMissingOptional": "BLOCK_DEPENDENT_ASSERTIONS",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "agent-cancel-and-recover",
+    "priority": "P2",
+    "task": "Launch a bounded cancellable task with a configured harmless agent, stop it through the run card or composer, then launch a short task with the same agent.",
+    "successCriteria": [
+      "the first agent run exposes progress and a cancellation control",
+      "cancellation produces a terminal stopped state and halts further events",
+      "the conversation remains usable",
+      "a later short run starts once and reaches a terminal result"
+    ],
+    "dependencies": {
+      "required": ["configured cancellable harmless agent", "agent run cancellation route", "isolated agent workspace"],
+      "optional": ["agent-specific external provider"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "EXTERNAL_DEPENDENCY",
+      "onMissingOptional": "BLOCK_DEPENDENT_ASSERTIONS",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "artifact-create-open-content",
+    "priority": "P1",
+    "task": "Ask Garden Chat to create a simple Markdown artifact with a unique heading, open the resulting inline card and artifact viewer, and inspect its content.",
+    "successCriteria": [
+      "the request reaches a completed response with exactly one owned artifact",
+      "the artifact card appears in the initiating conversation",
+      "the viewer opens and shows non-empty content containing the unique heading",
+      "preview/download routes do not expose files outside isolated artifact storage"
+    ],
+    "dependencies": {
+      "required": ["Hermes artifact tool", "configured local model path", "artifact card and viewer UI"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "artifact-refresh-restart-persistence",
+    "priority": "P1",
+    "task": "Create a simple artifact, reload the renderer, close and relaunch Electron with the same QA data root, reopen the originating conversation, and open the artifact again.",
+    "successCriteria": [
+      "the artifact remains associated with the originating chat after refresh",
+      "the artifact remains listed after full application restart",
+      "its content and identifier are stable and non-empty",
+      "no duplicate artifact is created by either lifecycle event"
+    ],
+    "dependencies": {
+      "required": ["completed artifact creation", "persisted conversation", "reusable isolated QA data root"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "learn-plan-confirm-build",
+    "priority": "P2",
+    "task": "In a garden with deterministic source material, open Learn, request a bounded syllabus/plan, review and confirm it, and wait for the learning build to reach a terminal state.",
+    "successCriteria": [
+      "Learn proposes a visible plan grounded in the selected garden",
+      "confirmation starts one build and exposes bounded progress",
+      "the build completes or surfaces a clear recoverable terminal error",
+      "completed learning content is navigable and remains inside the QA garden"
+    ],
+    "dependencies": {
+      "required": ["garden with ingested deterministic source", "ChatMock generation", "Learn UI and routes", "Quartz build path"],
+      "optional": ["GBrain retrieval"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE_WITH_DEGRADED_ASSERTIONS",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "learn-cancel-and-retry",
+    "priority": "P2",
+    "task": "Start a bounded Learn generation, cancel it through the UI, verify restoration, then retry with the same approved plan.",
+    "successCriteria": [
+      "cancellation reaches a terminal state within its timeout",
+      "the garden is restored without partial content presented as complete",
+      "controls recover and the same plan can be retried",
+      "retry creates one active build and reaches a truthful terminal result"
+    ],
+    "dependencies": {
+      "required": ["approved Learn plan", "cancellable Learn build", "Learn cancellation route"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "quartz-note-search-edit",
+    "priority": "P2",
+    "task": "Open a deterministic garden note in the embedded Quartz surface, find it through Quartz search/explorer, edit its Markdown using the implemented editor, and navigate back to the Breadboard dashboard.",
+    "successCriteria": [
+      "the note is discoverable and opens in the configured Quartz origin",
+      "the editor saves a unique QA-only change to the isolated garden",
+      "the updated content survives Quartz rebuild or refresh",
+      "the dashboard back navigation returns to a usable Breadboard surface"
+    ],
+    "dependencies": {
+      "required": ["Quartz service", "QA garden note", "Quartz search/explorer and Markdown edit UI"],
+      "optional": ["knowledge graph rendering"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "SKIP_OPTIONAL_ASSERTIONS",
+      "optionalClassification": "TEST_ENVIRONMENT",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "gbrain-disabled-degraded-state",
+    "priority": "P2",
+    "task": "Launch the isolated desktop profile with GBrain explicitly disabled, open a garden and its assistant/status UI, and perform a chat turn that does not require GBrain.",
+    "successCriteria": [
+      "the desktop reaches the dashboard without waiting indefinitely for GBrain",
+      "the UI reports disabled or unavailable knowledge retrieval truthfully",
+      "unrelated garden and chat functionality remains usable",
+      "no false healthy badge or repeated fatal probe error appears"
+    ],
+    "dependencies": {
+      "required": ["isolated desktop config with GBrain disabled", "garden and Garden Chat UI"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "ui-tars-unavailable-degraded-state",
+    "priority": "P2",
+    "task": "Launch with UI-TARS disabled or unavailable, inspect the agent/operator surface, and continue a normal Garden Chat workflow.",
+    "successCriteria": [
+      "UI-TARS is shown as disabled/unavailable rather than ready",
+      "attempting to select it yields useful setup or unavailable guidance",
+      "no infinite run card or false success is created",
+      "ordinary Garden Chat remains usable"
+    ],
+    "dependencies": {
+      "required": ["isolated config with UI-TARS disabled", "agent/operator UI"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "cad-unavailable-degraded-state",
+    "priority": "P2",
+    "task": "Launch with the optional CAD service disabled or absent, select the parametric CAD capability from chat, and inspect its health/setup behavior without starting a real design run.",
+    "successCriteria": [
+      "the CAD capability reports unavailable or setup-required truthfully",
+      "no run is falsely marked started or successful",
+      "the missing optional service does not block desktop startup",
+      "chat and non-CAD features remain usable"
+    ],
+    "dependencies": {
+      "required": ["isolated config with CAD disabled", "CAD capability UI"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "video-transcription-unavailable-state",
+    "priority": "P2",
+    "task": "Open the garden video import surface with Scriberr and optional media tools disabled, provide a syntactically valid video request without uploading user media, and inspect capability feedback.",
+    "successCriteria": [
+      "the surface identifies transcription as disabled or unavailable",
+      "missing ffmpeg, ffprobe, yt-dlp, or Scriberr is described without leaking configuration",
+      "no job remains stuck or falsely succeeds",
+      "the garden remains usable after dismissing the feedback"
+    ],
+    "dependencies": {
+      "required": ["isolated config with video transcription disabled", "garden video import UI"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "plan-local-task-lifecycle",
+    "priority": "P2",
+    "task": "Open the implemented Plan page, create a QA project and task, move the task between columns, add a short comment, refresh, and reopen the project.",
+    "successCriteria": [
+      "the project and task are created once in isolated local state",
+      "moving the task updates the visible column without duplication",
+      "the comment remains attached to the correct task",
+      "project, task, column, and comment state survive refresh"
+    ],
+    "dependencies": {
+      "required": ["authenticated dashboard", "Plan page and local plan routes", "isolated database"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  },
+  {
+    "id": "packaged-critical-restart-path",
+    "priority": "P1",
+    "task": "After explicit scoped human-gate approval, use the existing isolated installed-app smoke infrastructure and a supplied Windows installer to install and launch Breadboard, create minimal durable garden state, restart, verify persistence and services, exit cleanly, and uninstall through the established runner.",
+    "successCriteria": [
+      "the real installer and installed executable launch from outside the checkout",
+      "the main window and packaged web assets become ready",
+      "minimal garden state survives installed-app restart in isolated user data",
+      "services recover, exit without orphan processes, and uninstall preserves the isolated evidence/data policy"
+    ],
+    "dependencies": {
+      "required": ["Windows x64 host", "verified installer path", "existing installed-smoke runner", "isolated installed-smoke evidence directory", "sufficient disk space", "APPROVE LOOP ACTION approval scoped to isolated install/uninstall and rollback"],
+      "optional": ["valid Authenticode signature"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "RECORD_KNOWN_PACKAGING_LIMITATION",
+      "optionalClassification": "EXPECTED_BEHAVIOR",
+      "continueInventory": true,
+      "repairEligible": false
+    }
+  }
+]

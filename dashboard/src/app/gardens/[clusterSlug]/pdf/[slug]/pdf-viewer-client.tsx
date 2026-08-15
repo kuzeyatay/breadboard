@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { gardenDocumentHref } from "@/lib/garden-document-route";
 import { useRouter } from "next/navigation";
 import FastReadReader from "@/app/components/fastread-reader";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
@@ -1311,7 +1312,10 @@ export default function PdfViewerClient({
           )}
           {!readOnly && clusterSlug && documentSlug ? (
             <Link
-              href={`/garden/${clusterSlug}?note=${encodeURIComponent(documentSlug)}`}
+              href={gardenDocumentHref(clusterSlug, {
+                slug: documentSlug,
+                type: "source-document",
+              })}
               className="rounded-md border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
             >
               Source note

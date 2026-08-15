@@ -2642,14 +2642,25 @@ export default function DashboardClient({
             if (e.target === e.currentTarget) closeEditModal();
           }}
         >
-          <div className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6">
-            <h2 className="text-lg font-semibold mb-5">Edit garden</h2>
+          <div
+            className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-garden-title"
+          >
+            <h2 id="edit-garden-title" className="text-lg font-semibold mb-5">
+              Edit garden
+            </h2>
             <form onSubmit={handleUpdateCluster} className="space-y-4">
               <div>
-                <label className="block text-sm text-gray-400 mb-1.5">
+                <label
+                  htmlFor="edit-garden-name"
+                  className="block text-sm text-gray-400 mb-1.5"
+                >
                   Name
                 </label>
                 <input
+                  id="edit-garden-name"
                   type="text"
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
@@ -2659,10 +2670,14 @@ export default function DashboardClient({
                 />
               </div>
               <div>
-                <label className="block text-sm text-gray-400 mb-1.5">
+                <label
+                  htmlFor="edit-garden-description"
+                  className="block text-sm text-gray-400 mb-1.5"
+                >
                   Description
                 </label>
                 <textarea
+                  id="edit-garden-description"
                   value={editDescription}
                   onChange={(e) => setEditDescription(e.target.value)}
                   rows={4}

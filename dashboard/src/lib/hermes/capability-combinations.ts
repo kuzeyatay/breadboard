@@ -146,7 +146,10 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
     stacksCapabilities: true,
     acceptsAttachments: true,
   }),
-  profile("ruflo", RUFLO_COMMAND, "Ruflo", { stacksCapabilities: true }),
+  profile("ruflo", RUFLO_COMMAND, "Ruflo", {
+    stacksCapabilities: true,
+    acceptsAttachments: true,
+  }),
   profile("deep-research", DEEP_RESEARCH_SLASH_COMMAND, "Deep Research", {
     // Research reads sources and writes only its answer into this chat. It is
     // safe to treat it as an internal delegation rather than a user-approved

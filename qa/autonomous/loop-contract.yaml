@@ -1,0 +1,258 @@
+schema_version: "1.0"
+name: "breadboard-autonomous-electron-qa-repair"
+goal: >-
+  Execute one source-grounded Breadboard scenario through the actual Electron
+  application, preserve diagnostic evidence, and make at most one minimal,
+  regression-tested repair for a reproduced, repair-eligible product defect.
+risk_class: "L3"
+
+formal_validation:
+  agent_loop_run_available: false
+  status: "NOT_RUN"
+  validation: "NOT_RUN"
+  score: null
+  dry_run: "NOT_RUN"
+  privacy_scan: "NOT_RUN"
+  receipt_published: false
+  activation_allowed: false
+  notes: >-
+    The Agent Loop Engineering skill's formal runner and artifact tools were
+    unavailable in the authoring session. These values record absence of
+    execution; they are not results. Validate, score to at least 85, dry-run,
+    render the receipt, and privacy-scan with agent_loop_run before unattended
+    activation or scheduling is considered.
+
+trigger:
+  type: manual
+  schedule: null
+  timezone: null
+  one_scenario_per_invocation: true
+
+inputs:
+  required:
+    - "scenario ID from qa/autonomous/scenarios.json"
+    - "repository revision and clean base reference"
+    - "isolated git worktree path or reviewer-approved equivalent"
+    - "explicit allowed source and test paths for the scenario"
+    - "absolute disposable QA run root"
+    - "Electron launch mode: development or packaged critical-path"
+    - "relevant baseline and verification commands"
+    - "rollback method for candidate changes"
+  optional:
+    - "failure-preservation request"
+    - "declared optional integration endpoints or executables"
+    - "known baseline failures with evidence paths"
+    - "packaged installer path for an isolated installed-smoke scenario"
+
+state:
+  backend: receipt
+  location: ".qa-results/autonomous/state.json"
+  read_before_run: true
+  update_after_run: true
+  context_rules:
+    - "Read repository instructions, the selected scenario, and the previous receipt before acting."
+    - "Do not infer a pass, repair, or baseline from prior narrative text."
+    - "Treat pre-existing unrelated work and failures as preserved external state."
+
+tools:
+  allowed:
+    - read_files
+    - search_files
+    - terminal_read_only_diagnostics
+    - terminal_tests
+    - playwright_electron_renderer_control
+    - electron_main_process_evaluation_for_qa_hooks
+    - write_ignored_qa_evidence
+    - write_finding_and_receipt
+    - patch_files_in_isolated_worktree_after_reproduction
+    - git_diff_read_only_review
+  forbidden_actions:
+    - delete_files
+    - access_secrets
+    - public_posting
+    - production_deploy
+    - payments
+    - modify_real_breadboard_user_data
+    - read_or_print_credentials_or_capability_tokens
+    - bind_internal_services_beyond_loopback
+    - bypass_authentication_or_approval_gates
+    - weaken_renderer_sandbox_navigation_or_ipc_boundaries
+    - write_outside_allowed_paths_or_isolated_worktree
+    - commit_push_open_pr_merge_or_schedule
+    - arbitrary_os_mouse_automation
+    - use_breadboard_agent_as_primary_test_authority
+    - redesign_unrelated_ui_or_architecture
+
+isolation:
+  mode: git_worktree
+  notes: >-
+    Repository edits occur only in a dedicated worktree. Electron userData,
+    databases, Quartz content, gardens, conversations, artifacts, agent state,
+    skills, caches, logs, configuration, and credentials must resolve beneath
+    the unique disposable QA run root. Stop before launch if any mutable path
+    resolves to normal user data or unrelated repository data. QA-only native
+    hooks require an explicit test-mode flag and fixture paths beneath that
+    root; production behavior remains unchanged.
+
+verification:
+  deterministic_checks:
+    - name: required_inputs_and_scenario
+      method: >-
+        Parse scenarios.json and confirm the requested unique scenario ID,
+        revision, allowed paths, launch mode, run root, commands, and rollback
+        method are present.
+      pass_condition: "Every required input exists and exactly one scenario is selected."
+    - name: qa_data_isolation
+      method: >-
+        Resolve every mutable Electron and Breadboard data path before launch,
+        record the absolute paths, and compare them to the canonical QA run root
+        and known normal user-data roots.
+      pass_condition: >-
+        Every mutable path is a descendant of the QA run root and no path is the
+        normal Breadboard user-data directory, a real garden, or unrelated repo data.
+    - name: actual_electron_control
+      method: >-
+        Launch Breadboard's Electron entrypoint through Playwright Electron and
+        identify the renderer window owned by that process.
+      pass_condition: >-
+        The scenario is operated in the real Electron renderer; no manually
+        started browser-only dashboard is used as the primary system under test.
+    - name: failure_reproduction
+      method: >-
+        On failure, reset to the recorded isolated precondition, relaunch the
+        affected runtime, and repeat the exact task once before any source edit.
+      pass_condition: >-
+        A repair begins only when the same material failure is reproduced and
+        expected, actual, logs, responsible code path, and plausible cause are recorded.
+    - name: repair_classification_gate
+      method: >-
+        Validate the finding classification against the allowed enum and the
+        repair-eligibility policy in README.md.
+      pass_condition: >-
+        Only PRODUCT_BUG, or a clear already-promised MISSING_FEATURE, can reach
+        source patching; every other classification is recorded without repair.
+    - name: regression_test
+      method: >-
+        Run the smallest test that demonstrates the original defect against the
+        pre-repair behavior when feasible and against the candidate repair.
+      pass_condition: >-
+        The test detects the defective invariant and passes with the repair; it
+        would fail again if the defect were reintroduced.
+    - name: relevant_existing_checks
+      method: >-
+        Run the declared directly relevant existing tests plus required build,
+        type, or lint checks and record every command and exit code.
+      pass_condition: >-
+        No new relevant failure is introduced; pre-existing failures remain
+        explicitly distinguished with baseline evidence.
+    - name: diff_scope_and_security
+      method: >-
+        Inspect git diff names/content and scan diagnostics and outputs for
+        secrets, capability tokens, public binding, auth bypass, broad exception
+        swallowing, unrelated rewrites, and writes outside allowed paths.
+      pass_condition: >-
+        The diff is minimal and within allowed paths, no forbidden security
+        change or secret disclosure exists, and rollback is explicit.
+    - name: exact_electron_replay
+      method: >-
+        Restart or relaunch all affected runtime components and repeat the exact
+        original scenario through Electron with the original inputs and criteria.
+      pass_condition: >-
+        Every original success criterion passes, no new fatal diagnostic occurs,
+        intended state persists, and no success criterion was weakened.
+    - name: clean_shutdown
+      method: >-
+        Close the Electron app through the supported lifecycle and inspect the
+        processes and ports started for the run.
+      pass_condition: >-
+        Electron exits, supervised child processes are gone, QA ports are free,
+        and unrelated processes were not terminated.
+    - name: receipt_completeness
+      method: >-
+        Validate the finding against qa/autonomous/finding.schema.json and check
+        the receipt for request, revision, paths, commands/exit codes, evidence,
+        classification, severity, diff, tests, reviewer result, replay, rollback,
+        unresolved risks, and stop reason.
+      pass_condition: "Both machine-readable finding and human-readable receipt are complete and redacted."
+  review_checks:
+    - name: classification_and_root_cause_review
+      reviewer: "independent human reviewer"
+      rubric: >-
+        Evidence reproduces the failure; classification and severity match the
+        documented definitions; the causal chain identifies the responsible path.
+    - name: minimality_security_and_rollback_review
+      reviewer: "independent human reviewer"
+      rubric: >-
+        The diff is the smallest responsible repair, preserves production
+        security and unrelated work, has regression coverage, and can be rolled back.
+    - name: receipt_readability
+      reviewer: "human"
+      rubric: "A reviewer can understand the run, evidence, decision, remaining risk, and stop reason in two minutes."
+  definition_of_done:
+    - "one selected scenario has a truthful passed, failed, blocked, or flaky finding"
+    - "all mutable application state was proven isolated before launch"
+    - "no repair occurred without reproduction, classification, and root-cause evidence"
+    - "any repair has a permanent regression test and relevant checks"
+    - "the exact original scenario was replayed after runtime relaunch"
+    - "Electron and all run-owned child processes shut down cleanly"
+    - "diff, rollback, reviewer result, evidence, and stop reason are in the receipt"
+    - "no forbidden action was attempted and no secret appears in outputs"
+
+stop_conditions:
+  max_iterations: 3
+  max_runtime_minutes: 120
+  success_signal: "scenario_criteria_verified_and_receipt_written"
+  failure_policy: >-
+    Stop and report on missing input, failed isolation, failed verification, the
+    same error twice, a forbidden action/path, a human gate, unsafe shutdown,
+    iteration/runtime exhaustion, or a required broad/unrelated redesign. Do
+    not keep trying unrelated alternatives. A replay failure may resume
+    diagnosis only within the remaining bounds.
+  stop_on_repeated_error: true
+  rationale: >-
+    Repository edits and live Electron/service processes make this an L3 loop;
+    a tight attempt/time bound prevents speculative edits, runaway child
+    processes, and damage disguised as resilience.
+
+human_gate:
+  required_for:
+    - deletion
+    - secrets
+    - public_posting
+    - production_deploy
+    - payments
+    - non_qa_data_migration_or_destructive_operation
+    - external_message_post_invite_or_account_action
+    - broad_service_restart_or_installer_action_outside_isolated_smoke
+    - security_auth_capability_permission_or_sandbox_weakening
+    - expansion_of_allowed_paths_or_product_scope
+    - ambiguous_classification_or_missing_feature_promise
+    - apply_candidate_outside_isolated_worktree
+    - commit_push_open_pr_merge_or_schedule
+  approval_format: "APPROVE LOOP ACTION: <action> / <scope> / <rollback>"
+
+outputs:
+  artifacts:
+    - ".qa-results/<run-id>/finding.json"
+    - ".qa-results/<run-id>/receipt.md"
+    - ".qa-results/<run-id>/diagnostics.json"
+    - ".qa-results/<run-id>/playwright-trace.zip on failure"
+    - ".qa-results/<run-id>/failure-screenshot.png on failure"
+    - ".qa-results/<run-id>/redacted-service-logs/"
+    - ".qa-results/<run-id>/candidate.diff when a repair is attempted"
+  never_generated_by_contract_design:
+    - "qa/autonomous/FIRST_QA_REPORT.md"
+
+receipt:
+  required: true
+  path: ".qa-results/<run-id>/receipt.md"
+  must_include:
+    - "exact input request and scenario ID"
+    - "repository revision, launch mode, QA run root, and allowed paths"
+    - "actions and commands with exit codes"
+    - "expected, actual, evidence paths, classification, and severity"
+    - "changed files and diff summary, or explicit no-change decision"
+    - "regression and relevant-check results"
+    - "independent reviewer result"
+    - "replay and clean-shutdown results"
+    - "rollback path, unresolved risks, and actual stop reason"

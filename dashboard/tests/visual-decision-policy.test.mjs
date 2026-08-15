@@ -16,10 +16,59 @@ import {
 } from "../src/lib/visual-necessity.ts";
 import {
   applyVisualizationRoutesToLearningUnits,
-  buildVisualizationPlan,
+  buildVisualizationPlan as buildVisualizationPlanRaw,
 } from "../src/lib/visualization-opportunities.ts";
 import { visualTypeCompatibleWithUnit } from "../src/lib/learning-unit-contract.ts";
 import { buildDeterministicVisual, buildVisualBlock, validateVisualSpec } from "../src/lib/visual-spec.ts";
+
+function buildVisualizationPlan(input) {
+  const requiredVisuals = input.learningUnits.filter((candidate) =>
+    candidate.interactiveVisualPlan?.requirement === "required").length;
+  const recommendedVisuals = input.learningUnits.filter((candidate) =>
+    candidate.interactiveVisualPlan?.requirement === "recommended").length;
+  const optionalVisuals = input.learningUnits.filter((candidate) =>
+    candidate.interactiveVisualPlan?.requirement === "optional").length;
+  const active = requiredVisuals + recommendedVisuals + optionalVisuals;
+  const canonicalEvidenceByUnit = Object.fromEntries(input.learningUnits.map((candidate) => {
+    if (!ACTIVE.has(candidate.interactiveVisualPlan?.requirement)) return [candidate.id, []];
+    const formulaIds = new Set(candidate.sourceFormulas.map((formula) => formula.id));
+    const figureIds = new Set(candidate.sourceFigures.map((figure) => figure.id));
+    const tableIds = new Set(candidate.sourceTables.map((table) => table.id));
+    const anchors = [...new Set([
+      ...candidate.sourceAnchors,
+      ...figureIds,
+      ...formulaIds,
+      ...tableIds,
+      ...(candidate.interactiveVisualPlan?.decision.evidence.sourceAnchorIds ?? []),
+      ...(candidate.interactiveVisualPlan?.visualIntent?.sourceAnchors ?? []),
+    ])];
+    return [candidate.id, anchors.map((anchor) => ({
+      anchor,
+      kind: formulaIds.has(anchor)
+        ? "source_formula"
+        : figureIds.has(anchor)
+          ? "source_figure"
+          : tableIds.has(anchor)
+            ? "source_table"
+            : "source_text",
+      text: candidate.learningQuestion,
+    }))];
+  }));
+  return buildVisualizationPlanRaw({
+    ...input,
+    canonicalEvidenceByUnit,
+    visualBudget: input.visualBudget ?? {
+      targetMinimum: active,
+      targetMaximum: active,
+      maximumPerSection: active,
+      minimumUnitsBetweenSimilarVisuals: 0,
+      requiredVisuals,
+      recommendedVisuals,
+      optionalVisuals,
+      reason: "Fixture-authored visual budget.",
+    },
+  });
+}
 
 function unit(overrides = {}) {
   return {
@@ -51,6 +100,53 @@ function withPlan(candidate, decision, requirement) {
       alternativeCoverage: requirement === "required" ? "uncovered" : "covered",
     },
     teachingMediumPlan: deriveTeachingMediumPlan(candidate, decision),
+  };
+}
+
+/**
+ * A necessity decision says a unit deserves an interaction; it is not a contract.
+ * Routing additionally requires the interaction goal, learner control, observable,
+ * and expected insight the whole-garden visual model authors, each grounded in the
+ * unit's own evidence. Tests that exercise dispatch must start from that shape.
+ */
+function withModelAuthoredPlan(candidate, decision, { controlLabel, expectedInsight, interactionGoal }) {
+  const planned = withPlan(candidate, decision, "required");
+  const evidence = [{
+    anchor: candidate.sourceAnchors[0],
+    quote: candidate.learningQuestion,
+  }];
+  const visualIntent = {
+    id: `intent-${candidate.id.toLowerCase()}`,
+    uniqueConcept: controlLabel,
+    visualType: "generated_module",
+    whyStaticSourceFigureIsNotEnough:
+      "A static figure fixes one case; the learner has to move the control to see the trade-off resolve.",
+    learnerManipulates: [controlLabel],
+    expectedInsight,
+    sourceAnchors: candidate.sourceAnchors,
+    duplicateSignature: `sig-${candidate.id.toLowerCase()}`,
+  };
+  return {
+    ...planned,
+    interactiveVisual: visualIntent,
+    interactiveVisualPlan: {
+      ...planned.interactiveVisualPlan,
+      visualIntent,
+      interactionGoal,
+      controlContract: [{
+        id: `fixture_${candidate.id.toLowerCase()}`,
+        kind: "variable",
+        label: controlLabel,
+        type: "slider",
+        min: 0,
+        max: 10,
+        step: 0.1,
+        defaultValue: 1,
+        evidence,
+      }],
+      observable: { label: expectedInsight, representation: "chart", evidence },
+      expectedInsightEvidence: evidence,
+    },
   };
 }
 
@@ -294,7 +390,7 @@ describe("visual decision policy — dispatch, embedding, validation, repair", (
     sections: [{ title: "S1", subsections: units.map((u) => ({ title: u.title, learningUnitId: u.id })) }],
   });
 
-  test("11. Selected visual contract reaches implementation dispatch", () => {
+  test("11. Only a model-authored visual contract reaches implementation dispatch", () => {
     const dyn = unit({
       id: "U1",
       role: "comparison",
@@ -304,13 +400,30 @@ describe("visual decision policy — dispatch, embedding, validation, repair", (
     });
     const plan = planGardenVisualNecessity({ gardenId: "g", learningUnits: [dyn] });
     assert.ok(ACTIVE.has(plan.decisions[0].necessity));
-    const vplan = buildVisualizationPlan({ gardenId: "g", learningMap: learningMapFor([dyn]), learningUnits: plan.learningUnits });
-    assert.ok(vplan.opportunities.length >= 1, "a candidate opportunity must be produced");
-    const route = vplan.decisions[0];
-    assert.ok(
-      ["trusted_renderer", "generated_module"].includes(route.route),
-      `expected dispatch, got ${route.route}`,
+
+    // Necessity alone cannot dispatch: routing refuses a plan whose contract the
+    // model never authored rather than inferring controls for it.
+    assert.throws(
+      () => buildVisualizationPlan({
+        gardenId: "g",
+        learningMap: learningMapFor([dyn]),
+        learningUnits: plan.learningUnits,
+      }),
+      /validated model-authored learner control contract/i,
     );
+
+    const authored = withModelAuthoredPlan(dyn, plan.decisions[0], {
+      controlLabel: "rate, latency, and delta encoding",
+      expectedInsight: "trade off under a fixed spike budget",
+      interactionGoal: "compare_cases",
+    });
+    const vplan = buildVisualizationPlan({
+      gardenId: "g",
+      learningMap: learningMapFor([dyn]),
+      learningUnits: [authored],
+    });
+    assert.equal(vplan.opportunities.length, 1, "a candidate opportunity must be produced");
+    assert.equal(vplan.decisions[0].route, "generated_module");
   });
 
   test("12. Implemented visual remains embedded through finalization", () => {
@@ -322,13 +435,14 @@ describe("visual decision policy — dispatch, embedding, validation, repair", (
       newConcepts: ["encoding trade-offs"],
     });
     const plan = planGardenVisualNecessity({ gardenId: "g", learningUnits: [dyn] });
-    const vplan = buildVisualizationPlan({ gardenId: "g", learningMap: learningMapFor([dyn]), learningUnits: plan.learningUnits });
-    const trusted = vplan.decisions.find((d) => d.route === "trusted_renderer");
-    assert.ok(trusted, "the encoding trade-off unit must route to a deterministic trusted renderer");
 
-    // Implementation + validation: the deterministic builder yields a real,
-    // validated interactive spec (not placeholder markup).
-    const spec = buildDeterministicVisual(trusted.selectedRenderer, { gardenId: "g", pageSlug: "learning/u1" });
+    // Implementation + validation: a trusted renderer compatible with the unit
+    // yields a real, validated interactive spec (not placeholder markup). Learn
+    // reaches this builder when generated-module attempts are exhausted, not
+    // through routing, which is model-authored end to end.
+    const renderer = "tradeoff_explorer";
+    assert.equal(visualTypeCompatibleWithUnit(renderer, dyn).ok, true);
+    const spec = buildDeterministicVisual(renderer, { gardenId: "g", pageSlug: "learning/u1" });
     assert.ok(spec, "the trusted renderer must build a concrete visual spec");
     assert.equal(validateVisualSpec(spec).spec?.id, spec.id, "the built spec must revalidate");
     assert.ok((spec.controls?.length ?? 0) >= 1, "an interactive visual must expose at least one control");
@@ -387,12 +501,17 @@ describe("visual decision policy — routing produces a concrete interactive int
       newConcepts: ["encoding trade-offs"],
     });
     const plan = planGardenVisualNecessity({ gardenId: "g", learningUnits: [dyn] });
+    const authored = withModelAuthoredPlan(dyn, plan.decisions[0], {
+      controlLabel: "rate, latency, and delta encoding",
+      expectedInsight: "trade off under a fixed spike budget",
+      interactionGoal: "compare_cases",
+    });
     const vplan = buildVisualizationPlan({
       gardenId: "g",
       learningMap: { gardenId: "g", sections: [{ title: "S1", subsections: [{ title: dyn.title, learningUnitId: "U1" }] }] },
-      learningUnits: plan.learningUnits,
+      learningUnits: [authored],
     });
-    const routed = applyVisualizationRoutesToLearningUnits(plan.learningUnits, vplan);
+    const routed = applyVisualizationRoutesToLearningUnits([authored], vplan);
     const withIntent = routed.filter((u) => u.interactiveVisual);
     assert.ok(withIntent.length >= 1, "at least one unit must carry a concrete interactive intent");
     assert.ok(withIntent[0].interactiveVisual.visualType);

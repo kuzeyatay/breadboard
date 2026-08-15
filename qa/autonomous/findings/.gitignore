@@ -1,0 +1,5 @@
+# Runtime findings belong in the ignored QA output directory, not in source.
+*
+!.gitignore
+!.gitkeep
+

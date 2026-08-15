@@ -47,3 +47,8 @@ test("the badge distinguishes unavailable from a grounded answer (honest failure
   // The unavailable state is explicit, never a silent fallback label.
   assert.match(badge, /Knowledge: unavailable/);
 });
+
+test("the badge stays hidden when knowledge retrieval is healthy", () => {
+  assert.doesNotMatch(badge, /Knowledge: hybrid/);
+  assert.match(badge, /if \(key === "healthy"\) return null/);
+});

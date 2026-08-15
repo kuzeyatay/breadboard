@@ -355,7 +355,13 @@ export function readProfileStats(
   const agents = readAgentUse(database, userId);
 
   const totals: ProfileTotals = {
-    conversations: count(database, "SELECT COUNT(*) AS value FROM conversations WHERE user_id = ?", userId),
+    // Temporary chats are excluded everywhere they would be counted or named:
+    // a chat kept out of history should not reappear as a statistic about it.
+    conversations: count(
+      database,
+      "SELECT COUNT(*) AS value FROM conversations WHERE user_id = ? AND temporary = 0",
+      userId,
+    ),
     prompts: Number(usage.prompts),
     replies: Number(usage.replies),
     gardens: count(database, "SELECT COUNT(*) AS value FROM clusters WHERE user_id = ?", userId),
@@ -1096,7 +1102,7 @@ function readFirstConversation(
     .prepare(
       `SELECT title, created_at
        FROM conversations
-       WHERE user_id = ?
+       WHERE user_id = ? AND temporary = 0
        ORDER BY datetime(created_at) ASC, id ASC
        LIMIT 1`,
     )

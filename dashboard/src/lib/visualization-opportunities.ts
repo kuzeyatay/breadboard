@@ -7,10 +7,6 @@ import {
   type LearningUnitRole,
 } from "./learning-unit-contract.ts";
 import type { ProposedLearningMap } from "./learn-utils.ts";
-import {
-  deriveGardenVisualBudget,
-  saveVisualNecessityArtifacts,
-} from "./visual-necessity.ts";
 import type {
   ContractInteractiveVisualPlan,
   GardenVisualBudget,
@@ -20,7 +16,10 @@ import type {
   VisualDecisionOverride,
   VisualNecessityDecision,
 } from "./visual-necessity-types.ts";
-import { persistedVisualizationControlContractProblems } from "./visualization-contract-validation.ts";
+import {
+  persistedVisualizationControlContractProblems,
+  type VisualizationContractEvidenceEntry,
+} from "./visualization-contract-validation.ts";
 import {
   TRUSTED_RENDERER_REGISTRY,
   trustedRenderer,
@@ -30,6 +29,17 @@ import {
 
 export type VisualizationInputType = "slider" | "number" | "select" | "toggle" | "button";
 export type VisualizationOutputRepresentation = InteractiveVisualOutputRepresentation;
+export type VisualizationCanonicalEvidenceByUnit = Record<
+  string,
+  readonly VisualizationContractEvidenceEntry[]
+>;
+
+const CANONICAL_VISUAL_EVIDENCE_KINDS = new Set<VisualizationContractEvidenceEntry["kind"]>([
+  "source_text",
+  "source_formula",
+  "source_figure",
+  "source_table",
+]);
 
 export interface VisualizationOpportunityInput {
   id: string;
@@ -51,13 +61,15 @@ export interface VisualizationOpportunityOutput {
 
 export interface SourceVisualRelationship {
   sourceVisualId: string;
-  treatment:
+  /** Present only when a model-authored contract explicitly selected a treatment. */
+  treatment?:
     | "direct_source_embed"
     | "source_embed_plus_interactive_reconstruction"
     | "interactive_reconstruction_with_source_link"
     | "intentional_omission";
-  fidelity: "exact_source_image" | "reconstructed" | "normalized" | "illustrative";
-  explanation: string;
+  /** Present only when the model explicitly made a fidelity claim. */
+  fidelity?: "exact_source_image" | "reconstructed" | "normalized" | "illustrative";
+  explanation?: string;
 }
 
 export interface VisualizationOpportunity {
@@ -71,10 +83,19 @@ export interface VisualizationOpportunity {
   sourceAnchorIds: string[];
   sourceVisualIds: string[];
   sourceVisualRelationships: SourceVisualRelationship[];
+  /** Empty when the plan carries no model-authored visual intent to read it from. */
   learningObjective: string;
   learnerQuestion: string;
+  /** Empty when the plan carries no model-authored visual intent to read it from. */
   pedagogicalReason: string;
-  interactionGoal: VisualizationInteractionGoal;
+  /**
+   * Absent when the plan carries no model-authored interaction goal. Nothing
+   * infers one: such an opportunity exists only to be reported as an invalid
+   * contract, never to be routed to a renderer.
+   */
+  interactionGoal?: VisualizationInteractionGoal;
+  /** Exact model-authored learner sequence. Optional only for legacy saved plans and fixtures. */
+  learnerAction?: string;
   requiredInputs: VisualizationOpportunityInput[];
   requiredOutputs: VisualizationOpportunityOutput[];
   /** Empty only when a typed, source-grounded control contract validates. */
@@ -179,8 +200,63 @@ function priorityForUnit(unit: LearningUnitContract): VisualizationOpportunity["
   return "low";
 }
 
-function inputId(label: string, index: number): string {
+export function visualizationOpportunityFieldId(label: string, index: number): string {
   return safeId(label).replace(/-/g, "_") || `input_${index + 1}`;
+}
+
+function ownedSourceAnchorIds(unit: LearningUnitContract): Set<string> {
+  return new Set([
+    ...unit.sourceAnchors,
+    ...unit.sourceFigures.map((item) => item.id),
+    ...unit.sourceFormulas.map((item) => item.id),
+    ...unit.sourceTables.map((item) => item.id),
+    ...(unit.semanticConcepts ?? []).flatMap((concept) => concept.evidenceAnchors),
+    ...(unit.knowledgeClaims ?? []).flatMap((claim) => [
+      ...claim.evidenceAnchors,
+      ...(claim.derivationAnchors ?? []),
+    ]),
+  ]);
+}
+
+export function canonicalVisualizationEvidenceProblems(input: {
+  unit: LearningUnitContract;
+  evidence: unknown;
+}): string[] {
+  const { unit } = input;
+  if (!Array.isArray(input.evidence) || input.evidence.length === 0) {
+    return [`${unit.id}: canonical extracted-source evidence is missing`];
+  }
+  const ownedAnchors = ownedSourceAnchorIds(unit);
+  const problems: string[] = [];
+  input.evidence.forEach((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      problems.push(`${unit.id}: canonical evidence[${index}] must be an object`);
+      return;
+    }
+    const entry = raw as Partial<VisualizationContractEvidenceEntry>;
+    if (typeof entry.anchor !== "string" || !entry.anchor.trim()) {
+      problems.push(`${unit.id}: canonical evidence[${index}] has no anchor`);
+    } else if (!ownedAnchors.has(entry.anchor)) {
+      problems.push(`${unit.id}: canonical evidence anchor ${entry.anchor} is not owned by the learning unit`);
+    }
+    if (typeof entry.text !== "string" || !entry.text.trim()) {
+      problems.push(`${unit.id}: canonical evidence[${index}] has no extracted source text`);
+    }
+    if (!entry.kind || !CANONICAL_VISUAL_EVIDENCE_KINDS.has(entry.kind)) {
+      problems.push(
+        `${unit.id}: evidence kind ${String(entry.kind ?? "(missing)")} is not canonical extracted-source evidence`,
+      );
+    }
+  });
+  return [...new Set(problems)];
+}
+
+function canonicalEvidenceForUnit(
+  evidenceByUnit: VisualizationCanonicalEvidenceByUnit | undefined,
+  unitId: string,
+): readonly VisualizationContractEvidenceEntry[] {
+  const evidence = evidenceByUnit?.[unitId];
+  return Array.isArray(evidence) ? evidence : [];
 }
 
 const GENERIC_VISUAL_CONTRACT_IDS = new Set([
@@ -196,33 +272,31 @@ const GENERIC_VISUAL_CONTRACT_IDS = new Set([
 const GENERIC_VISUAL_CONTRACT_LABEL_RE =
   /^(?:control|exploration level|input|main output|output|parameter|process step|result|step|value)$/i;
 
-function cleanQuestionPhrase(value: string): string {
-  return value
-    .replace(/^[\s,:;-]+|[\s,?.:;-]+$/g, "")
-    .replace(/^(?:a|an|the)\s+/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-export function requiredGeneratedVisualizationContractProblems(input: {
+function generatedVisualizationContractProblemsFor(input: {
   opportunities: readonly VisualizationOpportunity[];
   decisions: readonly VisualizationRouteDecision[];
-}): string[] {
+}, include: (opportunity: VisualizationOpportunity) => boolean): string[] {
   const routeByOpportunity = new Map(
     input.decisions.map((decision) => [decision.opportunityId, decision]),
   );
   const problems: string[] = [];
   for (const opportunity of input.opportunities) {
     const route = routeByOpportunity.get(opportunity.id);
-    if (opportunity.requirement !== "required" || route?.route !== "generated_module") continue;
+    if (!include(opportunity) || route?.route !== "generated_module") continue;
+    const requirement = opportunity.requirement;
     if (opportunity.controlContractProblems.length > 0) {
       problems.push(
-        `${opportunity.id}: required generated visualization needs a validated model-authored learner control contract (${opportunity.controlContractProblems.join("; ")})`,
+        `${opportunity.id}: ${requirement} generated visualization needs a validated model-authored learner control contract (${opportunity.controlContractProblems.join("; ")})`,
+      );
+    }
+    if (!opportunity.learnerAction?.trim()) {
+      problems.push(
+        `${opportunity.id}: ${requirement} generated visualization has no model-authored learnerAction sequence`,
       );
     }
     if (opportunity.requiredInputs.length === 0) {
       problems.push(
-        `${opportunity.id}: required generated visualization has no source-grounded learner input; repair the learning-unit contract with a specific variable, case, or process position`,
+        `${opportunity.id}: ${requirement} generated visualization has no source-grounded learner input; repair the learning-unit contract with a specific variable, case, or process position`,
       );
     }
     for (const control of opportunity.requiredInputs) {
@@ -231,13 +305,13 @@ export function requiredGeneratedVisualizationContractProblems(input: {
         GENERIC_VISUAL_CONTRACT_LABEL_RE.test(control.label.trim())
       ) {
         problems.push(
-          `${opportunity.id}: required generated visualization uses generic input "${control.id}"/"${control.label}"; repair the learning-unit contract with the source-backed learner action`,
+          `${opportunity.id}: ${requirement} generated visualization uses generic input "${control.id}"/"${control.label}"; repair the learning-unit contract with the source-backed learner action`,
         );
       }
     }
     if (opportunity.requiredOutputs.length === 0) {
       problems.push(
-        `${opportunity.id}: required generated visualization has no source-grounded observable output`,
+        `${opportunity.id}: ${requirement} generated visualization has no source-grounded observable output`,
       );
     }
     for (const output of opportunity.requiredOutputs) {
@@ -246,7 +320,7 @@ export function requiredGeneratedVisualizationContractProblems(input: {
         GENERIC_VISUAL_CONTRACT_LABEL_RE.test(output.label.trim())
       ) {
         problems.push(
-          `${opportunity.id}: required generated visualization uses generic output "${output.id}"/"${output.label}"; repair the learning-unit contract with the source-backed response`,
+          `${opportunity.id}: ${requirement} generated visualization uses generic output "${output.id}"/"${output.label}"; repair the learning-unit contract with the source-backed response`,
         );
       }
     }
@@ -259,50 +333,211 @@ function requiredInputsForUnit(
   groundingUnit: LearningUnitContract = _unit,
 ): VisualizationOpportunityInput[] {
   const controlContract = groundingUnit.interactiveVisualPlan?.controlContract ?? [];
-  if (controlContract.length > 0) {
-    return controlContract.flatMap((control, index): VisualizationOpportunityInput[] => {
-      if (control.kind === "select_case") {
-        const options = [...new Set((control.options ?? []).map(cleanQuestionPhrase).filter(Boolean))];
-        if (options.length < 2) return [];
-        return [{
-          id: inputId(control.label, index),
-          label: control.label,
-          type: "select",
-          options,
-          defaultValue: options[0],
-        }];
-      }
-      return [{
-        id: inputId(control.label, index),
-        label: control.label,
-        type: "slider",
-        min: 0,
-        max: 1,
-        step: 0.01,
-        defaultValue: 0.5,
-      }];
-    });
-  }
-  return [];
+  return controlContract.map((control): VisualizationOpportunityInput => ({
+    id: control.id,
+    label: control.label,
+    type: control.type,
+    ...(control.unit !== undefined ? { unit: control.unit } : {}),
+    ...(control.min !== undefined ? { min: control.min } : {}),
+    ...(control.max !== undefined ? { max: control.max } : {}),
+    ...(control.step !== undefined ? { step: control.step } : {}),
+    ...(control.options !== undefined ? { options: [...control.options] } : {}),
+    defaultValue: control.defaultValue,
+  }));
 }
 
 function requiredOutputsForUnit(
   _unit: LearningUnitContract,
-  _goal: VisualizationInteractionGoal,
   groundingUnit: LearningUnitContract = _unit,
+  canonicalEvidence: readonly VisualizationContractEvidenceEntry[] = [],
 ): VisualizationOpportunityOutput[] {
   const authoredObservable = groundingUnit.interactiveVisualPlan?.observable;
   if (
     authoredObservable &&
-    persistedVisualizationControlContractProblems(groundingUnit).length === 0
+    persistedVisualizationControlContractProblems(groundingUnit, canonicalEvidence).length === 0
   ) {
     return [{
-      id: inputId(authoredObservable.label, 0),
+      id: visualizationOpportunityFieldId(authoredObservable.label, 0),
       label: authoredObservable.label,
       representation: authoredObservable.representation,
     }];
   }
   return [];
+}
+
+/**
+ * A saved opportunity is a projection of the persisted learning-unit contract,
+ * not an independent source of pedagogy. Regeneration uses this check to reject
+ * stale plans before asking a model to create a replacement artifact.
+ */
+export function persistedVisualizationOpportunityContractProblems(input: {
+  unit: LearningUnitContract;
+  opportunity: Pick<
+    VisualizationOpportunity,
+    "learningUnitId" | "learnerAction" | "requiredInputs" | "requiredOutputs"
+  >;
+}): string[] {
+  const problems: string[] = [];
+  if (input.opportunity.learningUnitId !== input.unit.id) {
+    problems.push(
+      `saved opportunity targets learning unit ${input.opportunity.learningUnitId}, expected ${input.unit.id}`,
+    );
+  }
+  const expectedLearnerAction = input.unit.interactiveVisualPlan?.learnerAction;
+  if (input.opportunity.learnerAction !== expectedLearnerAction) {
+    problems.push("saved opportunity learnerAction differs from the current learning-unit contract");
+  }
+  const expectedInputs = requiredInputsForUnit(input.unit, input.unit);
+  const actualInputs = Array.isArray(input.opportunity.requiredInputs)
+    ? input.opportunity.requiredInputs
+    : [];
+  if (actualInputs.length !== expectedInputs.length) {
+    problems.push(
+      `saved opportunity has ${actualInputs.length} required input(s), current contract has ${expectedInputs.length}`,
+    );
+  }
+  const inputFields = ["id", "label", "type", "unit", "min", "max", "step", "defaultValue"] as const;
+  expectedInputs.forEach((expected, index) => {
+    const actual = actualInputs[index];
+    if (!actual) return;
+    for (const field of inputFields) {
+      if (actual[field] !== expected[field]) {
+        problems.push(`requiredInputs[${index}].${field} differs from the current learning-unit contract`);
+      }
+    }
+    const expectedOptions = expected.options;
+    const actualOptions = actual.options;
+    const optionsMatch = expectedOptions === undefined && actualOptions === undefined
+      || Array.isArray(expectedOptions) && Array.isArray(actualOptions)
+        && actualOptions.length === expectedOptions.length
+        && actualOptions.every((option, optionIndex) => option === expectedOptions[optionIndex]);
+    if (!optionsMatch) {
+      problems.push(`requiredInputs[${index}].options differs from the current learning-unit contract`);
+    }
+  });
+
+  const observable = input.unit.interactiveVisualPlan?.observable;
+  const expectedOutputs: VisualizationOpportunityOutput[] = observable
+    ? [{
+        id: visualizationOpportunityFieldId(observable.label, 0),
+        label: observable.label,
+        representation: observable.representation,
+      }]
+    : [];
+  const actualOutputs = Array.isArray(input.opportunity.requiredOutputs)
+    ? input.opportunity.requiredOutputs
+    : [];
+  if (actualOutputs.length !== expectedOutputs.length) {
+    problems.push(
+      `saved opportunity has ${actualOutputs.length} required output(s), current contract has ${expectedOutputs.length}`,
+    );
+  }
+  expectedOutputs.forEach((expected, index) => {
+    const actual = actualOutputs[index];
+    if (!actual) return;
+    for (const field of ["id", "label", "representation"] as const) {
+      if (actual[field] !== expected[field]) {
+        problems.push(`requiredOutputs[${index}].${field} differs from the current learning-unit contract`);
+      }
+    }
+  });
+  return [...new Set(problems)];
+}
+
+/** Problems for every generated interaction explicitly approved by the model.
+ * Code may not silently omit a recommended/optional interaction because its
+ * authored contract is incomplete. */
+export function generatedVisualizationContractProblems(input: {
+  opportunities: readonly VisualizationOpportunity[];
+  decisions: readonly VisualizationRouteDecision[];
+}): string[] {
+  return generatedVisualizationContractProblemsFor(
+    input,
+    (opportunity) => opportunity.requirement !== "none",
+  );
+}
+
+/** Legacy/public required-only view retained for callers that intentionally
+ * report hard required coverage separately. */
+export function requiredGeneratedVisualizationContractProblems(input: {
+  opportunities: readonly VisualizationOpportunity[];
+  decisions: readonly VisualizationRouteDecision[];
+}): string[] {
+  return generatedVisualizationContractProblemsFor(
+    input,
+    (opportunity) => opportunity.requirement === "required",
+  );
+}
+
+function citedSourceAnchorsForUnit(
+  unit: LearningUnitContract,
+  groundingUnit: LearningUnitContract,
+  canonicalEvidence: readonly VisualizationContractEvidenceEntry[],
+): { sourceAnchorIds: string[]; problems: string[] } {
+  const plan = unit.interactiveVisualPlan;
+  const groundingPlan = groundingUnit.interactiveVisualPlan;
+  const sourceArtifactIds = [
+    ...unit.sourceFigures.map((item) => item.id),
+    ...unit.sourceFormulas.map((item) => item.id),
+    ...unit.sourceTables.map((item) => item.id),
+  ];
+  const citedSourceContracts = [
+    ...unit.sourceAnchors,
+    ...sourceArtifactIds,
+    ...(plan?.decision.evidence.sourceAnchorIds ?? []),
+    ...(plan?.visualIntent?.sourceAnchors ?? []),
+    ...(groundingPlan?.decision.evidence.sourceAnchorIds ?? []),
+    ...(groundingPlan?.visualIntent?.sourceAnchors ?? []),
+  ];
+  const citedInteractionEvidence = [
+    ...(groundingPlan?.controlContract ?? []).flatMap((control) =>
+      control.evidence.map((evidence) => evidence.anchor)),
+    ...(groundingPlan?.observable?.evidence ?? []).map((evidence) => evidence.anchor),
+    ...(groundingPlan?.expectedInsightEvidence ?? []).map((evidence) => evidence.anchor),
+  ];
+  const knownSourceAnchors = new Set([
+    ...unit.sourceAnchors,
+    ...sourceArtifactIds,
+    ...(unit.semanticConcepts ?? []).flatMap((concept) => concept.evidenceAnchors),
+    ...(unit.knowledgeClaims ?? []).flatMap((claim) => [
+      ...claim.evidenceAnchors,
+      ...(claim.derivationAnchors ?? []),
+    ]),
+    ...groundingUnit.sourceAnchors,
+    ...groundingUnit.sourceFigures.map((item) => item.id),
+    ...groundingUnit.sourceFormulas.map((item) => item.id),
+    ...groundingUnit.sourceTables.map((item) => item.id),
+    ...(groundingUnit.semanticConcepts ?? []).flatMap((concept) => concept.evidenceAnchors),
+    ...(groundingUnit.knowledgeClaims ?? []).flatMap((claim) => [
+      ...claim.evidenceAnchors,
+      ...(claim.derivationAnchors ?? []),
+    ]),
+  ]);
+  const validatedEvidenceAnchors = new Set(
+    canonicalEvidence
+      .filter((entry) =>
+        CANONICAL_VISUAL_EVIDENCE_KINDS.has(entry.kind) &&
+        typeof entry.anchor === "string" &&
+        knownSourceAnchors.has(entry.anchor) &&
+        typeof entry.text === "string" &&
+        entry.text.trim().length > 0)
+      .map((entry) => entry.anchor),
+  );
+  const citedAnchors = [...new Set([...citedSourceContracts, ...citedInteractionEvidence])];
+  const problems = citedAnchors.flatMap((anchor) => {
+    if (!knownSourceAnchors.has(anchor)) {
+      return [`${unit.id}: cited visual source anchor ${anchor} is not owned by the learning unit`];
+    }
+    if (!validatedEvidenceAnchors.has(anchor)) {
+      return [`${unit.id}: cited visual source anchor ${anchor} has no canonical extracted-source evidence`];
+    }
+    return [];
+  });
+  return {
+    sourceAnchorIds: citedAnchors.filter((anchor) =>
+      knownSourceAnchors.has(anchor) && validatedEvidenceAnchors.has(anchor)),
+    problems: [...new Set(problems)],
+  };
 }
 
 function subsectionTarget(map: ProposedLearningMap, unitId: string, fallbackTitle: string) {
@@ -329,6 +564,7 @@ export function analyzeVisualizationOpportunities(input: {
   gardenId: string;
   learningMap: ProposedLearningMap;
   learningUnits: LearningUnitContract[];
+  canonicalEvidenceByUnit: VisualizationCanonicalEvidenceByUnit;
   /**
    * Pre-necessity contracts may carry an explicit, already-grounded learner
    * action. They are evidence only: renderer/type selection still uses the
@@ -346,9 +582,18 @@ export function analyzeVisualizationOpportunities(input: {
     })
     .map((unit) => {
     const groundingUnit = groundingById.get(unit.id) ?? unit;
+    const canonicalEvidence = canonicalEvidenceForUnit(input.canonicalEvidenceByUnit, unit.id);
+    const canonicalEvidenceProblems = canonicalVisualizationEvidenceProblems({
+      unit,
+      evidence: canonicalEvidence,
+    });
     const visualPlan = unit.interactiveVisualPlan!;
     const priority = priorityForUnit(unit);
-    const interactionGoal = visualPlan.interactionGoal!;
+    // A plan missing its model-authored parts still yields an opportunity, so
+    // the contract checker can name what is wrong with it. None of it is
+    // reconstructed here: absent stays absent.
+    const interactionGoal = visualPlan.interactionGoal;
+    const learnerAction = visualPlan.learnerAction;
     const target = subsectionTarget(input.learningMap, unit.id, unit.title);
     const conceptIds = [
       ...(unit.semanticConcepts ?? []).map((concept) => concept.slug),
@@ -358,30 +603,26 @@ export function analyzeVisualizationOpportunities(input: {
     // represented by their canonical source anchors and must not be mislabeled
     // as source-image relationships in the generated artifact manifest.
     const sourceVisualIds = unit.sourceFigures.map((figure) => figure.id);
-    const sourceVisualRelationships: SourceVisualRelationship[] = unit.sourceFigures.map((figure) => {
-      if (figure.placement === "not_used_with_reason") {
-        return {
-          sourceVisualId: figure.id,
-          treatment: "intentional_omission",
-          fidelity: "exact_source_image",
-          explanation: figure.notUsedReason || figure.interpretationGoal,
-        };
-      }
-      return {
-        sourceVisualId: figure.id,
-        treatment: "source_embed_plus_interactive_reconstruction",
-        fidelity: "illustrative",
-        explanation: `The original source figure remains available; any interactive reconstruction is illustrative and supports: ${figure.interpretationGoal}`,
-      };
-    });
-    const learningObjective = visualPlan.visualIntent!.expectedInsight;
-    const pedagogicalReason = visualPlan.visualIntent!.whyStaticSourceFigureIsNotEnough;
+    // Used figures remain neutral provenance. An explicit not-used placement
+    // is itself model-authored and can be projected without inventing fidelity.
+    const sourceVisualRelationships: SourceVisualRelationship[] = unit.sourceFigures.map((figure) =>
+      figure.placement === "not_used_with_reason"
+        ? {
+            sourceVisualId: figure.id,
+            treatment: "intentional_omission" as const,
+            ...(figure.notUsedReason ? { explanation: figure.notUsedReason } : {}),
+          }
+        : { sourceVisualId: figure.id });
+    const citedSources = citedSourceAnchorsForUnit(unit, groundingUnit, canonicalEvidence);
+    const learningObjective = visualPlan.visualIntent?.expectedInsight ?? "";
+    const pedagogicalReason = visualPlan.visualIntent?.whyStaticSourceFigureIsNotEnough ?? "";
     const fingerprint = stableHash({
       concepts: [...conceptIds].sort(),
       formulas: unit.sourceFormulas.map((formula) => formula.id).sort(),
       figures: unit.sourceFigures.map((figure) => figure.id).sort(),
       learningObjective: learningObjective.toLowerCase(),
       interactionGoal,
+      learnerAction,
     });
     const id = `visual-${safeId(unit.id)}-${fingerprint.slice(0, 8)}`;
     return {
@@ -390,16 +631,21 @@ export function analyzeVisualizationOpportunities(input: {
       learningUnitId: unit.id,
       ...target,
       conceptIds: [...new Set(conceptIds)],
-      sourceAnchorIds: [...new Set(unit.sourceAnchors)],
+      sourceAnchorIds: citedSources.sourceAnchorIds,
       sourceVisualIds: [...new Set(sourceVisualIds)],
       sourceVisualRelationships,
       learningObjective,
       learnerQuestion: unit.learningQuestion,
       pedagogicalReason,
       interactionGoal,
+      learnerAction,
       requiredInputs: requiredInputsForUnit(unit, groundingUnit),
-      requiredOutputs: requiredOutputsForUnit(unit, interactionGoal, groundingUnit),
-      controlContractProblems: persistedVisualizationControlContractProblems(groundingUnit),
+      requiredOutputs: requiredOutputsForUnit(unit, groundingUnit, canonicalEvidence),
+      controlContractProblems: [
+        ...canonicalEvidenceProblems,
+        ...persistedVisualizationControlContractProblems(groundingUnit, canonicalEvidence),
+        ...citedSources.problems,
+      ],
       preferredRenderer: "generated_module",
       requiresGeneratedModule: false,
       priority,
@@ -417,7 +663,10 @@ function compatibilityScore(
   renderer: TrustedRendererDefinition,
 ): number {
   let score = 0;
-  if (renderer.interactionGoals.includes(opportunity.interactionGoal)) score += 0.35;
+  // No model-authored goal scores no goal match; it never counts as a hit.
+  if (opportunity.interactionGoal && renderer.interactionGoals.includes(opportunity.interactionGoal)) {
+    score += 0.35;
+  }
   if (renderer.roles.includes(unit.role)) score += 0.25;
   const text = `${unitText(unit)} ${opportunity.learningObjective}`.toLowerCase();
   const matchingKeywords = renderer.keywords.filter((keyword) => text.includes(keyword.toLowerCase()));
@@ -489,7 +738,7 @@ export function selectVisualizationRoutes(input: {
         route: "trusted_renderer",
         selectedRenderer: best.renderer.id,
         compatibilityScore: best.score,
-        reason: `${best.renderer.label} satisfies the learning objective, unit role, and ${opportunity.interactionGoal.replace(/_/g, " ")} interaction.`,
+        reason: `${best.renderer.label} satisfies the learning objective, unit role, and ${(opportunity.interactionGoal ?? "").replace(/_/g, " ")} interaction.`,
       });
       continue;
     }
@@ -524,6 +773,9 @@ export function buildVisualizationPlan(input: {
   gardenId: string;
   learningMap: ProposedLearningMap;
   learningUnits: LearningUnitContract[];
+  /** Validated model-authored whole-garden budget from the necessity pass. */
+  visualBudget: GardenVisualBudget;
+  canonicalEvidenceByUnit: VisualizationCanonicalEvidenceByUnit;
   groundingUnits?: LearningUnitContract[];
   necessityReviewCalls?: number;
   rejectedNecessityReviews?: number;
@@ -537,15 +789,61 @@ export function buildVisualizationPlan(input: {
       "Visualization routing requires a validated model-authored necessity and teaching-medium decision for every learning unit.",
     );
   }
+  const budgetNumberFields = [
+    "targetMinimum",
+    "targetMaximum",
+    "maximumPerSection",
+    "minimumUnitsBetweenSimilarVisuals",
+    "requiredVisuals",
+    "recommendedVisuals",
+    "optionalVisuals",
+  ] as const;
+  const budgetProblems = budgetNumberFields.flatMap((field) =>
+    Number.isInteger(input.visualBudget?.[field]) && input.visualBudget[field] >= 0
+      ? []
+      : [`visualBudget.${field} must be a non-negative integer`]);
+  if (!input.visualBudget?.reason?.trim()) budgetProblems.push("visualBudget.reason is required");
+  if (
+    Number.isInteger(input.visualBudget?.targetMinimum) &&
+    Number.isInteger(input.visualBudget?.targetMaximum) &&
+    input.visualBudget.targetMinimum > input.visualBudget.targetMaximum
+  ) {
+    budgetProblems.push("visualBudget.targetMinimum cannot exceed targetMaximum");
+  }
+  const authoredCounts = {
+    requiredVisuals: input.learningUnits.filter((unit) =>
+      unit.interactiveVisualPlan?.requirement === "required").length,
+    recommendedVisuals: input.learningUnits.filter((unit) =>
+      unit.interactiveVisualPlan?.requirement === "recommended").length,
+    optionalVisuals: input.learningUnits.filter((unit) =>
+      unit.interactiveVisualPlan?.requirement === "optional").length,
+  };
+  for (const [field, actual] of Object.entries(authoredCounts)) {
+    if (input.visualBudget?.[field as keyof typeof authoredCounts] !== actual) {
+      budgetProblems.push(
+        `visualBudget.${field} must match the ${actual} model-authored ${field.replace(/Visuals$/, "")} decisions`,
+      );
+    }
+  }
+  if (budgetProblems.length > 0) {
+    throw new Error(`Visualization budget validation failed: ${budgetProblems.join("; ")}`);
+  }
   const incompleteModelContracts = input.learningUnits.flatMap((unit) => {
     const plan = unit.interactiveVisualPlan!;
     if (plan.requirement === "none") return [];
     const problems: string[] = [];
+    const canonicalEvidence = canonicalEvidenceForUnit(input.canonicalEvidenceByUnit, unit.id);
+    problems.push(...canonicalVisualizationEvidenceProblems({
+      unit,
+      evidence: canonicalEvidence,
+    }));
     if (!plan.interactionGoal) problems.push("missing model-authored interactionGoal");
+    if (!plan.learnerAction?.trim()) problems.push("missing model-authored learnerAction");
     if (!plan.visualIntent) problems.push("missing model-authored visualIntent");
     if (!plan.observable) problems.push("missing model-authored observable");
-    problems.push(...persistedVisualizationControlContractProblems(unit));
-    return problems.map((problem) => `${unit.id}: ${problem}`);
+    problems.push(...persistedVisualizationControlContractProblems(unit, canonicalEvidence));
+    return problems.map((problem) =>
+      problem.startsWith(`${unit.id}:`) ? problem : `${unit.id}: ${problem}`);
   });
   if (incompleteModelContracts.length > 0) {
     throw new Error(
@@ -556,12 +854,7 @@ export function buildVisualizationPlan(input: {
     learningUnits: input.learningUnits,
     decisions: input.learningUnits.map((unit) => unit.interactiveVisualPlan!.decision),
     teachingMedia: input.learningUnits.map((unit) => unit.teachingMediumPlan!),
-    // This is report metadata only. It does not select, promote, demote, or
-    // remove a visual; all such decisions are already present on the contract.
-    budget: deriveGardenVisualBudget(
-      input.learningUnits,
-      input.learningUnits.map((unit) => unit.interactiveVisualPlan!.decision),
-    ),
+    budget: input.visualBudget,
     overrides: input.visualDecisionOverrides ?? [],
   };
   const opportunities = analyzeVisualizationOpportunities({
@@ -574,10 +867,14 @@ export function buildVisualizationPlan(input: {
     learningUnits: necessityPlan.learningUnits,
     routingAuthority: "model_authored",
   });
-  const opportunityContractProblems = requiredGeneratedVisualizationContractProblems(selected);
+  const opportunityContractProblems = [
+    ...selected.opportunities.flatMap((opportunity) =>
+      opportunity.controlContractProblems.map((problem) => `${opportunity.id}: ${problem}`)),
+    ...generatedVisualizationContractProblems(selected),
+  ];
   if (opportunityContractProblems.length > 0) {
     throw new Error(
-      `Visualization opportunity contract validation failed: ${opportunityContractProblems.join("; ")}`,
+      `Visualization opportunity contract validation failed: ${[...new Set(opportunityContractProblems)].join("; ")}`,
     );
   }
   return {
@@ -588,7 +885,7 @@ export function buildVisualizationPlan(input: {
     decisions: selected.decisions,
     visualNecessityDecisions: necessityPlan.decisions,
     teachingMedia: necessityPlan.teachingMedia,
-    visualBudget: necessityPlan.budget,
+    visualBudget: { ...necessityPlan.budget },
     visualDecisionOverrides: necessityPlan.overrides,
     necessityReviewCalls: input.necessityReviewCalls ?? 0,
     rejectedNecessityReviews: input.rejectedNecessityReviews ?? 0,
@@ -596,6 +893,24 @@ export function buildVisualizationPlan(input: {
 }
 
 /** Attach renderer/type intent only after necessity and garden coordination. */
+export function projectedVisualizationTypeForRoute(input: {
+  unit: LearningUnitContract;
+  route: VisualizationRouteDecision;
+}): string | undefined {
+  const visualPlan = input.unit.interactiveVisualPlan;
+  if (!visualPlan || visualPlan.requirement === "none" || input.route.route === "intentional_omission") {
+    return undefined;
+  }
+  const candidateType = input.route.selectedRenderer ?? visualPlan.decision.recommendedVisualType;
+  return input.route.route === "generated_module"
+    ? candidateType && visualTypeCompatibleWithUnit(candidateType, input.unit).ok
+      ? candidateType
+      : "generated_module"
+    : candidateType && visualTypeCompatibleWithUnit(candidateType, input.unit).ok
+      ? candidateType
+      : undefined;
+}
+
 export function applyVisualizationRoutesToLearningUnits(
   learningUnits: LearningUnitContract[],
   plan: VisualizationPlan,
@@ -620,14 +935,7 @@ export function applyVisualizationRoutesToLearningUnits(
         },
       };
     }
-    const candidateType = route.selectedRenderer ?? visualPlan.decision.recommendedVisualType;
-    const selectedType = route.route === "generated_module"
-      ? candidateType && visualTypeCompatibleWithUnit(candidateType, unit).ok
-        ? candidateType
-        : "generated_module"
-      : candidateType && visualTypeCompatibleWithUnit(candidateType, unit).ok
-        ? candidateType
-        : undefined;
+    const selectedType = projectedVisualizationTypeForRoute({ unit, route });
     if (!selectedType) {
       return {
         ...unit,
@@ -671,14 +979,6 @@ export function saveVisualizationPlan(gardenDir: string, plan: VisualizationPlan
   const filePath = visualizationPlanPath(gardenDir);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(plan, null, 2)}\n`, "utf-8");
-  saveVisualNecessityArtifacts(gardenDir, plan.gardenId, {
-    decisions: plan.visualNecessityDecisions,
-    teachingMedia: plan.teachingMedia,
-    budget: plan.visualBudget,
-    overrides: plan.visualDecisionOverrides,
-    reviewCalls: plan.necessityReviewCalls,
-    rejectedReviews: plan.rejectedNecessityReviews,
-  });
 }
 
 export function loadVisualizationPlan(gardenDir: string): VisualizationPlan | null {
@@ -687,27 +987,19 @@ export function loadVisualizationPlan(gardenDir: string): VisualizationPlan | nu
     if (
       parsed?.schemaVersion !== 1 ||
       !Array.isArray(parsed.opportunities) ||
-      !Array.isArray(parsed.decisions)
+      !Array.isArray(parsed.decisions) ||
+      !parsed.visualBudget ||
+      typeof parsed.visualBudget !== "object"
     ) {
       return null;
     }
-    const visualBudget: GardenVisualBudget = parsed.visualBudget ?? {
-      targetMinimum: 0,
-      targetMaximum: 0,
-      maximumPerSection: 2,
-      minimumUnitsBetweenSimilarVisuals: 3,
-      requiredVisuals: 0,
-      recommendedVisuals: 0,
-      optionalVisuals: 0,
-      reason: "Legacy visualization plan; necessity will be recalculated before repair or regeneration.",
-    };
     return {
       ...parsed,
       visualNecessityDecisions: Array.isArray(parsed.visualNecessityDecisions)
         ? parsed.visualNecessityDecisions
         : [],
       teachingMedia: Array.isArray(parsed.teachingMedia) ? parsed.teachingMedia : [],
-      visualBudget,
+      visualBudget: parsed.visualBudget,
       visualDecisionOverrides: Array.isArray(parsed.visualDecisionOverrides)
         ? parsed.visualDecisionOverrides
         : [],
