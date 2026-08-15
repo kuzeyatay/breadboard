@@ -16,6 +16,7 @@ import {
   createClusterFolder,
   deleteClusterFolder,
   moveClusterFolder,
+  reorderClusterFolder,
   setClusterRepository,
 } from "@/app/actions/clusters";
 import type { Cluster, ClusterVisibility } from "@/app/actions/clusters";
@@ -23,6 +24,8 @@ import {
   FOLDER_SEPARATOR,
   expandFolderPaths,
   folderLabel,
+  folderParent,
+  folderRankFromOrder,
   isInSubtree,
   visibleFolderRows,
 } from "@/lib/cluster-folders";
@@ -197,6 +200,9 @@ export default function DashboardClient({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // The cluster a new garden should be created in, set by the "+" on a cluster
+  // header. Null creates it at the top level, as the toolbar button always does.
+  const [newGardenFolder, setNewGardenFolder] = useState<string | null>(null);
   const [editingCluster, setEditingCluster] = useState<Cluster | null>(null);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
@@ -226,6 +232,12 @@ export default function DashboardClient({
   const [dragOverFolderKey, setDragOverFolderKey] = useState<string | null>(
     null,
   );
+  // Which cluster header the pointer is hovering an *edge* of, and which side.
+  // An edge means "reorder next to this one"; the middle means "nest inside".
+  const [dropEdge, setDropEdge] = useState<{
+    key: string;
+    place: "before" | "after";
+  } | null>(null);
   const [expandedClusterFolders, setExpandedClusterFolders] = useState<
     Set<string>
   >(new Set());
@@ -272,6 +284,10 @@ export default function DashboardClient({
   const [bgImage, setBgImage] = useState<string | null>(null);
   const [showBgModal, setShowBgModal] = useState(false);
   const [appTheme, setAppTheme] = useState<AppTheme>("light");
+  // The terminal dock is fixed to the bottom of the viewport, so it covers the
+  // end of the page rather than pushing it. Measuring it keeps the last row of
+  // cards scrollable into view however far the dock is dragged open.
+  const [dockHeight, setDockHeight] = useState(0);
 
   // Which garden or cluster is being written to a file right now, keyed
   // "garden:<slug>" / "cluster:<path>"; "import" while one is being read back.
@@ -309,6 +325,17 @@ export default function DashboardClient({
     setAppTheme(theme);
     applyAppTheme(theme);
   }
+
+  // Track the dock's height so the page keeps scrollable room beneath it.
+  useEffect(() => {
+    const dock = document.querySelector("[data-terminal-dock]");
+    if (!dock) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setDockHeight(entry.contentRect.height);
+    });
+    observer.observe(dock);
+    return () => observer.disconnect();
+  }, []);
 
   // Re-render once a second while uploading so elapsed-time markers tick up.
   useEffect(() => {
@@ -372,15 +399,25 @@ export default function DashboardClient({
     | { kind: "header"; folder: string; key: string; depth: number }
     | { kind: "card"; cluster: Cluster };
 
+  // `clusterFolders` arrives from the server in the order the user dragged its
+  // clusters into, so its own indices are the ranks the tree sorts siblings by.
+  const folderRank = useMemo(
+    () => folderRankFromOrder(clusterFolders),
+    [clusterFolders],
+  );
+
   // Clusters nest, and a cluster is identified by its full path
   // ("EE Year 1/Semester 2").
   const folderPaths = useMemo(
     () =>
-      expandFolderPaths([
-        ...clusterFolders,
-        ...filteredClusters.map((cluster) => cluster.folder),
-      ]),
-    [clusterFolders, filteredClusters],
+      expandFolderPaths(
+        [
+          ...clusterFolders,
+          ...filteredClusters.map((cluster) => cluster.folder),
+        ],
+        folderRank,
+      ),
+    [clusterFolders, filteredClusters, folderRank],
   );
 
   const clusterRenderList = useMemo<ClusterRenderEntry[]>(() => {
@@ -404,8 +441,10 @@ export default function DashboardClient({
     // Depth-first, so a cluster's own gardens are emitted before its nested
     // clusters and the section folding below attributes each card to the right
     // header.
-    const rows = visibleFolderRows(folderPaths, (folder) =>
-      expandedClusterFolders.has(`folder:${folder}`),
+    const rows = visibleFolderRows(
+      folderPaths,
+      (folder) => expandedClusterFolders.has(`folder:${folder}`),
+      folderRank,
     );
     for (const { folder, depth } of rows) {
       const key = `folder:${folder}`;
@@ -418,7 +457,13 @@ export default function DashboardClient({
       }
     }
     return entries;
-  }, [clusterView, filteredClusters, folderPaths, expandedClusterFolders]);
+  }, [
+    clusterView,
+    filteredClusters,
+    folderPaths,
+    folderRank,
+    expandedClusterFolders,
+  ]);
 
   // Fold the flat header/card list into per-folder sections so each group packs
   // (masonry) on its own and cards never bleed across a folder boundary.
@@ -580,6 +625,7 @@ export default function DashboardClient({
     setDraggingClusterId(null);
     setDraggingFolderPath(null);
     setDragOverFolderKey(null);
+    setDropEdge(null);
     const target = folder && folder.trim() ? folder.trim() : null;
     const existing = myClusters.find((c) => c.id === clusterId);
     if (!existing || (existing.folder ?? null) === target) return;
@@ -610,6 +656,7 @@ export default function DashboardClient({
     setDraggingClusterId(null);
     setDraggingFolderPath(null);
     setDragOverFolderKey(null);
+    setDropEdge(null);
     const parent = targetParent?.trim() ?? "";
     const name = folderLabel(source);
     const target = parent ? `${parent}${FOLDER_SEPARATOR}${name}` : name;
@@ -625,11 +672,11 @@ export default function DashboardClient({
 
     const previousFolders = clusterFolders;
     const previousClusters = myClusters;
-    setClusterFolders((prev) =>
-      [
-        ...new Set(prev.map((f) => rewriteFolderPrefix(f, source, target) ?? f)),
-      ].sort((a, b) => a.localeCompare(b)),
-    );
+    // No re-sort: this array's order *is* the manual order, and a re-parent
+    // leaves every cluster's rank among its siblings alone.
+    setClusterFolders((prev) => [
+      ...new Set(prev.map((f) => rewriteFolderPrefix(f, source, target) ?? f)),
+    ]);
     setMyClusters((prev) =>
       prev.map((c) => ({
         ...c,
@@ -655,6 +702,81 @@ export default function DashboardClient({
         router.refresh();
       } catch (err) {
         addToast(err instanceof Error ? err.message : "Failed to move cluster");
+        setClusterFolders(previousFolders);
+        setMyClusters(previousClusters);
+      }
+    });
+  }
+
+  /**
+   * Drop a cluster onto a sibling's top or bottom edge: it takes that sibling's
+   * parent and sits immediately before or after it. Ordering is the array's own
+   * order, so the optimistic update is a splice.
+   */
+  function handleReorderClusterFolder(
+    source: string,
+    target: string,
+    place: "before" | "after",
+  ) {
+    setDraggingClusterId(null);
+    setDraggingFolderPath(null);
+    setDragOverFolderKey(null);
+    setDropEdge(null);
+    if (!source || !target || source === target) return;
+    if (isInSubtree(target, source)) {
+      addToast("A cluster cannot be moved inside itself.");
+      return;
+    }
+
+    const parent = folderParent(target);
+    const name = folderLabel(source);
+    const moved = parent ? `${parent}${FOLDER_SEPARATOR}${name}` : name;
+    if (moved !== source && folderPaths.includes(moved)) {
+      addToast("A cluster with this name already exists here.");
+      return;
+    }
+
+    const previousFolders = clusterFolders;
+    const previousClusters = myClusters;
+    setClusterFolders((prev) => {
+      const rewritten = [
+        ...new Set(prev.map((f) => rewriteFolderPrefix(f, source, moved) ?? f)),
+      ];
+      const rest = rewritten.filter((f) => f !== moved);
+      const at = rest.indexOf(target);
+      const index =
+        at < 0 ? rest.length : place === "before" ? at : at + 1;
+      rest.splice(index, 0, moved);
+      return rest;
+    });
+    if (moved !== source) {
+      setMyClusters((prev) =>
+        prev.map((c) => ({
+          ...c,
+          folder: rewriteFolderPrefix(c.folder, source, moved),
+        })),
+      );
+      setExpandedClusterFolders((prev) => {
+        const next = new Set<string>();
+        for (const key of prev) {
+          const folder = key.slice("folder:".length);
+          next.add(
+            `folder:${rewriteFolderPrefix(folder, source, moved) ?? folder}`,
+          );
+        }
+        if (parent) next.add(`folder:${parent}`);
+        return next;
+      });
+    }
+
+    startTransition(async () => {
+      try {
+        await reorderClusterFolder(source, target, place);
+        router.refresh();
+      } catch (err) {
+        addToast(
+          err instanceof Error ? err.message : "Failed to reorder cluster",
+        );
         setClusterFolders(previousFolders);
         setMyClusters(previousClusters);
       }
@@ -693,9 +815,9 @@ export default function DashboardClient({
     }
     setClusterFolderError(null);
     if (!clusterFolders.includes(folder)) {
-      setClusterFolders((prev) =>
-        [...prev, folder].sort((a, b) => a.localeCompare(b)),
-      );
+      // Appending matches where the server files a new cluster: last among the
+      // siblings it was created under.
+      setClusterFolders((prev) => [...prev, folder]);
     }
     if (parent) {
       setExpandedClusterFolders((prev) => new Set(prev).add(`folder:${parent}`));
@@ -716,23 +838,144 @@ export default function DashboardClient({
     });
   }
 
+  /**
+   * True when what is being dragged may land in `folder` (null = top level).
+   * A cluster cannot be dropped on itself or on anything it contains.
+   */
+  function canDropInFolder(folder: string | null) {
+    const isSelfDrop =
+      draggingFolderPath != null &&
+      folder != null &&
+      isInSubtree(folder, draggingFolderPath);
+    return (
+      (draggingClusterId != null || draggingFolderPath != null) && !isSelfDrop
+    );
+  }
+
+  /**
+   * Drop handlers for a whole cluster section — its header row *and* the cards
+   * underneath. A header is a thin strip, so aiming a dragged cluster at one is
+   * fiddly next to the generous target a garden card grid already offers; the
+   * section gives clusters the same landing area. `folder` is null for the
+   * unfoldered, top-level section.
+   */
+  function folderDropProps(folder: string | null, key: string) {
+    const canDrop = canDropInFolder(folder);
+    return {
+      onDragOver: (e: React.DragEvent<HTMLDivElement>) => {
+        // A .garden or .cluster dragged in from the desktop imports here.
+        const fileDrag = isFileDrag(e);
+        if (!canDrop && !fileDrag) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = fileDrag ? "copy" : "move";
+        if (dragOverFolderKey !== key) setDragOverFolderKey(key);
+        // Reveal a collapsed cluster so it's clear where the drop will land.
+        if (folder != null && !expandedClusterFolders.has(key)) {
+          setExpandedClusterFolders((prev) => new Set(prev).add(key));
+        }
+      },
+      onDragLeave: (e: React.DragEvent<HTMLDivElement>) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          setDragOverFolderKey((prev) => (prev === key ? null : prev));
+        }
+      },
+      onDrop: (e: React.DragEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        setDragOverFolderKey(null);
+        setDropEdge(null);
+        const dropped = e.dataTransfer.files?.[0];
+        if (dropped) {
+          importTransfer(dropped, folder);
+          return;
+        }
+        if (!canDrop) return;
+        if (draggingFolderPath) {
+          handleMoveClusterFolder(draggingFolderPath, folder);
+          return;
+        }
+        const id =
+          Number(e.dataTransfer.getData("text/plain")) || draggingClusterId;
+        if (id != null) handleMoveClusterToFolder(id, folder);
+      },
+    };
+  }
+
+  /**
+   * Which third of a header the pointer sits in. The outer thirds reorder the
+   * dragged cluster next to this one; the middle drops it inside, which is what
+   * the section handler underneath already does.
+   */
+  function edgePlaceAt(
+    e: React.DragEvent<HTMLDivElement>,
+  ): "before" | "after" | null {
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.height <= 0) return null;
+    const offset = (e.clientY - rect.top) / rect.height;
+    if (offset <= 0.3) return "before";
+    if (offset >= 0.7) return "after";
+    return null;
+  }
+
   function renderFolderHeader(folder: string, key: string, depth = 0) {
-    const isOver = dragOverFolderKey === key;
+    const isOver = dragOverFolderKey === key && dropEdge?.key !== key;
     const isExpanded = expandedClusterFolders.has(key);
     const count = subtreeGardenCount(folder);
-    // A cluster cannot be dropped on itself or on anything it contains.
-    const isSelfDrop =
-      draggingFolderPath != null && isInSubtree(folder, draggingFolderPath);
-    const canDrop =
-      (draggingClusterId != null || draggingFolderPath != null) && !isSelfDrop;
+    // Reordering only applies between clusters, and never against itself or a
+    // cluster it contains.
+    const canReorder =
+      clusterView === "mine" &&
+      draggingFolderPath != null &&
+      draggingFolderPath !== folder &&
+      !isInSubtree(folder, draggingFolderPath);
+    const edge = dropEdge?.key === key ? dropEdge.place : null;
     return (
       <div
         key={key}
         role="button"
         tabIndex={0}
         draggable={clusterView === "mine"}
+        onDragOver={(e) => {
+          if (!canReorder) return;
+          const place = edgePlaceAt(e);
+          if (!place) {
+            // Middle band: let the section underneath claim it as a nest.
+            if (dropEdge?.key === key) setDropEdge(null);
+            return;
+          }
+          // Owning the event keeps the section from also lighting up as a
+          // "drop inside here" target while the insertion line is showing.
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = "move";
+          if (dropEdge?.key !== key || dropEdge.place !== place) {
+            setDropEdge({ key, place });
+          }
+          if (dragOverFolderKey !== null) setDragOverFolderKey(null);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+            setDropEdge((prev) => (prev?.key === key ? null : prev));
+          }
+        }}
+        onDrop={(e) => {
+          if (!canReorder || !draggingFolderPath) return;
+          const place = edgePlaceAt(e);
+          if (!place) return;
+          e.preventDefault();
+          e.stopPropagation();
+          handleReorderClusterFolder(draggingFolderPath, folder, place);
+        }}
         onDragStart={(e) => {
           e.stopPropagation();
+          // Grabbing one of the trailing buttons must not drag the cluster, the
+          // same guard a garden card applies to its own action links.
+          if (
+            (e.target as HTMLElement).closest('[data-card-action="true"]') !=
+            null
+          ) {
+            e.preventDefault();
+            return;
+          }
           // Firefox will not start a drag without payload. The path is never
           // read back as a garden id — `draggingFolderPath` decides the branch.
           e.dataTransfer.setData("text/plain", folder);
@@ -743,6 +986,7 @@ export default function DashboardClient({
         onDragEnd={() => {
           setDraggingFolderPath(null);
           setDragOverFolderKey(null);
+          setDropEdge(null);
         }}
         onClick={() => toggleClusterFolder(key)}
         onKeyDown={(e) => {
@@ -751,49 +995,41 @@ export default function DashboardClient({
             toggleClusterFolder(key);
           }
         }}
-        onDragOver={(e) => {
-          // A .garden or .cluster dragged in from the desktop imports here.
-          const fileDrag = isFileDrag(e);
-          if (!canDrop && !fileDrag) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = fileDrag ? "copy" : "move";
-          if (dragOverFolderKey !== key) setDragOverFolderKey(key);
-          // Reveal a collapsed cluster so it's clear where the drop will land.
-          if (!expandedClusterFolders.has(key)) {
-            setExpandedClusterFolders((prev) => new Set(prev).add(key));
-          }
-        }}
-        onDragLeave={(e) => {
-          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-            setDragOverFolderKey((prev) => (prev === key ? null : prev));
-          }
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOverFolderKey(null);
-          const dropped = e.dataTransfer.files?.[0];
-          if (dropped) {
-            importTransfer(dropped, folder || null);
-            return;
-          }
-          if (!canDrop) return;
-          if (draggingFolderPath) {
-            handleMoveClusterFolder(draggingFolderPath, folder);
-            return;
-          }
-          const id =
-            Number(e.dataTransfer.getData("text/plain")) || draggingClusterId;
-          if (id != null) handleMoveClusterToFolder(id, folder);
-        }}
         style={{ marginLeft: depth * FOLDER_INDENT_PX }}
+        title={
+          clusterView === "mine"
+            ? "Drag onto another cluster to nest it, or onto its top or bottom edge to reorder"
+            : undefined
+        }
         className={[
-          "basis-full mt-2 flex items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-left transition-colors",
+          "relative basis-full mt-2 flex items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-left transition-colors",
+          clusterView === "mine" ? "cursor-grab active:cursor-grabbing" : "",
           isOver
             ? "border-cyan-400/60 bg-cyan-950/20"
             : "border-gray-800 hover:border-gray-700 hover:bg-gray-900/50",
           draggingFolderPath === folder ? "opacity-50" : "",
         ].join(" ")}
       >
+        {edge && (
+          // Where the dragged cluster will land, drawn on the edge it will
+          // take, and indented to the level it will end up at.
+          <span
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-x-0 h-0.5 rounded-full bg-cyan-400 ${
+              edge === "before" ? "-top-1" : "-bottom-1"
+            }`}
+          />
+        )}
+        {clusterView === "mine" && (
+          <svg
+            aria-hidden="true"
+            className="h-3.5 w-3.5 shrink-0 text-gray-700"
+            fill="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path d="M9 5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm9 0a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0ZM9 12a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm9 0a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0ZM9 19a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm9 0a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z" />
+          </svg>
+        )}
         <svg
           className={`h-3.5 w-3.5 shrink-0 text-gray-500 transition-transform ${isExpanded ? "rotate-90" : ""}`}
           fill="none"
@@ -826,6 +1062,42 @@ export default function DashboardClient({
         <span className="text-[11px] text-gray-600">{count}</span>
         {folder && (
           <span
+            data-card-action="true"
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation();
+              openModal(folder);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                openModal(folder);
+              }
+            }}
+            className="ml-auto rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-emerald-300"
+            aria-label={`New garden inside ${folderLabel(folder)}`}
+            title="New garden in this cluster"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.7}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 9v6m3-3H9m10.5 0a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"
+              />
+            </svg>
+          </span>
+        )}
+        {folder && (
+          <span
+            data-card-action="true"
             role="button"
             tabIndex={0}
             onClick={(e) => {
@@ -839,7 +1111,7 @@ export default function DashboardClient({
                 openClusterFolderModal(folder);
               }
             }}
-            className="ml-auto rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
+            className="rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
             aria-label={`New cluster inside ${folderLabel(folder)}`}
             title="New cluster inside this one"
           >
@@ -860,6 +1132,7 @@ export default function DashboardClient({
         )}
         {folder && (
           <span
+            data-card-action="true"
             role="button"
             tabIndex={0}
             onClick={(e) => {
@@ -898,6 +1171,7 @@ export default function DashboardClient({
         )}
         {folder && (
           <span
+            data-card-action="true"
             role="button"
             tabIndex={0}
             onClick={(e) => {
@@ -934,16 +1208,18 @@ export default function DashboardClient({
     );
   }
 
-  function openModal() {
+  function openModal(folder: string | null = null) {
     setName("");
     setDescription("");
     setError(null);
+    setNewGardenFolder(folder);
     setModalOpen(true);
   }
 
   function closeModal() {
     setModalOpen(false);
     setError(null);
+    setNewGardenFolder(null);
   }
 
   function openEditModal(cluster: Cluster) {
@@ -981,9 +1257,17 @@ export default function DashboardClient({
     e.preventDefault();
     if (!name.trim()) return;
     setError(null);
+    const folder = newGardenFolder;
     startTransition(async () => {
       try {
-        await createCluster(name.trim(), description.trim());
+        await createCluster(name.trim(), description.trim(), folder);
+        // Reveal the cluster it landed in, so the new card is not created
+        // behind a collapsed header.
+        if (folder) {
+          setExpandedClusterFolders((prev) =>
+            new Set(prev).add(`folder:${folder}`),
+          );
+        }
         closeModal();
         router.refresh();
       } catch (err: unknown) {
@@ -1677,17 +1961,20 @@ export default function DashboardClient({
     <div
       // Marks the pixels the terminal dock's glass bar refracts.
       data-glass-scene-root
-      className="dashboard-shell min-h-screen bg-gray-950 text-white flex flex-col pb-12"
-      style={
-        bgImage
+      className="dashboard-shell min-h-screen bg-gray-950 text-white flex flex-col"
+      style={{
+        // Clear the fixed dock, then a screenful of slack so the bottom of the
+        // grid can always be scrolled up to a comfortable reading position.
+        paddingBottom: `calc(${Math.round(dockHeight)}px + 40vh)`,
+        ...(bgImage
           ? {
               backgroundImage: `url(${bgImage})`,
               backgroundSize: "cover",
               backgroundPosition: "center",
               backgroundAttachment: "fixed",
             }
-          : undefined
-      }
+          : {}),
+      }}
     >
       <NavBar
         email={userEmail}
@@ -1841,7 +2128,7 @@ export default function DashboardClient({
         <div className="mb-3 flex items-center gap-2">
           <button
             type="button"
-            onClick={openModal}
+            onClick={() => openModal(null)}
             className="neu-button-primary inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-gray-950 transition-colors hover:bg-gray-100"
           >
             <svg
@@ -1905,7 +2192,7 @@ export default function DashboardClient({
           </button>
         </div>
 
-        {filteredClusters.length === 0 ? (
+        {clusterSections.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-32 text-gray-600">
             <p className="text-lg">
               {searchQuery
@@ -1961,8 +2248,29 @@ export default function DashboardClient({
                 </div>
               )}
             <div className="flex flex-col gap-2">
-              {clusterSections.map((section) => (
-                <div key={section.key} className="flex flex-col">
+              {clusterSections.map((section) => {
+                // The whole section is the drop target, not just its header
+                // strip: a dragged cluster lands anywhere over the cluster it is
+                // being moved into. The flat section stands in for the top level.
+                const dropKey = section.header ? section.header.key : "root";
+                const dropFolder = section.header
+                  ? section.header.folder
+                  : null;
+                const sectionOver =
+                  clusterView === "mine" &&
+                  dragOverFolderKey === dropKey &&
+                  canDropInFolder(dropFolder);
+                return (
+                <div
+                  key={section.key}
+                  {...(clusterView === "mine"
+                    ? folderDropProps(dropFolder, dropKey)
+                    : {})}
+                  className={[
+                    "flex flex-col rounded-xl transition-colors",
+                    sectionOver ? "bg-cyan-950/10 ring-1 ring-cyan-400/30" : "",
+                  ].join(" ")}
+                >
                   {section.header &&
                     renderFolderHeader(
                       section.header.folder,
@@ -1995,7 +2303,14 @@ export default function DashboardClient({
                             key={cluster.id}
                             draggable={cardDraggable}
                             onDragStart={(e) => {
-                              if (!cardDraggable) return;
+                              const dragSource = e.target as HTMLElement;
+                              if (
+                                !cardDraggable ||
+                                dragSource.closest('[data-card-action="true"]')
+                              ) {
+                                e.preventDefault();
+                                return;
+                              }
                               e.dataTransfer.setData(
                                 "text/plain",
                                 String(cluster.id),
@@ -2410,29 +2725,29 @@ export default function DashboardClient({
                               {clusterView === "mine" ||
                               cluster.chat_accessible ? (
                                 <>
-                                  <a
+                                  <Link
                                     data-card-action="true"
                                     href={`/garden/${cluster.slug}`}
                                     className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
                                   >
                                     Open garden view
-                                  </a>
-                                  <a
+                                  </Link>
+                                  <Link
                                     data-card-action="true"
                                     href={`/gardens/${cluster.slug}`}
                                     className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
                                   >
                                     Open garden dashboard
-                                  </a>
+                                  </Link>
                                 </>
                               ) : (
-                                <a
+                                <Link
                                   data-card-action="true"
                                   href={`/garden/${cluster.slug}`}
                                   className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
                                 >
                                   Open garden view
-                                </a>
+                                </Link>
                               )}
                             </div>
 
@@ -2490,7 +2805,8 @@ export default function DashboardClient({
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </>
         )}
@@ -2584,7 +2900,12 @@ export default function DashboardClient({
           }}
         >
           <div className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6">
-            <h2 className="text-lg font-semibold mb-5">New garden</h2>
+            <h2 className="text-lg font-semibold">New garden</h2>
+            <p className="mb-5 mt-0.5 text-sm text-gray-500">
+              {newGardenFolder
+                ? `Inside ${newGardenFolder}`
+                : "At the top level"}
+            </p>
             <form onSubmit={handleCreate} className="space-y-4">
               <div>
                 <label className="block text-sm text-gray-400 mb-1.5">

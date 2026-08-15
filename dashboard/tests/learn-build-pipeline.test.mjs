@@ -143,6 +143,14 @@ test("1/2. workspace seeds durable inputs and never copies the old learning tree
   fs.mkdirSync(path.join(repo, ".breadboard"), { recursive: true });
   fs.writeFileSync(path.join(repo, ".breadboard", "source-visuals.json"), "[]");
   fs.writeFileSync(path.join(repo, ".breadboard", "claims.json"), "{}");
+  for (const name of [
+    "visual-necessity-decisions.json",
+    "visual-necessity-decisions.md",
+    "visual-decision-records.json",
+    "visual-contract-executability-reviews.json",
+  ]) {
+    fs.writeFileSync(path.join(repo, ".breadboard", name), "stale model output");
+  }
 
   const ws = createLearnBuildWorkspace({
     gardenSlug: "g1", jobId: "job1", mode: "generate",
@@ -156,6 +164,18 @@ test("1/2. workspace seeds durable inputs and never copies the old learning tree
   // old learning tree and disposable projections NOT copied
   assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, "learning")), false);
   assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "claims.json")), false);
+  for (const name of [
+    "visual-necessity-decisions.json",
+    "visual-necessity-decisions.md",
+    "visual-decision-records.json",
+    "visual-contract-executability-reviews.json",
+  ]) {
+    assert.equal(
+      fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", name)),
+      false,
+      `${name} must not seed a fresh staging run`,
+    );
+  }
 });
 
 test("1c. generation workspace preserves the authoritative source-anchor ledger byte-for-byte", () => {

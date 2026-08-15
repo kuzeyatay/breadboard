@@ -76,6 +76,7 @@ import {
   canonicalizeLearnerWikilinks,
   containsRawVisualPlaceholder,
   excludeSyllabusFromSources,
+  formatQualityProblemForRepair,
   parseJsonCandidate,
   publicLearningVersionId,
   removeRawVisualPlaceholders,
@@ -151,21 +152,31 @@ import {
   type VisualizationPublicationOutcome,
 } from "@/lib/visualization-opportunities";
 import {
+  buildVisualizationContractRepairPrompt,
   buildVisualizationPlanWithContractRepair,
-  type VisualizationContractEvidenceEntry,
   type VisualizationContractRepairPacket,
 } from "@/lib/visualization-contract-repair";
+import {
+  canonicalVisualizationEvidenceByUnit,
+  declaredVisualizationSourceAnchorIdsForUnit as declaredSourceAnchorIdsForUnit,
+} from "@/lib/visualization-canonical-evidence";
+import {
+  AUTHORITATIVE_LEARNING_UNIT_CONTRACT_MARKDOWN_RELATIVE_PATH,
+  renderAuthoritativeLearningUnitContractMarkdown,
+} from "@/lib/learning-unit-contract-markdown";
 import {
   buildVisualContractExecutabilityLedger,
   buildFinalVisualizationPlanFromRoutedContracts,
   reviewVisualizationPlanExecutability,
   saveVisualContractExecutabilityLedger,
+  strictVisualContractExecutabilityResponseOrExactRaw,
   VISUAL_CONTRACT_EXECUTABILITY_LEDGER_RELATIVE_PATH,
   type VisualContractExecutabilityProviderRequest,
 } from "@/lib/visualization-contract-executability";
 import {
   buildGeneratedVisualBlock,
   createGeneratedVisualization,
+  GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS,
 } from "@/lib/generated-visuals";
 import {
   normalizeLearnOperationMode,
@@ -1526,32 +1537,34 @@ function attachLearnJobModelTracking({
     client,
     (event) => recordLearnTokenUsageEvent(jobId, event),
     {
-      retry502: {
+      retryTransport: {
         signal: controller.signal,
-        onDelay: ({ attempt, maxAttempts, delayMs }) => {
+        onDelay: ({ attempt, maxAttempts, delayMs, retryCause }) => {
           throwIfLearnCancelled(jobId);
-          const currentStep = `Gateway 502; waiting 4 minutes before retry ${attempt}/${maxAttempts}`;
+          const currentStep = `Model transport unavailable; waiting 4 minutes before retry ${attempt}/${maxAttempts}`;
           updateLearnJob(jobId, { currentStep });
-          appendLearnEvent(contentPath, gardenId, "learn_chatmock_502_retry", {
+          appendLearnEvent(contentPath, gardenId, "learn_model_transport_retry", {
             jobId,
             phase: "waiting",
             attempt,
             maxAttempts,
             delayMs,
+            retryCause,
             currentStep,
           });
         },
-        onAttempt: ({ attempt, maxAttempts, delayMs }) => {
+        onAttempt: ({ attempt, maxAttempts, delayMs, retryCause }) => {
           throwIfLearnCancelled(jobId);
           if (attempt === 1) return;
-          const currentStep = `Retrying request (${attempt}/${maxAttempts})`;
+          const currentStep = `Retrying model transport (${attempt}/${maxAttempts})`;
           updateLearnJob(jobId, { currentStep });
-          appendLearnEvent(contentPath, gardenId, "learn_chatmock_502_retry", {
+          appendLearnEvent(contentPath, gardenId, "learn_model_transport_retry", {
             jobId,
             phase: "attempting",
             attempt,
             maxAttempts,
             delayMs,
+            retryCause,
             currentStep,
           });
         },
@@ -2637,6 +2650,7 @@ async function callCouncilText({
   sourceContext,
   councilModeOverride,
   timeoutMs,
+  preserveExactContent = false,
 }: {
   client: OpenAI;
   model: string;
@@ -2650,6 +2664,9 @@ async function callCouncilText({
   /** Per-request timeout override. When set, SDK-internal retries are disabled
    * so the caller's own retry ladder controls what happens on a timeout. */
   timeoutMs?: number;
+  /** Structured-output callers need the exact provider text when strict JSON
+   * parsing fails so a bounded AI rereview can see and wholly rewrite it. */
+  preserveExactContent?: boolean;
 }): Promise<CouncilCallResult> {
   logPromptBudget(
     `${taskType}${pageId ? ` ${pageId}` : ""} (${councilModeOverride ?? "default"})`,
@@ -2681,14 +2698,15 @@ async function callCouncilText({
     councilRunId?: string;
     councilMode?: string;
   };
+  const exactContent = response.choices[0]?.message?.content ?? "";
   return {
     // Every piece of prose the pipeline writes into a garden page comes through
     // here, so this is where invisible-Unicode marks come out of it — before
     // any anchor is assigned or any gate counts a line. Only invisible
-    // characters go; formulas, anchors and fenced blocks are untouched, and the
-    // JSON path (`callCouncilJson`) is deliberately not scrubbed, so nothing
-    // structured is ever reshaped on its way to a parser.
-    content: scrubbed(response.choices[0]?.message?.content?.trim() ?? ""),
+    // characters go; formulas, anchors and fenced blocks are untouched.
+    // Strict structured callers can opt into the exact provider bytes so a
+    // malformed response reaches their bounded AI rereview without reshaping.
+    content: preserveExactContent ? exactContent : scrubbed(exactContent.trim()),
     councilRunId: typed.councilRunId ?? response.id,
     councilMode: typed.councilMode,
   };
@@ -2704,6 +2722,7 @@ async function callCouncilJson({
   sourceContext,
   councilModeOverride = "full_council",
   timeoutMs,
+  preserveExactContent = false,
 }: {
   client: OpenAI;
   model: string;
@@ -2714,6 +2733,7 @@ async function callCouncilJson({
   sourceContext: unknown;
   councilModeOverride?: CouncilMode;
   timeoutMs?: number;
+  preserveExactContent?: boolean;
 }): Promise<CouncilJsonResult> {
   const result = await callCouncilText({
     client,
@@ -2725,6 +2745,7 @@ async function callCouncilJson({
     sourceContext,
     councilModeOverride,
     timeoutMs,
+    preserveExactContent,
   });
   return { ...result, parsed: parseJsonCandidate(result.content) };
 }
@@ -2740,14 +2761,8 @@ async function requestVisualizationContractRepair(input: {
     model: input.model,
     taskType: "visualization_generation",
     gardenId: input.gardenId,
-    system:
-      "Repair the complete interaction contract for each supplied model-approved interactive visual, whether its immutable requirement is required, recommended, or optional. Every repair must be a complete replacement authored by you even when only one field was missing; code will not merge, restore, or infer omitted fields. " +
-      "Return STRICT JSON: {\"repairs\":[{\"unitId\":string,\"interactionGoal\":\"manipulate_variables\"|\"observe_change_over_time\"|\"compare_cases\"|\"step_through_process\"|\"explore_structure\"|\"test_prediction\"|\"inspect_relationship\"|\"simulate_system\",\"learnerAction\":string,\"visualIntent\":{\"id\":string,\"uniqueConcept\":string,\"visualType\":string,\"whyStaticSourceFigureIsNotEnough\":string,\"learnerManipulates\":string[],\"expectedInsight\":string,\"sourceAnchors\":string[],\"duplicateSignature\":string,\"reuseOf\"?:string},\"controls\":[{\"id\":string,\"kind\":\"variable\"|\"select_case\"|\"process_position\",\"label\":string,\"type\":\"slider\"|\"number\"|\"select\",\"unit\"?:string,\"min\"?:number,\"max\"?:number,\"step\"?:number,\"options\"?:string[],\"defaultValue\":number|string,\"evidence\":[{\"anchor\":string,\"quote\":string}]}],\"observable\":{\"label\":string,\"representation\":\"value\"|\"chart\"|\"diagram\"|\"animation\"|\"timeline\"|\"table\"|\"annotation\",\"evidence\":[{\"anchor\":string,\"quote\":string}]},\"expectedInsight\":string,\"expectedInsightEvidence\":[{\"anchor\":string,\"quote\":string}]}]}. " +
-      "Use only the evidence entries supplied for that same unit. Every quote must be an exact substring of the entry with that anchor. " +
-      "Author the complete non-empty learnerAction sequence plus every control id, input type, domain, and default; code will validate and project them verbatim. Numeric controls require finite min, max, step, and an in-range numeric default. Select controls require at least two source-named options and an exact declared default. " +
-      "visualIntent.id must be non-empty, visualIntent.visualType must be a lowercase identifier, visualIntent.learnerManipulates must exactly equal the control labels in order, visualIntent.expectedInsight must exactly equal expectedInsight, and visualIntent.sourceAnchors must include every cited evidence anchor and only supplied canonical anchors. The observable label and expected insight must each be directly supported by their cited quotes. Never invent plausible controls, labels, cases, claims, or units. " +
-      "Do not return or change necessity, requirement, renderer, route, or publication policy; visualIntent.visualType cannot change the already-selected route. Address every failed unit and use previousRejectionReasons to correct a rejected attempt.",
-    user: JSON.stringify(input.packet),
+    system: buildVisualizationContractRepairPrompt(input.packet).system,
+    user: buildVisualizationContractRepairPrompt(input.packet).user,
     sourceContext: input.packet,
     councilModeOverride: "direct_council",
     timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
@@ -2761,7 +2776,7 @@ async function requestVisualizationContractExecutabilityReview(input: {
   gardenId: string;
   request: VisualContractExecutabilityProviderRequest;
 }): Promise<unknown> {
-  const { parsed } = await callCouncilJson({
+  const result = await callCouncilText({
     client: input.client,
     model: input.model,
     taskType: "visual_necessity_review",
@@ -2779,11 +2794,12 @@ async function requestVisualizationContractExecutabilityReview(input: {
     },
     councilModeOverride: "direct_council",
     timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+    preserveExactContent: true,
   });
   // Missing/malformed structured output is a semantic rejection handled by
-  // the bounded model rereview. A true callCouncilJson transport exception is
+  // the bounded model rereview. A true Council transport exception is
   // deliberately not caught here and escapes without consuming that budget.
-  return parsed;
+  return strictVisualContractExecutabilityResponseOrExactRaw(result.content);
 }
 
 async function planAndReviewVisualNecessity(input: {
@@ -3389,20 +3405,6 @@ function conceptRegistryAlignmentProblems(input: {
   }
 }
 
-function declaredSourceAnchorIdsForUnit(unit: LearningUnitContract): string[] {
-  return [...new Set([
-    ...unit.sourceAnchors,
-    ...unit.sourceFigures.map((artifact) => artifact.id),
-    ...unit.sourceFormulas.map((artifact) => artifact.id),
-    ...unit.sourceTables.map((artifact) => artifact.id),
-    ...(unit.semanticConcepts ?? []).flatMap((concept) => concept.evidenceAnchors),
-    ...(unit.knowledgeClaims ?? []).flatMap((claim) => [
-      ...claim.evidenceAnchors,
-      ...(claim.derivationAnchors ?? []),
-    ]),
-  ])];
-}
-
 function canonicalLearningSpineEvidenceByUnit(
   clusterDir: string,
   units: readonly LearningUnitContract[],
@@ -3425,35 +3427,6 @@ function canonicalLearningSpineEvidenceByUnit(
       }];
     }),
   ]));
-}
-
-function canonicalVisualizationEvidenceByUnit(
-  clusterDir: string,
-  units: readonly LearningUnitContract[],
-): Record<string, VisualizationContractEvidenceEntry[]> {
-  const registry = buildCanonicalSourceAnchors(clusterDir, { allowInferredFormulaText: false });
-  return Object.fromEntries(units.map((unit) => {
-    const entries: VisualizationContractEvidenceEntry[] = [];
-    for (const anchorId of declaredSourceAnchorIdsForUnit(unit)) {
-      const anchor = registry[anchorId];
-      if (!anchor) continue;
-      const kind: VisualizationContractEvidenceEntry["kind"] =
-        anchor.kind === "formula"
-          ? "source_formula"
-          : anchor.kind === "table"
-            ? "source_table"
-            : anchor.kind === "figure" || anchor.kind === "graph"
-              ? "source_figure"
-              : "source_text";
-      const texts = anchor.exactText
-        ? [anchor.exactText]
-        : (anchor.kind === "figure" || anchor.kind === "graph" || anchor.kind === "table") && anchor.caption
-          ? [anchor.caption]
-          : [];
-      for (const text of texts) entries.push({ anchor: anchorId, kind, text });
-    }
-    return [unit.id, entries];
-  }));
 }
 
 function exactCanonicalRepairSourceText(
@@ -3694,6 +3667,14 @@ function writeLearningUnitContractArtifacts({
   const lines = [
     "# Learning Unit Contract",
     "",
+    "<!--",
+    "artifactRole: pre_executability_learning_unit_contract_summary",
+    "interactionContractsAreAuthoritative: false",
+    "supersededBy: .breadboard/learning-unit-contract.json, .breadboard/visualization-plan.json, .breadboard/visual-contract-executability-reviews.json",
+    "-->",
+    "",
+    "> **Artifact role:** Pre-executability planning summary. Its interaction controls are not authoritative until the executability ledger and final JSON contract are persisted.",
+    "",
     `Source set hash: ${sourceSetHash}`,
     `Learning units: ${reconciledUnits.length}`,
     `Source artifact assignments: ${finalAssignments.length}`,
@@ -3786,7 +3767,22 @@ function persistRoutedVisualPlans(
     else delete next.interactiveVisual;
     return next;
   });
-  fs.writeFileSync(filePath, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8");
+  const jsonPayload = `${JSON.stringify(parsed, null, 2)}\n`;
+  fs.writeFileSync(filePath, jsonPayload, "utf-8");
+  const contractHash = createHash("sha256").update(jsonPayload).digest("hex");
+  const planningMarkdownPath = path.join(
+    clusterDir,
+    ...AUTHORITATIVE_LEARNING_UNIT_CONTRACT_MARKDOWN_RELATIVE_PATH.split("/"),
+  );
+  fs.mkdirSync(path.dirname(planningMarkdownPath), { recursive: true });
+  fs.writeFileSync(
+    planningMarkdownPath,
+    renderAuthoritativeLearningUnitContractMarkdown({
+      units,
+      authoritativeSourceSha256: contractHash,
+    }),
+    "utf-8",
+  );
 }
 
 function learningUnitsFromCoveragePlan(plan: unknown): LearningUnitContract[] {
@@ -4857,12 +4853,19 @@ export async function runLearnPlanning({
         ...data,
       }),
     });
+    const planningExecutabilityContext = {
+      phase: "planning" as const,
+      jobId: job.id,
+      model,
+      learningMapId: storedMap.id,
+    };
     const executabilityReview = await reviewVisualizationPlanExecutability({
       gardenId,
       learningMap,
       learningUnits: visualizationPlanning.learningUnits,
       initialPlan: visualizationPlanning.plan,
       canonicalEvidenceByUnit: canonicalVisualEvidence,
+      auditContext: planningExecutabilityContext,
       maximumRepeatedInteractionSignature: LEARN_VISUAL_MAX_REPEATED_INTERACTION_SIGNATURE,
       provider: (request) => requestVisualizationContractExecutabilityReview({
         client,
@@ -4886,6 +4889,20 @@ export async function runLearnPlanning({
       finalRoutedLearningUnits: learningUnits,
       reviewedPlan: visualizationPlan,
       canonicalEvidenceByUnit: canonicalVisualEvidence,
+    });
+    // Construct and validate the complete audit envelope before any of the
+    // reviewed contracts or plan are persisted. A malformed review/audit can
+    // therefore never leave a partially published contract set behind.
+    const planningExecutabilityLedger = buildVisualContractExecutabilityLedger({
+      gardenId,
+      context: planningExecutabilityContext,
+      review: executabilityReview,
+      finalRoutedLearningUnits: learningUnits,
+      finalVisualizationPlan: visualizationPlan,
+      structuralContractRepair: {
+        source: visualizationPlanning.repairSource,
+        ...visualizationPlanning.repairAudit,
+      },
     });
     persistRoutedVisualPlans(clusterPath(contentPath, gardenId), learningUnits);
     learningMap = learningMapWithConfirmedUnitContracts(learningMap, learningUnits);
@@ -4915,22 +4932,7 @@ export async function runLearnPlanning({
     saveVisualizationPlan(clusterPath(contentPath, gardenId), visualizationPlan);
     saveVisualContractExecutabilityLedger({
       gardenDir: clusterPath(contentPath, gardenId),
-      ledger: buildVisualContractExecutabilityLedger({
-        gardenId,
-        context: {
-          phase: "planning",
-          jobId: job.id,
-          model,
-          learningMapId: storedMap.id,
-        },
-        review: executabilityReview,
-        finalRoutedLearningUnits: learningUnits,
-        finalVisualizationPlan: visualizationPlan,
-        structuralContractRepair: {
-          source: visualizationPlanning.repairSource,
-          ...visualizationPlanning.repairAudit,
-        },
-      }),
+      ledger: planningExecutabilityLedger,
     });
     appendLearnEvent(contentPath, gardenId, "visual_contract_executability_ledger_persisted", {
       jobId: job.id,
@@ -5444,7 +5446,7 @@ function validateTopicOverview(
   const generalQuality = assessLessonQuality(markdown, { minWords: 250 });
   for (const problem of generalQuality.problems) {
     if (problem.code === "no-qa" || problem.code === "no-example") continue;
-    problems.push(`${problem.code}: ${problem.message}`);
+    problems.push(formatQualityProblemForRepair(problem));
   }
   if (/```breadboard-visual/i.test(markdown) || containsRawVisualPlaceholder(markdown)) {
     problems.push("overview contains an interactive-visual block or placeholder");
@@ -6462,7 +6464,7 @@ async function reconcileInteractiveVisuals({
       // Every interaction in this plan was explicitly selected by the model.
       // Give each one the same bounded repair budget; code may not silently
       // demote a recommended or optional model decision after planning.
-      maxAttempts: 5,
+      maxAttempts: GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS,
       availableSourceAnchorIds: new Set(
         Object.keys(buildCanonicalSourceAnchors(path.join(contentPath, gardenId), { allowInferredFormulaText: false })),
       ),
@@ -7315,12 +7317,20 @@ export async function runTextbookGeneration({
         ...data,
       }),
     });
+    const generationExecutabilityContext = {
+      phase: "generation" as const,
+      jobId: job.id,
+      model,
+      learningMapId: map.id,
+      textbookVersionId,
+    };
     const generationExecutabilityReview = await reviewVisualizationPlanExecutability({
       gardenId,
       learningMap: repairedLearningMap,
       learningUnits: generationVisualizationPlanning.learningUnits,
       initialPlan: generationVisualizationPlanning.plan,
       canonicalEvidenceByUnit: generationCanonicalVisualEvidence,
+      auditContext: generationExecutabilityContext,
       maximumRepeatedInteractionSignature: LEARN_VISUAL_MAX_REPEATED_INTERACTION_SIGNATURE,
       provider: (request) => requestVisualizationContractExecutabilityReview({
         client,
@@ -7348,6 +7358,19 @@ export async function runTextbookGeneration({
       reviewedPlan: visualizationPlan,
       canonicalEvidenceByUnit: generationCanonicalVisualEvidence,
     });
+    // As in planning, prove that the durable ledger can be built before any
+    // generation-phase contract/plan artifact is replaced.
+    const generationExecutabilityLedger = buildVisualContractExecutabilityLedger({
+      gardenId,
+      context: generationExecutabilityContext,
+      review: generationExecutabilityReview,
+      finalRoutedLearningUnits: confirmedLearningUnits,
+      finalVisualizationPlan: visualizationPlan,
+      structuralContractRepair: {
+        source: generationVisualizationPlanning.repairSource,
+        ...generationVisualizationPlanning.repairAudit,
+      },
+    });
     persistRoutedVisualPlans(clusterDir, confirmedLearningUnits);
     repairedCoveragePlan = {
       ...repairedCoveragePlan,
@@ -7367,23 +7390,7 @@ export async function runTextbookGeneration({
     saveVisualizationPlan(clusterDir, visualizationPlan);
     saveVisualContractExecutabilityLedger({
       gardenDir: clusterDir,
-      ledger: buildVisualContractExecutabilityLedger({
-        gardenId,
-        context: {
-          phase: "generation",
-          jobId: job.id,
-          model,
-          learningMapId: map.id,
-          textbookVersionId,
-        },
-        review: generationExecutabilityReview,
-        finalRoutedLearningUnits: confirmedLearningUnits,
-        finalVisualizationPlan: visualizationPlan,
-        structuralContractRepair: {
-          source: generationVisualizationPlanning.repairSource,
-          ...generationVisualizationPlanning.repairAudit,
-        },
-      }),
+      ledger: generationExecutabilityLedger,
     });
     appendLearnEvent(contentPath, gardenId, "visual_contract_executability_ledger_persisted", {
       jobId: job.id,
@@ -7804,13 +7811,7 @@ export async function runTextbookGeneration({
                   pageMarkdown: attemptBody,
                   failedProblems: quality.problems
                     .filter((problem) => problem.hard)
-                    .map((problem) =>
-                      problem.evidence?.length
-                        ? `${problem.code}: ${problem.message} — offending lines: ${problem.evidence
-                            .map((line) => JSON.stringify(line))
-                            .join(", ")}`
-                        : `${problem.code}: ${problem.message}`,
-                    ),
+                    .map(formatQualityProblemForRepair),
                   dossier: pageDossier,
                   repairRules: [
                     "Fix only the listed hard failures.",
@@ -8267,6 +8268,7 @@ export async function runTextbookGeneration({
         repairExecutor: repairExecutorMode,
         preserveModelAuthoredVisuals: true,
         preserveModelAuthoredContent: true,
+        expectedVisualContractExecutabilityContext: generationExecutabilityContext,
         // Repair is model-only: there is no deterministic executor to fall back
         // to, so the repair pass always carries a live model executor.
         modelRepair: createOpenAIRepairExecutor({
@@ -8296,6 +8298,7 @@ export async function runTextbookGeneration({
         gardenDir: clusterDir,
         gardenSlug: gardenId,
         preserveModelAuthoredContent: true,
+        expectedVisualContractExecutabilityContext: generationExecutabilityContext,
       });
       appendLearnEvent(contentPath, gardenId, "learn_export_finalized", {
         jobId: job.id,
@@ -8310,6 +8313,7 @@ export async function runTextbookGeneration({
         gardenDir: clusterDir,
         gardenSlug: gardenId,
         strictModelApprovedVisuals: true,
+        expectedVisualContractExecutabilityContext: generationExecutabilityContext,
       });
       appendLearnEvent(contentPath, gardenId, "learn_final_artifact_verified", {
         jobId: job.id,
@@ -8506,6 +8510,7 @@ export async function runTextbookGeneration({
           gardenDir: candidateDir,
           gardenSlug: gardenId,
           strictModelApprovedVisuals: true,
+          expectedVisualContractExecutabilityContext: generationExecutabilityContext,
         }).accepted,
     });
     previousPromotedGardenDir = promotion.previousPreservedAt;

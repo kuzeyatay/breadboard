@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ResolvedPaths } from "./path-resolver";
 import type { DesktopServiceDefinition } from "./service-manager";
@@ -16,12 +17,41 @@ export const QA_CRITICAL_SERVICE_IDS = new Set([
   "dashboard",
 ]);
 
+function resolveQaProviderAuthFile(paths: ResolvedPaths): string | undefined {
+  const configured = process.env["BREADBOARD_QA_PROVIDER_AUTH_FILE"]?.trim();
+  if (!configured) return undefined;
+  const resolved = path.resolve(configured);
+  let realPath: string;
+  try {
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile()) throw new Error("not a regular file");
+    realPath = fs.realpathSync(resolved);
+  } catch (error) {
+    throw new Error(
+      `BREADBOARD_QA_PROVIDER_AUTH_FILE must name an existing regular file: ${resolved}`,
+      { cause: error },
+    );
+  }
+  const relative = path.relative(path.resolve(paths.dataRoot), realPath);
+  const insideDataRoot =
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative));
+  if (insideDataRoot) {
+    throw new Error(
+      `BREADBOARD_QA_PROVIDER_AUTH_FILE must remain outside disposable QA data: ${realPath}`,
+    );
+  }
+  return realPath;
+}
+
 export function prepareQaServiceDefinitions(
   definitions: DesktopServiceDefinition[],
   paths: ResolvedPaths,
   profile: QaServiceProfile,
 ): DesktopServiceDefinition[] {
   if (!paths.qaMode) return definitions;
+
+  const providerAuthFile = resolveQaProviderAuthFile(paths);
 
   return definitions
     .filter((definition) => QA_CRITICAL_SERVICE_IDS.has(definition.id))
@@ -94,6 +124,8 @@ export function prepareQaServiceDefinitions(
           AUDIO_ANALYZER_BIN_DIR: state("audio-analyzer-bin"),
           BOOK_TO_SKILL_ROOT: source("book-to-skill"),
           BREADBOARD_CAD_HOME: state("cad"),
+          BREADBOARD_GOAL_HOME: state("goal-mode"),
+          BREADBOARD_GOAL_ROOT: source("goal"),
           BREADBOARD_LOOPX_HOME: state("loopx"),
           BREADBOARD_LOOPX_ROOT: source("loopx"),
           BREADBOARD_OMH_ROOT: source("omh"),
@@ -171,6 +203,13 @@ export function prepareQaServiceDefinitions(
       }
       if (definition.id === "chatmock") {
         env["COUNCIL_LEDGER_DIR"] = councilLedgerDir;
+        if (providerAuthFile) {
+          // ChatMock reads this existing session directly and is forbidden to
+          // refresh it in place. The QA CODEX_HOME remains disposable for all
+          // other ChatMock state and account-management writes.
+          env["CHATMOCK_AUTH_FILE"] = providerAuthFile;
+          env["CHATMOCK_AUTH_READ_ONLY"] = "1";
+        }
       }
       if (definition.id === "hermes") {
         // Hermes normally treats the checkout as a development fallback: it

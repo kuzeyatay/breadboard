@@ -1,6 +1,6 @@
 ---
 title: "My garden"
-date: "2026-08-13"
+date: "2026-08-15"
 description: "All the gardens attached to your account."
 knowledge_type: "garden-overview"
 garden_scope: "private"
@@ -14,8 +14,8 @@ All the gardens attached to your account.
 
 - Gardens: 9
 - Lesson pages: 43
-- Graph links: 3729
-- Indexed words: 1988235
+- Graph links: 9981
+- Indexed words: 2602289
 
 ## Gardens
 
@@ -33,4 +33,4 @@ All the gardens attached to your account.
 
 ### EE year 2
 
-1. [Electromagnetism 1](/electromagnetism-1/) - 0 lesson pages, 0 links
+1. [Electromagnetism 1](/electromagnetism-1/) - 0 lesson pages, 6252 links

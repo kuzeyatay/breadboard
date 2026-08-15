@@ -41,7 +41,16 @@ import {
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
 } from "../dashboard/src/lib/learning-unit-contract.ts";
-import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "../dashboard/src/lib/learn-utils.ts";
+import {
+  formulaMeaningMatch,
+  formulaMetricFamily,
+  isFormulaExpression,
+  isGroundableFormula,
+  isTrivialFormulaFragment,
+  isWorkedExampleFormula,
+  safeLearnFileSegment,
+  sourceCommentaryMatches,
+} from "../dashboard/src/lib/learn-utils.ts";
 import { auditFinalGardenState, buildFinalGardenState } from "../dashboard/src/lib/final-garden-state.ts";
 import { validateGardenSemantics } from "../dashboard/src/lib/garden-semantics.ts";
 import { REQUIRED_VALIDATION_REPORT_SECTIONS as CANONICAL_REPORT_SECTIONS, VALIDATION_REPORT_STATIC_SECTIONS } from "../dashboard/src/lib/garden-finalize.ts";
@@ -59,17 +68,6 @@ const katex = require("katex") as {
 // Shared rule mirrors (keep in sync with dashboard/src/lib/learn-utils.ts,
 // dashboard/src/lib/learning-garden.ts and quartz/quartz/plugins/filters/draft.ts)
 // ---------------------------------------------------------------------------
-
-const SOURCE_COMMENTARY_PATTERNS: RegExp[] = [
-  /\bthe paper\b/i,
-  /\bthis paper\b/i,
-  /\bthe source\b/i,
-  /\bthe uploaded source\b/i,
-  /\bsource-derived\b/i,
-  /\bsource-central\b/i,
-  /\baccording to the source\b/i,
-  /\bthe source material\b/i,
-];
 
 const FALLBACK_FINGERPRINTS: RegExp[] = [
   /The durable concept/i,
@@ -1529,10 +1527,15 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
   {
     const problems: string[] = [];
     for (const page of lessonPages) {
-      const prose = teachingProse(page.body);
-      let count = 0;
-      for (const pattern of SOURCE_COMMENTARY_PATTERNS) count += countPattern(prose, pattern);
-      if (count > 0) problems.push(`${page.relPath}: ${count} source-commentary phrase(s) in teaching prose`);
+      const commentary = sourceCommentaryMatches(page.body);
+      if (commentary.length > 0) {
+        const snippets = [...new Set(commentary.map((match) => match.snippet))];
+        problems.push(
+          `${page.relPath}: ${commentary.length} source-commentary phrase(s) in teaching prose; offending text: ${snippets
+            .map((snippet) => JSON.stringify(snippet))
+            .join(", ")}`,
+        );
+      }
       const title = fmString(page.frontmatter, "title");
       if (/\b(paper|source|textbook|evidence)\b/i.test(title)) {
         problems.push(`${page.relPath}: title reads as source commentary ("${title}")`);

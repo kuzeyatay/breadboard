@@ -38,10 +38,27 @@ export type VisualExpression =
       whenFalse: VisualExpression;
     };
 
+export type GeneratedVisualControlProtocolRole =
+  | "prediction_input"
+  | "commit_prediction"
+  | "reveal_outcome"
+  | "evaluate_prediction"
+  | "reset";
+
+export type GeneratedVisualControlKind =
+  | "variable"
+  | "select_case"
+  | "process_position"
+  | "protocol_action";
+
 export interface GeneratedVisualControl {
   id: string;
+  /** Exact semantic kind from the model-reviewed opportunity, when scoped. */
+  kind?: GeneratedVisualControlKind;
   label: string;
   type: "slider" | "number" | "select" | "toggle" | "button";
+  /** Exact protocol role from the model-reviewed opportunity, when present. */
+  protocolRole?: GeneratedVisualControlProtocolRole;
   unit?: string;
   min?: number;
   max?: number;
@@ -250,6 +267,16 @@ export interface SpatialScene {
     azimuthDegrees?: number;
     elevationDegrees?: number;
     scale?: number;
+    /**
+     * The authored camera projection. Omitted values preserve the original
+     * generated-visual contract and render as a fixed orthographic view.
+     */
+    projection?: "orthographic" | "perspective";
+    /**
+     * Whether the learner may navigate the authored spatial model. Camera
+     * navigation never changes the model-authored geometry or learner state.
+     */
+    interaction?: "fixed" | "orbit";
   };
   groups: SpatialGroup[];
 }

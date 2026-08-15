@@ -125,6 +125,39 @@ class AuthFileSelectionTests(unittest.TestCase):
             "access-old",
         )
 
+    def test_explicit_auth_file_is_authoritative_and_refresh_is_read_only(self) -> None:
+        external = Path(self.tempdir.name) / "normal" / "auth.json"
+        _write_auth(external.parent, "external", "2026-07-20T10:00:00Z")
+        refreshed = {
+            "access_token": "access-refreshed",
+            "id_token": "id-refreshed",
+            "refresh_token": "refresh-refreshed",
+            "account_id": "account-refreshed",
+        }
+
+        with patch.dict(
+            os.environ,
+            {
+                "CHATMOCK_AUTH_FILE": str(external),
+                "CHATMOCK_AUTH_READ_ONLY": "1",
+                "CHATGPT_LOCAL_HOME": str(self.chatgpt_home),
+                "CODEX_HOME": str(self.codex_home),
+            },
+        ), patch("chatmock.utils._should_refresh_access_token", return_value=True), patch(
+            "chatmock.utils._refresh_chatgpt_tokens", return_value=refreshed
+        ):
+            auth = read_auth_file()
+            access_token, account_id, id_token = load_chatgpt_tokens()
+
+        self.assertEqual(auth["marker"], "external")
+        self.assertEqual((access_token, account_id, id_token), (
+            "access-refreshed",
+            "account-refreshed",
+            "id-refreshed",
+        ))
+        stored = json.loads(external.read_text(encoding="utf-8"))
+        self.assertEqual(stored["tokens"]["access_token"], "access-external")
+
 
 if __name__ == "__main__":
     unittest.main()

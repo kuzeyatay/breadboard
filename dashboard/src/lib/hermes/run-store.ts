@@ -33,6 +33,11 @@ export interface RuntimeRunDispatch {
   variant?: string;
   system?: string;
   tools?: Record<string, boolean>;
+  /** Goal Mode state active for this run; used by the native Goal MCP bridge. */
+  goalMode?: {
+    goalId: string;
+    enabled: true;
+  };
   /** Durable products that must exist before this run may report completion. */
   requiredArtifacts?: RuntimeArtifactRequirement[];
   /** Written only after the runtime acknowledges prompt submission. */

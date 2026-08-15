@@ -180,6 +180,22 @@ function checkResourcesRoot(resources, label) {
     `${label} Agency Agents license`,
   );
   requireFile(
+    path.join(resources, "app-services", "goal", "templates", "continuation.md"),
+    `${label} Goal Mode continuation contract`,
+  );
+  requireFile(
+    path.join(resources, "app-services", "goal", "templates", "budget_limit.md"),
+    `${label} Goal Mode budget-limit contract`,
+  );
+  requireFile(
+    path.join(resources, "app-services", "goal", "LICENSE"),
+    `${label} Goal Mode upstream license`,
+  );
+  requireFile(
+    path.join(resources, "app-services", "goal", "BREADBOARD_UPSTREAM_COMMIT"),
+    `${label} Goal Mode upstream revision`,
+  );
+  requireFile(
     path.join(resources, "app-services", "scripts", "start-postiz-supervisor.mjs"),
     `${label} Postiz supervisor entrypoint`,
   );

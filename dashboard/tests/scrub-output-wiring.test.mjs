@@ -85,13 +85,30 @@ test("the answer on screen is scrubbed too, at done rather than per delta", () =
   );
 });
 
-test("garden prose is scrubbed where it is generated, and structured output is not", () => {
+test("garden prose is scrubbed while executability can preserve exact structured output", () => {
   const learn = read("lib", "learn.ts");
   const text = learn.slice(learn.indexOf("async function callCouncilText"), learn.indexOf("async function callCouncilJson"));
-  assert.match(text, /scrubbed\(response\.choices/, "generated page prose must be scrubbed");
+  assert.match(text, /scrubbed\(exactContent\.trim\(\)\)/, "generated page prose must be scrubbed");
+  assert.match(
+    text,
+    /preserveExactContent\s*\?\s*exactContent\s*:\s*scrubbed/,
+    "structured callers must retain exact provider text while prose still uses the scrubber",
+  );
   const json = learn.slice(learn.indexOf("async function callCouncilJson"));
   const body = json.slice(0, json.indexOf("\n}\n"));
   assert.ok(!body.includes("scrubbed("), "structured output must not be reshaped on its way to a parser");
+  assert.match(body, /preserveExactContent\s*=\s*false/);
+  const executability = learn.slice(
+    learn.indexOf("async function requestVisualizationContractExecutabilityReview"),
+    learn.indexOf("async function planAndReviewVisualNecessity"),
+  );
+  assert.match(executability, /callCouncilText\(/);
+  assert.doesNotMatch(executability, /callCouncilJson\(/);
+  assert.match(executability, /preserveExactContent:\s*true/);
+  assert.match(
+    executability,
+    /strictVisualContractExecutabilityResponseOrExactRaw\(result\.content\)/,
+  );
 });
 
 test("a fetched document keeps its metadata; only produced files are scrubbed", () => {

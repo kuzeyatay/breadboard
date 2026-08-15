@@ -11,6 +11,7 @@ import type {
   ContractInteractiveVisualPlan,
   GardenVisualBudget,
   InteractiveVisualIntent,
+  InteractiveVisualControlProtocolRole,
   InteractiveVisualOutputRepresentation,
   TeachingMediumPlan,
   VisualDecisionOverride,
@@ -43,8 +44,10 @@ const CANONICAL_VISUAL_EVIDENCE_KINDS = new Set<VisualizationContractEvidenceEnt
 
 export interface VisualizationOpportunityInput {
   id: string;
+  kind: "variable" | "select_case" | "process_position" | "protocol_action";
   label: string;
   type: VisualizationInputType;
+  protocolRole?: InteractiveVisualControlProtocolRole;
   unit?: string;
   min?: number;
   max?: number;
@@ -335,8 +338,10 @@ function requiredInputsForUnit(
   const controlContract = groundingUnit.interactiveVisualPlan?.controlContract ?? [];
   return controlContract.map((control): VisualizationOpportunityInput => ({
     id: control.id,
+    kind: control.kind,
     label: control.label,
     type: control.type,
+    ...(control.protocolRole !== undefined ? { protocolRole: control.protocolRole } : {}),
     ...(control.unit !== undefined ? { unit: control.unit } : {}),
     ...(control.min !== undefined ? { min: control.min } : {}),
     ...(control.max !== undefined ? { max: control.max } : {}),
@@ -396,7 +401,18 @@ export function persistedVisualizationOpportunityContractProblems(input: {
       `saved opportunity has ${actualInputs.length} required input(s), current contract has ${expectedInputs.length}`,
     );
   }
-  const inputFields = ["id", "label", "type", "unit", "min", "max", "step", "defaultValue"] as const;
+  const inputFields = [
+    "id",
+    "kind",
+    "label",
+    "type",
+    "protocolRole",
+    "unit",
+    "min",
+    "max",
+    "step",
+    "defaultValue",
+  ] as const;
   expectedInputs.forEach((expected, index) => {
     const actual = actualInputs[index];
     if (!actual) return;
@@ -623,6 +639,7 @@ export function analyzeVisualizationOpportunities(input: {
       learningObjective: learningObjective.toLowerCase(),
       interactionGoal,
       learnerAction,
+      controlContract: visualPlan.controlContract ?? null,
     });
     const id = `visual-${safeId(unit.id)}-${fingerprint.slice(0, 8)}`;
     return {

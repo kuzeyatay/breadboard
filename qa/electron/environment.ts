@@ -76,6 +76,11 @@ export interface CreateQaEnvironmentOptions {
   allowCredentialEnv?: readonly string[];
   /** Seed a QA-only desktop config with optional integrations disabled. */
   seedDesktopConfig?: boolean;
+  /**
+   * Optional read-only reference to the normal ChatMock provider session.
+   * This is a path, never credential contents, and is not copied into QA.
+   */
+  providerAuthFile?: string;
 }
 
 export interface QaCleanupResult {
@@ -286,8 +291,15 @@ export function createQaEnvironment(
     optionalStateDir,
     markerFile,
   };
-
   try {
+    const providerAuthFile = validateProviderAuthFile(
+      options.providerAuthFile,
+      dataDir,
+    );
+    const normalizedOptions: CreateQaEnvironmentOptions = {
+      ...options,
+      ...(providerAuthFile ? { providerAuthFile } : {}),
+    };
     for (const directory of [
       userDataDir,
       dataDir,
@@ -330,7 +342,7 @@ export function createQaEnvironment(
       paths,
       options.seedDesktopConfig !== false,
     );
-    const env = controlledEnvironment(paths, options);
+    const env = controlledEnvironment(paths, normalizedOptions);
     const launchArgs = [
       "--breadboard-dev",
       `--breadboard-user-data-dir=${userDataDir}`,
@@ -489,6 +501,10 @@ function controlledEnvironment(
     VIDEO_TRANSCRIPTION_ENABLED: "false",
   });
 
+  if (options.providerAuthFile) {
+    result.BREADBOARD_QA_PROVIDER_AUTH_FILE = options.providerAuthFile;
+  }
+
   for (const key of DENIED_CREDENTIAL_ENV) result[key] = "";
 
   for (const [key, value] of Object.entries(options.env ?? {})) {
@@ -509,6 +525,31 @@ function controlledEnvironment(
   // product's real desktop lifecycle.
   delete result["ELECTRON_RUN_AS_NODE"];
   return result;
+}
+
+function validateProviderAuthFile(
+  providerAuthFile: string | undefined,
+  dataRoot: string,
+): string | undefined {
+  if (!providerAuthFile?.trim()) return undefined;
+  const resolved = path.resolve(providerAuthFile.trim());
+  let realPath: string;
+  try {
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile()) throw new Error("not a regular file");
+    realPath = fs.realpathSync(resolved);
+  } catch (error) {
+    throw new Error(
+      `BREADBOARD_QA_PROVIDER_AUTH_FILE must name an existing regular file: ${resolved}`,
+      { cause: error },
+    );
+  }
+  if (isPathInside(dataRoot, realPath)) {
+    throw new Error(
+      `BREADBOARD_QA_PROVIDER_AUTH_FILE must remain outside disposable QA data: ${realPath}`,
+    );
+  }
+  return realPath;
 }
 
 function seedDesktopConfig(paths: QaRunPaths, enabled: boolean): QaBootstrapValues {

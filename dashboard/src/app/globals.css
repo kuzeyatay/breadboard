@@ -528,6 +528,19 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
     inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 56%, transparent);
 }
 
+/* Temporary chat. What the user says here is not going to be kept, so its
+   outline is drawn as a broken one — the same dashed line the switch itself
+   uses. The raised shadow is dropped with it: a bubble that is about to
+   disappear should not look pressed into the paper. Assistant turns are left
+   alone, so the contrast reads as "this side of the conversation is the part
+   that goes away". */
+[data-temporary-chat="true"] .neu-chat-message-user {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--botanical) 62%, var(--paper-raised));
+  background: color-mix(in srgb, var(--neu-chat-user-surface) 82%, transparent);
+  box-shadow: none;
+}
+
 /* Breadboard workspace materials. These classes are deliberately visual-only:
    panel motion, sizing, overflow, positioning, and disclosure state stay in
    their existing component classes. */
@@ -1470,6 +1483,56 @@ b {
 
 .learn-progress-pulse {
   animation: learn-progress-pulse 1.2s ease-in-out infinite;
+}
+
+/* The chat jump control's own show/hide transition. `.neu-button-icon` sets a
+   `transition` shorthand of its own, and unlayered CSS beats Tailwind's utility
+   layer, so the fade has to be declared here — after that rule — rather than
+   with a `transition` utility that would silently lose. */
+.bb-chat-jump-control {
+  transition:
+    opacity 200ms var(--neu-easing),
+    transform 200ms var(--neu-easing),
+    box-shadow var(--neu-duration) var(--neu-easing),
+    border-color var(--neu-duration) var(--neu-easing),
+    background-color var(--neu-duration) var(--neu-easing),
+    color var(--neu-duration) var(--neu-easing);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Descendants too: the two faces cross-fade with their own transitions. */
+  .bb-chat-jump-control,
+  .bb-chat-jump-control * {
+    transition: none;
+  }
+}
+
+/* The three dots the chat jump control wears while an answer is still being
+   written. The stagger comes from a per-dot animation-delay, so one keyframe
+   set covers all three. */
+@keyframes bb-chat-jump-dot {
+  0%,
+  70%,
+  100% {
+    opacity: 0.4;
+    transform: translateY(0);
+  }
+  35% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.bb-chat-jump-dot {
+  animation: bb-chat-jump-dot 1.05s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The dots still say "working"; they just stop moving to say it. */
+  .bb-chat-jump-dot {
+    animation: none;
+    opacity: 0.75;
+  }
 }
 
 /* A ViMax animatic shot: the drawn first frame drifts from the composition the

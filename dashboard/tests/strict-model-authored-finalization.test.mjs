@@ -273,3 +273,62 @@ test("strict contract repair ignores a requested deterministic executor and pres
   const contract = JSON.parse(fs.readFileSync(fixture.contractPath, "utf-8"));
   assert.deepEqual(contract.learningUnits[0].knowledgeClaims, []);
 });
+
+test("strict whole-finalizer rejects unsafe or malformed authoritative plan placement without throwing", (t) => {
+  const fixture = makeStrictBoundaryGarden();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const planPath = path.join(fixture.gardenDir, ".breadboard", "visualization-plan.json");
+  const basePlan = {
+    schemaVersion: 1,
+    gardenId: "strict-garden",
+    generatedAt: "2026-08-15T00:00:00.000Z",
+    opportunities: [{
+      id: "visual-u1",
+      gardenId: "strict-garden",
+      learningUnitId: "U1",
+      targetPage: "../../junk.md",
+      targetHeading: "Accuracy",
+      insertionAnchor: "learning-unit:U1:after-introduction",
+      requiredInputs: [],
+      requiredOutputs: [],
+      necessityDecision: {},
+    }],
+    decisions: [{ opportunityId: "visual-u1", route: "generated_module", reason: "fixture" }],
+    visualNecessityDecisions: [],
+    teachingMedia: [],
+    visualBudget: {},
+    visualDecisionOverrides: [],
+    necessityReviewCalls: 1,
+    rejectedNecessityReviews: 0,
+  };
+  fs.writeFileSync(planPath, `${JSON.stringify(basePlan, null, 2)}\n`, "utf8");
+  const unsafeReport = finalizeGardenExport({
+    gardenDir: fixture.gardenDir,
+    gardenSlug: "strict-garden",
+    preserveModelAuthoredContent: true,
+  });
+  assert.match(
+    unsafeReport.criticalProblems.join(" "),
+    /Visualization-plan final placement projection.*targetPage is unsafe/i,
+  );
+
+  fs.writeFileSync(
+    planPath,
+    `${JSON.stringify({ ...basePlan, opportunities: [null], decisions: [null] }, null, 2)}\n`,
+    "utf8",
+  );
+  assert.doesNotThrow(() => finalizeGardenExport({
+    gardenDir: fixture.gardenDir,
+    gardenSlug: "strict-garden",
+    preserveModelAuthoredContent: true,
+  }));
+  const malformedReport = finalizeGardenExport({
+    gardenDir: fixture.gardenDir,
+    gardenSlug: "strict-garden",
+    preserveModelAuthoredContent: true,
+  });
+  assert.match(
+    malformedReport.criticalProblems.join(" "),
+    /Visualization-plan final placement projection.*opportunity 1 is malformed/i,
+  );
+});

@@ -142,6 +142,10 @@ test("full Learn filesystem clear preserves durable inputs and prunes only learn
       ".breadboard/learn-run-snapshots/job/manifest.json",
       ".breadboard/canonical-shadow/accepted-snapshot.json",
       ".breadboard/learning-unit-contract.json",
+      ".breadboard/visual-necessity-decisions.json",
+      ".breadboard/visual-necessity-decisions.md",
+      ".breadboard/visual-decision-records.json",
+      ".breadboard/visual-contract-executability-reviews.json",
       ".breadboard/formula-assignment-plan.json",
       ".breadboard/formula-identities.json",
       ".breadboard/render-manifest.json",
@@ -164,6 +168,10 @@ test("full Learn filesystem clear preserves durable inputs and prunes only learn
     assert.equal(exists(garden, ".breadboard/source-anchors.json"), false);
     assert.equal(exists(garden, ".breadboard/build-workspace.json"), false);
     assert.equal(exists(garden, ".breadboard/formula-identities.json"), false);
+    assert.equal(exists(garden, ".breadboard/visual-necessity-decisions.json"), false);
+    assert.equal(exists(garden, ".breadboard/visual-necessity-decisions.md"), false);
+    assert.equal(exists(garden, ".breadboard/visual-decision-records.json"), false);
+    assert.equal(exists(garden, ".breadboard/visual-contract-executability-reviews.json"), false);
     assert.equal(exists(garden, ".breadboard/learn-build.lock.json"), false);
 
     const sourceVisuals = readJson(garden, ".breadboard/source-visuals.json");

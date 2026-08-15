@@ -195,6 +195,54 @@ function fixture(options = {}) {
   return { learningUnits, packet, response };
 }
 
+function predictionU24(overrides = {}) {
+  const base = requiredU24();
+  const evidence = [{
+    anchor: "S1.P24",
+    quote: CANONICAL_U24_TEXT,
+  }];
+  return {
+    ...base,
+    interaction: {
+      ...base.interaction,
+      interactionGoal: "test_prediction",
+      learnerAction:
+        "Choose a representation-domain prediction, commit it, then reveal the represented fields.",
+      controls: [
+        {
+          id: "prediction_domain",
+          kind: "select_case",
+          label: "time or frequency domain",
+          type: "select",
+          protocolRole: "prediction_input",
+          options: ["time domain", "frequency domain"],
+          defaultValue: "frequency domain",
+          evidence,
+        },
+        {
+          id: "commit_prediction",
+          kind: "protocol_action",
+          label: "Commit prediction",
+          type: "button",
+          protocolRole: "commit_prediction",
+          defaultValue: 0,
+          evidence: [],
+        },
+        {
+          id: "reveal_outcome",
+          kind: "protocol_action",
+          label: "Reveal outcome",
+          type: "button",
+          protocolRole: "reveal_outcome",
+          defaultValue: 0,
+          evidence: [],
+        },
+      ],
+    },
+    ...overrides,
+  };
+}
+
 const U16_WAVE_FORMULA = "E_x(z,t)=f(z-vt)+g(z+vt)";
 const U17_WAVENUMBER_FORMULA =
   "k=\\omega\\sqrt{\\mu\\epsilon}=k_0\\sqrt{\\mu_r\\epsilon_r}";
@@ -461,6 +509,23 @@ describe("model-authored visual necessity batch", () => {
       /temperature/.test(problem.message)), true);
   });
 
+  test("accepts a complete model-authored prediction protocol in the whole-garden batch", () => {
+    const { packet, learningUnits, response } = fixture();
+    const predictionResponse = structuredClone(response);
+    predictionResponse.decisions[0] = predictionU24();
+    const result = validateModelVisualNecessityBatch({
+      packet,
+      learningUnits,
+      response: predictionResponse,
+    });
+    assert.equal(result.ok, true, result.ok ? "" : JSON.stringify(result.problems));
+    assert.deepEqual(
+      result.plan.response.decisions[0].interaction.controls.map((control) =>
+        control.protocolRole),
+      ["prediction_input", "commit_prediction", "reveal_outcome"],
+    );
+  });
+
   test("accepts the exact U16 and U17 symbolic contracts from canonical source formulas", () => {
     const { packet, learningUnits, response } = electromagnetismFormulaFixture();
     const result = validateModelVisualNecessityBatch({ packet, learningUnits, response });
@@ -712,6 +777,35 @@ describe("model-authored visual necessity batch", () => {
     assert.equal(result.plan.response.decisions[1].unitId, "U25");
     assert.deepEqual(result.plan.response.decisions[1], response.decisions[1]);
     assert.equal(result.plan.response.decisions[0].interaction.controls[0].label, "time or frequency domain");
+  });
+
+  test("targeted repair accepts and preserves a complete prediction protocol", async () => {
+    const { packet, learningUnits, response } = fixture();
+    const invalid = structuredClone(response);
+    delete invalid.decisions[0].interaction;
+    const result = await runModelVisualNecessityPlanning({
+      packet,
+      learningUnits,
+      provider: async () => invalid,
+      targetedRepairProvider: async () => ({
+        schemaVersion: 1,
+        gardenId: packet.gardenId,
+        decisions: [predictionU24()],
+      }),
+    });
+    assert.equal(result.targetedRepairCalls, 1);
+    assert.deepEqual(
+      result.plan.response.decisions[0].interaction.controls.map((control) => ({
+        id: control.id,
+        protocolRole: control.protocolRole,
+        evidence: control.evidence,
+      })),
+      [
+        { id: "prediction_domain", protocolRole: "prediction_input", evidence: [{ anchor: "S1.P24", quote: CANONICAL_U24_TEXT }] },
+        { id: "commit_prediction", protocolRole: "commit_prediction", evidence: [] },
+        { id: "reveal_outcome", protocolRole: "reveal_outcome", evidence: [] },
+      ],
+    );
   });
 
   test("malformed targeted output is rejected as a whole and retried without applying a partial decision", async () => {

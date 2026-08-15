@@ -4,88 +4,82 @@ pre:has(> code.breadboard-generated-visual-block) {
 
 .breadboard-generated-visual-card,
 .breadboard-generated-visual-fallback {
-  margin: 1.4rem 0;
-  border: 1px solid var(--lightgray);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--light) 92%, white);
-  color: var(--dark);
-  overflow: hidden;
+  --viz-bg: var(--light);
+  --viz-text: var(--dark);
+  --viz-muted: var(--gray);
+  --viz-line: var(--lightgray);
+  --viz-control: color-mix(in srgb, var(--light) 86%, var(--lightgray));
+  --viz-control-hover: color-mix(in srgb, var(--light) 70%, var(--lightgray));
+  --viz-accent: var(--secondary);
+  margin: 1.6rem 0;
+  color: var(--viz-text);
 }
 
 .breadboard-generated-visual-card {
-  .bgv-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 1rem 1.1rem 0.8rem;
-  }
-
-  .bgv-kicker {
-    margin: 0 0 0.12rem;
-    color: var(--secondary);
-    font-size: 0.72rem;
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-
-  .bgv-title {
-    margin: 0;
-    font-size: 1.08rem;
-  }
-
-  .bgv-description,
-  .bgv-sources {
-    margin: 0.25rem 0 0;
-    color: var(--gray);
-    font-size: 0.87rem;
-  }
-
-  .bgv-version {
-    flex: none;
-    border: 1px solid var(--lightgray);
-    border-radius: 999px;
-    padding: 0.15rem 0.48rem;
-    color: var(--gray);
-    font: 0.72rem var(--codeFont);
-  }
+  width: 100%;
+  min-width: 0;
+  background: transparent;
 
   .bgv-frame {
     display: block;
     width: 100%;
-    min-height: 360px;
+    min-height: 420px;
     border: 0;
-    border-block: 1px solid var(--lightgray);
-    background: #fbfaf5;
+    background: var(--viz-bg);
+  }
+
+  .bgv-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem 1.2rem;
+    min-width: 0;
+    border-top: 1px solid var(--viz-line);
+    padding: 0.72rem 0;
+    color: var(--viz-muted);
+    font-size: 0.78rem;
+  }
+
+  .bgv-provenance,
+  .bgv-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.75rem;
+    min-width: 0;
+  }
+
+  .bgv-version {
+    flex: none;
+    font-family: var(--codeFont);
   }
 
   .bgv-sources {
-    padding: 0.65rem 1.1rem 0;
+    min-width: 0;
     overflow-wrap: anywhere;
   }
 
-  .bgv-footer {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.55rem;
-    min-height: 3.2rem;
-    padding: 0.7rem 1.1rem 0.85rem;
+  .bgv-actions {
+    flex: none;
+    justify-content: flex-end;
   }
 
   .bgv-action {
-    border: 1px solid var(--lightgray);
+    border: 1px solid var(--viz-line);
     border-radius: 8px;
-    background: var(--light);
-    color: var(--dark);
-    padding: 0.38rem 0.72rem;
+    background: var(--viz-control);
+    color: var(--viz-text);
+    padding: 0.4rem 0.72rem;
     cursor: pointer;
   }
 
+  .bgv-action:hover {
+    background: var(--viz-control-hover);
+  }
+
   .bgv-action-primary {
-    border-color: var(--dark);
-    background: var(--dark);
+    border-color: var(--viz-accent);
+    background: var(--viz-accent);
     color: var(--light);
   }
 
@@ -95,27 +89,45 @@ pre:has(> code.breadboard-generated-visual-block) {
   }
 
   .bgv-action:focus-visible {
-    outline: 3px solid color-mix(in srgb, var(--secondary) 48%, transparent);
-    outline-offset: 2px;
+    outline: 2px solid var(--viz-accent);
+    outline-offset: 3px;
   }
 
   .bgv-status {
-    color: var(--gray);
-    font-size: 0.82rem;
+    max-width: 34ch;
+    color: var(--viz-muted);
   }
 }
 
 .breadboard-generated-visual-fallback {
-  padding: 0.9rem 1rem;
+  border-block: 1px solid var(--viz-line);
+  padding: 0.9rem 0;
 
   p {
     margin: 0.3rem 0 0;
-    color: var(--gray);
+    color: var(--viz-muted);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .breadboard-generated-visual-card * {
+    transition-duration: 0.01ms !important;
   }
 }
 
 @media (max-width: 520px) {
-  .breadboard-generated-visual-card .bgv-header {
-    gap: 0.5rem;
+  .breadboard-generated-visual-card {
+    .bgv-frame {
+      min-height: 320px;
+    }
+
+    .bgv-meta {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .bgv-actions {
+      justify-content: flex-start;
+    }
   }
 }

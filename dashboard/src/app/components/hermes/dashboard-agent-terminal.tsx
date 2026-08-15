@@ -5636,21 +5636,10 @@ function RuntimeTerminal({
       >
         {headerMounted ? (
           <>
-            <button
-              type="button"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={() => setSidebarOpen((value) => !value)}
-              style={{ animationDelay: "40ms" }}
-              className={`${headerItemAnim} neu-button-icon flex h-7 w-7 items-center justify-center rounded-md border border-gray-800 text-gray-400 transition hover:border-gray-700 hover:text-white`}
-              title={sidebarOpen ? "Hide the sidebar" : "Show the sidebar"}
-              aria-label="Toggle the sidebar"
-            >
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5" />
-              </svg>
-            </button>
+            {/* No rail toggle here: the rail is opened and closed by its own
+                edge, the divider between it and the transcript. */}
             <div
-              style={{ animationDelay: "210ms" }}
+              style={{ animationDelay: "40ms" }}
               className={`${headerItemAnim} flex min-w-0 items-center gap-2`}
             >
               <span
@@ -5703,9 +5692,10 @@ function RuntimeTerminal({
               ) : null}
               <GBrainStatusBadge />
             </div>
-            {/* Artifacts, Uploads and Scheduled all live in the left rail now;
-                the header keeps only the rail toggle and the runtime state.
-                Temporary chat sits in the chat itself, below this bar. */}
+            {/* Artifacts, Uploads and Scheduled all live in the left rail now,
+                and the rail's own divider opens it, so the header is down to
+                the runtime state alone. Temporary chat sits in the chat itself,
+                below this bar. */}
           </>
         ) : null}
       </header>
@@ -5724,38 +5714,41 @@ function RuntimeTerminal({
               transcript's own cards and the Artifacts archive both file into
               it, so an artifact never leaves the dock it was made in. */}
           <ArtifactDockHostProvider host={artifactLane}>
-          {sidebarOpen ? (
-            <TerminalSidebar
-              chats={sidebarChats}
-              loading={historyLoading}
-              error={historyError}
-              activeChatId={session.sessionId}
-              openPanel={sidePanel}
-              onNewChat={startNewSavedChat}
-              onTogglePanel={togglePanel}
-              onOpenSearch={() => setSearchOpen(true)}
-              onOpenChat={(chat) => openHistorySession(chat.id)}
-              onRenameChat={(chat, title) =>
-                void patchHistorySession(chat, { title }, "This chat could not be renamed.")
-              }
-              onTogglePin={(chat) =>
-                void patchHistorySession(
-                  chat,
-                  { pinned: !chat.pinned },
-                  chat.pinned ? "This chat could not be unpinned." : "This chat could not be pinned.",
-                )
-              }
-              onDeleteChat={(chat) => void deleteHistorySession(chat)}
-              onDeleteChats={(selected) => void deleteHistorySessions(selected)}
-              onHighlightChat={(chat, highlight) =>
-                void patchHistorySession(
-                  chat,
-                  { highlight },
-                  "This chat could not be highlighted.",
-                )
-              }
-            />
-          ) : null}
+          {/* The rail is always mounted. Closed, it keeps a narrow column of
+              actions and its divider; there is no toolbar button to bring it
+              back, so it must never leave the layout entirely. */}
+          <TerminalSidebar
+            collapsed={!sidebarOpen}
+            onToggleCollapsed={() => setSidebarOpen((value) => !value)}
+            chats={sidebarChats}
+            loading={historyLoading}
+            error={historyError}
+            activeChatId={session.sessionId}
+            openPanel={sidePanel}
+            onNewChat={startNewSavedChat}
+            onTogglePanel={togglePanel}
+            onOpenSearch={() => setSearchOpen(true)}
+            onOpenChat={(chat) => openHistorySession(chat.id)}
+            onRenameChat={(chat, title) =>
+              void patchHistorySession(chat, { title }, "This chat could not be renamed.")
+            }
+            onTogglePin={(chat) =>
+              void patchHistorySession(
+                chat,
+                { pinned: !chat.pinned },
+                chat.pinned ? "This chat could not be unpinned." : "This chat could not be pinned.",
+              )
+            }
+            onDeleteChat={(chat) => void deleteHistorySession(chat)}
+            onDeleteChats={(selected) => void deleteHistorySessions(selected)}
+            onHighlightChat={(chat, highlight) =>
+              void patchHistorySession(
+                chat,
+                { highlight },
+                "This chat could not be highlighted.",
+              )
+            }
+          />
 
           <div className="relative flex min-w-0 flex-1 flex-col">
             <input
@@ -5774,7 +5767,7 @@ function RuntimeTerminal({
               type="button"
               onClick={toggleTemporaryChat}
               aria-pressed={temporaryChat}
-              className={`absolute right-3 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+              className={`absolute right-3 top-2 z-20 flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
                 temporaryChat
                   ? "text-[#2F5C41]"
                   : "text-[#9AAAA1] hover:text-[#172A22]"
@@ -5789,13 +5782,14 @@ function RuntimeTerminal({
               }
             >
               {/* A message bubble drawn as a broken line: the shape of a chat,
-                  without the part that lasts. */}
+                  without the part that lasts. While the mode is on it carries a
+                  tick, so "this is on" is legible without comparing shades. */}
               <svg
-                className="h-[18px] w-[18px]"
+                className="h-[26px] w-[26px]"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
-                strokeWidth={1.8}
+                strokeWidth={1.7}
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 aria-hidden="true"
@@ -5804,6 +5798,9 @@ function RuntimeTerminal({
                   strokeDasharray="3.6 3"
                   d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
                 />
+                {temporaryChat ? (
+                  <path strokeWidth={2} d="M8.6 12.1l2.4 2.4 4.6-5" />
+                ) : null}
               </svg>
             </button>
             {/* The mode is a promise about what happens to what you type, so it
@@ -5845,6 +5842,7 @@ function RuntimeTerminal({
                 externalRunLaunching={
                   externalRunLaunching || agentLaunchQueue.queued
                 }
+                temporaryChat={temporaryChat}
                 steerError={session.steerError}
                 error={runtimeUnavailable ? RUNTIME_UNAVAILABLE_MESSAGE : session.error}
                 pendingPermission={session.pendingPermission}

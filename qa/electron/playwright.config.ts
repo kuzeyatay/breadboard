@@ -33,6 +33,10 @@ export default defineConfig({
       testMatch: /exploratory\/.*\.spec\.ts/,
     },
     {
+      name: "hermes",
+      testMatch: /hermes\/.*\.spec\.ts/,
+    },
+    {
       name: "packaged",
       testMatch: /packaged\/.*\.spec\.ts/,
     },

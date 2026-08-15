@@ -130,6 +130,11 @@ import {
 } from "../map/grounding.ts";
 import { readGeographicContext, recordCurrentLocation } from "../map/store.ts";
 import { parseCurrentLocationPayload } from "../hermes/current-location-context.ts";
+import {
+  activateGoalMode,
+  GOAL_MODE_CONNECTION,
+  type GoalModeState,
+} from "../goal-mode.ts";
 
 export interface ConversationSurfaceContext {
   activeGardenSlug?: string;
@@ -181,6 +186,11 @@ export interface StartConversationTurnInput {
    * stored, exactly like Super agent above.
    */
   adhdMode?: boolean;
+  /**
+   * The user switched Goal Mode on for this turn. Breadboard creates or resumes
+   * its per-conversation Goal-compatible state before dispatch.
+   */
+  goalMode?: boolean;
   /**
    * The user had YOLO mode on for this message. This configures Hermes's
    * session-scoped approval bypass only; Breadboard's capability policy and
@@ -646,6 +656,38 @@ export async function startConversationTurn(
       ]),
     ];
   }
+  // Goal Mode is explicitly selected by the person for this message. It starts
+  // from the task they sent, after command tokens have been stripped, and then
+  // remains bound to this conversation only. The state bridge is local and
+  // deterministic; it never launches the cloned server in the request path.
+  const goalMode = input.goalMode === true && input.surface !== "quartz_ai";
+  let goalModeState: GoalModeState | null = null;
+  if (goalMode) {
+    try {
+      goalModeState = activateGoalMode({
+        conversationPublicId: input.conversation.public_id,
+        objective: resolved.userText || input.text,
+      });
+      decision.allowedTools = [...new Set([...decision.allowedTools, "mcp_call"])];
+      decision.selectedConnections = [
+        ...new Set([...decision.selectedConnections, GOAL_MODE_CONNECTION]),
+      ];
+    } catch (error) {
+      // A malformed / oversized objective must not make an otherwise valid
+      // chat turn disappear. The normal task runs, without Goal Mode context,
+      // and the audit trail exposes why activation was unavailable.
+      recordAuditEvent({
+        eventType: "goal_mode.activation_failed",
+        runtimeSessionId: session.row.id,
+        userId: input.conversation.user_id,
+        gardenId: session.row.garden_id,
+        payload: {
+          conversationPublicId: input.conversation.public_id,
+          message: error instanceof Error ? error.message.slice(0, 300) : "goal_mode_activation_failed",
+        },
+      });
+    }
+  }
   const engine = resolveHermesEngine(input.model, input.reasoningEffort);
   const runtime = getAgentRuntimeByKind(session.runtimeKind);
   const connectedApps =
@@ -691,6 +733,7 @@ export async function startConversationTurn(
       decisionId: storedDecision.id,
       mode: decision.mode,
       superAgent,
+      goalMode: Boolean(goalModeState),
       yoloMode: input.yoloMode === true,
       ...(superAgentInventory
         ? {
@@ -835,6 +878,7 @@ export async function startConversationTurn(
   const tools = mergeSelectedTools(prepared.grant.allowedTools, {
     ...resolved.tools,
     ...connectedApps.tools,
+    ...(goalModeState ? { mcp_call: true } : {}),
   });
   // Whether this turn needs verified map data is decided here, before dispatch,
   // from the request and Breadboard's own geographic state — never from what the
@@ -864,6 +908,7 @@ export async function startConversationTurn(
     userText: resolved.userText || input.text,
     conversationPublicId: input.conversation.public_id,
     adhdMode: input.adhdMode === true,
+    goalMode: goalModeState,
     additional: [
       superAgentInventory ? renderSuperAgentDirective(superAgentInventory) : "",
       composeMemoryContext(
@@ -983,6 +1028,14 @@ export async function startConversationTurn(
       variant: engine.variant,
       tools,
       system: baseSystem,
+      ...(goalModeState
+        ? {
+            goalMode: {
+              goalId: goalModeState.goal_id,
+              enabled: true,
+            },
+          }
+        : {}),
       ...(requiredVisualizerSkill
         ? {
             requiredArtifacts: [

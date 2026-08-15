@@ -246,19 +246,56 @@ const agentSession = fs.readFileSync(
   new URL("../src/app/components/hermes/use-agent-session.ts", import.meta.url),
   "utf8",
 );
+const runtimePanel = fs.readFileSync(
+  new URL("../src/app/components/hermes/agent-runtime-panel.tsx", import.meta.url),
+  "utf8",
+);
+const globalCss = fs.readFileSync(
+  new URL("../src/app/globals.css", import.meta.url),
+  "utf8",
+);
 
 test("the switch floats in the corner of the chat, not in the toolbar", () => {
   assert.match(terminal, /aria-pressed=\{temporaryChat\}/);
   assert.match(terminal, /onClick=\{toggleTemporaryChat\}/);
   // A bare glyph in the chat's own top-right corner: no raised button, no
   // border, and no vertical space taken from an ordinary chat.
-  assert.match(terminal, /className=\{`absolute right-3 top-2 z-20 flex h-7 w-7/);
+  assert.match(terminal, /className=\{`absolute right-3 top-2 z-20 flex h-10 w-10/);
   assert.doesNotMatch(
     terminal,
     /neu-button-icon[^`]*\n?[^`]*aria-pressed=\{temporaryChat\}/,
   );
   // Announced in words as well as in state, because the mode is a promise.
   assert.match(terminal, /Temporary chat\./);
+});
+
+test("the switch wears a tick while the mode is on", () => {
+  assert.match(
+    terminal,
+    /temporaryChat \? \(\s*<path strokeWidth=\{2\} d="M8\.6 12\.1l2\.4 2\.4 4\.6-5" \/>/,
+  );
+});
+
+test("what the user says in a temporary chat is drawn on a broken outline", () => {
+  // One attribute on the transcript root drives every user bubble, including
+  // the ones rendered by nested components.
+  assert.match(runtimePanel, /data-temporary-chat=\{temporaryChat \? "true" : undefined\}/);
+  assert.match(terminal, /temporaryChat=\{temporaryChat\}/);
+  assert.match(
+    globalCss,
+    /\[data-temporary-chat="true"\] \.neu-chat-message-user \{[^}]*border-style: dashed;/,
+  );
+  // The raised shadow goes with it: nothing about to disappear should look
+  // pressed into the paper.
+  assert.match(
+    globalCss,
+    /\[data-temporary-chat="true"\] \.neu-chat-message-user \{[^}]*box-shadow: none;/,
+  );
+  // It has to win over the base rule it is overriding, so it must come after it.
+  assert.ok(
+    globalCss.indexOf('[data-temporary-chat="true"] .neu-chat-message-user') >
+      globalCss.indexOf(".neu-chat-message-user {"),
+  );
 });
 
 test("toggling temporary chat starts or restores a chat rather than relabelling one", () => {

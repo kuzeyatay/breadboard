@@ -16,7 +16,11 @@ export interface ModelTransportAttempt {
   attempt: number;
   maxAttempts: number;
   delayMs: number;
+  /** Why this retry is being attempted. Absent only for the first request. */
+  retryCause?: ModelTransportRetryCause;
 }
+
+export type ModelTransportRetryCause = "http_502" | "connection_failure";
 
 export interface ModelTransportRetryOptions {
   signal?: AbortSignal | null;
@@ -142,18 +146,28 @@ function isTimeout(details: ErrorDetail[]): boolean {
 /** Only failures that mean ChatMock disappeared between request and response
  * are replayable. If an HTTP response exists, 502 is the sole retryable
  * status. Aborts and timeouts remain caller-owned terminal outcomes. */
-export function isRetryableModelTransportError(error: unknown): boolean {
+export function modelTransportRetryCause(
+  error: unknown,
+): ModelTransportRetryCause | undefined {
   const details = errorDetails(error);
-  if (details.length === 0 || isCancellation(details)) return false;
+  if (details.length === 0 || isCancellation(details)) return undefined;
 
   const responseStatus = details.find(({ status }) => status !== undefined)?.status;
-  if (responseStatus !== undefined) return responseStatus === 502;
-  if (isTimeout(details)) return false;
+  if (responseStatus !== undefined) {
+    return responseStatus === 502 ? "http_502" : undefined;
+  }
+  if (isTimeout(details)) return undefined;
 
   return details.some(({ code, message }) => (
     RETRYABLE_CONNECTION_CODES.has(code.toUpperCase()) ||
     RETRYABLE_CONNECTION_MESSAGE.test(message)
-  ));
+  ))
+    ? "connection_failure"
+    : undefined;
+}
+
+export function isRetryableModelTransportError(error: unknown): boolean {
+  return modelTransportRetryCause(error) !== undefined;
 }
 
 /** Retry one logical model request after a transient ChatMock transport
@@ -164,12 +178,14 @@ export async function retryModelTransport<T>(
   options: ModelTransportRetryOptions = {},
 ): Promise<T> {
   const sleep = options.sleep ?? waitForRetry;
+  let retryCause: ModelTransportRetryCause | undefined;
   for (let index = 0; index < MODEL_TRANSPORT_ATTEMPT_DELAYS_MS.length; index += 1) {
     if (options.signal?.aborted) throw abortReason(options.signal);
     const attempt: ModelTransportAttempt = {
       attempt: index + 1,
       maxAttempts: MODEL_TRANSPORT_MAX_ATTEMPTS,
       delayMs: MODEL_TRANSPORT_ATTEMPT_DELAYS_MS[index],
+      ...(retryCause ? { retryCause } : {}),
     };
     if (attempt.delayMs > 0) {
       options.onDelay?.(attempt);
@@ -181,7 +197,8 @@ export async function retryModelTransport<T>(
       return await operation(attempt);
     } catch (error) {
       if (options.signal?.aborted) throw abortReason(options.signal);
-      if (!isRetryableModelTransportError(error) || attempt.attempt === attempt.maxAttempts) {
+      retryCause = modelTransportRetryCause(error);
+      if (!retryCause || attempt.attempt === attempt.maxAttempts) {
         throw error;
       }
     }

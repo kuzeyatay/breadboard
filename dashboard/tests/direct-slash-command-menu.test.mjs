@@ -50,9 +50,44 @@ test("direct slash commands exclude setup entries and include usable agents", ()
 
   assert.deepEqual(
     items.map((item) => item.token),
-    ["agents:deep-research", "ready", "agents:agency-agents:researcher", "drive", "brief"],
+    ["ready", "agents:deep-research", "agents:agency-agents:researcher", "brief", "drive"],
   );
   assert.ok(items.every((item) => item.enabled !== false && item.healthy !== false));
+});
+
+test("matching commands are ordered skills, agents, prompts, then workflows", () => {
+  const items = directSlashCommandItems({
+    surface: "dashboard_terminal",
+    query: "review",
+    availableRuntimeAgentIds: ["deep-research"],
+    groups: {
+      skills: [
+        // The workflow pack is installed as a skill and must still sort last.
+        ready({
+          id: "rlaope/oh-my-hermes/review-workflow",
+          slug: "omh:review-workflow",
+          token: "omh:review-workflow",
+          name: "Review workflow",
+          source: "https://github.com/rlaope/oh-my-hermes",
+        }),
+        ready({ id: "skill:review", token: "review-notes", name: "Review notes" }),
+      ],
+      mcp: [ready({ id: "mcp:live", kind: "mcp", token: "drive", name: "Review drive" })],
+      prompts: [ready({ id: "prompt:review", kind: "prompt", token: "review-brief", name: "Review brief" })],
+      agents: [ready({ id: "agent:aris", kind: "agent", token: "agent:aris", name: "Review persona" })],
+    },
+  });
+
+  assert.deepEqual(
+    items.map((item) => item.token),
+    [
+      "review-notes",
+      "agent:aris",
+      "review-brief",
+      "drive",
+      "omh:review-workflow",
+    ],
+  );
 });
 
 test("slash queries filter commands without exposing the full manager", () => {

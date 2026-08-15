@@ -24,6 +24,7 @@ import {
   directSlashCommandItems,
   type DirectCommandGroups,
 } from "@/lib/hermes/direct-slash-commands";
+import { isWorkflowCommand } from "@/lib/hermes/omh-command";
 
 type CommandResponse = { groups: DirectCommandGroups };
 
@@ -48,6 +49,15 @@ const KIND_LABELS: Record<CommandHubItem["kind"], string> = {
   prompt: "Prompt",
   agent: "Agent",
 };
+
+/**
+ * The list is ordered by section but never ruled off, so each row's own label is
+ * what tells the reader which section they have reached. Workflows are skills on
+ * disk and would otherwise read as one.
+ */
+function commandKindLabel(item: CommandHubItem): string {
+  return isWorkflowCommand(item) ? "Workflow" : KIND_LABELS[item.kind];
+}
 
 const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
   function SlashCommandMenu(
@@ -182,7 +192,7 @@ const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
                       </span>
                     </span>
                     <span className="shrink-0 text-[10px] text-[var(--ink-muted)]">
-                      {KIND_LABELS[item.kind]}
+                      {commandKindLabel(item)}
                     </span>
                   </button>
                 </li>

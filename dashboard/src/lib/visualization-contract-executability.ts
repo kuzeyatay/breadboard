@@ -5,7 +5,16 @@ import { isDeepStrictEqual } from "node:util";
 
 import type { LearningUnitContract } from "./learning-unit-contract.ts";
 import type { ProposedLearningMap } from "./learn-utils.ts";
-import type { VisualizationContractRepairAttempt } from "./visualization-contract-repair.ts";
+import {
+  AUTHORITATIVE_LEARNING_UNIT_CONTRACT_MARKDOWN_RELATIVE_PATH,
+  renderAuthoritativeLearningUnitContractMarkdown,
+} from "./learning-unit-contract-markdown.ts";
+import {
+  buildVisualizationContractRepairPrompt,
+  VISUALIZATION_CONTRACT_REPAIR_RESPONSE_SCHEMA_HASH,
+  visualizationContractRepairSystemPrompt,
+  type VisualizationContractRepairAttempt,
+} from "./visualization-contract-repair.ts";
 import {
   GENERATED_VISUAL_CAPABILITY_MANIFEST,
   GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
@@ -21,11 +30,13 @@ import {
   type VisualizationRouteDecision,
 } from "./visualization-opportunities.ts";
 import {
+  COMPLETE_VISUALIZATION_CONTRACT_REPAIR_SCHEMA,
   parseVisualizationContractRepairResponse,
   pedagogyContractFromCompleteRepair,
   validateVisualizationContractUnitRepair,
   type CompleteVisualizationContractUnitRepair,
   type VisualizationContractEvidenceEntry,
+  type VisualizationContractUnitRepair,
 } from "./visualization-contract-validation.ts";
 
 /**
@@ -47,16 +58,14 @@ export const VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET = Object.freeze({
 /** Keeps a malformed provider payload from turning the audit ledger into an unbounded file. */
 export const MAX_VISUAL_CONTRACT_EXECUTABILITY_RESPONSE_BYTES = 512_000;
 export const MAX_VISUAL_CONTRACT_EXECUTABILITY_LEDGER_BYTES = 4_000_000;
+const MAX_VISUAL_CONTRACT_EXECUTABILITY_JSON_DIAGNOSTIC_CHARS = 240;
+const MAX_VISUAL_CONTRACT_EXECUTABILITY_JSON_CONTEXT_CHARS = 120;
 
 export const VISUAL_CONTRACT_EXECUTABILITY_LEDGER_RELATIVE_PATH =
   ".breadboard/visual-contract-executability-reviews.json" as const;
 
-function quotedUnion(values: readonly string[]): string {
-  return values.map((value) => JSON.stringify(value)).join("|");
-}
-
 const VISUAL_CONTRACT_EXECUTABILITY_RESPONSE_SCHEMA =
-  `{"schemaVersion":1,"gardenId":string,"reviews":[{"unitId":string,"verdict":"approve"|"replace","reason":string,"replacement"?:{"unitId":string,"interactionGoal":"manipulate_variables"|"observe_change_over_time"|"compare_cases"|"step_through_process"|"explore_structure"|"test_prediction"|"inspect_relationship"|"simulate_system","learnerAction":string,"visualIntent":{"id":string,"uniqueConcept":string,"visualType":string,"whyStaticSourceFigureIsNotEnough":string,"learnerManipulates":string[],"expectedInsight":string,"sourceAnchors":string[],"duplicateSignature":string,"reuseOf"?:string},"controls":[{"id":string,"kind":${quotedUnion(GENERATED_VISUAL_CAPABILITY_MANIFEST.requiredContractControls.kinds)},"label":string,"type":${quotedUnion(GENERATED_VISUAL_CAPABILITY_MANIFEST.requiredContractControls.types)},"unit"?:string,"min"?:number,"max"?:number,"step"?:number,"options"?:string[],"defaultValue":number|string,"evidence":[{"anchor":string,"quote":string}]}],"observable":{"label":string,"representation":${quotedUnion(GENERATED_VISUAL_CAPABILITY_MANIFEST.outputs.representations)},"evidence":[{"anchor":string,"quote":string}]},"expectedInsight":string,"expectedInsightEvidence":[{"anchor":string,"quote":string}]}}]}`;
+  `{"schemaVersion":1,"gardenId":string,"reviews":[{"unitId":string,"verdict":"approve"|"replace","reason":string,"replacement"?:${COMPLETE_VISUALIZATION_CONTRACT_REPAIR_SCHEMA}}]}`;
 
 export const VISUAL_CONTRACT_EXECUTABILITY_RESPONSE_SCHEMA_HASH = crypto
   .createHash("sha256")
@@ -89,6 +98,7 @@ export interface VisualContractExecutabilityUnitPacket {
 export interface VisualContractExecutabilityReviewPacket {
   schemaVersion: typeof VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION;
   gardenId: string;
+  auditContext?: VisualContractExecutabilityLedgerContext;
   units: VisualContractExecutabilityUnitPacket[];
   technicalCapabilities: {
     manifestVersion: typeof GENERATED_VISUAL_CAPABILITY_MANIFEST_VERSION;
@@ -349,6 +359,7 @@ export interface VisualContractExecutabilityAttempt {
   attempt: number;
   startedAt: string;
   completedAt: string;
+  packet: VisualContractExecutabilityReviewPacket;
   requestHash: string;
   packetHash: string;
   systemPromptHash: string;
@@ -395,6 +406,7 @@ export interface VisualContractExecutabilityRunResult<TPlan> {
   beforeContracts: Record<string, CompleteVisualizationContractUnitRepair>;
   reviewedContracts: Record<string, CompleteVisualizationContractUnitRepair>;
   wholeGardenConstraints: VisualContractExecutabilityWholeGardenConstraints | null;
+  auditContext: VisualContractExecutabilityLedgerContext | null;
 }
 
 export class VisualContractExecutabilityReviewError extends Error {
@@ -434,11 +446,52 @@ function cloneExact<T>(value: T): T {
   return structuredClone(value);
 }
 
+/** Exact shape that survives this JSON artifact's on-disk serialization. */
+function clonePersistedJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 function responseByteLength(value: unknown): number {
   try {
     return Buffer.byteLength(JSON.stringify(value), "utf8");
   } catch {
     return Number.POSITIVE_INFINITY;
+  }
+}
+
+/** Bounded syntax-only feedback for a raw model response. This deliberately
+ * invokes strict JSON.parse once and reports where it stopped; it never
+ * balances delimiters, extracts a substring, or returns a parsed value. */
+function strictJsonSyntaxDiagnostic(value: string): string | null {
+  try {
+    JSON.parse(value);
+    return null;
+  } catch (error) {
+    const rawMessage = error instanceof Error ? error.message : "invalid JSON";
+    const safeMessage = rawMessage
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, MAX_VISUAL_CONTRACT_EXECUTABILITY_JSON_DIAGNOSTIC_CHARS);
+    const positionMatch = safeMessage.match(/\bposition\s+(\d+)\b/i);
+    const position = positionMatch ? Number(positionMatch[1]) : null;
+    const boundedPosition = position !== null && Number.isSafeInteger(position)
+      ? Math.max(0, Math.min(value.length, position))
+      : null;
+    const context = boundedPosition === null
+      ? ""
+      : value.slice(
+          Math.max(0, boundedPosition - Math.floor(MAX_VISUAL_CONTRACT_EXECUTABILITY_JSON_CONTEXT_CHARS / 2)),
+          Math.min(
+            value.length,
+            boundedPosition + Math.ceil(MAX_VISUAL_CONTRACT_EXECUTABILITY_JSON_CONTEXT_CHARS / 2),
+          ),
+        );
+    return [
+      `strict JSON.parse failed${boundedPosition === null ? "" : ` at position ${boundedPosition}`}`,
+      safeMessage || "invalid JSON",
+      ...(context ? [`bounded context ${JSON.stringify(context)}`] : []),
+    ].join(": ");
   }
 }
 
@@ -553,7 +606,7 @@ function strictReplacementShape(
         value: control,
         path: `${pathValue}.controls[${index}]`,
         required: ["id", "kind", "label", "type", "defaultValue", "evidence"],
-        optional: ["unit", "min", "max", "step", "options"],
+        optional: ["protocolRole", "unit", "min", "max", "step", "options"],
         problems,
         unitId,
       });
@@ -626,6 +679,7 @@ export function buildVisualContractExecutabilityReviewPacket(input: {
   gardenId: string;
   learningUnits: LearningUnitContract[];
   canonicalEvidenceByUnit: VisualizationCanonicalEvidenceByUnit;
+  auditContext?: VisualContractExecutabilityLedgerContext;
   wholeGardenConstraints?: VisualContractExecutabilityWholeGardenConstraints;
   previousRejectionReasons?: VisualContractExecutabilityProblem[];
   previousResponse?: unknown;
@@ -671,6 +725,7 @@ export function buildVisualContractExecutabilityReviewPacket(input: {
   return {
     schemaVersion: VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION,
     gardenId,
+    ...(input.auditContext ? { auditContext: cloneExact(input.auditContext) } : {}),
     units,
     technicalCapabilities: {
       manifestVersion: GENERATED_VISUAL_CAPABILITY_MANIFEST_VERSION,
@@ -699,9 +754,11 @@ export function visualContractExecutabilitySystemPrompt(): string {
     "Approve only when the interaction goal, learner controls, learner-visible observable, and expected insight form an executable learning activity. The learner must be able to perform the action named by the goal using the declared controls, observe the consequence needed to judge the result, and reach the expected insight from the represented states.",
     "Judge realizability against the exact versioned technicalCapabilities manifest in the request. Approve only when the declared learner sequence can be implemented with those control state transitions, expressions, conditional visibility rules, scene kinds, primitive topology, and hard limits; do not assume hidden state, geometry, widgets, or renderer features absent from that manifest.",
     "Check goal-to-control-to-observable executability explicitly. Every condition or case that is decisive for the expected insight must be represented by a declared control state or by explicit observable behavior; a selector that merely changes what is displayed is insufficient when the goal requires a distinct learner decision, comparison, prediction, or evaluation.",
-    "For interactionGoal test_prediction, the contract must give the learner a way to commit a prediction before the outcome is revealed or evaluated. A control that only selects the viewed case or display state is not by itself a prediction commitment. The observable must make the later result or evaluation visible without erasing the committed choice.",
-    "Use only the canonical evidence supplied with that same unit. Every evidence quote must be an exact substring at its anchor, and every control label, select option, observable label, and expected insight must be literally grounded under the supplied contract rules. Do not invent subject-matter claims, cases, variables, conditions, or units.",
+    "For interactionGoal test_prediction, the learner must commit a prediction before the outcome is revealed or evaluated. Require three distinct authored controls in order: an evidence-grounded slider/number/select marked prediction_input, a protocol_action button/toggle marked commit_prediction, then a protocol_action button/toggle marked reveal_outcome or evaluate_prediction. The protocol default must keep the result hidden, and the later observable must retain the selected prediction while showing the result or evaluation.",
+    "Use only the canonical evidence supplied with that same unit. Every source-semantic control label and option, observable label, and expected insight must be literally grounded by exact quotes at their anchors. Pure protocol_action controls instead require exactly empty evidence; their model-authored UI labels may express only interaction mechanics and never substantiate a subject claim, observable, or insight. Do not invent subject-matter claims, cases, variables, conditions, or units.",
     "When previousRejectionReasons are present, correct every listed problem in a fresh complete batch. Do not argue with or paraphrase the rejection reasons.",
+    "When previousResponse is a string, it is the exact malformed response from the prior attempt. Inspect its strict JSON syntax diagnostic, then author a fresh complete response; never return a patch, fragment, or commentary about the prior response.",
+    "Before returning, validate the entire response with a strict JSON parser. Return one JSON object only, with no Markdown fence, wrapper, trailing token, or surplus delimiter.",
   ].join(" ");
 }
 
@@ -713,6 +770,20 @@ export function buildVisualContractExecutabilityPrompt(
     user: JSON.stringify(packet),
     sourceContext: packet,
   };
+}
+
+/** Strict executability transport boundary. Valid JSON is decoded once from
+ * the exact provider text; invalid nonempty text is returned byte-for-byte so
+ * only a fresh bounded AI rereview can replace it. */
+export function strictVisualContractExecutabilityResponseOrExactRaw(
+  content: string,
+): unknown {
+  if (content.trim().length === 0) return null;
+  try {
+    return JSON.parse(content) as unknown;
+  } catch {
+    return content;
+  }
 }
 
 export type ParseVisualContractExecutabilityResponseResult =
@@ -735,7 +806,15 @@ export function parseVisualContractExecutabilityResponse(input: {
     return { ok: false, problems };
   }
   if (!isRecord(input.value)) {
-    problem(problems, "invalid_response", "response", "response must be an object");
+    const syntaxDiagnostic = typeof input.value === "string"
+      ? strictJsonSyntaxDiagnostic(input.value)
+      : null;
+    problem(
+      problems,
+      "invalid_response",
+      "response",
+      `response must be an object${syntaxDiagnostic ? `; ${syntaxDiagnostic}` : ""}`,
+    );
     return { ok: false, problems };
   }
   exactObjectKeys({
@@ -927,7 +1006,6 @@ function applyVerbatimReplacements(input: {
   const replacementByUnit = new Map<string, CompleteVisualizationContractUnitRepair>();
   const problems: VisualContractExecutabilityProblem[] = [];
   for (const review of input.response.reviews) {
-    if (review.verdict !== "replace") continue;
     const unit = unitById.get(review.unitId);
     if (!unit) {
       problem(
@@ -939,22 +1017,28 @@ function applyVerbatimReplacements(input: {
       );
       continue;
     }
+    const reviewedContract = review.verdict === "replace"
+      ? review.replacement
+      : completeVisualContractForUnit(unit);
     const validation = validateVisualizationContractUnitRepair({
       unit,
-      repair: review.replacement,
+      repair: reviewedContract,
       evidence: input.canonicalEvidenceByUnit[unit.id] ?? [],
       requireCompleteContract: true,
+      requireExecutableProtocol: true,
     });
     for (const message of validation) {
       problem(
         problems,
         "invalid_replacement_contract",
-        `review:${review.unitId}.replacement`,
+        `review:${review.unitId}.${review.verdict === "replace" ? "replacement" : "approvedContract"}`,
         message,
         review.unitId,
       );
     }
-    replacementByUnit.set(review.unitId, review.replacement);
+    if (review.verdict === "replace") {
+      replacementByUnit.set(review.unitId, review.replacement);
+    }
   }
   if (problems.length > 0) return { ok: false, problems };
 
@@ -1003,6 +1087,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
   gardenId: string;
   learningUnits: LearningUnitContract[];
   canonicalEvidenceByUnit: VisualizationCanonicalEvidenceByUnit;
+  auditContext?: VisualContractExecutabilityLedgerContext;
   wholeGardenConstraints?: VisualContractExecutabilityWholeGardenConstraints;
   provider: VisualContractExecutabilityProvider;
   validateGlobal?: (learningUnits: LearningUnitContract[]) => VisualContractExecutabilityProblem[];
@@ -1032,6 +1117,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
       wholeGardenConstraints: input.wholeGardenConstraints
         ? cloneExact(input.wholeGardenConstraints)
         : null,
+      auditContext: input.auditContext ? cloneExact(input.auditContext) : null,
     };
   }
   if (new Set(activeUnitIds).size !== activeUnitIds.length) {
@@ -1058,6 +1144,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
       gardenId: input.gardenId,
       learningUnits: input.learningUnits,
       canonicalEvidenceByUnit: input.canonicalEvidenceByUnit,
+      ...(input.auditContext ? { auditContext: input.auditContext } : {}),
       ...(input.wholeGardenConstraints
         ? { wholeGardenConstraints: input.wholeGardenConstraints }
         : {}),
@@ -1069,6 +1156,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
     const attemptAudit = {
       attempt,
       startedAt,
+      packet: cloneExact(packet),
       requestHash: sha256Json({ system: prompt.system, user: prompt.user }),
       packetHash: sha256Json(packet),
       systemPromptHash: sha256Text(prompt.system),
@@ -1245,6 +1333,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
       wholeGardenConstraints: input.wholeGardenConstraints
         ? cloneExact(input.wholeGardenConstraints)
         : null,
+      auditContext: input.auditContext ? cloneExact(input.auditContext) : null,
     };
   }
 
@@ -1266,6 +1355,7 @@ export async function reviewVisualizationPlanExecutability(input: {
   learningUnits: LearningUnitContract[];
   initialPlan: VisualizationPlan;
   canonicalEvidenceByUnit: VisualizationCanonicalEvidenceByUnit;
+  auditContext?: VisualContractExecutabilityLedgerContext;
   provider: VisualContractExecutabilityProvider;
   maximumRepeatedInteractionSignature: number;
   maxCalls?: number;
@@ -1295,6 +1385,7 @@ export async function reviewVisualizationPlanExecutability(input: {
     gardenId: input.gardenId,
     learningUnits: input.learningUnits,
     canonicalEvidenceByUnit: input.canonicalEvidenceByUnit,
+    ...(input.auditContext ? { auditContext: input.auditContext } : {}),
     wholeGardenConstraints,
     provider: input.provider,
     ...(input.maxCalls !== undefined ? { maxCalls: input.maxCalls } : {}),
@@ -1338,12 +1429,36 @@ export function buildFinalVisualizationPlanFromRoutedContracts(input: {
   });
 }
 
-export interface VisualContractExecutabilityLedgerContext {
-  phase: "planning" | "generation";
-  jobId: string;
-  model: string;
-  learningMapId?: string;
-  textbookVersionId?: string;
+export type VisualContractExecutabilityLedgerContext =
+  | {
+      phase: "planning";
+      jobId: string;
+      model: string;
+      learningMapId: string;
+    }
+  | {
+      phase: "generation";
+      jobId: string;
+      model: string;
+      learningMapId: string;
+      textbookVersionId: string;
+    };
+
+type BoundVisualizationOpportunity = Omit<
+  VisualizationPlan["opportunities"][number],
+  "targetPage" | "targetHeading" | "insertionAnchor"
+>;
+
+function boundVisualizationOpportunity(
+  opportunity: VisualizationPlan["opportunities"][number],
+): BoundVisualizationOpportunity {
+  const {
+    targetPage: _targetPage,
+    targetHeading: _targetHeading,
+    insertionAnchor: _insertionAnchor,
+    ...bound
+  } = opportunity;
+  return bound;
 }
 
 export interface VisualContractExecutabilityLedger {
@@ -1374,7 +1489,15 @@ export interface VisualContractExecutabilityLedger {
     visualDecisionOverrides: VisualizationPlan["visualDecisionOverrides"];
     necessityReviewCalls: number;
     rejectedNecessityReviews: number;
+    opportunitiesExcludingMechanicalPlacement: BoundVisualizationOpportunity[];
+    routeDecisions: VisualizationPlan["decisions"];
   };
+  immutableGardenAllocation: Array<{
+    unitId: string;
+    requirement: NonNullable<LearningUnitContract["interactiveVisualPlan"]>["requirement"];
+    decisionBeforeMechanicalRouting: unknown;
+    teachingMediumPlan: LearningUnitContract["teachingMediumPlan"];
+  }>;
   structuralContractRepair: {
     source: "none" | "model";
     attempts: VisualizationContractRepairAttempt[];
@@ -1427,13 +1550,27 @@ function visualContractExecutabilityLedgerIntegrityHash(
   return sha256Json(payload);
 }
 
+function serializedVisualContractExecutabilityLedger(
+  ledger: VisualContractExecutabilityLedger,
+): string {
+  const payload = `${JSON.stringify(ledger, null, 2)}\n`;
+  if (Buffer.byteLength(payload, "utf8") > MAX_VISUAL_CONTRACT_EXECUTABILITY_LEDGER_BYTES) {
+    throw new Error(
+      `Visual-contract executability ledger exceeds ${MAX_VISUAL_CONTRACT_EXECUTABILITY_LEDGER_BYTES} UTF-8 bytes.`,
+    );
+  }
+  return payload;
+}
+
 function opportunityInputsForContract(
   contract: CompleteVisualizationContractUnitRepair,
 ): Array<Record<string, unknown>> {
   return contract.controls.map((control) => ({
     id: control.id,
+    kind: control.kind,
     label: control.label,
     type: control.type,
+    ...(control.protocolRole !== undefined ? { protocolRole: control.protocolRole } : {}),
     ...(control.unit !== undefined ? { unit: control.unit } : {}),
     ...(control.min !== undefined ? { min: control.min } : {}),
     ...(control.max !== undefined ? { max: control.max } : {}),
@@ -1456,6 +1593,234 @@ function exactKeySet(value: Record<string, unknown>, keys: readonly string[]): b
   );
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isActiveRequirementValue(value: unknown): value is ActiveRequirement {
+  return value === "required" || value === "recommended" || value === "optional";
+}
+
+function isCanonicalEvidenceEntryEnvelope(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    exactKeySet(value, ["anchor", "kind", "text"]) &&
+    Boolean(compact(value.anchor)) &&
+    Boolean(compact(value.kind)) &&
+    Boolean(compact(value.text))
+  );
+}
+
+function isCompleteContractEnvelope(value: unknown): boolean {
+  if (!isRecord(value) || !compact(value.unitId)) return false;
+  const parsed = parseVisualizationContractRepairResponse(
+    { repairs: [value] },
+    { requireCompleteContract: true, expectedUnitIds: [value.unitId as string] },
+  );
+  return parsed.problems.length === 0 && parsed.repairs.length === 1;
+}
+
+function isWholeGardenConstraintsEnvelope(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    exactKeySet(value, [
+      "unitOrder",
+      "sectionByUnit",
+      "maximumRepeatedInteractionSignature",
+      "targetMinimum",
+      "targetMaximum",
+      "maximumPerSection",
+      "minimumUnitsBetweenSimilarVisuals",
+      "requiredVisuals",
+      "recommendedVisuals",
+      "optionalVisuals",
+    ]) &&
+    isStringArray(value.unitOrder) &&
+    isRecord(value.sectionByUnit) &&
+    Object.values(value.sectionByUnit).every((sectionId) => Boolean(compact(sectionId))) &&
+    [
+      "maximumRepeatedInteractionSignature",
+      "targetMinimum",
+      "targetMaximum",
+      "maximumPerSection",
+      "minimumUnitsBetweenSimilarVisuals",
+      "requiredVisuals",
+      "recommendedVisuals",
+      "optionalVisuals",
+    ].every((field) =>
+      Number.isInteger(value[field]) && Number(value[field]) >= 0)
+  );
+}
+
+function isExecutabilityProblemEnvelope(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const hasUnitId = Object.prototype.hasOwnProperty.call(value, "unitId");
+  return (
+    exactKeySet(value, ["code", "path", "message", ...(hasUnitId ? ["unitId"] : [])]) &&
+    Boolean(compact(value.code)) &&
+    Boolean(compact(value.path)) &&
+    Boolean(compact(value.message)) &&
+    (!hasUnitId || Boolean(compact(value.unitId)))
+  );
+}
+
+function isTransportAccountingEnvelope(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    exactKeySet(value, [
+      "logicalSemanticCall",
+      "providerInvocationsAtThisBoundary",
+      "transportRetries",
+    ]) &&
+    Number.isInteger(value.logicalSemanticCall) &&
+    Number(value.logicalSemanticCall) > 0 &&
+    value.providerInvocationsAtThisBoundary === 1 &&
+    value.transportRetries === "owned_below_semantic_boundary_not_counted"
+  );
+}
+
+function isLedgerContextEnvelope(value: unknown): value is VisualContractExecutabilityLedgerContext {
+  if (!isRecord(value)) return false;
+  if (value.phase === "planning") {
+    return (
+      exactKeySet(value, ["phase", "jobId", "model", "learningMapId"]) &&
+      Boolean(compact(value.jobId)) &&
+      Boolean(compact(value.model)) &&
+      Boolean(compact(value.learningMapId))
+    );
+  }
+  return (
+    value.phase === "generation" &&
+    exactKeySet(value, ["phase", "jobId", "model", "learningMapId", "textbookVersionId"]) &&
+    Boolean(compact(value.jobId)) &&
+    Boolean(compact(value.model)) &&
+    Boolean(compact(value.learningMapId)) &&
+    Boolean(compact(value.textbookVersionId))
+  );
+}
+
+function isArtifactProvenanceEnvelope(value: unknown): boolean {
+  if (!isRecord(value) || !exactKeySet(value, [
+    "visualNecessityDecisionSource",
+    "authoritativeFinalLearningUnitContract",
+    "authoritativeVisualizationPlan",
+    "reviewLedger",
+  ])) return false;
+  const necessity = value.visualNecessityDecisionSource;
+  const contract = value.authoritativeFinalLearningUnitContract;
+  const plan = value.authoritativeVisualizationPlan;
+  const ledger = value.reviewLedger;
+  return (
+    isRecord(necessity) &&
+    exactKeySet(necessity, [
+      "path",
+      "decisionRecordsPath",
+      "role",
+      "finalInteractionContractsMayDiffer",
+    ]) &&
+    necessity.path === VISUAL_NECESSITY_ARTIFACT_RELATIVE_PATH &&
+    necessity.decisionRecordsPath === VISUAL_DECISION_RECORDS_RELATIVE_PATH &&
+    necessity.role === "pre_executability_model_necessity_and_teaching_medium_source" &&
+    necessity.finalInteractionContractsMayDiffer === true &&
+    isRecord(contract) &&
+    exactKeySet(contract, ["path", "role"]) &&
+    contract.path === LEARNING_UNIT_CONTRACT_RELATIVE_PATH &&
+    contract.role === "authoritative_final_interaction_contract" &&
+    isRecord(plan) &&
+    exactKeySet(plan, ["path", "role"]) &&
+    plan.path === VISUALIZATION_PLAN_RELATIVE_PATH &&
+    plan.role === "authoritative_final_routing_projection" &&
+    isRecord(ledger) &&
+    exactKeySet(ledger, ["path", "role"]) &&
+    ledger.path === VISUAL_CONTRACT_EXECUTABILITY_LEDGER_RELATIVE_PATH &&
+    ledger.role === "exact_model_review_and_replacement_audit"
+  );
+}
+
+function isExecutabilityPacketEnvelope(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const hasAuditContext = Object.prototype.hasOwnProperty.call(value, "auditContext");
+  const hasConstraints = Object.prototype.hasOwnProperty.call(value, "wholeGardenConstraints");
+  const hasPreviousResponse = Object.prototype.hasOwnProperty.call(value, "previousResponse");
+  if (!exactKeySet(value, [
+    "schemaVersion",
+    "gardenId",
+    ...(hasAuditContext ? ["auditContext"] : []),
+    "units",
+    "technicalCapabilities",
+    ...(hasConstraints ? ["wholeGardenConstraints"] : []),
+    "previousRejectionReasons",
+    ...(hasPreviousResponse ? ["previousResponse"] : []),
+  ])) return false;
+  if (
+    value.schemaVersion !== VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION ||
+    !compact(value.gardenId) ||
+    !Array.isArray(value.units) ||
+    !isStringArray(value.previousRejectionReasons) ||
+    (hasAuditContext && !isLedgerContextEnvelope(value.auditContext)) ||
+    !isRecord(value.technicalCapabilities) ||
+    !exactKeySet(value.technicalCapabilities, ["manifestVersion", "manifestHash", "manifest"]) ||
+    (hasConstraints && !isWholeGardenConstraintsEnvelope(value.wholeGardenConstraints))
+  ) return false;
+  return value.units.every((unit) =>
+    isRecord(unit) &&
+    exactKeySet(unit, [
+      "unitId",
+      "title",
+      "role",
+      "learningQuestion",
+      "prerequisiteConcepts",
+      "concepts",
+      "necessity",
+      "requirement",
+      "contract",
+      "canonicalEvidence",
+    ]) &&
+    Boolean(compact(unit.unitId)) &&
+    typeof unit.title === "string" &&
+    typeof unit.role === "string" &&
+    typeof unit.learningQuestion === "string" &&
+    isStringArray(unit.prerequisiteConcepts) &&
+    isStringArray(unit.concepts) &&
+    isActiveRequirementValue(unit.necessity) &&
+    unit.requirement === unit.necessity &&
+    isCompleteContractEnvelope(unit.contract) &&
+    (unit.contract as Record<string, unknown>).unitId === unit.unitId &&
+    Array.isArray(unit.canonicalEvidence) &&
+    unit.canonicalEvidence.every(isCanonicalEvidenceEntryEnvelope));
+}
+
+function isStructuralRepairPacketEnvelope(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    exactKeySet(value, ["problems", "units", "previousRejectionReasons"]) &&
+    isStringArray(value.problems) &&
+    isStringArray(value.previousRejectionReasons) &&
+    Array.isArray(value.units) &&
+    value.units.every((unit) =>
+      isRecord(unit) &&
+      exactKeySet(unit, [
+        "unitId",
+        "title",
+        "role",
+        "requirement",
+        "interactionGoal",
+        "learnerAction",
+        "learningObjective",
+        "evidence",
+      ]) &&
+      Boolean(compact(unit.unitId)) &&
+      typeof unit.title === "string" &&
+      typeof unit.role === "string" &&
+      isActiveRequirementValue(unit.requirement) &&
+      typeof unit.interactionGoal === "string" &&
+      typeof unit.learnerAction === "string" &&
+      typeof unit.learningObjective === "string" &&
+      Array.isArray(unit.evidence) &&
+      unit.evidence.every(isCanonicalEvidenceEntryEnvelope))
+  );
+}
+
 function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): string[] {
   const problems: string[] = [];
   if (!isRecord(value)) return ["executability ledger must be an object"];
@@ -1471,6 +1836,7 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
     "rejectedReviews",
     "wholeGardenConstraints",
     "authoritativePlanPolicy",
+    "immutableGardenAllocation",
     "structuralContractRepair",
     "artifactProvenance",
     "attempts",
@@ -1502,35 +1868,7 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
   if (!Number.isInteger(value.rejectedReviews) || Number(value.rejectedReviews) < 0) {
     problems.push("executability ledger rejectedReviews is invalid");
   }
-  if (
-    !isRecord(value.wholeGardenConstraints) ||
-    !exactKeySet(value.wholeGardenConstraints, [
-      "unitOrder",
-      "sectionByUnit",
-      "maximumRepeatedInteractionSignature",
-      "targetMinimum",
-      "targetMaximum",
-      "maximumPerSection",
-      "minimumUnitsBetweenSimilarVisuals",
-      "requiredVisuals",
-      "recommendedVisuals",
-      "optionalVisuals",
-    ]) ||
-    !Array.isArray(value.wholeGardenConstraints.unitOrder) ||
-    !isRecord(value.wholeGardenConstraints.sectionByUnit) ||
-    [
-      "maximumRepeatedInteractionSignature",
-      "targetMinimum",
-      "targetMaximum",
-      "maximumPerSection",
-      "minimumUnitsBetweenSimilarVisuals",
-      "requiredVisuals",
-      "recommendedVisuals",
-      "optionalVisuals",
-    ].some((field) =>
-      !Number.isInteger((value.wholeGardenConstraints as Record<string, unknown>)[field]) ||
-      Number((value.wholeGardenConstraints as Record<string, unknown>)[field]) < 0)
-  ) {
+  if (!isWholeGardenConstraintsEnvelope(value.wholeGardenConstraints)) {
     problems.push("executability ledger whole-garden constraints are invalid");
   }
   if (
@@ -1540,35 +1878,51 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
       "visualDecisionOverrides",
       "necessityReviewCalls",
       "rejectedNecessityReviews",
+      "opportunitiesExcludingMechanicalPlacement",
+      "routeDecisions",
     ]) ||
     !isRecord(value.authoritativePlanPolicy.visualBudget) ||
-    !Array.isArray(value.authoritativePlanPolicy.visualDecisionOverrides)
+    !Array.isArray(value.authoritativePlanPolicy.visualDecisionOverrides) ||
+    !value.authoritativePlanPolicy.visualDecisionOverrides.every(isRecord) ||
+    !Array.isArray(value.authoritativePlanPolicy.opportunitiesExcludingMechanicalPlacement) ||
+    !value.authoritativePlanPolicy.opportunitiesExcludingMechanicalPlacement.every(isRecord) ||
+    !Array.isArray(value.authoritativePlanPolicy.routeDecisions) ||
+    !value.authoritativePlanPolicy.routeDecisions.every(isRecord) ||
+    !Number.isInteger(value.authoritativePlanPolicy.necessityReviewCalls) ||
+    Number(value.authoritativePlanPolicy.necessityReviewCalls) < 0 ||
+    !Number.isInteger(value.authoritativePlanPolicy.rejectedNecessityReviews) ||
+    Number(value.authoritativePlanPolicy.rejectedNecessityReviews) < 0
   ) {
     problems.push("executability ledger authoritative plan policy is invalid");
   }
   if (!Array.isArray(value.attempts)) problems.push("executability ledger attempts must be an array");
   if (!Array.isArray(value.units)) problems.push("executability ledger units must be an array");
+  if (!Array.isArray(value.immutableGardenAllocation)) {
+    problems.push("executability ledger immutable garden allocation must be an array");
+  } else {
+    value.immutableGardenAllocation.forEach((allocation, index) => {
+      if (
+        !isRecord(allocation) ||
+        !exactKeySet(allocation, [
+          "unitId",
+          "requirement",
+          "decisionBeforeMechanicalRouting",
+          "teachingMediumPlan",
+        ]) ||
+        !compact(allocation.unitId) ||
+        !compact(allocation.requirement) ||
+        !isRecord(allocation.decisionBeforeMechanicalRouting) ||
+        !isRecord(allocation.teachingMediumPlan)
+      ) {
+        problems.push(`executability ledger immutable allocation ${index + 1} is invalid`);
+      }
+    });
+  }
   if (value.scope !== "current_phase_only_generation_replaces_planning_ledger") {
     problems.push("executability ledger scope is invalid");
   }
-  if (!isRecord(value.context) || !exactKeySet(value.context, [
-    "phase",
-    "jobId",
-    "model",
-    ...(Object.prototype.hasOwnProperty.call(value.context ?? {}, "learningMapId")
-      ? ["learningMapId"]
-      : []),
-    ...(Object.prototype.hasOwnProperty.call(value.context ?? {}, "textbookVersionId")
-      ? ["textbookVersionId"]
-      : []),
-  ])) {
+  if (!isLedgerContextEnvelope(value.context)) {
     problems.push("executability ledger context fields are invalid");
-  } else {
-    if (value.context.phase !== "planning" && value.context.phase !== "generation") {
-      problems.push("executability ledger context.phase is invalid");
-    }
-    if (!compact(value.context.jobId)) problems.push("executability ledger context.jobId is missing");
-    if (!compact(value.context.model)) problems.push("executability ledger context.model is missing");
   }
   if (
     !isRecord(value.technicalCapabilities) ||
@@ -1604,20 +1958,38 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
         !isRecord(attempt) ||
         !exactKeySet(attempt, [
           "attempt",
+          "startedAt",
+          "completedAt",
+          "packet",
+          "packetHash",
+          "requestHash",
+          "systemPromptHash",
+          "responseSchemaHash",
+          "canonicalEvidenceHashes",
+          "transportAccounting",
           "accepted",
           "responseEncoding",
           "response",
           "rejectionReasons",
           "appliedUnitIds",
         ]) ||
-        !Array.isArray(attempt.rejectionReasons) ||
-        !Array.isArray(attempt.appliedUnitIds)
+        !isStructuralRepairPacketEnvelope(attempt.packet) ||
+        !isRecord(attempt.canonicalEvidenceHashes) ||
+        !Object.values(attempt.canonicalEvidenceHashes).every((hash) =>
+          SHA256_HEX_PATTERN.test(String(hash))) ||
+        !isTransportAccountingEnvelope(attempt.transportAccounting) ||
+        !isStringArray(attempt.rejectionReasons) ||
+        !isStringArray(attempt.appliedUnitIds) ||
+        !Number.isInteger(attempt.attempt) ||
+        typeof attempt.accepted !== "boolean" ||
+        !isIsoTimestamp(attempt.startedAt) ||
+        !isIsoTimestamp(attempt.completedAt)
       ) {
         problems.push(`executability ledger structural repair attempt ${index + 1} fields are invalid`);
       }
     });
   }
-  if (!isRecord(value.artifactProvenance)) {
+  if (!isArtifactProvenanceEnvelope(value.artifactProvenance)) {
     problems.push("executability ledger artifact provenance is invalid");
   }
   if (Array.isArray(value.attempts)) {
@@ -1628,6 +2000,7 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
           "attempt",
           "startedAt",
           "completedAt",
+          "packet",
           "requestHash",
           "packetHash",
           "systemPromptHash",
@@ -1641,8 +2014,16 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
           "rejectionReasons",
         ]) ||
         !isRecord(attempt.canonicalEvidenceHashes) ||
-        !isRecord(attempt.transportAccounting) ||
-        !Array.isArray(attempt.rejectionReasons)
+        !Object.values(attempt.canonicalEvidenceHashes).every((hash) =>
+          SHA256_HEX_PATTERN.test(String(hash))) ||
+        !isExecutabilityPacketEnvelope(attempt.packet) ||
+        !isTransportAccountingEnvelope(attempt.transportAccounting) ||
+        !Array.isArray(attempt.rejectionReasons) ||
+        !attempt.rejectionReasons.every(isExecutabilityProblemEnvelope) ||
+        !Number.isInteger(attempt.attempt) ||
+        typeof attempt.accepted !== "boolean" ||
+        !isIsoTimestamp(attempt.startedAt) ||
+        !isIsoTimestamp(attempt.completedAt)
       ) {
         problems.push(`executability ledger attempt ${index + 1} fields are invalid`);
       }
@@ -1666,7 +2047,19 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
         !isRecord(unit.beforeReviewContract) ||
         !isRecord(unit.reviewedContractBeforeMechanicalRouting) ||
         !isRecord(unit.finalRoutedContract) ||
-        !isRecord(unit.mechanicalRouting)
+        !isCompleteContractEnvelope(unit.beforeReviewContract) ||
+        !isCompleteContractEnvelope(unit.reviewedContractBeforeMechanicalRouting) ||
+        !isCompleteContractEnvelope(unit.finalRoutedContract) ||
+        !isRecord(unit.mechanicalRouting) ||
+        !exactKeySet(unit.mechanicalRouting, [
+          "opportunityId",
+          "decision",
+          "reviewedRecommendedVisualType",
+          "projectedVisualType",
+        ]) ||
+        !compact(unit.mechanicalRouting.opportunityId) ||
+        !isRecord(unit.mechanicalRouting.decision) ||
+        !compact(unit.mechanicalRouting.projectedVisualType)
       ) {
         problems.push(`executability ledger unit ${index + 1} fields are invalid`);
       }
@@ -1690,6 +2083,10 @@ export function visualContractExecutabilityLinkageProblems(input: {
   finalLearningUnits: LearningUnitContract[];
   visualizationPlan: VisualizationPlan | null;
   requireGenerationPhase?: boolean;
+  /** Independently rebuilt from durable garden source anchors by finalization. */
+  authoritativeCanonicalEvidenceByUnit?: VisualizationCanonicalEvidenceByUnit;
+  /** Supplied by the active Learn run, never reconstructed from the ledger itself. */
+  expectedContext?: VisualContractExecutabilityLedgerContext;
 }): string[] {
   const problems: string[] = [];
   const ledger = input.ledger;
@@ -1706,6 +2103,16 @@ export function visualContractExecutabilityLinkageProblems(input: {
   }
   if (input.requireGenerationPhase && ledger.context.phase !== "generation") {
     problems.push(`executability ledger phase is ${ledger.context.phase}, expected generation`);
+  }
+  if (input.expectedContext) {
+    if (!isDeepStrictEqual(ledger.context, input.expectedContext)) {
+      problems.push("executability ledger context differs from the authoritative Learn run context");
+    }
+  } else if (input.requireGenerationPhase) {
+    problems.push("authoritative Learn run context was not supplied to final executability linkage");
+  }
+  if (input.requireGenerationPhase && !input.authoritativeCanonicalEvidenceByUnit) {
+    problems.push("canonical visualization evidence was not rebuilt from durable garden sources");
   }
   if (ledger.scope !== "current_phase_only_generation_replaces_planning_ledger") {
     problems.push("executability ledger scope is missing or invalid");
@@ -1769,14 +2176,20 @@ export function visualContractExecutabilityLinkageProblems(input: {
 
   const activeUnits = input.finalLearningUnits.filter((unit) => activeRequirement(unit));
   const activeIds = activeUnits.map((unit) => unit.id);
-  const finalPlanPolicy = {
+  const finalPlanPolicy = clonePersistedJson({
     visualBudget: plan.visualBudget,
     visualDecisionOverrides: plan.visualDecisionOverrides,
     necessityReviewCalls: plan.necessityReviewCalls,
     rejectedNecessityReviews: plan.rejectedNecessityReviews,
-  };
+    opportunitiesExcludingMechanicalPlacement: plan.opportunities.map(
+      boundVisualizationOpportunity,
+    ),
+    routeDecisions: plan.decisions,
+  });
   if (!isDeepStrictEqual(ledger.authoritativePlanPolicy, finalPlanPolicy)) {
-    problems.push("visualization plan budget, overrides, or necessity-review counters differ from the ledger");
+    problems.push(
+      "visualization plan opportunities, routes, budget, overrides, or necessity-review counters differ from the ledger",
+    );
   }
   const constraintBudgetProjection = {
     targetMinimum: ledger.wholeGardenConstraints.targetMinimum,
@@ -1799,11 +2212,23 @@ export function visualContractExecutabilityLinkageProblems(input: {
     constraints: ledger.wholeGardenConstraints,
   }).map((item) => `${item.path}: ${item.message}`));
   const ledgerIds = ledger.units.map((unit) => unit.unitId);
+  const ledgerByUnit = new Map(ledger.units.map((item) => [item.unitId, item]));
+  const finalUnitById = new Map(input.finalLearningUnits.map((unit) => [unit.id, unit]));
+  const allocationByUnit = new Map(
+    ledger.immutableGardenAllocation.map((item) => [item.unitId, item]),
+  );
   if (!isDeepStrictEqual(ledgerIds, activeIds)) {
     problems.push("executability ledger units do not exactly match active final learning units in order");
   }
   if (new Set(ledgerIds).size !== ledgerIds.length) {
     problems.push("executability ledger contains duplicate unit records");
+  }
+  for (const unit of input.finalLearningUnits) {
+    if (ledger.wholeGardenConstraints.sectionByUnit[unit.id] !== unit.sectionPlan?.id) {
+      problems.push(
+        `${unit.id}: reviewed whole-garden section mapping differs from the final learning-unit section`,
+      );
+    }
   }
   if (ledger.callAccounting.semanticCalls !== ledger.attempts.length) {
     problems.push("executability ledger semanticCalls does not equal its persisted attempt count");
@@ -1829,8 +2254,12 @@ export function visualContractExecutabilityLinkageProblems(input: {
   ) {
     problems.push("executability ledger must end with exactly one accepted semantic review attempt");
   }
+  const initialEvidenceByUnit = new Map(
+    (ledger.attempts[0]?.packet.units ?? []).map((unit) => [unit.unitId, unit.canonicalEvidence]),
+  );
   ledger.attempts.forEach((attempt, index) => {
     const expectedAttempt = index + 1;
+    const packet = attempt.packet;
     if (
       attempt.attempt !== expectedAttempt ||
       attempt.transportAccounting?.logicalSemanticCall !== expectedAttempt ||
@@ -1849,6 +2278,16 @@ export function visualContractExecutabilityLinkageProblems(input: {
     ) {
       problems.push(`executability ledger attempt ${expectedAttempt} has invalid timestamps`);
     }
+    const priorAttempt = ledger.attempts[index - 1];
+    if (
+      priorAttempt &&
+      Date.parse(attempt.startedAt) < Date.parse(priorAttempt.completedAt)
+    ) {
+      problems.push(`executability ledger attempt ${expectedAttempt} starts before the prior attempt completed`);
+    }
+    if (Date.parse(attempt.completedAt) > Date.parse(ledger.generatedAt)) {
+      problems.push(`executability ledger attempt ${expectedAttempt} completes after ledger generation`);
+    }
     for (const [field, hash] of [
       ["requestHash", attempt.requestHash],
       ["packetHash", attempt.packetHash],
@@ -1864,6 +2303,121 @@ export function visualContractExecutabilityLinkageProblems(input: {
     }
     if (attempt.responseSchemaHash !== VISUAL_CONTRACT_EXECUTABILITY_RESPONSE_SCHEMA_HASH) {
       problems.push(`executability ledger attempt ${expectedAttempt} responseSchemaHash is stale`);
+    }
+    if (attempt.packetHash !== sha256Json(packet)) {
+      problems.push(`executability ledger attempt ${expectedAttempt} packetHash does not match its packet`);
+    }
+    const reconstructedPrompt = buildVisualContractExecutabilityPrompt(packet);
+    if (
+      attempt.requestHash !== sha256Json({
+        system: reconstructedPrompt.system,
+        user: reconstructedPrompt.user,
+      })
+    ) {
+      problems.push(`executability ledger attempt ${expectedAttempt} requestHash does not match its request`);
+    }
+    if (
+      packet.schemaVersion !== VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION ||
+      packet.gardenId !== input.gardenId ||
+      !isDeepStrictEqual(packet.auditContext, ledger.context) ||
+      !isDeepStrictEqual(packet.technicalCapabilities, {
+        manifestVersion: GENERATED_VISUAL_CAPABILITY_MANIFEST_VERSION,
+        manifestHash: GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
+        manifest: GENERATED_VISUAL_CAPABILITY_MANIFEST,
+      }) ||
+      !isDeepStrictEqual(packet.wholeGardenConstraints, ledger.wholeGardenConstraints)
+    ) {
+      problems.push(`executability ledger attempt ${expectedAttempt} packet metadata is stale`);
+    }
+    const packetUnitIds = packet.units.map((unit) => unit.unitId);
+    if (!isDeepStrictEqual(packetUnitIds, activeIds)) {
+      problems.push(`executability ledger attempt ${expectedAttempt} packet units are incomplete`);
+    }
+    for (const packetUnit of packet.units) {
+      const ledgerUnit = ledgerByUnit.get(packetUnit.unitId);
+      const finalUnit = finalUnitById.get(packetUnit.unitId);
+      const allocation = allocationByUnit.get(packetUnit.unitId);
+      if (
+        !ledgerUnit ||
+        !isDeepStrictEqual(packetUnit.contract, ledgerUnit.beforeReviewContract)
+      ) {
+        problems.push(
+          `executability ledger attempt ${expectedAttempt} packet contract for ${packetUnit.unitId} differs from the reviewed input`,
+        );
+      }
+      const expectedMetadata = finalUnit && allocation ? {
+        unitId: finalUnit.id,
+        title: finalUnit.title,
+        role: finalUnit.role,
+        learningQuestion: finalUnit.learningQuestion,
+        prerequisiteConcepts: finalUnit.prerequisiteConcepts,
+        concepts: [
+          ...finalUnit.newConcepts,
+          ...(finalUnit.semanticConcepts ?? []).flatMap((concept) => [
+            concept.slug,
+            concept.preferredLabel,
+            ...concept.aliases,
+          ]),
+        ],
+        necessity: finalUnit.interactiveVisualPlan?.decision.necessity,
+        requirement: allocation.requirement,
+      } : null;
+      const packetMetadata = {
+        unitId: packetUnit.unitId,
+        title: packetUnit.title,
+        role: packetUnit.role,
+        learningQuestion: packetUnit.learningQuestion,
+        prerequisiteConcepts: packetUnit.prerequisiteConcepts,
+        concepts: packetUnit.concepts,
+        necessity: packetUnit.necessity,
+        requirement: packetUnit.requirement,
+      };
+      if (!expectedMetadata || !isDeepStrictEqual(packetMetadata, expectedMetadata)) {
+        problems.push(
+          `executability ledger attempt ${expectedAttempt} packet metadata for ${packetUnit.unitId} differs from the final immutable unit`,
+        );
+      }
+      if (!isDeepStrictEqual(
+        packetUnit.canonicalEvidence,
+        initialEvidenceByUnit.get(packetUnit.unitId),
+      )) {
+        problems.push(
+          `executability ledger attempt ${expectedAttempt} canonical evidence for ${packetUnit.unitId} differs across attempts`,
+        );
+      }
+      const authoritativeEvidence =
+        input.authoritativeCanonicalEvidenceByUnit?.[packetUnit.unitId];
+      if (
+        input.authoritativeCanonicalEvidenceByUnit &&
+        !isDeepStrictEqual(packetUnit.canonicalEvidence, authoritativeEvidence)
+      ) {
+        problems.push(
+          `executability ledger attempt ${expectedAttempt} canonical evidence for ${packetUnit.unitId} differs from durable garden sources`,
+        );
+      }
+    }
+    const recomputedEvidenceHashes = Object.fromEntries(
+      packet.units.map((unit) => [unit.unitId, sha256Json(unit.canonicalEvidence)]),
+    );
+    if (!isDeepStrictEqual(attempt.canonicalEvidenceHashes, recomputedEvidenceHashes)) {
+      problems.push(`executability ledger attempt ${expectedAttempt} evidence hashes do not match its packet`);
+    }
+    const expectedPriorReasons = priorAttempt
+      ? priorAttempt.rejectionReasons.map((item) => `${item.path}: ${item.message}`)
+      : [];
+    if (!isDeepStrictEqual(packet.previousRejectionReasons, expectedPriorReasons)) {
+      problems.push(`executability ledger attempt ${expectedAttempt} previous rejection reasons are not exact`);
+    }
+    const expectedPriorResponse = priorAttempt?.responseEncoding === "json"
+      ? priorAttempt.response
+      : undefined;
+    if (
+      (expectedPriorResponse === undefined &&
+        Object.prototype.hasOwnProperty.call(packet, "previousResponse")) ||
+      (expectedPriorResponse !== undefined &&
+        !isDeepStrictEqual(packet.previousResponse, expectedPriorResponse))
+    ) {
+      problems.push(`executability ledger attempt ${expectedAttempt} previous response is not exact`);
     }
     if (!SHA256_HEX_PATTERN.test(String(attempt.wholeGardenConstraintsHash ?? ""))) {
       problems.push(`executability ledger attempt ${expectedAttempt} lacks a whole-garden constraints hash`);
@@ -1904,11 +2458,20 @@ export function visualContractExecutabilityLinkageProblems(input: {
     });
     if (!acceptedParsed.ok) {
       problems.push("executability ledger accepted attempt no longer contains a valid exact response");
-    } else if (!isDeepStrictEqual(
-      acceptedParsed.response.reviews,
-      ledger.units.map((unit) => unit.acceptedReview),
-    )) {
-      problems.push("executability ledger unit verdicts differ from the accepted exact response");
+    } else {
+      // Review arrays are a complete batch, not an ordered protocol. Preserve
+      // the model's exact array in the accepted attempt while linking each
+      // durable unit record by its immutable unit id.
+      const acceptedReviewByUnit = new Map(
+        acceptedParsed.response.reviews.map((review) => [review.unitId, review]),
+      );
+      if (
+        acceptedReviewByUnit.size !== ledger.units.length ||
+        ledger.units.some((unit) =>
+          !isDeepStrictEqual(acceptedReviewByUnit.get(unit.unitId), unit.acceptedReview))
+      ) {
+        problems.push("executability ledger unit verdicts differ from the accepted exact response");
+      }
     }
   }
 
@@ -1923,6 +2486,9 @@ export function visualContractExecutabilityLinkageProblems(input: {
       problems.push("executability ledger claims no structural repair but contains repair attempts");
     }
   } else {
+    if (structuralRepair.attempts.length > 3) {
+      problems.push("executability ledger structural repair exceeds its three-call hard bound");
+    }
     const structuralAccepted = structuralRepair.attempts.filter((attempt) => attempt.accepted);
     const acceptedStructuralAttempt = structuralAccepted[0];
     if (
@@ -1941,8 +2507,92 @@ export function visualContractExecutabilityLinkageProblems(input: {
       if (attempt.attempt !== index + 1) {
         problems.push("executability ledger structural repair attempt numbering is invalid");
       }
+      if (
+        !isIsoTimestamp(attempt.startedAt) ||
+        !isIsoTimestamp(attempt.completedAt) ||
+        Date.parse(attempt.completedAt) < Date.parse(attempt.startedAt)
+      ) {
+        problems.push(`executability ledger structural repair attempt ${index + 1} has invalid timestamps`);
+      }
+      const priorStructuralAttempt = structuralRepair.attempts[index - 1];
+      if (
+        priorStructuralAttempt &&
+        Date.parse(attempt.startedAt) < Date.parse(priorStructuralAttempt.completedAt)
+      ) {
+        problems.push(
+          `executability ledger structural repair attempt ${index + 1} starts before the prior attempt completed`,
+        );
+      }
+      if (Date.parse(attempt.completedAt) > Date.parse(ledger.generatedAt)) {
+        problems.push(
+          `executability ledger structural repair attempt ${index + 1} completes after ledger generation`,
+        );
+      }
+      if (
+        attempt.transportAccounting?.logicalSemanticCall !== index + 1 ||
+        attempt.transportAccounting?.providerInvocationsAtThisBoundary !== 1 ||
+        attempt.transportAccounting?.transportRetries !==
+          "owned_below_semantic_boundary_not_counted"
+      ) {
+        problems.push(`executability ledger structural repair attempt ${index + 1} has invalid call accounting`);
+      }
+      const repairPrompt = buildVisualizationContractRepairPrompt(attempt.packet);
+      if (
+        attempt.packetHash !== sha256Json(attempt.packet) ||
+        attempt.requestHash !== sha256Json(repairPrompt) ||
+        attempt.systemPromptHash !== sha256Text(visualizationContractRepairSystemPrompt()) ||
+        attempt.responseSchemaHash !== VISUALIZATION_CONTRACT_REPAIR_RESPONSE_SCHEMA_HASH
+      ) {
+        problems.push(`executability ledger structural repair attempt ${index + 1} hashes are stale`);
+      }
+      const repairEvidenceHashes = Object.fromEntries(
+        attempt.packet.units.map((unit) => [unit.unitId, sha256Json(unit.evidence)]),
+      );
+      if (!isDeepStrictEqual(attempt.canonicalEvidenceHashes, repairEvidenceHashes)) {
+        problems.push(`executability ledger structural repair attempt ${index + 1} evidence hashes are stale`);
+      }
+      for (const packetUnit of attempt.packet.units) {
+        const finalUnit = finalUnitById.get(packetUnit.unitId);
+        if (
+          !finalUnit ||
+          packetUnit.title !== finalUnit.title ||
+          packetUnit.role !== finalUnit.role ||
+          packetUnit.requirement !== finalUnit.interactiveVisualPlan?.requirement
+        ) {
+          problems.push(
+            `executability ledger structural repair attempt ${index + 1} metadata for ${packetUnit.unitId} differs from the final immutable unit`,
+          );
+        }
+        if (!isDeepStrictEqual(
+          packetUnit.evidence,
+          initialEvidenceByUnit.get(packetUnit.unitId),
+        )) {
+          problems.push(
+            `executability ledger structural repair attempt ${index + 1} evidence for ${packetUnit.unitId} differs from executability review evidence`,
+          );
+        }
+        const authoritativeEvidence =
+          input.authoritativeCanonicalEvidenceByUnit?.[packetUnit.unitId];
+        if (
+          input.authoritativeCanonicalEvidenceByUnit &&
+          !isDeepStrictEqual(packetUnit.evidence, authoritativeEvidence)
+        ) {
+          problems.push(
+            `executability ledger structural repair attempt ${index + 1} evidence for ${packetUnit.unitId} differs from durable garden sources`,
+          );
+        }
+      }
+      if (!isDeepStrictEqual(
+        attempt.packet.previousRejectionReasons,
+        structuralRepair.attempts[index - 1]?.rejectionReasons ?? [],
+      )) {
+        problems.push(`executability ledger structural repair attempt ${index + 1} rejection history is not exact`);
+      }
       if (!attempt.accepted && attempt.rejectionReasons.length === 0) {
         problems.push(`executability ledger structural repair attempt ${index + 1} lacks rejection reasons`);
+      }
+      if (attempt.accepted && attempt.rejectionReasons.length !== 0) {
+        problems.push(`executability ledger accepted structural repair attempt ${index + 1} contains rejection reasons`);
       }
       if (
         (attempt.responseEncoding !== "json" && attempt.responseEncoding !== "undefined") ||
@@ -1963,12 +2613,14 @@ export function visualContractExecutabilityLinkageProblems(input: {
         problems.push("executability ledger accepted structural repair response is malformed");
       } else {
         const repairIds = parsedStructuralRepair.repairs.map((repair) => repair.unitId);
+        const packetUnitIds = acceptedStructuralAttempt!.packet.units.map((unit) => unit.unitId);
         if (
           new Set(repairIds).size !== repairIds.length ||
           new Set(acceptedStructuralAttempt!.appliedUnitIds).size !==
             acceptedStructuralAttempt!.appliedUnitIds.length ||
           repairIds.length !== acceptedStructuralAttempt!.appliedUnitIds.length ||
-          repairIds.some((unitId) => !acceptedStructuralAttempt!.appliedUnitIds.includes(unitId))
+          repairIds.some((unitId) => !acceptedStructuralAttempt!.appliedUnitIds.includes(unitId)) ||
+          !isDeepStrictEqual(packetUnitIds, acceptedStructuralAttempt!.appliedUnitIds)
         ) {
           problems.push("executability ledger structural repair ids differ from its applied unit ids");
         }
@@ -1985,6 +2637,15 @@ export function visualContractExecutabilityLinkageProblems(input: {
           }
         }
       }
+    }
+    const lastStructuralAttempt = structuralRepair.attempts.at(-1);
+    const firstExecutabilityAttempt = ledger.attempts[0];
+    if (
+      lastStructuralAttempt &&
+      firstExecutabilityAttempt &&
+      Date.parse(firstExecutabilityAttempt.startedAt) < Date.parse(lastStructuralAttempt.completedAt)
+    ) {
+      problems.push("executability review started before structural contract repair completed");
     }
   }
 
@@ -2013,7 +2674,37 @@ export function visualContractExecutabilityLinkageProblems(input: {
   const opportunityByUnit = new Map(plan.opportunities.map((item) => [item.learningUnitId, item]));
   const routeByOpportunity = new Map(plan.decisions.map((item) => [item.opportunityId, item]));
   const necessityByUnit = new Map(plan.visualNecessityDecisions.map((item) => [item.unitId, item]));
-  const ledgerByUnit = new Map(ledger.units.map((item) => [item.unitId, item]));
+  const allocationIds = ledger.immutableGardenAllocation.map((item) => item.unitId);
+  const finalUnitIds = input.finalLearningUnits.map((unit) => unit.id);
+  if (!isDeepStrictEqual(allocationIds, finalUnitIds)) {
+    problems.push("executability ledger immutable allocation does not cover every final unit in order");
+  }
+  for (const unit of input.finalLearningUnits) {
+    const allocation = allocationByUnit.get(unit.id);
+    const finalUnitPlan = unit.interactiveVisualPlan;
+    if (!allocation || !finalUnitPlan || !unit.teachingMediumPlan) {
+      problems.push(`${unit.id}: immutable allocation or final necessity plan is missing`);
+      continue;
+    }
+    if (allocation.requirement !== finalUnitPlan.requirement) {
+      problems.push(`${unit.id}: final requirement differs from the reviewed immutable allocation`);
+    }
+    if (!isDeepStrictEqual(allocation.teachingMediumPlan, unit.teachingMediumPlan)) {
+      problems.push(`${unit.id}: final teaching medium differs from the reviewed immutable allocation`);
+    }
+    const expectedDecision = cloneExact(
+      allocation.decisionBeforeMechanicalRouting as Record<string, unknown>,
+    );
+    const routedLedgerUnit = ledgerByUnit.get(unit.id);
+    if (activeRequirement(unit) && routedLedgerUnit) {
+      expectedDecision.recommendedVisualType = routedLedgerUnit.mechanicalRouting.projectedVisualType;
+    }
+    if (!isDeepStrictEqual(decisionWithoutInteraction(unit), expectedDecision)) {
+      problems.push(
+        `${unit.id}: final visual-necessity allocation changed beyond the mechanical recommendedVisualType route projection`,
+      );
+    }
+  }
 
   for (const unit of activeUnits) {
     let finalContract: CompleteVisualizationContractUnitRepair;
@@ -2201,6 +2892,322 @@ export function visualContractExecutabilityLinkageProblems(input: {
   return [...new Set(problems)];
 }
 
+function readJsonArtifact(filePath: string): unknown {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function necessityArtifactMarkerIsExact(value: Record<string, unknown>): boolean {
+  return (
+    value.artifactRole ===
+      "pre_executability_model_necessity_and_teaching_medium_source" &&
+    value.interactionContractsAreAuthoritative === false &&
+    isRecord(value.supersededBy) &&
+    exactKeySet(value.supersededBy, [
+      "learningUnitContract",
+      "visualizationPlan",
+      "executabilityReviewLedger",
+    ]) &&
+    value.supersededBy.learningUnitContract === LEARNING_UNIT_CONTRACT_RELATIVE_PATH &&
+    value.supersededBy.visualizationPlan === VISUALIZATION_PLAN_RELATIVE_PATH &&
+    value.supersededBy.executabilityReviewLedger ===
+      VISUAL_CONTRACT_EXECUTABILITY_LEDGER_RELATIVE_PATH
+  );
+}
+
+function recordWithoutInteraction(value: unknown): unknown {
+  if (!isRecord(value)) return null;
+  const { interaction: _interaction, ...rest } = value;
+  return rest;
+}
+
+const NECESSITY_INTERACTION_KEYS = [
+  "interactionGoal",
+  "uniqueConcept",
+  "whyStaticSourceFigureIsNotEnough",
+  "learnerAction",
+  "controls",
+  "observable",
+  "expectedInsight",
+  "expectedInsightEvidence",
+  "duplicateSignature",
+] as const;
+
+function necessityInteractionRepair(input: {
+  unitId: string;
+  value: unknown;
+}): { repair?: VisualizationContractUnitRepair; problems: string[] } {
+  if (!isRecord(input.value)) {
+    return { problems: ["interaction must be an object"] };
+  }
+  const problems: string[] = [];
+  if (!exactKeySet(input.value, NECESSITY_INTERACTION_KEYS)) {
+    problems.push("interaction fields are not the exact persisted pedagogy contract shape");
+  }
+  for (const field of [
+    "interactionGoal",
+    "uniqueConcept",
+    "whyStaticSourceFigureIsNotEnough",
+    "learnerAction",
+    "expectedInsight",
+    "duplicateSignature",
+  ] as const) {
+    if (!compact(input.value[field])) {
+      problems.push(`${field} must be a nonempty string`);
+    }
+  }
+  const parsed = parseVisualizationContractRepairResponse(
+    {
+      repairs: [{
+        unitId: input.unitId,
+        interactionGoal: input.value.interactionGoal,
+        learnerAction: input.value.learnerAction,
+        controls: input.value.controls,
+        observable: input.value.observable,
+        expectedInsight: input.value.expectedInsight,
+        expectedInsightEvidence: input.value.expectedInsightEvidence,
+      }],
+    },
+    { requireCompleteContract: false, expectedUnitIds: [input.unitId] },
+  );
+  problems.push(...parsed.problems);
+  return {
+    ...(problems.length === 0 && parsed.repairs.length === 1
+      ? { repair: parsed.repairs[0] }
+      : {}),
+    problems: [...new Set(problems)],
+  };
+}
+
+/**
+ * Bind the pre-executability source artifacts and human-readable contract
+ * projection to the durable ledger + final JSON artifacts. This deliberately
+ * permits stale nested interactions only in the self-labelled necessity
+ * source; immutable necessity/medium policy must still match exactly.
+ */
+export function visualContractExecutabilityArtifactProvenanceProblems(input: {
+  gardenDir: string;
+  gardenId: string;
+  ledger: VisualContractExecutabilityLedger | null;
+  finalLearningUnits: LearningUnitContract[];
+}): string[] {
+  const problems: string[] = [];
+  const ledger = input.ledger;
+  if (!ledger) return ["visual-contract executability review ledger is missing or invalid"];
+  const necessityPath = path.join(
+    input.gardenDir,
+    ...VISUAL_NECESSITY_ARTIFACT_RELATIVE_PATH.split("/"),
+  );
+  const recordsPath = path.join(
+    input.gardenDir,
+    ...VISUAL_DECISION_RECORDS_RELATIVE_PATH.split("/"),
+  );
+  const necessityMarkdownPath = path.join(
+    input.gardenDir,
+    ".breadboard",
+    "visual-necessity-decisions.md",
+  );
+  const finalContractPath = path.join(
+    input.gardenDir,
+    ...LEARNING_UNIT_CONTRACT_RELATIVE_PATH.split("/"),
+  );
+  const finalContractMarkdownPath = path.join(
+    input.gardenDir,
+    ...AUTHORITATIVE_LEARNING_UNIT_CONTRACT_MARKDOWN_RELATIVE_PATH.split("/"),
+  );
+  const necessity = readJsonArtifact(necessityPath);
+  const records = readJsonArtifact(recordsPath);
+  if (!isRecord(necessity)) {
+    problems.push(`${VISUAL_NECESSITY_ARTIFACT_RELATIVE_PATH} is missing or malformed`);
+  } else {
+    if (necessity.gardenId !== input.gardenId) {
+      problems.push(`${VISUAL_NECESSITY_ARTIFACT_RELATIVE_PATH} gardenId is stale`);
+    }
+    if (!necessityArtifactMarkerIsExact(necessity)) {
+      problems.push(`${VISUAL_NECESSITY_ARTIFACT_RELATIVE_PATH} role/supersededBy marker is invalid`);
+    }
+    if (!Array.isArray(necessity.decisions)) {
+      problems.push(`${VISUAL_NECESSITY_ARTIFACT_RELATIVE_PATH} decisions are malformed`);
+    } else {
+      const decisionByUnit = new Map(
+        necessity.decisions.flatMap((decision) =>
+          isRecord(decision) && compact(decision.unitId)
+            ? [[decision.unitId as string, decision] as const]
+            : []),
+      );
+      const expectedIds = ledger.immutableGardenAllocation.map((item) => item.unitId);
+      const ledgerUnitById = new Map(ledger.units.map((item) => [item.unitId, item]));
+      const structurallyRepairedUnitIds = new Set(
+        ledger.structuralContractRepair.attempts
+          .filter((attempt) => attempt.accepted)
+          .flatMap((attempt) => attempt.appliedUnitIds),
+      );
+      const acceptedStructuralPacketUnitById = new Map(
+        ledger.structuralContractRepair.attempts
+          .filter((attempt) => attempt.accepted)
+          .flatMap((attempt) => attempt.packet.units)
+          .map((unit) => [unit.unitId, unit] as const),
+      );
+      const finalUnitById = new Map(
+        input.finalLearningUnits.map((unit) => [unit.id, unit] as const),
+      );
+      const canonicalEvidenceByUnit = new Map(
+        (ledger.attempts[0]?.packet.units ?? []).map(
+          (unit) => [unit.unitId, unit.canonicalEvidence] as const,
+        ),
+      );
+      if (
+        decisionByUnit.size !== necessity.decisions.length ||
+        decisionByUnit.size !== expectedIds.length ||
+        expectedIds.some((unitId) => !decisionByUnit.has(unitId))
+      ) {
+        problems.push(`${VISUAL_NECESSITY_ARTIFACT_RELATIVE_PATH} decisions do not uniquely cover the immutable garden allocation`);
+      }
+      for (const allocation of ledger.immutableGardenAllocation) {
+        const decision = decisionByUnit.get(allocation.unitId);
+        if (
+          !decision ||
+          !isDeepStrictEqual(
+            recordWithoutInteraction(decision),
+            allocation.decisionBeforeMechanicalRouting,
+          )
+        ) {
+          problems.push(
+            `${allocation.unitId}: pre-executability necessity fields differ from the immutable ledger allocation`,
+          );
+        }
+        const ledgerUnit = ledgerUnitById.get(allocation.unitId);
+        if (!ledgerUnit) continue;
+        const parsedInteraction = necessityInteractionRepair({
+          unitId: allocation.unitId,
+          value: decision?.interaction,
+        });
+        if (!parsedInteraction.repair) {
+          problems.push(
+            `${allocation.unitId}: active pre-executability necessity interaction is missing or malformed: ${parsedInteraction.problems.join("; ")}`,
+          );
+          continue;
+        }
+        const finalUnit = finalUnitById.get(allocation.unitId);
+        const originalInteractionProblems = finalUnit
+          ? validateVisualizationContractUnitRepair({
+              repair: parsedInteraction.repair,
+              unit: finalUnit,
+              evidence: canonicalEvidenceByUnit.get(allocation.unitId),
+              requireCompleteContract: false,
+              // This validates the raw model-authored necessity record rather
+              // than retroactively requiring the later executability repair.
+              requireExecutableProtocol: false,
+            })
+          : [`${allocation.unitId}: final learning unit is missing`];
+        if (originalInteractionProblems.length > 0) {
+          problems.push(
+            `${allocation.unitId}: original necessity interaction is invalid: ${originalInteractionProblems.join("; ")}`,
+          );
+        }
+        if (structurallyRepairedUnitIds.has(allocation.unitId)) {
+          const packetUnit = acceptedStructuralPacketUnitById.get(allocation.unitId);
+          if (
+            !packetUnit ||
+            parsedInteraction.repair.interactionGoal !== packetUnit.interactionGoal ||
+            parsedInteraction.repair.learnerAction !== packetUnit.learnerAction ||
+            parsedInteraction.repair.expectedInsight !== packetUnit.learningObjective
+          ) {
+            problems.push(
+              `${allocation.unitId}: structural repair request does not exactly describe the original necessity interaction goal, learner action, and expected insight`,
+            );
+          }
+        } else if (!isDeepStrictEqual(
+          decision?.interaction,
+          pedagogyContractFromCompleteRepair(ledgerUnit.beforeReviewContract),
+        )) {
+          problems.push(
+            `${allocation.unitId}: executability beforeReviewContract is not the exact unrepaired necessity interaction`,
+          );
+        }
+      }
+    }
+    if (!Array.isArray(necessity.teachingMedia)) {
+      problems.push(`${VISUAL_NECESSITY_ARTIFACT_RELATIVE_PATH} teachingMedia are malformed`);
+    } else {
+      const mediumByUnit = new Map(
+        necessity.teachingMedia.flatMap((medium) =>
+          isRecord(medium) && compact(medium.unitId)
+            ? [[medium.unitId as string, medium] as const]
+            : []),
+      );
+      if (
+        mediumByUnit.size !== necessity.teachingMedia.length ||
+        mediumByUnit.size !== ledger.immutableGardenAllocation.length ||
+        ledger.immutableGardenAllocation.some((item) =>
+          !isDeepStrictEqual(mediumByUnit.get(item.unitId), item.teachingMediumPlan))
+      ) {
+        problems.push(`${VISUAL_NECESSITY_ARTIFACT_RELATIVE_PATH} teaching media differ from the immutable ledger allocation`);
+      }
+    }
+    if (
+      !isDeepStrictEqual(necessity.budget, ledger.authoritativePlanPolicy.visualBudget) ||
+      !isDeepStrictEqual(
+        necessity.overrides,
+        ledger.authoritativePlanPolicy.visualDecisionOverrides,
+      ) ||
+      necessity.reviewCalls !== ledger.authoritativePlanPolicy.necessityReviewCalls ||
+      necessity.rejectedReviews !==
+        ledger.authoritativePlanPolicy.rejectedNecessityReviews
+    ) {
+      problems.push(`${VISUAL_NECESSITY_ARTIFACT_RELATIVE_PATH} budget/override/review policy differs from the final plan ledger`);
+    }
+  }
+  if (!isRecord(records)) {
+    problems.push(`${VISUAL_DECISION_RECORDS_RELATIVE_PATH} is missing or malformed`);
+  } else {
+    if (records.gardenId !== input.gardenId || !necessityArtifactMarkerIsExact(records)) {
+      problems.push(`${VISUAL_DECISION_RECORDS_RELATIVE_PATH} role/supersededBy marker is invalid`);
+    }
+    if (
+      isRecord(necessity) &&
+      (
+        records.generatedAt !== necessity.generatedAt ||
+        !isDeepStrictEqual(records.decisionRecords, necessity.decisionRecords)
+      )
+    ) {
+      problems.push(`${VISUAL_DECISION_RECORDS_RELATIVE_PATH} is not the exact necessity decision-record projection`);
+    }
+  }
+  let necessityMarkdown = "";
+  try { necessityMarkdown = fs.readFileSync(necessityMarkdownPath, "utf8"); } catch { /* reported below */ }
+  if (
+    !/Pre-executability necessity and teaching-medium source/i.test(necessityMarkdown) ||
+    !/interaction contract here is not authoritative after review/i.test(necessityMarkdown) ||
+    !necessityMarkdown.includes(LEARNING_UNIT_CONTRACT_RELATIVE_PATH) ||
+    !necessityMarkdown.includes(VISUALIZATION_PLAN_RELATIVE_PATH) ||
+    !necessityMarkdown.includes(VISUAL_CONTRACT_EXECUTABILITY_LEDGER_RELATIVE_PATH)
+  ) {
+    problems.push(".breadboard/visual-necessity-decisions.md role/supersededBy notice is missing or stale");
+  }
+  try {
+    const finalContractPayload = fs.readFileSync(finalContractPath, "utf8");
+    const expectedMarkdown = renderAuthoritativeLearningUnitContractMarkdown({
+      units: input.finalLearningUnits,
+      authoritativeSourceSha256: sha256Text(finalContractPayload),
+    });
+    const actualMarkdown = fs.readFileSync(finalContractMarkdownPath, "utf8");
+    if (actualMarkdown !== expectedMarkdown) {
+      problems.push(
+        `${AUTHORITATIVE_LEARNING_UNIT_CONTRACT_MARKDOWN_RELATIVE_PATH} is not the exact final contract projection`,
+      );
+    }
+  } catch {
+    problems.push(
+      `${AUTHORITATIVE_LEARNING_UNIT_CONTRACT_MARKDOWN_RELATIVE_PATH} is missing or cannot be linked to the final contract`,
+    );
+  }
+  return [...new Set(problems)];
+}
+
 export function visualContractExecutabilityLedgerPath(gardenDir: string): string {
   return path.join(gardenDir, ...VISUAL_CONTRACT_EXECUTABILITY_LEDGER_RELATIVE_PATH.split("/"));
 }
@@ -2218,6 +3225,11 @@ export function buildVisualContractExecutabilityLedger(input: {
   };
   generatedAt?: string;
 }): VisualContractExecutabilityLedger {
+  if (!isDeepStrictEqual(input.review.auditContext, input.context)) {
+    throw new Error(
+      "Cannot persist visual-contract executability audit under a context the reviewer request did not see.",
+    );
+  }
   if (!input.review.wholeGardenConstraints) {
     throw new Error(
       "Cannot persist visual-contract executability audit without whole-garden constraints.",
@@ -2228,6 +3240,20 @@ export function buildVisualContractExecutabilityLedger(input: {
   );
   const finalByUnit = new Map(input.finalRoutedLearningUnits.map((unit) => [unit.id, unit]));
   const reviewedByUnit = new Map(input.review.learningUnits.map((unit) => [unit.id, unit]));
+  const immutableGardenAllocation = input.review.learningUnits.map((unit) => {
+    const plan = unit.interactiveVisualPlan;
+    if (!plan || !unit.teachingMediumPlan) {
+      throw new Error(
+        `Cannot persist visual-contract executability allocation audit for incomplete unit ${unit.id}.`,
+      );
+    }
+    return {
+      unitId: unit.id,
+      requirement: plan.requirement,
+      decisionBeforeMechanicalRouting: cloneExact(decisionWithoutInteraction(unit)),
+      teachingMediumPlan: cloneExact(unit.teachingMediumPlan),
+    };
+  });
   const units = Object.keys(input.review.beforeContracts).map((unitId) => {
     const review = acceptedByUnit.get(unitId);
     const finalUnit = finalByUnit.get(unitId);
@@ -2310,12 +3336,17 @@ export function buildVisualContractExecutabilityLedger(input: {
     },
     rejectedReviews: input.review.rejectedReviews,
     wholeGardenConstraints: cloneExact(input.review.wholeGardenConstraints),
-    authoritativePlanPolicy: {
+    authoritativePlanPolicy: clonePersistedJson({
       visualBudget: cloneExact(input.finalVisualizationPlan.visualBudget),
       visualDecisionOverrides: cloneExact(input.finalVisualizationPlan.visualDecisionOverrides),
       necessityReviewCalls: input.finalVisualizationPlan.necessityReviewCalls,
       rejectedNecessityReviews: input.finalVisualizationPlan.rejectedNecessityReviews,
-    },
+      opportunitiesExcludingMechanicalPlacement: input.finalVisualizationPlan.opportunities.map(
+        (opportunity) => cloneExact(boundVisualizationOpportunity(opportunity)),
+      ),
+      routeDecisions: cloneExact(input.finalVisualizationPlan.decisions),
+    }),
+    immutableGardenAllocation,
     structuralContractRepair: cloneExact(input.structuralContractRepair),
     artifactProvenance: {
       visualNecessityDecisionSource: {
@@ -2355,6 +3386,11 @@ export function buildVisualContractExecutabilityLedger(input: {
       `Visual-contract executability ledger linkage failed: ${linkageProblems.join("; ")}`,
     );
   }
+  // Persistence call sites construct the complete ledger before writing the
+  // final contract or plan. Enforce the durable byte ceiling at that preflight
+  // boundary as well as in save(), so an oversized audit cannot fail only
+  // after authoritative artifacts have already been replaced.
+  serializedVisualContractExecutabilityLedger(ledger);
   return ledger;
 }
 
@@ -2364,12 +3400,7 @@ export function saveVisualContractExecutabilityLedger(input: {
 }): string {
   const filePath = visualContractExecutabilityLedgerPath(input.gardenDir);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const payload = `${JSON.stringify(input.ledger, null, 2)}\n`;
-  if (Buffer.byteLength(payload, "utf8") > MAX_VISUAL_CONTRACT_EXECUTABILITY_LEDGER_BYTES) {
-    throw new Error(
-      `Visual-contract executability ledger exceeds ${MAX_VISUAL_CONTRACT_EXECUTABILITY_LEDGER_BYTES} UTF-8 bytes.`,
-    );
-  }
+  const payload = serializedVisualContractExecutabilityLedger(input.ledger);
   const temporary = `${filePath}.tmp-${process.pid}-${crypto.randomUUID()}`;
   const backup = `${filePath}.previous-${process.pid}-${crypto.randomUUID()}`;
   let displaced = false;

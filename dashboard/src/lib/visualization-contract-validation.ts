@@ -1,8 +1,11 @@
+import { isDeepStrictEqual } from "node:util";
+
 import type { LearningUnitContract } from "./learning-unit-contract.ts";
 import { GENERATED_VISUAL_CAPABILITY_MANIFEST } from "./generated-visual-capabilities.ts";
 import type {
   InteractiveVisualControlContract,
   InteractiveVisualControlInputType,
+  InteractiveVisualControlProtocolRole,
   InteractiveVisualIntent,
   InteractiveVisualObservableContract,
   InteractiveVisualOutputRepresentation,
@@ -12,6 +15,8 @@ import type { VisualizationInteractionGoal } from "./visualization-registry.ts";
 
 export type VisualizationContractControlKind =
   (typeof GENERATED_VISUAL_CAPABILITY_MANIFEST.requiredContractControls.kinds)[number];
+export type VisualizationContractProtocolRole =
+  (typeof GENERATED_VISUAL_CAPABILITY_MANIFEST.requiredContractControls.protocolRoles)[number];
 
 export interface VisualizationContractEvidenceRef {
   anchor: string;
@@ -96,6 +101,16 @@ export interface VisualizationContractRepairParseOptions {
 
 export const MAX_VISUALIZATION_CONTRACT_REPAIR_RESPONSE_BYTES = 512_000;
 
+function quotedUnion(values: readonly string[]): string {
+  return values.map((value) => JSON.stringify(value)).join("|");
+}
+
+/** Shared strict complete-record schema used by both model prompts and validators. */
+export const VISUALIZATION_CONTRACT_CONTROL_SCHEMA =
+  `{"id":string,"kind":${quotedUnion(GENERATED_VISUAL_CAPABILITY_MANIFEST.requiredContractControls.kinds)},"label":string,"type":${quotedUnion(GENERATED_VISUAL_CAPABILITY_MANIFEST.requiredContractControls.types)},"protocolRole"?:${quotedUnion(GENERATED_VISUAL_CAPABILITY_MANIFEST.requiredContractControls.protocolRoles)},"unit"?:string,"min"?:number,"max"?:number,"step"?:number,"options"?:string[],"defaultValue":number|string|boolean,"evidence":[{"anchor":string,"quote":string}]}`;
+export const COMPLETE_VISUALIZATION_CONTRACT_REPAIR_SCHEMA =
+  `{"unitId":string,"interactionGoal":"manipulate_variables"|"observe_change_over_time"|"compare_cases"|"step_through_process"|"explore_structure"|"test_prediction"|"inspect_relationship"|"simulate_system","learnerAction":string,"visualIntent":{"id":string,"uniqueConcept":string,"visualType":string,"whyStaticSourceFigureIsNotEnough":string,"learnerManipulates":string[],"expectedInsight":string,"sourceAnchors":string[],"duplicateSignature":string,"reuseOf"?:string},"controls":[${VISUALIZATION_CONTRACT_CONTROL_SCHEMA}],"observable":{"label":string,"representation":${quotedUnion(GENERATED_VISUAL_CAPABILITY_MANIFEST.outputs.representations)},"evidence":[{"anchor":string,"quote":string}]},"expectedInsight":string,"expectedInsightEvidence":[{"anchor":string,"quote":string}]}`;
+
 const GENERIC_CONTROL_RE =
   /^(?:control|exploration level|input|key variable|main output|output|parameter|process step|result|step|value|variable)$/i;
 const GENERIC_INSIGHT_RE = /^(?:observe the response|see what happens|the output changes|result|insight)$/i;
@@ -114,6 +129,9 @@ const REQUIRED_CONTROL_TYPES = new Set<string>(
 );
 const REQUIRED_CONTROL_KINDS = new Set<string>(
   GENERATED_VISUAL_CAPABILITY_MANIFEST.requiredContractControls.kinds,
+);
+const PROTOCOL_ROLES = new Set<InteractiveVisualControlProtocolRole>(
+  GENERATED_VISUAL_CAPABILITY_MANIFEST.requiredContractControls.protocolRoles,
 );
 const OUTPUT_REPRESENTATIONS = new Set<InteractiveVisualOutputRepresentation>(
   GENERATED_VISUAL_CAPABILITY_MANIFEST.outputs.representations,
@@ -449,7 +467,7 @@ function parseControls(
       value: record,
       path: controlPath,
       required: ["id", "kind", "label", "type", "defaultValue", "evidence"],
-      optional: ["unit", "min", "max", "step", "options"],
+      optional: ["protocolRole", "unit", "min", "max", "step", "options"],
       problems,
     });
     const id = typeof record.id === "string" ? record.id : "";
@@ -460,10 +478,16 @@ function parseControls(
     const type = typeof record.type === "string"
       ? record.type as InteractiveVisualControlInputType
       : "" as InteractiveVisualControlInputType;
+    const protocolRole = typeof record.protocolRole === "string"
+      ? record.protocolRole as InteractiveVisualControlProtocolRole
+      : undefined;
     if (typeof record.id !== "string") problems.push(`${controlPath}.id must be a string`);
     if (typeof record.kind !== "string") problems.push(`${controlPath}.kind must be a string`);
     if (typeof record.label !== "string") problems.push(`${controlPath}.label must be a string`);
     if (typeof record.type !== "string") problems.push(`${controlPath}.type must be a string`);
+    if (record.protocolRole !== undefined && typeof record.protocolRole !== "string") {
+      problems.push(`${controlPath}.protocolRole must be a string when supplied`);
+    }
     if (record.unit !== undefined && typeof record.unit !== "string") {
       problems.push(`${controlPath}.unit must be a string when supplied`);
     }
@@ -482,8 +506,12 @@ function parseControls(
     }
     if (record.defaultValue === undefined) {
       problems.push(`${controlPath}.defaultValue is required`);
-    } else if (typeof record.defaultValue !== "number" && typeof record.defaultValue !== "string") {
-      problems.push(`${controlPath}.defaultValue must be a number or string`);
+    } else if (
+      typeof record.defaultValue !== "number" &&
+      typeof record.defaultValue !== "string" &&
+      typeof record.defaultValue !== "boolean"
+    ) {
+      problems.push(`${controlPath}.defaultValue must be a number, string, or boolean`);
     }
     const evidence = parseEvidenceRefs(record.evidence, `${controlPath}.evidence`, problems);
     controls.push({
@@ -491,13 +519,16 @@ function parseControls(
       kind,
       label,
       type,
+      ...(protocolRole ? { protocolRole } : {}),
       ...(typeof record.unit === "string" ? { unit: record.unit } : {}),
       ...(typeof record.min === "number" ? { min: record.min } : {}),
       ...(typeof record.max === "number" ? { max: record.max } : {}),
       ...(typeof record.step === "number" ? { step: record.step } : {}),
       ...(options ? { options } : {}),
       defaultValue:
-        typeof record.defaultValue === "number" || typeof record.defaultValue === "string"
+        typeof record.defaultValue === "number" ||
+        typeof record.defaultValue === "string" ||
+        typeof record.defaultValue === "boolean"
           ? record.defaultValue
           : "",
       evidence,
@@ -651,6 +682,8 @@ export function validateVisualizationContractUnitRepair(input: {
   evidence?: readonly VisualizationContractEvidenceEntry[];
   /** Active repair uses a complete model-authored replacement contract. */
   requireCompleteContract?: boolean;
+  /** Post-review gate: require an explicit ordered prediction protocol. */
+  requireExecutableProtocol?: boolean;
 }): string[] {
   const { repair, unit } = input;
   const problems: string[] = [];
@@ -667,7 +700,8 @@ export function validateVisualizationContractUnitRepair(input: {
     problems.push(`${unit.id}: at most ${maximumControls} learner controls are allowed`);
   }
   const seenControlIds = new Set<string>();
-  for (const control of repair.controls) {
+  const protocolRoleIndex = new Map<InteractiveVisualControlProtocolRole, number>();
+  repair.controls.forEach((control, controlIndex) => {
     if (!REQUIRED_CONTROL_KINDS.has(control.kind)) {
       problems.push(`${unit.id}: control "${control.label || control.id}" has invalid kind "${control.kind}"`);
     }
@@ -685,6 +719,59 @@ export function validateVisualizationContractUnitRepair(input: {
     }
     if (!REQUIRED_CONTROL_TYPES.has(control.type)) {
       problems.push(`${unit.id}: control "${control.label}" has invalid input type "${control.type}"`);
+    }
+    const protocolRole = control.protocolRole;
+    if (protocolRole !== undefined && !PROTOCOL_ROLES.has(protocolRole)) {
+      problems.push(`${unit.id}: control "${control.label}" has invalid protocolRole "${protocolRole}"`);
+    } else if (protocolRole !== undefined) {
+      if (protocolRoleIndex.has(protocolRole)) {
+        problems.push(`${unit.id}: protocolRole "${protocolRole}" must be unique`);
+      } else {
+        protocolRoleIndex.set(protocolRole, controlIndex);
+      }
+    }
+    const isPureProtocolControl = control.type === "button" || control.type === "toggle";
+    if (isPureProtocolControl) {
+      if (control.kind !== "protocol_action") {
+        problems.push(`${unit.id}: ${control.type} control "${control.label}" must use kind protocol_action`);
+      }
+      if (!protocolRole) {
+        problems.push(`${unit.id}: ${control.type} control "${control.label}" requires protocolRole`);
+      } else if (protocolRole === "prediction_input") {
+        problems.push(
+          `${unit.id}: prediction_input must mark an evidence-grounded subject control, not a pure protocol action`,
+        );
+      }
+      for (const field of ["unit", "min", "max", "step", "options"] as const) {
+        if (control[field] !== undefined) {
+          problems.push(`${unit.id}: protocol control "${control.label}" must not declare ${field}`);
+        }
+      }
+      if (control.evidence.length !== 0) {
+        problems.push(
+          `${unit.id}: pure protocol control "${control.label}" must carry exactly empty evidence`,
+        );
+      }
+      if (control.type === "button" && control.defaultValue !== 0) {
+        problems.push(`${unit.id}: protocol button "${control.label}" defaultValue must be 0`);
+      }
+      if (control.type === "toggle" && control.defaultValue !== false) {
+        problems.push(`${unit.id}: protocol toggle "${control.label}" defaultValue must be false`);
+      }
+      return;
+    }
+    if (control.kind === "protocol_action") {
+      problems.push(
+        `${unit.id}: source-semantic control "${control.label}" must not use kind protocol_action`,
+      );
+    }
+    if (
+      protocolRole !== undefined &&
+      protocolRole !== "prediction_input"
+    ) {
+      problems.push(
+        `${unit.id}: ordinary source-semantic controls may carry only protocolRole prediction_input`,
+      );
     }
     if (control.kind === "select_case" && control.type !== "select") {
       problems.push(`${unit.id}: select-case control "${control.label}" must use input type select`);
@@ -751,7 +838,7 @@ export function validateVisualizationContractUnitRepair(input: {
     const refs = evidenceRefsAreValid(control.evidence, evidence);
     if (!refs.valid) {
       problems.push(`${unit.id}: control "${control.label}" has an invalid evidence quote or anchor`);
-      continue;
+      return;
     }
     const quotedText = control.evidence.map((item) => item.quote).join(" ");
     if (!phraseGroundedInText(control.label, quotedText)) {
@@ -764,6 +851,57 @@ export function validateVisualizationContractUnitRepair(input: {
         }
       }
     }
+  });
+  if (repair.interactionGoal === "test_prediction" && input.requireExecutableProtocol) {
+    const predictionInputIndex = protocolRoleIndex.get("prediction_input");
+    const commitIndex = protocolRoleIndex.get("commit_prediction");
+    const outcomeIndices = [
+      protocolRoleIndex.get("reveal_outcome"),
+      protocolRoleIndex.get("evaluate_prediction"),
+    ].filter((index): index is number => index !== undefined);
+    if (predictionInputIndex === undefined) {
+      problems.push(
+        `${unit.id}: test_prediction requires one evidence-grounded slider/number/select with protocolRole prediction_input`,
+      );
+    }
+    if (commitIndex === undefined) {
+      problems.push(
+        `${unit.id}: test_prediction requires a distinct protocol_action button/toggle with protocolRole commit_prediction`,
+      );
+    }
+    if (outcomeIndices.length === 0) {
+      problems.push(
+        `${unit.id}: test_prediction requires a distinct reveal_outcome or evaluate_prediction protocol control`,
+      );
+    }
+    if (
+      predictionInputIndex !== undefined &&
+      commitIndex !== undefined &&
+      predictionInputIndex >= commitIndex
+    ) {
+      problems.push(
+        `${unit.id}: prediction_input control must precede commit_prediction in authored control order`,
+      );
+    }
+    if (
+      commitIndex !== undefined &&
+      outcomeIndices.length > 0 &&
+      commitIndex >= Math.min(...outcomeIndices)
+    ) {
+      problems.push(
+        `${unit.id}: commit_prediction control must precede reveal_outcome/evaluate_prediction in authored control order`,
+      );
+    }
+  } else if (
+    repair.interactionGoal !== "test_prediction" &&
+    (
+      protocolRoleIndex.has("prediction_input") ||
+      protocolRoleIndex.has("commit_prediction") ||
+      protocolRoleIndex.has("reveal_outcome") ||
+      protocolRoleIndex.has("evaluate_prediction")
+    )
+  ) {
+    problems.push(`${unit.id}: prediction protocol roles require interactionGoal test_prediction`);
   }
   if (repair.interactionGoal !== undefined) {
     if (!INTERACTION_GOALS.has(repair.interactionGoal)) {
@@ -934,12 +1072,12 @@ export function persistedVisualizationControlContractProblems(
     expectedInsightEvidence: plan.expectedInsightEvidence,
   };
   const expectedDecisionInteraction = pedagogyContractFromCompleteRepair(completeRepair);
-  if (JSON.stringify(plan.decision.interaction) !== JSON.stringify(expectedDecisionInteraction)) {
+  if (!isDeepStrictEqual(plan.decision.interaction, expectedDecisionInteraction)) {
     controlProblems.push(
       `${unit.id}: decision.interaction must exactly match the authoritative model-authored interaction contract`,
     );
   }
-  if (JSON.stringify(unit.interactiveVisual) !== JSON.stringify(intent)) {
+  if (!isDeepStrictEqual(unit.interactiveVisual, intent)) {
     controlProblems.push(
       `${unit.id}: interactiveVisual must exactly match interactiveVisualPlan.visualIntent`,
     );

@@ -787,6 +787,10 @@ db.exec(`
   )
 `);
 
+// Where the user dragged a cluster among its siblings. NULL means "never
+// reordered", which sorts alphabetically after the placed ones.
+ensureColumn("cluster_folders", "position", "position INTEGER");
+
 function usernameBaseFromEmail(email: string): string {
   const localPart = email.split("@")[0] ?? "user";
   const base = localPart

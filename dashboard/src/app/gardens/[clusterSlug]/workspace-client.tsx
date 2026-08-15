@@ -11606,7 +11606,7 @@ export default function WorkspaceClient({
           {renderLearnPanel()}
           {/* Positioning context for the jump control, so it floats at the foot
               of the transcript rather than below the composer. */}
-          <div className="relative flex min-h-0 flex-1 flex-col">
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
             <main ref={transcriptScrollRef} className="flex-1 overflow-y-auto px-4 py-6">
             <ChatTranscript
               clusterName={clusterName}

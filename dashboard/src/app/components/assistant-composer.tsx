@@ -27,6 +27,7 @@ import SlashCommandMenu, {
 } from '@/app/components/hermes/slash-command-menu';
 import { splitLeadingCommandTokens } from '@/app/components/hermes/command-text';
 import { useDirectMode } from '@/app/components/use-direct-mode';
+import { useGoalMode } from '@/app/components/use-goal-mode';
 import { useYoloMode } from '@/app/components/use-yolo-mode';
 import { useAgentMode, useSuperAgent } from '@/app/components/use-agent-mode';
 import type { ModelFailoverNotice } from '@/app/components/use-assistant-intelligence';
@@ -513,6 +514,7 @@ export default function AssistantComposer({
   const [agencyAgentNotice, setAgencyAgentNotice] = useState<string | null>(null);
   const commandBackdropRef = useRef<HTMLDivElement | null>(null);
   const [directMode, setDirectMode] = useDirectMode();
+  const [goalMode, setGoalMode] = useGoalMode();
   const [yoloMode, setYoloMode] = useYoloMode();
   const [agentMode, setAgentMode] = useAgentMode();
   const [superAgent, setSuperAgent] = useSuperAgent();
@@ -2023,6 +2025,29 @@ export default function AssistantComposer({
                       >
                         <span
                           className={`neu-surface-raised absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-200 ${agentMode ? 'translate-x-5' : 'translate-x-0'}`}
+                        />
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={goalMode}
+                      onClick={() => setGoalMode(!goalMode)}
+                      className="flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left text-[var(--ink)] transition hover:bg-[var(--paper-strong)]"
+                    >
+                      <span className="min-w-0">
+                        <span className="block">Goal mode</span>
+                        <span className="block text-[11px] text-[var(--ink-muted)]">
+                          Keep a verified objective across this chat’s turns
+                        </span>
+                      </span>
+                      <span
+                        aria-hidden
+                        className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${goalMode ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
+                      >
+                        <span
+                          className={`neu-surface-raised absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-200 ${goalMode ? 'translate-x-5' : 'translate-x-0'}`}
                         />
                       </span>
                     </button>

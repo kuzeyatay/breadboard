@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -6,6 +7,7 @@ import {
   HTTP_502_MAX_ATTEMPTS,
   HTTP_502_RETRY_INTERVAL_MS,
   isRetryableModelTransportError,
+  modelTransportRetryCause,
   retryModelTransport,
   retryHttp502,
 } from '../src/lib/http-502-retry.ts';
@@ -126,6 +128,69 @@ test('only the recognized ChatMock restart failures are transport-retryable', ()
   }
 });
 
+test('retry metadata distinguishes HTTP 502 from connection failures without changing attempt numbers', async () => {
+  const attempts = [];
+  const delays = [];
+  let calls = 0;
+  const result = await retryModelTransport(
+    async () => {
+      calls += 1;
+      if (calls === 1) throw errorWithStatus(502);
+      if (calls === 2) {
+        throw Object.assign(new Error('connect failed'), { code: 'ECONNREFUSED' });
+      }
+      if (calls === 3) {
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('socket closed'), { code: 'ECONNRESET' }),
+        });
+      }
+      return 'recovered';
+    },
+    {
+      onAttempt: (attempt) => attempts.push(attempt),
+      onDelay: (attempt) => delays.push(attempt),
+      sleep: async () => undefined,
+    },
+  );
+
+  assert.equal(result, 'recovered');
+  assert.equal(calls, 4);
+  assert.deepEqual(
+    attempts.map(({ attempt, retryCause }) => ({ attempt, retryCause })),
+    [
+      { attempt: 1, retryCause: undefined },
+      { attempt: 2, retryCause: 'http_502' },
+      { attempt: 3, retryCause: 'connection_failure' },
+      { attempt: 4, retryCause: 'connection_failure' },
+    ],
+  );
+  assert.deepEqual(
+    delays.map(({ attempt, retryCause }) => ({ attempt, retryCause })),
+    [{ attempt: 4, retryCause: 'connection_failure' }],
+  );
+  assert.equal(modelTransportRetryCause(errorWithStatus(502)), 'http_502');
+  assert.equal(
+    modelTransportRetryCause(Object.assign(new Error('reset'), { code: 'ECONNRESET' })),
+    'connection_failure',
+  );
+});
+
+test('Learn retry progress uses a truthful generic event and carries the classified cause', () => {
+  const source = fs.readFileSync(new URL('../src/lib/learn.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('function attachLearnJobModelTracking');
+  const end = source.indexOf('\nfunction updateLearnJob', start);
+  assert.ok(start >= 0 && end > start, 'expected the Learn model tracking callback');
+  const trackingSource = source.slice(start, end);
+
+  assert.equal(
+    [...trackingSource.matchAll(/"learn_model_transport_retry"/g)].length,
+    2,
+  );
+  assert.equal([...trackingSource.matchAll(/\bretryCause\b/g)].length, 4);
+  assert.match(trackingSource, /Model transport unavailable/);
+  assert.doesNotMatch(trackingSource, /Gateway 502|learn_chatmock_502_retry/);
+});
+
 test('a transient connection failure replays the same operation outside semantic accounting', async () => {
   let calls = 0;
   const attempts = [];
@@ -160,22 +225,32 @@ test('cancellation between a transport failure and retry stops replay immediatel
   assert.equal(calls, 1);
 });
 
-test('Learn tracks six transport attempts as one logical model call', async () => {
+test('Learn tracks six mixed transport attempts as one logical model call', async () => {
   const events = [];
   const createOptions = [];
+  const transportAttempts = [];
   const controller = new AbortController();
   let calls = 0;
   const client = fakeClient(async (_body, options) => {
     calls += 1;
     createOptions.push(options);
-    if (calls < 6) throw errorWithStatus(502);
+    if (calls < 6) {
+      if (calls % 2 === 1) throw errorWithStatus(502);
+      throw Object.assign(new Error('connection dropped'), { code: 'ECONNRESET' });
+    }
     return { usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 } };
   });
 
   attachLearnTokenUsageTracking(
     client,
     (event) => events.push(event),
-    { retry502: { signal: controller.signal, sleep: async () => undefined } },
+    {
+      retryTransport: {
+        signal: controller.signal,
+        onAttempt: (attempt) => transportAttempts.push(attempt),
+        sleep: async () => undefined,
+      },
+    },
   );
   const response = await client.chat.completions.create(
     { model: 'gpt-5.6-sol' },
@@ -184,6 +259,17 @@ test('Learn tracks six transport attempts as one logical model call', async () =
 
   assert.equal(response.usage.total_tokens, 10);
   assert.equal(calls, 6);
+  assert.deepEqual(
+    transportAttempts.map(({ attempt, retryCause }) => ({ attempt, retryCause })),
+    [
+      { attempt: 1, retryCause: undefined },
+      { attempt: 2, retryCause: 'http_502' },
+      { attempt: 3, retryCause: 'connection_failure' },
+      { attempt: 4, retryCause: 'http_502' },
+      { attempt: 5, retryCause: 'connection_failure' },
+      { attempt: 6, retryCause: 'http_502' },
+    ],
+  );
   assert.deepEqual(events.map(({ type }) => type), ['started', 'completed']);
   assert.ok(createOptions.every((options) => options.maxRetries === 0));
   assert.ok(createOptions.every((options) => options.timeout === 1234));

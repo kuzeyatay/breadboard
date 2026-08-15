@@ -9,12 +9,14 @@ import {
   deleteFolder,
   expandFolderPaths,
   folderPathChain,
+  folderRankFromOrder,
   isInSubtree,
   joinFolderPath,
   listFolders,
   moveFolder,
   normalizeFolderPath,
   renameFolder,
+  reorderFolder,
   visibleFolderRows,
 } from "../src/lib/cluster-folders.ts";
 
@@ -36,6 +38,7 @@ function makeDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       name TEXT NOT NULL,
+      position INTEGER,
       UNIQUE(user_id, name)
     );
   `);
@@ -315,6 +318,28 @@ describe("tree rendering order", () => {
     );
   });
 
+  // The dashboard has no positions of its own: it ranks by where each path sits
+  // in the array the server handed it, which is the stored order.
+  test("a list's own order becomes the sibling ranking", () => {
+    const rank = folderRankFromOrder(["Z", "Z/late", "Z/early", "A"]);
+    assert.deepEqual(
+      ["A", "Z", "Z/early", "Z/late"].sort((a, b) =>
+        compareFolderPaths(a, b, rank),
+      ),
+      ["Z", "Z/late", "Z/early", "A"],
+    );
+  });
+
+  test("a cluster absent from the ranking falls back to the alphabet", () => {
+    const rank = folderRankFromOrder(["Z"]);
+    // "Z" is ranked and therefore leads; the rest are unranked and tie, so they
+    // sort against each other by name.
+    assert.deepEqual(
+      ["Maths", "Art", "Z"].sort((a, b) => compareFolderPaths(a, b, rank)),
+      ["Z", "Art", "Maths"],
+    );
+  });
+
   test("paths from gardens and the registry merge into one ancestor-complete list", () => {
     assert.deepEqual(expandFolderPaths(["A/B/C", null, "A", "", "Z"]), [
       "A",
@@ -325,6 +350,165 @@ describe("tree rendering order", () => {
   });
 });
 
+describe("reordering clusters", () => {
+  /** Creates top-level clusters in the given order and returns the db. */
+  function withTopLevel(...names) {
+    const db = makeDb();
+    for (const name of names) createFolder(db, USER, name, null);
+    return db;
+  }
+
+  function positionOf(db, name) {
+    return db
+      .prepare("SELECT position FROM cluster_folders WHERE user_id = ? AND name = ?")
+      .get(USER, name).position;
+  }
+
+  test("an untouched tree is alphabetical and stores no positions", () => {
+    const db = withTopLevel("Physics", "Maths", "Art");
+    assert.deepEqual(listFolders(db, USER), ["Art", "Maths", "Physics"]);
+    assert.equal(positionOf(db, "Physics"), null);
+  });
+
+  test("dropping on a sibling's top edge places it before that sibling", () => {
+    const db = withTopLevel("Art", "Maths", "Physics");
+    reorderFolder(db, USER, "Physics", "Maths", "before");
+    assert.deepEqual(listFolders(db, USER), ["Art", "Physics", "Maths"]);
+  });
+
+  test("dropping on a sibling's bottom edge places it after", () => {
+    const db = withTopLevel("Art", "Maths", "Physics");
+    reorderFolder(db, USER, "Art", "Maths", "after");
+    assert.deepEqual(listFolders(db, USER), ["Maths", "Art", "Physics"]);
+  });
+
+  test("the first reorder numbers the whole sibling list, not just the two", () => {
+    const db = withTopLevel("Art", "Maths", "Physics");
+    reorderFolder(db, USER, "Physics", "Art", "before");
+    assert.deepEqual(
+      ["Physics", "Art", "Maths"].map((name) => positionOf(db, name)),
+      [0, 1, 2],
+    );
+  });
+
+  test("a cluster reordered from another parent is re-parented on the way", () => {
+    const db = makeDb();
+    createFolder(db, USER, "Maths", null);
+    createFolder(db, USER, "Physics", null);
+    createFolder(db, USER, "Optics", "Physics");
+    createFolder(db, USER, "Algebra", "Maths");
+    addGarden(db, "lenses", "Physics/Optics");
+
+    reorderFolder(db, USER, "Physics/Optics", "Maths/Algebra", "before");
+
+    assert.deepEqual(listFolders(db, USER), [
+      "Maths",
+      "Maths/Optics",
+      "Maths/Algebra",
+      "Physics",
+    ]);
+    // The subtree's gardens come along, as with any other move.
+    assert.equal(gardenFolder(db, "lenses"), "Maths/Optics");
+  });
+
+  test("nested clusters travel with the cluster being reordered", () => {
+    const db = makeDb();
+    createFolder(db, USER, "Maths", null);
+    createFolder(db, USER, "Physics", null);
+    createFolder(db, USER, "Optics", "Physics");
+    createFolder(db, USER, "Lenses", "Physics/Optics");
+
+    reorderFolder(db, USER, "Physics/Optics", "Maths", "after");
+
+    assert.deepEqual(listFolders(db, USER), [
+      "Maths",
+      "Optics",
+      "Optics/Lenses",
+      "Physics",
+    ]);
+  });
+
+  test("ordering one parent leaves every other parent alphabetical", () => {
+    const db = makeDb();
+    createFolder(db, USER, "Maths", null);
+    createFolder(db, USER, "Zebra", "Maths");
+    createFolder(db, USER, "Apple", "Maths");
+    createFolder(db, USER, "Physics", null);
+    createFolder(db, USER, "Waves", "Physics");
+    createFolder(db, USER, "Atoms", "Physics");
+
+    reorderFolder(db, USER, "Maths/Zebra", "Maths/Apple", "before");
+
+    assert.deepEqual(listFolders(db, USER), [
+      "Maths",
+      "Maths/Zebra",
+      "Maths/Apple",
+      "Physics",
+      "Physics/Atoms",
+      "Physics/Waves",
+    ]);
+  });
+
+  test("a cluster created under an ordered parent lands at the end", () => {
+    const db = makeDb();
+    createFolder(db, USER, "Maths", null);
+    createFolder(db, USER, "Zebra", "Maths");
+    createFolder(db, USER, "Apple", "Maths");
+    reorderFolder(db, USER, "Maths/Zebra", "Maths/Apple", "before");
+
+    createFolder(db, USER, "Aardvark", "Maths");
+
+    assert.deepEqual(listFolders(db, USER), [
+      "Maths",
+      "Maths/Zebra",
+      "Maths/Apple",
+      "Maths/Aardvark",
+    ]);
+  });
+
+  test("a cluster cannot be reordered against its own descendant", () => {
+    const db = makeDb();
+    createFolder(db, USER, "Physics", null);
+    createFolder(db, USER, "Optics", "Physics");
+    assert.throws(
+      () => reorderFolder(db, USER, "Physics", "Physics/Optics", "before"),
+      /inside itself/,
+    );
+  });
+
+  test("reordering a cluster against itself is a no-op", () => {
+    const db = withTopLevel("Art", "Maths");
+    reorderFolder(db, USER, "Art", "Art", "after");
+    assert.deepEqual(listFolders(db, USER), ["Art", "Maths"]);
+  });
+
+  test("a reorder onto an occupied name is rejected", () => {
+    const db = makeDb();
+    createFolder(db, USER, "Maths", null);
+    createFolder(db, USER, "Physics", null);
+    createFolder(db, USER, "Optics", "Physics");
+    createFolder(db, USER, "Optics", "Maths");
+    createFolder(db, USER, "Algebra", "Maths");
+    assert.throws(
+      () => reorderFolder(db, USER, "Physics/Optics", "Maths/Algebra", "before"),
+      /already exists/,
+    );
+  });
+
+  test("another user's clusters keep their own order", () => {
+    const db = makeDb();
+    createFolder(db, USER, "Art", null);
+    createFolder(db, USER, "Maths", null);
+    createFolder(db, OTHER_USER, "Art", null);
+    createFolder(db, OTHER_USER, "Maths", null);
+
+    reorderFolder(db, USER, "Maths", "Art", "before");
+
+    assert.deepEqual(listFolders(db, USER), ["Maths", "Art"]);
+    assert.deepEqual(listFolders(db, OTHER_USER), ["Art", "Maths"]);
+  });
+});
+
 describe("dashboard renders the tree", () => {
   const client = fs.readFileSync(
     new URL("../src/app/dashboard/dashboard-client.tsx", import.meta.url),
@@ -332,7 +516,7 @@ describe("dashboard renders the tree", () => {
   );
 
   test("headers come from the shared tree order and are indented by depth", () => {
-    assert.match(client, /visibleFolderRows\(folderPaths,/);
+    assert.match(client, /visibleFolderRows\(\s*folderPaths,/);
     assert.match(client, /marginLeft: depth \* FOLDER_INDENT_PX/);
   });
 
@@ -348,5 +532,77 @@ describe("dashboard renders the tree", () => {
 
   test("each header can create a cluster nested inside it", () => {
     assert.match(client, /openClusterFolderModal\(folder\)/);
+  });
+
+  test("each header can create a garden directly inside its cluster", () => {
+    assert.match(client, /openModal\(folder\)/);
+    assert.match(client, /title="New garden in this cluster"/);
+    assert.match(client, /createCluster\(name\.trim\(\), description\.trim\(\), folder\)/);
+  });
+
+  // A header is a thin strip. Aiming a dragged cluster at one is far fiddlier
+  // than dropping a garden onto a card grid, so the section is the target.
+  test("a whole section takes a nesting drop, not just the header strip", () => {
+    assert.match(client, /folderDropProps\(dropFolder, dropKey\)/);
+    assert.match(client, /section\.header \? section\.header\.key : "root"/);
+  });
+
+  // Dropping in the middle of a header must keep meaning "nest inside", so the
+  // header only claims the event on its outer thirds and lets the rest bubble.
+  test("a header's edges reorder while its middle still nests", () => {
+    assert.match(client, /if \(offset <= 0\.3\) return "before";/);
+    assert.match(client, /if \(offset >= 0\.7\) return "after";/);
+    const header = client.slice(
+      client.indexOf("function renderFolderHeader("),
+      client.indexOf("function openModal("),
+    );
+    // The middle band returns before preventDefault, so the section handler
+    // underneath still sees the drag.
+    assert.match(header, /const place = edgePlaceAt\(e\);\s*if \(!place\)/);
+    assert.match(
+      header,
+      /handleReorderClusterFolder\(draggingFolderPath, folder, place\)/,
+    );
+  });
+
+  test("grabbing a header button does not drag the cluster away", () => {
+    assert.match(
+      client,
+      /\(e\.target as HTMLElement\)\.closest\('\[data-card-action="true"\]'\)/,
+    );
+  });
+
+  // Headers used to vanish behind the "No gardens yet" state, which left an
+  // empty cluster impossible to see, drag, or fill.
+  test("an empty cluster still renders its header", () => {
+    assert.match(client, /clusterSections\.length === 0 \?/);
+  });
+
+  test("the page keeps scrollable room under the fixed terminal dock", () => {
+    assert.match(client, /querySelector\("\[data-terminal-dock\]"\)/);
+    assert.match(client, /new ResizeObserver/);
+    assert.match(client, /paddingBottom: `calc\(\$\{Math\.round\(dockHeight\)\}px \+ 40vh\)`/);
+  });
+});
+
+describe("creating a garden inside a cluster", () => {
+  const actions = fs.readFileSync(
+    new URL("../src/app/actions/clusters.ts", import.meta.url),
+    "utf8",
+  );
+  const createCluster = actions.slice(
+    actions.indexOf("export async function createCluster("),
+    actions.indexOf("export async function updateClusterDetails("),
+  );
+
+  test("the action files the new garden and registers missing ancestors", () => {
+    assert.match(createCluster, /folder\?: string \| null/);
+    assert.match(createCluster, /normalizeFolderPath\(folder\)/);
+    assert.match(createCluster, /ensureFolderPath\(db, userId, cleanFolder\)/);
+    assert.match(createCluster, /INSERT INTO clusters \([^)]*folder\)/);
+  });
+
+  test("an empty cluster stores NULL rather than a blank path", () => {
+    assert.match(createCluster, /cleanFolder \|\| null/);
   });
 });

@@ -5,6 +5,7 @@ import type { CapabilityDecision } from "./capability-policy.ts";
 import { directModeSection } from "./direct-mode.ts";
 import { metaPromptSection, metaPromptingEnabled } from "./meta-prompting.ts";
 import { loopStateSection } from "../loopx/governance.ts";
+import { goalModeSection, type GoalModeState } from "../goal-mode.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 
 function readSystemPrompt(name: string): string {
@@ -54,6 +55,8 @@ export function composeHermesSystemPrompt(input: {
    * key for compatibility with clients that were already open during rename.
    */
   adhdMode?: boolean;
+  /** Goal-compatible state selected for this one conversation turn. */
+  goalMode?: GoalModeState | null;
 }): string {
   const decision = input.decision;
   const sections = [
@@ -114,6 +117,8 @@ export function composeHermesSystemPrompt(input: {
   // local file read, never a call into the control plane.
   const loopState = loopStateSection(input.conversationPublicId, input.surface);
   if (loopState) sections.push(loopState);
+  const goalMode = goalModeSection(input.goalMode ?? null);
+  if (goalMode) sections.push(goalMode);
   if (input.additional?.trim()) sections.push(input.additional.trim());
   // Persona overlays are deliberately last and explicitly subordinate. They
   // can shape voice and approach, but never the server-authored sections above.

@@ -45,8 +45,10 @@ test("Hermes terminal uses the original Breadboard terminal shell", () => {
     terminal,
     /style=\{\{ background: glassActive \? "transparent" : "var\(--terminal-bar\)" \}\}/,
   );
-  assert.match(terminal, /aria-label="Toggle the sidebar"/);
-  // New chat and Recents live in the rail the header toggles.
+  // The rail is opened and closed by its own edge, not by a toolbar button.
+  assert.match(terminalSidebar, /aria-label="Toggle the sidebar"/);
+  assert.doesNotMatch(terminal, /aria-label="Toggle the sidebar"/);
+  // New chat and Recents live in the rail the divider opens.
   assert.match(terminalSidebar, /label="New chat"/);
   assert.match(terminalSidebar, /label="Recents"/);
   assert.match(terminal, /terminal-boot-reveal/);

@@ -10,9 +10,9 @@ import {
   type SkillsCatalogStore,
 } from "./skills-catalog-store.ts";
 import type { SkillsShDetail } from "./skills-sh-client.ts";
+import { OMH_SKILLS_SOURCE, omhWorkflowToken } from "./omh-command.ts";
 
-/** GitHub identity of the vendored oh-my-hermes workflow pack. */
-export const OMH_SKILLS_SOURCE = "rlaope/oh-my-hermes";
+export { OMH_SKILLS_SOURCE };
 /** Human label used in inspection notices. */
 export const OMH_SKILLS_LABEL = "oh-my-hermes clone";
 /** Upstream keeps every generated workflow skill in one tree. */
@@ -180,7 +180,7 @@ function loadSnapshot(repository: string, force: boolean): LocalOmhSnapshot {
       duplicate: false,
       curated: false,
       ranks: {},
-      slashCommand: `omh:${slug}`,
+      slashCommand: omhWorkflowToken(slug),
     };
     skills.set(id, {
       directory,

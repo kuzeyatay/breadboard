@@ -466,7 +466,7 @@ export default defineVisualization({
   title: "Coupled state intervention",
   description: "Change the gain and inspect how the propagated state changes.",
   accessibilityDescription: "A gain slider updates a numeric propagated-state result and a plotted response curve.",
-  controls: [{ id: "gain", label: "gain", type: "slider", min: 0, max: 3, step: 0.1, defaultValue: 1 }],
+  controls: [{ id: "gain", kind: "variable", label: "gain", type: "slider", min: 0, max: 3, step: 0.1, defaultValue: 1 }],
   outputs: [{
     id: "coupled_state_propagation_under_intervention",
     label: "coupled-state propagation under intervention",
@@ -527,8 +527,8 @@ test("generated numeric controls must preserve every model-authored contract fie
 test("generated select controls preserve option order, default, and absence of numeric fields", () => {
   const selectSource = validSource
     .replace(
-      'controls: [{ id: "gain", label: "gain", type: "slider", min: 0, max: 3, step: 0.1, defaultValue: 1 }]',
-      'controls: [{ id: "case", label: "Boundary case", type: "select", options: ["closed", "open"], defaultValue: "closed" }]',
+      'controls: [{ id: "gain", kind: "variable", label: "gain", type: "slider", min: 0, max: 3, step: 0.1, defaultValue: 1 }]',
+      'controls: [{ id: "case", kind: "select_case", label: "Boundary case", type: "select", options: ["closed", "open"], defaultValue: "closed" }]',
     )
     .replaceAll('id: "gain"', 'id: "case"');
   const opportunity = {
@@ -536,6 +536,7 @@ test("generated select controls preserve option order, default, and absence of n
     similarityFingerprint: "select-contract-fingerprint",
     requiredInputs: [{
       id: "case",
+      kind: "select_case",
       label: "Boundary case",
       type: "select",
       options: ["closed", "open"],
@@ -608,6 +609,7 @@ test("compilation cache is source-, opportunity-, and SDK-version aware", () => 
     similarityFingerprint: "stable-semantic-fingerprint",
     requiredInputs: [{
       id: "gain",
+      kind: "variable",
       label: "gain",
       type: "slider",
       min: 0,

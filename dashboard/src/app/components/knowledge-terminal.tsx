@@ -19,6 +19,7 @@ import {
   chatAutoScrollResponseKey,
   useChatAutoScroll,
 } from '@/app/components/use-chat-auto-scroll';
+import ChatJumpToBottom from '@/app/components/chat-jump-to-bottom';
 import ChatMarkdown from '@/app/components/chat-markdown';
 import ChatTimeSeparator from '@/app/components/chat-time-separator';
 import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
@@ -262,7 +263,11 @@ export default function KnowledgeTerminal({ scope }: Props) {
     window.localStorage.setItem(HEIGHT_KEY, String(preferredHeight));
   }, [height]);
 
-  const transcriptScrollRef = useChatAutoScroll<HTMLDivElement>({
+  const {
+    ref: transcriptScrollRef,
+    awayFromBottom: transcriptAwayFromBottom,
+    scrollToBottom: jumpToNewestMessage,
+  } = useChatAutoScroll<HTMLDivElement>({
     isResponding: isStreaming,
     responseKey: chatAutoScrollResponseKey(messages),
     contentKey: chatAutoScrollContentKey(messages),
@@ -779,6 +784,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
 
         {/* Chat column */}
         <div className="flex min-w-0 flex-1 flex-col">
+          {/* Positioning context for the jump control, so it floats at the foot
+              of the transcript rather than below the composer. */}
+          <div className="relative flex min-h-0 flex-1 flex-col">
           <div ref={transcriptScrollRef} className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-3xl px-4 py-5">
               {messages.length === 0 ? (
@@ -862,6 +870,12 @@ export default function KnowledgeTerminal({ scope }: Props) {
                 </div>
               )}
             </div>
+          </div>
+            <ChatJumpToBottom
+              visible={transcriptAwayFromBottom}
+              busy={isStreaming}
+              onJump={jumpToNewestMessage}
+            />
           </div>
 
           {/* Composer */}

@@ -899,6 +899,9 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       // source and every conversation silently loses its loop state.
       BREADBOARD_LOOPX_PYTHON: binaries.python,
       BREADBOARD_LOOPX_ROOT: path.join(paths.appRoot, "loopx"),
+      // Goal Mode reads the cloned Goal continuation contract. State itself is
+      // conversation-scoped under BREADBOARD_DATA_DIR, never in app resources.
+      BREADBOARD_GOAL_ROOT: path.join(paths.appRoot, "goal"),
       // Product-owned persona catalog. A valid source override is supported
       // for development, while installed builds use the staged copy.
       AGENCY_AGENTS_PATH: resolveAgencyAgentsPath(paths),

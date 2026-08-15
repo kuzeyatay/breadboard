@@ -5,6 +5,7 @@ import {
 } from "./capability-combinations.ts";
 import type { PublicAgencyAgent } from "./agency-agents-client.ts";
 import { agencyAgentToken } from "./agency-agent-command.ts";
+import { isWorkflowCommand } from "./omh-command.ts";
 
 export interface DirectCommandGroups {
   skills: CommandHubItem[];
@@ -46,6 +47,11 @@ function agencyCommand(agent: PublicAgencyAgent): CommandHubItem {
  * Build the type-ahead list from capabilities that can run now. Catalog-only,
  * disabled, disconnected, unhealthy, or uninstalled entries stay in the full
  * capability manager and never leak into the direct slash-command menu.
+ *
+ * Matches are returned in one flat list, ordered by section — skills, then
+ * agents, then prompts, then connections, then workflows — so the reading order
+ * carries the grouping without the menu having to draw a heading or a rule
+ * between them.
  */
 export function directSlashCommandItems({
   groups,
@@ -78,13 +84,19 @@ export function directSlashCommandItems({
       enabled: true,
       healthy: true,
     }));
+  // Workflows are stored as skills, so they are split back out here and held
+  // for the end of the list rather than diluting the skill section.
+  const installedSkills = groups?.skills ?? [];
+  const skills = installedSkills.filter((item) => !isWorkflowCommand(item));
+  const workflows = installedSkills.filter((item) => isWorkflowCommand(item));
   const candidates = [
+    ...skills,
     ...runtimeAgents,
-    ...(groups?.skills ?? []),
     ...(groups?.agents ?? []),
     ...agencyAgents.map(agencyCommand),
-    ...(groups?.mcp ?? []),
     ...(groups?.prompts ?? []),
+    ...(groups?.mcp ?? []),
+    ...workflows,
   ];
   const normalizedQuery = query.trim().replace(/^\//, "").toLowerCase();
   const seenTokens = new Set<string>();
