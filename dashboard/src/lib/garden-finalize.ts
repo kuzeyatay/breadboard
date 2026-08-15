@@ -71,10 +71,16 @@ import {
   planGardenVisualNecessity,
   saveVisualNecessityArtifacts,
 } from "./visual-necessity.ts";
-import { loadVisualizationPlan } from "./visualization-opportunities.ts";
+import {
+  loadVisualizationPlan,
+  type VisualizationPlan,
+} from "./visualization-opportunities.ts";
+import { canonicalVisualizationEvidenceByUnit } from "./visualization-canonical-evidence.ts";
 import {
   loadVisualContractExecutabilityLedger,
+  visualContractExecutabilityArtifactProvenanceProblems,
   visualContractExecutabilityLinkageProblems,
+  type VisualContractExecutabilityLedgerContext,
 } from "./visualization-contract-executability.ts";
 
 // ---------------------------------------------------------------------------
@@ -1292,6 +1298,107 @@ function generatedVisualIntegrityProblems(gardenDir: string, pages: LearnerPage[
   return [...new Set(problems)];
 }
 
+export function visualizationPlanPlacementProblems(input: {
+  gardenDir: string;
+  gardenId: string;
+  pages: LearnerPage[];
+  plan: VisualizationPlan | null;
+}): string[] {
+  const problems: string[] = [];
+  if (!input.plan) return ["authoritative visualization plan is missing or invalid"];
+  const pageByRel = new Map(input.pages.map((page) => [page.rel.replace(/\\/g, "/"), page]));
+  if (!Array.isArray(input.plan.opportunities) || !Array.isArray(input.plan.decisions)) {
+    return ["authoritative visualization plan placement arrays are malformed"];
+  }
+  const routeByOpportunity = new Map<
+    string,
+    VisualizationPlan["decisions"][number]
+  >();
+  input.plan.decisions.forEach((rawDecision, index) => {
+    if (
+      !rawDecision ||
+      typeof rawDecision !== "object" ||
+      typeof rawDecision.opportunityId !== "string"
+    ) {
+      problems.push(`visualization-plan route decision ${index + 1} is malformed`);
+      return;
+    }
+    routeByOpportunity.set(rawDecision.opportunityId, rawDecision);
+  });
+  input.plan.opportunities.forEach((rawOpportunity, index) => {
+    if (
+      !rawOpportunity ||
+      typeof rawOpportunity !== "object" ||
+      typeof rawOpportunity.id !== "string" ||
+      typeof rawOpportunity.learningUnitId !== "string"
+    ) {
+      problems.push(`visualization-plan opportunity ${index + 1} is malformed`);
+      return;
+    }
+    const opportunity = rawOpportunity;
+    const targetPage = String(opportunity.targetPage ?? "");
+    const normalizedTargetPage = targetPage.replace(/\\/g, "/");
+    const targetSegments = normalizedTargetPage.split("/");
+    if (
+      targetPage !== normalizedTargetPage ||
+      !normalizedTargetPage.startsWith("learning/") ||
+      !normalizedTargetPage.endsWith(".md") ||
+      normalizedTargetPage !== path.posix.normalize(normalizedTargetPage) ||
+      targetSegments.some((segment) => !segment || segment === "." || segment === "..")
+    ) {
+      problems.push(`${opportunity.id}: visualization-plan targetPage is unsafe or not a learning Markdown page`);
+      return;
+    }
+    const targetHeading = String(opportunity.targetHeading ?? "").trim();
+    const expectedAnchor =
+      `learning-unit:${opportunity.learningUnitId}:after-introduction`;
+    if (!targetHeading) {
+      problems.push(`${opportunity.id}: visualization-plan targetHeading is empty`);
+    }
+    if (opportunity.insertionAnchor !== expectedAnchor) {
+      problems.push(`${opportunity.id}: visualization-plan insertionAnchor is not the exact mechanical unit anchor`);
+    }
+    const page = pageByRel.get(normalizedTargetPage);
+    if (!page) {
+      problems.push(`${opportunity.id}: visualization-plan targetPage does not exist`);
+      return;
+    }
+    if (fmGetScalar(page.rawFm, "learningUnitId") !== opportunity.learningUnitId) {
+      problems.push(`${opportunity.id}: visualization-plan targetPage belongs to another learning unit`);
+    }
+    if (!targetHeading || !page.title.trim().toLowerCase().endsWith(targetHeading.toLowerCase())) {
+      problems.push(`${opportunity.id}: visualization-plan targetHeading does not match the lesson`);
+    }
+    const route = routeByOpportunity.get(opportunity.id);
+    if (route?.route !== "generated_module") return;
+    const manifest = readJson<Record<string, unknown>>(
+      path.join(
+        input.gardenDir,
+        ".breadboard",
+        "visuals",
+        opportunity.id,
+        "manifest.json",
+      ),
+      {},
+    );
+    if (
+      manifest.id !== opportunity.id ||
+      manifest.gardenId !== input.gardenId ||
+      manifest.learningUnitId !== opportunity.learningUnitId ||
+      String(manifest.targetPage ?? "").replace(/\\/g, "/") !== normalizedTargetPage ||
+      manifest.targetHeading !== opportunity.targetHeading ||
+      manifest.insertionAnchor !== opportunity.insertionAnchor
+    ) {
+      problems.push(`${opportunity.id}: published generated-visual manifest placement differs from the authoritative plan`);
+    }
+    const marker = `<!-- ${opportunity.insertionAnchor} -->`;
+    if (!page.body.includes(marker) || !embeddedGeneratedVisualVersions(page.body).has(opportunity.id)) {
+      problems.push(`${opportunity.id}: authoritative plan placement is not present on its published lesson page`);
+    }
+  });
+  return [...new Set(problems)];
+}
+
 function embeddedVisualTypes(body: string): string[] {
   const types: string[] = [];
   let match: RegExpExecArray | null;
@@ -1799,6 +1906,7 @@ export function finalizeGardenExport({
   gardenDir,
   gardenSlug,
   preserveModelAuthoredContent = false,
+  expectedVisualContractExecutabilityContext,
 }: {
   gardenDir: string;
   gardenSlug: string;
@@ -1806,6 +1914,8 @@ export function finalizeGardenExport({
    * hard gates may run, but learner prose, formulas, visuals, and contract
    * semantics are never synthesized or rewritten by deterministic repair. */
   preserveModelAuthoredContent?: boolean;
+  /** Exact active Learn identity, supplied out-of-band from the review ledger. */
+  expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
 }): FinalizeReport {
   const report: FinalizeReport = {
     changed: [],
@@ -1973,11 +2083,14 @@ export function finalizeGardenExport({
     gardenSlug,
     report,
     strictModelApprovedVisuals: preserveModelAuthoredContent,
+    expectedVisualContractExecutabilityContext,
   });
   runCriticalGate({
     gardenDir,
+    gardenSlug,
     report,
     strictModelApprovedVisuals: preserveModelAuthoredContent,
+    expectedVisualContractExecutabilityContext,
   });
 
   return report;
@@ -3094,18 +3207,22 @@ interface ModelRepairAttempt {
  * the candidate is reverted and dumped to failed-repairs/. */
 async function tryModelRepairForPage({
   gardenDir,
+  gardenSlug,
   request,
   modelRepair,
   repairReport,
   contractPath,
   strictModelApprovedVisuals = false,
+  expectedVisualContractExecutabilityContext,
 }: {
   gardenDir: string;
+  gardenSlug: string;
   request: UnitRepairRequest;
   modelRepair: ModelRepairExecutor;
   repairReport: FinalizeReport;
   contractPath: string | undefined;
   strictModelApprovedVisuals?: boolean;
+  expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
 }): Promise<ModelRepairAttempt> {
   const page = loadLearnerPages(gardenDir).find((candidate) => candidate.rel === request.pagePath);
   if (!page) {
@@ -3143,9 +3260,11 @@ async function tryModelRepairForPage({
   const applied = applyRepairCandidate(gardenDir, page, candidate, contractPath);
   const checks = collectFinalizeChecks({
     gardenDir,
+    gardenId: gardenSlug,
     report: emptyFinalizeReport(),
     includeReportSelfCheck: false,
     strictModelApprovedVisuals,
+    expectedVisualContractExecutabilityContext,
   });
   const problems = unresolvedErrorsForRequest(checks, request);
   if (problems.length > 0) {
@@ -3173,6 +3292,7 @@ export async function repairLearningUnitsFromContract({
   modelRepair,
   preserveModelAuthoredVisuals = false,
   preserveModelAuthoredContent = false,
+  expectedVisualContractExecutabilityContext,
 }: {
   gardenDir: string;
   gardenSlug: string;
@@ -3185,6 +3305,7 @@ export async function repairLearningUnitsFromContract({
   /** Skip preflight contract/source reconciliation that would silently mutate
    * model-authored semantics before the model sees the validation failures. */
   preserveModelAuthoredContent?: boolean;
+  expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
 }): Promise<LearningUnitRepairRunReport> {
   const requestedAt = new Date().toISOString();
   const preflightRepairReport = emptyFinalizeReport();
@@ -3201,9 +3322,11 @@ export async function repairLearningUnitsFromContract({
   const reportForChecks = emptyFinalizeReport();
   const firstChecks = collectFinalizeChecks({
     gardenDir,
+    gardenId: gardenSlug,
     report: reportForChecks,
     includeReportSelfCheck: false,
     strictModelApprovedVisuals: preserveModelAuthoredContent,
+    expectedVisualContractExecutabilityContext,
   });
   const requests = collectUnitRepairRequests({ gardenDir, checks: firstChecks });
   const repairReport = emptyFinalizeReport();
@@ -3247,11 +3370,13 @@ export async function repairLearningUnitsFromContract({
         attemptedByPage.set(pagePath, ["model"]);
         const attempt = await tryModelRepairForPage({
           gardenDir,
+          gardenSlug,
           request: merged,
           modelRepair,
           repairReport,
           contractPath,
           strictModelApprovedVisuals: preserveModelAuthoredContent,
+          expectedVisualContractExecutabilityContext,
         });
         executions.push({
           unitId: merged.unitId,
@@ -3367,9 +3492,11 @@ export async function repairLearningUnitsFromContract({
   }
   const finalChecks = collectFinalizeChecks({
     gardenDir,
+    gardenId: gardenSlug,
     report: emptyFinalizeReport(),
     includeReportSelfCheck: false,
     strictModelApprovedVisuals: preserveModelAuthoredContent,
+    expectedVisualContractExecutabilityContext,
   });
   const finalPageByRel = new Map(loadLearnerPages(gardenDir).map((page) => [page.rel, page]));
   const changedFiles = [...new Set(repairReport.changed.filter((file) => !changedBefore.has(file)))].sort();
@@ -3485,6 +3612,7 @@ export function verifyFinalArtifactNoMutation({
   gardenSlug,
   updateRepairReport = true,
   strictModelApprovedVisuals = false,
+  expectedVisualContractExecutabilityContext,
 }: {
   gardenDir: string;
   gardenSlug: string;
@@ -3492,13 +3620,16 @@ export function verifyFinalArtifactNoMutation({
   /** Re-run the same approved-visual hard gate used by active Learn after any
    * end-stage critic repair and immediately before promotion. */
   strictModelApprovedVisuals?: boolean;
+  expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
 }): FinalArtifactVerification {
   const before = snapshotFiles(gardenDir);
   const checks = collectFinalizeChecks({
     gardenDir,
+    gardenId: gardenSlug,
     report: emptyFinalizeReport(),
     includeReportSelfCheck: true,
     strictModelApprovedVisuals,
+    expectedVisualContractExecutabilityContext,
   });
   const after = snapshotFiles(gardenDir);
   const validationFailures = validationFailuresFromChecks(checks);
@@ -5687,11 +5818,13 @@ function writeFinalizeValidationReport({
   gardenSlug,
   report,
   strictModelApprovedVisuals = false,
+  expectedVisualContractExecutabilityContext,
 }: {
   gardenDir: string;
   gardenSlug: string;
   report: FinalizeReport;
   strictModelApprovedVisuals?: boolean;
+  expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
 }): void {
   const bd = path.join(gardenDir, ".breadboard");
   fs.mkdirSync(bd, { recursive: true });
@@ -5761,15 +5894,36 @@ function writeFinalizeValidationReport({
     fs.writeFileSync(reportPath, `${lines.join("\n")}\n`, "utf-8");
   };
 
-  write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: false, strictModelApprovedVisuals }));
-  write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: true, strictModelApprovedVisuals }));
+  write(collectFinalizeChecks({
+    gardenDir,
+    gardenId: gardenSlug,
+    report,
+    includeReportSelfCheck: false,
+    strictModelApprovedVisuals,
+    expectedVisualContractExecutabilityContext,
+  }));
+  write(collectFinalizeChecks({
+    gardenDir,
+    gardenId: gardenSlug,
+    report,
+    includeReportSelfCheck: true,
+    strictModelApprovedVisuals,
+    expectedVisualContractExecutabilityContext,
+  }));
   // Fix 10: report completeness is a SERIALIZER test. If the just-written
   // report cannot serialize every required section, rewrite once from the
   // current audit and block only if the current writer itself is broken —
   // never because an old report from an earlier generation lacked a heading.
   let serialization = verifyValidationReportSerialization(reportPath, REQUIRED_VALIDATION_REPORT_SECTIONS);
   if (!serialization.valid) {
-    write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: true, strictModelApprovedVisuals }));
+    write(collectFinalizeChecks({
+      gardenDir,
+      gardenId: gardenSlug,
+      report,
+      includeReportSelfCheck: true,
+      strictModelApprovedVisuals,
+      expectedVisualContractExecutabilityContext,
+    }));
     serialization = verifyValidationReportSerialization(reportPath, REQUIRED_VALIDATION_REPORT_SECTIONS);
     if (!serialization.valid) {
       report.criticalProblems.push(
@@ -7337,14 +7491,19 @@ function finalizerBoundaryProblems(report: FinalizeReport): string[] {
 
 function collectFinalizeChecks({
   gardenDir,
+  gardenId,
   report,
   includeReportSelfCheck = true,
   strictModelApprovedVisuals = false,
+  expectedVisualContractExecutabilityContext,
 }: {
   gardenDir: string;
+  /** Required for strict Learn paths; build/staging directory names are not garden ids. */
+  gardenId?: string;
   report: FinalizeReport;
   includeReportSelfCheck?: boolean;
   strictModelApprovedVisuals?: boolean;
+  expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
 }): FinalizeCheck[] {
   const checks: FinalizeCheck[] = [];
   const push = (name: string, problems: string[]) => checks.push({ name, status: problems.length ? "FAIL" : "PASS", problems });
@@ -7361,15 +7520,55 @@ function collectFinalizeChecks({
   }
   const ledger = readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []);
   if (strictModelApprovedVisuals) {
+    const executabilityLedger = loadVisualContractExecutabilityLedger(gardenDir);
+    const visualizationPlan = loadVisualizationPlan(gardenDir);
+    let canonicalEvidence: ReturnType<typeof canonicalVisualizationEvidenceByUnit> | undefined;
+    const canonicalEvidenceProblems: string[] = [];
+    try {
+      canonicalEvidence = canonicalVisualizationEvidenceByUnit(gardenDir, contract.units);
+    } catch (error) {
+      canonicalEvidenceProblems.push(
+        `canonical visualization evidence could not be rebuilt: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     push(
       "Model-authored visual-contract executability linkage",
-      visualContractExecutabilityLinkageProblems({
-        gardenId: path.basename(path.resolve(gardenDir)),
-        ledger: loadVisualContractExecutabilityLedger(gardenDir),
-        finalLearningUnits: contract.units,
-        visualizationPlan: loadVisualizationPlan(gardenDir),
-        requireGenerationPhase: true,
-      }),
+      gardenId
+        ? [
+            ...canonicalEvidenceProblems,
+            ...visualContractExecutabilityLinkageProblems({
+              gardenId,
+              ledger: executabilityLedger,
+              finalLearningUnits: contract.units,
+              visualizationPlan,
+              requireGenerationPhase: true,
+              authoritativeCanonicalEvidenceByUnit: canonicalEvidence,
+              expectedContext: expectedVisualContractExecutabilityContext,
+            }),
+          ]
+        : ["strict visual-contract finalization requires an explicit garden id"],
+    );
+    push(
+      "Visual-contract source artifact provenance",
+      gardenId
+        ? visualContractExecutabilityArtifactProvenanceProblems({
+            gardenDir,
+            gardenId,
+            ledger: executabilityLedger,
+            finalLearningUnits: contract.units,
+          })
+        : ["strict visual-contract finalization requires an explicit garden id"],
+    );
+    push(
+      "Visualization-plan final placement projection",
+      gardenId
+        ? visualizationPlanPlacementProblems({
+            gardenDir,
+            gardenId,
+            pages: learnerPages,
+            plan: visualizationPlan,
+          })
+        : ["strict visual-contract finalization requires an explicit garden id"],
     );
   }
 
@@ -7856,12 +8055,16 @@ function collectFinalizeChecks({
 
 function runCriticalGate({
   gardenDir,
+  gardenSlug,
   report,
   strictModelApprovedVisuals = false,
+  expectedVisualContractExecutabilityContext,
 }: {
   gardenDir: string;
+  gardenSlug: string;
   report: FinalizeReport;
   strictModelApprovedVisuals?: boolean;
+  expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
 }): void {
   const problems: string[] = [];
   // Dirty tree.
@@ -7927,9 +8130,11 @@ function runCriticalGate({
   const failEntries: Array<{ check: string; problem: string }> = [];
   for (const check of collectFinalizeChecks({
     gardenDir,
+    gardenId: gardenSlug,
     report,
     includeReportSelfCheck: true,
     strictModelApprovedVisuals,
+    expectedVisualContractExecutabilityContext,
   })) {
     if (check.status !== "FAIL") continue;
     for (const problem of check.problems) failEntries.push({ check: check.name, problem });

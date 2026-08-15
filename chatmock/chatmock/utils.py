@@ -25,6 +25,32 @@ def get_home_dir() -> str:
     return home
 
 
+def get_auth_file_override() -> str | None:
+    """Return an explicitly referenced provider session file.
+
+    Breadboard's QA profile keeps ``CODEX_HOME`` disposable, but a legitimate
+    ChatGPT session may live in the user's normal desktop profile.  The
+    override is deliberately a *file*, rather than a home directory, so
+    account discovery and all other ChatMock state remain in the active home.
+    When set, the file is authoritative: a missing or malformed reference
+    must not silently fall back to another profile.
+    """
+    value = os.getenv("CHATMOCK_AUTH_FILE", "").strip()
+    if not value:
+        return None
+    return os.path.abspath(os.path.expanduser(value))
+
+
+def auth_file_read_only() -> bool:
+    """Whether refreshed tokens must never be written to the auth reference."""
+    return os.getenv("CHATMOCK_AUTH_READ_ONLY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _unique_auth_paths(homes: List[str | None]) -> List[str]:
     paths: List[str] = []
     seen: set[str] = set()
@@ -76,6 +102,11 @@ def _auth_freshness(auth: Dict[str, Any], path: str) -> float:
 
 
 def _read_auth_file_with_path() -> Tuple[Dict[str, Any], str] | None:
+    override = get_auth_file_override()
+    if override is not None:
+        auth = _read_auth_path(override)
+        return (auth, override) if auth is not None else None
+
     # An explicitly configured home remains authoritative. This preserves the
     # existing container/profile behavior while allowing a malformed or missing
     # configured file to fall through to the normal local stores.
@@ -503,6 +534,12 @@ def _persist_refreshed_auth(
     updated_auth = dict(auth)
     updated_auth["tokens"] = updated_tokens
     updated_auth["last_refresh"] = _now_iso8601()
+    if auth_file_read_only() and auth_path:
+        configured = get_auth_file_override()
+        if configured is not None and os.path.normcase(os.path.abspath(auth_path)) == os.path.normcase(configured):
+            # Keep the refreshed values in memory for this request, but never
+            # mutate the user's referenced provider session from QA.
+            return None
     if write_auth_file(updated_auth, auth_path=auth_path):
         return updated_auth, updated_tokens
     eprint("ERROR: unable to persist refreshed auth tokens")

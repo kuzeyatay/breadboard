@@ -499,7 +499,35 @@ export async function assertGardenWorkspace(
   await expect(
     page.getByRole("button", { name: "New chat", exact: true }).first(),
   ).toBeVisible();
-  await expect(page.getByPlaceholder(/Ask about your documents/)).toBeVisible();
+  const composer = page.getByPlaceholder(/Ask about your documents/).first();
+  await expect(composer).toBeVisible();
+
+  // A cold Next route can paint the server-rendered composer well before
+  // React hydrates it. A visible textarea is not enough: Playwright could
+  // fill the DOM while the controlled value and Send state remain unchanged.
+  // Wait for the real React onChange/onKeyDown handlers and for chat history
+  // loading to release the composer. This is QA synchronization only; it does
+  // not alter the product runtime or its production behavior.
+  await page.waitForFunction(
+    () => {
+      const node = document.querySelector(
+        'textarea[placeholder*="Ask about your documents"]',
+      ) as (HTMLTextAreaElement & Record<string, unknown>) | null;
+      if (!node) return false;
+      const reactProps = Object.entries(node).find(([key]) =>
+        key.startsWith("__reactProps$"),
+      )?.[1];
+      if (!reactProps || typeof reactProps !== "object") return false;
+      const props = reactProps as Record<string, unknown>;
+      return typeof props.onChange === "function" && typeof props.onKeyDown === "function";
+    },
+    undefined,
+    { timeout: timeoutMs },
+  );
+  await expect(
+    page.getByRole("button", { name: "New chat", exact: true }).first(),
+  ).toBeEnabled({ timeout: timeoutMs });
+  await expect(composer).toBeEditable({ timeout: timeoutMs });
 
   if (documentTitles.length > 0) {
     await ensureDocumentsExpanded(page, timeoutMs);

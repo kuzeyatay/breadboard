@@ -479,6 +479,38 @@ log("staging loopx control plane");
   );
 }
 
+// --- goal -----------------------------------------------------------------
+// Goal Mode consumes Goal's upstream continuation contract and persists its
+// compatible state through Breadboard's conversation-scoped bridge. Only the
+// MIT-licensed template and attribution ship; the Python MCP process is not
+// launched in an installed app because one stdio process cannot safely own
+// state for multiple Breadboard conversations.
+log("staging Goal Mode contract");
+{
+  const goalSource = path.join(repoRoot, "goal");
+  const continuationSource = path.join(goalSource, "src", "templates", "continuation.md");
+  const licenseSource = path.join(goalSource, "LICENSE");
+  if (!fs.existsSync(continuationSource) || !fs.existsSync(licenseSource)) {
+    fail("goal/src/templates/continuation.md and goal/LICENSE are required for Goal Mode.");
+  }
+  const goalTarget = path.join(stagingRoot, "goal");
+  freshDir(goalTarget);
+  copyTree(
+    path.join(goalSource, "src", "templates"),
+    path.join(goalTarget, "templates"),
+  );
+  fs.copyFileSync(licenseSource, path.join(goalTarget, "LICENSE"));
+  const revision = spawnSync("git", ["-C", goalSource, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+    shell: false,
+  });
+  fs.writeFileSync(
+    path.join(goalTarget, "BREADBOARD_UPSTREAM_COMMIT"),
+    `${revision.status === 0 ? revision.stdout.trim() : "unversioned"}\n`,
+    "utf8",
+  );
+}
+
 // --- Agency Agents -------------------------------------------------------
 // Breadboard reads these Markdown personas directly at request time. Stage
 // only the division catalog and its agent files: examples, contribution docs,
@@ -766,6 +798,7 @@ const licenseSources = [
   ["agency-agents", path.join(repoRoot, "agency-agents", "LICENSE")],
   ["chatmock", path.join(repoRoot, "chatmock", "LICENSE")],
   ["codex", path.join(repoRoot, "codex", "LICENSE")],
+  ["goal", path.join(repoRoot, "goal", "LICENSE")],
   ["hermes-agent", path.join(hermesRoot, "LICENSE")],
   ["scientific-agent-skills", path.join(scientificSkillsRoot, "LICENSE.md")],
   ["quartz", path.join(repoRoot, "quartz", "LICENSE.txt")],

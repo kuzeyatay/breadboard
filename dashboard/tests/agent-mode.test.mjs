@@ -1,4 +1,4 @@
-// Agent mode and Super agent: the two switches under YOLO mode.
+// Agent mode, Goal Mode, and Super agent: the runtime switches under YOLO mode.
 //
 // Agent mode decides which pipeline a message travels: on, the Hermes agent
 // runtime; off, straight to the provider. Super agent is agent mode with the
@@ -38,21 +38,24 @@ function installBrowser(initial = {}) {
   return store;
 }
 
-test("the Intelligence menu offers both modes below YOLO mode", () => {
+test("the Intelligence menu offers Goal Mode between Agent and Super agent", () => {
   const yolo = composer.indexOf("YOLO mode");
   const agent = composer.indexOf("Agent mode");
+  const goal = composer.indexOf("Goal mode");
   const superAgent = composer.indexOf("Super agent");
-  assert.ok(yolo >= 0 && agent > yolo && superAgent > agent);
+  assert.ok(yolo >= 0 && agent > yolo && goal > agent && superAgent > goal);
 
   const block = composer.slice(agent - 600, superAgent + 900);
   assert.match(block, /aria-checked=\{agentMode\}/);
   assert.match(block, /onClick=\{\(\) => setAgentMode\(!agentMode\)\}/);
+  assert.match(block, /aria-checked=\{goalMode\}/);
+  assert.match(block, /onClick=\{\(\) => setGoalMode\(!goalMode\)\}/);
   assert.match(block, /aria-checked=\{superAgent\}/);
   assert.match(block, /onClick=\{\(\) => setSuperAgent\(!superAgent\)\}/);
-  // Both switches are the same control the YOLO row uses, so they read the same
+  // All three switches are the same control the YOLO row uses, so they read the same
   // to a screen reader and animate the same way.
-  assert.equal(block.match(/role="switch"/g)?.length, 2);
-  assert.equal(block.match(/translate-x-5/g)?.length, 2);
+  assert.equal(block.match(/role="switch"/g)?.length, 3);
+  assert.equal(block.match(/translate-x-5/g)?.length, 3);
 });
 
 test("agent mode defaults to on and super agent to off", async () => {
@@ -97,7 +100,19 @@ test("a stale stored super agent never survives agent mode being off", async () 
   assert.equal(store.isSuperAgentEnabled(), false);
 });
 
-test("the chat client routes by agent mode and sends super agent per message", () => {
+test("Goal Mode turns Agent mode on before its next message", async () => {
+  const stored = installBrowser({ "breadboard:agent-mode": "false" });
+  const goal = await import("../src/app/components/use-goal-mode.ts?coupling-check");
+  const agent = await import("../src/app/components/use-agent-mode.ts?goal-coupling-check");
+
+  goal.setGoalModeEnabled(true);
+  assert.equal(goal.isGoalModeEnabled(), true);
+  assert.equal(agent.isAgentModeEnabled(), true);
+  assert.equal(stored.get("breadboard:goal-mode"), "true");
+  assert.equal(stored.get("breadboard:agent-mode"), "true");
+});
+
+test("the chat client routes by agent mode and sends its selected runtime modes per message", () => {
   // Read at send time: the switch that governs a message is the one that was on
   // when it was sent, not the one rendered when the hook last ran.
   assert.match(
@@ -106,6 +121,7 @@ test("the chat client routes by agent mode and sends super agent per message", (
   );
   assert.match(agentSession, /sessions\/\$\{input\.sessionId\}\/direct/);
   assert.match(agentSession, /superAgent: isSuperAgentEnabled\(\)/);
+  assert.match(agentSession, /goalMode: isGoalModeEnabled\(\)/);
   // The agent path is still the only one that opens an event stream.
   assert.match(agentSession, /\/events\?\$\{streamContext\.toString\(\)\}/);
 });

@@ -7,7 +7,7 @@ import { VISUAL_SDK_VERSION } from "./visual-sdk.ts";
  * generation, and pre-generation executability review. It contains no
  * subject-specific pedagogy and no renderer-selection policy.
  */
-export const GENERATED_VISUAL_CAPABILITY_MANIFEST_VERSION = 1 as const;
+export const GENERATED_VISUAL_CAPABILITY_MANIFEST_VERSION = 2 as const;
 
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
@@ -48,8 +48,25 @@ export const GENERATED_VISUAL_CAPABILITY_MANIFEST = deepFreeze({
   },
   requiredContractControls: {
     maximum: 3,
-    types: ["slider", "number", "select"],
-    kinds: ["variable", "select_case", "process_position"],
+    types: ["slider", "number", "select", "toggle", "button"],
+    kinds: ["variable", "select_case", "process_position", "protocol_action"],
+    protocolRoles: [
+      "prediction_input",
+      "commit_prediction",
+      "reveal_outcome",
+      "evaluate_prediction",
+      "reset",
+    ],
+    protocolRules: {
+      sourceSemanticTypes: ["slider", "number", "select"],
+      pureProtocolTypes: ["button", "toggle"],
+      pureProtocolKind: "protocol_action",
+      pureProtocolEvidence: "exactly_empty",
+      buttonDefault: 0,
+      toggleDefault: false,
+      testPrediction:
+        "an evidence-grounded slider/number/select marked prediction_input must precede a distinct protocol_action button/toggle marked commit_prediction, which must precede a distinct protocol_action button/toggle marked reveal_outcome or evaluate_prediction; the outcome expression or visibility must remain unchanged through prediction and commit-only states and change only after valid commit then reveal/evaluate",
+    },
     exactProjectionRequired: true,
   },
   runtimeControls: {
@@ -57,17 +74,51 @@ export const GENERATED_VISUAL_CAPABILITY_MANIFEST = deepFreeze({
     selectExpressionValue: "stable zero-based option index",
     toggleExpressionValue: "0 or 1",
     buttonExpressionValue: "monotonic click count reset to 0 by Reset",
-    updates: "control changes synchronously reevaluate outputs, visibility, and scenes",
+    updates:
+      "control changes synchronously reevaluate outputs, visibility, and scenes",
+    protocolRoleSequencing:
+      "the trusted runtime keeps prediction_input editable until commit_prediction, then locks prediction; reveal_outcome and evaluate_prediction are disabled and mutation-guarded until commit; Reset clears the protocol and unlocks prediction",
     retainedHistoryOrHiddenState: false,
   },
   outputs: {
-    representations: ["value", "chart", "diagram", "animation", "timeline", "table", "annotation"],
-    numericExpressionOptionalFor: ["diagram", "animation", "timeline", "table", "annotation"],
+    representations: [
+      "value",
+      "chart",
+      "diagram",
+      "animation",
+      "timeline",
+      "table",
+      "annotation",
+    ],
+    numericExpressionOptionalFor: [
+      "diagram",
+      "animation",
+      "timeline",
+      "table",
+      "annotation",
+    ],
   },
   expressions: {
     kinds: ["constant", "input", "binary", "unary", "clamp", "conditional"],
-    binaryOperators: ["add", "subtract", "multiply", "divide", "power", "min", "max"],
-    unaryOperators: ["negate", "abs", "sqrt", "sin", "cos", "tan", "exp", "log"],
+    binaryOperators: [
+      "add",
+      "subtract",
+      "multiply",
+      "divide",
+      "power",
+      "min",
+      "max",
+    ],
+    unaryOperators: [
+      "negate",
+      "abs",
+      "sqrt",
+      "sin",
+      "cos",
+      "tan",
+      "exp",
+      "log",
+    ],
     comparisons: ["lt", "lte", "gt", "gte", "eq"],
     timeVariable: "t is available to dynamic expressions",
   },
@@ -86,11 +137,38 @@ export const GENERATED_VISUAL_CAPABILITY_MANIFEST = deepFreeze({
     ],
     diagram: "bounded 2D node-link graphs",
     spatial: {
-      projection: "stable orthographic projection supplied by the runtime",
-      primitiveKinds: ["plane", "polygon", "sphere", "cylinder", "cone", "point", "vector"],
-      plane: "centered full rectangular patch extending to both sides of center",
-      polygon: "bounded filled planar patch with 3-12 ordered, coplanar, non-collinear, non-self-intersecting vertices",
-      conditionalVisibility: "groups and primitives accept expression-valued visibleWhen",
+      projection:
+        "a model-authored orthographic or perspective camera, with stable authored-world framing supplied by the runtime",
+      projections: ["orthographic", "perspective"],
+      interactions: ["fixed", "orbit"],
+      defaults: {
+        projection: "orthographic",
+        interaction: "fixed",
+      },
+      cameraAuthorship:
+        "projection and interaction are explicit presentation fields; the runtime never infers them from subject matter, geometry, controls, or output representation",
+      orbitNavigation: [
+        "pointer drag",
+        "touch drag",
+        "wheel zoom",
+        "keyboard orbit and zoom",
+        "Home or Reset",
+      ],
+      primitiveKinds: [
+        "plane",
+        "polygon",
+        "sphere",
+        "cylinder",
+        "cone",
+        "point",
+        "vector",
+      ],
+      plane:
+        "centered full rectangular patch extending to both sides of center",
+      polygon:
+        "bounded filled planar patch with 3-12 ordered, coplanar, non-collinear, non-self-intersecting vertices",
+      conditionalVisibility:
+        "groups and primitives accept expression-valued visibleWhen",
       palette: ["green", "blue", "amber", "violet", "red", "cyan", "gray"],
       patterns: ["solid", "striped", "dotted", "crosshatch"],
     },
@@ -99,8 +177,9 @@ export const GENERATED_VISUAL_CAPABILITY_MANIFEST = deepFreeze({
   },
   interactionProtocol: {
     predictionCommitThenReveal:
-      "realizable with a declared prediction input and expression-gated result, using a button click count or another explicit authored control state to keep the result hidden until commitment",
-    automaticStateMachine: false,
+      "realizable only with declared prediction_input, commit_prediction, and reveal_outcome/evaluate_prediction roles plus an outcome or visibility expression gated by both action states; the trusted runtime locks prediction at commit and rejects premature reveal/evaluate activation",
+    automaticStateMachine:
+      "enabled only for exact model-authored protocolRole values; it does not infer a protocol from labels, subject matter, geometry, or control order",
     networkOrServerRoundTripInsideArtifact: false,
   },
 } as const);

@@ -56,7 +56,9 @@ test("Terminal and Garden retain their existing mechanics while using the shared
 
   assert.match(terminal, /bb-neu-tray[\s\S]*fixed inset-x-0 bottom-0/);
   // The rail is its own component now, and a little wider than the old one.
-  assert.match(terminalSidebar, /bb-neu-sidebar-left[\s\S]*w-\[260px\] shrink-0/);
+  // Collapsed it keeps a narrow column of icons rather than leaving the layout.
+  assert.match(terminalSidebar, /bb-neu-sidebar-left flex shrink-0/);
+  assert.match(terminalSidebar, /collapsed \? "w-\[52px\]" : "w-\[260px\]"/);
   assert.match(terminalSidebar, /bb-neu-conversation-row-selected/);
   assert.match(terminal, /bb-neu-sidebar-right[\s\S]*w-\[min\(42vw,520px\)\]/);
 

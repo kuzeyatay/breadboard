@@ -17,7 +17,9 @@ const isClusterIndex = (page: QuartzComponentProps) =>
 export const sharedPageComponents: SharedLayout = {
   head: Component.Head(),
   header: [],
-  afterBody: [],
+  // The highlighter renders nothing until text is selected; it lives here so
+  // every page (notes, folders, tags) gets the selection menu.
+  afterBody: [Component.Highlighter()],
   footer: Component.Empty(),
 }
 

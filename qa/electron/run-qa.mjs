@@ -15,6 +15,8 @@ for (const argument of process.argv.slice(2)) {
     env.BREADBOARD_QA_HEADED = "1";
   } else if (argument === "--trace") {
     env.BREADBOARD_QA_TRACE = "1";
+  } else if (argument === "--no-trace") {
+    env.BREADBOARD_QA_NO_TRACE = "1";
   } else if (argument === "--preserve-runtime") {
     env.BREADBOARD_QA_PRESERVE_RUNTIME = "1";
   } else if (argument === "--skip-desktop-build") {

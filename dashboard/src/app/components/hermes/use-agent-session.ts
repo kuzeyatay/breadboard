@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isDirectModeEnabled } from "@/app/components/use-direct-mode";
+import { isGoalModeEnabled } from "@/app/components/use-goal-mode";
 import { isYoloModeEnabled, useYoloMode } from "@/app/components/use-yolo-mode";
 import {
   isAgentModeEnabled,
@@ -2369,6 +2370,7 @@ export function useAgentSession(
               // as it stood when this message was sent governs this turn only.
               superAgent: isSuperAgentEnabled(),
               adhdMode: isDirectModeEnabled(),
+              goalMode: isGoalModeEnabled(),
               yoloMode: isYoloModeEnabled(),
               currentLocation,
             }),

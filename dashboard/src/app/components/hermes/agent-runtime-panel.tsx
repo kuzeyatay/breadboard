@@ -134,6 +134,13 @@ interface Props {
    * already be queueing during that window.
    */
   externalRunLaunching?: boolean;
+  /**
+   * This chat is off the record. Only the transcript's appearance changes here:
+   * what the user says is drawn on a broken outline, so the thing that will not
+   * be kept looks unlike the thing that will. Every rule behind that promise
+   * lives on the server.
+   */
+  temporaryChat?: boolean;
   steerError: string | null;
   error: string | null;
   pendingPermission: PermissionPrompt | null;
@@ -415,6 +422,7 @@ export default function AgentRuntimePanel({
   connection,
   runState,
   externalRunLaunching = false,
+  temporaryChat = false,
   steerError,
   error,
   pendingPermission,
@@ -1175,7 +1183,14 @@ export default function AgentRuntimePanel({
     : undefined;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    // One attribute rather than a prop on every bubble: user messages are drawn
+    // in three places (a turn, an edit form, a steered segment) and some of them
+    // are nested components, so the mode is announced once here and the styling
+    // is a descendant rule in globals.css.
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      data-temporary-chat={temporaryChat ? "true" : undefined}
+    >
       {/* Positioning context for the jump control, so it floats at the foot of
           the transcript rather than below the composer. The transcript keeps
           its own indentation; only this wrapper is new. */}

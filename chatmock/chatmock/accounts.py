@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from . import failover
-from .utils import _read_auth_path, get_home_dir, parse_jwt_claims
+from .utils import _read_auth_path, get_auth_file_override, get_home_dir, parse_jwt_claims
 
 ACCOUNTS_DIRNAME = "accounts"
 
@@ -91,7 +91,7 @@ def _identity(auth: Dict[str, Any], path: str) -> tuple[str, Optional[str], Opti
 
 
 def _primary_path() -> str:
-    return os.path.join(get_home_dir(), "auth.json")
+    return get_auth_file_override() or os.path.join(get_home_dir(), "auth.json")
 
 
 def list_accounts() -> List[ChatGptAccount]:

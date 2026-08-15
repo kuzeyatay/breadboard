@@ -57,8 +57,8 @@ export async function launchBreadboard(
   const packaged = options.packaged === true;
   const executablePath = options.executablePath ?? electronExecutable(desktopRoot);
   const args = packaged
-    ? [`--breadboard-user-data-dir=${run.paths.userDataDir}`]
-    : [desktopRoot, ...run.electronArgs];
+    ? ["--disable-gpu", `--breadboard-user-data-dir=${run.paths.userDataDir}`]
+    : [desktopRoot, "--disable-gpu", ...run.electronArgs];
 
   const application = await electron.launch({
     executablePath,

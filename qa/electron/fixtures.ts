@@ -277,8 +277,10 @@ export class ElectronQaHarness {
         diagnostics,
       });
       this.currentPage = null;
-      await this.currentApp.application.context().tracing.start(TRACE_OPTIONS);
-      this.traceStarted = true;
+      if (process.env["BREADBOARD_QA_NO_TRACE"] !== "1") {
+        await this.currentApp.application.context().tracing.start(TRACE_OPTIONS);
+        this.traceStarted = true;
+      }
       if (this.activeTrace) await this.startTraceChunk();
     } catch (error) {
       this.failed = true;
@@ -440,6 +442,7 @@ export const test = playwrightTest.extend<QaTestFixtures, QaWorkerFixtures>({
           process.env["BREADBOARD_QA_PRESERVE_RUNTIME"] === "1"
             ? "always"
             : "on-failure",
+        providerAuthFile: process.env["BREADBOARD_QA_PROVIDER_AUTH_FILE"],
       });
       const harness = new ElectronQaHarness(run);
       try {

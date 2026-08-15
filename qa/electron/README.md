@@ -48,6 +48,18 @@ written below `.qa-results/packaged/<run-id>/`. Failed runs preserve their
 isolated runtime; set `BREADBOARD_QA_PRESERVE_RUNTIME=1` to preserve successful
 runs as well.
 
+## Hermes conversational replay
+
+`npm run qa:electron:hermes` runs the dedicated real-Electron Garden Chat
+replay. It registers a disposable account, selects a text attachment through
+the renderer, submits `HERMES_E2E_OK.` through `/api/chat`, and records the
+Hermes/provider result, diagnostics, service logs, and reload state. A healthy
+QA assertion can still produce a `BLOCKED` conversational receipt when the
+isolated profile has no approved model/provider; the suite never fakes a model
+response or replaces the renderer path with a direct Hermes API call. See
+`qa/autonomous/HERMES_QA_REPORT.md` for the current blocker inventory and
+nested-repository provenance.
+
 ## Relationship to the installed desktop smoke
 
 This probe complements, and does not replace,

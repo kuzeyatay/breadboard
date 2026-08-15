@@ -29,6 +29,7 @@ import Empty from "./Empty"
 import HomeOverview from "./HomeOverview"
 import FolderPdfExport from "./FolderPdfExport"
 import BreadboardAI from "./BreadboardAI"
+import Highlighter from "./Highlighter"
 
 export {
   ArticleTitle,
@@ -62,4 +63,5 @@ export {
   HomeOverview,
   FolderPdfExport,
   BreadboardAI,
+  Highlighter,
 }

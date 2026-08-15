@@ -1415,21 +1415,39 @@ function normalizeInteractiveVisualControls(raw: unknown) {
     const kind = typeof record.kind === "string" ? record.kind : "";
     const label = typeof record.label === "string" ? record.label : "";
     const type = typeof record.type === "string" ? record.type : "";
+    const protocolRole = typeof record.protocolRole === "string" ? record.protocolRole : "";
     if (
       !id ||
       !label ||
-      !["variable", "select_case", "process_position"].includes(kind) ||
-      !["slider", "number", "select"].includes(type) ||
-      (typeof record.defaultValue !== "number" && typeof record.defaultValue !== "string")
+      !["variable", "select_case", "process_position", "protocol_action"].includes(kind) ||
+      !["slider", "number", "select", "toggle", "button"].includes(type) ||
+      (protocolRole && ![
+        "prediction_input",
+        "commit_prediction",
+        "reveal_outcome",
+        "evaluate_prediction",
+        "reset",
+      ].includes(protocolRole)) ||
+      (typeof record.defaultValue !== "number" &&
+        typeof record.defaultValue !== "string" &&
+        typeof record.defaultValue !== "boolean")
     ) return [];
     const options = Array.isArray(record.options) && record.options.every((option) => typeof option === "string")
       ? [...record.options] as string[]
       : undefined;
     return [{
       id,
-      kind: kind as "variable" | "select_case" | "process_position",
+      kind: kind as "variable" | "select_case" | "process_position" | "protocol_action",
       label,
-      type: type as "slider" | "number" | "select",
+      type: type as "slider" | "number" | "select" | "toggle" | "button",
+      ...(protocolRole ? {
+        protocolRole: protocolRole as
+          | "prediction_input"
+          | "commit_prediction"
+          | "reveal_outcome"
+          | "evaluate_prediction"
+          | "reset",
+      } : {}),
       ...(typeof record.unit === "string" ? { unit: record.unit } : {}),
       ...(typeof record.min === "number" ? { min: record.min } : {}),
       ...(typeof record.max === "number" ? { max: record.max } : {}),

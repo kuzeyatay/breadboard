@@ -24,7 +24,14 @@ import {
   recordAuditEvent,
   runtimeExternalSessionId,
 } from "@/lib/hermes/runtime-store.ts";
-import { getActiveRuntimeRun } from "@/lib/hermes/run-store.ts";
+import {
+  getActiveRuntimeRun,
+  parseRuntimeRunDispatch,
+} from "@/lib/hermes/run-store.ts";
+import {
+  callGoalModeTool,
+  GOAL_MODE_CONNECTION,
+} from "@/lib/goal-mode.ts";
 import { capabilityForInternalToolRequest } from "@/lib/hermes/tool-service-auth.ts";
 import {
   ApiError,
@@ -33,6 +40,7 @@ import {
   requireEnabled,
 } from "@/lib/hermes/route-helpers.ts";
 import { connectionToolAllowed } from "@/lib/hermes/capability-policy.ts";
+import { getConversationById } from "@/lib/conversations/store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -120,6 +128,64 @@ export async function POST(request: Request) {
     // Added only by server-owned Hermes/Hermes wrappers after their
     // native approval UI resolves; it is absent from the model tool schema.
     const permissionGranted = body.permissionGranted === true;
+    // Goal Mode is a built-in, conversation-scoped bridge. It deliberately
+    // bypasses the saved-MCP registry: a generic local MCP process is shared by
+    // user, while Goal state must be isolated to the exact conversation whose
+    // signed capability token reached this route.
+    if (slug === GOAL_MODE_CONNECTION) {
+      const goalMode = parseRuntimeRunDispatch(run).goalMode;
+      if (!goalMode?.enabled) {
+        throw new ApiError(
+          403,
+          "goal_mode_disabled",
+          "Goal Mode is not enabled for this turn.",
+        );
+      }
+      if (!new Set(["get_goal", "create_goal", "update_goal"]).has(tool)) {
+        throw new ApiError(403, "goal_tool_denied", "That Goal tool is not available.");
+      }
+      const conversation = getConversationById(session.conversation_id);
+      if (!conversation) {
+        throw new ApiError(403, "goal_conversation_missing", "Goal Mode conversation scope is invalid.");
+      }
+      recordAuditEvent({
+        eventType: "goal_mode.tool_started",
+        runtimeSessionId: session.id,
+        userId: session.user_id,
+        gardenId: session.garden_id,
+        payload: { runId: run.id, tool },
+      });
+      try {
+        const result = callGoalModeTool({
+          conversationPublicId: conversation.public_id,
+          tool,
+          args,
+        });
+        recordAuditEvent({
+          eventType: "goal_mode.tool_completed",
+          runtimeSessionId: session.id,
+          userId: session.user_id,
+          gardenId: session.garden_id,
+          payload: { runId: run.id, tool, success: !result.isError },
+        });
+        return NextResponse.json({
+          ok: true,
+          data: {
+            content: [{ type: "text", text: result.text }],
+            ...(result.isError ? { isError: true } : {}),
+          },
+        });
+      } catch {
+        recordAuditEvent({
+          eventType: "goal_mode.tool_completed",
+          runtimeSessionId: session.id,
+          userId: session.user_id,
+          gardenId: session.garden_id,
+          payload: { runId: run.id, tool, success: false },
+        });
+        throw new ApiError(502, "goal_tool_failed", "Goal Mode could not update its state.");
+      }
+    }
     if (!decision.selectedConnections.includes(slug)) {
       throw new ApiError(
         403,

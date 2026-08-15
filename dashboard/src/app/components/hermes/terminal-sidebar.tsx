@@ -46,6 +46,10 @@ interface Props {
   onDeleteChats: (chats: TerminalSidebarChat[]) => void;
   /** Mark one chat with a palette color, or clear it with null. */
   onHighlightChat: (chat: TerminalSidebarChat, highlight: string | null) => void;
+  /** Narrow icon-only rail: the actions stay, the chat list steps out. */
+  collapsed: boolean;
+  /** Fired by the rail's own edge — the divider is the toggle. */
+  onToggleCollapsed: () => void;
 }
 
 const SECTION_STATE_KEY = "breadboard:terminal-sidebar:sections";
@@ -251,20 +255,29 @@ function NavButton({
   label,
   icon,
   active = false,
+  compact = false,
   onClick,
 }: {
   label: string;
   icon: React.ReactNode;
   active?: boolean;
+  /** Icon-only, for the collapsed rail. The label stays as the accessible name. */
+  compact?: boolean;
   onClick?: () => void;
 }) {
   // Flat list items, not cards: a column of raised controls reads as separate
   // objects and swamps the chat list underneath it.
-  const className = `flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition ${
-    active
-      ? "bg-[var(--paper-strong)] font-medium text-[var(--ink-heading)]"
-      : "text-[var(--ink)] hover:bg-[var(--paper-strong)]"
-  }`;
+  const className = compact
+    ? `flex h-9 w-9 items-center justify-center rounded-lg transition ${
+        active
+          ? "bg-[var(--paper-strong)] text-[var(--ink-heading)]"
+          : "text-[var(--ink)] hover:bg-[var(--paper-strong)]"
+      }`
+    : `flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition ${
+        active
+          ? "bg-[var(--paper-strong)] font-medium text-[var(--ink-heading)]"
+          : "text-[var(--ink)] hover:bg-[var(--paper-strong)]"
+      }`;
   const content = (
     <>
       <span
@@ -272,13 +285,49 @@ function NavButton({
       >
         {icon}
       </span>
-      <span className="truncate">{label}</span>
+      {compact ? null : <span className="truncate">{label}</span>}
     </>
   );
 
   return (
-    <button type="button" onClick={onClick} aria-pressed={active} className={className}>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      // Collapsed, the icon is the whole button, so the name has to be said out
+      // loud — to the screen reader and, on hover, to the eye.
+      aria-label={compact ? label : undefined}
+      title={compact ? label : undefined}
+      className={className}
+    >
       {content}
+    </button>
+  );
+}
+
+// The rail's own edge is the control that opens and closes it: a hairline that
+// thickens into a handle under the cursor. It replaces the toolbar's hamburger,
+// so the thing you click sits on the boundary it moves, and it echoes the
+// terminal's top resize handle turned on its side.
+function RailDivider({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  const label = collapsed ? "Show the chat list" : "Collapse the chat list";
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      aria-label="Toggle the sidebar"
+      title={label}
+      className="group relative z-[2] flex w-2 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0"
+    >
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[var(--line)] transition-colors group-hover:bg-[#8faf9a] group-focus-visible:bg-[#8faf9a]"
+      />
+      <span
+        aria-hidden
+        className="pointer-events-none relative h-14 w-1.5 rounded-full border border-transparent bg-transparent transition-colors group-hover:border-[rgba(169,193,177,0.7)] group-hover:bg-[#A9C1B1] group-focus-visible:border-[rgba(169,193,177,0.7)] group-focus-visible:bg-[#A9C1B1]"
+      />
     </button>
   );
 }
@@ -852,6 +901,8 @@ export default function TerminalSidebar({
   onDeleteChat,
   onDeleteChats,
   onHighlightChat,
+  collapsed,
+  onToggleCollapsed,
 }: Props) {
   // The rail only mounts once the dock is open, so reading the stored state
   // during the first render cannot desynchronize from server HTML.
@@ -908,6 +959,16 @@ export default function TerminalSidebar({
     [stopWorking],
   );
 
+  // Collapsing takes the list away, and everything that acts on the list goes
+  // with it. The menus are fixed-positioned, so one left open would otherwise
+  // hang in the transcript beside a rail that no longer shows its rows.
+  useEffect(() => {
+    if (!collapsed) return;
+    setMenuChatId(null);
+    setRecentsMenu(null);
+    stopWorking();
+  }, [collapsed, stopWorking]);
+
   // Escape leaves either mode, the same way it closes a menu.
   useEffect(() => {
     if (mode === "idle") return;
@@ -938,6 +999,12 @@ export default function TerminalSidebar({
   const paint = (chat: TerminalSidebarChat) =>
     onHighlightChat(chat, chat.highlight === pen ? null : pen);
 
+  // Collapsed the actions stack as a centered column of icons; open they are a
+  // list of rows.
+  const navClassName = collapsed
+    ? "flex flex-col items-center gap-0.5 p-2"
+    : "space-y-0.5 p-2";
+
   const renderRow = (chat: TerminalSidebarChat, workable = false) => (
     <ChatRow
       key={chat.id}
@@ -958,129 +1025,158 @@ export default function TerminalSidebar({
   );
 
   return (
-    // The shared rail class paints a green-tinted gradient off --paper-bg, and
-    // it is unlayered CSS, so a background utility cannot beat it. The rail is
-    // meant to read as the same paper as the chat and the panels beside it, so
-    // the surface is set here and only the class's edge shadow is kept.
-    <aside
-      style={{ background: "var(--paper-surface)" }}
-      className="bb-neu-sidebar-left flex w-[260px] shrink-0 flex-col border-r border-[var(--line)] text-[var(--ink)]"
-    >
-      <nav aria-label="Terminal actions" className="space-y-0.5 p-2">
-        <NavButton label="New chat" icon={<NewChatIcon />} onClick={onNewChat} />
-        <NavButton
-          label="Artifacts"
-          icon={<ArtifactArchiveIcon className="h-[18px] w-[18px]" />}
-          active={openPanel === "artifacts"}
-          onClick={() => onTogglePanel("artifacts")}
-        />
-        <NavButton
-          label="Uploads"
-          icon={<UploadsIcon />}
-          active={openPanel === "uploads"}
-          onClick={() => onTogglePanel("uploads")}
-        />
-        <NavButton label="Search" icon={<SearchIcon />} onClick={onOpenSearch} />
-        <NavButton
-          label="Scheduled"
-          icon={<ScheduledIcon />}
-          active={openPanel === "scheduled"}
-          onClick={() => onTogglePanel("scheduled")}
-        />
-        <NavButton
-          label="Hooks"
-          icon={<HooksIcon />}
-          active={openPanel === "hooks"}
-          onClick={() => onTogglePanel("hooks")}
-        />
-        <NavButton
-          label="Processes"
-          icon={<ProcessesIcon />}
-          active={openPanel === "processes"}
-          onClick={() => onTogglePanel("processes")}
-        />
-      </nav>
+    // The rail and the divider that moves it are one unit: the divider is the
+    // rail's right edge, so it travels with the width instead of sitting in the
+    // toolbar as a separate button.
+    <div className="flex shrink-0">
+      {/* The shared rail class paints a green-tinted gradient off --paper-bg, and
+          it is unlayered CSS, so a background utility cannot beat it. The rail is
+          meant to read as the same paper as the chat and the panels beside it, so
+          the surface is set here and only the class's edge shadow is kept. */}
+      <aside
+        style={{ background: "var(--paper-surface)" }}
+        className={`bb-neu-sidebar-left flex shrink-0 flex-col overflow-hidden text-[var(--ink)] transition-[width] duration-200 ease-out ${
+          collapsed ? "w-[52px]" : "w-[260px]"
+        }`}
+      >
+        <nav aria-label="Terminal actions" className={navClassName}>
+          <NavButton
+            label="New chat"
+            icon={<NewChatIcon />}
+            compact={collapsed}
+            onClick={onNewChat}
+          />
+          <NavButton
+            label="Artifacts"
+            icon={<ArtifactArchiveIcon className="h-[18px] w-[18px]" />}
+            active={openPanel === "artifacts"}
+            compact={collapsed}
+            onClick={() => onTogglePanel("artifacts")}
+          />
+          <NavButton
+            label="Uploads"
+            icon={<UploadsIcon />}
+            active={openPanel === "uploads"}
+            compact={collapsed}
+            onClick={() => onTogglePanel("uploads")}
+          />
+          <NavButton
+            label="Search"
+            icon={<SearchIcon />}
+            compact={collapsed}
+            onClick={onOpenSearch}
+          />
+          <NavButton
+            label="Scheduled"
+            icon={<ScheduledIcon />}
+            active={openPanel === "scheduled"}
+            compact={collapsed}
+            onClick={() => onTogglePanel("scheduled")}
+          />
+          <NavButton
+            label="Hooks"
+            icon={<HooksIcon />}
+            active={openPanel === "hooks"}
+            compact={collapsed}
+            onClick={() => onTogglePanel("hooks")}
+          />
+          <NavButton
+            label="Processes"
+            icon={<ProcessesIcon />}
+            active={openPanel === "processes"}
+            compact={collapsed}
+            onClick={() => onTogglePanel("processes")}
+          />
+        </nav>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-        {error ? <p className="px-2 pb-1 text-[11px] text-[#9a4438]">{error}</p> : null}
+        <div
+          // Collapsed, the list is not narrowed — it is gone. A 52px column of
+          // clipped chat names would be noise, and hiding it keeps the rows out
+          // of the tab order while the rail is shut.
+          hidden={collapsed}
+          className="min-h-0 flex-1 overflow-y-auto px-2 pb-3"
+        >
+          {error ? <p className="px-2 pb-1 text-[11px] text-[#9a4438]">{error}</p> : null}
 
-        {pinned.length > 0 ? (
+          {pinned.length > 0 ? (
+            <section className="pt-1">
+              <SectionHeader
+                label="Pinned"
+                open={sections.pinned}
+                count={pinned.length}
+                onToggle={() => toggleSection("pinned")}
+              />
+              {sections.pinned ? (
+                <ul className="space-y-0.5">{pinned.map((chat) => renderRow(chat))}</ul>
+              ) : null}
+            </section>
+          ) : null}
+
           <section className="pt-1">
             <SectionHeader
-              label="Pinned"
-              open={sections.pinned}
-              count={pinned.length}
-              onToggle={() => toggleSection("pinned")}
+              label="Recents"
+              open={sections.recents}
+              count={recents.length}
+              onToggle={() => toggleSection("recents")}
+              action={
+                recents.length > 0 && mode === "idle" ? (
+                  <SectionMenuButton
+                    label="Recents"
+                    open={recentsMenu !== null}
+                    onOpen={setRecentsMenu}
+                    onClose={() => setRecentsMenu(null)}
+                  />
+                ) : null
+              }
             />
-            {sections.pinned ? (
-              <ul className="space-y-0.5">{pinned.map((chat) => renderRow(chat))}</ul>
+            {recentsMenu ? (
+              <RecentsMenu
+                position={recentsMenu}
+                onClose={() => setRecentsMenu(null)}
+                onStartSelecting={() => {
+                  setRecentsMenu(null);
+                  setSelectedIds(new Set());
+                  setMode("selecting");
+                  // Working on a collapsed section would show nothing.
+                  if (!sections.recents) toggleSection("recents");
+                }}
+                onStartHighlighting={() => {
+                  setRecentsMenu(null);
+                  setMode("highlighting");
+                  if (!sections.recents) toggleSection("recents");
+                }}
+              />
+            ) : null}
+            {sections.recents ? (
+              loading && chats.length === 0 ? (
+                <ChatHistoryLoading />
+              ) : recents.length === 0 ? (
+                <p className="px-2 py-6 text-center text-xs text-[var(--ink-muted)]">
+                  {pinned.length > 0 ? "Everything is pinned" : "No chats yet"}
+                </p>
+              ) : (
+                <>
+                  {mode === "selecting" ? (
+                    <SelectionBar
+                      count={selectedChats.length}
+                      total={recents.length}
+                      onSelectAll={() => setSelectedIds(new Set(recents.map((chat) => chat.id)))}
+                      onClear={() => setSelectedIds(new Set())}
+                      onDelete={() => onDeleteChats(selectedChats)}
+                      onCancel={stopWorking}
+                    />
+                  ) : null}
+                  {mode === "highlighting" ? (
+                    <HighlightBar pen={pen} onPickPen={setPen} onDone={stopWorking} />
+                  ) : null}
+                  <ul className="space-y-0.5">{recents.map((chat) => renderRow(chat, true))}</ul>
+                </>
+              )
             ) : null}
           </section>
-        ) : null}
-
-        <section className="pt-1">
-          <SectionHeader
-            label="Recents"
-            open={sections.recents}
-            count={recents.length}
-            onToggle={() => toggleSection("recents")}
-            action={
-              recents.length > 0 && mode === "idle" ? (
-                <SectionMenuButton
-                  label="Recents"
-                  open={recentsMenu !== null}
-                  onOpen={setRecentsMenu}
-                  onClose={() => setRecentsMenu(null)}
-                />
-              ) : null
-            }
-          />
-          {recentsMenu ? (
-            <RecentsMenu
-              position={recentsMenu}
-              onClose={() => setRecentsMenu(null)}
-              onStartSelecting={() => {
-                setRecentsMenu(null);
-                setSelectedIds(new Set());
-                setMode("selecting");
-                // Working on a collapsed section would show nothing.
-                if (!sections.recents) toggleSection("recents");
-              }}
-              onStartHighlighting={() => {
-                setRecentsMenu(null);
-                setMode("highlighting");
-                if (!sections.recents) toggleSection("recents");
-              }}
-            />
-          ) : null}
-          {sections.recents ? (
-            loading && chats.length === 0 ? (
-              <ChatHistoryLoading />
-            ) : recents.length === 0 ? (
-              <p className="px-2 py-6 text-center text-xs text-[var(--ink-muted)]">
-                {pinned.length > 0 ? "Everything is pinned" : "No chats yet"}
-              </p>
-            ) : (
-              <>
-                {mode === "selecting" ? (
-                  <SelectionBar
-                    count={selectedChats.length}
-                    total={recents.length}
-                    onSelectAll={() => setSelectedIds(new Set(recents.map((chat) => chat.id)))}
-                    onClear={() => setSelectedIds(new Set())}
-                    onDelete={() => onDeleteChats(selectedChats)}
-                    onCancel={stopWorking}
-                  />
-                ) : null}
-                {mode === "highlighting" ? (
-                  <HighlightBar pen={pen} onPickPen={setPen} onDone={stopWorking} />
-                ) : null}
-                <ul className="space-y-0.5">{recents.map((chat) => renderRow(chat, true))}</ul>
-              </>
-            )
-          ) : null}
-        </section>
-      </div>
-    </aside>
+        </div>
+      </aside>
+      <RailDivider collapsed={collapsed} onToggle={onToggleCollapsed} />
+    </div>
   );
 }

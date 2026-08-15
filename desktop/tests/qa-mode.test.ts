@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { prepareQaServiceDefinitions } from "../src/main/qa-mode";
 import type { ResolvedPaths } from "../src/main/path-resolver";
@@ -143,4 +145,32 @@ test("non-QA definitions are returned unchanged", () => {
     "critical",
   );
   assert.equal(result, definitions);
+});
+
+test("critical QA can reference an external ChatMock session read-only", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-qa-auth-"));
+  const authFile = path.join(root, "auth.json");
+  fs.writeFileSync(authFile, "{}", "utf8");
+  const previous = process.env["BREADBOARD_QA_PROVIDER_AUTH_FILE"];
+  process.env["BREADBOARD_QA_PROVIDER_AUTH_FILE"] = authFile;
+  try {
+    const paths = {
+      qaMode: true,
+      dataRoot: path.resolve("C:/qa-user-data/Data"),
+      runtimeDir: path.resolve("C:/qa-user-data/Data/runtime"),
+    } as ResolvedPaths;
+    const prepared = prepareQaServiceDefinitions(
+      [definition("chatmock")],
+      paths,
+      "critical",
+    );
+    const chatmock = prepared[0];
+    assert.ok(chatmock);
+    assert.equal(chatmock.env["CHATMOCK_AUTH_FILE"], fs.realpathSync(authFile));
+    assert.equal(chatmock.env["CHATMOCK_AUTH_READ_ONLY"], "1");
+  } finally {
+    if (previous === undefined) delete process.env["BREADBOARD_QA_PROVIDER_AUTH_FILE"];
+    else process.env["BREADBOARD_QA_PROVIDER_AUTH_FILE"] = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

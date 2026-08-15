@@ -34,6 +34,7 @@ import {
 } from "./evidence.ts";
 import { finishActiveRuntimeRun } from "./run-store.ts";
 import { scheduleLoopxTickForConversation } from "../loopx/conversation-tick.ts";
+import { accountGoalModeTurn } from "../goal-mode.ts";
 import { scheduleDurableExtractionForConversation } from "../mem0/conversation-extraction.ts";
 import { scheduleMemoryProfileSynthesisForConversation } from "../conversations/memory-profile.ts";
 import {
@@ -639,6 +640,35 @@ function driveSessionEventPump(
             gardenId: session.row.garden_id,
             payload: { status },
           });
+        }
+        // Goal's accounting belongs at the same boundary as the upstream Stop
+        // hook: a dispatched turn has actually ended and its result is now
+        // durable. If the agent called update_goal during this turn, the state
+        // is complete and the helper intentionally leaves it untouched.
+        if (session.row.conversation_id !== null && streamRun) {
+          const goalMode = parseRuntimeRunDispatch(streamRun).goalMode;
+          if (goalMode?.enabled && goalMode.goalId) {
+            const conversation = db
+              .prepare("SELECT public_id FROM conversations WHERE id = ?")
+              .get(session.row.conversation_id) as { public_id: string } | undefined;
+            if (conversation?.public_id) {
+              try {
+                accountGoalModeTurn({
+                  conversationPublicId: conversation.public_id,
+                  goalId: goalMode.goalId,
+                  startedAt: streamRun.started_at,
+                });
+              } catch {
+                recordAuditEvent({
+                  eventType: "goal_mode.accounting_failed",
+                  runtimeSessionId: session.row.id,
+                  userId: session.row.user_id,
+                  gardenId: session.row.garden_id,
+                  payload: { runId: streamRun.id },
+                });
+              }
+            }
+          }
         }
         finishActiveRuntimeRun(
           session.row.id,

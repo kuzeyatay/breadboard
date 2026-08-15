@@ -468,9 +468,28 @@ test("author overrides and audit artifacts persist across replanning", () => {
     const plan = planGardenVisualNecessity({ gardenId: "g", learningUnits: [unit()], overrides: loaded });
     assert.equal(plan.learningUnits[0].interactiveVisualPlan.requirement, "none");
     saveVisualNecessityArtifacts(root, "g", plan);
-    assert.ok(fs.existsSync(path.join(root, ".breadboard", "visual-necessity-decisions.json")));
+    const necessityJsonPath = path.join(root, ".breadboard", "visual-necessity-decisions.json");
+    const decisionRecordsPath = path.join(root, ".breadboard", "visual-decision-records.json");
+    assert.ok(fs.existsSync(necessityJsonPath));
+    const necessityArtifact = JSON.parse(fs.readFileSync(necessityJsonPath, "utf-8"));
+    const decisionRecordsArtifact = JSON.parse(fs.readFileSync(decisionRecordsPath, "utf-8"));
+    for (const artifact of [necessityArtifact, decisionRecordsArtifact]) {
+      assert.equal(
+        artifact.artifactRole,
+        "pre_executability_model_necessity_and_teaching_medium_source",
+      );
+      assert.equal(artifact.interactionContractsAreAuthoritative, false);
+      assert.deepEqual(artifact.supersededBy, {
+        learningUnitContract: ".breadboard/learning-unit-contract.json",
+        visualizationPlan: ".breadboard/visualization-plan.json",
+        executabilityReviewLedger: ".breadboard/visual-contract-executability-reviews.json",
+      });
+    }
     const markdown = fs.readFileSync(path.join(root, ".breadboard", "visual-necessity-decisions.md"), "utf-8");
     assert.match(markdown, /# Interactive Visual Decisions/);
+    assert.match(markdown, /Pre-executability necessity and teaching-medium source/i);
+    assert.match(markdown, /interaction contract here is not authoritative after review/i);
+    assert.match(markdown, /visual-contract-executability-reviews\.json/);
     assert.match(markdown, /Author override/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

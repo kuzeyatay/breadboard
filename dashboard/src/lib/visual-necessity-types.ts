@@ -23,15 +23,29 @@ export interface InteractiveVisualControlEvidence {
   quote: string;
 }
 
-export type InteractiveVisualControlInputType = "slider" | "number" | "select";
+export type InteractiveVisualControlInputType =
+  | "slider"
+  | "number"
+  | "select"
+  | "toggle"
+  | "button";
+
+export type InteractiveVisualControlProtocolRole =
+  | "prediction_input"
+  | "commit_prediction"
+  | "reveal_outcome"
+  | "evaluate_prediction"
+  | "reset";
 
 export interface InteractiveVisualControlContract {
   /** Stable model-authored identifier used by the generated module contract. */
   id: string;
-  kind: "variable" | "select_case" | "process_position";
+  kind: "variable" | "select_case" | "process_position" | "protocol_action";
   label: string;
   /** Input widget semantics are authored by the model, never inferred downstream. */
   type: InteractiveVisualControlInputType;
+  /** Explicit model-authored interaction protocol; never inferred downstream. */
+  protocolRole?: InteractiveVisualControlProtocolRole;
   unit?: string;
   /** Required for slider and number controls. */
   min?: number;
@@ -41,8 +55,9 @@ export interface InteractiveVisualControlContract {
   step?: number;
   /** Required for select controls and forbidden for numeric controls. */
   options?: string[];
-  /** Must be a finite in-range number, or one of the declared select options. */
-  defaultValue: number | string;
+  /** Subject controls use numbers/options; protocol buttons use 0 and toggles false. */
+  defaultValue: number | string | boolean;
+  /** Empty only for pure protocol_action button/toggle controls. */
   evidence: InteractiveVisualControlEvidence[];
 }
 

@@ -42,6 +42,7 @@
     "qa:electron": "node qa/electron/run-qa.mjs",
     "qa:electron:critical": "node qa/electron/run-qa.mjs --project=critical",
     "qa:electron:explore": "node qa/electron/run-qa.mjs --project=exploratory",
+    "qa:electron:hermes": "node qa/electron/run-qa.mjs --project=hermes",
     "qa:electron:packaged": "node qa/electron/run-qa.mjs --project=packaged --skip-desktop-build",
     "qa:electron:headed": "node qa/electron/run-qa.mjs --project=critical --headed --preserve-runtime",
     "qa:electron:trace": "node qa/electron/run-qa.mjs --project=critical --trace --preserve-runtime",

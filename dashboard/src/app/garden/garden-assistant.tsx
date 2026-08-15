@@ -18,6 +18,7 @@ import {
   chatAutoScrollResponseKey,
   useChatAutoScroll,
 } from '@/app/components/use-chat-auto-scroll';
+import ChatJumpToBottom from '@/app/components/chat-jump-to-bottom';
 import ChatTimeSeparator from '@/app/components/chat-time-separator';
 import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
 import ActivityPanel from '@/app/components/hermes/activity-panel';
@@ -569,7 +570,11 @@ export default function GardenAssistant({
     };
   }, [activeClusterSlug]);
 
-  const transcriptScrollRef = useChatAutoScroll<HTMLDivElement>({
+  const {
+    ref: transcriptScrollRef,
+    awayFromBottom: transcriptAwayFromBottom,
+    scrollToBottom: jumpToNewestMessage,
+  } = useChatAutoScroll<HTMLDivElement>({
     isResponding: isStreaming,
     responseKey: chatAutoScrollResponseKey(messages),
     contentKey: chatAutoScrollContentKey(messages),
@@ -1326,6 +1331,9 @@ export default function GardenAssistant({
         </div>
       </div>
 
+      {/* Positioning context for the jump control, so it floats at the foot of
+          the transcript rather than below the composer. */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={transcriptScrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {messages.length === 0 ? (
           <div className="space-y-4">
@@ -1420,6 +1428,12 @@ export default function GardenAssistant({
             ))}
           </div>
         )}
+      </div>
+        <ChatJumpToBottom
+          visible={transcriptAwayFromBottom}
+          busy={isStreaming}
+          onJump={jumpToNewestMessage}
+        />
       </div>
 
       <div className="p-3">

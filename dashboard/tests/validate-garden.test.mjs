@@ -1379,6 +1379,58 @@ describe("garden validator regression fixture", () => {
     }
   });
 
+  test("source-commentary validation accepts a domain source and reports true document framing", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-source-context-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const pagePath = path.join(
+        dir,
+        "learning",
+        "2. Spiking Neurons",
+        "2.1 The Leaky Integrate-and-Fire Neuron.md",
+      );
+      const domainSentence =
+        "For each problem, identify the source, the desired field quantity, the observation region, the material regions, and any interfaces.";
+      fs.appendFileSync(pagePath, `\n${domainSentence}\n`);
+
+      let commentaryCheck = checkById(runChecksWithReport(dir, "snn-fixture"), 2);
+      assert.equal(
+        commentaryCheck.status,
+        "PASS",
+        `a physical/domain source is not document commentary: ${commentaryCheck.problems.join(" | ")}`,
+      );
+
+      const documentSentence = "The source explains the result instead of teaching it directly.";
+      fs.appendFileSync(pagePath, `\n${documentSentence}\n`);
+      commentaryCheck = checkById(runChecksWithReport(dir, "snn-fixture"), 2);
+      assert.equal(commentaryCheck.status, "FAIL");
+      assert.match(commentaryCheck.problems.join("\n"), /1 source-commentary phrase/);
+      assert.match(commentaryCheck.problems.join("\n"), /The source explains the result/);
+
+      const contextualDocumentSentences = [
+        "As shown in the source, the curves cross once.",
+        "In the source, the derivation begins with symmetry.",
+        "Based on the source, the boundary is fixed.",
+        "The source's explanation starts from the boundary.",
+        "The source provides an example of the limiting case.",
+        "The source provides evidence for the limiting case.",
+        "The source contains a worked derivation of the field.",
+        "The source highlights the limiting case.",
+      ];
+      for (const sentence of contextualDocumentSentences) {
+        fs.appendFileSync(pagePath, `\n${sentence}\n`);
+        commentaryCheck = checkById(runChecksWithReport(dir, "snn-fixture"), 2);
+        assert.equal(commentaryCheck.status, "FAIL", sentence);
+        assert.ok(
+          commentaryCheck.problems.some((problem) => problem.includes(sentence)),
+          `validator evidence should include the exact sentence: ${sentence}`,
+        );
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("a ZIP-shaped artifact with uppercase/internal/root-source folders fails strict export checks", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-zip-bad-"));
     try {

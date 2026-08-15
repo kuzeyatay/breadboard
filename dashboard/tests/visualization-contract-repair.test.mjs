@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 
 import {
   buildVisualizationPlanWithContractRepair,
+  buildVisualizationContractRepairPrompt,
   parseVisualizationContractRepairResponse,
   validateVisualizationContractUnitRepair,
 } from "../src/lib/visualization-contract-repair.ts";
+import {
+  MAX_VISUALIZATION_CONTRACT_REPAIR_RESPONSE_BYTES,
+} from "../src/lib/visualization-contract-validation.ts";
 import {
   applyVisualizationRoutesToLearningUnits,
 } from "../src/lib/visualization-opportunities.ts";
@@ -209,6 +214,24 @@ test("U24 complete interaction contract is model-repaired, typed, and preserved 
 
   assert.equal(calls, 1);
   assert.equal(result.repairSource, "model");
+  assert.equal(result.repairAudit.attempts.length, 1);
+  assert.equal(result.repairAudit.attempts[0].responseEncoding, "json");
+  assert.deepEqual(result.repairAudit.acceptedResponse, result.repairAudit.attempts[0].response);
+  assert.equal(
+    result.repairAudit.attempts[0].packetHash,
+    crypto.createHash("sha256")
+      .update(JSON.stringify(result.repairAudit.attempts[0].packet))
+      .digest("hex"),
+  );
+  assert.equal(
+    result.repairAudit.attempts[0].requestHash,
+    crypto.createHash("sha256")
+      .update(JSON.stringify(buildVisualizationContractRepairPrompt(
+        result.repairAudit.attempts[0].packet,
+      )))
+      .digest("hex"),
+  );
+  assert.equal(result.repairAudit.attempts[0].canonicalEvidenceHashes.U24.length, 64);
   assert.equal(result.learningUnits[0].interactiveVisualPlan.requirement, "required");
   assert.equal(result.learningUnits[0].interactiveVisualPlan.decision.necessity, "required");
   assert.equal(
@@ -221,6 +244,7 @@ test("U24 complete interaction contract is model-repaired, typed, and preserved 
   ]);
   assert.deepEqual(result.plan.opportunities[0].requiredInputs[0], {
     id: "representation_operation",
+    kind: "select_case",
     label: "time differentiation and frequency-domain operations",
     type: "select",
     options: ["time differentiation", "frequency-domain operations"],
@@ -454,6 +478,60 @@ test("strict repair parsing reports malformed and extra controls without truncat
   assert.equal(parsed.repairs[0].controls.length, 4, "valid controls are preserved, not sliced");
   assert.match(parsed.problems.join(" "), /contains 5 controls; at most 3/i);
   assert.match(parsed.problems.join(" "), /controls\[1\] must be an object/i);
+});
+
+test("complete repair parsing rejects duplicate, unknown, unexpected, and oversized records", () => {
+  const valid = validU24Repair().repairs[0];
+  const duplicate = parseVisualizationContractRepairResponse({
+    repairs: [valid, structuredClone(valid)],
+  }, {
+    requireCompleteContract: true,
+    expectedUnitIds: ["U24"],
+  });
+  assert.match(duplicate.problems.join(" "), /duplicates repair for U24/i);
+  assert.match(duplicate.problems.join(" "), /exactly 1 repair/i);
+
+  const unknown = structuredClone(valid);
+  unknown.unitId = "U99";
+  unknown.controls[0].unexpected = true;
+  const unknownResult = parseVisualizationContractRepairResponse({ repairs: [unknown] }, {
+    requireCompleteContract: true,
+    expectedUnitIds: ["U24"],
+  });
+  assert.match(unknownResult.problems.join(" "), /unexpected/i);
+  assert.match(unknownResult.problems.join(" "), /unaffected or unknown unit U99/i);
+  assert.match(unknownResult.problems.join(" "), /omitted affected unit U24/i);
+
+  const oversized = parseVisualizationContractRepairResponse({
+    repairs: [valid],
+    padding: "x".repeat(MAX_VISUALIZATION_CONTRACT_REPAIR_RESPONSE_BYTES),
+  }, { requireCompleteContract: true, expectedUnitIds: ["U24"] });
+  assert.match(oversized.problems.join(" "), /response exceeds/i);
+});
+
+test("structural repair provider transport failure escapes one semantic attempt", async () => {
+  const unit = requiredU24();
+  let calls = 0;
+  const events = [];
+  await assert.rejects(
+    () => buildVisualizationPlanWithContractRepair({
+      gardenId: "electromagnetism-1",
+      learningMap: mapFor(unit),
+      learningUnits: [unit],
+      visualBudget: VISUAL_BUDGET,
+      canonicalEvidenceByUnit: CANONICAL_EVIDENCE_BY_UNIT,
+      maxRepairAttempts: 3,
+      repairProvider: async () => {
+        calls += 1;
+        throw new Error("repair transport failed");
+      },
+      onEvent: (type) => events.push(type),
+    }),
+    /repair transport failed/,
+  );
+  assert.equal(calls, 1);
+  assert.equal(events.includes("visual_opportunity_contract_repair_transport_aborted"), true);
+  assert.equal(events.includes("visual_opportunity_contract_repair_exhausted"), false);
 });
 
 test("active repair parsing reports an incomplete replacement contract", () => {

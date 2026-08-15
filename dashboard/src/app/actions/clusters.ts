@@ -20,6 +20,7 @@ import {
   moveFolder,
   normalizeFolderPath,
   renameFolder,
+  reorderFolder,
 } from "@/lib/cluster-folders";
 
 export interface Cluster {
@@ -284,14 +285,26 @@ export async function recordClusterView(
 export async function createCluster(
   name: string,
   description: string,
+  /** Drop the new garden straight into this cluster instead of the top level. */
+  folder?: string | null,
 ): Promise<string> {
   try {
     const userId = await requireUserId();
     const slug = uniqueClusterSlug(name);
+    const cleanFolder = normalizeFolderPath(folder);
+    if (cleanFolder) ensureFolderPath(db, userId, cleanFolder);
 
     db.prepare(
-      "INSERT INTO clusters (user_id, name, slug, description, visibility, border_color) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(userId, name, slug, description, "private", DEFAULT_BORDER_COLOR);
+      "INSERT INTO clusters (user_id, name, slug, description, visibility, border_color, folder) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      userId,
+      name,
+      slug,
+      description,
+      "private",
+      DEFAULT_BORDER_COLOR,
+      cleanFolder || null,
+    );
 
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (contentPath) {
@@ -482,6 +495,30 @@ export async function moveClusterFolder(
   } catch (err) {
     throw new Error(
       err instanceof Error ? err.message : "Failed to move cluster",
+    );
+  }
+}
+
+/**
+ * Place a cluster immediately before or after `targetPath`, re-parenting it to
+ * that sibling's parent when needed. Dropping on a cluster's top or bottom edge
+ * reorders; dropping in its middle still nests.
+ */
+export async function reorderClusterFolder(
+  sourcePath: string,
+  targetPath: string,
+  place: "before" | "after",
+): Promise<void> {
+  try {
+    const userId = await requireUserId();
+    reorderFolder(db, userId, sourcePath, targetPath, place);
+
+    refreshPrivateQuartzIndex(userId);
+    revalidatePath("/dashboard");
+    revalidatePath("/garden");
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? err.message : "Failed to reorder cluster",
     );
   }
 }

@@ -10,6 +10,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
+import Link from 'next/link';
 
 interface GraphNode {
   slug: string;
@@ -316,15 +317,16 @@ function KnowledgeGraph({
                     {previewStatus === 'error' ? 'Preview unavailable.' : 'Loading garden preview...'}
                   </div>
                 ) : null}
-                <a
+                <Link
                   href={graphHref(clusterSlug)}
+                  prefetch
                   className="absolute inset-0"
                   aria-label="View garden"
                 >
                   <span className="neu-button absolute bottom-2 right-2 rounded-md border border-gray-700 bg-gray-950/85 px-2 py-1 text-[11px] font-medium text-gray-300 shadow-sm transition-colors group-hover:text-white">
                     View garden
                   </span>
-                </a>
+                </Link>
               </>
             )}
           </div>

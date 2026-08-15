@@ -264,6 +264,7 @@ test("required generated opportunities use the complete model-authored goal, con
     plan.opportunities[0].requiredInputs,
     [{
       id: "parallel_field_component",
+      kind: "variable",
       label: "field component parallel to each differential displacement",
       type: "number",
       unit: "V/m",
@@ -343,6 +344,16 @@ test("regeneration rejects saved input or output contracts that drift from the p
   assert.match(
     persistedVisualizationOpportunityContractProblems({ unit, opportunity: changedInput }).join("; "),
     /requiredInputs\[0\]\.max/i,
+  );
+
+  const changedKind = {
+    ...opportunity,
+    requiredInputs: opportunity.requiredInputs.map((control, index) =>
+      index === 0 ? { ...control, kind: "process_position" } : control),
+  };
+  assert.match(
+    persistedVisualizationOpportunityContractProblems({ unit, opportunity: changedKind }).join("; "),
+    /requiredInputs\[0\]\.kind/i,
   );
 
   const changedOutput = {
