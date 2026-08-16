@@ -293,3 +293,15 @@ test("the brokered tool map is authoritative over selected tools", async () => {
   const mcp = mergeSelectedTools(brokered, { "github_list_issues": true });
   assert.equal(mcp.github_list_issues, true);
 });
+
+test("an empty Hermes stream becomes an explicit retryable assistant response", () => {
+  assert.match(adapter, /message\.empty_response/);
+  assert.match(
+    adapter,
+    /The assistant returned no answer\. Please try again\./,
+  );
+  assert.match(
+    adapter,
+    /emit\(\{ type: "replace", text: assistantText \}\)/,
+  );
+});

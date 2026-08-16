@@ -2,14 +2,314 @@
     <loc>https://localhost:8081/</loc>
     <lastmod>2026-04-20T06:24:39.000Z</lastmod>
   </url><url>
+    <loc>https://localhost:8081/electromagnetism-1/</loc>
+    <lastmod>2026-08-13T21:00:00.000Z</lastmod>
+  </url><url>
     <loc>https://localhost:8081/breadboard-dev/</loc>
     <lastmod>2026-07-28T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/generated-visual-demo/</loc>
     <lastmod>2026-07-17T00:25:47.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/electromagnetism-1/</loc>
-    <lastmod>2026-08-13T21:00:00.000Z</lastmod>
+    <loc>https://localhost:8081/computer-architecture-2/32-bit-alu-organization-and-control-signals</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/32-bit-ripple-carry-adder</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/address-decomposition-into-tag-index-and-offset</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/assembly-directives-system-calls-and-simulator-commands</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/associative-cache-sizing-example-with-dirty-bit</loc>
+    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/associative-mapping-design-space</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/associativity-comparison-with-access-sequences</loc>
+    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/associativity-trade-offs-and-diminishing-returns</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/average-memory-access-time</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/behavioral-modeling-and-continuous-assignment</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/block-size-trade-offs-and-spatial-locality</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/branch-and-jump-execution-in-the-datapath</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/branch-instructions-and-pc-relative-control-flow</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/cache-block-size-and-address-field-decomposition</loc>
+    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/cache-hierarchy-control-boundaries</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/cache-memory-purpose-and-block-transfers</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/cache-performance-equations-with-cpi-stall</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/cache-types-and-multi-level-organization</loc>
+    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/character-encoding-with-ascii</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/combinational-and-sequential-logic-in-processors</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/computer-architecture-versus-computer-organization</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/core-components-of-a-computer-system</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/cpu-time-clocking-and-the-basic-performance-equation</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/d-latch-and-edge-triggered-d-flip-flop</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/data-memory-interface-and-address-calculation</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/datapath-and-control-partition-in-processor-design</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/de-morgans-laws-and-canonical-boolean-forms</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/direct-mapped-cache-placement-rule</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/direct-mapped-cache-sizing-calculations</loc>
+    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/execution-time-cpi-stall-and-amat</loc>
+    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/finite-state-machines-and-the-synchronous-fsm-model</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/fpga-lut-mapping-and-asic-standard-cell-mapping</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/from-high-level-code-to-assembly-and-machine-language</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/full-adder-and-half-adder-construction</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/functions-calling-convention-and-argument-passing</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/gate-level-modeling-with-verilog-modules-and-wires</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/half-adder-full-adder-and-ripple-carry-addition</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/hazards-in-pipelined-processors</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/hit-ratio-miss-ratio-and-miss-penalty</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/hits-misses-and-write-policies</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/i-type-immediates-loads-and-compare-instructions</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/immediate-generation-and-sign-extension-in-risc-v</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/instruction-cache-and-data-cache-separation</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/instruction-count-cpi-and-the-full-cpu-performance-equation</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/instruction-set-architecture-rv32i-registers-and-memory-basics</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/integrated-circuits-and-digital-chip-categories</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/jump-and-link-jalr-and-function-return-mechanics</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/leaf-and-non-leaf-procedures-with-stack-discipline</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/load-store-architecture-and-byte-addressable-memory</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/logic-blocks-truth-tables-and-boolean-expressions</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/logic-gates-and-digital-abstraction</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/logic-synthesis-and-physical-design-flow</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/main-control-and-alu-control-truth-tables</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/memory-hierarchy-and-locality-principles</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/moore-and-mealy-machine-distinction</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/moore-and-mealy-pattern-detector-for-two-consecutive-ones</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/moore-and-mealy-timing-and-combinational-path-tradeoffs</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/moore-parity-checker-fsm</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/multiplexer-behavior-and-logic-implementation</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/overflow-underflow-and-language-level-handling</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/performance-metrics-execution-time-cpu-time-and-response-time</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/pipeline-registers-and-pipelined-control-signals</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/positional-number-systems-and-base-conversion</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/procedural-blocks-sensitivity-lists-and-combinational-always-blocks</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/program-counter-and-instruction-memory</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/r-type-and-load-instruction-execution-flow</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/r-type-instructions-and-register-register-alu-operations</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/recursive-factorial-execution-and-stack-frame-growth</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/reg-variables-and-blocking-vs-nonblocking-assignment</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/register-file-ports-and-d-latch-foundation</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/registers-and-register-files</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/risc-v-assembly-programming-patterns-and-pseudoinstructions</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/risc-v-instruction-families-and-register-naming</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/rtl-modeling-for-finite-state-machines</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/s-type-stores-and-memory-update-examples</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/sequential-and-combinational-hardware-elements-in-the-datapath</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/sequential-circuits-and-clocked-storage</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/setup-time-hold-time-and-critical-path-timing</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/seven-great-ideas-in-computer-architecture</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/shift-and-bitwise-operations-in-rv32i</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/signed-integer-representations</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/single-cycle-datapath-and-five-classic-computer-components</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/single-cycle-multicycle-and-pipelined-execution</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/single-cycle-processor-datapath-and-control-overview</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/software-layers-operating-system-compiler-and-isa</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/sr-latch-and-gated-sr-latch</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/stack-layout-stack-frames-and-push-pop-procedures</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/store-instruction-execution-flow</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/tag-index-and-valid-bit-in-direct-mapped-caches</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/test-benches-and-stimulus-generation</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/transistors-as-the-physical-basis-of-logic-gates</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/twos-complement-arithmetic-and-sign-extension</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/unsigned-binary-arithmetic</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/unsigned-binary-representation-and-conversion-procedures</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/vending-machine-moore-fsm-design</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/verilog-as-a-hardware-description-language</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/why-computers-use-bits-and-how-bit-patterns-gain-meaning</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/worked-address-mapping-examples</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/worked-direct-mapped-cache-trace</loc>
+    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/computer-architecture-2/</loc>
+    <lastmod>2026-07-24T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/communication-1/adding-dbm-values</loc>
     <lastmod>2026-04-26T07:24:06.018Z</lastmod>
@@ -449,306 +749,6 @@
     <loc>https://localhost:8081/communication-1/</loc>
     <lastmod>2026-07-24T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/32-bit-alu-organization-and-control-signals</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/32-bit-ripple-carry-adder</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/address-decomposition-into-tag-index-and-offset</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/assembly-directives-system-calls-and-simulator-commands</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/associative-cache-sizing-example-with-dirty-bit</loc>
-    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/associative-mapping-design-space</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/associativity-comparison-with-access-sequences</loc>
-    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/associativity-trade-offs-and-diminishing-returns</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/average-memory-access-time</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/behavioral-modeling-and-continuous-assignment</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/block-size-trade-offs-and-spatial-locality</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/branch-and-jump-execution-in-the-datapath</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/branch-instructions-and-pc-relative-control-flow</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/cache-block-size-and-address-field-decomposition</loc>
-    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/cache-hierarchy-control-boundaries</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/cache-memory-purpose-and-block-transfers</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/cache-performance-equations-with-cpi-stall</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/cache-types-and-multi-level-organization</loc>
-    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/character-encoding-with-ascii</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/combinational-and-sequential-logic-in-processors</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/computer-architecture-versus-computer-organization</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/core-components-of-a-computer-system</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/cpu-time-clocking-and-the-basic-performance-equation</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/d-latch-and-edge-triggered-d-flip-flop</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/data-memory-interface-and-address-calculation</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/datapath-and-control-partition-in-processor-design</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/de-morgans-laws-and-canonical-boolean-forms</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/direct-mapped-cache-placement-rule</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/direct-mapped-cache-sizing-calculations</loc>
-    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/execution-time-cpi-stall-and-amat</loc>
-    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/finite-state-machines-and-the-synchronous-fsm-model</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/fpga-lut-mapping-and-asic-standard-cell-mapping</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/from-high-level-code-to-assembly-and-machine-language</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/full-adder-and-half-adder-construction</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/functions-calling-convention-and-argument-passing</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/gate-level-modeling-with-verilog-modules-and-wires</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/half-adder-full-adder-and-ripple-carry-addition</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/hazards-in-pipelined-processors</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/hit-ratio-miss-ratio-and-miss-penalty</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/hits-misses-and-write-policies</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/i-type-immediates-loads-and-compare-instructions</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/immediate-generation-and-sign-extension-in-risc-v</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/instruction-cache-and-data-cache-separation</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/instruction-count-cpi-and-the-full-cpu-performance-equation</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/instruction-set-architecture-rv32i-registers-and-memory-basics</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/integrated-circuits-and-digital-chip-categories</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/jump-and-link-jalr-and-function-return-mechanics</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/leaf-and-non-leaf-procedures-with-stack-discipline</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/load-store-architecture-and-byte-addressable-memory</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/logic-blocks-truth-tables-and-boolean-expressions</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/logic-gates-and-digital-abstraction</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/logic-synthesis-and-physical-design-flow</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/main-control-and-alu-control-truth-tables</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/memory-hierarchy-and-locality-principles</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/moore-and-mealy-machine-distinction</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/moore-and-mealy-pattern-detector-for-two-consecutive-ones</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/moore-and-mealy-timing-and-combinational-path-tradeoffs</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/moore-parity-checker-fsm</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/multiplexer-behavior-and-logic-implementation</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/overflow-underflow-and-language-level-handling</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/performance-metrics-execution-time-cpu-time-and-response-time</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/pipeline-registers-and-pipelined-control-signals</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/positional-number-systems-and-base-conversion</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/procedural-blocks-sensitivity-lists-and-combinational-always-blocks</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/program-counter-and-instruction-memory</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/r-type-and-load-instruction-execution-flow</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/r-type-instructions-and-register-register-alu-operations</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/recursive-factorial-execution-and-stack-frame-growth</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/reg-variables-and-blocking-vs-nonblocking-assignment</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/register-file-ports-and-d-latch-foundation</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/registers-and-register-files</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/risc-v-assembly-programming-patterns-and-pseudoinstructions</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/risc-v-instruction-families-and-register-naming</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/rtl-modeling-for-finite-state-machines</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/s-type-stores-and-memory-update-examples</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/sequential-and-combinational-hardware-elements-in-the-datapath</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/sequential-circuits-and-clocked-storage</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/setup-time-hold-time-and-critical-path-timing</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/seven-great-ideas-in-computer-architecture</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/shift-and-bitwise-operations-in-rv32i</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/signed-integer-representations</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/single-cycle-datapath-and-five-classic-computer-components</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/single-cycle-multicycle-and-pipelined-execution</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/single-cycle-processor-datapath-and-control-overview</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/software-layers-operating-system-compiler-and-isa</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/sr-latch-and-gated-sr-latch</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/stack-layout-stack-frames-and-push-pop-procedures</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/store-instruction-execution-flow</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/tag-index-and-valid-bit-in-direct-mapped-caches</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/test-benches-and-stimulus-generation</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/transistors-as-the-physical-basis-of-logic-gates</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/twos-complement-arithmetic-and-sign-extension</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/unsigned-binary-arithmetic</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/unsigned-binary-representation-and-conversion-procedures</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/vending-machine-moore-fsm-design</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/verilog-as-a-hardware-description-language</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/why-computers-use-bits-and-how-bit-patterns-gain-meaning</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/worked-address-mapping-examples</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/worked-direct-mapped-cache-trace</loc>
-    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/</loc>
-    <lastmod>2026-07-24T21:00:00.000Z</lastmod>
-  </url><url>
     <loc>https://localhost:8081/math-2/13-5-chain-rule-1781027979171</loc>
     <lastmod>2026-06-09T17:59:39.171Z</lastmod>
   </url><url>
@@ -761,11 +761,11 @@
     <loc>https://localhost:8081/math-2/</loc>
     <lastmod>2026-07-24T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/public-library/</loc>
-    <lastmod>2026-07-24T21:00:00.000Z</lastmod>
-  </url><url>
     <loc>https://localhost:8081/physics-for-ee/</loc>
     <lastmod>2026-08-11T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/public-library/</loc>
+    <lastmod>2026-07-24T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test2/</loc>
     <lastmod>2026-07-24T21:00:00.000Z</lastmod>
@@ -986,6 +986,15 @@
     <loc>https://localhost:8081/signals-and-systems/</loc>
     <lastmod>2026-07-24T21:00:00.000Z</lastmod>
   </url><url>
+    <loc>https://localhost:8081/electromagnetism-1/sources/engineering-electromagnetics-9th-ed-9nbsped-compress</loc>
+    <lastmod>2026-08-13T12:06:57.818Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/electromagnetism-1/sources/studyguide-5epf0</loc>
+    <lastmod>2026-08-13T12:11:44.070Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/electromagnetism-1/sources/</loc>
+    <lastmod>2026-08-13T21:00:00.000Z</lastmod>
+  </url><url>
     <loc>https://localhost:8081/generated-visual-demo/learning/Topic-Overview</loc>
     <lastmod>2026-07-17T11:10:57.000Z</lastmod>
   </url><url>
@@ -998,14 +1007,14 @@
     <loc>https://localhost:8081/generated-visual-demo/sources/</loc>
     <lastmod>2026-07-17T00:25:47.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/electromagnetism-1/sources/engineering-electromagnetics-9th-ed-9nbsped-compress</loc>
-    <lastmod>2026-08-13T12:06:57.818Z</lastmod>
+    <loc>https://localhost:8081/computer-architecture-2/sources/computer-architecture-2</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/electromagnetism-1/sources/studyguide-5epf0</loc>
-    <lastmod>2026-08-13T12:11:44.070Z</lastmod>
+    <loc>https://localhost:8081/computer-architecture-2/sources/slides-cac-15-18-memory-hierarchy</loc>
+    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/electromagnetism-1/sources/</loc>
-    <lastmod>2026-08-13T21:00:00.000Z</lastmod>
+    <loc>https://localhost:8081/computer-architecture-2/sources/</loc>
+    <lastmod>2026-07-24T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/communication-1/canvas-quizzes/hard-questions-1781680403859</loc>
     <lastmod>2026-06-17T07:13:23.859Z</lastmod>
@@ -1038,15 +1047,6 @@
     <lastmod>2026-04-26T07:58:41.833Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/communication-1/sources/</loc>
-    <lastmod>2026-07-24T21:00:00.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/sources/computer-architecture-2</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/sources/slides-cac-15-18-memory-hierarchy</loc>
-    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/sources/</loc>
     <lastmod>2026-07-24T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/math-2/notes/10-5-quadric-surfaces-1780665605317</loc>
@@ -1268,6 +1268,42 @@
     <loc>https://localhost:8081/physics-for-ee/module-vi-propagation-of-light/</loc>
     <lastmod>2026-07-02T17:38:22.000Z</lastmod>
   </url><url>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/1-oscillatory-motion-and-undamped-shm-foundations-1782370663514</loc>
+    <lastmod>2026-06-25T06:57:43.514Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/10-superposition-and-reflection-1782469961121</loc>
+    <lastmod>2026-06-26T10:32:41.121Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/11-standing-waves-modes-harmonics-and-resonance-on-strings-1782480998300</loc>
+    <lastmod>2026-06-26T13:36:38.300Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/2-mass-spring-systems-pendulums-and-recognizing-shm-1782381340000</loc>
+    <lastmod>2026-06-25T09:55:40.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/3-energy-in-simple-harmonic-motion-1782394708062</loc>
+    <lastmod>2026-06-25T13:38:28.062Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/4-damped-oscillations-1782397764534</loc>
+    <lastmod>2026-06-25T14:29:24.534Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/5-forced-oscillations-and-resonance-1782402583504</loc>
+    <lastmod>2026-06-25T15:49:43.504Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/6-what-a-mechanical-wave-is-1782413020458</loc>
+    <lastmod>2026-06-25T18:43:40.458Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/7-mathematical-description-of-traveling-waves-1782459028222</loc>
+    <lastmod>2026-06-26T07:30:28.222Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/8-the-wave-equation-and-waves-on-a-string-1782465883268</loc>
+    <lastmod>2026-06-26T09:24:43.268Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/9-energy-power-and-intensity-in-waves-1782467737584</loc>
+    <lastmod>2026-06-26T09:55:37.585Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/</loc>
+    <lastmod>2026-07-02T17:38:22.000Z</lastmod>
+  </url><url>
     <loc>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/1-why-quantum-mechanics-enters-this-course-1782669612494</loc>
     <lastmod>2026-06-28T18:00:12.494Z</lastmod>
   </url><url>
@@ -1313,42 +1349,6 @@
     <loc>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/</loc>
     <lastmod>2026-07-02T17:38:22.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/1-oscillatory-motion-and-undamped-shm-foundations-1782370663514</loc>
-    <lastmod>2026-06-25T06:57:43.514Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/10-superposition-and-reflection-1782469961121</loc>
-    <lastmod>2026-06-26T10:32:41.121Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/11-standing-waves-modes-harmonics-and-resonance-on-strings-1782480998300</loc>
-    <lastmod>2026-06-26T13:36:38.300Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/2-mass-spring-systems-pendulums-and-recognizing-shm-1782381340000</loc>
-    <lastmod>2026-06-25T09:55:40.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/3-energy-in-simple-harmonic-motion-1782394708062</loc>
-    <lastmod>2026-06-25T13:38:28.062Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/4-damped-oscillations-1782397764534</loc>
-    <lastmod>2026-06-25T14:29:24.534Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/5-forced-oscillations-and-resonance-1782402583504</loc>
-    <lastmod>2026-06-25T15:49:43.504Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/6-what-a-mechanical-wave-is-1782413020458</loc>
-    <lastmod>2026-06-25T18:43:40.458Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/7-mathematical-description-of-traveling-waves-1782459028222</loc>
-    <lastmod>2026-06-26T07:30:28.222Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/8-the-wave-equation-and-waves-on-a-string-1782465883268</loc>
-    <lastmod>2026-06-26T09:24:43.268Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/9-energy-power-and-intensity-in-waves-1782467737584</loc>
-    <lastmod>2026-06-26T09:55:37.585Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/</loc>
-    <lastmod>2026-07-02T17:38:22.000Z</lastmod>
-  </url><url>
     <loc>https://localhost:8081/physics-for-ee/sources/974965-english-1</loc>
     <lastmod>2026-06-24T15:03:37.884Z</lastmod>
   </url><url>
@@ -1370,11 +1370,11 @@
     <loc>https://localhost:8081/physics-for-ee/sources/</loc>
     <lastmod>2026-08-11T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/private-library/user-2/</loc>
-    <lastmod>2026-04-19T21:00:00.000Z</lastmod>
-  </url><url>
     <loc>https://localhost:8081/private-library/user-1/</loc>
     <lastmod>2026-08-14T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/private-library/user-2/</loc>
+    <lastmod>2026-04-19T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test2/learning/Learning-Map</loc>
     <lastmod>2026-07-19T08:54:59.492Z</lastmod>
@@ -1520,24 +1520,6 @@
     <loc>https://localhost:8081/test2/learning/6.-Applications,-Limits,-and-Open-Questions/</loc>
     <lastmod>2026-07-19T08:54:06.169Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.1-Spikes,-Timing,-and-Temporal-Information</loc>
-    <lastmod>2026-07-16T09:19:43.980Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.2-Event-Driven-Computation-and-Energy-Efficiency</loc>
-    <lastmod>2026-07-16T09:19:43.980Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.3-Membrane-Potential,-Input-Integration,-and-Leakage</loc>
-    <lastmod>2026-07-16T09:19:43.980Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.4-From-Encoded-Inputs-to-Competing-Neurons</loc>
-    <lastmod>2026-07-16T09:19:43.980Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.5-Excitation,-Inhibition,-and-Winner-Selection</loc>
-    <lastmod>2026-07-16T09:19:43.980Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/</loc>
-    <lastmod>2026-07-16T09:19:43.980Z</lastmod>
-  </url><url>
     <loc>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</loc>
     <lastmod>2026-07-16T09:19:43.980Z</lastmod>
   </url><url>
@@ -1560,6 +1542,24 @@
     <lastmod>2026-07-16T09:19:43.980Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/3.-Describing-Firing-Threshold-Formally/</loc>
+    <lastmod>2026-07-16T09:19:43.980Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.1-Spikes,-Timing,-and-Temporal-Information</loc>
+    <lastmod>2026-07-16T09:19:43.980Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.2-Event-Driven-Computation-and-Energy-Efficiency</loc>
+    <lastmod>2026-07-16T09:19:43.980Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.3-Membrane-Potential,-Input-Integration,-and-Leakage</loc>
+    <lastmod>2026-07-16T09:19:43.980Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.4-From-Encoded-Inputs-to-Competing-Neurons</loc>
+    <lastmod>2026-07-16T09:19:43.980Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.5-Excitation,-Inhibition,-and-Winner-Selection</loc>
+    <lastmod>2026-07-16T09:19:43.980Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/</loc>
     <lastmod>2026-07-16T09:19:43.980Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/4.-How-Surrogate-Gradient-Is-Applied/4.1-Surrogate-Gradient-Training</loc>

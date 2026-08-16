@@ -67,6 +67,31 @@ test("the header conceals on close the way it reveals on open", () => {
   assert.match(terminal, /setTimeout\(\(\) => \{[\s\S]*?\}, 760\)/);
 });
 
+// The dock is the heaviest box on the page and the page behind it measures it,
+// so a height animation relaid out both on every frame — the stutter the glide
+// used to open with. It slides instead: the box takes its final size up front
+// and only its offset is animated.
+test("the dock slides open rather than growing open", () => {
+  assert.match(terminal, /height: glideBox \?\? height/);
+  assert.match(terminal, /transform: glide \? `translate3d\(0, \$\{glideShift\}px, 0\)`/);
+  assert.match(terminal, /transition: glideMoving[\s\S]*?`transform \$\{DOCK_OPEN_MS\}ms/);
+  assert.doesNotMatch(terminal, /`height \$\{DOCK_OPEN_MS\}ms/);
+
+  // Opening mounts the whole terminal in the same commit that sets the height.
+  // The move waits for that work to land, or it spends its first frames queued
+  // behind the mount — which is what a laggy open actually was.
+  assert.match(
+    terminal,
+    /requestAnimationFrame\(\(\) => \{\s*glideRaf\.current = window\.requestAnimationFrame/,
+  );
+  assert.match(terminal, /setGlideMoving\(true\);\s*\n\s*setGlideShift\(open \? 0 :/);
+
+  // Reversing mid-flight starts from the edge's real position, which is neither
+  // the height in state nor the box's own height while it sits offset.
+  assert.match(terminal, /window\.innerHeight - dock\.getBoundingClientRect\(\)\.top/);
+  assert.match(terminal, /startHeight: visualHeight\(\)/);
+});
+
 test("the brown terminal header toggles fully open and fully closed", () => {
   assert.match(
     terminal,
@@ -235,4 +260,44 @@ test("a fully open terminal stops the page behind it from scrolling", () => {
   // Re-runs as the dock is dragged, so releasing below full height unlocks.
   const effectTail = terminal.slice(start, start + 1400);
   assert.match(effectTail, /\}, \[height\]\);/);
+});
+
+test("a message cannot be sent into a chat that is still loading", () => {
+  // The hook is the backstop: `send` reads a ref, because the handlers that
+  // call it run outside the render that produced the flag.
+  assert.match(agentSession, /const loadingSessionRef = useRef\(true\);/);
+  assert.match(
+    agentSession,
+    /const markLoadingSession = useCallback\(\(loading: boolean\) => \{\s*loadingSessionRef\.current = loading;\s*setLoadingSession\(loading\);/,
+  );
+  // Every write goes through the wrapper, or the ref drifts from the state.
+  assert.doesNotMatch(agentSession, /(?<!set)\bsetLoadingSession\(true\)/);
+  assert.match(agentSession, /if \(loadingSessionRef\.current\) return;/);
+
+  // The composer is disabled for the same window, so the block is visible
+  // rather than a send button that silently does nothing.
+  assert.match(
+    runtime,
+    /const conversationLocked = Boolean\(disabled\) \|\| loadingTranscript;/,
+  );
+  assert.match(runtime, /disabled=\{conversationLocked\}/);
+  assert.match(runtime, /loadingTranscript \? "Loading this chat…"/);
+  // Voice mode submits without touching the send button.
+  assert.match(
+    runtime,
+    /function submitComposer\(\) \{[\s\S]{0,220}if \(loadingTranscript\) return;/,
+  );
+
+  // Both surfaces stop at the top of their dispatch cascade, so a runtime
+  // agent cannot bind its run to a conversation that has not settled either.
+  assert.match(
+    terminal,
+    /const submit = useCallback\([\s\S]{0,400}if \(session\.loadingSession\) return;/,
+  );
+  assert.match(terminal, /if \(runtimeUnavailable \|\| busy \|\| session\.loadingSession\) return;/);
+  assert.match(
+    gardenChat,
+    /const submit = useCallback\(\(\) => \{[\s\S]{0,300}if \(session\.loadingSession\) return;/,
+  );
+  assert.match(gardenChat, /if \(busy \|\| session\.loadingSession\) return;/);
 });

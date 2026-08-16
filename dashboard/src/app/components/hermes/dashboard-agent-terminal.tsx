@@ -276,6 +276,26 @@ const SUGGESTED_PROMPTS: Record<TerminalScope, string[]> = {
   ],
 };
 
+// The openers an ordinary chat offers are all about accumulation — what spans
+// your gardens, what to review, what connects to what — and they are the wrong
+// invitation in a chat that keeps nothing. These are the questions worth asking
+// precisely because no one is taking notes: the beginner's question, the test
+// you would rather not have on your record, the honest look at a gap.
+const TEMPORARY_SUGGESTED_PROMPTS: Record<TerminalScope, string[]> = {
+  mine: [
+    "Explain a concept from my gardens as if I had never seen it.",
+    "Quiz me on a topic in my notes, without keeping the score.",
+    "Where are the holes in what I have written about a topic?",
+    "Give me a blunt read on something I think I understand.",
+  ],
+  public: [
+    "Explain a concept from the public gardens as if I were new to it.",
+    "Quiz me on a public-garden topic, without keeping the score.",
+    "What do the public gardens leave out about a subject?",
+    "Where should I start on a subject I know nothing about?",
+  ],
+};
+
 // The navbar scrolls away with the page, so its viewport-relative bottom turns
 // negative once the page is scrolled down. Left unclamped that inflates the
 // dock past the viewport: the dock is anchored to the bottom, so the extra
@@ -298,8 +318,27 @@ function clampHeight(height: number): number {
   return Math.min(maxHeight(), Math.max(MIN_HEIGHT, Math.round(height)));
 }
 
-function defaultOpenHeight(): number {
-  return maxHeight();
+// Where the navbar's underside lands once the page is back at the top. Opening
+// the dock sends the page there, so this — not wherever the bar happens to be
+// right now — is the room the dock has to leave above itself. Reached through
+// the scroll offset because the bar is in normal flow and travels with the page.
+function navOffsetAtTop(): number {
+  if (typeof document === "undefined") return 64;
+  const nav = document.querySelector("nav");
+  if (!nav) return 64;
+  const bottom = Math.ceil(nav.getBoundingClientRect().bottom + window.scrollY);
+  return Math.min(Math.max(0, bottom), window.innerHeight);
+}
+
+// A height remembered from an earlier drag is still capped by the room the
+// navbar needs, so "fully open" always means the same thing: the page at the
+// top, the bar above the dock. Dragged up while the page was scrolled down the
+// dock can be a whole viewport tall, and opening it that way after the scroll
+// would bury the top it just went to fetch.
+function openHeight(preferred: number | null): number {
+  if (typeof window === "undefined") return 720;
+  const max = Math.max(MIN_HEIGHT, Math.round(window.innerHeight - navOffsetAtTop()));
+  return preferred === null ? max : Math.min(preferred, max);
 }
 
 function prefersReducedMotion(): boolean {
@@ -490,8 +529,9 @@ function RuntimeTerminal({
     }
     if (initialPanel) {
       // A route-owned panel is the requested page, so it cannot stay hidden in
-      // the normally collapsed dock on first arrival.
-      setHeight(preferredOpenHeightRef.current ?? defaultOpenHeight());
+      // the normally collapsed dock on first arrival. Nothing is scrolled yet,
+      // so this opens to exactly what a click would.
+      setHeight(openHeight(preferredOpenHeightRef.current));
     }
   }, [initialPanel]);
   const [isResizing, setIsResizing] = useState(false);
@@ -625,8 +665,25 @@ function RuntimeTerminal({
   // animation lasts, and it does two jobs: it puts the transition on the dock,
   // and while closing it keeps the body rendered, so the dock carries the
   // transcript down with it instead of shrinking an emptied surface.
+  //
+  // What the animation moves is a translation, never the height. This is the
+  // most expensive box on the page — rail, transcript, composer — and the page
+  // behind it watches this element with a ResizeObserver to keep scrollable
+  // room under it. Animating the height relaid out the whole terminal and the
+  // whole page beneath it on every frame, which is what made the dock stutter
+  // open. A dock already at its final size, merely pushed down, costs the
+  // compositor one translation and the main thread nothing.
   const [glide, setGlide] = useState<"opening" | "closing" | null>(null);
+  // The size the box holds for the length of a glide: the open height in both
+  // directions, because a closing dock is still full until the moment it shuts.
+  const [glideBox, setGlideBox] = useState<number | null>(null);
+  // How far below that box the dock currently sits, and whether that distance
+  // is being animated — the opening frame has to land unanimated, or there is
+  // no start point for the transition to run from.
+  const [glideShift, setGlideShift] = useState(0);
+  const [glideMoving, setGlideMoving] = useState(false);
   const glideTimer = useRef<number | null>(null);
+  const glideRaf = useRef<number | null>(null);
   const bodyMounted = isOpen || glide === "closing";
 
   // Keep the header items mounted through their exit animation so they can
@@ -666,6 +723,9 @@ function RuntimeTerminal({
       }
       if (glideTimer.current !== null) {
         window.clearTimeout(glideTimer.current);
+      }
+      if (glideRaf.current !== null) {
+        window.cancelAnimationFrame(glideRaf.current);
       }
     },
     [],
@@ -832,8 +892,17 @@ function RuntimeTerminal({
 
     sync();
     window.addEventListener("resize", sync);
+    // The threshold is measured against the navbar, and the navbar rides the
+    // page, so scrolling changes the answer — including the ride to the top
+    // that opening the dock sets off. Without this the lock would be decided
+    // from where the page stood when the dock opened and never revisited.
+    // Collapsed the threshold cannot be met at any scroll position, so the
+    // listener is only worth its layout read while the dock is open.
+    const watchesScroll = height > COLLAPSED_HEIGHT + 8;
+    if (watchesScroll) window.addEventListener("scroll", sync, { passive: true });
     return () => {
       window.removeEventListener("resize", sync);
+      if (watchesScroll) window.removeEventListener("scroll", sync);
       body.style.overflow = previousOverflow;
       body.style.paddingRight = previousPaddingRight;
     };
@@ -4164,6 +4233,10 @@ function RuntimeTerminal({
   const submit = useCallback((
     textOverride?: string,
   ) => {
+    // Nothing may be dispatched into a chat that is still arriving -- not a
+    // Hermes turn and not one of the runtime-agent launches below, which bind
+    // their run to whichever conversation is selected when they start.
+    if (session.loadingSession) return;
     const text = (textOverride ?? input).trim();
     // Only the composer calls this with no override, so this is the one place
     // that knows a human is speaking: it ends whatever hand-off chain was
@@ -5218,7 +5291,7 @@ function RuntimeTerminal({
 
   const sendSuggestedPrompt = useCallback(
     (text: string) => {
-      if (runtimeUnavailable || busy) return;
+      if (runtimeUnavailable || busy || session.loadingSession) return;
       if (
         routeSocialsManagerCommand(text) ||
         routeHardwareBlueprintCommand(text) ||
@@ -5619,26 +5692,77 @@ function RuntimeTerminal({
       window.clearTimeout(glideTimer.current);
       glideTimer.current = null;
     }
+    if (glideRaf.current !== null) {
+      window.cancelAnimationFrame(glideRaf.current);
+      glideRaf.current = null;
+    }
     setGlide(null);
+    setGlideBox(null);
+    setGlideShift(0);
+    setGlideMoving(false);
+  }
+
+  // Where the dock's top edge actually is: neither the height in state nor the
+  // box's own height, once a glide has the box sitting below the viewport.
+  function visualHeight(): number {
+    const dock = dockRef.current;
+    if (!dock) return height;
+    return Math.max(
+      MIN_HEIGHT,
+      Math.round(window.innerHeight - dock.getBoundingClientRect().top),
+    );
   }
 
   // The one place the dock is opened or closed outright; everything else moves
-  // it by dragging. The timer only outlives the animation to take the
-  // transition back off, so the next drag starts unencumbered.
+  // it by dragging. The timer only outlives the animation to put the box back
+  // on its own height, so the next drag starts unencumbered.
   function toggleDock(open: boolean) {
+    // Read the edge before cancelling: a glide caught mid-flight is reversed
+    // from wherever it had got to, not from where it was headed.
+    const from = visualHeight();
     cancelGlide();
-    setHeight(
-      open ? (preferredOpenHeightRef.current ?? defaultOpenHeight()) : COLLAPSED_HEIGHT,
-    );
-    if (prefersReducedMotion()) return;
+    const reduced = prefersReducedMotion();
+    if (open) {
+      // Fully open, the dock is the page: everything the reader had scrolled
+      // past is behind it, and the strip left showing above it should be the
+      // top of the dashboard rather than whichever row of gardens happened to
+      // be under the cursor. The height it opens to already reserves the navbar
+      // this brings back, so the two movements arrive together.
+      window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
+    }
+    const target = open ? openHeight(preferredOpenHeightRef.current) : COLLAPSED_HEIGHT;
+    setHeight(target);
+    if (reduced) return;
+    // Opening, the box takes the size it will end at; closing, it keeps the one
+    // it had. Either way the height above has already settled what counts as
+    // open, so the header retracts and the body learns it is on its way out
+    // while the box it lives in stays exactly as big as it was.
+    const box = Math.max(open ? target : from, MIN_HEIGHT);
     setGlide(open ? "opening" : "closing");
-    glideTimer.current = window.setTimeout(
-      () => {
-        glideTimer.current = null;
-        setGlide(null);
-      },
-      open ? DOCK_OPEN_MS : DOCK_CLOSE_MS,
-    );
+    setGlideBox(box);
+    setGlideShift(open ? box - from : 0);
+    // Two frames of stillness before anything moves. Opening mounts the entire
+    // terminal in the commit above, and a transition started in the same frame
+    // spends its first stretch waiting on that work — the stutter this exists
+    // to remove. By the time these run, the box is built, laid out and painted,
+    // and sliding it is the only thing left to do.
+    glideRaf.current = window.requestAnimationFrame(() => {
+      glideRaf.current = window.requestAnimationFrame(() => {
+        glideRaf.current = null;
+        setGlideMoving(true);
+        setGlideShift(open ? 0 : box - COLLAPSED_HEIGHT);
+        glideTimer.current = window.setTimeout(
+          () => {
+            glideTimer.current = null;
+            setGlide(null);
+            setGlideBox(null);
+            setGlideShift(0);
+            setGlideMoving(false);
+          },
+          open ? DOCK_OPEN_MS : DOCK_CLOSE_MS,
+        );
+      });
+    });
   }
 
   function handleResizeStart(event: ReactPointerEvent<HTMLElement>) {
@@ -5647,7 +5771,7 @@ function RuntimeTerminal({
       startY: event.clientY,
       // Where the edge actually is, which is not the height in state while a
       // glide is still running.
-      startHeight: dockRef.current?.getBoundingClientRect().height ?? height,
+      startHeight: visualHeight(),
       // Whether it counts as open, though, is the state's call: caught halfway
       // through closing the dock is still tall, and a click there means "open
       // it again", not "close it twice".
@@ -5687,14 +5811,19 @@ function RuntimeTerminal({
   }
 
   const terminalStyle: CSSProperties = {
-    height,
+    // A glide lends the box its own height and moves it by offset instead, so
+    // nothing inside is resized while it travels; dragging owns the height
+    // directly, one frame at a time, exactly as before.
+    height: glideBox ?? height,
+    transform: glide ? `translate3d(0, ${glideShift}px, 0)` : undefined,
     // Set for the span of a click-driven open or close and no longer: a dragged
     // edge carrying a transition trails the pointer rather than tracking it.
-    transition: glide
+    transition: glideMoving
       ? glide === "opening"
-        ? `height ${DOCK_OPEN_MS}ms ${DOCK_OPEN_EASING}`
-        : `height ${DOCK_CLOSE_MS}ms ${DOCK_CLOSE_EASING}`
+        ? `transform ${DOCK_OPEN_MS}ms ${DOCK_OPEN_EASING}`
+        : `transform ${DOCK_CLOSE_MS}ms ${DOCK_CLOSE_EASING}`
       : undefined,
+    willChange: glide ? "transform" : undefined,
     // Once the shader owns the bar, the dock's fill has to get out of the way:
     // the scene layer paints above it, and a solid dock would just be a second,
     // flatter surface behind the glass.
@@ -6243,10 +6372,20 @@ function RuntimeTerminal({
                 statusMessage={attachmentStatus}
                 loadingTranscript={session.loadingSession}
                 emptyState={
+                  // Only the heading and the openers move with the mode. The
+                  // grounding line is true either way and the banner above has
+                  // already said what is switched off, so saying it twice here
+                  // would be the empty state explaining itself.
                   <div className="flex flex-col items-center gap-5 py-8 text-center">
                     <div>
                       <p className="text-lg font-medium text-white">
-                        {isPublic ? "Ask the public knowledge hub" : "Ask your whole knowledge base"}
+                        {temporaryChat
+                          ? isPublic
+                            ? "Ask the public hub off the record"
+                            : "Ask off the record"
+                          : isPublic
+                            ? "Ask the public knowledge hub"
+                            : "Ask your whole knowledge base"}
                       </p>
                       <p className="mt-1.5 text-sm text-gray-500">
                         {isPublic
@@ -6255,13 +6394,13 @@ function RuntimeTerminal({
                       </p>
                     </div>
                     <div className="grid w-full max-w-xl gap-2 sm:grid-cols-2">
-                      {SUGGESTED_PROMPTS[scope].map((prompt) => (
+                      {(temporaryChat ? TEMPORARY_SUGGESTED_PROMPTS : SUGGESTED_PROMPTS)[scope].map((prompt) => (
                         <button
                           type="button"
                           key={prompt}
                           onClick={() => sendSuggestedPrompt(prompt)}
                           disabled={busy || runtimeUnavailable}
-                          className="neu-button rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
+                          className="bb-terminal-suggestion neu-button rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           {prompt}
                         </button>

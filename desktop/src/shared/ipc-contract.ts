@@ -9,6 +9,8 @@ export const IPC_CHANNELS = {
   openMicrophoneSettings: "breadboard:open-microphone-settings",
   allowThemeLocation: "breadboard:allow-theme-location",
   setTheme: "breadboard:set-theme",
+  getStartupSound: "breadboard:get-startup-sound",
+  setStartupSound: "breadboard:set-startup-sound",
   startupContinue: "breadboard:startup-continue",
   startupAwaitDashboard: "breadboard:startup-await-dashboard",
   startupState: "breadboard:startup-state",

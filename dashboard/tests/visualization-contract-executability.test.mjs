@@ -27,6 +27,7 @@ import {
 import {
   renderAuthoritativeLearningUnitContractMarkdown,
 } from "../src/lib/learning-unit-contract-markdown.ts";
+import { normalizeLearningUnits } from "../src/lib/learning-unit-contract.ts";
 import { verifyFinalArtifactNoMutation } from "../src/lib/garden-finalize.ts";
 import {
   GENERATED_VISUAL_CAPABILITY_MANIFEST,
@@ -299,6 +300,28 @@ function executablePredictionContract(id = "visual-u3-prediction") {
       },
     ],
   };
+}
+
+function numericPredictionContract(id = "visual-u3-numeric-prediction") {
+  const contract = executablePredictionContract(id);
+  contract.controls[0] = {
+    id: "case_a_value",
+    kind: "variable",
+    label: "Case A",
+    type: "slider",
+    protocolRole: "prediction_input",
+    min: 0,
+    max: 50,
+    step: 1,
+    defaultValue: 0,
+    evidence: [{ anchor: ANCHOR, quote: EVIDENCE }],
+  };
+  contract.visualIntent = {
+    ...contract.visualIntent,
+    learnerManipulates: ["Case A", "Commit prediction", "Reveal outcome"],
+    duplicateSignature: "case-a-numeric-prediction-commit-reveal",
+  };
+  return contract;
 }
 
 function decision(unitId, necessity, contract) {
@@ -588,22 +611,36 @@ test("Learn's executability provider uses strict exact JSON and preserves malfor
     verdict: "approve",
     reason: "The complete contract is executable.",
   }]));
-  assert.deepEqual(
-    strictVisualContractExecutabilityResponseOrExactRaw(valid),
-    JSON.parse(valid),
-  );
+  assert.deepEqual(strictVisualContractExecutabilityResponseOrExactRaw(valid), {
+    kind: "visual_contract_executability_exact_raw_v2",
+    content: valid,
+  });
   for (const malformed of [
     `\`\`\`json\n${valid}\n\`\`\``,
     `prefix ${valid} suffix`,
     `${valid}}`,
   ]) {
-    assert.equal(
+    assert.deepEqual(
       strictVisualContractExecutabilityResponseOrExactRaw(malformed),
-      malformed,
-      "fences, prose wrappers, and surplus delimiters remain exact rejected AI text",
+      { kind: "visual_contract_executability_exact_raw_v2", content: malformed },
+      "fences, prose wrappers, and surplus delimiters remain exact provider text",
     );
   }
-  assert.equal(strictVisualContractExecutabilityResponseOrExactRaw(" \r\n\t"), null);
+  assert.deepEqual(strictVisualContractExecutabilityResponseOrExactRaw(" \r\n\t"), {
+    kind: "visual_contract_executability_exact_raw_v2",
+    content: " \r\n\t",
+  });
+  for (const raw of [
+    "null",
+    '{"schemaVersion":1,"schemaVersion":1,"gardenId":"prediction-garden","reviews":[]}',
+    '{"numeric":1e999}',
+  ]) {
+    assert.deepEqual(
+      strictVisualContractExecutabilityResponseOrExactRaw(raw),
+      { kind: "visual_contract_executability_exact_raw_v2", content: raw },
+      "valid JSON primitives, duplicate keys, and overflow spellings remain byte-exact until strict review",
+    );
+  }
 });
 
 test("surplus-brace output reaches a fresh complete AI rereview byte-for-byte", async () => {
@@ -637,10 +674,10 @@ test("surplus-brace output reaches a fresh complete AI rereview byte-for-byte", 
   ]);
   const malformedRaw = responseWithSurplusBraceAfterEachReplacement(freshBatch);
   assert.throws(() => JSON.parse(malformedRaw), SyntaxError);
-  assert.equal(
-    strictVisualContractExecutabilityResponseOrExactRaw(malformedRaw),
-    malformedRaw,
-  );
+  assert.deepEqual(strictVisualContractExecutabilityResponseOrExactRaw(malformedRaw), {
+    kind: "visual_contract_executability_exact_raw_v2",
+    content: malformedRaw,
+  });
 
   const requests = [];
   const before = structuredClone([u3, u10]);
@@ -654,8 +691,11 @@ test("surplus-brace output reaches a fresh complete AI rereview byte-for-byte", 
     provider: async (request) => {
       requests.push(request);
       if (requests.length === 1) return malformedRaw;
-      assert.equal(request.sourceContext.previousResponse, malformedRaw);
-      assert.equal(JSON.parse(request.user).previousResponse, malformedRaw);
+      assert.equal(request.sourceContext.previousProtocolFailure.response, malformedRaw);
+      assert.equal(
+        JSON.parse(request.user).previousProtocolFailure.response,
+        malformedRaw,
+      );
       assert.equal(request.sourceContext.previousRejectionReasons.length, 1);
       assert.match(
         request.sourceContext.previousRejectionReasons[0],
@@ -665,7 +705,7 @@ test("surplus-brace output reaches a fresh complete AI rereview byte-for-byte", 
         request.sourceContext.previousRejectionReasons[0],
         /bounded context/,
       );
-      assert.match(request.system, /exact malformed response from the prior attempt/i);
+      assert.match(request.system, /previousProtocolFailure is present/i);
       assert.match(request.system, /validate the entire response with a strict JSON parser/i);
       return structuredClone(freshBatch);
     },
@@ -676,12 +716,193 @@ test("surplus-brace output reaches a fresh complete AI rereview byte-for-byte", 
   assert.deepEqual([u3, u10], before, "the rejected raw response cannot mutate contracts");
   assert.equal(reviewed.attempts[0].accepted, false);
   assert.equal(reviewed.attempts[0].response, malformedRaw);
-  assert.equal(reviewed.attempts[0].responseEncoding, "json");
+  assert.equal(reviewed.attempts[0].responseEncoding, "exact_raw");
   assert.equal(reviewed.attempts[1].accepted, true);
-  assert.deepEqual(reviewed.attempts[1].response, freshBatch);
+  assert.deepEqual(JSON.parse(reviewed.attempts[1].response), freshBatch);
   assert.deepEqual(reviewed.acceptedResponse, freshBatch);
   assert.deepEqual(reviewed.reviewedContracts.U3, u3Replacement);
   assert.deepEqual(reviewed.reviewedContracts.U10, u10Replacement);
+});
+
+test("a parseable response accepted on a protocol retry persists its exact retry ordinal", async () => {
+  const unit = activeUnit(executablePredictionContract("visual-u3-protocol-retry"));
+  const replacement = executablePredictionContract("visual-u3-protocol-retry-corrected");
+  const malformedRaw = '{"schemaVersion":1,"gardenId":"prediction-garden","reviews":[';
+  const acceptedRaw = JSON.stringify(response([{
+    unitId: "U3",
+    verdict: "replace",
+    reason: "The complete model-authored correction is executable.",
+    replacement,
+  }]));
+  const auditContext = {
+    phase: "generation",
+    jobId: "job-protocol-retry-accept",
+    model: "review-model",
+    learningMapId: "map-protocol-retry-accept",
+    textbookVersionId: "textbook-protocol-retry-accept",
+  };
+  let calls = 0;
+  const review = await reviewVisualizationPlanExecutability({
+    gardenId: GARDEN_ID,
+    learningMap: learningMap(),
+    learningUnits: [unit],
+    initialPlan: initialPlan([unit]),
+    canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+    auditContext,
+    maximumRepeatedInteractionSignature: 1,
+    provider: async () => {
+      calls += 1;
+      return strictVisualContractExecutabilityResponseOrExactRaw(
+        calls === 1 ? malformedRaw : acceptedRaw,
+      );
+    },
+  });
+  assert.equal(review.calls, 2);
+  assert.equal(review.attempts[1].requestPurpose, "protocol_retry");
+  assert.equal(review.attempts[1].responseClassification, "semantic_candidate");
+  assert.equal(review.attempts[1].accepted, true);
+  assert.equal(review.attempts[1].transportAccounting.protocolRetry, 1);
+  assert.equal(review.attempts[1].transportAccounting.semanticCandidate, 1);
+
+  const routedUnits = applyVisualizationRoutesToLearningUnits(review.learningUnits, review.plan);
+  const finalPlan = buildFinalVisualizationPlanFromRoutedContracts({
+    gardenId: GARDEN_ID,
+    learningMap: learningMap(),
+    finalRoutedLearningUnits: routedUnits,
+    reviewedPlan: review.plan,
+    canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+  });
+  const ledger = buildVisualContractExecutabilityLedger({
+    gardenId: GARDEN_ID,
+    context: auditContext,
+    review,
+    finalRoutedLearningUnits: routedUnits,
+    finalVisualizationPlan: finalPlan,
+    structuralContractRepair: { source: "none", attempts: [] },
+  });
+  assert.equal(ledger.attempts[1].transportAccounting.protocolRetry, 1);
+  assert.deepEqual(visualContractExecutabilityLinkageProblems({
+    gardenId: GARDEN_ID,
+    ledger,
+    finalLearningUnits: routedUnits,
+    visualizationPlan: finalPlan,
+    requireGenerationPhase: true,
+    authoritativeCanonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+    expectedContext: auditContext,
+  }), []);
+});
+
+test("model-authored necessity coverage and teaching-medium rationale survive LUC normalization and strict linkage", async () => {
+  const rawUnit = activeUnit(executablePredictionContract("visual-u3-normalized-decision"));
+  rawUnit.interactiveVisualPlan.decision.confidence = 0.87;
+  rawUnit.interactiveVisualPlan.decision.alternativeCoverage = "uncovered";
+  rawUnit.interactiveVisualPlan.decision.teachingMediumReason =
+    "A source-grounded interactive comparison is the selected teaching medium.";
+  rawUnit.teachingMediumPlan.reason = rawUnit.interactiveVisualPlan.decision.teachingMediumReason;
+
+  const [normalized] = normalizeLearningUnits([rawUnit], { modelAuthoredOnly: true });
+  assert.equal(
+    normalized.interactiveVisualPlan?.decision.alternativeCoverage,
+    rawUnit.interactiveVisualPlan.decision.alternativeCoverage,
+  );
+  assert.equal(
+    normalized.interactiveVisualPlan?.decision.teachingMediumReason,
+    rawUnit.interactiveVisualPlan.decision.teachingMediumReason,
+  );
+
+  const auditContext = {
+    phase: "generation",
+    jobId: "job-normalized-decision",
+    model: "review-model",
+    learningMapId: "map-normalized-decision",
+    textbookVersionId: "textbook-normalized-decision",
+  };
+  const review = await reviewVisualizationPlanExecutability({
+    gardenId: GARDEN_ID,
+    learningMap: learningMap(),
+    learningUnits: [normalized],
+    initialPlan: initialPlan([normalized]),
+    canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+    auditContext,
+    maximumRepeatedInteractionSignature: 1,
+    provider: async () => response([{
+      unitId: "U3",
+      verdict: "approve",
+      reason: "The complete model-authored contract is executable.",
+    }]),
+  });
+  const routedUnits = applyVisualizationRoutesToLearningUnits(review.learningUnits, review.plan);
+  // The strict finalizer reloads the persisted Learning Unit Contract rather
+  // than receiving this in-memory routed projection. Re-normalize the JSON
+  // form here so a dropped decision field cannot be masked by object identity.
+  const persistedRoutedUnits = normalizeLearningUnits(
+    JSON.parse(JSON.stringify(routedUnits)),
+  );
+  assert.equal(
+    persistedRoutedUnits[0].interactiveVisualPlan?.decision.alternativeCoverage,
+    "uncovered",
+  );
+  assert.equal(
+    persistedRoutedUnits[0].interactiveVisualPlan?.decision.teachingMediumReason,
+    rawUnit.interactiveVisualPlan.decision.teachingMediumReason,
+  );
+  const finalPlan = buildFinalVisualizationPlanFromRoutedContracts({
+    gardenId: GARDEN_ID,
+    learningMap: learningMap(),
+    finalRoutedLearningUnits: persistedRoutedUnits,
+    reviewedPlan: review.plan,
+    canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+  });
+  const ledger = buildVisualContractExecutabilityLedger({
+    gardenId: GARDEN_ID,
+    context: auditContext,
+    review,
+    finalRoutedLearningUnits: persistedRoutedUnits,
+    finalVisualizationPlan: finalPlan,
+    structuralContractRepair: { source: "none", attempts: [] },
+  });
+  assert.equal(
+    finalPlan.visualNecessityDecisions[0].alternativeCoverage,
+    "uncovered",
+  );
+  assert.equal(
+    finalPlan.visualNecessityDecisions[0].teachingMediumReason,
+    rawUnit.interactiveVisualPlan.decision.teachingMediumReason,
+  );
+  assert.equal(
+    ledger.immutableGardenAllocation[0].decisionBeforeMechanicalRouting.alternativeCoverage,
+    "uncovered",
+  );
+  assert.equal(
+    ledger.immutableGardenAllocation[0].decisionBeforeMechanicalRouting.teachingMediumReason,
+    rawUnit.interactiveVisualPlan.decision.teachingMediumReason,
+  );
+  assert.deepEqual(visualContractExecutabilityLinkageProblems({
+    gardenId: GARDEN_ID,
+    ledger,
+    finalLearningUnits: persistedRoutedUnits,
+    visualizationPlan: finalPlan,
+    requireGenerationPhase: true,
+    authoritativeCanonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+    expectedContext: auditContext,
+  }), []);
+
+  const invalidCoverage = structuredClone(rawUnit);
+  invalidCoverage.interactiveVisualPlan.decision.alternativeCoverage = "covered_by_prose";
+  assert.equal(
+    normalizeLearningUnits([invalidCoverage], { modelAuthoredOnly: true })[0]
+      .interactiveVisualPlan,
+    undefined,
+    "a model-authored decision cannot smuggle an invalid alternativeCoverage enum through normalization",
+  );
+  const missingMediumReason = structuredClone(rawUnit);
+  missingMediumReason.interactiveVisualPlan.decision.teachingMediumReason = "";
+  assert.equal(
+    normalizeLearningUnits([missingMediumReason], { modelAuthoredOnly: true })[0]
+      .interactiveVisualPlan,
+    undefined,
+    "a model-authored decision cannot omit the teaching-medium rationale through normalization",
+  );
 });
 
 test("repeated malformed raw executability responses exhaust the AI budget and fail closed", async () => {
@@ -719,12 +940,331 @@ test("repeated malformed raw executability responses exhaust the AI budget and f
   );
   assert.equal(requests.length, 3);
   for (const request of requests.slice(1)) {
-    assert.equal(request.sourceContext.previousResponse, malformedRaw);
+    assert.equal(request.sourceContext.previousProtocolFailure.response, malformedRaw);
     assert.match(
       request.sourceContext.previousRejectionReasons.join(" "),
       /strict JSON\.parse failed at position \d+/,
     );
   }
+});
+
+test("protocol and semantic candidate caps share a hard five-invocation bound without mutation", async () => {
+  const unit = activeUnit(executablePredictionContract("visual-u3-hard-cap"));
+  const before = structuredClone(unit);
+  const malformedRaw = '{"schemaVersion":1,"gardenId":"prediction-garden","reviews":[';
+  const requests = [];
+  await assert.rejects(
+    () => runVisualContractExecutabilityReview({
+      gardenId: GARDEN_ID,
+      learningUnits: [unit],
+      canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+      provider: async (request) => {
+        requests.push(request);
+        return requests.length <= 2
+          ? strictVisualContractExecutabilityResponseOrExactRaw(malformedRaw)
+          : response([]);
+      },
+      validateAll: (learningUnits) => learningUnits,
+    }),
+    (error) => {
+      assert.equal(error.name, "VisualContractExecutabilityReviewError");
+      assert.equal(error.calls, 5);
+      assert.equal(error.semanticCandidates, 3);
+      assert.equal(error.protocolRetries, 2);
+      assert.match(error.message, /omitted active unit U3/i);
+      return true;
+    },
+  );
+  assert.equal(requests.length, 5);
+  assert.deepEqual(
+    requests.map((request) => request.requestPurpose),
+    [
+      "initial_semantic_review",
+      "protocol_retry",
+      "protocol_retry",
+      "semantic_rereview",
+      "semantic_rereview",
+    ],
+  );
+  assert.deepEqual(unit, before, "no capped rejected candidate changes the caller's contract");
+});
+
+test("protocol retries preserve exact overflowing semantic raw text into a bounded corrected ledger", async () => {
+  const unit = activeUnit(numericPredictionContract("visual-u3-numeric-original"));
+  const before = structuredClone(unit);
+  const overflowing = numericPredictionContract("visual-u3-numeric-overflow");
+  const corrected = numericPredictionContract("visual-u3-numeric-corrected");
+  const overflowingBatch = response([{
+    unitId: "U3",
+    verdict: "replace",
+    reason: "Use a numeric prediction control for the supplied source relationship.",
+    replacement: overflowing,
+  }]);
+  const overflowingRaw = JSON.stringify(overflowingBatch).replace(
+    '"step":1',
+    '"step":1e999',
+  );
+  assert.match(overflowingRaw, /"step":1e999/);
+  assert.equal(
+    JSON.stringify(JSON.parse(overflowingRaw)).includes('"step":null'),
+    true,
+    "the focused fixture demonstrates why preserving the provider bytes is required",
+  );
+  const correctedRaw = JSON.stringify(response([{
+    unitId: "U3",
+    verdict: "replace",
+    reason: "Use a finite authored slider step for the numeric prediction.",
+    replacement: corrected,
+  }]));
+  const malformedRaw = '{"schemaVersion":1,"gardenId":"prediction-garden","reviews":[';
+  const requests = [];
+  const auditContext = {
+    phase: "generation",
+    jobId: "job-raw-overflow",
+    model: "review-model",
+    learningMapId: "map-raw-overflow",
+    textbookVersionId: "textbook-raw-overflow",
+  };
+  const review = await reviewVisualizationPlanExecutability({
+    gardenId: GARDEN_ID,
+    learningMap: learningMap(),
+    learningUnits: [unit],
+    initialPlan: initialPlan([unit]),
+    canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+    auditContext,
+    maximumRepeatedInteractionSignature: 1,
+    provider: async (request) => {
+      requests.push(request);
+      return [
+        strictVisualContractExecutabilityResponseOrExactRaw(malformedRaw),
+        strictVisualContractExecutabilityResponseOrExactRaw(malformedRaw),
+        strictVisualContractExecutabilityResponseOrExactRaw(overflowingRaw),
+        strictVisualContractExecutabilityResponseOrExactRaw(correctedRaw),
+      ][requests.length - 1];
+    },
+  });
+
+  assert.deepEqual(unit, before, "no rejected response mutates the caller's contract");
+  assert.equal(review.calls, 4);
+  assert.equal(review.protocolRejections, 2);
+  assert.equal(review.protocolRetries, 2);
+  assert.equal(review.semanticCandidates, 2);
+  assert.equal(review.rejectedReviews, 1);
+  assert.equal(review.attempts[2].requestPurpose, "protocol_retry");
+  assert.equal(review.attempts[2].responseClassification, "semantic_candidate");
+  assert.equal(review.attempts[2].transportAccounting.semanticCandidate, 1);
+  assert.equal(review.attempts[2].transportAccounting.protocolRetry, 2);
+  assert.equal(review.attempts[2].response, overflowingRaw);
+  assert.equal(review.attempts[2].exactRawResponseSha256, hashText(overflowingRaw));
+  assert.equal(requests[3].requestPurpose, "semantic_rereview");
+  assert.equal(requests[3].sourceContext.previousProtocolFailure, undefined);
+  assert.equal(
+    requests[3].sourceContext.previousSemanticFailure.response,
+    overflowingRaw,
+  );
+  assert.equal(
+    requests[3].sourceContext.previousSemanticFailure.exactRawResponseSha256,
+    hashText(overflowingRaw),
+  );
+  assert.match(
+    requests[3].sourceContext.previousSemanticFailure.rejectionReasons.join(" "),
+    /step must be finite/i,
+  );
+  assert.match(requests[3].user, /1e999/);
+  assert.doesNotMatch(requests[3].user, /"step"\\?":null/);
+
+  // A later mechanical route may project a valid routed type that differs
+  // from the pre-review allocation. Semantic rejection replay must restore
+  // the signed pre-route decision before it validates model feedback.
+  const routeProjection = structuredClone(review.plan);
+  routeProjection.decisions[0].selectedRenderer = "post_review_route_type";
+  const routedUnits = applyVisualizationRoutesToLearningUnits(review.learningUnits, routeProjection);
+  assert.equal(
+    routedUnits[0].interactiveVisualPlan.decision.recommendedVisualType,
+    "post_review_route_type",
+  );
+  const finalPlan = buildFinalVisualizationPlanFromRoutedContracts({
+    gardenId: GARDEN_ID,
+    learningMap: learningMap(),
+    finalRoutedLearningUnits: routedUnits,
+    reviewedPlan: review.plan,
+    canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+  });
+  finalPlan.decisions[0].selectedRenderer = "post_review_route_type";
+  const ledger = buildVisualContractExecutabilityLedger({
+    gardenId: GARDEN_ID,
+    context: auditContext,
+    review,
+    finalRoutedLearningUnits: routedUnits,
+    finalVisualizationPlan: finalPlan,
+    structuralContractRepair: { source: "none", attempts: [] },
+  });
+  assert.equal(ledger.callAccounting.providerInvocations, 4);
+  assert.equal(ledger.callAccounting.semanticCandidates, 2);
+  assert.equal(ledger.callAccounting.protocolRetries, 2);
+  assert.equal(ledger.callAccounting.protocolRejections, 2);
+  assert.equal(ledger.attempts[2].response, overflowingRaw);
+  assert.match(JSON.stringify(ledger), /1e999/);
+  assert.deepEqual(visualContractExecutabilityLinkageProblems({
+    gardenId: GARDEN_ID,
+    ledger,
+    finalLearningUnits: routedUnits,
+    visualizationPlan: finalPlan,
+    requireGenerationPhase: true,
+    authoritativeCanonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+    expectedContext: auditContext,
+  }), []);
+
+  const persistenceParent = fs.mkdtempSync(path.join(os.tmpdir(), "executability-v2-raw-"));
+  const persistenceRoot = path.join(persistenceParent, "incoming-garden");
+  fs.mkdirSync(persistenceRoot, { recursive: true });
+  try {
+    const ledgerPath = saveVisualContractExecutabilityLedger({
+      gardenDir: persistenceRoot,
+      ledger,
+    });
+    const loaded = loadVisualContractExecutabilityLedger(persistenceRoot);
+    assert.deepEqual(loaded, ledger, "the signed v2 ledger survives byte-exact save/load");
+    assert.equal(loaded.attempts[2].response, overflowingRaw);
+
+    const legacy = structuredClone(ledger);
+    legacy.schemaVersion = 1;
+    refreshLedgerIntegrity(legacy);
+    fs.writeFileSync(ledgerPath, `${JSON.stringify(legacy, null, 2)}\n`, "utf8");
+    assert.equal(
+      loadVisualContractExecutabilityLedger(persistenceRoot),
+      null,
+      "a pre-v2 ledger cannot silently validate under exact-raw protocol semantics",
+    );
+  } finally {
+    fs.rmSync(persistenceParent, { recursive: true, force: true });
+  }
+
+  const rawTamper = structuredClone(ledger);
+  rawTamper.attempts[2].response = overflowingRaw.replace("1e999", "1e998");
+  refreshLedgerIntegrity(rawTamper);
+  assert.match(
+    visualContractExecutabilityLinkageProblems({
+      gardenId: GARDEN_ID,
+      ledger: rawTamper,
+      finalLearningUnits: routedUnits,
+      visualizationPlan: finalPlan,
+    }).join(" "),
+    /attempt 3 fields are invalid|response encoding is invalid/i,
+    "changing exact provider bytes without the matching raw hash fails closed",
+  );
+
+  const paddedRawTamper = structuredClone(ledger);
+  const paddedOverflowingRaw = `${overflowingRaw}${" ".repeat(520_000)}`;
+  paddedRawTamper.attempts[2].response = paddedOverflowingRaw;
+  paddedRawTamper.attempts[2].exactRawResponseSha256 = hashText(paddedOverflowingRaw);
+  paddedRawTamper.attempts[3].packet.previousSemanticFailure.response = paddedOverflowingRaw;
+  paddedRawTamper.attempts[3].packet.previousSemanticFailure.exactRawResponseSha256 =
+    hashText(paddedOverflowingRaw);
+  refreshExecutabilityAttemptHashes(paddedRawTamper.attempts[3]);
+  refreshLedgerIntegrity(paddedRawTamper);
+  assert.match(
+    visualContractExecutabilityLinkageProblems({
+      gardenId: GARDEN_ID,
+      ledger: paddedRawTamper,
+      finalLearningUnits: routedUnits,
+      visualizationPlan: finalPlan,
+    }).join(" "),
+    /attempt 3 fields are invalid/i,
+    "a coherently rehashed semantic raw response cannot bypass the exact response-byte cap",
+  );
+
+  const semanticReasonTamper = structuredClone(ledger);
+  const forgedReasons = [{
+    code: "forged_semantic_reason",
+    path: "review:U3.replacement",
+    message: "a forged semantic diagnosis",
+    unitId: "U3",
+  }];
+  semanticReasonTamper.attempts[2].rejectionReasons = forgedReasons;
+  semanticReasonTamper.attempts[3].packet.previousSemanticFailure.rejectionReasons = [
+    "review:U3.replacement: a forged semantic diagnosis",
+  ];
+  semanticReasonTamper.attempts[3].packet.previousRejectionReasons = [
+    "review:U3.replacement: a forged semantic diagnosis",
+  ];
+  refreshExecutabilityAttemptHashes(semanticReasonTamper.attempts[3]);
+  refreshLedgerIntegrity(semanticReasonTamper);
+  assert.match(
+    visualContractExecutabilityLinkageProblems({
+      gardenId: GARDEN_ID,
+      ledger: semanticReasonTamper,
+      finalLearningUnits: routedUnits,
+      visualizationPlan: finalPlan,
+    }).join(" "),
+    /semantic candidate 3 rejection diagnostic is not exact/i,
+    "a coherently rehashed semantic diagnostic cannot replace validator-derived feedback",
+  );
+});
+
+test("a live-shaped missing numeric step and exact overflowing retry both reach one final model-authored correction", async () => {
+  const unit = activeUnit(numericPredictionContract("visual-u3-live-shaped-original"));
+  const before = structuredClone(unit);
+  const missingStep = numericPredictionContract("visual-u3-live-shaped-missing-step");
+  delete missingStep.controls[0].step;
+  const overflowing = numericPredictionContract("visual-u3-live-shaped-overflow");
+  const corrected = numericPredictionContract("visual-u3-live-shaped-corrected");
+  const missingStepRaw = JSON.stringify(response([{
+    unitId: "U3",
+    verdict: "replace",
+    reason: "Model-authored numeric prediction interaction.",
+    replacement: missingStep,
+  }]));
+  const overflowingRaw = JSON.stringify(response([{
+    unitId: "U3",
+    verdict: "replace",
+    reason: "Model-authored numeric prediction interaction.",
+    replacement: overflowing,
+  }])).replace('"step":1', '"step":1e999');
+  const correctedRaw = JSON.stringify(response([{
+    unitId: "U3",
+    verdict: "replace",
+    reason: "Model-authored finite numeric prediction interaction.",
+    replacement: corrected,
+  }]));
+  const malformedRaw = '{"schemaVersion":1,"gardenId":"prediction-garden","reviews":[';
+  const requests = [];
+  const review = await runVisualContractExecutabilityReview({
+    gardenId: GARDEN_ID,
+    learningUnits: [unit],
+    canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+    provider: async (request) => {
+      requests.push(request);
+      return [
+        strictVisualContractExecutabilityResponseOrExactRaw(malformedRaw),
+        strictVisualContractExecutabilityResponseOrExactRaw(malformedRaw),
+        strictVisualContractExecutabilityResponseOrExactRaw(missingStepRaw),
+        strictVisualContractExecutabilityResponseOrExactRaw(overflowingRaw),
+        strictVisualContractExecutabilityResponseOrExactRaw(correctedRaw),
+      ][requests.length - 1];
+    },
+    validateAll: (learningUnits) => learningUnits,
+  });
+  assert.equal(review.calls, 5);
+  assert.equal(review.protocolRetries, 2);
+  assert.equal(review.protocolRejections, 2);
+  assert.equal(review.semanticCandidates, 3);
+  assert.equal(review.rejectedReviews, 2);
+  assert.equal(requests[3].requestPurpose, "semantic_rereview");
+  assert.equal(requests[3].sourceContext.previousSemanticFailure.response, missingStepRaw);
+  assert.match(
+    requests[3].sourceContext.previousSemanticFailure.rejectionReasons.join(" "),
+    /step must be finite/i,
+  );
+  assert.equal(requests[4].requestPurpose, "semantic_rereview");
+  assert.equal(requests[4].sourceContext.previousSemanticFailure.response, overflowingRaw);
+  assert.equal(
+    requests[4].sourceContext.previousSemanticFailure.exactRawResponseSha256,
+    hashText(overflowingRaw),
+  );
+  assert.match(requests[4].user, /1e999/);
+  assert.deepEqual(unit, before, "all rejected candidates remain non-mutating before the accepted batch");
+  assert.equal(review.reviewedContracts.U3.controls[0].step, 1);
 });
 
 test("U3 surface prediction contract receives a bounded AI-only complete replacement", async () => {
@@ -1299,6 +1839,19 @@ test("prediction protocol controls fail closed on type, evidence, role, and orde
 
 test("ledger survives replacement, links review to route only, and fails closed on tampering", async () => {
   const units = [inactiveUnit(), activeUnit()];
+  units[0].interactiveVisualPlan.decision.confidence = 0.87;
+  units[0].interactiveVisualPlan.decision.alternativeCoverage = "covered";
+  units[0].interactiveVisualPlan.decision.teachingMediumReason =
+    "The supplied prose is the selected teaching medium for the orientation unit.";
+  units[0].interactiveVisualPlan.alternativeCoverage = "covered";
+  units[0].teachingMediumPlan.reason =
+    units[0].interactiveVisualPlan.decision.teachingMediumReason;
+  units[1].interactiveVisualPlan.decision.confidence = 0.87;
+  units[1].interactiveVisualPlan.decision.alternativeCoverage = "uncovered";
+  units[1].interactiveVisualPlan.decision.teachingMediumReason =
+    "A source-grounded interactive comparison is the selected teaching medium.";
+  units[1].teachingMediumPlan.reason =
+    units[1].interactiveVisualPlan.decision.teachingMediumReason;
   const replacement = executablePredictionContract();
   const auditContext = {
     phase: "generation",
@@ -1392,7 +1945,7 @@ test("ledger survives replacement, links review to route only, and fails closed 
   });
   const oversizedReview = structuredClone(review);
   oversizedReview.attempts[0].packet.units[0].canonicalEvidence[0].text =
-    `${EVIDENCE}${"x".repeat(4_050_000)}`;
+    `${EVIDENCE}${"x".repeat(12_050_000)}`;
   refreshExecutabilityAttemptHashes(oversizedReview.attempts[0]);
   assert.throws(
     () => buildVisualContractExecutabilityLedger({
@@ -1403,7 +1956,7 @@ test("ledger survives replacement, links review to route only, and fails closed 
       finalVisualizationPlan: finalPlan,
       structuralContractRepair: { source: "none", attempts: [] },
     }),
-    /ledger exceeds 4000000 UTF-8 bytes/i,
+    /ledger exceeds 12000000 UTF-8 bytes/i,
     "the ledger byte ceiling is enforced before any persistence callback",
   );
   assert.equal(
@@ -1805,6 +2358,29 @@ test("ledger survives replacement, links review to route only, and fails closed 
       false,
       "the whole strict verifier uses the explicit garden id inside an incoming directory",
     );
+    assert.deepEqual(
+      wholeVerification.validationFailures.filter((failure) =>
+        /visualization-plan necessity decisions|opportunity necessityDecision|final visual-necessity allocation changed/i.test(failure)),
+      [],
+      "the strict finalizer preserves model-authored decision coverage and teaching-medium rationale through the persisted LUC",
+    );
+    const legacyLedger = structuredClone(ledger);
+    legacyLedger.schemaVersion = 1;
+    refreshLedgerIntegrity(legacyLedger);
+    fs.writeFileSync(filePath, `${JSON.stringify(legacyLedger, null, 2)}\n`, "utf8");
+    const legacyVerification = verifyFinalArtifactNoMutation({
+      gardenDir: root,
+      gardenSlug: GARDEN_ID,
+      updateRepairReport: false,
+      strictModelApprovedVisuals: true,
+      expectedVisualContractExecutabilityContext: auditContext,
+    });
+    assert.match(
+      legacyVerification.validationFailures.join(" "),
+      /visual-contract executability review ledger is missing or invalid/i,
+      "central finalization cannot bypass a coherently rehashed pre-v2 ledger",
+    );
+    saveVisualContractExecutabilityLedger({ gardenDir: root, ledger });
     const reversedNecessityArtifact = structuredClone(necessityArtifact);
     reversedNecessityArtifact.decisions.reverse();
     reversedNecessityArtifact.teachingMedia.reverse();

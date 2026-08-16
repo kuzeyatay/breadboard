@@ -23,6 +23,12 @@ import {
   attachIngestTokenUsageTracking,
   emptyIngestTokenUsage,
 } from "@/lib/ingest-token-usage";
+import {
+  renderSafetyCallout,
+  safetyFrontmatter,
+  scanDocumentForHiddenContent,
+  type DocumentSafetyReport,
+} from "@/lib/document-safety";
 import { ANYDOC_VERSION, convertWithAnydoc } from "@/lib/anydoc/convert";
 import type { AnydocImageSaver } from "@/lib/anydoc/convert";
 import { anydocFormatForExtension, anydocPageLabel } from "@/lib/anydoc/formats";
@@ -69,6 +75,20 @@ const PDF_OUTLINE_MAX_ENTRIES = 36;
 // of PNGs up front. This is not a source-page limit: Learn renders any later
 // syllabus/contract page from the preserved source_pdf on demand.
 const PDF_EAGER_SNAPSHOT_CACHE_PAGES = 24;
+
+// Formats whose original bytes carry concealment the extracted text no longer
+// shows — white-on-white runs, 1pt type, render mode 3. Everything else is
+// scanned for invisible Unicode and injection phrasing on its text alone.
+const STRUCTURALLY_SCANNABLE = new Set([
+  "pdf",
+  "docx",
+  "docm",
+  "dotx",
+  "pptx",
+  "pptm",
+  "xlsx",
+  "xlsm",
+]);
 
 class UploadAbortedError extends Error {
   constructor() {
@@ -1792,6 +1812,52 @@ async function runIngest({
     pages = [{ label: ext === "md" ? "Markdown" : "Text", text: plainText }];
   }
 
+  // ── Hidden-content scan ──────────────────────────────────────────────────
+  //
+  // The last stage of reading the document, and deliberately the last one that
+  // still happens before anything else in Breadboard consumes the text. Every
+  // branch above hands back hidden and visible content as one indistinguishable
+  // string — that is what makes white-on-white worth an attacker's trouble — so
+  // this is the only point where the original bytes and the extracted text are
+  // both in hand and the difference between them can still be recovered.
+  //
+  // It never rejects an upload. A false positive that lost somebody their
+  // contract would be a worse failure than the one this prevents, so the
+  // document is imported either way and the finding travels with it: quoted in
+  // a callout at the top of the source note, recorded in the note's
+  // frontmatter, and returned to the uploader as a message.
+
+  throwIfRequestAborted(request.signal);
+  emit("Checking for hidden text and prompt injection…");
+  let safetyReport: DocumentSafetyReport | undefined;
+  try {
+    safetyReport = scanDocumentForHiddenContent({
+      bytes: STRUCTURALLY_SCANNABLE.has(ext)
+        ? Buffer.from(await file.arrayBuffer())
+        : undefined,
+      ext,
+      // Both forms are scanned because a carrier can survive into one and not
+      // the other — anydoc's markdown is the content, while a VLM page's plain
+      // text is. Duplicate findings collapse in the report's dedupe pass.
+      extractedText:
+        markdownText === plainText ? plainText : `${plainText}\n\n${markdownText}`,
+      filename,
+    });
+
+    const callout = renderSafetyCallout(safetyReport);
+    if (callout) markdownText = `${callout}\n\n${markdownText}`;
+    if (safetyReport.message) {
+      console.warn(`[ingest] ${safetyReport.message}`);
+    }
+  } catch (error) {
+    // The scan is a safety net, not a gate. If it throws, the upload proceeds
+    // and the note records that no scan happened rather than implying a clean
+    // one — an absent verdict is the honest answer here.
+    console.warn(
+      `[ingest] Hidden-content scan failed for ${filename}: ${errorMessage(error, "unknown error")}`,
+    );
+  }
+
   // ── Knowledge extraction (optional) ──────────────────────────────────────
 
   let extraction: KnowledgeExtraction;
@@ -1857,19 +1923,24 @@ async function runIngest({
     plainText,
     pages,
     extraction,
-    sourceMetadata: useVlm
-      ? {
-          extraction_method: "hunyuan-ocr-gguf",
-          parse_mode: "vlm",
-          vlm_task: vlmTask,
-        }
-      : useAnydoc
+    sourceMetadata: {
+      ...(useVlm
         ? {
-            extraction_method: `anydoc-${ANYDOC_VERSION}`,
-            parse_mode: "anydoc",
-            anydoc_format: anydocFormat ?? ext,
+            extraction_method: "hunyuan-ocr-gguf",
+            parse_mode: "vlm",
+            vlm_task: vlmTask,
           }
-        : undefined,
+        : useAnydoc
+          ? {
+              extraction_method: `anydoc-${ANYDOC_VERSION}`,
+              parse_mode: "anydoc",
+              anydoc_format: anydocFormat ?? ext,
+            }
+          : {}),
+      // Written for a clean document too: no key at all would be ambiguous
+      // between "scanned and clean" and "uploaded before this stage existed".
+      ...(safetyReport ? safetyFrontmatter(safetyReport) : {}),
+    },
     abortSignal: request.signal,
     createdFilePaths: createdMarkdownPaths,
     onProgress: emit,
@@ -1889,6 +1960,16 @@ async function runIngest({
     visionError: visionError || undefined,
     screenshotWarning: screenshotWarning || undefined,
     mapGenerationWarning: mapGenerationWarning || undefined,
+    hiddenContentWarning: safetyReport?.message || undefined,
+    hiddenContentVerdict: safetyReport?.verdict,
+    hiddenContentFindings: safetyReport?.findings.length
+      ? safetyReport.findings.map((finding) => ({
+          severity: finding.severity,
+          type: finding.type,
+          where: finding.where,
+          detail: finding.detail,
+        }))
+      : undefined,
     mapGenerated: generateMap && !mapGenerationWarning && !skipKnowledgeExtraction,
     topics: saved.topics,
   };

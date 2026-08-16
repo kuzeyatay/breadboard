@@ -142,6 +142,13 @@ test("1/2. workspace seeds durable inputs and never copies the old learning tree
   fs.writeFileSync(path.join(repo, "learning", "1. Old Section", "1.1 Old.md"), "old page");
   fs.mkdirSync(path.join(repo, ".breadboard"), { recursive: true });
   fs.writeFileSync(path.join(repo, ".breadboard", "source-visuals.json"), "[]");
+  fs.writeFileSync(
+    path.join(repo, ".breadboard", "source-visual-source-index.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      sourceIdentityMap: [{ sourceId: "s1", sourceIndex: 1 }],
+    }),
+  );
   fs.writeFileSync(path.join(repo, ".breadboard", "claims.json"), "{}");
   for (const name of [
     "visual-necessity-decisions.json",
@@ -161,6 +168,11 @@ test("1/2. workspace seeds durable inputs and never copies the old learning tree
   // durable inputs present
   assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, "sources", "s1.md")));
   assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "source-visuals.json")));
+  assert.ok(
+    fs.existsSync(
+      path.join(ws.stagingGardenDir, ".breadboard", "source-visual-source-index.json"),
+    ),
+  );
   // old learning tree and disposable projections NOT copied
   assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, "learning")), false);
   assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "claims.json")), false);

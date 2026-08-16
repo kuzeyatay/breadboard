@@ -130,6 +130,91 @@ describe("fallback + commentary detectors", () => {
     assert.match(learnSource, /failedProblems:\s*lastOverviewProblems/);
   });
 
+  test("source-formula gate inspects model-authored display math before Quartz rewrites it", () => {
+    const learnSource = fs.readFileSync(path.join(process.cwd(), "src/lib/learn.ts"), "utf8");
+    assert.match(learnSource, /extractVerbatimDisplayMath\(body\)/);
+    assert.doesNotMatch(
+      learnSource,
+      /extractQuartzMath\(normalizeQuartzMarkdown\(body\)\)/,
+    );
+  });
+
+  test("source-formula topology recovery promotes only the reviewed active inventory", () => {
+    const learnSource = fs.readFileSync(path.join(process.cwd(), "src/lib/learn.ts"), "utf8");
+    const reviewBinding = learnSource.slice(
+      learnSource.indexOf("const review = await reviewRequiredSourceFormulaExactText"),
+      learnSource.indexOf("return review;", learnSource.indexOf("const review = await reviewRequiredSourceFormulaExactText")),
+    );
+    const postReviewBinding = reviewBinding.slice(reviewBinding.indexOf("const reviewedFormulaIds"));
+    assert.match(reviewBinding, /const reviewedFormulaIds = \[\.\.\.review\.formulaIds\]/);
+    assert.match(reviewBinding, /requiredFormulaIds:\s*reviewedFormulaIds/);
+    assert.match(reviewBinding, /formulaIds:\s*reviewedFormulaIds/);
+    assert.match(
+      reviewBinding,
+      /Accepted source-formula review inventory does not match its projected active equation ledger/,
+    );
+    assert.doesNotMatch(postReviewBinding, /requiredFormulaIds:\s*formulaIds/);
+  });
+
+  test("source-formula topology receipts stay immutable through generation and finalization", () => {
+    const learnSource = fs.readFileSync(path.join(process.cwd(), "src/lib/learn.ts"), "utf8");
+    assert.match(
+      learnSource,
+      /sourceFormulaReviewFinalizationContext\s*=\s*\{[\s\S]*?topologyReviewPageReceipts:\s*confirmedReviewManifest\.topologyReviewPageReceipts\.map/,
+    );
+    assert.match(
+      learnSource,
+      /sourceFormulaReviewFinalizationContext\s*=\s*\{[\s\S]*?sourceArtifactInventoryHash:\s*confirmedArtifactInventoryHash[\s\S]*?sourceIdentityMap:\s*context\.sourceVisualSourceIdentityMap\.map/,
+    );
+    const finalizerSource = fs.readFileSync(
+      path.join(process.cwd(), "src/lib/garden-finalize.ts"),
+      "utf8",
+    );
+    assert.match(
+      finalizerSource,
+      /expectedTopologyReviewPageReceipts:\s*expectedSourceFormulaReviewContext\?\.topologyReviewPageReceipts/,
+    );
+    assert.match(
+      finalizerSource,
+      /sourceFormulaReviewFinalizationContextFromGarden[\s\S]*?topologyReviewPageReceipts:\s*Array\.isArray\(manifest\?\.topologyReviewPageReceipts\)/,
+    );
+    assert.match(
+      finalizerSource,
+      /Selected source-artifact inventory binding[\s\S]*?sourceArtifactInventoryBindingProblems/,
+    );
+  });
+
+  test("syllabus teachability remains the sole lesson-generation gate when partial sources exist", () => {
+    const learnSource = fs.readFileSync(path.join(process.cwd(), "src/lib/learn.ts"), "utf8");
+    const assignmentGate = learnSource.slice(
+      learnSource.indexOf("function syllabusUnitAssignmentProblems"),
+      learnSource.indexOf("function writeLearningUnitContractArtifacts"),
+    );
+    assert.match(assignmentGate, /else if \(!syllabusUnit\.teachable\)/);
+    assert.doesNotMatch(assignmentGate, /availableSourceIds/);
+    assert.match(
+      learnSource,
+      /unit\.teachable\\` is the sole authorization to create learning units/,
+    );
+    assert.match(
+      learnSource,
+      /could not be fully supported by the available source material and was left uncovered/,
+    );
+    assert.doesNotMatch(
+      learnSource,
+      /has no available material in this garden and was left uncovered/,
+    );
+
+    const generationGate = learnSource.slice(
+      learnSource.indexOf("confirmedLearningUnits = learningUnitsFromCoveragePlan"),
+      learnSource.indexOf('appendLearnEvent(contentPath, gardenId, "learn_generation_started"'),
+    );
+    assert.match(
+      generationGate,
+      /syllabusUnitAssignmentProblems\(\s*confirmedLearningUnits,\s*map\.syllabusCoverage \?\? null/,
+    );
+  });
+
   test("scrubSourceCommentaryProse repairs document framing without weakening quality", () => {
     const leaky = GOOD_BODY.replace(
       "Imagine a sensor watching a mostly still scene.",

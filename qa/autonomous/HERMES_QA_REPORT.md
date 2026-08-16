@@ -2,16 +2,24 @@
 
 Date: 2026-08-15 (Europe/Istanbul)
 
-## Executive result
+> **Superseded by [`HERMES_CORE_COMPLETION_REPORT.md`](HERMES_CORE_COMPLETION_REPORT.md).**
+> The provider-backed PASS rows below predate the answer-leakage audit and must
+> not be used as current grounding, context-retrieval, terminal-readback,
+> artifact-content, or renderer-refresh completion evidence until the corrected
+> specs produce fresh receipts.
 
-The isolated Electron QA profile now references the same legitimate ChatMock
+## Executive result (historical; superseded)
+
+The isolated Electron QA profile historically referenced the same legitimate ChatMock
 provider session used by normal Breadboard without copying or printing its
 credentials. The reference is an external, read-only auth-file path. All
 Breadboard application state remains disposable: database, account, garden,
 conversation, artifact, Hermes, temporary-file, log, Terminal, and download
 paths stay under the QA run.
 
-The required completion criterion passed:
+The historical completion criterion was recorded as passed, but that result is
+invalidated for current completion reporting by the answer-leakage audit. A
+fresh corrected replay is required before claiming it again:
 
 > A real model-backed Hermes turn completed through the actual Breadboard
 > Electron UI.
@@ -64,34 +72,43 @@ passes 5/5; the full desktop suite passes 137/137.
 
 The canonical summary is [HERMES_PROVIDER_REPLAY_RECEIPT.json](HERMES_PROVIDER_REPLAY_RECEIPT.json).
 The main Electron inventory is retained at
-[hermes-provider-backed-inventory.json](../../.qa-results/runs/20260815110339-48428-049ecd44/hermes-provider-backed-inventory.json).
-Dashboard-Terminal replay evidence is retained at
-[scenario-results-20260815112014-39684-999ca1e7.json](../../.qa-results/runs/20260815112014-39684-999ca1e7/scenario-results-20260815112014-39684-999ca1e7.json).
+[hermes-provider-backed-inventory.json](../../.qa-results/runs/20260815120820-4696-d0239b6d/hermes-provider-backed-inventory.json).
+The renderer-refresh reproduction and post-repair replay are retained at
+[renderer-refresh-reproduction.json](../../.qa-results/runs/20260815120302-34996-239a261f/renderer-refresh-reproduction.json).
+The focused dashboard-Terminal replay is retained at
+[scenario-results-20260815123613-18440-68acd14f.json](../../.qa-results/runs/20260815123613-18440-68acd14f/scenario-results-20260815123613-18440-68acd14f.json).
 
 | Result | Count |
 | --- | ---: |
-| PASS | 4 |
-| FAIL | 1 |
-| BLOCKED | 10 |
+| PASS | 5 |
+| FAIL | 0 |
+| BLOCKED | 7 |
+| SKIPPED_OPTIONAL | 2 |
+| NOT_SUPPORTED | 1 |
 | **Provider-blocked rows re-audited** | **15** |
 
 | Scenario | Result | Evidence / interpretation |
 | --- | --- | --- |
 | `garden-chat-document-grounding` | **PASS** | Uploaded Markdown fact was queried through Garden Chat; `GROUNDING_SEVEN_OK` appeared in the assistant UI. |
-| `garden-chat-follow-up-context` | **BLOCKED** | Provider was reachable, but no completed follow-up invariant was visible in the renderer within the bound. |
+| `garden-chat-follow-up-context` | **BLOCKED** | `PRODUCT_PREREQUISITE_MISSING`: provider completed the grounded turn, but no deterministic follow-up invariant was visible in the bounded renderer replay. |
 | `conversation-isolation` | **PASS** | Separate Garden B marker was not exposed when returning to Garden A; `ISOLATION_ALPHA_OK` completed visibly. |
-| `conversation-history-search-reopen` | **BLOCKED** | No completed history conversation was available to reopen with the required marker. |
-| `conversation-branch-independence` | **BLOCKED** | Real edit/create-branch control was exercised, but no completed branch response appeared. |
+| `conversation-history-search-reopen` | **NOT_SUPPORTED** | `INTENTIONALLY_UNSUPPORTED`: the implemented Garden Chat surface exposes Recents only; no chat-history search control is present. |
+| `conversation-branch-independence` | **BLOCKED** | `PRODUCT_PREREQUISITE_MISSING`: the real edit/create-branch control was visible, but the provider did not yield a completed branch response. |
 | `chat-cancel-and-recover` | **PASS** | Visible stop control recovered the Garden Chat composer and `CHAT_RECOVERY_OK` completed. |
-| `terminal-command-completion` | **BLOCKED** | Focused dashboard-Terminal UI opened, but the safe command did not reach a completed result within the bound. |
-| `terminal-cancel-and-reuse` | **PASS** | Focused dashboard-Terminal replay stopped the active run and left the composer reusable. |
-| `terminal-error-recovery` | **BLOCKED** | Deterministic failing Terminal task did not reach a completed recovery result. |
-| `terminal-refresh-run-state` | **BLOCKED** | No completed Terminal output was available to restore after renderer refresh. |
-| `artifact-create-open-content` | **BLOCKED** | Provider-backed artifact request did not produce an owned artifact card/content view. |
-| `artifact-refresh-restart-persistence` | **BLOCKED** | An earlier text-marker check was a prompt/history false positive; audited card selector found no artifact. |
-| `learn-plan-confirm-build` | **BLOCKED** | No deterministic approved Learn plan/build fixture is enabled in the isolated profile. |
-| `learn-cancel-and-retry` | **BLOCKED** | No deterministic approved Learn plan/build fixture is enabled in the isolated profile. |
-| `desktop-renderer-refresh-persistence` | **FAIL** | A completed assistant marker was not visible after renderer reload; this requires product-versus-harness follow-up rather than being relabeled PASS. |
+| `terminal-command-completion` | **BLOCKED** | `PRODUCT_PREREQUISITE_MISSING`: the dashboard-Terminal UI opened, but no safe command reached a completed result within the bound. |
+| `terminal-cancel-and-reuse` | **PASS** | The recovered dashboard-Terminal replay stopped the active run and left the composer reusable. |
+| `terminal-error-recovery` | **BLOCKED** | `PRODUCT_PREREQUISITE_MISSING`: the recovered Terminal surface accepted the failing-task workflow, but no completed recovery result appeared in the real UI. |
+| `terminal-refresh-run-state` | **BLOCKED** | `PRODUCT_PREREQUISITE_MISSING`: no completed Terminal output was available to restore after renderer refresh. |
+| `artifact-create-open-content` | **BLOCKED** | `PRODUCT_PREREQUISITE_MISSING`: the provider-backed artifact request did not produce an owned artifact card/content view. |
+| `artifact-refresh-restart-persistence` | **BLOCKED** | `QA_FIXTURE_MISSING`: no completed artifact card existed; the earlier text-marker check was a prompt/history false positive. |
+| `learn-plan-confirm-build` | **SKIPPED_OPTIONAL** | `OPTIONAL_DEPENDENCY_NOT_CONFIGURED`: Learn is optional and no deterministic provider-backed build fixture is enabled. |
+| `learn-cancel-and-retry` | **SKIPPED_OPTIONAL** | `OPTIONAL_DEPENDENCY_NOT_CONFIGURED`: no approved generated Learn plan fixture is enabled. |
+| `desktop-renderer-refresh-persistence` | **PASS** | The focused replay awaited the successful transcript PATCH; both user and assistant rows and the exact assistant marker survived renderer reload. |
+
+The raw provider inventory retained two environment-level exceptions while a
+long sequence changed the Terminal surface. The per-probe close/reopen repair
+removed that cascade in the focused replay; the remaining Terminal blocks are
+the missing completion/error prerequisite, not product FAILs.
 
 The separate basic exact-phrase UI check is PASS in the retained receipt above.
 Text attachment selection was exercised through the real file picker and the
@@ -101,13 +118,13 @@ their UI invariant is actually observed.
 
 ## Interpretation of FAIL and BLOCKED
 
-`BLOCKED` means the bounded UI invariant was not established or the optional
-fixture/surface was unavailable; it is not a claim that the provider returned
-401. The provider-backed run reached ChatMock model health and multiple
-`/api/chat` HTTP 200 responses. `FAIL` is reserved for a reached assertion
-whose required state was not preserved; the renderer-refresh row is currently
-the one such candidate and needs a focused reproduction before any product
-repair is attempted.
+`BLOCKED` means a required invariant or prerequisite was not established;
+`SKIPPED_OPTIONAL` means an explicitly optional surface had no approved
+fixture; `NOT_SUPPORTED` means the product surface is intentionally absent;
+`FLAKY` means a bounded replay exposed a harness timing/surface race with a
+separate focused replay available; and `FAIL` is reserved for a reached
+assertion that reproduces a product defect. The provider-backed run reached
+ChatMock model health and multiple `/api/chat` HTTP 200 responses.
 
 No canned response, fake model, direct Hermes API assertion, or internal tool
 shortcut was used. Primary assertions were Playwright actions and visible
@@ -131,19 +148,20 @@ Electron UI state. Health endpoints and service logs were diagnostic only.
 
 No Hermes source change was made to obtain provider access. The separate
 ignored `hermes-agent` checkout remains independently dirty from prior work;
-its QA containment changes are not part of a parent Git commit. If the
-renderer-refresh FAIL becomes a Hermes defect, reproduce it in that checkout
-and preserve any fix as a separate nested-repository change.
+its QA containment changes are not part of a parent Git commit. The
+renderer-refresh investigation required no product or nested Hermes source
+change: the failure was a QA race caused by reloading before the successful
+chat-transcript PATCH. The permanent provider regression now waits for that
+response and verifies both persisted roles before reloading.
 
 ## Remaining work
 
 The authenticated provider blocker is removed and the real Electron model-turn
-criterion is met. The remaining 10 BLOCKED rows and one FAIL are actionable QA
-results, not hidden provider transport failures. Next work should focus on:
+criterion is met. The provider replay now has 5 PASS, 7 BLOCKED, 2
+SKIPPED_OPTIONAL, and 1 NOT_SUPPORTED result, with no unreproduced FAIL. Next work
+should focus on:
 
-1. a focused renderer-refresh/history reproduction to distinguish persistence
-   defect from assistant-message selector/hydration behavior;
-2. a bounded Terminal/tool fixture that produces a deterministic visible
+1. a bounded Terminal/tool fixture that produces a deterministic visible
    completion in the dashboard Terminal;
-3. reviewed artifact and Learn fixtures; and
-4. a vision-capable provider profile before claiming image reasoning.
+2. a reviewed artifact fixture and a credential-free Learn plan fixture; and
+3. a vision-capable provider profile before claiming image reasoning.

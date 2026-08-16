@@ -46,7 +46,7 @@ import {
   type ZettelNote,
 } from "./learning-unit-contract.ts";
 import { buildGardenTopicProfile, generateSectionTitle, type GardenTopicProfile } from "./section-title.ts";
-import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "./learn-utils.ts";
+import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment, stripMarkdownFrontmatter } from "./learn-utils.ts";
 import { auditFinalGardenState, auditLegacyMigrationPersistence, buildCanonicalSourceAnchors, buildFinalGardenState, reconcileFinalGardenState } from "./final-garden-state.ts";
 import { assertFormulaAssignmentCompatible, buildFormulaIdentityRegistry, legacyFormulaFamily } from "./formula-identity.ts";
 import { deriveUnitFormulaRequirement, validateFormulaAssignment } from "./formula-assignment.ts";
@@ -75,6 +75,21 @@ import {
   loadVisualizationPlan,
   type VisualizationPlan,
 } from "./visualization-opportunities.ts";
+import { extractVerbatimDisplayMath, normalizeQuartzMarkdown } from "./quartz-markdown.ts";
+import {
+  loadSourceVisualSourceIdentityMap,
+  sourceSetHashWithReviewedFormulas,
+  validateSourceFormulaReviewSet,
+  type SourceFormulaTopologyReviewPageReceipt,
+  type SourceVisual,
+  type SourceVisualSourceIdentity,
+} from "./source-visuals.ts";
+import { selectedSourceArtifactInventorySnapshot } from "./learn-source-artifact-inventory.ts";
+import {
+  syllabusCoverageRecoveryReceiptProblems,
+  type SyllabusCoverageEvidenceRecoveryReceipt,
+} from "./learn-syllabus-coverage-recovery.ts";
+import { modelSourcePageAnchors } from "./model-source-anchor-ledger.ts";
 import { canonicalVisualizationEvidenceByUnit } from "./visualization-canonical-evidence.ts";
 import {
   loadVisualContractExecutabilityLedger,
@@ -228,6 +243,11 @@ function readJson<T>(filePath: string, fallback: T): T {
 interface LearningUnitContractArtifact {
   units: LearningUnitContract[];
   assignments: SourceArtifactAssignment[];
+  sourceSetHash: string;
+  sourceFormulaReviewSetHash: string;
+  sourceArtifactInventoryHash: string;
+  syllabusCoverageEvidenceRecoveryHash: string;
+  syllabusCoverageEvidenceRecovery?: SyllabusCoverageEvidenceRecoveryReceipt;
   foundPath?: string;
 }
 
@@ -387,6 +407,23 @@ export interface FinalArtifactVerification {
   validationReportAccepted: boolean;
 }
 
+/** Immutable source-formula review identity supplied by the active Learn run.
+ * Passing it out-of-band prevents a self-consistent edit of the staged
+ * contract/manifest from redefining which AI review publication should trust. */
+export interface SourceFormulaReviewFinalizationContext {
+  reviewSetHash: string;
+  combinedSourceSetHash: string;
+  sourceArtifactInventoryHash: string;
+  syllabusCoverageEvidenceRecoveryHash: string;
+  syllabusCoverageEvidenceRecovery?: SyllabusCoverageEvidenceRecoveryReceipt;
+  formulaIds: string[];
+  sourceIds: string[];
+  sourceIdentityMap: SourceVisualSourceIdentity[];
+  /** Canonical page-level recovery receipts captured before staging/repair. */
+  topologyReviewPageReceipts: SourceFormulaTopologyReviewPageReceipt[];
+  model?: string;
+}
+
 export interface LearningUnitRepairRunReport {
   requestedAt: string;
   gardenSlug: string;
@@ -456,16 +493,124 @@ function readLearningUnitContract(gardenDir: string): LearningUnitContractArtifa
     path.join(gardenDir, ".breadboard", "planning", "learning-unit-contract.json"),
   ];
   for (const filePath of candidates) {
+    if (!fs.existsSync(filePath)) continue;
     try {
       const parsed = JSON.parse(readFileSyncWithRetry(filePath, "utf-8"));
       const units = normalizeLearningUnits(parsed);
       const assignments = dedupeSourceArtifactAssignments(normalizeSourceArtifactAssignments(parsed), units);
-      if (units.length > 0) return { units, assignments, foundPath: filePath };
+      // A present canonical contract remains authoritative even when its unit
+      // payload is empty or invalid. Falling through to an older planning copy
+      // would let metadata/provenance deletion silently select stale authority.
+      return {
+        units,
+        assignments,
+        sourceSetHash: stringField(parsed?.sourceSetHash),
+        sourceFormulaReviewSetHash: stringField(parsed?.sourceFormulaReviewSetHash),
+        sourceArtifactInventoryHash: stringField(parsed?.sourceArtifactInventoryHash),
+        syllabusCoverageEvidenceRecoveryHash: stringField(
+          parsed?.syllabusCoverageEvidenceRecoveryHash,
+        ),
+        ...(parsed && typeof parsed === "object" &&
+          Object.prototype.hasOwnProperty.call(parsed, "syllabusCoverageEvidenceRecovery")
+          ? {
+              syllabusCoverageEvidenceRecovery:
+                parsed.syllabusCoverageEvidenceRecovery as
+                  SyllabusCoverageEvidenceRecoveryReceipt,
+            }
+          : {}),
+        foundPath: filePath,
+      };
     } catch {
-      // try next
+      // A present but unreadable higher-priority contract cannot delegate
+      // authority to an older planning copy.
+      return {
+        units: [],
+        assignments: [],
+        sourceSetHash: "",
+        sourceFormulaReviewSetHash: "",
+        sourceArtifactInventoryHash: "",
+        syllabusCoverageEvidenceRecoveryHash: "",
+        foundPath: filePath,
+      };
     }
   }
-  return { units: [], assignments: [] };
+  return {
+    units: [],
+    assignments: [],
+    sourceSetHash: "",
+    sourceFormulaReviewSetHash: "",
+    sourceArtifactInventoryHash: "",
+    syllabusCoverageEvidenceRecoveryHash: "",
+  };
+}
+
+const SOURCE_FORMULA_REVIEW_SET_RELATIVE_PATH =
+  ".breadboard/source-formula-review-set.json";
+
+function readSourceFormulaReviewSetManifest(
+  gardenDir: string,
+): Record<string, unknown> | null {
+  const manifestPath = path.join(
+    gardenDir,
+    ...SOURCE_FORMULA_REVIEW_SET_RELATIVE_PATH.split("/"),
+  );
+  if (!fs.existsSync(manifestPath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSyncWithRetry(manifestPath, "utf-8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Capture the published review identity before a scoped repair creates its
+ * staging copy. A malformed existing manifest still returns a context with
+ * empty fields so the declared review gate fails closed instead of silently
+ * treating it as an unreviewed legacy garden. */
+export function sourceFormulaReviewFinalizationContextFromGarden(
+  gardenDir: string,
+): SourceFormulaReviewFinalizationContext | undefined {
+  const manifest = readSourceFormulaReviewSetManifest(gardenDir);
+  const contract = readLearningUnitContract(gardenDir);
+  if (!manifest && !contract.foundPath) return undefined;
+  let sourceIdentityMap: SourceVisualSourceIdentity[] = [];
+  try {
+    sourceIdentityMap = loadSourceVisualSourceIdentityMap(
+      path.dirname(gardenDir),
+      path.basename(gardenDir),
+    );
+  } catch {
+    // Preserve an explicit empty expectation so the strict finalizer reports
+    // the corrupt/missing registry instead of silently dropping the gate.
+  }
+  return {
+    reviewSetHash: stringField(manifest?.reviewSetHash),
+    combinedSourceSetHash: stringField(manifest?.combinedSourceSetHash),
+    sourceArtifactInventoryHash: contract.sourceArtifactInventoryHash,
+    syllabusCoverageEvidenceRecoveryHash:
+      contract.syllabusCoverageEvidenceRecoveryHash,
+    ...(contract.syllabusCoverageEvidenceRecovery !== undefined
+      ? {
+          syllabusCoverageEvidenceRecovery: JSON.parse(JSON.stringify(
+            contract.syllabusCoverageEvidenceRecovery,
+          )) as SyllabusCoverageEvidenceRecoveryReceipt,
+        }
+      : {}),
+    formulaIds: Array.isArray(manifest?.formulaIds)
+      ? manifest.formulaIds.map(stringField).filter(Boolean)
+      : [],
+    sourceIds: Array.isArray(manifest?.sourceIds)
+      ? manifest.sourceIds.map(stringField).filter(Boolean)
+      : [],
+    sourceIdentityMap: sourceIdentityMap.map((entry) => ({ ...entry })),
+    topologyReviewPageReceipts: Array.isArray(manifest?.topologyReviewPageReceipts)
+      ? (JSON.parse(JSON.stringify(manifest.topologyReviewPageReceipts)) as
+        SourceFormulaTopologyReviewPageReceipt[])
+      : [],
+    model: stringField(manifest?.model) || undefined,
+  };
 }
 
 function cleanText(value: unknown): string {
@@ -1907,6 +2052,7 @@ export function finalizeGardenExport({
   gardenSlug,
   preserveModelAuthoredContent = false,
   expectedVisualContractExecutabilityContext,
+  expectedSourceFormulaReviewContext,
 }: {
   gardenDir: string;
   gardenSlug: string;
@@ -1916,6 +2062,9 @@ export function finalizeGardenExport({
   preserveModelAuthoredContent?: boolean;
   /** Exact active Learn identity, supplied out-of-band from the review ledger. */
   expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
+  /** Exact active Learn formula-review identity, captured before mutable
+   * generation/finalization stages can redefine the accepted review set. */
+  expectedSourceFormulaReviewContext?: SourceFormulaReviewFinalizationContext;
 }): FinalizeReport {
   const report: FinalizeReport = {
     changed: [],
@@ -2084,6 +2233,7 @@ export function finalizeGardenExport({
     report,
     strictModelApprovedVisuals: preserveModelAuthoredContent,
     expectedVisualContractExecutabilityContext,
+    expectedSourceFormulaReviewContext,
   });
   runCriticalGate({
     gardenDir,
@@ -2091,6 +2241,7 @@ export function finalizeGardenExport({
     report,
     strictModelApprovedVisuals: preserveModelAuthoredContent,
     expectedVisualContractExecutabilityContext,
+    expectedSourceFormulaReviewContext,
   });
 
   return report;
@@ -3214,6 +3365,7 @@ async function tryModelRepairForPage({
   contractPath,
   strictModelApprovedVisuals = false,
   expectedVisualContractExecutabilityContext,
+  expectedSourceFormulaReviewContext,
 }: {
   gardenDir: string;
   gardenSlug: string;
@@ -3223,6 +3375,7 @@ async function tryModelRepairForPage({
   contractPath: string | undefined;
   strictModelApprovedVisuals?: boolean;
   expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
+  expectedSourceFormulaReviewContext?: SourceFormulaReviewFinalizationContext;
 }): Promise<ModelRepairAttempt> {
   const page = loadLearnerPages(gardenDir).find((candidate) => candidate.rel === request.pagePath);
   if (!page) {
@@ -3265,6 +3418,7 @@ async function tryModelRepairForPage({
     includeReportSelfCheck: false,
     strictModelApprovedVisuals,
     expectedVisualContractExecutabilityContext,
+    expectedSourceFormulaReviewContext,
   });
   const problems = unresolvedErrorsForRequest(checks, request);
   if (problems.length > 0) {
@@ -3293,6 +3447,7 @@ export async function repairLearningUnitsFromContract({
   preserveModelAuthoredVisuals = false,
   preserveModelAuthoredContent = false,
   expectedVisualContractExecutabilityContext,
+  expectedSourceFormulaReviewContext,
 }: {
   gardenDir: string;
   gardenSlug: string;
@@ -3306,6 +3461,7 @@ export async function repairLearningUnitsFromContract({
    * model-authored semantics before the model sees the validation failures. */
   preserveModelAuthoredContent?: boolean;
   expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
+  expectedSourceFormulaReviewContext?: SourceFormulaReviewFinalizationContext;
 }): Promise<LearningUnitRepairRunReport> {
   const requestedAt = new Date().toISOString();
   const preflightRepairReport = emptyFinalizeReport();
@@ -3327,6 +3483,7 @@ export async function repairLearningUnitsFromContract({
     includeReportSelfCheck: false,
     strictModelApprovedVisuals: preserveModelAuthoredContent,
     expectedVisualContractExecutabilityContext,
+    expectedSourceFormulaReviewContext,
   });
   const requests = collectUnitRepairRequests({ gardenDir, checks: firstChecks });
   const repairReport = emptyFinalizeReport();
@@ -3377,6 +3534,7 @@ export async function repairLearningUnitsFromContract({
           contractPath,
           strictModelApprovedVisuals: preserveModelAuthoredContent,
           expectedVisualContractExecutabilityContext,
+          expectedSourceFormulaReviewContext,
         });
         executions.push({
           unitId: merged.unitId,
@@ -3497,6 +3655,7 @@ export async function repairLearningUnitsFromContract({
     includeReportSelfCheck: false,
     strictModelApprovedVisuals: preserveModelAuthoredContent,
     expectedVisualContractExecutabilityContext,
+    expectedSourceFormulaReviewContext,
   });
   const finalPageByRel = new Map(loadLearnerPages(gardenDir).map((page) => [page.rel, page]));
   const changedFiles = [...new Set(repairReport.changed.filter((file) => !changedBefore.has(file)))].sort();
@@ -3613,6 +3772,7 @@ export function verifyFinalArtifactNoMutation({
   updateRepairReport = true,
   strictModelApprovedVisuals = false,
   expectedVisualContractExecutabilityContext,
+  expectedSourceFormulaReviewContext,
 }: {
   gardenDir: string;
   gardenSlug: string;
@@ -3621,6 +3781,7 @@ export function verifyFinalArtifactNoMutation({
    * end-stage critic repair and immediately before promotion. */
   strictModelApprovedVisuals?: boolean;
   expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
+  expectedSourceFormulaReviewContext?: SourceFormulaReviewFinalizationContext;
 }): FinalArtifactVerification {
   const before = snapshotFiles(gardenDir);
   const checks = collectFinalizeChecks({
@@ -3630,6 +3791,7 @@ export function verifyFinalArtifactNoMutation({
     includeReportSelfCheck: true,
     strictModelApprovedVisuals,
     expectedVisualContractExecutabilityContext,
+    expectedSourceFormulaReviewContext,
   });
   const after = snapshotFiles(gardenDir);
   const validationFailures = validationFailuresFromChecks(checks);
@@ -3722,6 +3884,16 @@ export interface FinalizeAuditResult {
 
 function classifyFinalCheck(name: string): { type: FinalRepairIssueType; repairMode: FinalRepairIssue["repairMode"] } {
   const n = name.toLowerCase();
+  if (
+    n.includes("source-formula manifest") ||
+    n.includes("source-formula provenance") ||
+    n.includes("source-formula identity integrity")
+  ) {
+    return { type: "structural_integrity", repairMode: "non_repairable" };
+  }
+  if (n.includes("reviewed source-formula page projection")) {
+    return { type: "formula_grounding", repairMode: "chatmock" };
+  }
   if (n.includes("formula metadata noise")) return { type: "formula_metadata_noise", repairMode: "deterministic_then_chatmock" };
   if (n.includes("formula")) return { type: "formula_grounding", repairMode: "deterministic_then_chatmock" };
   if (n.includes("source text concept") || n.includes("source anchor") || n.includes("source-anchor")) return { type: "source_anchor_missing", repairMode: "deterministic_then_chatmock" };
@@ -3759,8 +3931,25 @@ function gardenStateFingerprint(gardenDir: string): string {
  * the orchestrator can decide what to repair before the terminal publish
  * decision. `finalizeGardenExport` remains the throwing source of truth.
  */
-export function auditGardenForFinalization(gardenDir: string, gardenSlug: string): FinalizeAuditResult {
-  const checks = collectFinalizeChecks({ gardenDir, report: emptyFinalizeReport(), includeReportSelfCheck: false });
+export function auditGardenForFinalization(
+  gardenDir: string,
+  gardenSlug: string,
+  options: {
+    strictModelApprovedVisuals?: boolean;
+    expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
+    expectedSourceFormulaReviewContext?: SourceFormulaReviewFinalizationContext;
+  } = {},
+): FinalizeAuditResult {
+  const checks = collectFinalizeChecks({
+    gardenDir,
+    gardenId: gardenSlug,
+    report: emptyFinalizeReport(),
+    includeReportSelfCheck: false,
+    strictModelApprovedVisuals: options.strictModelApprovedVisuals,
+    expectedVisualContractExecutabilityContext:
+      options.expectedVisualContractExecutabilityContext,
+    expectedSourceFormulaReviewContext: options.expectedSourceFormulaReviewContext,
+  });
   const repairableIssues: FinalRepairIssue[] = [];
   const nonRepairableIssues: FinalRepairIssue[] = [];
   const seen = new Set<string>();
@@ -3772,13 +3961,18 @@ export function auditGardenForFinalization(gardenDir: string, gardenSlug: string
     for (const problem of check.problems) {
       const pagePath = pagePathFromProblem(problem);
       const target = anchorOrFamilyFromProblem(problem);
-      const isFormulaProjection = Boolean(target && /^S\d+\.P\d+\.E\d+$/i.test(target))
+      const isFormulaProjection = classified.repairMode !== "non_repairable" &&
+        Boolean(target && /^S\d+\.P\d+\.E\d+$/i.test(target))
         && /formula|contract fulfillment|source coverage mode precision/i.test(check.name);
       const orphanEntryIndex = /formula metadata noise/i.test(check.name)
         ? Number(problem.match(/formulas\[(\d+)\]/)?.[1])
         : Number.NaN;
       const type: FinalRepairIssueType = isFormulaProjection ? "formula_usage_projection" : classified.type;
-      const repairMode: FinalRepairIssue["repairMode"] = isFormulaProjection ? "deterministic_then_chatmock" : classified.repairMode;
+      const repairMode: FinalRepairIssue["repairMode"] = isFormulaProjection
+        ? /reviewed source-formula page projection/i.test(check.name)
+          ? "chatmock"
+          : "deterministic_then_chatmock"
+        : classified.repairMode;
       const unitId = (pagePath ? unitByPage.get(pagePath) : undefined)
         ?? (target
           ? finalState.learningUnitContract.assignments.find((assignment) => assignment.sourceArtifactId === target)?.assignedLearningUnitId
@@ -5819,12 +6013,14 @@ function writeFinalizeValidationReport({
   report,
   strictModelApprovedVisuals = false,
   expectedVisualContractExecutabilityContext,
+  expectedSourceFormulaReviewContext,
 }: {
   gardenDir: string;
   gardenSlug: string;
   report: FinalizeReport;
   strictModelApprovedVisuals?: boolean;
   expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
+  expectedSourceFormulaReviewContext?: SourceFormulaReviewFinalizationContext;
 }): void {
   const bd = path.join(gardenDir, ".breadboard");
   fs.mkdirSync(bd, { recursive: true });
@@ -5901,6 +6097,7 @@ function writeFinalizeValidationReport({
     includeReportSelfCheck: false,
     strictModelApprovedVisuals,
     expectedVisualContractExecutabilityContext,
+    expectedSourceFormulaReviewContext,
   }));
   write(collectFinalizeChecks({
     gardenDir,
@@ -5909,6 +6106,7 @@ function writeFinalizeValidationReport({
     includeReportSelfCheck: true,
     strictModelApprovedVisuals,
     expectedVisualContractExecutabilityContext,
+    expectedSourceFormulaReviewContext,
   }));
   // Fix 10: report completeness is a SERIALIZER test. If the just-written
   // report cannot serialize every required section, rewrite once from the
@@ -5923,6 +6121,7 @@ function writeFinalizeValidationReport({
       includeReportSelfCheck: true,
       strictModelApprovedVisuals,
       expectedVisualContractExecutabilityContext,
+      expectedSourceFormulaReviewContext,
     }));
     serialization = verifyValidationReportSerialization(reportPath, REQUIRED_VALIDATION_REPORT_SECTIONS);
     if (!serialization.valid) {
@@ -7489,6 +7688,662 @@ function finalizerBoundaryProblems(report: FinalizeReport): string[] {
   return problems;
 }
 
+/**
+ * Exact, layout-insensitive representation used only to prove that a reviewed
+ * source transcription survived projection. It deliberately performs no
+ * algebraic normalization, symbol substitution, or inferred repair.
+ */
+function exactFormulaProjectionKey(value: unknown): string {
+  return String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Apply the same renderer-facing lowering to both sides of an exact display
+ * comparison. This permits Quartz's mechanical `\\tag{n}` -> visible text
+ * lowering, but a changed sign, variable, limit, or term remains different. */
+function quartzDisplayProjectionKey(value: string): string {
+  const normalized = normalizeQuartzMarkdown(`$$\n${value}\n$$`);
+  const display = extractVerbatimDisplayMath(normalized)[0];
+  return exactFormulaProjectionKey(display?.formula);
+}
+
+function sourceFormulaIdsUsedByFinalArtifact(
+  contract: LearningUnitContractArtifact,
+  learnerPages: readonly LearnerPage[],
+  ledger: readonly LedgerVisual[],
+): string[] {
+  const ids = new Set<string>();
+  const add = (value: unknown): void => {
+    const id = String(value ?? "").trim();
+    if (isSourceFormulaId(id)) ids.add(id);
+  };
+  for (const assignment of contract.assignments) add(assignment.sourceArtifactId);
+  for (const unit of contract.units) {
+    for (const formula of unit.sourceFormulas ?? []) add(formula.id);
+    for (const anchor of unit.sourceAnchors ?? []) add(anchor);
+    for (const anchor of unit.interactiveVisual?.sourceAnchors ?? []) add(anchor);
+    for (const anchor of unit.interactiveVisualPlan?.visualIntent?.sourceAnchors ?? []) add(anchor);
+  }
+  for (const page of learnerPages) {
+    for (const anchor of formulaAnchorsFromFrontmatter(page.rawFm)) add(anchor);
+    for (const entry of formulaEntriesFromFrontmatter(page.rawFm)) {
+      add(entry.sourceAnchor);
+      add(entry.basedOnFormula);
+    }
+    for (const spec of embeddedVisualSpecs(page.body)) {
+      for (const anchor of visualSpecAnchorIds(spec)) add(anchor);
+    }
+  }
+  for (const visual of ledger) {
+    if (classifyFigure(visual) === "equation" && visual.usageStatus === "assigned") {
+      add(visual.sourceVisualId);
+    }
+  }
+  return [...ids].sort();
+}
+
+function currentSourceFormulaIds(
+  ledger: readonly LedgerVisual[],
+  selectedSourceIds: readonly string[] = [],
+): string[] {
+  const selected = new Set(selectedSourceIds.map((sourceId) => sourceId.trim()).filter(Boolean));
+  return [...new Set(
+    ledger
+      .filter((visual) =>
+        classifyFigure(visual) === "equation" &&
+        (selected.size === 0 || selected.has(String(visual.sourceId ?? "").trim())))
+      .map((visual) => visual.sourceVisualId.trim())
+      .filter((formulaId) => isSourceFormulaId(formulaId)),
+  )].sort();
+}
+
+function reviewedFormulaPageTargets(
+  contract: LearningUnitContractArtifact,
+  learnerPages: readonly LearnerPage[],
+  formulaIds: ReadonlySet<string>,
+): Map<string, LearnerPage[]> {
+  const targets = new Map<string, LearnerPage[]>();
+  const pagesByUnit = new Map<string, LearnerPage[]>();
+  const add = (formulaId: string, page: LearnerPage | undefined): void => {
+    if (!formulaIds.has(formulaId) || !page) return;
+    const pages = targets.get(formulaId) ?? [];
+    if (!pages.some((candidate) => candidate.rel === page.rel)) pages.push(page);
+    targets.set(formulaId, pages);
+  };
+  for (const page of learnerPages) {
+    const unitId = fmGetScalar(page.rawFm, "learningUnitId");
+    const pages = pagesByUnit.get(unitId) ?? [];
+    pages.push(page);
+    pagesByUnit.set(unitId, pages);
+    for (const formulaId of formulaAnchorsFromFrontmatter(page.rawFm)) add(formulaId, page);
+  }
+  for (const assignment of contract.assignments) {
+    if (!isSourceFormulaId(assignment.sourceArtifactId)) continue;
+    for (const page of pagesByUnit.get(assignment.assignedLearningUnitId) ?? []) {
+      add(assignment.sourceArtifactId, page);
+    }
+  }
+  for (const unit of contract.units) {
+    for (const formula of unit.sourceFormulas ?? []) {
+      for (const page of pagesByUnit.get(unit.id) ?? []) add(formula.id, page);
+    }
+  }
+  for (const pages of targets.values()) pages.sort((left, right) => left.rel.localeCompare(right.rel));
+  return targets;
+}
+
+/**
+ * Verify the final lesson projection against already-reviewed ledger text.
+ * This is validation-only: it never inserts, rewrites, or infers a formula.
+ */
+export function reviewedSourceFormulaPageBindingProblems({
+  gardenDir,
+  requiredFormulaIds = [],
+}: {
+  gardenDir: string;
+  requiredFormulaIds?: Iterable<string>;
+}): string[] {
+  const contract = readLearningUnitContract(gardenDir);
+  const learnerPages = loadLearnerPages(gardenDir);
+  const ledger = readJson<LedgerVisual[]>(
+    path.join(gardenDir, ".breadboard", "source-visuals.json"),
+    [],
+  );
+  const formulaIds = sourceFormulaIdsUsedByFinalArtifact(
+    contract,
+    learnerPages,
+    ledger,
+  );
+  for (const formulaId of requiredFormulaIds) {
+    const normalized = String(formulaId ?? "").trim();
+    if (isSourceFormulaId(normalized) && !formulaIds.includes(normalized)) formulaIds.push(normalized);
+  }
+  formulaIds.sort();
+  if (formulaIds.length === 0) return [];
+
+  const formulaIdSet = new Set(formulaIds);
+  const manifest = readSourceFormulaReviewSetManifest(gardenDir);
+  const expectedSourceSetHash = contract.sourceSetHash || stringField(manifest?.combinedSourceSetHash);
+  const expectedReviewSetHash = contract.sourceFormulaReviewSetHash || stringField(manifest?.reviewSetHash);
+  const ledgerById = new Map(ledger.map((visual) => [visual.sourceVisualId, visual]));
+  const targets = reviewedFormulaPageTargets(contract, learnerPages, formulaIdSet);
+  const displayKeysByPage = new Map(
+    learnerPages.map((page) => [
+      page.rel,
+      new Set(
+        extractVerbatimDisplayMath(normalizeQuartzMarkdown(page.body))
+          .map((expression) => exactFormulaProjectionKey(expression.formula))
+          .filter(Boolean),
+      ),
+    ]),
+  );
+  const problems: string[] = [];
+
+  for (const formulaId of formulaIds) {
+    const visual = ledgerById.get(formulaId);
+    const exactText = exactFormulaProjectionKey(visual?.exactText);
+    if (!visual || classifyFigure(visual) !== "equation") {
+      problems.push(`${formulaId}: reviewed formula is missing from the current source-visual ledger`);
+      continue;
+    }
+    if (!exactText) {
+      problems.push(`${formulaId}: reviewed formula has no current exactText`);
+      continue;
+    }
+    const formulaTargets = targets.get(formulaId) ?? [];
+    if (formulaTargets.length === 0) {
+      problems.push(`${formulaId}: reviewed formula has no contract/page projection target`);
+      continue;
+    }
+    const expectedDisplay = quartzDisplayProjectionKey(exactText);
+    for (const page of formulaTargets) {
+      const declared = new Set(formulaAnchorsFromFrontmatter(page.rawFm));
+      if (!declared.has(formulaId)) {
+        problems.push(`${page.rel}: reviewed formula ${formulaId} is required by its contract but absent from sourceFormulaAnchors`);
+      }
+      const definitions = formulaEntriesFromFrontmatter(page.rawFm).filter(
+        (entry) => formulaEntryKind(entry) === "source_definition" &&
+          String(entry.sourceAnchor ?? "").trim() === formulaId,
+      );
+      if (definitions.length === 0) {
+        problems.push(`${page.rel}: reviewed formula ${formulaId} has no source_definition metadata entry`);
+      } else {
+        for (const [index, entry] of definitions.entries()) {
+          if (exactFormulaProjectionKey(entry.text) !== exactText) {
+            problems.push(
+              `${page.rel}: reviewed formula ${formulaId} metadata entry ${index + 1} does not exactly match reviewed exactText`,
+            );
+          }
+        }
+      }
+      if (!expectedDisplay || !displayKeysByPage.get(page.rel)?.has(expectedDisplay)) {
+        problems.push(
+          `${page.rel}: reviewed formula ${formulaId} is not present as an exact visible Quartz display projection`,
+        );
+      }
+      if (expectedSourceSetHash && fmGetScalar(page.rawFm, "sourceSetHash") !== expectedSourceSetHash) {
+        problems.push(`${page.rel}: sourceSetHash does not match the reviewed Learning Unit Contract`);
+      }
+      if (
+        expectedReviewSetHash &&
+        fmGetScalar(page.rawFm, "sourceFormulaReviewSetHash") !== expectedReviewSetHash
+      ) {
+        problems.push(`${page.rel}: sourceFormulaReviewSetHash does not match the reviewed Learning Unit Contract`);
+      }
+    }
+  }
+
+  return [...new Set(problems)];
+}
+
+function verifiedFormulaIdentityReviewDriftProblems(
+  gardenDir: string,
+  requiredFormulaIds: Iterable<string>,
+): string[] {
+  const relevant = new Set(requiredFormulaIds);
+  if (relevant.size === 0) return [];
+  const ledger = readJson<LedgerVisual[]>(
+    path.join(gardenDir, ".breadboard", "source-visuals.json"),
+    [],
+  );
+  const reviewedTextById = new Map(
+    ledger
+      .filter((visual) => relevant.has(visual.sourceVisualId))
+      .map((visual) => [visual.sourceVisualId, exactFormulaProjectionKey(visual.exactText)]),
+  );
+  const artifact = readJson<Record<string, unknown>>(
+    path.join(gardenDir, ".breadboard", "formula-identities.json"),
+    {},
+  );
+  const identities = Array.isArray(artifact.identities)
+    ? artifact.identities as Array<Record<string, unknown>>
+    : [];
+  const problems: string[] = [];
+  for (const identity of identities) {
+    if (identity.verified !== true) continue;
+    const formulaId = String(identity.anchorId ?? "").trim();
+    if (!relevant.has(formulaId)) continue;
+    const identityText = exactFormulaProjectionKey(identity.canonicalText);
+    const reviewedText = reviewedTextById.get(formulaId) ?? "";
+    if (!identityText || identityText !== reviewedText) {
+      problems.push(
+        `${formulaId}: verified formula-identities canonicalText drifts from the reviewed source-visual exactText`,
+      );
+    }
+  }
+  return problems;
+}
+
+function sourceFormulaReviewManifestBindingProblems({
+  gardenDir,
+  contract,
+  requiredFormulaIds,
+  expectedContext,
+}: {
+  gardenDir: string;
+  contract: LearningUnitContractArtifact;
+  requiredFormulaIds: readonly string[];
+  expectedContext?: SourceFormulaReviewFinalizationContext;
+}): string[] {
+  const problems: string[] = [];
+  const manifest = readSourceFormulaReviewSetManifest(gardenDir);
+  if (!manifest) {
+    problems.push(
+      `${SOURCE_FORMULA_REVIEW_SET_RELATIVE_PATH} is missing for reviewed source formulas`,
+    );
+    return problems;
+  }
+  const manifestReviewSetHash = stringField(manifest.reviewSetHash);
+  const manifestBaseSourceSetHash = stringField(manifest.baseSourceSetHash);
+  const manifestCombinedSourceSetHash = stringField(manifest.combinedSourceSetHash);
+  const manifestModel = stringField(manifest.model);
+  const manifestFormulaIds = Array.isArray(manifest.formulaIds)
+    ? manifest.formulaIds.map(stringField).filter(Boolean)
+    : [];
+  const manifestSourceIds = Array.isArray(manifest.sourceIds)
+    ? manifest.sourceIds.map(stringField).filter(Boolean)
+    : [];
+  const manifestTopologyReviewPageReceipts = Array.isArray(
+    manifest.topologyReviewPageReceipts,
+  )
+    ? manifest.topologyReviewPageReceipts
+    : [];
+  if (manifest.schemaVersion !== 1) {
+    problems.push("source-formula review manifest has an invalid schemaVersion");
+  }
+  if (manifest.promptVersion !== 1) {
+    problems.push("source-formula review manifest has an invalid promptVersion");
+  }
+  if (!Array.isArray(manifest.formulaIds) || manifest.formulaIds.some((id) => !stringField(id))) {
+    problems.push("source-formula review manifest formulaIds are invalid");
+  }
+  if (!Array.isArray(manifest.sourceIds) || manifest.sourceIds.some((id) => !stringField(id))) {
+    problems.push("source-formula review manifest sourceIds are invalid");
+  }
+  if (!Array.isArray(manifest.topologyReviewPageReceipts)) {
+    problems.push("source-formula review manifest topologyReviewPageReceipts are invalid");
+  }
+  if (!/^[0-9a-f]{64}$/i.test(manifestReviewSetHash)) {
+    problems.push("source-formula review manifest has no valid reviewSetHash");
+  }
+  if (!/^[0-9a-f]{64}$/i.test(manifestCombinedSourceSetHash)) {
+    problems.push("source-formula review manifest has no valid combinedSourceSetHash");
+  }
+  if (!/^[0-9a-f]{64}$/i.test(manifestBaseSourceSetHash)) {
+    problems.push("source-formula review manifest has no valid baseSourceSetHash");
+  } else if (/^[0-9a-f]{64}$/i.test(manifestReviewSetHash)) {
+    const derivedCombinedSourceSetHash = sourceSetHashWithReviewedFormulas(
+      manifestBaseSourceSetHash,
+      manifestReviewSetHash,
+    );
+    if (derivedCombinedSourceSetHash !== manifestCombinedSourceSetHash) {
+      problems.push(
+        "source-formula review manifest combinedSourceSetHash is not derived from its baseSourceSetHash and reviewSetHash",
+      );
+    }
+  }
+  if (!manifestModel) problems.push("source-formula review manifest has no model");
+  if (new Set(manifestFormulaIds).size !== manifestFormulaIds.length) {
+    problems.push("source-formula review manifest formulaIds contain duplicates");
+  }
+  if (new Set(manifestSourceIds).size !== manifestSourceIds.length) {
+    problems.push("source-formula review manifest sourceIds contain duplicates");
+  }
+  const required = [...new Set(requiredFormulaIds)].sort();
+  const declared = [...new Set(manifestFormulaIds)].sort();
+  if (JSON.stringify(required) !== JSON.stringify(declared)) {
+    const requiredSet = new Set(required);
+    const declaredSet = new Set(declared);
+    const missing = required.filter((id) => !declaredSet.has(id));
+    const extra = declared.filter((id) => !requiredSet.has(id));
+    problems.push(
+      `source-formula review manifest formulaIds do not match the final relevant equation set; missing [${missing.join(", ")}], extra [${extra.join(", ")}]`,
+    );
+  }
+  if (!contract.sourceFormulaReviewSetHash) {
+    problems.push("Learning Unit Contract is missing sourceFormulaReviewSetHash");
+  } else if (contract.sourceFormulaReviewSetHash !== manifestReviewSetHash) {
+    problems.push(
+      "Learning Unit Contract sourceFormulaReviewSetHash does not match the source-formula review manifest",
+    );
+  }
+  if (!contract.sourceSetHash) {
+    problems.push("Learning Unit Contract is missing its reviewed sourceSetHash");
+  } else if (contract.sourceSetHash !== manifestCombinedSourceSetHash) {
+    problems.push(
+      "Learning Unit Contract sourceSetHash does not match the review manifest combinedSourceSetHash",
+    );
+  }
+  if (expectedContext) {
+    if (!expectedContext.reviewSetHash) {
+      problems.push("expected source-formula review context has no reviewSetHash");
+    } else if (expectedContext.reviewSetHash !== manifestReviewSetHash) {
+      problems.push(
+        "source-formula review manifest reviewSetHash does not match the active Learn expectation",
+      );
+    }
+    if (!expectedContext.combinedSourceSetHash) {
+      problems.push("expected source-formula review context has no combinedSourceSetHash");
+    } else if (expectedContext.combinedSourceSetHash !== manifestCombinedSourceSetHash) {
+      problems.push(
+        "source-formula review manifest combinedSourceSetHash does not match the active Learn expectation",
+      );
+    }
+    const expectedFormulaIds = [...new Set(expectedContext.formulaIds)].sort();
+    if (expectedFormulaIds.length !== expectedContext.formulaIds.length) {
+      problems.push("expected source-formula review context formulaIds contain duplicates");
+    }
+    if (JSON.stringify(expectedFormulaIds) !== JSON.stringify(declared)) {
+      problems.push(
+        "source-formula review manifest formulaIds do not match the active Learn expectation",
+      );
+    }
+    if (expectedContext.sourceIds.length !== new Set(expectedContext.sourceIds).size) {
+      problems.push("expected source-formula review context sourceIds contain duplicates");
+    }
+    if (JSON.stringify(expectedContext.sourceIds) !== JSON.stringify(manifestSourceIds)) {
+      problems.push(
+        "source-formula review manifest sourceIds do not match the active Learn expectation",
+      );
+    }
+    if (
+      JSON.stringify(expectedContext.topologyReviewPageReceipts) !==
+      JSON.stringify(manifestTopologyReviewPageReceipts)
+    ) {
+      problems.push(
+        "source-formula review manifest topology page receipts do not match the active Learn expectation",
+      );
+    }
+    if (expectedContext.model && expectedContext.model !== manifestModel) {
+      problems.push(
+        "source-formula review manifest model does not match the active Learn expectation",
+      );
+    }
+  }
+  return problems;
+}
+
+function sourceArtifactInventoryBindingProblems({
+  gardenDir,
+  contract,
+  expectedContext,
+}: {
+  gardenDir: string;
+  contract: LearningUnitContractArtifact;
+  expectedContext?: SourceFormulaReviewFinalizationContext;
+}): string[] {
+  const problems: string[] = [];
+  const validHash = (value: string) => /^[0-9a-f]{64}$/.test(value);
+  if (!validHash(contract.sourceArtifactInventoryHash)) {
+    problems.push(
+      "Learning Unit Contract is missing a valid sourceArtifactInventoryHash",
+    );
+  }
+  if (expectedContext) {
+    if (!validHash(expectedContext.sourceArtifactInventoryHash)) {
+      problems.push(
+        "expected source-formula review context has no valid sourceArtifactInventoryHash",
+      );
+    } else if (
+      expectedContext.sourceArtifactInventoryHash !==
+      contract.sourceArtifactInventoryHash
+    ) {
+      problems.push(
+        "Learning Unit Contract sourceArtifactInventoryHash does not match the active Learn expectation",
+      );
+    }
+  }
+
+  const manifest = readSourceFormulaReviewSetManifest(gardenDir);
+  const manifestSourceIds = Array.isArray(manifest?.sourceIds)
+    ? manifest.sourceIds.map(stringField).filter(Boolean)
+    : [];
+  const selectedSourceIds = expectedContext?.sourceIds ?? manifestSourceIds;
+  if (
+    selectedSourceIds.length === 0 ||
+    selectedSourceIds.some((sourceId) => !sourceId || sourceId.trim() !== sourceId) ||
+    new Set(selectedSourceIds).size !== selectedSourceIds.length
+  ) {
+    problems.push(
+      "selected source-artifact inventory has no valid unique source identity set",
+    );
+    return problems;
+  }
+
+  let durableIdentityMap: SourceVisualSourceIdentity[];
+  try {
+    durableIdentityMap = loadSourceVisualSourceIdentityMap(
+      path.dirname(gardenDir),
+      path.basename(gardenDir),
+    );
+  } catch (error) {
+    problems.push(
+      `selected source-artifact identity registry is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return problems;
+  }
+  if (durableIdentityMap.length === 0) {
+    problems.push("selected source-artifact identity registry is missing or empty");
+    return problems;
+  }
+  if (
+    expectedContext &&
+    JSON.stringify(expectedContext.sourceIdentityMap) !==
+      JSON.stringify(durableIdentityMap)
+  ) {
+    problems.push(
+      "selected source-artifact identity registry does not match the active Learn expectation",
+    );
+  }
+
+  let visuals: SourceVisual[];
+  const ledgerPath = path.join(
+    gardenDir,
+    ".breadboard",
+    "source-visuals.json",
+  );
+  try {
+    const parsed = JSON.parse(readFileSyncWithRetry(ledgerPath, "utf-8"));
+    if (!Array.isArray(parsed)) {
+      throw new Error("ledger root is not an array");
+    }
+    visuals = parsed as SourceVisual[];
+  } catch (error) {
+    problems.push(
+      `selected source-artifact ledger is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return problems;
+  }
+
+  try {
+    const snapshot = selectedSourceArtifactInventorySnapshot({
+      selectedSourceIds,
+      sourceIdentityMap: durableIdentityMap,
+      visuals,
+    });
+    if (
+      snapshot.sourceArtifactInventoryHash !==
+      contract.sourceArtifactInventoryHash
+    ) {
+      problems.push(
+        "Learning Unit Contract sourceArtifactInventoryHash does not match the staged selected-source ledger",
+      );
+    }
+    if (
+      expectedContext &&
+      snapshot.sourceArtifactInventoryHash !==
+        expectedContext.sourceArtifactInventoryHash
+    ) {
+      problems.push(
+        "staged selected-source artifact inventory does not match the active Learn expectation",
+      );
+    }
+  } catch (error) {
+    problems.push(
+      `selected source-artifact inventory is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return problems;
+}
+
+function syllabusCoverageEvidenceRecoveryBindingProblems({
+  gardenDir,
+  contract,
+  expectedContext,
+}: {
+  gardenDir: string;
+  contract: LearningUnitContractArtifact;
+  expectedContext?: SourceFormulaReviewFinalizationContext;
+}): string[] {
+  const problems: string[] = [];
+  const contractReceipt = contract.syllabusCoverageEvidenceRecovery as unknown;
+  const expectedReceipt = expectedContext?.syllabusCoverageEvidenceRecovery as unknown;
+  const contractReceiptPresent = contractReceipt !== undefined;
+  const expectedReceiptPresent = expectedReceipt !== undefined;
+  const validHash = (value: string) => /^[0-9a-f]{64}$/.test(value);
+
+  if (expectedContext) {
+    const expectedRecoveryHash =
+      expectedContext.syllabusCoverageEvidenceRecoveryHash ?? "";
+    if (contract.syllabusCoverageEvidenceRecoveryHash !==
+        expectedRecoveryHash) {
+      problems.push(
+        "Learning Unit Contract syllabus evidence-recovery hash does not match the active Learn expectation",
+      );
+    }
+    if (contractReceiptPresent !== expectedReceiptPresent ||
+        (contractReceiptPresent &&
+         JSON.stringify(contractReceipt) !== JSON.stringify(expectedReceipt))) {
+      problems.push(
+        "Learning Unit Contract syllabus evidence-recovery receipt does not match the active Learn expectation",
+      );
+    }
+  }
+
+  if (!contractReceiptPresent) {
+    if (contract.syllabusCoverageEvidenceRecoveryHash) {
+      problems.push(
+        "Learning Unit Contract declares a syllabus evidence-recovery hash without its receipt",
+      );
+    }
+    if (expectedReceiptPresent || expectedContext?.syllabusCoverageEvidenceRecoveryHash) {
+      problems.push("active Learn syllabus evidence-recovery receipt is missing from the Learning Unit Contract");
+    }
+    return [...new Set(problems)];
+  }
+
+  const receiptRecord = asObject(contractReceipt);
+  const receiptIntegrity = stringField(receiptRecord.integritySha256);
+  if (!validHash(contract.syllabusCoverageEvidenceRecoveryHash) ||
+      contract.syllabusCoverageEvidenceRecoveryHash !== receiptIntegrity) {
+    problems.push("Learning Unit Contract syllabus evidence-recovery hash does not bind its receipt");
+  }
+  if (expectedContext &&
+      (!validHash(expectedContext.syllabusCoverageEvidenceRecoveryHash ?? "") ||
+       expectedContext.syllabusCoverageEvidenceRecoveryHash !== receiptIntegrity)) {
+    problems.push("active Learn syllabus evidence-recovery hash does not bind its receipt");
+  }
+  if (receiptRecord.outcome !== "recovered") {
+    problems.push("syllabus evidence-recovery receipt is not a recovered teachable decision");
+  }
+
+  const bindings = Array.isArray(receiptRecord.sourceBindings)
+    ? receiptRecord.sourceBindings
+    : [];
+  const sources: Array<{
+    id: string;
+    slug: string;
+    title: string;
+    relPath: string;
+    body: string;
+  }> = [];
+  const root = path.resolve(gardenDir);
+  let realRoot = root;
+  try {
+    realRoot = fs.realpathSync(root);
+  } catch (error) {
+    problems.push(`syllabus evidence-recovery garden root is unreadable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  for (const [index, rawBinding] of bindings.entries()) {
+    const binding = asObject(rawBinding);
+    const sourceId = stringField(binding.sourceId);
+    const relPath = stringField(binding.relPath);
+    if (!sourceId || !relPath) {
+      problems.push(`syllabus evidence-recovery source binding ${index + 1} is invalid`);
+      continue;
+    }
+    const sourcePath = path.resolve(root, ...relPath.replace(/\\/g, "/").split("/"));
+    const relative = path.relative(root, sourcePath);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+      problems.push(`syllabus evidence-recovery source binding ${sourceId} escapes the garden root`);
+      continue;
+    }
+    try {
+      const realSourcePath = fs.realpathSync(sourcePath);
+      const realRelative = path.relative(realRoot, realSourcePath);
+      if (!realRelative || realRelative.startsWith("..") || path.isAbsolute(realRelative)) {
+        problems.push(`syllabus evidence-recovery source binding ${sourceId} resolves outside the garden root`);
+        continue;
+      }
+      sources.push({
+        id: sourceId,
+        slug: sourceId,
+        title: sourceId,
+        relPath,
+        body: stripMarkdownFrontmatter(
+          readFileSyncWithRetry(realSourcePath, "utf-8"),
+        ).trim(),
+      });
+    } catch (error) {
+      problems.push(
+        `syllabus evidence-recovery source binding ${sourceId} is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  try {
+    problems.push(...syllabusCoverageRecoveryReceiptProblems({
+      receipt: contractReceipt,
+      sources: sources.map((source) => ({
+        sourceId: source.slug,
+        relPath: source.relPath,
+        body: source.body,
+      })),
+      anchors: modelSourcePageAnchors(sources),
+      expectedSourceSetHash: contract.sourceSetHash,
+      expectedSourceArtifactInventoryHash: contract.sourceArtifactInventoryHash,
+    }));
+  } catch (error) {
+    problems.push(
+      `syllabus evidence-recovery live provenance could not be rebuilt: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return [...new Set(problems)];
+}
+
 function collectFinalizeChecks({
   gardenDir,
   gardenId,
@@ -7496,6 +8351,7 @@ function collectFinalizeChecks({
   includeReportSelfCheck = true,
   strictModelApprovedVisuals = false,
   expectedVisualContractExecutabilityContext,
+  expectedSourceFormulaReviewContext,
 }: {
   gardenDir: string;
   /** Required for strict Learn paths; build/staging directory names are not garden ids. */
@@ -7504,6 +8360,7 @@ function collectFinalizeChecks({
   includeReportSelfCheck?: boolean;
   strictModelApprovedVisuals?: boolean;
   expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
+  expectedSourceFormulaReviewContext?: SourceFormulaReviewFinalizationContext;
 }): FinalizeCheck[] {
   const checks: FinalizeCheck[] = [];
   const push = (name: string, problems: string[]) => checks.push({ name, status: problems.length ? "FAIL" : "PASS", problems });
@@ -7519,6 +8376,113 @@ function collectFinalizeChecks({
     if (unitId) pagesByUnit.set(unitId, page);
   }
   const ledger = readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []);
+  const sourceFormulaReviewManifest = readSourceFormulaReviewSetManifest(gardenDir);
+  const rawManifestFormulaIds = sourceFormulaReviewManifest?.formulaIds;
+  const manifestFormulaIds = Array.isArray(rawManifestFormulaIds)
+    ? rawManifestFormulaIds.map(stringField).filter(Boolean)
+    : [];
+  const rawManifestSourceIds = sourceFormulaReviewManifest?.sourceIds;
+  const manifestSourceIds = Array.isArray(rawManifestSourceIds)
+    ? rawManifestSourceIds.map(stringField).filter(Boolean)
+    : [];
+  const selectedSourceIds = expectedSourceFormulaReviewContext
+    ? expectedSourceFormulaReviewContext.sourceIds
+    : manifestSourceIds;
+  const currentReviewedFormulaIds = currentSourceFormulaIds(ledger, selectedSourceIds);
+  const declaredReviewedFormulaIds = expectedSourceFormulaReviewContext
+    ? expectedSourceFormulaReviewContext.formulaIds
+    : manifestFormulaIds;
+  const usedFormulaIds = sourceFormulaIdsUsedByFinalArtifact(
+    contract,
+    learnerPages,
+    ledger,
+  );
+  const requireSourceFormulaReview = Boolean(
+    expectedSourceFormulaReviewContext ||
+    contract.sourceFormulaReviewSetHash ||
+    sourceFormulaReviewManifest,
+  );
+  const requireSourceArtifactInventory = Boolean(
+    expectedSourceFormulaReviewContext ||
+    contract.sourceArtifactInventoryHash ||
+    sourceFormulaReviewManifest,
+  );
+  const requireSyllabusCoverageEvidenceRecovery = Boolean(
+    expectedSourceFormulaReviewContext ||
+    contract.syllabusCoverageEvidenceRecoveryHash ||
+    contract.syllabusCoverageEvidenceRecovery !== undefined,
+  );
+  if (requireSyllabusCoverageEvidenceRecovery) {
+    push(
+      "Syllabus coverage evidence-recovery binding",
+      syllabusCoverageEvidenceRecoveryBindingProblems({
+        gardenDir,
+        contract,
+        expectedContext: expectedSourceFormulaReviewContext,
+      }),
+    );
+  }
+  if (requireSourceArtifactInventory) {
+    push(
+      "Selected source-artifact inventory binding",
+      sourceArtifactInventoryBindingProblems({
+        gardenDir,
+        contract,
+        expectedContext: expectedSourceFormulaReviewContext,
+      }),
+    );
+  }
+  if (requireSourceFormulaReview) {
+    const manifestBindingProblems = sourceFormulaReviewManifestBindingProblems({
+      gardenDir,
+      contract,
+      requiredFormulaIds: currentReviewedFormulaIds,
+      expectedContext: expectedSourceFormulaReviewContext,
+    });
+    const declaredReviewedFormulaIdSet = new Set(declaredReviewedFormulaIds);
+    for (const formulaId of usedFormulaIds) {
+      if (!declaredReviewedFormulaIdSet.has(formulaId)) {
+        manifestBindingProblems.push(
+          `${formulaId}: final-used source formula is absent from the AI-reviewed formula set`,
+        );
+      }
+    }
+    push(
+      "AI-reviewed source-formula manifest binding",
+      manifestBindingProblems,
+    );
+    const manifestReviewSetHash = stringField(sourceFormulaReviewManifest?.reviewSetHash);
+    const manifestModel = stringField(sourceFormulaReviewManifest?.model);
+    const reviewValidation = validateSourceFormulaReviewSet({
+      gardenDir,
+      gardenSlug: gardenId ?? path.basename(gardenDir),
+      assetUrlGardenSlug: gardenId ?? path.basename(gardenDir),
+      requiredFormulaIds: declaredReviewedFormulaIds,
+      expectedReviewSetHash:
+        expectedSourceFormulaReviewContext?.reviewSetHash ||
+        contract.sourceFormulaReviewSetHash ||
+        manifestReviewSetHash ||
+        undefined,
+      expectedModel:
+        expectedSourceFormulaReviewContext?.model || manifestModel || undefined,
+      expectedSourceIds:
+        expectedSourceFormulaReviewContext?.sourceIds ?? manifestSourceIds,
+      expectedTopologyReviewPageReceipts:
+        expectedSourceFormulaReviewContext?.topologyReviewPageReceipts,
+    });
+    push("AI-reviewed source-formula provenance", reviewValidation.problems);
+    push(
+      "Reviewed source-formula identity integrity",
+      verifiedFormulaIdentityReviewDriftProblems(gardenDir, usedFormulaIds),
+    );
+    push(
+      "Reviewed source-formula page projection",
+      reviewedSourceFormulaPageBindingProblems({
+        gardenDir,
+        requiredFormulaIds: usedFormulaIds,
+      }),
+    );
+  }
   if (strictModelApprovedVisuals) {
     const executabilityLedger = loadVisualContractExecutabilityLedger(gardenDir);
     const visualizationPlan = loadVisualizationPlan(gardenDir);
@@ -8059,12 +9023,14 @@ function runCriticalGate({
   report,
   strictModelApprovedVisuals = false,
   expectedVisualContractExecutabilityContext,
+  expectedSourceFormulaReviewContext,
 }: {
   gardenDir: string;
   gardenSlug: string;
   report: FinalizeReport;
   strictModelApprovedVisuals?: boolean;
   expectedVisualContractExecutabilityContext?: VisualContractExecutabilityLedgerContext;
+  expectedSourceFormulaReviewContext?: SourceFormulaReviewFinalizationContext;
 }): void {
   const problems: string[] = [];
   // Dirty tree.
@@ -8135,6 +9101,7 @@ function runCriticalGate({
     includeReportSelfCheck: true,
     strictModelApprovedVisuals,
     expectedVisualContractExecutabilityContext,
+    expectedSourceFormulaReviewContext,
   })) {
     if (check.status !== "FAIL") continue;
     for (const problem of check.problems) failEntries.push({ check: check.name, problem });

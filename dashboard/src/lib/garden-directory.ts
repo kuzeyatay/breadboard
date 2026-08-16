@@ -5,7 +5,9 @@
 // pipeline in behind it. `garden-filesystem.ts` re-exports both names, so the
 // existing callers are unaffected.
 
+import fs from "node:fs";
 import path from "node:path";
+import { INTERNAL_CONCEPT_FOLDER } from "./learning-garden.ts";
 
 /**
  * A failure with the HTTP shape the folders route already returns.
@@ -43,4 +45,43 @@ export function gardenDirectory(
     throw new GardenFilesystemError("Invalid garden path", 400);
   }
   return clusterDir;
+}
+
+/**
+ * How many notes a Garden holds, counted the way a reader would see it:
+ * recursively, so notes in `sources/`, `learning/` and any other sub-folder
+ * count, and without the `Internal/` namespace, whose ConceptNodes are
+ * machinery rather than pages. Same traversal rules as `walkClusterMarkdown`
+ * in `knowledge.ts` (which re-exports this), but it never stats a file — this
+ * runs once per Garden on every dashboard load, so it stays a directory walk.
+ */
+export function countClusterMarkdown(clusterDir: string): number {
+  if (!fs.existsSync(clusterDir)) return 0;
+
+  const internalRoot = INTERNAL_CONCEPT_FOLDER.split("/")[0];
+  let count = 0;
+  const walk = (dir: string, depth: number) => {
+    let dirents: fs.Dirent[];
+    try {
+      dirents = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const dirent of dirents) {
+      const name = dirent.name;
+      if (dirent.isDirectory()) {
+        if (name === "assets" || name.startsWith(".")) continue;
+        if (depth === 0 && name === internalRoot) continue;
+        walk(path.join(dir, name), depth + 1);
+        continue;
+      }
+      if (!dirent.isFile() || !name.endsWith(".md")) continue;
+      const lower = name.toLowerCase();
+      if (lower === "_index.md" || lower === "index.md") continue;
+      count += 1;
+    }
+  };
+
+  walk(clusterDir, 0);
+  return count;
 }

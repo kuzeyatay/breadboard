@@ -7,8 +7,10 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
+  GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES,
   compileGeneratedVisualization,
   generateVisualizationCandidate,
+  planGeneratedVisualSelectPreviewStates,
   runGeneratedVisualBrowserTests,
   runGeneratedVisualDeterministicTests,
   validateGeneratedVisualizationCandidateEnvelope,
@@ -33,6 +35,7 @@ function spatialDefinition() {
     accessibilityDescription: "A labelled selector changes the visible spatial construction while a fixed point remains in place. Every object is named by type and pattern in a text legend.",
     controls: [{
       id: "case_mode",
+      kind: "select_case",
       label: "Construction",
       type: "select",
       options: ["Planar", "Axial", "Radial"],
@@ -134,6 +137,7 @@ const opportunity = {
   similarityFingerprint: "spatial-fixture",
   requiredInputs: [{
     id: "case_mode",
+    kind: "select_case",
     label: "Construction",
     type: "select",
     options: ["Planar", "Axial", "Radial"],
@@ -381,7 +385,46 @@ test("candidate envelope fails closed and the Council-visible prompt discloses t
   assert.deepEqual(userPacket.repairContext.exactErrors, ["prior candidate needs repair"]);
 });
 
-test("spatial runtime mounts accessibly at browser viewports", (t) => {
+test("select preview planning covers mixed reviewed select kinds, remains bounded, and marks unrendered combinations explicitly", () => {
+  const definition = spatialDefinition();
+  definition.controls.push({
+    id: "comparison_mode",
+    kind: "process_position",
+    label: "Comparison",
+    type: "select",
+    options: ["First", "Second", "Third"],
+    defaultValue: "First",
+  });
+
+  const states = planGeneratedVisualSelectPreviewStates(definition);
+
+  assert.equal(states.length, GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES);
+  assert.equal(states[0].id, "default");
+  assert.equal(states[0].defaultState, true);
+  assert.ok(states.every((state) => state.selectStateCoverageTruncated));
+  assert.ok(
+    states.every((state) => state.selectState.length === 2),
+    "each bounded preview identity must name every rendered select value",
+  );
+  assert.ok(
+    states.some((state) =>
+      state.selectState.some(
+        (entry) => entry.controlId === "case_mode" && entry.optionLabel === "Axial",
+      ),
+    ),
+  );
+  assert.ok(
+    states.some((state) =>
+      state.selectState.some(
+        (entry) =>
+          entry.controlId === "comparison_mode" && entry.optionLabel === "Second",
+      ),
+    ),
+    "a process_position select cannot disappear when select_case is also present",
+  );
+});
+
+test("spatial runtime mounts accessibly at browser viewports and captures every bounded select-case preview", (t) => {
   if (!browserPath()) return t.skip("Chromium or Edge is not installed");
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-spatial-browser-"));
   try {
@@ -393,6 +436,36 @@ test("spatial runtime mounts accessibly at browser viewports", (t) => {
         .every((entry) => entry.detail === "mounted and self-tested"),
     );
     assert.equal(result.browser?.screenshotCreated, true);
+    assert.equal(result.browser?.previewMatrixComplete, true);
+    assert.equal(result.browser?.selectStateCount, 3);
+    assert.equal(result.browser?.previewCount, 6);
+    assert.equal(result.browser?.selectStateCoverageTruncated, false);
+    assert.equal(result.previews?.length, 6);
+    const previewIds = result.previews.map((preview) => preview.id).sort();
+    assert.deepEqual(previewIds, [
+      "desktop-1000x720-light--case_mode-1",
+      "desktop-1000x720-light--case_mode-2",
+      "desktop-1000x720-light--default",
+      "mobile-375x667-light--case_mode-1",
+      "mobile-375x667-light--case_mode-2",
+      "mobile-375x667-light--default",
+    ]);
+    for (const preview of result.previews) {
+      assert.equal(preview.theme, "light");
+      assert.deepEqual(preview.selectStateCoverageTruncated, false);
+      assert.equal(preview.selectState.length, 1);
+      assert.equal(preview.selectState[0].controlId, "case_mode");
+      assert.ok(["Planar", "Axial", "Radial"].includes(preview.selectState[0].optionLabel));
+      assert.ok(
+        (preview.viewport.width === 375 && preview.viewport.height === 667) ||
+          (preview.viewport.width === 1000 && preview.viewport.height === 720),
+      );
+      assert.ok(fs.statSync(preview.path).size > 0, preview.id);
+    }
+    assert.equal(
+      result.previews.find((preview) => preview.defaultState && preview.viewport.width === 1000)?.path,
+      path.join(outputDir, "preview.png"),
+    );
     assert.ok(fs.statSync(path.join(outputDir, "preview.png")).size > 0);
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });

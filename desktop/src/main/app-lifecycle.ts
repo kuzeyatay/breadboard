@@ -62,6 +62,7 @@ import {
 import { openMicrophoneSettings } from "./microphone-settings";
 import { stopRecallEngine } from "./recall";
 import { readLastWindowTheme, writeLastWindowTheme } from "./theme-state";
+import { readStartupSoundEnabled, writeStartupSoundEnabled } from "./startup-sound";
 import { prepareQaServiceDefinitions } from "./qa-mode";
 import type { QaServiceProfile } from "./startup-options";
 
@@ -799,6 +800,26 @@ export class AppLifecycle {
         }
       }
       return true;
+    });
+    // Asked by two renderers that never meet: the startup screen, which plays
+    // the chime, and the Profile page, which is where it is switched off.
+    ipcMain.handle(IPC_CHANNELS.getStartupSound, () =>
+      readStartupSoundEnabled(this.paths.configDir),
+    );
+    ipcMain.handle(IPC_CHANNELS.setStartupSound, (_event, enabled: unknown) => {
+      if (typeof enabled !== "boolean") return false;
+      try {
+        writeStartupSoundEnabled(this.paths.configDir, enabled);
+        return true;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logs
+          .forService("desktop")
+          .write(`[desktop] could not persist the startup sound preference: ${reason}`);
+        // The switch puts itself back on a false: a preference that silently
+        // failed to save would come back on at the next launch anyway.
+        return false;
+      }
     });
   }
 

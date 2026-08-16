@@ -31,6 +31,9 @@ import {
   UserMessageText,
 } from "@/app/components/hermes/command-text";
 import SavePromptDialog from "@/app/components/hermes/save-prompt-dialog";
+import GardenSettingsDialog, {
+  GardenSettingsIcon,
+} from "@/app/components/garden-settings-dialog";
 import { useLegacyAgentActivity } from "@/app/components/hermes/use-legacy-agent-activity";
 import type {
   ActivityItem,
@@ -2292,6 +2295,7 @@ export default function WorkspaceClient({
   const [learnBusy, setLearnBusy] = useState(false);
   const [learnCancelBusy, setLearnCancelBusy] = useState(false);
   const [learnPanelOpen, setLearnPanelOpen] = useState(false);
+  const [gardenSettingsOpen, setGardenSettingsOpen] = useState(false);
   const [learnConfirmationAction, setLearnConfirmationAction] =
     useState<LearnDestructiveAction | null>(null);
   const [learnSourceOnly, setLearnSourceOnly] = useState(true);
@@ -3101,6 +3105,10 @@ export default function WorkspaceClient({
     let mapGeneratedCount = 0;
     const screenshotWarnings: string[] = [];
     const mapWarnings: string[] = [];
+    // Kept apart from the other warnings so it can be raised first and with a
+    // title: this one is about whether the document can be trusted, not about
+    // how well it was read.
+    const hiddenContentWarnings: string[] = [];
 
     for (const file of uploadFiles) {
       if (uploadCanceledRef.current || abortController.signal.aborted) break;
@@ -3262,6 +3270,9 @@ export default function WorkspaceClient({
             if (typeof result.mapGenerationWarning === "string") {
               mapWarnings.push(`${file.name}: ${result.mapGenerationWarning}`);
             }
+            if (typeof result.hiddenContentWarning === "string") {
+              hiddenContentWarnings.push(result.hiddenContentWarning);
+            }
           }
         } else {
           const message = streamError || "Upload failed";
@@ -3309,6 +3320,11 @@ export default function WorkspaceClient({
           "success",
           "Upload complete",
         );
+        // Ahead of the extraction warnings: the message already names the file,
+        // and it is the one a user should read before acting on the document.
+        for (const warning of hiddenContentWarnings) {
+          addToast(warning, "error", "Hidden content detected");
+        }
         for (const warning of screenshotWarnings) addToast(warning);
         for (const warning of mapWarnings) addToast(warning);
       }
@@ -8831,11 +8847,6 @@ export default function WorkspaceClient({
           <div className="flex min-h-8 items-start justify-between gap-3">
             <div className="flex h-8 shrink-0 items-center gap-2">
               <p className="text-sm font-medium text-white">Learn</p>
-              {learnState?.sourceSetChanged && (
-                <span className="rounded-md border border-amber-700/50 bg-amber-950/30 px-2 py-0.5 text-[10px] font-medium text-amber-300">
-                  New sources
-                </span>
-              )}
             </div>
 
             <div className="flex min-w-0 flex-1 items-start gap-2">
@@ -9339,7 +9350,7 @@ export default function WorkspaceClient({
                   onClick={handleRepairIssues}
                   disabled={!canStart}
                   title="Repairs only failing pages and components; unaffected content is preserved"
-                  className="neu-button-primary flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="neu-button-primary flex h-[30px] items-center gap-1.5 px-3 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {learnBusy ? (
                     <Spinner className="h-3.5 w-3.5" />
@@ -9371,7 +9382,7 @@ export default function WorkspaceClient({
                   type="button"
                   onClick={handleFullRebuild}
                   disabled={!canStart}
-                  className="neu-button-destructive rounded-lg border border-red-900/70 px-3 py-1.5 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="neu-button-destructive h-[30px] rounded-lg border border-red-900/70 px-3 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
                   title="Destructive: recreate the Learning Map, contract, all pages, and visuals"
                 >
                   Rebuild entire garden
@@ -9382,7 +9393,7 @@ export default function WorkspaceClient({
                   type="button"
                   onClick={handleClearLearnData}
                   disabled={learnBusy || learnCancelBusy || active}
-                  className="neu-button-destructive rounded-lg border border-red-900/70 px-3 py-1.5 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="neu-button-destructive h-[30px] rounded-lg border border-red-900/70 px-3 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
                   title="Destructive: remove generated Learn content and Learn history while preserving sources and non-Learn notes"
                 >
                   Clear Learn data
@@ -9402,7 +9413,7 @@ export default function WorkspaceClient({
                     learnCancelBusy ||
                     (!canStart && status !== "awaiting_confirmation")
                   }
-                  className="neu-button-primary flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="neu-button-primary flex h-[30px] items-center gap-1.5 rounded-lg bg-white px-3 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {learnBusy || active ? (
                     <Spinner className="h-3.5 w-3.5" />
@@ -9431,7 +9442,7 @@ export default function WorkspaceClient({
                   type="button"
                   onClick={handleCancelLearn}
                   disabled={learnCancelBusy}
-                  className="neu-button-destructive flex items-center gap-1.5 rounded-lg border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:border-red-700 hover:text-red-200 disabled:cursor-wait disabled:opacity-60"
+                  className="neu-button-destructive flex h-[30px] items-center gap-1.5 rounded-lg border border-red-900/60 bg-red-950/30 px-3 text-sm font-medium text-red-300 transition-colors hover:border-red-700 hover:text-red-200 disabled:cursor-wait disabled:opacity-60"
                   title="Stop this Learn run"
                 >
                   {learnCancelBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
@@ -9445,7 +9456,7 @@ export default function WorkspaceClient({
                   <button
                     type="button"
                     onClick={() => setLearnPanelOpen(false)}
-                    className="neu-button-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
+                    className="neu-button-icon flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
                     aria-label="Close Learn panel"
                     title="Close"
                   >
@@ -11073,8 +11084,24 @@ export default function WorkspaceClient({
               </>
             )}
           </button>
+          <button
+            type="button"
+            onClick={() => setGardenSettingsOpen(true)}
+            title="Garden settings"
+            aria-label="Garden settings"
+            className="neu-button flex items-center justify-center rounded-lg border border-gray-700 p-1.5 text-gray-300 transition-colors hover:border-gray-500 hover:text-white"
+          >
+            <GardenSettingsIcon className="h-4 w-4" />
+          </button>
         </div>
       </header>
+
+      {gardenSettingsOpen ? (
+        <GardenSettingsDialog
+          gardenSlug={clusterSlug}
+          onClose={() => setGardenSettingsOpen(false)}
+        />
+      ) : null}
 
       {/* Body */}
       <div className="flex flex-1 min-h-0">

@@ -51,6 +51,7 @@ import {
 } from "../conversations/store.ts";
 import { composeMemoryContext } from "../conversations/memory.ts";
 import { loadConversationMemoryBundleHybrid } from "../mem0/retrieval.ts";
+import { gardenInstructions } from "../garden-settings.ts";
 import { associateArtifactToolCall, listArtifactEventsAfter } from "./artifact-store.ts";
 import { listAgentLaunchRequestsAfter } from "./agent-launch-store.ts";
 import { acquireDetachedEventPump } from "./detached-event-pump.ts";
@@ -384,6 +385,11 @@ export async function openGardenAgentChat(
     conversationPublicId: conversation.public_id,
     adhdMode: payload.adhdMode === true,
     additional: [
+      // The garden's own standing instructions, set from the workspace header's
+      // settings dialog. Placed ahead of the rest of the turn's context so it
+      // reads as a preference the assistant carries into the work, not as a
+      // late correction bolted onto the end of the prompt.
+      gardenInstructionsContext(session.row.cluster_id),
       composeMemoryContext(memory),
       connectedApps.systemContext,
       documents.context,
@@ -500,6 +506,22 @@ function parseSelectedDocumentSlugs(value: unknown): string[] {
         .filter(Boolean),
     ),
   ].slice(0, 12);
+}
+
+/**
+ * The garden's standing instructions, if it has any.
+ *
+ * Read per turn rather than cached: the settings dialog can change them while a
+ * chat is open, and a stale cache would make the change look like it had not
+ * saved. Truncated because this is free text a user typed into a box.
+ */
+function gardenInstructionsContext(clusterId: number | null): string {
+  const instructions = gardenInstructions(clusterId).trim();
+  if (!instructions) return "";
+  return [
+    "Instructions for this garden, set by the user:",
+    instructions.slice(0, 4_000),
+  ].join("\n");
 }
 
 function gardenTurnContext(
@@ -805,6 +827,21 @@ function legacyGardenEventStream(
             if (groundedAssistantText !== assistantText) {
               assistantText = groundedAssistantText;
               emit({ type: "replace", text: assistantText });
+            }
+            // A provider/runtime can close a successful stream without ever
+            // emitting answer text. Do not leave the Garden transcript with a
+            // blank assistant bubble and an apparently completed turn: make
+            // the terminal state explicit and give the user a safe retry path.
+            if (!assistantText.trim() && toolCalls.length === 0) {
+              assistantText =
+                "The assistant returned no answer. Please try again.";
+              emit({ type: "replace", text: assistantText });
+              recordAuditEvent({
+                eventType: "message.empty_response",
+                runtimeSessionId: session.row.id,
+                userId: session.row.user_id,
+                gardenId: session.row.garden_id,
+              });
             }
             const verification = assessVerification(assistantText, evidence, {
               webGroundingRequired,

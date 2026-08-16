@@ -430,6 +430,7 @@ async function probePreloadSecurity({
     "awaitDashboardReady",
     "continueToDashboard",
     "copyDiagnostics",
+    "getStartupSound",
     "getStartupState",
     "getVersions",
     "onStartupState",
@@ -438,6 +439,7 @@ async function probePreloadSecurity({
     "pickFolder",
     "quit",
     "retryService",
+    "setStartupSound",
     "setTheme",
   ]);
   expect(

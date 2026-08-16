@@ -107,11 +107,9 @@ manual `start.bat` or localhost URLs.
 - **Signing / updates**: the installer is currently unsigned and auto-update
   is disabled by design — see `docs/DESKTOP_RELEASE_CHECKLIST.md`.
 
-Full docs: `docs/DESKTOP_ARCHITECTURE.md`, `docs/DESKTOP_RUNTIME_AUDIT.md`,
-`docs/DESKTOP_DEVELOPMENT.md`, `docs/DESKTOP_PACKAGING.md`,
-`docs/DESKTOP_SECURITY.md`, `docs/DESKTOP_TROUBLESHOOTING.md`,
-`docs/DESKTOP_RELEASE_CHECKLIST.md`,
-`docs/DESKTOP_IMPLEMENTATION_REPORT_2026-07-21.md`.
+Full docs: `docs/DESKTOP_ARCHITECTURE.md`, `docs/DESKTOP_DEVELOPMENT.md`,
+`docs/DESKTOP_PACKAGING.md`, `docs/DESKTOP_SECURITY.md`,
+`docs/DESKTOP_TROUBLESHOOTING.md`, `docs/DESKTOP_RELEASE_CHECKLIST.md`.
 
 ---
 
@@ -140,13 +138,22 @@ flowchart LR
 
 ```text
 breadboard/
-├── chatmock/      # local OpenAI-compatible model bridge
 ├── dashboard/     # main app (Next.js + auth + APIs + UI)
-├── pdf.js/        # PDF-related frontend/runtime assets
+├── desktop/       # Electron shell that supervises the local stack
+├── hermes-agent/  # interactive chat runtime
+├── chatmock/      # local OpenAI-compatible model bridge
 ├── quartz/        # Quartz site used as the garden layer
-├── scripts/       # helper scripts, including Quartz startup
-└── start.bat      # starts ChatMock, Quartz, and Dashboard
+├── scriberr/      # video transcription service (Docker)
+├── pdf.js/        # PDF-related frontend/runtime assets
+├── docs/          # integration, desktop, and agent documentation
+├── qa/            # Playwright QA suites for the Electron app
+├── scripts/       # service launchers and setup helpers
+└── start.bat      # starts ChatMock, Scriberr, Quartz, Hermes, and Dashboard
 ```
+
+Agent integrations are vendored as sibling clones (for example `hyperframes/`,
+`vimax/`, `video-use/`, `audio-analyzer-rs/`, `gbrain/`), each documented under
+`docs/`.
 
 ---
 
@@ -450,6 +457,7 @@ npm run dev
 - Dashboard: `http://localhost:3000`
 - Quartz garden: `http://localhost:8081`
 - ChatMock backend: `http://localhost:8765/v1`
+- Hermes runtime: `http://localhost:9129`
 - Scriberr (video transcription): `http://localhost:8091`
 - PenEcho (whiteboard cards): `http://localhost:8092` (started on demand)
 

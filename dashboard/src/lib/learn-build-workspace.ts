@@ -69,6 +69,9 @@ const DISPOSABLE_TOP_LEVEL = new Set([
  * `.breadboard` is disposable projection output. */
 const DURABLE_BREADBOARD_ENTRIES = new Set([
   "source-visuals.json", // canonical source extraction ledger
+  "source-visual-source-index.json", // durable garden-global S<n> ownership
+  "source-formula-reviews", // AI-authored formula fidelity records + PDF-render evidence
+  "source-formula-review-set.json", // stable reviewed-formula set/source-hash binding
   "source-anchors.json", // canonical model-selected source-anchor ledger
   "sources", // extracted per-source markdown, if present here
   "events.jsonl", // append-only operational history; merged before promotion

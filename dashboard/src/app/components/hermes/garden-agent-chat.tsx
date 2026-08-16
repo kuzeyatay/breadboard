@@ -21,6 +21,7 @@ import ArtifactPanel, {
   ArtifactArchiveIcon,
 } from "./artifact-panel";
 import SkillReviewPanel from "./skill-review-panel";
+import ReviewSettingsPanel from "./review-settings-panel";
 import TerminalScheduledPanel from "./terminal-scheduled-panel";
 import GBrainStatusBadge from "./gbrain-status-badge";
 import { GARDEN_DOCUMENTS_CHANGED_EVENT } from "./artifact-viewer";
@@ -85,7 +86,27 @@ type PanelView =
   | "artifacts"
   | "recents"
   | "skills"
-  | "scheduled";
+  | "scheduled"
+  | "review";
+
+/** Gear, for the garden's own settings. Inline so the toolbar keeps one idiom. */
+function SettingsGearIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
 
 const SUGGESTED_PROMPTS = [
   "Summarize the main ideas of this garden.",
@@ -346,6 +367,10 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
   );
 
   const submit = useCallback(() => {
+    // Nothing may be dispatched into a chat that is still arriving -- not a
+    // Hermes turn and not one of the agent launches below, which bind their run
+    // to whichever conversation is selected when they start.
+    if (session.loadingSession) return;
     const text = input.trim();
     const codexTask = taskFromCodexCommand(text);
     if (codexTask !== null) {
@@ -485,7 +510,7 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
 
   const sendSuggestedPrompt = useCallback(
     (text: string) => {
-      if (busy) return;
+      if (busy || session.loadingSession) return;
       if (routeDeepResearchCommand(text)) return;
       if (deepResearch.agent) {
         void deepResearch.launch(text);
@@ -641,6 +666,17 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
             <ArtifactArchiveIcon className="h-3.5 w-3.5 shrink-0" />
             Artifacts
           </button>
+          <button
+            type="button"
+            onClick={() => toggleView("review")}
+            className={`inline-flex items-center ${
+              view === "review" ? activeHeaderButton : headerButton
+            }`}
+            title="Spaced repetition settings for this garden"
+            aria-label="Spaced repetition settings"
+          >
+            <SettingsGearIcon className="h-3.5 w-3.5 shrink-0" />
+          </button>
           {onClose ? (
             <button
               type="button"
@@ -720,6 +756,8 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
         // Garden chat has no side rail, so scheduling is a view here — the same
         // panel the Terminal shows, pointed at this garden.
         <TerminalScheduledPanel surface="garden_chat" gardenSlug={gardenSlug} />
+      ) : view === "review" ? (
+        <ReviewSettingsPanel gardenSlug={gardenSlug} onClose={() => setView("chat")} />
       ) : view === "artifacts" ? (
         <ArtifactPanel
           compact

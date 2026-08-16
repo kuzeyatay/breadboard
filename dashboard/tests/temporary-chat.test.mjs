@@ -298,6 +298,50 @@ test("what the user says in a temporary chat is drawn on a broken outline", () =
   );
 });
 
+test("the blank temporary chat asks for different things, and keeps the grounding promise", () => {
+  // The openers switch with the mode rather than being one fixed list.
+  assert.match(
+    terminal,
+    /\(temporaryChat \? TEMPORARY_SUGGESTED_PROMPTS : SUGGESTED_PROMPTS\)\[scope\]\.map\(/,
+  );
+  assert.match(terminal, /const TEMPORARY_SUGGESTED_PROMPTS: Record<TerminalScope, string\[\]> = \{/);
+  // Both scopes are covered: the mode is available over the public hub too.
+  const temporaryPrompts = terminal.slice(
+    terminal.indexOf("const TEMPORARY_SUGGESTED_PROMPTS"),
+  );
+  assert.match(temporaryPrompts.slice(0, 900), /\bmine: \[/);
+  assert.match(temporaryPrompts.slice(0, 900), /\bpublic: \[/);
+  // The heading changes; the grounding line does not. It is true in either
+  // mode, and the banner has already said what is switched off — so there is
+  // one copy of it, branching on scope alone.
+  assert.match(terminal, /"Ask off the record"/);
+  assert.match(terminal, /"Ask the public hub off the record"/);
+  assert.doesNotMatch(terminal, /Answers are still grounded/);
+  assert.equal(
+    terminal.match(/Answers are grounded in the notes across every garden you own\./g)?.length,
+    1,
+  );
+  // Off the record, the cards wear the same broken outline as the messages.
+  assert.match(terminal, /className="bb-terminal-suggestion neu-button/);
+  assert.match(
+    globalCss,
+    /\[data-temporary-chat="true"\] \.bb-terminal-suggestion \{[^}]*border-style: dashed;/,
+  );
+  assert.match(
+    globalCss,
+    /\[data-temporary-chat="true"\] \.bb-terminal-suggestion \{[^}]*box-shadow: none;/,
+  );
+  // Hover must not put the raised shadow back on a card that is about to go.
+  assert.match(
+    globalCss,
+    /\[data-temporary-chat="true"\] \.bb-terminal-suggestion:hover:not\(:disabled\) \{[^}]*box-shadow: none;/,
+  );
+  assert.ok(
+    globalCss.indexOf('[data-temporary-chat="true"] .bb-terminal-suggestion') >
+      globalCss.indexOf(".neu-button,"),
+  );
+});
+
 test("toggling temporary chat starts or restores a chat rather than relabelling one", () => {
   assert.match(
     terminal,

@@ -22,6 +22,8 @@ class FakeIpcRenderer implements IpcRendererLike {
     if (channel === IPC_CHANNELS.openMicrophoneSettings) return true;
     if (channel === IPC_CHANNELS.allowThemeLocation) return true;
     if (channel === IPC_CHANNELS.setTheme) return true;
+    if (channel === IPC_CHANNELS.getStartupSound) return false;
+    if (channel === IPC_CHANNELS.setStartupSound) return true;
     return undefined;
   }
 
@@ -45,6 +47,8 @@ test("preload API invokes only the declared IPC contract", async () => {
   assert.equal(await api.openMicrophoneSettings(), true);
   assert.equal(await api.allowThemeLocation(), true);
   assert.equal(await api.setTheme("dark"), true);
+  assert.equal(await api.getStartupSound(), false);
+  assert.equal(await api.setStartupSound(false), true);
   await api.continueToDashboard();
 
   assert.deepEqual(
@@ -60,11 +64,20 @@ test("preload API invokes only the declared IPC contract", async () => {
       IPC_CHANNELS.openMicrophoneSettings,
       IPC_CHANNELS.allowThemeLocation,
       IPC_CHANNELS.setTheme,
+      IPC_CHANNELS.getStartupSound,
+      IPC_CHANNELS.setStartupSound,
       IPC_CHANNELS.startupContinue,
     ],
   );
   assert.deepEqual(ipc.calls[2]?.args, ["dashboard"]);
-  assert.deepEqual(ipc.calls.at(-2)?.args, ["dark"]);
+  assert.deepEqual(
+    ipc.calls.find((call) => call.channel === IPC_CHANNELS.setTheme)?.args,
+    ["dark"],
+  );
+  assert.deepEqual(
+    ipc.calls.find((call) => call.channel === IPC_CHANNELS.setStartupSound)?.args,
+    [false],
+  );
 });
 
 test("startup subscriptions receive state and unsubscribe cleanly", () => {

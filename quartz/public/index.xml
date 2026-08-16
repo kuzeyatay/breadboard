@@ -54,16 +54,16 @@
     <description><![CDATA[ Learning garden with 0 source documents, 0 lesson pages, and 0 graph links. ]]></description>
     <pubDate>Tue, 28 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>Communication 1</title>
-    <link>https://localhost:8081/communication-1/</link>
-    <guid>https://localhost:8081/communication-1/</guid>
-    <description><![CDATA[ Learning garden with 6 source documents, 0 lesson pages, and 1398 graph links. ]]></description>
-    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
-  </item><item>
     <title>Computer Architecture</title>
     <link>https://localhost:8081/computer-architecture-2/</link>
     <guid>https://localhost:8081/computer-architecture-2/</guid>
     <description><![CDATA[ Learning garden with 2 source documents, 0 lesson pages, and 989 graph links. ]]></description>
+    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
+  </item><item>
+    <title>Communication 1</title>
+    <link>https://localhost:8081/communication-1/</link>
+    <guid>https://localhost:8081/communication-1/</guid>
+    <description><![CDATA[ Learning garden with 6 source documents, 0 lesson pages, and 1398 graph links. ]]></description>
     <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item>
     </channel>

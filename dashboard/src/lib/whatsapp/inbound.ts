@@ -36,6 +36,7 @@ import {
   HELP_TEXT,
   MAX_REPLY_CHARS,
 } from "./inbound-policy.ts";
+import { handleInboundReview } from "../review/delivery.ts";
 import type { WhatsAppInboundMessage } from "./bridge.ts";
 import type { WhatsAppStore } from "./store.ts";
 
@@ -106,6 +107,15 @@ export async function routeWhatsAppMessage(
   const command = text.trim().toLowerCase();
   if (command === "/help") {
     return { status: "replied", reply: HELP_TEXT, conversationId: "" };
+  }
+
+  // A message arriving while a review question is open in this thread is an
+  // answer to that question, not the start of a chat. Grading it here — before
+  // any conversation is created — is what stops "3" from being routed to the
+  // assistant as an inscrutable one-word prompt.
+  const review = await handleInboundReview({ chatId: message.chatId, text });
+  if (review) {
+    return { status: "replied", reply: review.reply, conversationId: "" };
   }
 
   const label = contactLabel(message);

@@ -364,6 +364,22 @@ test("emailing a report requires confirmation and an external action", () => {
   assert.equal(p.requiresConfirmation, true);
 });
 
+test("referring to a previous message stays conversational", () => {
+  const p = plan(
+    "What reference number did I give you in my previous message? Reply only with the reference number.",
+  );
+  assert.deepEqual(p.requiredCapabilities, ["conversation"]);
+  assert.equal(p.requiresConfirmation, false);
+  assert.equal(p.riskLevel, "low");
+});
+
+test("messaging a recipient remains an external action", () => {
+  const p = plan("Message the team that the deployment is ready.");
+  assert.ok(p.requiredCapabilities.includes("application_action"));
+  assert.ok(p.requiredCapabilities.includes("mcp"));
+  assert.equal(p.requiresConfirmation, true);
+});
+
 /* ------------------------------------------------------------------ */
 /* Least privilege and isolation                                       */
 /* ------------------------------------------------------------------ */

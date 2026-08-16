@@ -5,6 +5,11 @@ import { usePathname, useSearchParams } from 'next/navigation';
 
 const NAVIGATION_START_EVENT = 'breadboard:navigation-start';
 const MAX_PENDING_PROGRESS = 92;
+// A dev-mode route compile routinely takes 20-35s (the dashboard route has been
+// measured at 26s), so a short deadline here would abandon navigations that are
+// still perfectly alive. This is only a backstop for clicks that never became a
+// navigation at all; a real one ends on the route change below.
+const ABANDON_AFTER_MS = 120_000;
 
 export function startNavigationProgress(): void {
   if (typeof window === 'undefined') return;
@@ -21,19 +26,28 @@ export default function NavigationProgress() {
   const routeKey = `${pathname}?${searchParams.toString()}`;
   const previousRouteRef = useRef(routeKey);
   const progressIntervalRef = useRef<number | null>(null);
-  const safetyTimerRef = useRef<number | null>(null);
+  const abandonTimerRef = useRef<number | null>(null);
   const completionTimersRef = useRef<number[]>([]);
+  const progressRef = useRef(0);
   const [visible, setVisible] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [pending, setPending] = useState(false);
+
+  // Every write goes through here so the creep interval can read the current
+  // value without re-arming itself on each render.
+  const applyProgress = useCallback((next: number) => {
+    progressRef.current = next;
+    setProgress(next);
+  }, []);
 
   const clearProgressTimers = useCallback(() => {
     if (progressIntervalRef.current !== null) {
       window.clearInterval(progressIntervalRef.current);
       progressIntervalRef.current = null;
     }
-    if (safetyTimerRef.current !== null) {
-      window.clearTimeout(safetyTimerRef.current);
-      safetyTimerRef.current = null;
+    if (abandonTimerRef.current !== null) {
+      window.clearTimeout(abandonTimerRef.current);
+      abandonTimerRef.current = null;
     }
   }, []);
 
@@ -45,31 +59,54 @@ export default function NavigationProgress() {
   const finishNavigation = useCallback(() => {
     clearProgressTimers();
     clearCompletionTimers();
+    setPending(false);
     setVisible(true);
-    setProgress(100);
+    applyProgress(100);
 
     completionTimersRef.current = [
       window.setTimeout(() => setVisible(false), 180),
-      window.setTimeout(() => setProgress(0), 420),
+      window.setTimeout(() => applyProgress(0), 420),
     ];
-  }, [clearCompletionTimers, clearProgressTimers]);
+  }, [applyProgress, clearCompletionTimers, clearProgressTimers]);
+
+  // A click that never became a navigation has to release the bar eventually,
+  // but it must not claim the page arrived: run the bar out rather than filling
+  // it. Completing here is what made a slow navigation look like a dead button —
+  // the bar finished and vanished seconds before the page it was tracking.
+  const abandonNavigation = useCallback(() => {
+    clearProgressTimers();
+    clearCompletionTimers();
+    setPending(false);
+    setVisible(false);
+    completionTimersRef.current = [window.setTimeout(() => applyProgress(0), 240)];
+  }, [applyProgress, clearCompletionTimers, clearProgressTimers]);
 
   const beginNavigation = useCallback(() => {
     clearProgressTimers();
     clearCompletionTimers();
+    setPending(true);
     setVisible(true);
-    setProgress((current) => (current > 0 && current < 100 ? current : 8));
+    const resumed = progressRef.current;
+    applyProgress(resumed > 0 && resumed < 100 ? resumed : 8);
 
     progressIntervalRef.current = window.setInterval(() => {
-      setProgress((current) => {
-        if (current >= MAX_PENDING_PROGRESS) return current;
-        const step = Math.max(0.8, (MAX_PENDING_PROGRESS - current) * 0.1);
-        return Math.min(MAX_PENDING_PROGRESS, current + step);
-      });
+      const current = progressRef.current;
+      if (current >= MAX_PENDING_PROGRESS) {
+        // The creep has nothing left to travel. Stop ticking and let the
+        // stalled shimmer carry the "still working" signal, however long the
+        // route takes to compile and render.
+        if (progressIntervalRef.current !== null) {
+          window.clearInterval(progressIntervalRef.current);
+          progressIntervalRef.current = null;
+        }
+        return;
+      }
+      const step = Math.max(0.8, (MAX_PENDING_PROGRESS - current) * 0.1);
+      applyProgress(Math.min(MAX_PENDING_PROGRESS, current + step));
     }, 260);
 
-    safetyTimerRef.current = window.setTimeout(finishNavigation, 20_000);
-  }, [clearCompletionTimers, clearProgressTimers, finishNavigation]);
+    abandonTimerRef.current = window.setTimeout(abandonNavigation, ABANDON_AFTER_MS);
+  }, [abandonNavigation, applyProgress, clearCompletionTimers, clearProgressTimers]);
 
   useEffect(() => {
     if (previousRouteRef.current === routeKey) return;
@@ -128,18 +165,25 @@ export default function NavigationProgress() {
     };
   }, [beginNavigation, clearCompletionTimers, clearProgressTimers]);
 
+  // Pinned at the ceiling with the creep stopped, a static bar reads as frozen.
+  // The shimmer is the only thing distinguishing "still compiling" from "dead".
+  const stalled = pending && progress >= MAX_PENDING_PROGRESS;
+
   return (
     <div
-      className="pointer-events-none fixed inset-x-0 top-0 z-[10000] h-[3px] overflow-hidden"
+      className="pointer-events-none fixed inset-x-0 top-0 z-[10000] h-[4px] overflow-hidden"
       role="progressbar"
       aria-label="Loading page"
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(progress)}
+      aria-busy={pending}
       aria-hidden={!visible}
     >
       <div
-        className="h-full bg-[#0969da] will-change-[width,opacity]"
+        className={`h-full bg-[#0969da] shadow-[0_0_8px_rgba(9,105,218,0.7)] will-change-[width,opacity] ${
+          stalled ? 'bb-nav-progress-stalled' : ''
+        }`}
         style={{
           width: `${progress}%`,
           opacity: visible ? 1 : 0,

@@ -6,6 +6,8 @@ import test from "node:test";
 
 import {
   GENERATED_VISUAL_MAX_SOURCE_CHARS,
+  GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES,
+  GENERATED_VISUAL_REPAIR_HISTORY_MAX_ENTRIES,
   GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS,
   GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS,
   GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS,
@@ -16,7 +18,10 @@ import {
   normalizeDetailedGeneratedVisualCriticRecord,
   retryGeneratedVisualProviderRequest,
 } from "../src/lib/generated-visuals.ts";
-import { GENERATED_VISUAL_CAPABILITY_MANIFEST } from "../src/lib/generated-visual-capabilities.ts";
+import {
+  GENERATED_VISUAL_CAPABILITY_MANIFEST,
+  GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
+} from "../src/lib/generated-visual-capabilities.ts";
 import { attachLearnTokenUsageTracking } from "../src/lib/learn-token-usage.ts";
 
 const validSource = `import { defineVisualization } from "@breadboard/visual-sdk";
@@ -140,6 +145,10 @@ function baseInput(gardenDir, events, overrides = {}) {
 
 test("Learn gives model-authored visual repair the bounded semantic ceiling", () => {
   assert.equal(GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS, 8);
+  assert.equal(
+    GENERATED_VISUAL_REPAIR_HISTORY_MAX_ENTRIES,
+    GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS,
+  );
   const learnSource = fs.readFileSync(
     new URL("../src/lib/learn.ts", import.meta.url),
     "utf8",
@@ -186,11 +195,41 @@ test("semantic repair reaches attempt eight with exact AI critic feedback and th
       events.filter(({ type }) => type === "visual_repair_started").length,
       GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS - 1,
     );
-    for (let attempt = 2; attempt <= GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS; attempt += 1) {
-      assert.deepEqual(candidateRequests[attempt - 1].errors, [
+    for (
+      let attempt = 2;
+      attempt <= GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      const request = candidateRequests[attempt - 1];
+      assert.deepEqual(request.errors, [
         criticReasons[attempt - 2],
         ...requestedChanges[attempt - 2],
       ]);
+      assert.deepEqual(request.previousCandidate, candidate());
+      assert.equal(request.repairHistory.length, attempt - 1);
+      assert.deepEqual(
+        request.repairHistory.map((entry) => ({
+          attempt: entry.attempt,
+          failureCategory: entry.failureCategory,
+          errors: entry.errors,
+          critic: entry.critic,
+        })),
+        Array.from({ length: attempt - 1 }, (_, index) => ({
+          attempt: index + 1,
+          failureCategory: "critic",
+          errors: [
+            criticReasons[index],
+            ...requestedChanges[index],
+          ],
+          critic: {
+            reason: criticReasons[index],
+            requestedChanges: requestedChanges[index],
+          },
+        })),
+      );
+      for (const entry of request.repairHistory) {
+        assert.match(entry.candidateSnapshotHash, /^[a-f0-9]{64}$/);
+      }
     }
     assert.deepEqual(result.errors, [
       criticReasons.at(-1),
@@ -199,6 +238,47 @@ test("semantic repair reaches attempt eight with exact AI critic feedback and th
     assert.equal(events.filter(({ type }) => type === "visual_fallback_used").length, 1);
     assert.equal(events.some(({ type }) => type === "visual_published"), false);
     assert.equal(loadGeneratedVisualManifest(gardenDir, opportunity.id), null);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("repair history fingerprints all six candidate fields instead of sourceCode alone", async () => {
+  const gardenDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "breadboard-visual-snapshot-lineage-"),
+  );
+  const events = [];
+  const requests = [];
+  const candidates = [
+    { ...candidate(), explanation: "First explanation with the shared source." },
+    { ...candidate(), explanation: "Second explanation with the shared source." },
+    { ...candidate(), explanation: "Third explanation with the shared source." },
+  ];
+  try {
+    const result = await createGeneratedVisualization(
+      baseInput(gardenDir, events, {
+        maxAttempts: 3,
+        candidateProvider: async (input) => {
+          requests.push(input);
+          return candidates[requests.length - 1];
+        },
+        criticProvider: async () =>
+          rejectedCritic("The complete candidate needs another model revision.", [
+            "Change an authored field without changing the shared source.",
+          ]),
+      }),
+    );
+
+    assert.equal(result.manifest, null);
+    assert.equal(requests.length, 3);
+    assert.equal(candidates[0].sourceCode, candidates[1].sourceCode);
+    assert.equal(requests[2].previousCandidate.explanation, candidates[1].explanation);
+    assert.equal(requests[2].repairHistory.length, 2);
+    assert.notEqual(
+      requests[2].repairHistory[0].candidateSnapshotHash,
+      requests[2].repairHistory[1].candidateSnapshotHash,
+      "metadata-only candidate changes must have distinct repair lineage",
+    );
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });
   }
@@ -213,6 +293,9 @@ function assertSameCandidateRequest(left, right) {
   assert.equal(left.sourceFigureSummaries, right.sourceFigureSummaries);
   assert.equal(left.formulaDefinitions, right.formulaDefinitions);
   assert.equal(left.previousSourceCode, right.previousSourceCode);
+  assert.equal(left.previousCandidate, right.previousCandidate);
+  assert.equal(left.repairHistory, right.repairHistory);
+  assert.equal(left.previews, right.previews);
   assert.equal(left.errors, right.errors);
   assert.equal(left.timeoutMs, right.timeoutMs);
   assert.ok(left.signal instanceof AbortSignal);
@@ -412,6 +495,124 @@ test("built-in model repair receives the complete prior source and every exact f
   );
 });
 
+test("built-in model repair carries the complete prior candidate, cumulative exact history, immutable contract, and labelled preview evidence", async () => {
+  const previewDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "breadboard-visual-repair-packet-"),
+  );
+  const previewPath = path.join(previewDir, "mobile-case-b.png");
+  fs.writeFileSync(
+    previewPath,
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+3MxGAAAAAElFTkSuQmCC",
+      "base64",
+    ),
+  );
+  const bodies = [];
+  const previousCandidate = {
+    ...candidate(),
+    title: "Prior authored title",
+    explanation: "Prior authored explanation.",
+    testCases: [{
+      name: "prior check",
+      inputs: { input: 2 },
+      expected: { result: 4 },
+      tolerance: 0,
+    }],
+    accessibilityDescription: "Prior authored non-visual description.",
+    pedagogicalClaims: ["Prior authored pedagogical claim."],
+  };
+  const repairHistory = [
+    {
+      attempt: 1,
+      failureCategory: "validation",
+      errors: ["exact validation gate reason"],
+      candidateSnapshotHash: "a".repeat(64),
+    },
+    {
+      attempt: 2,
+      failureCategory: "critic",
+      errors: ["exact critic reason", "exact requested change"],
+      critic: {
+        reason: "exact critic reason",
+        requestedChanges: ["exact requested change"],
+      },
+      candidateSnapshotHash: "b".repeat(64),
+    },
+  ];
+  const previews = [{
+    id: "mobile-375x667-light--case_mode-1",
+    viewport: { width: 375, height: 667 },
+    theme: "light",
+    selectState: [{ controlId: "case_mode", optionIndex: 1, optionLabel: "Case B" }],
+    defaultState: false,
+    selectStateCoverageTruncated: false,
+    path: previewPath,
+  }];
+  const client = {
+    chat: {
+      completions: {
+        create: async (body) => {
+          bodies.push(body);
+          return {
+            choices: [{ message: { content: JSON.stringify(candidate()) } }],
+            usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 },
+          };
+        },
+      },
+    },
+  };
+
+  try {
+    await generateVisualizationCandidate({
+      client,
+      model: "test-model",
+      opportunity,
+      pageMarkdown: "Source-grounded fixture text.",
+      sourceContext,
+      sourceFigureSummaries,
+      formulaDefinitions,
+      previousCandidate,
+      repairHistory,
+      errors: repairHistory.at(-1).errors,
+      previews,
+    });
+
+    const system = bodies[0].messages.find(({ role }) => role === "system").content;
+    assert.match(system, /immutableContract controls and outputs are fixed/i);
+    assert.match(system, /previewCoverage\.selectStateCoverageTruncated/i);
+    const content = bodies[0].messages.find(({ role }) => role === "user").content;
+    assert.ok(Array.isArray(content));
+    assert.equal(content.filter((part) => part.type === "image_url").length, 1);
+    const userPacket = JSON.parse(content.find((part) => part.type === "text").text);
+    assert.deepEqual(userPacket.immutableContract, {
+      requiredInputs: opportunity.requiredInputs,
+      requiredOutputs: opportunity.requiredOutputs,
+    });
+    const { sourceHash, ...previousCandidateMetadata } =
+      userPacket.repairContext.previousCandidate;
+    assert.deepEqual(previousCandidateMetadata, previousCandidate);
+    assert.match(sourceHash, /^[a-f0-9]{64}$/);
+    assert.deepEqual(userPacket.repairContext.exactHistory, repairHistory);
+    assert.deepEqual(userPacket.repairContext.renderedPreviews, [{
+      id: previews[0].id,
+      viewport: previews[0].viewport,
+      theme: previews[0].theme,
+      selectState: previews[0].selectState,
+      defaultState: false,
+      selectStateCoverageTruncated: false,
+    }]);
+    assert.deepEqual(userPacket.repairContext.previewCoverage, {
+      renderedPreviewCount: 1,
+      selectStateCap: 4,
+      selectStateCoverageTruncated: false,
+      policy:
+        "Labelled previews are evidence only for their stated viewport and select state. A truncated select-state matrix is a deliberate bounded subset, never proof of an unrendered state or full state coverage.",
+    });
+  } finally {
+    fs.rmSync(previewDir, { recursive: true, force: true });
+  }
+});
+
 test("provider timeout replays candidate generation without consuming a semantic attempt or usage event", async () => {
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-provider-retry-"));
   const events = [];
@@ -547,6 +748,17 @@ test("non-transport candidate failure remains a model-authored semantic repair a
     assert.equal(requests.length, 2);
     assert.equal(requests[0].errors, undefined);
     assert.deepEqual(requests[1].errors, ["candidate envelope is invalid"]);
+    assert.equal(requests[1].previousCandidate, undefined);
+    assert.deepEqual(requests[1].repairHistory, [{
+      attempt: 1,
+      failureCategory: "generation",
+      errors: ["candidate envelope is invalid"],
+    }]);
+    assert.equal(
+      "candidateSnapshotHash" in requests[1].repairHistory[0],
+      false,
+      "a failed generation must not be attributed to a prior candidate",
+    );
     assert.equal(events.filter(({ type }) => type === "visual_generation_failed").length, 1);
     assert.equal(events.filter(({ type }) => type === "visual_repair_started").length, 1);
     assert.equal(events.some(({ type }) => type.includes("transport_retry")), false);
@@ -669,6 +881,7 @@ test("critic transport retry preserves the validated artifact and critic protoco
       "sourceFigureSummaries",
       "formulaDefinitions",
       "previewPath",
+      "previews",
       "tests",
       "priorCriticFailure",
     ]) {
@@ -821,6 +1034,34 @@ test("critic prompt requires topology/domain comparison and legacy approval ente
     assert.match(system, /input, then commit, then reveal\/evaluate order/i);
     assert.match(system, /reveals or evaluates the outcome before commitment/i);
     assert.match(system, /no retained hidden-state snapshot/i);
+    assert.match(system, /complete bounded inventory of every blocking revision/i);
+    assert.match(system, /immutableContract controls and outputs are planner-owned/i);
+    assert.match(system, /sourceCode\/SDK-feasible/i);
+    assert.match(system, /never request a contract, planner, lesson, route, renderer, runtime, CSS, or unavailable SDK mutation/i);
+    assert.match(system, /bounded representative evidence rather than proof of complete or unshown select-state coverage/i);
+    const criticPacket = JSON.parse(
+      requests[0].messages.find(({ role }) => role === "user").content,
+    );
+    assert.deepEqual(criticPacket.immutableContract, {
+      requiredInputs: opportunity.requiredInputs,
+      requiredOutputs: opportunity.requiredOutputs,
+    });
+    assert.deepEqual(
+      criticPacket.capabilityManifest,
+      GENERATED_VISUAL_CAPABILITY_MANIFEST,
+    );
+    assert.equal(
+      criticPacket.capabilityManifestHash,
+      GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
+    );
+    assert.deepEqual(criticPacket.renderedPreviews, []);
+    assert.deepEqual(criticPacket.previewCoverage, {
+      renderedPreviewCount: 0,
+      selectStateCap: GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES,
+      selectStateCoverageTruncated: false,
+      policy:
+        "Labelled previews are evidence only for their stated viewport and select state. A truncated select-state matrix is a deliberate bounded subset, never proof of an unrendered state or full state coverage.",
+    });
     assert.ok(
       requests[0].response_format.json_schema.schema.properties.scores.required.includes(
         "primitiveTopologyAndDomain",

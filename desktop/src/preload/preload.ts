@@ -11,6 +11,8 @@ export const PRELOAD_IPC_CHANNELS = {
   openMicrophoneSettings: "breadboard:open-microphone-settings",
   allowThemeLocation: "breadboard:allow-theme-location",
   setTheme: "breadboard:set-theme",
+  getStartupSound: "breadboard:get-startup-sound",
+  setStartupSound: "breadboard:set-startup-sound",
   startupContinue: "breadboard:startup-continue",
   startupAwaitDashboard: "breadboard:startup-await-dashboard",
   startupState: "breadboard:startup-state",
@@ -90,6 +92,14 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     // chrome while it is open; the window goes back to its theme on close.
     setTheme: (surface: "light" | "dark" | "voice"): Promise<boolean> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.setTheme, surface) as Promise<boolean>,
+    // Whether the startup screen's chime may sound. Both the startup screen
+    // that plays it and the Profile switch that sets it read the same answer
+    // from the shell, which is the only place either of them can share.
+    getStartupSound: (): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.getStartupSound) as Promise<boolean>,
+    /** Resolves false when the choice could not be written down. */
+    setStartupSound: (enabled: boolean): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.setStartupSound, enabled) as Promise<boolean>,
   };
 }
 

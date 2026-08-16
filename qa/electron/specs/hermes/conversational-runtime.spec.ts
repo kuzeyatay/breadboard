@@ -81,7 +81,8 @@ test("Hermes real UI conversational path and supported surface inventory", async
   const runtimeStatus = await probeJson(page, `${dashboardOrigin}/api/hermes/health`);
   const modelStatus = await probeJson(page, `${dashboardOrigin}/api/models`);
 
-  const prompt = "Reply with the exact phrase HERMES_E2E_OK.";
+  const marker = `HERMES-E2E-${Math.floor(100000 + Math.random() * 900000)}`;
+  const prompt = `Reply with the exact phrase ${marker}. This is a direct-response smoke check, not a memory or retrieval claim.`;
   const chatResponses: Array<{ status: number; body: string }> = [];
   const captureChatResponse = async (response: import("playwright").Response) => {
     if (new URL(response.url()).pathname !== "/api/chat") return;
@@ -92,12 +93,13 @@ test("Hermes real UI conversational path and supported surface inventory", async
   const composer = page.getByPlaceholder(/Ask about your documents/).first();
   await expect(composer).toBeVisible({ timeout: 30_000 });
   await expect(composer).toBeEditable({ timeout: 120_000 });
+  const beforeAssistantCount = await page.locator('div[class~="text-gray-200"]').count();
   await composer.fill(prompt);
   const send = page.getByRole("button", { name: "Send", exact: true }).last();
   await expect(send).toBeEnabled();
   await send.click();
 
-  const observed = await observeTurn(page, prompt, TURN_TIMEOUT_MS);
+  const observed = await observeTurn(page, prompt, marker, beforeAssistantCount, TURN_TIMEOUT_MS);
   // Expected provider 401s are recorded as ordinary blocked diagnostics. A
   // fatal renderer/main/Hermes event is never allowed to masquerade as a
   // superficially usable composer.
@@ -111,8 +113,8 @@ test("Hermes real UI conversational path and supported surface inventory", async
     runId: qa.run.runId,
     surface: "garden_chat",
     prompt,
-    result: observed.responseText.includes("HERMES_E2E_OK") ? "PASS" : "BLOCKED",
-    ...(observed.responseText.includes("HERMES_E2E_OK")
+    result: observed.responseText.includes(marker) ? "PASS" : "BLOCKED",
+    ...(observed.responseText.includes(marker)
       ? {}
       : {
           reason:
@@ -155,6 +157,8 @@ test("Hermes real UI conversational path and supported surface inventory", async
 async function observeTurn(
   page: Page,
   prompt: string,
+  marker: string,
+  beforeAssistantCount: number,
   timeoutMs: number,
 ): Promise<{
   responseText: string;
@@ -167,25 +171,10 @@ async function observeTurn(
   let failureText = "";
   let userMessageVisible = false;
   while (Date.now() < deadline) {
-    // AgentRuntimePanel gives user bubbles a legacy class but deliberately
-    // leaves assistant prose unstyled at the message wrapper. For this
-    // harmless exact-phrase turn, the semantic text node is the reliable
-    // renderer assertion and cannot match the user prompt (which ends in a
-    // period).
-    const exactPhrase = page.getByText("HERMES_E2E_OK", { exact: true }).first();
-    const exactPhraseVisible = await exactPhrase.isVisible().catch(() => false);
-    if (exactPhraseVisible) {
-      responseText = await exactPhrase
-        .textContent()
-        .then((text) => text?.trim() ?? "")
-        .catch(() => "");
+    const assistantBlocks = page.locator('div[class~="text-gray-200"]');
+    if (await assistantBlocks.count() > beforeAssistantCount) {
+      responseText = await assistantBlocks.last().innerText().catch(() => "");
     }
-    responseText = await page
-      .locator(".neu-chat-message:not(.neu-chat-message-user)")
-      .allTextContents()
-      .then((values) => values.join("\n").trim())
-      .then((legacyText) => legacyText || responseText)
-      .catch(() => responseText);
     failureText = await page
       .getByRole("alert")
       .allTextContents()
@@ -201,7 +190,7 @@ async function observeTurn(
     const composerUsable = await composer
       .isEnabled()
       .catch(() => false);
-    if (responseText.includes("HERMES_E2E_OK") || (failureText && composerUsable)) {
+    if (responseText.includes(marker) || (failureText && composerUsable)) {
       return { responseText, failureText, userMessageVisible, composerUsable };
     }
     await new Promise((resolve) => setTimeout(resolve, 250));

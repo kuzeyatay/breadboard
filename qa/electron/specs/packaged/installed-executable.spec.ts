@@ -26,6 +26,7 @@ const EXPECTED_PRELOAD_API_KEYS = [
   "awaitDashboardReady",
   "continueToDashboard",
   "copyDiagnostics",
+  "getStartupSound",
   "getStartupState",
   "getVersions",
   "onStartupState",
@@ -34,6 +35,7 @@ const EXPECTED_PRELOAD_API_KEYS = [
   "pickFolder",
   "quit",
   "retryService",
+  "setStartupSound",
   "setTheme",
 ] as const;
 const PACKAGED_BEHAVIOR_ENVIRONMENT_KEYS = [

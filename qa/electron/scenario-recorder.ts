@@ -8,6 +8,7 @@ export type ScenarioStatus =
   | "BLOCKED"
   | "SKIPPED_OPTIONAL"
   | "NOT_SUPPORTED"
+  | "FLAKY"
   | "NOT_RUN";
 export type FailureClassification =
   | "PRODUCT_BUG"
@@ -129,6 +130,12 @@ export type ScenarioProbeOutcome =
       readonly classification?: Exclude<FailureClassification, null>;
     }
   | {
+      readonly status: "FLAKY";
+      readonly reason: string;
+      readonly evidence?: readonly string[];
+      readonly classification?: Exclude<FailureClassification, null>;
+    }
+  | {
       readonly status: "NOT_RUN";
       readonly reason: string;
       readonly evidence?: readonly string[];
@@ -146,6 +153,12 @@ export interface ScenarioProbeOptions {
 }
 
 export interface ScenarioFailureDecision {
+  readonly status?:
+    | "FAIL"
+    | "BLOCKED"
+    | "SKIPPED_OPTIONAL"
+    | "NOT_SUPPORTED"
+    | "FLAKY";
   readonly classification: Exclude<FailureClassification, null>;
   readonly evidence?: readonly string[];
   /** A redacted summary suitable for the persisted receipt. */
@@ -282,15 +295,18 @@ export class ScenarioRecorder {
           outcome.classification ?? "OPTIONAL_DEPENDENCY_NOT_CONFIGURED",
         );
       }
-      if (outcome.status === "NOT_SUPPORTED") {
+      if (outcome.status === "NOT_SUPPORTED" || outcome.status === "FLAKY") {
         return this.recordDisposition(
           id,
-          "NOT_SUPPORTED",
+          outcome.status,
           outcome.reason,
           outcome.evidence ?? [],
           started,
           startedAt,
-          outcome.classification ?? "INTENTIONALLY_UNSUPPORTED",
+          outcome.classification ??
+            (outcome.status === "FLAKY"
+              ? "QA_HARNESS_LIMITATION"
+              : "INTENTIONALLY_UNSUPPORTED"),
         );
       }
       return this.recordMissingDependency(
@@ -304,6 +320,41 @@ export class ScenarioRecorder {
       );
     } catch (error) {
       const decision = await options.classifyFailure?.(error);
+      if (
+        decision?.status === "BLOCKED" &&
+        decision.classification !== "PRODUCT_BUG"
+      ) {
+        return this.recordMissingDependency(
+          id,
+          "required",
+          decision.actual ?? (error instanceof Error ? error.message : String(error)),
+          [
+            ...(options.failureEvidence ?? []),
+            ...(decision.evidence ?? []),
+          ],
+          started,
+          startedAt,
+          decision.classification,
+        );
+      }
+      if (
+        decision?.status === "SKIPPED_OPTIONAL" ||
+        decision?.status === "NOT_SUPPORTED" ||
+        decision?.status === "FLAKY"
+      ) {
+        return this.recordDisposition(
+          id,
+          decision.status,
+          decision.actual ?? (error instanceof Error ? error.message : String(error)),
+          [
+            ...(options.failureEvidence ?? []),
+            ...(decision.evidence ?? []),
+          ],
+          started,
+          startedAt,
+          decision.classification,
+        );
+      }
       return this.recordFailure(
         id,
         started,
@@ -381,6 +432,25 @@ export class ScenarioRecorder {
     return this.recordDisposition(
       id,
       "NOT_SUPPORTED",
+      reason,
+      evidence,
+      now,
+      new Date(now).toISOString(),
+      classification,
+    );
+  }
+
+  flaky(
+    id: string,
+    reason: string,
+    evidence: readonly string[] = [],
+    classification: Exclude<FailureClassification, null> =
+      "QA_HARNESS_LIMITATION",
+  ): ScenarioAttempt {
+    const now = Date.now();
+    return this.recordDisposition(
+      id,
+      "FLAKY",
       reason,
       evidence,
       now,
@@ -491,7 +561,7 @@ export class ScenarioRecorder {
 
   private recordDisposition(
     id: string,
-    status: "SKIPPED_OPTIONAL" | "NOT_SUPPORTED",
+    status: "SKIPPED_OPTIONAL" | "NOT_SUPPORTED" | "FLAKY",
     reason: string,
     evidence: readonly string[],
     started: number,

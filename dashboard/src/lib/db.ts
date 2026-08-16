@@ -20,6 +20,7 @@ import { ensureMapSchema } from "./map/schema.ts";
 import { ensureSocialsManagerSchema } from "./socials-manager/schema.ts";
 import { ensureTelegramSchema } from "./telegram/schema.ts";
 import { ensureWhatsAppSchema } from "./whatsapp/schema.ts";
+import { ensureReviewSchema } from "./review/schema.ts";
 
 const DB_PATH = path.join(databaseDir(), "brain.db");
 
@@ -361,6 +362,17 @@ ensureColumn(
   "fork_allowed INTEGER NOT NULL DEFAULT 0",
 );
 ensureColumn("clusters", "repo_path", "repo_path TEXT");
+// Per-garden standing instructions, appended to the system prompt of every turn
+// in this garden. See src/lib/hermes/garden-chat-adapter.ts.
+ensureColumn("clusters", "instructions", "instructions TEXT NOT NULL DEFAULT ''");
+// 'default' | 'garden_only'. Garden-only makes this garden's durable memories
+// invisible to chats elsewhere, and hides everything else from chats here — the
+// filter lives in retrieveDurableMemories (src/lib/conversations/memory.ts).
+ensureColumn(
+  "clusters",
+  "memory_scope",
+  "memory_scope TEXT NOT NULL DEFAULT 'default'",
+);
 ensureColumn("chat_messages", "token_usage", "token_usage TEXT");
 // Virtual grouping of clusters into folders on the dashboard / garden overview.
 ensureColumn("clusters", "folder", "folder TEXT");
@@ -776,6 +788,12 @@ ensureWhatsAppSchema(db);
 // Additive Telegram link tables (settings + update offset, chat→conversation map,
 // dedupe). The bot token is never stored here either — only on disk under Hermes.
 ensureTelegramSchema(db);
+
+// Spaced repetition: per-user delivery choice, per-garden participation, one
+// FSRS card per learning page, and the questions currently awaiting a reply.
+// Scheduling state lives here rather than in note frontmatter because a garden's
+// markdown is a build output the Learn pipeline rewrites. See src/lib/review/.
+ensureReviewSchema(db);
 
 // Persist cluster-group folders even while they contain no clusters yet.
 db.exec(`

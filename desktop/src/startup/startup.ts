@@ -32,6 +32,7 @@ interface BreadboardDesktopApiLocal {
   quit(): Promise<void>;
   continueToDashboard(): Promise<void>;
   awaitDashboardReady(): Promise<void>;
+  getStartupSound(): Promise<boolean>;
 }
 
 interface WelcomeGreeting {
@@ -101,6 +102,27 @@ const REDUCED_DISSOLVE_MS = 240;
 let failedServiceId: string | null = null;
 let stage: "loading" | "preparing" | "welcome" | "dissolving" = "loading";
 let introPlaying = false;
+/**
+ * Whether the chime may sound at all, switched off on the Profile page. It is
+ * asked for as the page loads and held by the shell rather than read from
+ * anywhere the dashboard keeps settings — this screen runs before the dashboard
+ * exists and before anyone has signed in.
+ *
+ * A shell that cannot answer leaves the sound on: muting is a deliberate
+ * choice, and a failed lookup is not one.
+ */
+let introEnabled = true;
+// Asked for through a resolved promise rather than called outright: a shell too
+// old to answer would otherwise throw here, on the first statements of the only
+// screen the app has, and take the whole launch down over a chime.
+const introPreference = Promise.resolve()
+  .then(() => api.getStartupSound())
+  .then(
+    (enabled) => {
+      introEnabled = enabled !== false;
+    },
+    () => undefined,
+  );
 /** Bumped whenever the screen leaves the pre-welcome wait, so a dashboard that
  *  finishes painting after a service died cannot open the greeting anyway. */
 let gateToken = 0;
@@ -149,15 +171,18 @@ function showGreeting(greeting: WelcomeGreeting): void {
 
 /**
  * The chime the greeting arrives over. It plays once, unprompted — the only
- * thing that can refuse it is an autoplay policy, and a silent start is a
- * complete outcome, so a rejection is simply noted and dropped.
+ * things that can refuse it are the person's own preference and an autoplay
+ * policy, and a silent start is a complete outcome either way, so a rejection
+ * is simply noted and dropped.
  *
  * `introPlaying` records that it was started rather than that it is still
  * sounding: what the rest of the screen needs to know is whether a chime is
- * leading the greeting in, which stays true for the beat after it ends.
+ * leading the greeting in, which stays true for the beat after it ends. A muted
+ * screen therefore leaves it false, and the greeting arrives on the shorter
+ * delay it would have used before there was a sound to wait for.
  */
 function startIntro(): void {
-  if (introPlaying) return;
+  if (!introEnabled || introPlaying) return;
   introPlaying = true;
   void introSound.play().catch(() => {
     introPlaying = false;
@@ -193,10 +218,15 @@ function beginWelcomeGate(): void {
   const open = () => {
     if (token === gateToken) enterWelcome();
   };
+  // The chime preference is settled first. It decides both whether a sound
+  // plays and how long the greeting holds back for one, so an answer arriving
+  // mid-welcome would be an answer arriving too late — and since it is asked
+  // for as the page loads, this costs nothing against the dashboard's own wait.
+  //
   // Both arms: the shell caps this wait rather than reporting failure, so a
   // rejection means the channel itself is gone — and never showing the welcome
   // would be a worse outcome than showing it over a dashboard still painting.
-  void api.awaitDashboardReady().then(open, open);
+  void introPreference.then(() => api.awaitDashboardReady().then(open, open));
 }
 
 function enterWelcome(): void {

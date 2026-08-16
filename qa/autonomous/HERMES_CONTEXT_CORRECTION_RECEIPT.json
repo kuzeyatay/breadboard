@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-15T15:40:00+03:00",
+  "runId": "20260815153711-42028-effac560",
+  "spec": "qa/electron/specs/hermes/context-correction.spec.ts",
+  "providerAuthReference": "CHATMOCK_AUTH_FILE; read-only reference, contents omitted",
+  "result": "BLOCKED",
+  "counts": {
+    "PASS": 0,
+    "BLOCKED": 3,
+    "FAIL": 0
+  },
+  "attempts": [
+    {
+      "id": "active-conversation-context",
+      "status": "BLOCKED",
+      "actual": "Authenticated provider did not complete the context setup turn; no retrieval assertion was attempted as a PASS."
+    },
+    {
+      "id": "renderer-refresh-restoration",
+      "status": "BLOCKED",
+      "actual": "Provider did not complete the post-refresh retrieval turn."
+    },
+    {
+      "id": "conversation-isolation",
+      "status": "BLOCKED",
+      "actual": "Provider did not complete the isolated-conversation retrieval turn."
+    }
+  ],
+  "evidence": [
+    ".qa-results/results.json",
+    ".qa-results/runs/20260815153711-42028-effac560/diagnostics/launch-1/diagnostics.json"
+  ],
+  "note": "No corrected context invariant was promoted to PASS. The retrieval prompts omitted the generated marker, and the three tests used newest-assistant-block assertions; the provider prerequisite was unavailable within the bounded replay."
+}

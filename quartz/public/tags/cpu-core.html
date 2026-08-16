@@ -1041,6 +1041,55 @@ html.penecho-board-open {
   let activeSpatialDragCleanup = null
   let activeSpatialDragScene = null
   let activeDefinitionCleanup = null
+  const RUNTIME_DIAGNOSTIC_MAX_ENTRIES = 12
+  const RUNTIME_DIAGNOSTIC_MAX_LENGTH = 384
+
+  const safeRuntimeDiagnosticText = (value) => {
+    const text = String(value ?? "")
+      .replace(/\\s+/g, " ")
+      .trim()
+    let unicodeSafe = ""
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index)
+      if (code >= 0xd800 && code <= 0xdbff) {
+        const next = text.charCodeAt(index + 1)
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          unicodeSafe += text[index] + text[index + 1]
+          index += 1
+        } else unicodeSafe += "\\ufffd"
+      } else unicodeSafe += code >= 0xdc00 && code <= 0xdfff ? "\\ufffd" : text[index]
+    }
+    if (unicodeSafe.length <= RUNTIME_DIAGNOSTIC_MAX_LENGTH) return unicodeSafe
+    const suffix = \`...[truncated:\${unicodeSafe.length}]\`
+    let prefixLength = RUNTIME_DIAGNOSTIC_MAX_LENGTH - suffix.length
+    if (
+      prefixLength > 0 &&
+      unicodeSafe.charCodeAt(prefixLength - 1) >= 0xd800 &&
+      unicodeSafe.charCodeAt(prefixLength - 1) <= 0xdbff &&
+      unicodeSafe.charCodeAt(prefixLength) >= 0xdc00 &&
+      unicodeSafe.charCodeAt(prefixLength) <= 0xdfff
+    )
+      prefixLength -= 1
+    return \`\${unicodeSafe.slice(0, prefixLength)}\${suffix}\`
+  }
+
+  const writeRuntimeDiagnostics = (diagnostics) => {
+    const normalized = diagnostics.map(safeRuntimeDiagnosticText).filter(Boolean)
+    if (normalized.length === 0) {
+      delete document.body.dataset.breadboardRuntimeDiagnostics
+      return
+    }
+    const visibleCount =
+      normalized.length > RUNTIME_DIAGNOSTIC_MAX_ENTRIES
+        ? RUNTIME_DIAGNOSTIC_MAX_ENTRIES - 1
+        : RUNTIME_DIAGNOSTIC_MAX_ENTRIES
+    const bounded = normalized.slice(0, visibleCount)
+    if (normalized.length > visibleCount)
+      bounded.push(\`additional_failures:\${normalized.length - visibleCount}\`)
+    document.body.dataset.breadboardRuntimeDiagnostics = encodeURIComponent(
+      JSON.stringify(bounded),
+    )
+  }
 
   const element = (tag, className, text) => {
     const node = document.createElement(tag)
@@ -3568,45 +3617,73 @@ html.penecho-board-open {
         if (selfTestsRan) return
         selfTestsRan = true
         try {
-          let passed = true
-          const spatialDomIsValid = () =>
-            Array.from(document.querySelectorAll("[data-spatial-host=true]")).every((host) => {
-              const svg = host.querySelector("[data-spatial-projection]")
-              const primitives = host.querySelectorAll("[data-spatial-kind]")
-              const legendItems = host.querySelectorAll("[data-spatial-legend-id]")
-              const labels = Array.from(host.querySelectorAll("[data-spatial-label-for]"))
-              const labelBoxes = labels.map((label) => label.getBBox())
-              const labelsDoNotOverlap = labelBoxes.every((box, index) =>
-                labelBoxes.slice(index + 1).every((candidate) => {
-                  const overlapWidth = Math.max(
-                    0,
-                    Math.min(box.x + box.width, candidate.x + candidate.width) -
-                      Math.max(box.x, candidate.x),
+          const failures = []
+          const boxSummary = (box) =>
+            \`x=\${Math.round(box.x * 10) / 10},y=\${Math.round(box.y * 10) / 10},width=\${Math.round(box.width * 10) / 10},height=\${Math.round(box.height * 10) / 10}\`
+          const collectSpatialDiagnostics = (phase) =>
+            Array.from(document.querySelectorAll("[data-spatial-host=true]")).forEach(
+              (host, hostIndex) => {
+                const scope = \`spatial.\${phase}.host[\${hostIndex}]\`
+                const svg = host.querySelector("[data-spatial-projection]")
+                const primitives = host.querySelectorAll("[data-spatial-kind]")
+                const legendItems = host.querySelectorAll("[data-spatial-legend-id]")
+                const labels = Array.from(host.querySelectorAll("[data-spatial-label-for]"))
+                const labelBoxes = labels.map((label) => label.getBBox())
+                if (!svg) failures.push(\`\${scope}.projection: missing projection SVG\`)
+                else {
+                  if (!["orthographic", "perspective"].includes(svg.dataset.spatialProjection))
+                    failures.push(
+                      \`\${scope}.projection: expected orthographic|perspective; actual=\${String(svg.dataset.spatialProjection)}\`,
+                    )
+                  if (!["fixed", "orbit"].includes(svg.dataset.spatialInteraction))
+                    failures.push(
+                      \`\${scope}.interaction: expected fixed|orbit; actual=\${String(svg.dataset.spatialInteraction)}\`,
+                    )
+                  if (!svg.querySelector("desc"))
+                    failures.push(\`\${scope}.description: missing SVG desc\`)
+                }
+                if (primitives.length === 0)
+                  failures.push(\`\${scope}.primitives: expected at least 1; actual=0\`)
+                if (legendItems.length !== primitives.length)
+                  failures.push(
+                    \`\${scope}.legend_count: expected=\${primitives.length}; actual=\${legendItems.length}\`,
                   )
-                  const overlapHeight = Math.max(
-                    0,
-                    Math.min(box.y + box.height, candidate.y + candidate.height) -
-                      Math.max(box.y, candidate.y),
+                if (labels.length !== primitives.length)
+                  failures.push(
+                    \`\${scope}.label_count: expected=\${primitives.length}; actual=\${labels.length}\`,
                   )
-                  return overlapWidth * overlapHeight <= 16
-                }),
-              )
-              return (
-                Boolean(svg) &&
-                ["orthographic", "perspective"].includes(svg.dataset.spatialProjection) &&
-                ["fixed", "orbit"].includes(svg.dataset.spatialInteraction) &&
-                Boolean(svg.querySelector("desc")) &&
-                primitives.length > 0 &&
-                legendItems.length === primitives.length &&
-                labels.length === primitives.length &&
-                labelsDoNotOverlap &&
-                Array.from(primitives).every(
-                  (node) =>
-                    Boolean(node.getAttribute("aria-label")) &&
-                    node.getAttribute("tabindex") === "0",
+                labelBoxes.forEach((box, index) =>
+                  labelBoxes.slice(index + 1).forEach((candidate, offset) => {
+                    const overlapWidth = Math.max(
+                      0,
+                      Math.min(box.x + box.width, candidate.x + candidate.width) -
+                        Math.max(box.x, candidate.x),
+                    )
+                    const overlapHeight = Math.max(
+                      0,
+                      Math.min(box.y + box.height, candidate.y + candidate.height) -
+                        Math.max(box.y, candidate.y),
+                    )
+                    const overlapArea = overlapWidth * overlapHeight
+                    if (overlapArea > 16) {
+                      const candidateIndex = index + offset + 1
+                      failures.push(
+                        \`\${scope}.label_overlap: first=\${String(labels[index].dataset.spatialLabelFor)} (\${boxSummary(box)}); second=\${String(labels[candidateIndex].dataset.spatialLabelFor)} (\${boxSummary(candidate)}); overlapArea=\${Math.round(overlapArea * 10) / 10}\`,
+                      )
+                    }
+                  }),
                 )
-              )
-            })
+                Array.from(primitives).forEach((node, primitiveIndex) => {
+                  const missing = []
+                  if (!node.getAttribute("aria-label")) missing.push("aria-label")
+                  if (node.getAttribute("tabindex") !== "0") missing.push('tabindex="0"')
+                  if (missing.length > 0)
+                    failures.push(
+                      \`\${scope}.primitive_accessibility: primitive=\${String(node.dataset.spatialId ?? primitiveIndex)}; missing=\${missing.join(",")}\`,
+                    )
+                })
+              },
+            )
           const first = document.querySelector("[data-control-id]")
           if (first) {
             first.focus()
@@ -3621,20 +3698,26 @@ html.penecho-board-open {
               first.dispatchEvent(new Event("change", { bubbles: true }))
             } else first.click()
           }
-          if (!spatialDomIsValid()) passed = false
+          collectSpatialDiagnostics("after_control_change")
           document.querySelectorAll("[data-output-finite]").forEach((node) => {
-            if (node.dataset.outputFinite !== "true") passed = false
+            if (node.dataset.outputFinite !== "true")
+              failures.push(
+                \`output.after_control_change.nonfinite: outputId=\${String(node.dataset.outputId)}\`,
+              )
           })
           const resetButton = document.querySelector("[data-action=reset]")
           if (resetButton) resetButton.click()
-          if (!spatialDomIsValid()) passed = false
+          collectSpatialDiagnostics("after_reset")
           document.querySelectorAll("[data-control-id]").forEach((node) => {
             const control = definition.controls.find(
               (candidate) => candidate.id === node.dataset.controlId,
             )
             if (!control) return
             const actual = node.type === "checkbox" ? node.checked : node.value
-            if (String(actual) !== String(control.defaultValue)) passed = false
+            if (String(actual) !== String(control.defaultValue))
+              failures.push(
+                \`control.after_reset.mismatch: controlId=\${String(node.dataset.controlId)}; expected=\${String(control.defaultValue)}; actual=\${String(actual)}\`,
+              )
           })
           const scrollWidth = document.documentElement.scrollWidth
           const clientWidth = document.documentElement.clientWidth
@@ -3642,9 +3725,13 @@ html.penecho-board-open {
           document.body.dataset.breadboardClientWidth = String(clientWidth)
           if (scrollWidth > clientWidth + 1) {
             document.body.dataset.breadboardOverflow = "true"
-            passed = false
+            failures.push(
+              \`layout.horizontal_overflow: scrollWidth=\${scrollWidth}; clientWidth=\${clientWidth}\`,
+            )
           }
-          document.body.dataset.breadboardRuntimeTests = passed ? "passed" : "failed"
+          writeRuntimeDiagnostics(failures)
+          document.body.dataset.breadboardRuntimeTests =
+            failures.length === 0 ? "passed" : "failed"
           window.scrollTo(0, 0)
         } catch (error) {
           // Without this the attribute is simply never written, which reads as
@@ -3652,6 +3739,9 @@ html.penecho-board-open {
           document.body.dataset.breadboardRuntimeTests = "failed"
           document.body.dataset.breadboardRuntimeError =
             error instanceof Error ? \`\${error.message}\` : "self-test failed"
+          writeRuntimeDiagnostics([
+            \`runtime.self_test.exception: \${error instanceof Error ? error.message : "self-test failed"}\`,
+          ])
         }
       }
       // A headless --dump-dom run renders on demand, so a frame after this
@@ -3679,6 +3769,10 @@ html.penecho-board-open {
       renderDefinition(message.definition, message.theme, message.language)
     } catch (error) {
       document.body.dataset.breadboardRuntimeTests = "failed"
+      if (window.__BREADBOARD_VISUAL_TEST_MODE__)
+        writeRuntimeDiagnostics([
+          \`runtime.render.exception: \${error instanceof Error ? error.message : "render failed"}\`,
+        ])
       parent.postMessage(
         {
           type: EVENT,
@@ -3690,10 +3784,10 @@ html.penecho-board-open {
     }
   })
 })()
-`;var C="breadboard-generated-visual:init",I="breadboard-generated-visual:theme",S="breadboard-generated-visual:event";function y(n){return typeof n=="object"&&n!==null&&!Array.isArray(n)}function o(n,e,t){let r=document.createElement(n);return e&&(r.className=e),t!==void 0&&(r.textContent=t),r}function E(){try{let n=new URL(window.location.href);return/^garden\./i.test(n.hostname)?n.origin.replace("//garden.","//"):/^(localhost|127(?:\.\d+){3}|0\.0\.0\.0)$/i.test(n.hostname)||n.port==="8081"?`${n.protocol}//${n.hostname}:3000`:n.origin}catch{return""}}function k(){let n=window.location.pathname;try{n=decodeURIComponent(n)}catch{}let e=n.split("/").map(t=>t.trim()).filter(Boolean);return e[0]==="garden"&&e.shift(),{gardenId:e[0]??"",pageSlug:e.slice(1).join("/")}}function M(){return document.documentElement.getAttribute("saved-theme")==="dark"?"dark":"light"}function z(){let n=document.documentElement.lang.trim();if(!n||n.length>64)return"en";try{return Intl.getCanonicalLocales(n)[0]??"en"}catch{return"en"}}function B(n){let e=String(x).replace(/<\/script/gi,"<\\/script");return`<!doctype html><html lang="${n}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"></head><body><div id="breadboard-generated-visual-root"></div><script>${e}<\/script></body></html>`}async function w(n,e,t,r){let a=E(),{gardenId:d,pageSlug:u}=k();if(!a||!d){t.textContent="Open this lesson from the dashboard to update the visualization.";return}r.forEach(s=>{s.disabled=!0}),t.textContent=e==="regenerate"?"Generating a validated replacement\u2026":"Restoring the previous version\u2026";try{let s=await fetch(`${a}/api/gardens/${encodeURIComponent(d)}/visualizations/${encodeURIComponent(n.id)}/${e}`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({pageSlug:u,currentVersion:n.version,version:e==="rollback"?n.previousVersion:void 0,reason:e==="regenerate"?"Learner requested a clearer generated visualization":void 0})}),l=await s.json().catch(()=>({}));if(!s.ok||l.success!==!0)throw new Error(typeof l.error=="string"?l.error:`Could not ${e} visualization`);t.textContent="Updated. Reloading the lesson\u2026",window.setTimeout(()=>window.location.reload(),1200)}catch(s){r.forEach(l=>{l.disabled=!1}),t.textContent=s instanceof Error?s.message:`Could not ${e} visualization`}}function g(n){let e=o("aside","breadboard-generated-visual-fallback");return e.setAttribute("role","note"),e.appendChild(o("strong",void 0,"Interactive visualization unavailable")),e.appendChild(o("p",void 0,n)),e}function V(n){if(n.classList.contains("breadboard-generated-visual-invalid"))return g(n.dataset.generatedVisualError||"The generated artifact did not pass validation.");let e,t;try{if(e=JSON.parse(n.dataset.generatedVisualDefinition??""),t=JSON.parse(n.dataset.generatedVisualManifest??""),!y(e)||!t?.id||!Number.isInteger(t.version))throw new Error("invalid data")}catch{return g("The generated artifact could not be decoded safely.")}let r=o("section","breadboard-generated-visual-card");r.dataset.visualId=t.id,r.setAttribute("aria-label",`${t.title} interactive visualization`);let a=o("iframe","bgv-frame"),d=z();a.title=t.title,a.sandbox.add("allow-scripts"),a.referrerPolicy="no-referrer",a.loading="lazy",a.srcdoc=B(d),r.appendChild(a);let u=Array.isArray(t.sourceAnchorIds)?t.sourceAnchorIds.filter(i=>typeof i=="string"):[],s=o("footer","bgv-meta"),l=o("div","bgv-provenance");l.appendChild(o("span","bgv-version",`Generated visual \xB7 v${t.version}`)),u.length>0&&l.appendChild(o("span","bgv-sources",`Sources: ${u.slice(0,8).join(", ")}`)),s.appendChild(l);let m=o("div","bgv-actions"),v=o("button","bgv-action bgv-action-primary","Regenerate");v.type="button";let h=[v];if(m.appendChild(v),Number.isInteger(t.previousVersion)&&Number(t.previousVersion)>0){let i=o("button","bgv-action",`Restore v${t.previousVersion}`);i.type="button",h.push(i),i.addEventListener("click",()=>{w(t,"rollback",c,h)}),m.appendChild(i)}let c=o("span","bgv-status");c.setAttribute("role","status"),c.setAttribute("aria-live","polite"),m.appendChild(c),s.appendChild(m),v.addEventListener("click",()=>{w(t,"regenerate",c,h)}),r.appendChild(s);let f=i=>{if(!(i.source!==a.contentWindow||!y(i.data)||i.data.type!==S))if(i.data.event==="ready"){let p=typeof i.data.height=="number"?i.data.height:480;a.style.height=`${Math.max(300,Math.min(4800,p+4))}px`}else i.data.event==="runtime-error"&&(c.textContent="The visualization stopped safely after a runtime error.",a.hidden=!0,a.insertAdjacentElement("afterend",g("Its source lesson remains available below.")))};window.addEventListener("message",f),window.addCleanup(()=>window.removeEventListener("message",f));let b=i=>{let p=i?.detail?.theme,j=p==="dark"||p==="light"?p:M();a.contentWindow?.postMessage({type:I,theme:j},"*")};return document.addEventListener("themechange",b),window.addCleanup(()=>document.removeEventListener("themechange",b)),a.addEventListener("load",()=>{a.contentWindow?.postMessage({type:C,definition:e,theme:M(),language:d},"*")},{once:!0}),r}document.addEventListener("nav",()=>{let n=document.querySelectorAll("code.breadboard-generated-visual-block");for(let e of n){let t=e.closest("pre")??e;t.dataset.bgvBound!=="true"&&(t.dataset.bgvBound="true",t.replaceWith(V(e)))}});
+`;var j="breadboard-generated-visual:init",S="breadboard-generated-visual:theme",I="breadboard-generated-visual:event";function y(n){return typeof n=="object"&&n!==null&&!Array.isArray(n)}function o(n,e,t){let r=document.createElement(n);return e&&(r.className=e),t!==void 0&&(r.textContent=t),r}function E(){try{let n=new URL(window.location.href);return/^garden\./i.test(n.hostname)?n.origin.replace("//garden.","//"):/^(localhost|127(?:\.\d+){3}|0\.0\.0\.0)$/i.test(n.hostname)||n.port==="8081"?`${n.protocol}//${n.hostname}:3000`:n.origin}catch{return""}}function k(){let n=window.location.pathname;try{n=decodeURIComponent(n)}catch{}let e=n.split("/").map(t=>t.trim()).filter(Boolean);return e[0]==="garden"&&e.shift(),{gardenId:e[0]??"",pageSlug:e.slice(1).join("/")}}function M(){return document.documentElement.getAttribute("saved-theme")==="dark"?"dark":"light"}function z(){let n=document.documentElement.lang.trim();if(!n||n.length>64)return"en";try{return Intl.getCanonicalLocales(n)[0]??"en"}catch{return"en"}}function B(n){let e=String(x).replace(/<\/script/gi,"<\\/script");return`<!doctype html><html lang="${n}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"></head><body><div id="breadboard-generated-visual-root"></div><script>${e}<\/script></body></html>`}async function w(n,e,t,r){let a=E(),{gardenId:d,pageSlug:u}=k();if(!a||!d){t.textContent="Open this lesson from the dashboard to update the visualization.";return}r.forEach(s=>{s.disabled=!0}),t.textContent=e==="regenerate"?"Generating a validated replacement\u2026":"Restoring the previous version\u2026";try{let s=await fetch(`${a}/api/gardens/${encodeURIComponent(d)}/visualizations/${encodeURIComponent(n.id)}/${e}`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({pageSlug:u,currentVersion:n.version,version:e==="rollback"?n.previousVersion:void 0,reason:e==="regenerate"?"Learner requested a clearer generated visualization":void 0})}),l=await s.json().catch(()=>({}));if(!s.ok||l.success!==!0)throw new Error(typeof l.error=="string"?l.error:`Could not ${e} visualization`);t.textContent="Updated. Reloading the lesson\u2026",window.setTimeout(()=>window.location.reload(),1200)}catch(s){r.forEach(l=>{l.disabled=!1}),t.textContent=s instanceof Error?s.message:`Could not ${e} visualization`}}function g(n){let e=o("aside","breadboard-generated-visual-fallback");return e.setAttribute("role","note"),e.appendChild(o("strong",void 0,"Interactive visualization unavailable")),e.appendChild(o("p",void 0,n)),e}function A(n){if(n.classList.contains("breadboard-generated-visual-invalid"))return g(n.dataset.generatedVisualError||"The generated artifact did not pass validation.");let e,t;try{if(e=JSON.parse(n.dataset.generatedVisualDefinition??""),t=JSON.parse(n.dataset.generatedVisualManifest??""),!y(e)||!t?.id||!Number.isInteger(t.version))throw new Error("invalid data")}catch{return g("The generated artifact could not be decoded safely.")}let r=o("section","breadboard-generated-visual-card");r.dataset.visualId=t.id,r.setAttribute("aria-label",`${t.title} interactive visualization`);let a=o("iframe","bgv-frame"),d=z();a.title=t.title,a.sandbox.add("allow-scripts"),a.referrerPolicy="no-referrer",a.loading="lazy",a.srcdoc=B(d),r.appendChild(a);let u=Array.isArray(t.sourceAnchorIds)?t.sourceAnchorIds.filter(i=>typeof i=="string"):[],s=o("footer","bgv-meta"),l=o("div","bgv-provenance");l.appendChild(o("span","bgv-version",`Generated visual \xB7 v${t.version}`)),u.length>0&&l.appendChild(o("span","bgv-sources",`Sources: ${u.slice(0,8).join(", ")}`)),s.appendChild(l);let m=o("div","bgv-actions"),h=o("button","bgv-action bgv-action-primary","Regenerate");h.type="button";let v=[h];if(m.appendChild(h),Number.isInteger(t.previousVersion)&&Number(t.previousVersion)>0){let i=o("button","bgv-action",`Restore v${t.previousVersion}`);i.type="button",v.push(i),i.addEventListener("click",()=>{w(t,"rollback",c,v)}),m.appendChild(i)}let c=o("span","bgv-status");c.setAttribute("role","status"),c.setAttribute("aria-live","polite"),m.appendChild(c),s.appendChild(m),h.addEventListener("click",()=>{w(t,"regenerate",c,v)}),r.appendChild(s);let f=i=>{if(!(i.source!==a.contentWindow||!y(i.data)||i.data.type!==I))if(i.data.event==="ready"){let p=typeof i.data.height=="number"?i.data.height:480;a.style.height=`${Math.max(300,Math.min(4800,p+4))}px`}else i.data.event==="runtime-error"&&(c.textContent="The visualization stopped safely after a runtime error.",a.hidden=!0,a.insertAdjacentElement("afterend",g("Its source lesson remains available below.")))};window.addEventListener("message",f),window.addCleanup(()=>window.removeEventListener("message",f));let b=i=>{let p=i?.detail?.theme,C=p==="dark"||p==="light"?p:M();a.contentWindow?.postMessage({type:S,theme:C},"*")};return document.addEventListener("themechange",b),window.addCleanup(()=>document.removeEventListener("themechange",b)),a.addEventListener("load",()=>{a.contentWindow?.postMessage({type:j,definition:e,theme:M(),language:d},"*")},{once:!0}),r}document.addEventListener("nav",()=>{let n=document.querySelectorAll("code.breadboard-generated-visual-block");for(let e of n){let t=e.closest("pre")??e;t.dataset.bgvBound!=="true"&&(t.dataset.bgvBound="true",t.replaceWith(A(e)))}});
 </script><script type="application/javascript" data-persist="true">var v=/^(localhost|127(?:\.\d+){3}|0\.0\.0\.0)$/i,L="8092";function a(e,t,n){let o=document.createElement(e);return t&&(o.className=t),n!==void 0&&(o.textContent=n),o}function E(){try{let e=new URL(window.location.href);return/^garden\./i.test(e.hostname)?e.origin.replace("//garden.","//"):v.test(e.hostname)||e.port==="8081"?`${e.protocol}//${e.hostname}:3000`:e.origin}catch{return""}}function T(){try{let e=new URL(window.location.href);return v.test(e.hostname)||e.port==="8081"?`${e.protocol}//${e.hostname}:${L}`:/^garden\./i.test(e.hostname)?e.origin.replace("//garden.","//penecho."):`${e.protocol}//penecho.${e.host}`}catch{return""}}function y(e){let t=e.dataset.boardId??"";if(!t)return null;let n=Number(e.dataset.boardHeight);return{id:t,title:e.dataset.boardTitle||"Whiteboard",height:Number.isFinite(n)&&n>0?n:520,server:e.dataset.boardServer||T()}}async function C(e){let t=E();if(!t)return{url:e||null,error:""};try{let n=await fetch(`${t}/api/penecho/status`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}),o=await n.json().catch(()=>({}));return n.ok&&o.running?{url:o.baseUrl||e,error:""}:{url:null,error:o.available===!1?"The whiteboard server is not installed next to this dashboard.":o.error||"The whiteboard server could not be started."}}catch{return{url:e||null,error:""}}}function w(e,t){let n=new URL(e);return n.pathname="/",n.searchParams.set("board",t.id),t.title&&n.searchParams.set("title",t.title),n.toString()}function H(e){let t=a("section","penecho-board");t.dataset.boardId=e.id,t.style.setProperty("--penecho-board-height",`${e.height}px`);let n=a("header","penecho-board-header"),o=a("div","penecho-board-heading");o.appendChild(a("p","penecho-board-kicker","Whiteboard")),o.appendChild(a("h4","penecho-board-title",e.title)),n.appendChild(o);let i=a("button","penecho-board-action","Expand");i.type="button",i.setAttribute("aria-expanded","false"),n.appendChild(i),t.appendChild(n);let p=a("div","penecho-board-surface"),h=a("div","penecho-board-placeholder");h.appendChild(a("p","penecho-board-placeholder-text","Opening the board\u2026"));let s=a("button","penecho-board-action","Try again");s.type="button",s.hidden=!0,h.appendChild(s),p.appendChild(h),t.appendChild(p);let d=null,b=(r,c)=>{h.querySelector(".penecho-board-placeholder-text").textContent=r,s.hidden=!c},u=async()=>{if(d)return;s.hidden=!0,b("Opening the board\u2026",!1);let{url:r,error:c}=await C(e.server);if(!r){b(c||"The whiteboard server is not running.",!0);return}d=a("iframe","penecho-board-frame"),d.title=e.title,d.src=w(r,e),d.allow="clipboard-read; clipboard-write",p.appendChild(d),t.classList.add("penecho-board--mounted")};s.addEventListener("click",()=>{u()});let l=null,g=r=>{r?(l=a("div","penecho-board-spacer"),l.style.height=`${t.offsetHeight}px`,t.insertAdjacentElement("beforebegin",l)):(l?.remove(),l=null),t.classList.toggle("penecho-board--expanded",r),document.documentElement.classList.toggle("penecho-board-open",r),i.textContent=r?"Close":"Expand",i.setAttribute("aria-expanded",String(r)),r&&u()},f=()=>g(!t.classList.contains("penecho-board--expanded"));i.addEventListener("click",r=>{r.stopPropagation(),f()}),n.addEventListener("click",f),document.addEventListener("keydown",r=>{r.key==="Escape"&&t.classList.contains("penecho-board--expanded")&&g(!1)});let m=new IntersectionObserver(r=>{r.some(c=>c.isIntersecting)&&(m.disconnect(),u())},{rootMargin:"200px"});return m.observe(t),t}function M(){let e=a("aside","penecho-board-fallback");return e.setAttribute("role","note"),e.appendChild(a("strong",void 0,"Whiteboard unavailable")),e.appendChild(a("p",void 0,"This whiteboard reference is missing its board id.")),e}document.addEventListener("nav",()=>{let e=document.querySelectorAll("code.penecho-board-block");for(let t of e){let n=t.closest("pre")??t;if(n.dataset.penechoBound==="true")continue;n.dataset.penechoBound="true";let o=y(t);n.replaceWith(o?H(o):M())}});
 </script><script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/copy-tex.min.js" type="application/javascript" data-persist="true"></script><script type="application/javascript" data-persist="true">
         const socket = new WebSocket('ws://localhost:3001')
         // reload(true) ensures resources like images and scripts are fetched again in firefox
         socket.addEventListener('message', () => document.location.reload(true))
-      </script><script src="../postscript.js?v=msuars7k" type="module" data-persist="true"></script></html>
+      </script><script src="../postscript.js?v=msvqzc3f" type="module" data-persist="true"></script></html>

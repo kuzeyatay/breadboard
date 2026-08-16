@@ -12,6 +12,12 @@ export const MODEL_TRANSPORT_ATTEMPT_DELAYS_MS = [
   MODEL_TRANSPORT_RETRY_INTERVAL_MS,
 ] as const;
 
+/** The complete quiet period before the final scheduled transport attempt.
+ * Callers that impose a bounded logical-request deadline can derive it from
+ * this value instead of silently pre-empting the retry contract. */
+export const MODEL_TRANSPORT_TOTAL_DELAY_MS = MODEL_TRANSPORT_ATTEMPT_DELAYS_MS
+  .reduce((total, delayMs) => total + delayMs, 0);
+
 export interface ModelTransportAttempt {
   attempt: number;
   maxAttempts: number;
@@ -33,6 +39,7 @@ export interface ModelTransportRetryOptions {
 export const HTTP_502_MAX_ATTEMPTS = MODEL_TRANSPORT_MAX_ATTEMPTS;
 export const HTTP_502_RETRY_INTERVAL_MS = MODEL_TRANSPORT_RETRY_INTERVAL_MS;
 export const HTTP_502_ATTEMPT_DELAYS_MS = MODEL_TRANSPORT_ATTEMPT_DELAYS_MS;
+export const HTTP_502_TOTAL_DELAY_MS = MODEL_TRANSPORT_TOTAL_DELAY_MS;
 export type Http502Attempt = ModelTransportAttempt;
 export type Http502RetryOptions = ModelTransportRetryOptions;
 
@@ -75,6 +82,13 @@ const RETRYABLE_CONNECTION_MESSAGE =
 const CANCELLATION_MESSAGE =
   /\b(?:request|operation|job) (?:was )?(?:cancelled|canceled|aborted)\b/i;
 const TIMEOUT_MESSAGE = /\b(?:timed out|timeout)\b/i;
+// Some subscription gateways wrap an explicit spent-session response in 502.
+// Require both a quota/limit marker and a reset/retry marker, so an ordinary
+// bad gateway remains eligible for the bounded transport retry schedule.
+const PROVIDER_QUOTA_OR_LIMIT_MESSAGE =
+  /\b(?:session|usage|rate)\s+limit\b|\b(?:insufficient[_\s-]?quota|quota|credits?)\s+(?:is\s+)?(?:exhausted|exceeded|depleted)\b/i;
+const PROVIDER_QUOTA_RESET_MESSAGE =
+  /\breset(?:s|ting)?\b|\btry\s+again\b|\bretry(?:ing)?\b/i;
 
 interface ErrorDetail {
   code: string;
@@ -143,6 +157,21 @@ function isTimeout(details: ErrorDetail[]): boolean {
   ));
 }
 
+function hasExplicitProviderQuotaReset(details: ErrorDetail[]): boolean {
+  return details.some(({ message }) => (
+    PROVIDER_QUOTA_OR_LIMIT_MESSAGE.test(message) &&
+    PROVIDER_QUOTA_RESET_MESSAGE.test(message)
+  ));
+}
+
+/** Whether a provider expressly says that the selected model is quota-limited
+ * until a reset/retry point, even when a gateway incorrectly wraps it in 502.
+ * This is terminal at the Learn transport boundary: replaying the same model
+ * cannot restore its session and must not spend the generic outage budget. */
+export function isExplicitProviderQuotaResetError(error: unknown): boolean {
+  return hasExplicitProviderQuotaReset(errorDetails(error));
+}
+
 /** Only failures that mean ChatMock disappeared between request and response
  * are replayable. If an HTTP response exists, 502 is the sole retryable
  * status. Aborts and timeouts remain caller-owned terminal outcomes. */
@@ -151,6 +180,7 @@ export function modelTransportRetryCause(
 ): ModelTransportRetryCause | undefined {
   const details = errorDetails(error);
   if (details.length === 0 || isCancellation(details)) return undefined;
+  if (hasExplicitProviderQuotaReset(details)) return undefined;
 
   const responseStatus = details.find(({ status }) => status !== undefined)?.status;
   if (responseStatus !== undefined) {

@@ -34,6 +34,11 @@ import type {
   ProfileReliability,
   ProfileStats,
 } from "@/lib/profile/stats.ts";
+import type {
+  ReviewChannel,
+  ReviewStats,
+  ReviewUserSettings,
+} from "@/lib/review/types.ts";
 import {
   APP_THEME_MODE_CHANGE_EVENT,
   APP_THEME_MODE_STORAGE_KEY,
@@ -55,6 +60,10 @@ import {
   inDesktopShell,
   requestCurrentLocationFix,
 } from "@/lib/current-location-source.ts";
+import {
+  startupSoundControl,
+  type StartupSoundControl,
+} from "@/lib/desktop-startup-sound.ts";
 
 interface Invite {
   id: number;
@@ -162,6 +171,15 @@ function Card({
       {children}
     </section>
   );
+}
+
+/**
+ * One card inside a balanced column set. Multi-column layout is free to split a
+ * block across the column boundary, which would tear a card in half, so every
+ * item opts out and the browser breaks between cards instead.
+ */
+function Packed({ children }: { children: React.ReactNode }) {
+  return <div className="mb-4 break-inside-avoid">{children}</div>;
 }
 
 function Stat({ value, label, hint }: { value: string; label: string; hint?: string }) {
@@ -606,6 +624,82 @@ function ThemePanel() {
   );
 }
 
+/**
+ * The chime the desktop app opens with.
+ *
+ * The card is absent rather than disabled outside the desktop shell: in a
+ * browser there is no startup screen, so there is no sound to mute and a switch
+ * for one would be a switch that does nothing. It is also absent for the first
+ * frame everywhere, because whether a shell is there can only be asked once the
+ * page is running in one.
+ */
+function StartupSoundPanel() {
+  const [control, setControl] = useState<StartupSoundControl | null>(null);
+  const [enabled, setEnabled] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const desktop = startupSoundControl();
+    if (!desktop) return;
+    let active = true;
+    void desktop.read().then((current) => {
+      if (!active) return;
+      setEnabled(current);
+      // Shown only once its real state is known, so the switch never appears
+      // in a position it is about to leave.
+      setControl(() => desktop);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (!control) return null;
+
+  async function toggle() {
+    if (!control) return;
+    const next = !enabled;
+    setEnabled(next);
+    setBusy(true);
+    setError(null);
+    const saved = await control.write(next);
+    setBusy(false);
+    if (saved) return;
+    // Nothing was written down, so the next launch would sound exactly as it
+    // does now. Put the switch back rather than let it claim otherwise.
+    setEnabled(!next);
+    setError("Breadboard could not save this preference on this computer.");
+  }
+
+  return (
+    <Card title="Startup sound" hint="The chime Breadboard opens with.">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-white">Play on launch</p>
+          <p className="mt-0.5 text-xs leading-5 text-gray-500">
+            {enabled
+              ? "A short chime plays as the welcome appears."
+              : "Breadboard opens in silence."}
+          </p>
+        </div>
+        <Switch
+          checked={enabled}
+          label="Play a sound when Breadboard starts"
+          busy={busy}
+          onChange={() => void toggle()}
+        />
+      </div>
+
+      {error && (
+        <p className="mt-4 text-xs text-red-400" role="alert">
+          {error}
+        </p>
+      )}
+    </Card>
+  );
+}
+
 // --------------------------------------------------------------- location
 
 type LocationRequestState = "idle" | "checking" | "blocked" | "unavailable";
@@ -886,6 +980,205 @@ function LocationPanel() {
  * the alternative — a control that does nothing until the server answers —
  * reads as broken for something this small.
  */
+/**
+ * Where spaced-repetition questions are delivered.
+ *
+ * The channel is one per-user choice, made here rather than per garden, because
+ * a person has one phone. Which gardens actually ask questions is set from each
+ * garden chat's settings icon — the two halves are deliberately separate.
+ *
+ * A channel that is not linked is shown but disabled: silently accepting a
+ * choice that can never deliver is how this feature would most easily appear
+ * broken.
+ */
+function ReviewDeliveryPanel() {
+  const [settings, setSettings] = useState<ReviewUserSettings | null>(null);
+  const [stats, setStats] = useState<ReviewStats | null>(null);
+  const [available, setAvailable] = useState<{ whatsapp: boolean; telegram: boolean }>({
+    whatsapp: false,
+    telegram: false,
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const apply = useCallback((payload: {
+    settings: ReviewUserSettings;
+    stats: ReviewStats;
+    available: { whatsapp: boolean; telegram: boolean };
+  }) => {
+    setSettings(payload.settings);
+    setStats(payload.stats);
+    setAvailable(payload.available);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/review/settings");
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (!cancelled) apply(payload);
+      } catch {
+        // A profile page that cannot reach the endpoint still renders; the
+        // panel simply stays in its loading state rather than erroring loudly.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apply]);
+
+  async function patch(body: Record<string, unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/review/settings", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) throw new Error("Could not save that.");
+      apply(await response.json());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not save that.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const channels: Array<{ value: ReviewChannel; label: string; enabled: boolean; note: string }> = [
+    { value: "off", label: "Off", enabled: true, note: "No questions are sent." },
+    {
+      value: "whatsapp",
+      label: "WhatsApp",
+      enabled: available.whatsapp,
+      note: available.whatsapp ? "Sent to your most recent chat." : "Link WhatsApp first.",
+    },
+    {
+      value: "telegram",
+      label: "Telegram",
+      enabled: available.telegram,
+      note: available.telegram ? "Sent to your most recent chat." : "Link Telegram first.",
+    },
+  ];
+
+  return (
+    <Card
+      title="Review delivery"
+      hint="Questions from your gardens, scheduled with FSRS and sent to your phone."
+    >
+      {error ? <p className="mb-2 text-xs text-[#a45f56]">{error}</p> : null}
+      {settings === null ? (
+        <p className="text-xs text-gray-500">Loading…</p>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-2">
+            {channels.map((channel) => {
+              const active = settings.channel === channel.value;
+              return (
+                <button
+                  key={channel.value}
+                  type="button"
+                  disabled={busy || !channel.enabled}
+                  onClick={() => void patch({ channel: channel.value })}
+                  className={`neu-button rounded-xl border px-3 py-2 text-left transition disabled:opacity-40 ${
+                    active
+                      ? "border-[var(--botanical)] bg-[var(--paper-raised)]"
+                      : "border-gray-800"
+                  }`}
+                >
+                  <span className="block text-xs font-medium text-gray-200">{channel.label}</span>
+                  <span className="mt-0.5 block text-[10px] leading-snug text-gray-500">
+                    {channel.note}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between text-xs text-gray-400">
+              <span>Questions per day</span>
+              <span className="text-gray-200">{settings.dailyLimit}</span>
+            </div>
+            <input
+              type="range"
+              min={1}
+              max={50}
+              value={settings.dailyLimit}
+              disabled={busy}
+              onChange={(event) => void patch({ dailyLimit: Number(event.target.value) })}
+              className="mt-1 w-full"
+            />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between text-xs text-gray-400">
+              <span>Start sending from</span>
+              <span className="text-gray-200">
+                {String(settings.sendHour).padStart(2, "0")}:00
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={23}
+              value={settings.sendHour}
+              disabled={busy}
+              onChange={(event) => void patch({ sendHour: Number(event.target.value) })}
+              className="mt-1 w-full"
+            />
+            <p className="mt-1 text-[11px] text-gray-600">
+              One question at a time. The next arrives once you answer the last, until
+              the day&rsquo;s limit is reached.
+            </p>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between text-xs text-gray-400">
+              <span>Target recall</span>
+              <span className="text-gray-200">
+                {Math.round(settings.desiredRetention * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min={70}
+              max={97}
+              value={Math.round(settings.desiredRetention * 100)}
+              disabled={busy}
+              onChange={(event) =>
+                void patch({ desiredRetention: Number(event.target.value) / 100 })
+              }
+              className="mt-1 w-full"
+            />
+            <p className="mt-1 text-[11px] text-gray-600">
+              Higher means shorter intervals and more reviews for the same material.
+            </p>
+          </div>
+
+          {stats && stats.total > 0 ? (
+            <p className="text-[11px] text-gray-600">
+              {formatCount(stats.total)} card{stats.total === 1 ? "" : "s"} across your
+              gardens, {formatCount(stats.due)} due now
+              {stats.retention30d !== null
+                ? ` · ${Math.round(stats.retention30d * 100)}% recalled over 30 days`
+                : ""}
+              .
+            </p>
+          ) : (
+            <p className="text-[11px] text-gray-600">
+              No cards yet. Open a garden&rsquo;s chat and use its settings icon to build
+              them.
+            </p>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function ShortcutPanel({ initial }: { initial: NavbarShortcuts }) {
   const router = useRouter();
   const [shortcuts, setShortcuts] = useState(initial);
@@ -1677,8 +1970,16 @@ export default function ProfileClient({
         </div>
 
         {/* ------------------------------------------------ output and cost */}
-        <div className="mt-4 grid items-start gap-4 lg:grid-cols-2">
-          <div className="space-y-4">
+        {/*
+          These eight panels differ wildly in height — Review delivery is worth
+          several settings cards, and every one of them grows or shrinks with
+          the account's own data. Two fixed columns therefore left a tall void
+          under whichever side happened to end first. A balanced column set
+          splits the same sequence wherever the two sides come out even, so the
+          void closes no matter what the data does to any single card.
+        */}
+        <div className="mt-4 -mb-4 gap-4 lg:columns-2">
+          <Packed>
             <Card title="What came out of it" hint="Artifacts by kind, and the agents you actually run.">
               {artifactKinds.length === 0 ? (
                 <p className="text-xs text-gray-600">Nothing has been produced yet.</p>
@@ -1714,13 +2015,9 @@ export default function ProfileClient({
                 </>
               )}
             </Card>
+          </Packed>
 
-            <ThemePanel />
-
-            <LocationPanel />
-          </div>
-
-          <div className="space-y-4">
+          <Packed>
             <Card
               title="What it cost to answer you"
               hint={
@@ -1739,11 +2036,31 @@ export default function ProfileClient({
                   : `It also keeps ${formatCount(totals.memories)} thing${totals.memories === 1 ? "" : "s"} about you in durable memory.`}
               </p>
             </Card>
+          </Packed>
 
-            <ShortcutPanel initial={initialShortcuts} />
+          <Packed>
+            <ReviewDeliveryPanel />
+          </Packed>
 
+          <Packed>
             <InvitePanel initial={stats.invites} />
-          </div>
+          </Packed>
+
+          <Packed>
+            <ThemePanel />
+          </Packed>
+
+          <Packed>
+            <ShortcutPanel initial={initialShortcuts} />
+          </Packed>
+
+          <Packed>
+            <LocationPanel />
+          </Packed>
+
+          <Packed>
+            <StartupSoundPanel />
+          </Packed>
         </div>
 
         {/* ------------------------------------------- models and reliability */}

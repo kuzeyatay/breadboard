@@ -8,6 +8,7 @@ import { synchronizeSkillsCatalog } from "./lib/hermes/skills-catalog-sync.ts";
 import { resumeAbandonedRuntimeRuns } from "./lib/hermes/run-recovery.ts";
 import { ABANDONED_RUN_AFTER_MS } from "./lib/hermes/run-liveness.ts";
 import { startScheduledChatScheduler } from "./lib/schedules/scheduler.ts";
+import { startReviewScheduler } from "./lib/review/scheduler.ts";
 import { autostartComfyUi } from "./lib/comfyui/autostart.ts";
 import { autostartTelegramGateway } from "./lib/telegram/service.ts";
 import { autostartWhatsAppGateway } from "./lib/whatsapp/service.ts";
@@ -84,6 +85,11 @@ if (!globalState.__breadboardAbandonedLearnSweeper) {
 // Cron-scheduled chats fire from this process, so they keep running while the
 // app is open on any page — or on none at all.
 startScheduledChatScheduler();
+
+// Spaced repetition pushes its questions from here for the same reason: review
+// that only happens when you remember to open the app is the thing this feature
+// exists to replace.
+startReviewScheduler();
 
 // Same reasoning for WhatsApp: a linked phone should reach Breadboard whenever
 // the app is running, not only while a chat page happens to be open.

@@ -254,7 +254,16 @@ const MEMORY_VERB =
   /\b(remember|recall|keep\s+in\s+mind|note\s+that|for\s+(?:next|future)\s+time|don'?t\s+forget|my\s+preference)\b/i;
 
 const EXTERNAL_ACTION_VERB =
-  /\b(email|e-mail|send|message|post|publish|share|submit|tweet|notify|invite|schedule|book|order|purchase|pay)\b/i;
+  /\b(email|e-mail|send|post|publish|share|submit|tweet|notify|invite|schedule|book|order|purchase|pay)\b/i;
+
+// "message" is also a very common conversational noun (for example,
+// "What did I say in my previous message?").  Treat it as an external
+// action only when it is followed by an object/recipient.  Matching the
+// target after the word keeps ordinary references to a prior message in the
+// conversation-only path while preserving requests such as "message the
+// team" and "message Alex".
+const MESSAGE_ACTION =
+  /\bmessage\s+(?:the|a|an|my|our|your|him|her|them|[A-Za-z][\w.-]*)\b/i;
 
 const DESTRUCTIVE_SYSTEM =
   /\b(force[- ]push|git\s+reset\s+--hard|rebase|deploy|release|drop\s+(?:the\s+)?(?:database|table)|revoke|rotate\s+(?:the\s+)?(?:secret|credential|key)|uninstall|format\s+(?:the\s+)?(?:drive|disk)|shut\s*down|reboot)\b/i;
@@ -544,7 +553,8 @@ function readSignals(text: string, resources: ResourceReference[]): Signals {
     garden,
     gardenWrite: garden && GARDEN_WRITE_VERB.test(text),
     memory: MEMORY_VERB.test(text),
-    externalAction: EXTERNAL_ACTION_VERB.test(text),
+    externalAction:
+      EXTERNAL_ACTION_VERB.test(text) || MESSAGE_ACTION.test(text),
     destructiveSystem: DESTRUCTIVE_SYSTEM.test(text),
     coding: requiresCodingOutcome(text),
     fileScope,
