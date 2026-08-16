@@ -136,6 +136,17 @@ export interface VisualNecessityDecision {
     nearbyVisualIntentIds: string[];
   };
   reason: string;
+  /**
+   * Model-authored accounting of whether another supplied teaching medium
+   * already covers this learning goal. It is optional only for legacy or
+   * deterministic decisions; active model-authoring paths preserve it.
+   */
+  alternativeCoverage?: "covered" | "uncovered" | "unverified";
+  /**
+   * Model-authored rationale for the selected teaching medium. It stays
+   * distinct from the broader necessity rationale above.
+   */
+  teachingMediumReason?: string;
   /** Present for active model-authored decisions and synchronized atomically
    * with the top-level interaction plan after executability review. */
   interaction?: InteractiveVisualPedagogyContract;

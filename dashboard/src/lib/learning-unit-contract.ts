@@ -1605,6 +1605,18 @@ function normalizeVisualNecessityDecision(
       ? (record.evidence as Record<string, unknown>)
       : {};
   const interaction = normalizeInteractivePedagogyContract(record.interaction);
+  const alternativeCoverage = compact(record.alternativeCoverage);
+  const teachingMediumReason = compact(record.teachingMediumReason);
+  const hasAlternativeCoverage = ["covered", "uncovered", "unverified"].includes(
+    alternativeCoverage,
+  );
+  // A model-authored Learning Unit Contract must retain these two pedagogical
+  // decisions verbatim through the contract projection. They are not inferred
+  // from a preferred medium or alternative plan: absent or malformed values
+  // make this nested decision invalid so the authoring response is rejected.
+  if (modelAuthoredOnly && (!hasAlternativeCoverage || !teachingMediumReason)) {
+    return undefined;
+  }
   return {
     unitId: compact(record.unitId) || (modelAuthoredOnly ? "" : fallbackUnitId),
     pageId: compact(record.pageId) || (modelAuthoredOnly ? "" : fallbackUnitId),
@@ -1635,6 +1647,12 @@ function normalizeVisualNecessityDecision(
       nearbyVisualIntentIds: asStringArray(evidenceRecord.nearbyVisualIntentIds),
     },
     reason: compact(record.reason),
+    ...(hasAlternativeCoverage
+      ? {
+          alternativeCoverage: alternativeCoverage as VisualNecessityDecision["alternativeCoverage"],
+        }
+      : {}),
+    ...(teachingMediumReason ? { teachingMediumReason } : {}),
     ...(interaction ? { interaction } : {}),
   };
 }

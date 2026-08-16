@@ -6,6 +6,8 @@ import {
   HTTP_502_ATTEMPT_DELAYS_MS,
   HTTP_502_MAX_ATTEMPTS,
   HTTP_502_RETRY_INTERVAL_MS,
+  MODEL_TRANSPORT_TOTAL_DELAY_MS,
+  isExplicitProviderQuotaResetError,
   isRetryableModelTransportError,
   modelTransportRetryCause,
   retryModelTransport,
@@ -13,8 +15,8 @@ import {
 } from '../src/lib/http-502-retry.ts';
 import { attachLearnTokenUsageTracking } from '../src/lib/learn-token-usage.ts';
 
-function errorWithStatus(status) {
-  return Object.assign(new Error(`HTTP ${status}`), { status });
+function errorWithStatus(status, message = `HTTP ${status}`) {
+  return Object.assign(new Error(message), { status });
 }
 
 function fakeClient(create) {
@@ -63,6 +65,14 @@ test('502 retries use six total attempts: three adjacent then three four-minute 
   );
 });
 
+test('exported transport total delay remains the sum of the scheduled waits', () => {
+  assert.equal(
+    MODEL_TRANSPORT_TOTAL_DELAY_MS,
+    HTTP_502_ATTEMPT_DELAYS_MS.reduce((total, delayMs) => total + delayMs, 0),
+  );
+  assert.equal(MODEL_TRANSPORT_TOTAL_DELAY_MS, HTTP_502_RETRY_INTERVAL_MS * 3);
+});
+
 test('a successful third adjacent attempt returns immediately', async () => {
   let calls = 0;
   const sleeps = [];
@@ -92,6 +102,28 @@ test('non-502 responses and thrown network errors are not retried', async () => 
     );
     assert.equal(calls, 1);
   }
+});
+
+test('an explicit provider session reset wrapped in 502 is terminal without replay', async () => {
+  const quotaReset = errorWithStatus(
+    502,
+    "You've hit your session limit; resets 1:30pm (Europe/Istanbul)",
+  );
+  const sleeps = [];
+  let calls = 0;
+
+  assert.equal(isExplicitProviderQuotaResetError(quotaReset), true);
+  assert.equal(modelTransportRetryCause(quotaReset), undefined);
+  assert.equal(isRetryableModelTransportError(quotaReset), false);
+  await assert.rejects(
+    () => retryModelTransport(async () => {
+      calls += 1;
+      throw quotaReset;
+    }, { sleep: async (delayMs) => sleeps.push(delayMs) }),
+    (error) => error === quotaReset,
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(sleeps, []);
 });
 
 test('only the recognized ChatMock restart failures are transport-retryable', () => {

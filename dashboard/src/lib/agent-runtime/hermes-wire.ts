@@ -209,7 +209,13 @@ export class HermesRpcClient {
       notify();
     };
     const onAbort = () => notify();
-    queue.push(...(this.eventJournals.get(liveSessionId) ?? []));
+    // A stream is opened immediately before `prompt.submit` for the next
+    // Breadboard turn.  Replaying the previous journal here is unsafe: the
+    // prior turn's `message.complete`/idle frame can be consumed as the new
+    // turn's terminal event, causing the dashboard to persist the previous
+    // answer and return before Hermes has processed the submitted prompt.
+    // Durable recovery is handled by `session.turn_result` in the runtime
+    // adapter, so a fresh subscription must observe live frames only.
     this.listeners.add(onEvent);
     this.closeListeners.add(onClose);
     signal?.addEventListener("abort", onAbort, { once: true });

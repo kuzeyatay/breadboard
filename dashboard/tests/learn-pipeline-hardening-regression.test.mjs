@@ -154,6 +154,9 @@ describe("Learn rollback and garden isolation contracts", () => {
     assert.ok(rollbackPaths.includes("Learning"));
     assert.ok(rollbackPaths.includes("assets/source-visuals"));
     assert.ok(rollbackPaths.includes(".breadboard/planning"));
+    assert.ok(rollbackPaths.includes(".breadboard/source-formula-reviews"));
+    assert.ok(rollbackPaths.includes(".breadboard/source-formula-review-set.json"));
+    assert.ok(rollbackPaths.includes(".breadboard/source-visual-source-index.json"));
     for (const protectedPath of [
       "_index.md",
       "sources",
@@ -227,6 +230,14 @@ describe("Learn rollback and garden isolation contracts", () => {
     assert.match(
       generationSource.slice(stagedDriftIndex, stagedDriftIndex + 350),
       /throw new LearnPipelineConflictError[\s\S]*?isolated workspace/,
+    );
+  });
+
+  test("planning releases its fenced lease when strict source context collection fails", () => {
+    const planningSource = sourceOf(namedFunction("runLearnPlanning"));
+    assert.match(
+      planningSource,
+      /try \{[\s\S]*?context = collectLearnSourceContext\([\s\S]*?\} catch \(error\) \{\s*lease\.release\(\);\s*throw error;/,
     );
   });
 
@@ -477,10 +488,15 @@ describe("Learn validation, reads, and publication contracts", () => {
     );
     assert.match(
       planningSource,
-      /structuredArtifactIdsMentionedBySources\(context\)[\s\S]*?candidateArtifactIds:\s*mentionedArtifactIds[\s\S]*?const promptSourceContext/,
+      /structuredArtifactIdsMentionedBySources\(context\)[\s\S]*?candidateArtifactIds:\s*mentionedArtifactIds[\s\S]*?let promptSourceContext/,
       "source-markdown page hints must be proven before the planner sees extractedSourceArtifacts",
     );
     assert.match(generationSource, /ensureReferencedSourceArtifactsExtracted\(/);
+    assert.match(
+      sourceOf(namedFunction("ensureSourceVisualsExtracted")),
+      /sourceVisualCachedPageImageUrls\(contentPath, gardenId, source\.slug\)/,
+      "rollback-surviving AI page scans must hydrate before the next Source Map",
+    );
     assert.match(
       learnSource,
       /may ONLY be copied verbatim from extractedSourceArtifacts/,
@@ -493,7 +509,160 @@ describe("Learn validation, reads, and publication contracts", () => {
     );
   });
 
-  test("learning-spine repair keeps each accepted candidate paired with its own problems", () => {
+  test("late non-formula inventory drift reauthors Source Map once and cannot reach scope after a second drift", () => {
+    const planningSource = sourceOf(namedFunction("runLearnPlanning"));
+
+    assert.match(
+      planningSource,
+      /const requestSourceMap = async \(\) => \{[\s\S]*?const artifactInventory = refreshSelectedSourceArtifactInventory\([\s\S]*?const call = await callValidatedPlanningJson\([\s\S]*?return \{ call, artifactInventory \}/,
+      "the full selected artifact inventory must be captured immediately before every Source Map call",
+    );
+    assert.match(
+      planningSource,
+      /for \(;;\) \{[\s\S]*?ensureReferencedSourceArtifactsExtracted\([\s\S]*?const postSelectedPageArtifactInventory = refreshSelectedSourceArtifactInventory\([\s\S]*?const inventoryTransition = sourceMapArtifactInventoryTransition\([\s\S]*?sourceMapReplanAttempted[\s\S]*?sourceMapRequest = await requestSourceMap\(\)/,
+      "any first registry drift must re-author and revalidate the complete Source Map",
+    );
+    assert.match(
+      planningSource,
+      /if \(inventoryTransition === "fail"\) \{[\s\S]*?Selected source-artifact inventory changed again after the bounded Source Map replan/,
+      "the bounded second selected-page scan must fail closed on any further inventory drift, including a map call that selected no pages",
+    );
+    assert.match(
+      planningSource,
+      /Selected source-artifact inventory changed again after the bounded Source Map replan/,
+    );
+    assert.match(
+      planningSource,
+      /const currentSourceMapArtifactProblems = sourceMapPlanProblems\([\s\S]*?registeredArtifacts:\s*context\.sourceFigures[\s\S]*?The accepted Source Map is not valid against the current selected source-artifact inventory/,
+      "scope planning must revalidate the accepted map against the current complete registry",
+    );
+    const sourceMapValidation = sourceOf(namedFunction("sourceMapPlanProblems"));
+    assert.match(sourceMapValidation, /registered\.sourceId !== sourceId/);
+    assert.match(sourceMapValidation, /rawKind !== registered\.kind/);
+  });
+
+  test("selected artifact inventory survives map/version persistence and rollback restoration", () => {
+    const tables = sourceOf(namedFunction("ensureLearnTables"));
+    assert.match(
+      tables,
+      /CREATE TABLE IF NOT EXISTS learn_maps[\s\S]*?source_artifact_inventory_hash TEXT NOT NULL/,
+    );
+    assert.match(
+      tables,
+      /CREATE TABLE IF NOT EXISTS learn_versions[\s\S]*?source_artifact_inventory_hash TEXT NOT NULL/,
+    );
+    assert.ok(
+      (tables.match(/ADD COLUMN source_artifact_inventory_hash TEXT NOT NULL DEFAULT ''/g) ?? [])
+        .length >= 2,
+      "legacy maps and versions must migrate to an invalid empty binding",
+    );
+
+    const insertMap = sourceOf(namedFunction("insertLearnMap"));
+    assert.match(insertMap, /sourceArtifactInventoryHash:\s*string/);
+    assert.match(insertMap, /source_artifact_inventory_hash/);
+    assert.match(insertMap, /stored\.sourceArtifactInventoryHash/);
+    const insertVersion = sourceOf(namedFunction("insertLearnVersion"));
+    assert.match(insertVersion, /sourceArtifactInventoryHash:\s*string/);
+    assert.match(insertVersion, /source_artifact_inventory_hash/);
+    assert.match(insertVersion, /sourceArtifactInventoryHash,/);
+
+    const rollback = sourceOf(namedFunction("restoreLearnDatabaseSnapshot"));
+    assert.match(
+      rollback,
+      /INSERT INTO learn_maps[\s\S]*?source_artifact_inventory_hash[\s\S]*?row\.source_artifact_inventory_hash \?\? ""/,
+    );
+    assert.match(
+      rollback,
+      /INSERT INTO learn_versions[\s\S]*?source_artifact_inventory_hash[\s\S]*?row\.source_artifact_inventory_hash \?\? ""/,
+    );
+
+    const contractBacked = sourceOf(namedFunction("isContractBackedLearningMap"));
+    assert.match(contractBacked, /\^\[0-9a-f\]\{64\}\$/);
+    assert.match(
+      contractBacked,
+      /coverageInventoryHash === map\.sourceArtifactInventoryHash\.toLowerCase\(\)/,
+    );
+    const coverage = sourceOf(namedFunction("sourceCoveragePlan"));
+    assert.match(coverage, /sourceArtifactInventoryHash:\s*context\.sourceArtifactInventoryHash/);
+    const contractWrite = sourceOf(namedFunction("writeLearningUnitContractArtifacts"));
+    assert.match(contractWrite, /sourceArtifactInventoryHash:\s*string/);
+    assert.match(contractWrite, /sourceArtifactInventoryHash,/);
+  });
+
+  test("inventory authority is recollected and CAS-bound at planning, confirmation, and generation boundaries", () => {
+    const planning = sourceOf(namedFunction("runLearnPlanning"));
+    const commitRecollect = planning.indexOf("const commitContext = collectLearnSourceContext");
+    const insert = planning.indexOf("const stored = insertLearnMap", commitRecollect);
+    const finalRecollect = planning.indexOf("const finalPlanningContext = collectLearnSourceContext", insert);
+    const awaiting = planning.indexOf('status: retainLeaseOnSuccess ? "building_navigation" : "awaiting_confirmation"', finalRecollect);
+    assert.ok(commitRecollect >= 0 && insert > commitRecollect);
+    assert.match(
+      planning.slice(commitRecollect, insert),
+      /commitContext\.sourceArtifactInventoryHash !== context\.sourceArtifactInventoryHash/,
+    );
+    assert.ok(finalRecollect > insert && awaiting > finalRecollect);
+    assert.match(
+      planning.slice(finalRecollect, awaiting),
+      /finalPlanningContext\.sourceArtifactInventoryHash !==[\s\S]*?storedMap\.sourceArtifactInventoryHash/,
+    );
+    assert.ok(
+      (planning.match(/WHERE id = \? AND source_artifact_inventory_hash = \?/g) ?? []).length >= 2,
+      "contract and routed-map writes must retain the inventory CAS",
+    );
+
+    const confirmation = sourceOf(namedFunction("confirmLearningMap"));
+    const confirmationRecollect = confirmation.indexOf("const confirmationContext = collectLearnSourceContext");
+    const confirmationUpdate = confirmation.indexOf("UPDATE learn_maps", confirmationRecollect);
+    assert.ok(confirmationRecollect >= 0 && confirmationUpdate > confirmationRecollect);
+    assert.match(
+      confirmation.slice(confirmationRecollect, confirmationUpdate),
+      /confirmationContext\.sourceArtifactInventoryHash !==[\s\S]*?map\.sourceArtifactInventoryHash/,
+    );
+    assert.match(
+      confirmation.slice(confirmationUpdate),
+      /status = 'proposed'[\s\S]*?source_set_hash = \?[\s\S]*?source_artifact_inventory_hash = \?/,
+    );
+
+    const generation = sourceOf(namedFunction("runTextbookGeneration"));
+    const liveGate = generation.indexOf("confirmedArtifactInventoryHash !== map.sourceArtifactInventoryHash");
+    const stagedGate = generation.indexOf("stagedContext.sourceArtifactInventoryHash !==");
+    const extraction = generation.indexOf("const generationFormulaReview = await reviewAndBindSourceFormulas");
+    const postExtractionGate = generation.indexOf("context.sourceArtifactInventoryHash !== map.sourceArtifactInventoryHash", extraction);
+    const contractWrite = generation.indexOf("const contractWrite = writeLearningUnitContractArtifacts", postExtractionGate);
+    const finalMapCas = generation.lastIndexOf("UPDATE learn_maps");
+    const versionInsert = generation.indexOf("insertLearnVersion", finalMapCas);
+    assert.ok(liveGate >= 0 && stagedGate > liveGate && extraction > stagedGate);
+    assert.ok(postExtractionGate > extraction && contractWrite > postExtractionGate);
+    assert.ok(finalMapCas > contractWrite && versionInsert > finalMapCas);
+    assert.match(
+      generation.slice(finalMapCas, versionInsert + 500),
+      /status = 'confirmed'[\s\S]*?source_set_hash = \?[\s\S]*?source_artifact_inventory_hash = \?[\s\S]*?sourceArtifactInventoryHash:\s*context\.sourceArtifactInventoryHash/,
+    );
+  });
+
+  test("status requires a version's exact map and aggregates current artifact drift", () => {
+    const status = sourceOf(namedFunction("getLearnStatusSnapshot"));
+    assert.match(
+      status,
+      /const versionMap = isContractBackedLearningMap\(versionMapCandidate\)/,
+    );
+    assert.match(status, /let sourceSetChanged = Boolean\(latestVersion && !versionMap\)/);
+    assert.match(
+      status,
+      /const sourceBindingMap = latestVersion\s*\? versionMap\s*:\s*contractProposed \?\? confirmedMap/,
+    );
+    assert.match(status, /selectedSourceArtifactInventorySnapshot\(/);
+    assert.match(
+      status,
+      /latestVersion\.source_artifact_inventory_hash !==[\s\S]*?sourceBindingMap\.sourceArtifactInventoryHash/,
+    );
+    assert.match(
+      status,
+      /expectedArtifactInventoryHash !== currentArtifactInventoryHash/,
+    );
+  });
+
+  test("learning-spine repair carries the strongest rejected candidate with its exact problem history", () => {
     const planningSource = sourceOf(namedFunction("runLearnPlanning"));
     const repairStart = planningSource.indexOf("let topicMapCall = await callPlanningJsonWithRetry");
     const repairEnd = planningSource.indexOf("const visualNecessityReview", repairStart);
@@ -502,28 +671,43 @@ describe("Learn validation, reads, and publication contracts", () => {
 
     assert.match(
       repairSource,
-      /const acceptedResponseForRepair = topicMapCall\.parsed \?\? \{\s*unparsedResponse: topicMapCall\.content,?\s*\}/,
-      "the next repair must receive the exact currently accepted response",
+      /startLearningSpineFullRepairLineage\(\{[\s\S]*?invalidResponse:\s*topicMapCall\.content[\s\S]*?unitCount:\s*learningUnits\.length[\s\S]*?validationProblems:\s*contractProblems/,
+      "the initial response, units, and exact hard failures must start one lineage",
     );
     assert.match(
       repairSource,
-      /user: topicMapUser\(\{\s*repairAttempt,\s*invalidResponse: acceptedResponseForRepair,\s*validationProblems: contractProblems,?\s*\}\)/,
-      "the repair prompt must pair the accepted response with its own hard-check failures",
+      /let topicMapCall = await callPlanningJsonWithRetry\(\{[\s\S]*?taskType:\s*"learning_spine"[\s\S]*?preserveExactContent:\s*true[\s\S]*?\}\);/,
+      "the initial candidate must retain exact provider text before entering the lineage",
+    );
+    assert.match(
+      repairSource,
+      /const retryCall = await callPlanningJsonWithRetry\(\{[\s\S]*?taskType:\s*"learning_spine"[\s\S]*?preserveExactContent:\s*true[\s\S]*?\}\);/,
+      "every full-contract repair candidate must retain exact provider text",
+    );
+    assert.match(
+      repairSource,
+      /const repairFeedback = learningSpineFullRepairFeedback\(fullRepairLineage, repairAttempt\)[\s\S]*?user: topicMapUser\(repairFeedback\)/,
+      "the next repair must receive the incumbent response and its exact hard-check history",
+    );
+    assert.match(
+      repairSource,
+      /recordLearningSpineFullRepairCandidate\(\{[\s\S]*?invalidResponse:\s*retryCall\.content[\s\S]*?unitCount:\s*retryUnits\.length[\s\S]*?validationProblems:\s*retryProblems/,
+      "every rejected retry must be reviewed with its exact raw candidate and failures",
+    );
+    assert.match(
+      repairSource,
+      /candidateUnitCount:\s*retryUnits\.length[\s\S]*?promotedToIncumbent:\s*lineageReview\?\.promotedToIncumbent \?\? false[\s\S]*?incumbentUnitCount:\s*fullRepairLineage\.incumbent\.unitCount/,
+      "durable review events must expose the candidate-lineage decision",
+    );
+    assert.match(
+      repairSource,
+      /topicMapCall = fullRepairLineage\.incumbent\.payload\.call;[\s\S]*?learningUnits = fullRepairLineage\.incumbent\.payload\.units;[\s\S]*?sourceArtifactOmissions = fullRepairLineage\.incumbent\.payload\.sourceArtifactOmissions;[\s\S]*?contractProblems = fullRepairLineage\.incumbent\.validationProblems/,
+      "candidate state and validation state must advance atomically from the lineage incumbent",
     );
     assert.doesNotMatch(
       repairSource,
-      /\bfeedbackProblems\b/,
-      "problems from a discarded retry must not become feedback for the accepted candidate",
-    );
-
-    const acceptedReplacement = repairSource.match(
-      /if \(retryProblems\.length < contractProblems\.length\) \{[\s\S]*?topicMapCall = retryCall;[\s\S]*?learningUnits = retryUnits;[\s\S]*?sourceArtifactOmissions = retrySourceArtifactOmissions;[\s\S]*?contractProblems = retryProblems;[\s\S]*?\}/,
-    );
-    assert.ok(acceptedReplacement, "candidate state and validation state must advance atomically");
-    assert.doesNotMatch(
-      repairSource.replace(acceptedReplacement[0], ""),
-      /topicMapCall = retryCall|learningUnits = retryUnits|sourceArtifactOmissions = retrySourceArtifactOmissions|contractProblems = retryProblems/,
-      "an equal or worse replacement must not change any accepted-candidate state",
+      /retryProblems\.length < contractProblems\.length/,
+      "raw problem count alone must not decide whether a nonempty candidate replaces an empty one",
     );
     assert.match(repairSource, /for \(let repairAttempt = 1; repairAttempt <= 2/);
     assert.equal(
@@ -532,7 +716,9 @@ describe("Learn validation, reads, and publication contracts", () => {
       "the initial/full-replacement call sites stay intact and targeted model repair has its own provider call",
     );
     assert.match(repairSource, /runLearningSpineTargetedRepair\([\s\S]*?maxAttempts:\s*2/);
-    assert.match(repairSource, /remained invalid after 3 bounded attempts/);
+    assert.match(repairSource, /describeLearningSpineRepairAttempts\(\{[\s\S]*?fullContractAttempts:\s*3/);
+    assert.match(repairSource, /targetedCalls:\s*targetedRepairOutcome\?\.calls \?\? 0/);
+    assert.match(repairSource, /targetedStatus:\s*targetedRepairOutcome\?\.status \?\? "not_run"/);
     assert.match(repairSource, /No fallback curriculum was written/);
   });
 
@@ -622,7 +808,7 @@ describe("Learn validation, reads, and publication contracts", () => {
     assert.match(generationSource, /new Set<string>\(\)/);
     assert.match(
       generationSource,
-      /auditGardenForFinalization\(clusterDir, gardenId\)[\s\S]*?audit\.stateFingerprint/,
+      /auditGardenForFinalization\(clusterDir, gardenId,\s*\{[\s\S]*?expectedSourceFormulaReviewContext:\s*sourceFormulaReviewFinalizationContext[\s\S]*?audit\.stateFingerprint/,
     );
     assert.match(
       generationSource,
@@ -1121,7 +1307,8 @@ describe("cross-process mutation fences", () => {
 describe("model-approved generated visual failures", () => {
   test("use the full bounded repair budget and stop before finalization if any approved visual remains missing", () => {
     const reconcileSource = sourceOf(namedFunction("reconcileInteractiveVisuals"));
-    assert.match(reconcileSource, /maxAttempts:\s*5/);
+    assert.match(reconcileSource, /maxAttempts:\s*GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS/);
+    assert.match(learnSource, /GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS/);
     assert.match(
       reconcileSource,
       /throw new Error\([\s\S]*?Model-approved \$\{opportunity\.requirement\} interactive visual/,
@@ -1179,7 +1366,11 @@ describe("model-authored source artifact coverage", () => {
     assert.match(planning, /sourceArtifactCoverageProblems\(\s*learningUnits,\s*sourceArtifactOmissions/);
     assert.match(planning, /for \(let repairAttempt = 1; repairAttempt <= 2/);
     assert.match(planning, /sourceArtifactCoverageProblems\(\s*retryUnits,\s*retrySourceArtifactOmissions/);
-    assert.match(planning, /sourceArtifactOmissions = retrySourceArtifactOmissions/);
+    assert.match(
+      planning,
+      /sourceArtifactOmissions:\s*retrySourceArtifactOmissions[\s\S]*?sourceArtifactOmissions = fullRepairLineage\.incumbent\.payload\.sourceArtifactOmissions/,
+      "omissions must advance atomically with the selected full-repair candidate",
+    );
     assert.match(learnSource, /sourceArtifactOmissions:\s*omissions/);
     assert.match(learnSource, /sourceArtifactOmissions,\s*buildCanonicalSourceAnchors/);
     assert.doesNotMatch(
@@ -1471,4 +1662,53 @@ test("half-swap plus restore failure exposes the retained previous tree honestly
     /destination untouched|destination intact|previous published garden (?:preserved|restored)/i,
   );
   assert.match(result.reason, /could not be restored|recovery is required/i);
+});
+
+test("zero-teachable syllabus recovery is bounded, durable, and precedes every map or LUC call", () => {
+  const recoveryGate = learnSource.indexOf(
+    "if (!syllabusCoverageHasTeachableUnits(syllabusCoverage))",
+  );
+  const sourceMapRequest = learnSource.indexOf("const requestSourceMap = async", recoveryGate);
+  const firstLearningSpineRequest = learnSource.indexOf(
+    'taskType: "learning_spine"',
+    recoveryGate,
+  );
+  assert.ok(recoveryGate > 0, "zero-teachable recovery gate must exist");
+  assert.ok(sourceMapRequest > recoveryGate, "Source Map must follow recovery");
+  assert.ok(firstLearningSpineRequest > sourceMapRequest, "LUC authoring must follow Source Map");
+  const recoveryBlock = learnSource.slice(recoveryGate, sourceMapRequest);
+  assert.match(recoveryBlock, /runSyllabusCoverageEvidenceRecovery/);
+  assert.match(recoveryBlock, /preserveExactContent: true/);
+  assert.match(recoveryBlock, /const recoveryLiveContext = collectLearnSourceContext/);
+  assert.match(recoveryBlock, /syllabusCoverageRecoveryReceiptProblems/);
+  assert.match(recoveryBlock, /No Source Map or Learning Unit Contract was requested/);
+
+  const coveragePlan = sourceOf(namedFunction("sourceCoveragePlan"));
+  assert.match(coveragePlan, /syllabusCoverageEvidenceRecoveryHash/);
+  assert.match(coveragePlan, /syllabusCoverageEvidenceRecovery/);
+  const writer = sourceOf(namedFunction("writeLearningUnitContractArtifacts"));
+  assert.match(writer, /syllabusCoverageEvidenceRecoveryHash/);
+  assert.match(writer, /syllabusCoverageEvidenceRecovery/);
+
+  const confirmation = sourceOf(namedFunction("confirmLearningMap"));
+  assert.ok(
+    confirmation.indexOf('const alreadyConfirmed = map.status === "confirmed"') <
+      confirmation.indexOf("assertSyllabusCoverageRecoveryBinding"),
+  );
+  assert.ok(
+    confirmation.indexOf("assertSyllabusCoverageRecoveryBinding") <
+      confirmation.indexOf("if (alreadyConfirmed) return"),
+    "idempotent confirmation must not bypass live receipt validation",
+  );
+
+  const generation = sourceOf(namedFunction("runTextbookGeneration"));
+  assert.match(
+    generation,
+    /sourceFormulaReviewFinalizationContextFromGarden\(workspace\.stagingGardenDir\)/,
+  );
+  assert.ok(
+    generation.indexOf("stagedPersistedSourceContext") <
+      generation.lastIndexOf("writeLearningUnitContractArtifacts"),
+    "seeded LUC receipt must be checked before the generation writer can replace it",
+  );
 });

@@ -806,6 +806,10 @@ export function useAgentSession(
   // conversation to restore, and until it answers an empty transcript is
   // indistinguishable from a chat whose messages haven't arrived yet.
   const [loadingSession, setLoadingSession] = useState(true);
+  // `send` runs from event handlers that read refs, not the render's state, so
+  // the flag has to exist in both forms. Every write goes through
+  // `markLoadingSession` to keep them from drifting apart.
+  const loadingSessionRef = useRef(true);
   const [pendingPermission, setPendingPermission] =
     useState<PermissionPrompt | null>(null);
   const [activeTools, setActiveTools] = useState<ToolActivity[]>([]);
@@ -865,6 +869,11 @@ export function useAgentSession(
     [storageKey, temporaryChats],
   );
 
+  const markLoadingSession = useCallback((loading: boolean) => {
+    loadingSessionRef.current = loading;
+    setLoadingSession(loading);
+  }, []);
+
   const transition = useCallback((next: AgentRunState) => {
     runStateRef.current = next;
     setRunState(next);
@@ -892,7 +901,7 @@ export function useAgentSession(
   // runtime session after a refresh; Hermes ids remain server-side.
   useEffect(() => {
     let cancelled = false;
-    setLoadingSession(true);
+    markLoadingSession(true);
     void loadHermesSessionSummaries(surface)
       .then(async (sessions) => {
         if (cancelled || sessionRef.current) return;
@@ -956,7 +965,7 @@ export function useAgentSession(
       })
       .catch(() => undefined)
       .finally(() => {
-        if (!cancelled) setLoadingSession(false);
+        if (!cancelled) markLoadingSession(false);
       });
     return () => {
       cancelled = true;
@@ -965,6 +974,7 @@ export function useAgentSession(
     surface,
     createOptions?.gardenSlug,
     createOptions?.pageSlug,
+    markLoadingSession,
     storageKey,
     transition,
   ]);
@@ -2105,6 +2115,14 @@ export function useAgentSession(
     async (text: string, options?: AgentSendOptions) => {
       const trimmed = text.trim();
       if (!trimmed || isActiveAgentRunState(runStateRef.current)) return;
+      // A turn composed while the transcript is still arriving is a turn built
+      // against the wrong history: on a cold mount there is no conversation yet,
+      // so the send would open a second one and the restore would then replace
+      // the optimistic pair while its stream was still writing into it; on a
+      // chat switch the arriving transcript overwrites the same pair. The
+      // surfaces disable the composer for this window, so reaching here means a
+      // path that outran the flag -- drop the turn rather than corrupt the view.
+      if (loadingSessionRef.current) return;
       const viewEpoch = viewEpochRef.current;
       const resumedBlockedTurn =
         blockedTurnRef.current?.text === trimmed ? blockedTurnRef.current : null;
@@ -2987,13 +3005,13 @@ export function useAgentSession(
     setSteerError(null);
     setError(null);
     // A blank chat is fully loaded the moment it exists; nothing is in flight.
-    setLoadingSession(false);
+    markLoadingSession(false);
     setPendingPermission(null);
     setActiveTools([]);
     setActivities([]);
     setRunToResume(null);
     pendingHistoryOverrideRef.current = null;
-  }, [storageKey, transition]);
+  }, [markLoadingSession, storageKey, transition]);
 
   const setMessagesExternal = useCallback((nextMessages: AgentMessage[]) => {
     pendingHistoryOverrideRef.current = nextMessages;
@@ -3012,7 +3030,7 @@ export function useAgentSession(
   const openSession = useCallback(
     async (id: string, optimisticMessages: AgentMessage[] = []) => {
       reset();
-      setLoadingSession(true);
+      markLoadingSession(true);
       const viewEpoch = viewEpochRef.current;
       sessionRef.current = id;
       setSessionId(id);
@@ -3085,10 +3103,11 @@ export function useAgentSession(
       } finally {
         // A newer view already owns the flag; leaving it alone keeps this
         // superseded open from clearing the newer one's spinner.
-        if (viewEpochRef.current === viewEpoch) setLoadingSession(false);
+        if (viewEpochRef.current === viewEpoch) markLoadingSession(false);
       }
     },
     [
+      markLoadingSession,
       reset,
       storageKey,
       surface,

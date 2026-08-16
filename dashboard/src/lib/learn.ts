@@ -18,7 +18,9 @@ import {
   auditGardenForFinalization,
   finalizeGardenExport,
   repairLearningUnitsFromContract,
+  sourceFormulaReviewFinalizationContextFromGarden,
   verifyFinalArtifactNoMutation,
+  type SourceFormulaReviewFinalizationContext,
   type UnitRepairRequest,
 } from "@/lib/garden-finalize";
 import { createOpenAIRepairExecutor } from "@/lib/repair-executor";
@@ -62,14 +64,29 @@ import {
 } from "@/lib/visual-spec";
 import {
   extractSourceVisuals,
+  computeSourceFormulaReviewSetHash,
   ensureSourcePdfPageSnapshots,
   isFullPageSnapshotUrl,
+  loadSourceFormulaReviewSetManifest,
+  resolveSourceVisualSourceIdentityMap,
   loadSourceVisuals,
   recordSourceVisualAssignments,
+  reviewRequiredSourceFormulaExactText,
+  saveSourceFormulaReviewSetManifest,
+  sourceSetHashWithReviewedFormulas,
+  sourceVisualCachedPageImageUrls,
+  sourceVisualSourceIdentityMapHash,
   sourceVisualEmbedUrl,
   sourceVisualMarkdown,
+  validateSourceFormulaReviewSet,
   type SourceVisual,
+  type SourceFormulaReviewResult,
+  type SourceVisualSourceIdentity,
 } from "@/lib/source-visuals";
+import {
+  selectedSourceArtifactInventorySnapshot,
+  sourceMapArtifactInventoryTransition,
+} from "@/lib/learn-source-artifact-inventory";
 import {
   assessLessonQuality,
   buildLearningPageFrontmatter,
@@ -104,7 +121,7 @@ import {
   type LearningSubsectionPlan,
   type ProposedLearningMap,
 } from "@/lib/learn-utils";
-import { extractQuartzMath, normalizeQuartzMarkdown } from "@/lib/quartz-markdown";
+import { extractVerbatimDisplayMath, normalizeQuartzMarkdown } from "@/lib/quartz-markdown";
 import {
   attachLearnTokenUsageTracking,
   emptyLearnTokenUsage,
@@ -114,6 +131,8 @@ import {
 } from "@/lib/learn-token-usage";
 import { transitionLearnTimer } from "@/lib/learn-timer";
 import {
+  authoredSyllabusLocatorCatalog,
+  buildSyllabusCoverageSourceCatalog,
   detectUnavailableCitations,
   modelAuthoredSyllabusPlanProblems,
   projectModelAuthoredSyllabusPlan,
@@ -122,8 +141,16 @@ import {
   syllabusCoverageDecisionProblems,
   unavailableCitationProbes,
   type SyllabusCoverage,
+  type SyllabusPlan,
   type UnavailableCitationProbe,
 } from "@/lib/learn-syllabus";
+import {
+  runSyllabusCoverageEvidenceRecovery,
+  syllabusCoverageHasTeachableUnits,
+  syllabusCoverageRecoveryReceiptProblems,
+  type SyllabusCoverageEvidenceRecoveryReceipt,
+  type SyllabusCoverageRecoveryProviderRequest,
+} from "@/lib/learn-syllabus-coverage-recovery";
 import {
   loadVisualDecisionOverrides,
   saveVisualNecessityArtifacts,
@@ -134,6 +161,13 @@ import {
   runModelVisualNecessityPlanning,
 } from "@/lib/model-visual-necessity";
 import { runLearningSpineTargetedRepair } from "@/lib/model-learning-spine-repair";
+import {
+  describeLearningSpineRepairAttempts,
+  learningSpineFullRepairFeedback,
+  recordLearningSpineFullRepairCandidate,
+  startLearningSpineFullRepairLineage,
+  type LearningSpineFullRepairFeedback,
+} from "@/lib/learning-spine-full-repair";
 import {
   modelSourcePageAnchors,
   selectedStructuralSourcePageHints,
@@ -260,6 +294,8 @@ export interface StoredLearningMap {
   visualOpportunities: unknown[];
   coveragePlan: unknown;
   sourceSetHash: string;
+  /** Exact selected-source visual inventory supplied to the authored Source Map. */
+  sourceArtifactInventoryHash: string;
   sourceIds: string[];
   /** Slug of the document this map was planned against as its syllabus. Page
    * generation re-reads it so lessons follow the same study guide the plan did. */
@@ -379,6 +415,7 @@ interface LearnMapRow {
   visual_opportunities_json: string;
   coverage_plan_json: string;
   source_set_hash: string;
+  source_artifact_inventory_hash: string;
   source_ids_json: string | null;
   syllabus_source_id: string | null;
   syllabus_coverage_json: string | null;
@@ -392,13 +429,20 @@ interface LearnVersionRow {
   job_id: string;
   learning_map_id: string;
   source_set_hash: string;
+  source_artifact_inventory_hash: string;
   page_count: number;
   backup_dir: string | null;
   created_at: string;
 }
 
 interface LearnSourceContext extends LearnContextSummary {
+  baseSourceSetHash: string;
   sourceSetHash: string;
+  sourceFormulaReviewSetHash?: string;
+  /** Versioned canonical inventory of every selected planner-visible source artifact. */
+  sourceArtifactInventoryHash: string;
+  /** Durable garden-global S<n> ownership; never compacted to this run's selection. */
+  sourceVisualSourceIdentityMap: SourceVisualSourceIdentity[];
   sourceFigures: SourceFigure[];
   existingTextbookPages: LearnSourceSummary[];
   conceptNodes: LearnConceptSummary[];
@@ -787,7 +831,7 @@ Return ONLY JSON with this exact shape:
       "citation": "exact citation copied byte-for-byte from referencedMaterials",
       "status": "available | missing | generic",
       "sourceIds": ["exact selected source id that satisfies this full citation"],
-      "matchReason": "specific evidence in the supplied source metadata/content for this verdict"
+      "matchReason": "specific canonical raw page or unpaged source evidence for this verdict"
     }
   ],
   "units": [
@@ -803,12 +847,14 @@ Return ONLY JSON with this exact shape:
 
 Hard rules:
 - Return exactly one resolution for every referenced material and exactly one coverage record for every syllabus unit, in the supplied order. Never omit or add records.
-- Judge each material from the supplied source catalog, excerpts, and content. Use only exact supplied source IDs.
+- Judge each material from the supplied source catalog. \`selectedSourceCatalog.sourceRecords[].navigationMetadata\` (including title, description, excerpt, and planningIndex) is generated navigation context and can never prove a bibliographic title, author, chapter, page, or locator. Exact sourceId, sourceFile, and relPath are routing identity only. \`canonicalRawPageEvidence.pages\` and \`unpagedEvidence\` are the bounded verbatim source material: each page record carries its exact sourceId, pageNumber, and complete raw text in document order. Use only exact supplied source IDs.
+- \`selectedSourceCatalog.authoredLocators\` copies the syllabus's locator strings verbatim. It never selects a source page or establishes that a source satisfies one. The catalog may omit complete raw pages only because of its explicit transport bounds. An omittedPageCount or truncated flag is transport metadata, never proof that a citation is present. When the supplied canonical raw evidence does not visibly establish the full citation's title/authors and locator, author \`missing\`; never infer it from navigation metadata, a filename, subject overlap, or a locator string alone.
 - "available" requires direct evidence that an uploaded source satisfies the FULL citation. Match title/authors AND any locator such as chapter, section, or page range. A matching book title alone never proves that an assigned chapter or page range is present. Put one or more satisfying source IDs in sourceIds.
 - "missing" means the citation identifies a work or assigned part but the supplied evidence does not establish that it is present. Use an empty sourceIds array. Do not guess from subject overlap.
 - "generic" is only for a reference that identifies no checkable work, such as "Readings TBD". Use an empty sourceIds array.
-- Preserve each citation exactly as supplied. In each unit, missingCitations must contain exactly its assigned materials resolved "missing", in syllabus material order. Generic references are not missing citations.
-- For each unit, independently author whether the selected sources genuinely support its objectives and topics. If teachable is true, select every source the planner should ground it in. If false, use an empty availableSourceIds array.
+- Preserve each citation exactly as supplied. In each unit, missingCitations must contain exactly its assigned materials resolved "missing", in syllabus material order. Distinct assigned material IDs can copy the same exact citation: retain one occurrence for every such missing material ID and never de-duplicate it. Generic references are not missing citations.
+- For each unit, independently author whether the selected sources genuinely support its objectives and topics in full. teachable is the sole authorization for the planner to generate lessons. If true, select every source the planner should ground it in.
+- An unteachable unit may still have partial or direct source support. When an assigned material is available, list at least one exact selected source for that material in availableSourceIds, keep teachable false if the evidence cannot support the unit in full, and explain that limitation in coverageReason. Use an empty availableSourceIds array only when no selected source directly supports an assigned available material. Never flip teachable merely to satisfy an array condition.
 - A missing REQUIRED material is strong evidence against teachability, but another uploaded source may support the unit if its supplied content directly covers the objectives and topics; explain that evidence. A missing OPTIONAL material does not by itself make the unit unteachable. Required/optional is semantic input for your verdict, never a code rule.
 - If an assigned material is available, the unit's availableSourceIds must include at least one source selected for that material.
 - Never claim that a source contains a chapter, fact, process, example, or result that is not visible in the supplied evidence.`;
@@ -828,10 +874,11 @@ Syllabus (hard requirements):
 
 Material availability (hard requirements — this is what stops fabrication):
 - A separate source-grounded model has already reviewed every work the syllabus assigns against the exact selected-source catalog. Its authored coverage decision is authoritative for this run. Do not second-guess it.
-- \`unit.availableSourceIds\` lists the documents that ARE present for that unit. Ground that unit heavily and specifically in those documents: its definitions, figures, formulas, numbers, and examples come from there first, and only then from the rest of the garden.
+- \`unit.availableSourceIds\` lists documents with direct support for at least part of that unit. For a unit whose \`teachable\` verdict is true, ground it heavily and specifically in those documents: its definitions, figures, formulas, numbers, and examples come from there first, and only then from the rest of the garden.
+- \`unit.teachable\` is the sole authorization to create learning units. If it is false, do not plan or generate a learning unit for that syllabus item even when \`availableSourceIds\` records partial support. Partial support never overrides an unteachable verdict.
 - \`unit.missingCitations\` lists works the syllabus assigns that NOBODY UPLOADED. You have never seen their contents. Never plan a unit, anchor, figure, formula, result, or claim that depends on them. Never summarize, paraphrase, characterize, or state what such a work says, argues, shows, or concludes. Never name one in learner-facing text.
 - Cover a syllabus topic whose material is missing ONLY from the source material that IS present, and only as far as that material genuinely supports. If it does not support the topic, leave the topic uncovered and record it in warnings.
-- \`syllabusCoverage.untaughtUnitTitles\` lists units with no available material at all. Do not create learning units for them. Record each one in warnings as an uncoverable syllabus item.
+- \`syllabusCoverage.untaughtUnitTitles\` lists units the coverage review judged unteachable from the selected sources, including units with only partial support. Do not create learning units for them. Record each one in warnings as an uncoverable syllabus item.
 - Every warning about missing material must name the syllabus item, never invent a substitute for it.`;
 
 /** Page-writing rules that apply only when a syllabus is in play. */
@@ -982,6 +1029,7 @@ function ensureLearnTables(): void {
       visual_opportunities_json TEXT NOT NULL,
       coverage_plan_json        TEXT NOT NULL,
       source_set_hash           TEXT NOT NULL,
+      source_artifact_inventory_hash TEXT NOT NULL,
       source_ids_json           TEXT NOT NULL DEFAULT '[]',
       syllabus_source_id        TEXT,
       syllabus_coverage_json    TEXT,
@@ -998,6 +1046,7 @@ function ensureLearnTables(): void {
       job_id              TEXT NOT NULL,
       learning_map_id     TEXT NOT NULL,
       source_set_hash     TEXT NOT NULL,
+      source_artifact_inventory_hash TEXT NOT NULL,
       page_count          INTEGER NOT NULL DEFAULT 0,
       backup_dir          TEXT,
       created_at          TEXT NOT NULL
@@ -1081,6 +1130,22 @@ function ensureLearnTables(): void {
   }
   if (!learnMapColumns.has("syllabus_coverage_json")) {
     db.exec("ALTER TABLE learn_maps ADD COLUMN syllabus_coverage_json TEXT");
+  }
+  if (!learnMapColumns.has("source_artifact_inventory_hash")) {
+    db.exec(
+      "ALTER TABLE learn_maps ADD COLUMN source_artifact_inventory_hash TEXT NOT NULL DEFAULT ''",
+    );
+  }
+
+  const learnVersionColumns = new Set(
+    (db.prepare("PRAGMA table_info(learn_versions)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  if (!learnVersionColumns.has("source_artifact_inventory_hash")) {
+    db.exec(
+      "ALTER TABLE learn_versions ADD COLUMN source_artifact_inventory_hash TEXT NOT NULL DEFAULT ''",
+    );
   }
 
   const learnClearOperationColumns = new Set(
@@ -1329,6 +1394,7 @@ function rowToMap(row: LearnMapRow | undefined): StoredLearningMap | null {
   // map is missing or unparseable is not a usable plan: reading it back as a
   // synthesized map would hand the garden a curriculum the model never wrote.
   const learningMap = parseJson(row.learning_map_json) as ProposedLearningMap | null;
+  const coveragePlan = parseJson(row.coverage_plan_json);
   if (!learningMap || !Array.isArray(learningMap.sections) || learningMap.sections.length === 0) {
     return null;
   }
@@ -1344,8 +1410,9 @@ function rowToMap(row: LearnMapRow | undefined): StoredLearningMap | null {
       (parseJson(row.proposed_order_json) as LearningSectionPlan[] | null) ?? [],
     visualOpportunities:
       (parseJson(row.visual_opportunities_json) as unknown[] | null) ?? [],
-    coveragePlan: parseJson(row.coverage_plan_json),
+    coveragePlan,
     sourceSetHash: row.source_set_hash,
+    sourceArtifactInventoryHash: row.source_artifact_inventory_hash ?? "",
     sourceIds: parseSourceIds(row.source_ids_json),
     syllabusSourceId: row.syllabus_source_id ?? undefined,
     syllabusCoverage:
@@ -1845,6 +1912,7 @@ function insertLearnMap({
   learningMap,
   coveragePlan,
   sourceSetHash,
+  sourceArtifactInventoryHash,
   sourceIds,
   syllabusSourceId,
   syllabusCoverage,
@@ -1856,6 +1924,7 @@ function insertLearnMap({
   learningMap: ProposedLearningMap;
   coveragePlan: unknown;
   sourceSetHash: string;
+  sourceArtifactInventoryHash: string;
   sourceIds: string[];
   syllabusSourceId?: string;
   syllabusCoverage?: SyllabusCoverage | null;
@@ -1882,6 +1951,7 @@ function insertLearnMap({
     ),
     coveragePlan,
     sourceSetHash,
+    sourceArtifactInventoryHash,
     sourceIds: [...sourceIds],
     syllabusSourceId,
     syllabusCoverage: syllabusCoverage ?? null,
@@ -1892,9 +1962,9 @@ function insertLearnMap({
     `INSERT INTO learn_maps (
       id, garden_id, job_id, status, source_map_json, scope_contract_json,
       learning_map_json, proposed_order_json, visual_opportunities_json,
-      coverage_plan_json, source_set_hash, source_ids_json, syllabus_source_id,
-      syllabus_coverage_json, created_at, confirmed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      coverage_plan_json, source_set_hash, source_artifact_inventory_hash,
+      source_ids_json, syllabus_source_id, syllabus_coverage_json, created_at, confirmed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     stored.id,
     stored.gardenId,
@@ -1907,6 +1977,7 @@ function insertLearnMap({
     jsonString(stored.visualOpportunities),
     jsonString(stored.coveragePlan),
     stored.sourceSetHash,
+    stored.sourceArtifactInventoryHash,
     jsonString(stored.sourceIds),
     stored.syllabusSourceId ?? null,
     stored.syllabusCoverage ? jsonString(stored.syllabusCoverage) : null,
@@ -1929,6 +2000,7 @@ function insertLearnVersion({
   jobId,
   learningMapId,
   sourceSetHash,
+  sourceArtifactInventoryHash,
   pageCount,
   backupDir,
 }: {
@@ -1937,21 +2009,23 @@ function insertLearnVersion({
   jobId: string;
   learningMapId: string;
   sourceSetHash: string;
+  sourceArtifactInventoryHash: string;
   pageCount: number;
   backupDir?: string;
 }): void {
   ensureLearnTables();
   db.prepare(
     `INSERT INTO learn_versions (
-      id, garden_id, job_id, learning_map_id, source_set_hash, page_count,
-      backup_dir, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, garden_id, job_id, learning_map_id, source_set_hash,
+      source_artifact_inventory_hash, page_count, backup_dir, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     gardenId,
     jobId,
     learningMapId,
     sourceSetHash,
+    sourceArtifactInventoryHash,
     pageCount,
     backupDir ?? null,
     nowIso(),
@@ -2018,7 +2092,53 @@ function sourceFiguresFromVisuals(visuals: SourceVisual[]): SourceFigure[] {
     }));
 }
 
+/**
+ * Return the exact selected visual ledger projection consumed by Source Map
+ * prompts. This is deliberately broader than the reviewed-equation hash: a
+ * late figure, graph, table, or diagram changes the model's required complete
+ * artifact partition just as materially as a new equation does.
+ */
+function selectedSourceArtifactInventoryForContext(
+  context: LearnSourceContext,
+  visuals: readonly SourceVisual[],
+) {
+  return selectedSourceArtifactInventorySnapshot({
+    selectedSourceIds: context.sources.map((source) => source.slug),
+    sourceIdentityMap: context.sourceVisualSourceIdentityMap,
+    visuals,
+  });
+}
+
+function refreshSelectedSourceArtifactInventory(
+  contentPath: string,
+  gardenId: string,
+  context: LearnSourceContext,
+) {
+  const selectedSourceIds = new Set(context.sources.map((source) => source.slug));
+  const ledger = loadSourceVisuals(contentPath, gardenId);
+  const visuals = ledger.filter((visual) =>
+    selectedSourceIds.has(visual.sourceId),
+  );
+  const inventory = selectedSourceArtifactInventoryForContext(context, ledger);
+  context.sourceFigures = sourceFiguresFromVisuals(visuals);
+  context.sourceArtifactInventoryHash = inventory.sourceArtifactInventoryHash;
+  return inventory;
+}
+
 const STRUCTURED_SOURCE_ARTIFACT_RE = /^S(\d+)\.P(\d+)\.(?:F|G|T|E)\d+$/i;
+
+function stableSourceVisualIndex(
+  context: LearnSourceContext,
+  sourceId: string,
+): number {
+  const sourceIndex = context.sourceVisualSourceIdentityMap.find(
+    (entry) => entry.sourceId === sourceId,
+  )?.sourceIndex;
+  if (!sourceIndex) {
+    throw new Error(`Stable source-visual identity is missing for source "${sourceId}".`);
+  }
+  return sourceIndex;
+}
 
 function registeredArtifactsFromFigures(sourceFigures: SourceFigure[]): RegisteredSourceArtifact[] {
   return sourceFigures.map((figure) => ({
@@ -2073,19 +2193,20 @@ function structuredArtifactIdsFromUnits(units: LearningUnitContract[]): string[]
 /**
  * Candidate artifact labels emitted into each source's own Markdown during
  * ingestion. They are hints, not evidence: remap the local source number to
- * this run's selected-source order, then let PDF rendering + vision decide
+ * the durable garden-global source slot, then let PDF rendering + vision decide
  * which exact ids are real before the planner can use them.
  */
 function structuredArtifactIdsMentionedBySources(context: LearnSourceContext): string[] {
   const ids = new Set<string>();
-  context.sources.forEach((source, index) => {
+  context.sources.forEach((source) => {
+    const sourceIndex = stableSourceVisualIndex(context, source.slug);
     const re = /\bS\d+\.P(\d+)\.([FGTE])(\d+)\b/gi;
     for (const match of (source.body ?? "").matchAll(re)) {
       const pageNumber = Number.parseInt(match[1], 10);
       const ordinal = Number.parseInt(match[3], 10);
       if (!Number.isSafeInteger(pageNumber) || pageNumber < 1) continue;
       if (!Number.isSafeInteger(ordinal) || ordinal < 1) continue;
-      ids.add(`S${index + 1}.P${pageNumber}.${match[2].toUpperCase()}${ordinal}`);
+      ids.add(`S${sourceIndex}.P${pageNumber}.${match[2].toUpperCase()}${ordinal}`);
     }
   });
   return [...ids].sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
@@ -2117,7 +2238,7 @@ async function ensureReferencedSourceArtifactsExtracted({
   context: LearnSourceContext;
   units: LearningUnitContract[];
   candidateArtifactIds?: readonly string[];
-  explicitPageHints?: readonly Pick<SelectedStructuralSourcePageHint, "sourceIndex" | "pageNumber">[];
+  explicitPageHints?: readonly Pick<SelectedStructuralSourcePageHint, "sourceId" | "sourceIndex" | "pageNumber">[];
   checkpoint?: () => void;
   onProgress?: (step: string) => void;
 }): Promise<{
@@ -2133,6 +2254,12 @@ async function ensureReferencedSourceArtifactsExtracted({
     ...candidateArtifactIds.filter((id) => STRUCTURED_SOURCE_ARTIFACT_RE.test(id)),
   ])].filter((id) => !registeredBefore.has(id));
   const pagesBySourceIndex = new Map<number, Set<number>>();
+  const sourceIdentityById = new Map(
+    context.sourceVisualSourceIdentityMap.map((entry) => [entry.sourceId, entry.sourceIndex]),
+  );
+  const selectedSourceByStableIndex = new Map(
+    context.sources.map((source) => [stableSourceVisualIndex(context, source.slug), source]),
+  );
   const scanErrors: string[] = [];
   const addRequestedPage = (sourceIndex: number, pageNumber: number) => {
     if (!Number.isSafeInteger(sourceIndex) || sourceIndex < 1) return;
@@ -2149,7 +2276,8 @@ async function ensureReferencedSourceArtifactsExtracted({
     addRequestedPage(sourceIndex, pageNumber);
   }
   for (const hint of explicitPageHints) {
-    addRequestedPage(hint.sourceIndex, hint.pageNumber);
+    const stableSourceIndex = sourceIdentityById.get(hint.sourceId);
+    if (stableSourceIndex) addRequestedPage(stableSourceIndex, hint.pageNumber);
   }
 
   const requestedPages = [...pagesBySourceIndex]
@@ -2163,7 +2291,7 @@ async function ensureReferencedSourceArtifactsExtracted({
 
   for (const [sourceIndex, pageNumbers] of pagesBySourceIndex) {
     checkpoint?.();
-    const source = context.sources[sourceIndex - 1];
+    const source = selectedSourceByStableIndex.get(sourceIndex);
     if (!source?.sourcePdf) continue;
     const sortedPages = [...pageNumbers].sort((left, right) => left - right);
     onProgress?.(
@@ -2212,10 +2340,15 @@ async function ensureReferencedSourceArtifactsExtracted({
   }
 
   const selectedSourceIds = new Set(context.sources.map((source) => source.slug));
-  const visuals = loadSourceVisuals(contentPath, gardenId).filter((visual) =>
+  const visualLedger = loadSourceVisuals(contentPath, gardenId);
+  const visuals = visualLedger.filter((visual) =>
     selectedSourceIds.has(visual.sourceId),
   );
   context.sourceFigures = sourceFiguresFromVisuals(visuals);
+  context.sourceArtifactInventoryHash = selectedSourceArtifactInventoryForContext(
+    context,
+    visualLedger,
+  ).sourceArtifactInventoryHash;
   const registeredAfter = new Set(context.sourceFigures.map((figure) => figure.figureId));
   return {
     requestedIds,
@@ -2270,6 +2403,12 @@ export function collectLearnSourceContext(
     );
   }
   const selectedSourceIdSet = new Set(sources.map((source) => source.slug));
+  const sourceVisualSourceIdentityMap = resolveSourceVisualSourceIdentityMap({
+    contentPath,
+    gardenSlug: gardenId,
+    sourceIds: sources.map((source) => source.slug),
+    persist: false,
+  });
   const conceptNodes: LearnConceptSummary[] = knowledge.nodes
     .filter(
       (node) =>
@@ -2304,11 +2443,61 @@ export function collectLearnSourceContext(
   // Figures come from the Stage-2 SourceVisual ledger (cropped, captioned).
   // Before extraction has run the list is simply empty — full-page snapshots
   // are never presented as figures.
-  const sourceFigures = sourceFiguresFromVisuals(
-    loadSourceVisuals(contentPath, gardenId).filter((visual) =>
-      selectedSourceIdSet.has(visual.sourceId),
-    ),
+  const sourceVisualLedger = loadSourceVisuals(contentPath, gardenId);
+  const selectedSourceVisuals = sourceVisualLedger.filter((visual) =>
+    selectedSourceIdSet.has(visual.sourceId),
   );
+  const sourceFigures = sourceFiguresFromVisuals(selectedSourceVisuals);
+  const sourceArtifactInventoryHash = selectedSourceArtifactInventorySnapshot({
+    selectedSourceIds: sources.map((source) => source.slug),
+    sourceIdentityMap: sourceVisualSourceIdentityMap,
+    visuals: sourceVisualLedger,
+  }).sourceArtifactInventoryHash;
+
+  const baseSourceSetHash = sourceSetHashWithSyllabus(
+    sourceSetHashForSources(sources),
+    syllabus,
+  );
+  const selectedSourceOrder = sources.map((source) => source.slug);
+  const selectedFormulaIds = selectedSourceVisuals
+    .filter((visual) => visual.type === "equation")
+    .map((visual) => visual.sourceVisualId)
+    .sort();
+  const reviewManifest = loadSourceFormulaReviewSetManifest(contentPath, gardenId);
+  let sourceFormulaReviewSetHash: string | undefined;
+  let sourceSetHash = baseSourceSetHash;
+  if (
+    reviewManifest &&
+    reviewManifest.baseSourceSetHash === baseSourceSetHash &&
+    JSON.stringify(reviewManifest.sourceIds) === JSON.stringify(selectedSourceOrder) &&
+    reviewManifest.sourceIdentityMapHash ===
+      sourceVisualSourceIdentityMapHash(sourceVisualSourceIdentityMap) &&
+    JSON.stringify(reviewManifest.sourceIdentityMap) ===
+      JSON.stringify(sourceVisualSourceIdentityMap) &&
+    JSON.stringify(reviewManifest.formulaIds) === JSON.stringify(selectedFormulaIds)
+  ) {
+    try {
+      const recomputedReviewSetHash = computeSourceFormulaReviewSetHash(
+        loadSourceVisuals(contentPath, gardenId),
+        reviewManifest.formulaIds,
+        reviewManifest.sourceIds,
+        sourceVisualSourceIdentityMap,
+        reviewManifest.topologyReviewPageReceipts,
+      );
+      if (recomputedReviewSetHash === reviewManifest.reviewSetHash) {
+        sourceFormulaReviewSetHash = recomputedReviewSetHash;
+      }
+    } catch {
+      // Status/context reads treat incomplete or stale review provenance as an
+      // unreviewed source set. Pipeline/finalization paths run the full gate.
+    }
+    if (sourceFormulaReviewSetHash) {
+      sourceSetHash = sourceSetHashWithReviewedFormulas(
+        baseSourceSetHash,
+        sourceFormulaReviewSetHash,
+      );
+    }
+  }
 
   return {
     gardenId,
@@ -2318,13 +2507,164 @@ export function collectLearnSourceContext(
     conceptNodes,
     existingTextbookPages,
     sourceFigures,
+    sourceVisualSourceIdentityMap,
     syllabus,
     selectedSourceIds: selectedSources.map((source) => source.slug),
-    sourceSetHash: sourceSetHashWithSyllabus(
-      sourceSetHashForSources(sources),
-      syllabus,
-    ),
+    sourceArtifactInventoryHash,
+    baseSourceSetHash,
+    sourceSetHash,
+    ...(sourceFormulaReviewSetHash ? { sourceFormulaReviewSetHash } : {}),
   };
+}
+
+async function reviewAndBindSourceFormulas({
+  client,
+  model,
+  contentPath,
+  gardenId,
+  context,
+  checkpoint,
+  onProgress,
+}: {
+  client: OpenAI;
+  model: string;
+  contentPath: string;
+  gardenId: string;
+  context: LearnSourceContext;
+  checkpoint?: () => void;
+  onProgress?: (step: string) => void;
+}): Promise<SourceFormulaReviewResult> {
+  checkpoint?.();
+  const selectedSourceIds = context.sources.map((source) => source.slug);
+  const selectedSourceIdSet = new Set(selectedSourceIds);
+  const sourceIdentityMap = context.sourceVisualSourceIdentityMap;
+  const sourceIdentityMapHash = sourceVisualSourceIdentityMapHash(sourceIdentityMap);
+  const formulaIds = loadSourceVisuals(contentPath, gardenId)
+    .filter((visual) => selectedSourceIdSet.has(visual.sourceId) && visual.type === "equation")
+    .map((visual) => visual.sourceVisualId)
+    .sort();
+  const currentLedger = loadSourceVisuals(contentPath, gardenId);
+  const existingManifest = loadSourceFormulaReviewSetManifest(contentPath, gardenId);
+  if (
+    existingManifest &&
+    existingManifest.model === model &&
+    existingManifest.baseSourceSetHash === context.baseSourceSetHash &&
+    JSON.stringify(existingManifest.sourceIds) === JSON.stringify(selectedSourceIds) &&
+    existingManifest.sourceIdentityMapHash === sourceIdentityMapHash &&
+    JSON.stringify(existingManifest.sourceIdentityMap) === JSON.stringify(sourceIdentityMap) &&
+    JSON.stringify(existingManifest.formulaIds) === JSON.stringify(formulaIds)
+  ) {
+    let stableHash = "";
+    try {
+      stableHash = computeSourceFormulaReviewSetHash(
+        currentLedger,
+        formulaIds,
+        selectedSourceIds,
+        sourceIdentityMap,
+        existingManifest.topologyReviewPageReceipts,
+      );
+    } catch {
+      stableHash = "";
+    }
+    if (stableHash === existingManifest.reviewSetHash) {
+      const existingValidation = validateSourceFormulaReviewSet({
+        contentPath,
+        gardenSlug: gardenId,
+        requiredFormulaIds: formulaIds,
+        expectedReviewSetHash: existingManifest.reviewSetHash,
+        expectedModel: model,
+        expectedSourceIds: selectedSourceIds,
+        sourceIdentityMap,
+        expectedTopologyReviewPageReceipts: existingManifest.topologyReviewPageReceipts,
+      });
+      if (existingValidation.problems.length === 0) {
+        refreshSelectedSourceArtifactInventory(contentPath, gardenId, context);
+        context.sourceFormulaReviewSetHash = existingManifest.reviewSetHash;
+        context.sourceSetHash = existingManifest.combinedSourceSetHash;
+        const reviewedFormulas = currentLedger.filter((visual) => formulaIds.includes(visual.sourceVisualId));
+        return {
+          visuals: currentLedger,
+          formulaIds,
+          reviewedFormulaSetHash: existingManifest.reviewSetHash,
+          approvedFormulaIds: reviewedFormulas
+            .filter((visual) => visual.formulaReview?.decision === "approved")
+            .map((visual) => visual.sourceVisualId)
+            .sort(),
+          replacementFormulaIds: reviewedFormulas
+            .filter((visual) => visual.formulaReview?.decision === "replaced")
+            .map((visual) => visual.sourceVisualId)
+            .sort(),
+          newlyReplacedFormulaIds: [],
+          cacheHitFormulaIds: [...formulaIds],
+          modelCalls: 0,
+          topologyReviewPageReceipts: [...existingManifest.topologyReviewPageReceipts],
+        };
+      }
+    }
+  }
+  const review = await reviewRequiredSourceFormulaExactText({
+    client,
+    model,
+    contentPath,
+    gardenSlug: gardenId,
+    selectedSourceIds,
+    sourceIdentityMap,
+    requiredFormulaIds: formulaIds,
+    checkCancelled: checkpoint,
+    onProgress,
+  });
+  checkpoint?.();
+  // V5 whole-page recovery may merge, split, retire, or discover equation
+  // slots. From this point onward the model-reviewed active inventory is
+  // authoritative; the pre-review ledger ids must never be validated or
+  // promoted into the manifest after a topology change.
+  const reviewedFormulaIds = [...review.formulaIds];
+  const projectedFormulaIds = review.visuals
+    .filter((visual) => selectedSourceIdSet.has(visual.sourceId) && visual.type === "equation")
+    .map((visual) => visual.sourceVisualId)
+    .sort();
+  if (JSON.stringify(reviewedFormulaIds) !== JSON.stringify(projectedFormulaIds)) {
+    throw new Error(
+      "Accepted source-formula review inventory does not match its projected active equation ledger.",
+    );
+  }
+  const validation = validateSourceFormulaReviewSet({
+    contentPath,
+    gardenSlug: gardenId,
+    requiredFormulaIds: reviewedFormulaIds,
+    expectedReviewSetHash: review.reviewedFormulaSetHash,
+    expectedModel: model,
+    expectedSourceIds: selectedSourceIds,
+    sourceIdentityMap,
+    expectedTopologyReviewPageReceipts: review.topologyReviewPageReceipts,
+  });
+  if (validation.problems.length > 0) {
+    throw new Error(
+      `Accepted source-formula review provenance failed strict validation: ${validation.problems.join("; ")}`,
+    );
+  }
+  const combinedSourceSetHash = sourceSetHashWithReviewedFormulas(
+    context.baseSourceSetHash,
+    review.reviewedFormulaSetHash,
+  );
+  saveSourceFormulaReviewSetManifest(contentPath, gardenId, {
+    schemaVersion: 1,
+    promptVersion: 1,
+    model,
+    sourceIds: selectedSourceIds,
+    sourceIdentityMap: [...sourceIdentityMap],
+    sourceIdentityMapHash,
+    formulaIds: reviewedFormulaIds,
+    topologyReviewPageReceipts: review.topologyReviewPageReceipts,
+    reviewSetHash: review.reviewedFormulaSetHash,
+    baseSourceSetHash: context.baseSourceSetHash,
+    combinedSourceSetHash,
+    createdAt: nowIso(),
+  });
+  refreshSelectedSourceArtifactInventory(contentPath, gardenId, context);
+  context.sourceFormulaReviewSetHash = review.reviewedFormulaSetHash;
+  context.sourceSetHash = combinedSourceSetHash;
+  return review;
 }
 
 /**
@@ -2354,6 +2694,12 @@ async function ensureSourceVisualsExtracted({
   checkpoint?: () => void;
   onProgress?: (step: string) => void;
 }): Promise<SourceVisual[]> {
+  context.sourceVisualSourceIdentityMap = resolveSourceVisualSourceIdentityMap({
+    contentPath,
+    gardenSlug: gardenId,
+    sourceIds: context.sources.map((source) => source.slug),
+    persist: true,
+  });
   const visualRichSlugs = new Set(
     context.sources.filter(sourceAppearsVisualRich).map((source) => source.slug),
   );
@@ -2362,7 +2708,11 @@ async function ensureSourceVisualsExtracted({
   for (let index = 0; index < context.sources.length; index += 1) {
     checkpoint?.();
     const source = context.sources[index];
-    const pageImageUrls = (source.sourceImages ?? []).filter(isFullPageSnapshotUrl);
+    const sourceIndex = stableSourceVisualIndex(context, source.slug);
+    const pageImageUrls = [...new Set([
+      ...(source.sourceImages ?? []).filter(isFullPageSnapshotUrl),
+      ...sourceVisualCachedPageImageUrls(contentPath, gardenId, source.slug),
+    ])];
     if (pageImageUrls.length === 0) continue;
     try {
       await extractSourceVisuals({
@@ -2371,7 +2721,7 @@ async function ensureSourceVisualsExtracted({
         contentPath,
         gardenSlug: gardenId,
         sourceId: source.slug,
-        sourceIndex: index + 1,
+        sourceIndex,
         pageImageUrls,
         checkpoint,
         onProgress,
@@ -2384,10 +2734,15 @@ async function ensureSourceVisualsExtracted({
   }
 
   const selectedSourceIds = new Set(context.sources.map((source) => source.slug));
-  const visuals = loadSourceVisuals(contentPath, gardenId).filter((visual) =>
+  const visualLedger = loadSourceVisuals(contentPath, gardenId);
+  const visuals = visualLedger.filter((visual) =>
     selectedSourceIds.has(visual.sourceId),
   );
   context.sourceFigures = sourceFiguresFromVisuals(visuals);
+  context.sourceArtifactInventoryHash = selectedSourceArtifactInventoryForContext(
+    context,
+    visualLedger,
+  ).sourceArtifactInventoryHash;
 
   if (!deferEmptyVisualCheck && visualRichSlugs.size > 0) {
     const realFigures = visuals.filter(
@@ -2564,9 +2919,10 @@ function promptSources(context: LearnSourceContext): unknown {
     gardenId: context.gardenId,
     gardenTitle: context.gardenTitle,
     sourceSetHash: context.sourceSetHash,
-    sources: context.sources.map((source, sourceIndex) => ({
+    sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
+    sources: context.sources.map((source) => ({
       id: source.slug,
-      sourceNumber: sourceIndex + 1,
+      sourceNumber: stableSourceVisualIndex(context, source.slug),
       title: source.title,
       description: source.description,
       relPath: source.relPath,
@@ -2592,21 +2948,17 @@ function promptSources(context: LearnSourceContext): unknown {
 /** Exact selected-source evidence for the model-authored syllabus coverage
  * decision. The per-source bound is transport-only: strings are copied from
  * the source record, never summarized, ranked, or matched by code. */
-function promptSyllabusCoverageSourceCatalog(context: LearnSourceContext): unknown {
-  const maxContentCharsPerSource = Math.max(
-    18_000,
-    Math.floor(120_000 / Math.max(1, context.sources.length)),
-  );
-  return context.sources.map((source) => ({
-    id: source.slug,
-    title: source.title,
-    description: source.description,
-    relPath: source.relPath,
-    sourceType: source.sourceType,
-    sourceFile: source.sourceFile,
-    excerpt: source.excerpt,
-    content: sourcePlanningIndex(source.body, maxContentCharsPerSource),
-  }));
+function promptSyllabusCoverageSourceCatalog(
+  context: LearnSourceContext,
+  syllabusPlan: SyllabusPlan,
+): unknown {
+  return {
+    sourceRecords: buildSyllabusCoverageSourceCatalog(context.sources),
+    // These exact strings remain syllabus input. They do not choose or match a
+    // source page; the coverage model decides whether the raw source prefix
+    // proves each locator.
+    authoredLocators: authoredSyllabusLocatorCatalog(syllabusPlan.referencedMaterials),
+  };
 }
 
 /** Body-free source context for downstream planning stages. The learning-spine
@@ -2618,9 +2970,10 @@ function promptSourcesCompact(context: LearnSourceContext): unknown {
     gardenId: context.gardenId,
     gardenTitle: context.gardenTitle,
     sourceSetHash: context.sourceSetHash,
-    sources: context.sources.map((source, sourceIndex) => ({
+    sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
+    sources: context.sources.map((source) => ({
       id: source.slug,
-      sourceNumber: sourceIndex + 1,
+      sourceNumber: stableSourceVisualIndex(context, source.slug),
       title: source.title,
       description: source.description,
       relPath: source.relPath,
@@ -2791,14 +3144,18 @@ async function requestVisualizationContractExecutabilityReview(input: {
       attempt: input.request.attempt,
       unitIds: input.request.unitIds,
       previousProblemCount: input.request.problems.length,
+      requestPurpose: input.request.requestPurpose,
+      semanticCandidatesBeforeRequest: input.request.semanticCandidatesBeforeRequest,
+      protocolRetriesBeforeRequest: input.request.protocolRetriesBeforeRequest,
     },
     councilModeOverride: "direct_council",
     timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
     preserveExactContent: true,
   });
-  // Missing/malformed structured output is a semantic rejection handled by
-  // the bounded model rereview. A true Council transport exception is
-  // deliberately not caught here and escapes without consuming that budget.
+  // Preserve exact provider text—even valid JSON—so the bounded reviewer can
+  // separate raw protocol retries from parsed semantic candidates without
+  // JSON.parse/JSON.stringify normalizing model numbers. A true Council
+  // transport exception deliberately escapes this boundary unchanged.
   return strictVisualContractExecutabilityResponseOrExactRaw(result.content);
 }
 
@@ -2925,6 +3282,7 @@ async function callPlanningJsonWithRetry({
   sourceContext,
   contentPath,
   jobId,
+  preserveExactContent = false,
 }: {
   client: OpenAI;
   model: string;
@@ -2935,6 +3293,7 @@ async function callPlanningJsonWithRetry({
   sourceContext: unknown;
   contentPath: string;
   jobId: string;
+  preserveExactContent?: boolean;
 }): Promise<CouncilJsonResult> {
   try {
     return await callCouncilJson({
@@ -2947,6 +3306,7 @@ async function callPlanningJsonWithRetry({
       sourceContext,
       councilModeOverride: LEARN_PLANNING_COUNCIL_MODE,
       timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+      preserveExactContent,
     });
   } catch (error) {
     if (!isPlanningTimeoutError(error)) throw error;
@@ -2956,6 +3316,7 @@ async function callPlanningJsonWithRetry({
       error: errorMessage(error),
       retryCouncilMode: LEARN_PLANNING_RETRY_COUNCIL_MODE,
     });
+    throwIfLearnCancelled(jobId);
     return await callCouncilJson({
       client,
       model,
@@ -2966,6 +3327,7 @@ async function callPlanningJsonWithRetry({
       sourceContext,
       councilModeOverride: LEARN_PLANNING_RETRY_COUNCIL_MODE,
       timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+      preserveExactContent,
     });
   }
 }
@@ -2982,6 +3344,7 @@ async function callValidatedPlanningJson({
   jobId,
   stageLabel,
   validate,
+  preserveExactContent = false,
 }: {
   client: OpenAI;
   model: string;
@@ -2994,6 +3357,7 @@ async function callValidatedPlanningJson({
   jobId: string;
   stageLabel: string;
   validate: (value: unknown) => string[];
+  preserveExactContent?: boolean;
 }): Promise<CouncilJsonResult> {
   const originalRequest = parseJsonCandidate(user) ?? user;
   let result = await callPlanningJsonWithRetry({
@@ -3006,6 +3370,7 @@ async function callValidatedPlanningJson({
     sourceContext,
     contentPath,
     jobId,
+    preserveExactContent,
   });
   let problems = validate(result.parsed);
   for (let repairAttempt = 1; repairAttempt <= 2 && problems.length > 0; repairAttempt += 1) {
@@ -3042,6 +3407,7 @@ async function callValidatedPlanningJson({
       },
       contentPath,
       jobId,
+      preserveExactContent,
     });
     problems = validate(result.parsed);
     appendLearnEvent(contentPath, gardenId, "learn_planning_schema_repair_reviewed", {
@@ -3063,7 +3429,7 @@ async function callValidatedPlanningJson({
 function sourceMapPlanProblems(input: {
   value: unknown;
   sourceIds: readonly string[];
-  registeredArtifacts: readonly Pick<SourceFigure, "figureId" | "kind" | "page">[];
+  registeredArtifacts: readonly Pick<SourceFigure, "figureId" | "sourceId" | "kind" | "page">[];
   canonicalAnchors: readonly { id: string; sourceId: string }[];
 }): string[] {
   const record = planningRecord(input.value);
@@ -3100,14 +3466,42 @@ function sourceMapPlanProblems(input: {
 
   const figures = Array.isArray(record.figures) ? record.figures : [];
   if (!Array.isArray(record.figures)) problems.push("figures must be an array");
-  const registeredArtifactIds = new Set(input.registeredArtifacts.map((artifact) => artifact.figureId));
+  const registeredArtifactById = new Map<string, {
+    sourceId: string;
+    kind: RegisteredSourceArtifact["kind"];
+  }>();
+  for (const artifact of input.registeredArtifacts) {
+    const sourceId = typeof artifact.sourceId === "string" ? artifact.sourceId : "";
+    if (!artifact.figureId || !sourceId) {
+      problems.push("registered source artifacts require exact ids and source ids");
+      continue;
+    }
+    if (registeredArtifactById.has(artifact.figureId)) {
+      problems.push(`registered source artifact ${artifact.figureId} appears more than once`);
+      continue;
+    }
+    const kind = artifact.kind === "table"
+      ? "table"
+      : artifact.kind === "formula"
+        ? "formula"
+        : artifact.kind === "graph"
+          ? "graph"
+          : "figure";
+    registeredArtifactById.set(artifact.figureId, { sourceId, kind });
+  }
+  const registeredArtifactIds = new Set(registeredArtifactById.keys());
   const seenArtifactIds = new Set<string>();
   figures.forEach((rawFigure, index) => {
     const figure = planningRecord(rawFigure);
-    const id = typeof figure.id === "string" ? figure.id.trim() : "";
-    const sourceId = typeof figure.sourceId === "string" ? figure.sourceId.trim() : "";
+    const rawId = typeof figure.id === "string" ? figure.id : "";
+    const id = rawId.trim();
+    const rawSourceId = typeof figure.sourceId === "string" ? figure.sourceId : "";
+    const sourceId = rawSourceId.trim();
+    const registered = registeredArtifactById.get(id);
     if (!id || !registeredArtifactIds.has(id)) {
       problems.push(`figures[${index}].id must be copied from registered sourceVisuals`);
+    } else if (rawId !== id) {
+      problems.push(`figures[${index}].id must copy the registered artifact id exactly`);
     } else if (seenArtifactIds.has(id)) {
       problems.push(`registered artifact ${id} appears more than once`);
     } else {
@@ -3115,6 +3509,16 @@ function sourceMapPlanProblems(input: {
     }
     if (!expectedSourceIds.has(sourceId)) {
       problems.push(`figures[${index}].sourceId must be an exact supplied source id`);
+    } else if (rawSourceId !== sourceId) {
+      problems.push(`figures[${index}].sourceId must copy the registered source id exactly`);
+    } else if (registered && registered.sourceId !== sourceId) {
+      problems.push(`figures[${index}].sourceId must match registered artifact ${id}`);
+    }
+    const rawKind = typeof figure.kind === "string" ? figure.kind : "";
+    if (!registered) {
+      problems.push(`figures[${index}].kind must copy the registered artifact kind`);
+    } else if (rawKind !== registered.kind) {
+      problems.push(`figures[${index}].kind must match registered artifact ${id}`);
     }
   });
   for (const artifactId of registeredArtifactIds) {
@@ -3354,9 +3758,19 @@ function sourceCoveragePlan(
   sourceArtifactAssignments: SourceArtifactAssignment[] = [],
   sourceArtifactOmissions: SourceArtifactOmission[] = [],
   canonicalSourceAnchors: Readonly<Record<string, CanonicalSourceAnchor>> = {},
+  syllabusCoverage: SyllabusCoverage | null = null,
 ): unknown {
+  const syllabusCoverageEvidenceRecovery = syllabusCoverage?.evidenceRecovery;
+  const syllabusCoverageEvidenceRecoveryHash =
+    syllabusCoverageEvidenceRecovery?.integritySha256 ?? "";
   return {
     sourceSetHash: context.sourceSetHash,
+    sourceFormulaReviewSetHash: context.sourceFormulaReviewSetHash,
+    sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
+    syllabusCoverageEvidenceRecoveryHash,
+    ...(syllabusCoverageEvidenceRecovery
+      ? { syllabusCoverageEvidenceRecovery }
+      : {}),
     learningUnitContracts: learningUnits,
     sourceArtifactAssignments,
     sourceArtifactOmissions,
@@ -3427,6 +3841,111 @@ function canonicalLearningSpineEvidenceByUnit(
       }];
     }),
   ]));
+}
+
+function sourceFormulaReviewSetHashFromCoveragePlan(value: unknown): string | undefined {
+  const candidate = planningRecord(value).sourceFormulaReviewSetHash;
+  return typeof candidate === "string" && candidate.trim() ? candidate.trim() : undefined;
+}
+
+function sourceArtifactInventoryHashFromCoveragePlan(value: unknown): string | undefined {
+  const candidate = planningRecord(value).sourceArtifactInventoryHash;
+  return typeof candidate === "string" && /^[0-9a-f]{64}$/i.test(candidate)
+    ? candidate.toLowerCase()
+    : undefined;
+}
+
+function syllabusCoverageEvidenceRecoveryHashFromCoveragePlan(
+  value: unknown,
+): string | undefined {
+  const candidate = planningRecord(value).syllabusCoverageEvidenceRecoveryHash;
+  return typeof candidate === "string" && /^[0-9a-f]{64}$/.test(candidate)
+    ? candidate
+    : undefined;
+}
+
+function syllabusCoverageRecoverySources(
+  context: LearnSourceContext,
+): Array<{ sourceId: string; relPath: string; body?: string }> {
+  return context.sources.map((source) => ({
+    sourceId: source.slug,
+    relPath: source.relPath,
+    body: source.body,
+  }));
+}
+
+function syllabusCoverageRecoveryBindingProblems(input: {
+  context: LearnSourceContext;
+  coveragePlan: unknown;
+  syllabusCoverage: SyllabusCoverage | null | undefined;
+}): string[] {
+  const problems: string[] = [];
+  if (input.context.syllabus && !input.syllabusCoverage) {
+    return ["active syllabus has no persisted coverage decision"];
+  }
+  if (!input.context.syllabus && input.syllabusCoverage) {
+    return ["persisted syllabus coverage has no active syllabus source"];
+  }
+  const receipt = input.syllabusCoverage?.evidenceRecovery as unknown;
+  const receiptPresent = receipt !== undefined;
+  const declaredReceipt = planningRecord(input.coveragePlan)
+    .syllabusCoverageEvidenceRecovery;
+  const declaredReceiptPresent = declaredReceipt !== undefined;
+  const declaredHash = syllabusCoverageEvidenceRecoveryHashFromCoveragePlan(
+    input.coveragePlan,
+  );
+  const rawDeclaredHash = planningRecord(input.coveragePlan)
+    .syllabusCoverageEvidenceRecoveryHash;
+  if (!receiptPresent) {
+    if (declaredReceiptPresent) {
+      problems.push("coverage plan carries a syllabus evidence-recovery receipt without persisted coverage provenance");
+    }
+    if (rawDeclaredHash !== undefined && rawDeclaredHash !== "") {
+      problems.push("coverage plan declares a syllabus evidence-recovery hash without a receipt");
+    }
+    if (input.syllabusCoverage && !syllabusCoverageHasTeachableUnits(input.syllabusCoverage)) {
+      problems.push("zero-teachable syllabus coverage cannot proceed without a recovered receipt");
+    }
+    return problems;
+  }
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    return [...problems, "persisted syllabus evidence-recovery receipt is malformed"];
+  }
+  const typedReceipt = receipt as SyllabusCoverageEvidenceRecoveryReceipt;
+  if (!declaredReceiptPresent ||
+      JSON.stringify(declaredReceipt) !== JSON.stringify(typedReceipt)) {
+    problems.push("coverage plan syllabus evidence-recovery receipt does not match persisted coverage provenance");
+  }
+  if (!declaredHash || declaredHash !== typedReceipt.integritySha256) {
+    problems.push("coverage plan syllabus evidence-recovery hash does not match its receipt");
+  }
+  problems.push(...syllabusCoverageRecoveryReceiptProblems({
+    receipt: typedReceipt,
+    sources: syllabusCoverageRecoverySources(input.context),
+    anchors: structuralSourceTextAnchorCatalog(input.context),
+    coverage: input.syllabusCoverage ?? undefined,
+    expectedSourceSetHash: input.context.sourceSetHash,
+    expectedSourceArtifactInventoryHash: input.context.sourceArtifactInventoryHash,
+  }));
+  if (typedReceipt.outcome !== "recovered" ||
+      !syllabusCoverageHasTeachableUnits(input.syllabusCoverage)) {
+    problems.push("syllabus evidence recovery did not produce a teachable coverage decision");
+  }
+  return [...new Set(problems)];
+}
+
+function assertSyllabusCoverageRecoveryBinding(input: {
+  context: LearnSourceContext;
+  coveragePlan: unknown;
+  syllabusCoverage: SyllabusCoverage | null | undefined;
+  stage: string;
+}): void {
+  const problems = syllabusCoverageRecoveryBindingProblems(input);
+  if (problems.length > 0) {
+    throw new LearnPipelineConflictError(
+      `${input.stage} syllabus coverage evidence recovery is stale or invalid: ${problems.join("; ")}`,
+    );
+  }
 }
 
 function exactCanonicalRepairSourceText(
@@ -3514,7 +4033,7 @@ function syllabusUnitAssignmentProblems(
       if (!syllabusUnit) {
         problems.push(`unit "${unit.id}" references unknown syllabus unit "${id}"`);
       } else if (!syllabusUnit.teachable) {
-        problems.push(`unit "${unit.id}" references unteachable syllabus unit "${id}" with no available source material`);
+        problems.push(`unit "${unit.id}" references syllabus unit "${id}" that the coverage review judged unteachable`);
       }
     }
     return problems;
@@ -3528,6 +4047,9 @@ function writeLearningUnitContractArtifacts({
   omissions,
   registeredArtifacts,
   sourceSetHash,
+  sourceFormulaReviewSetHash,
+  sourceArtifactInventoryHash,
+  syllabusCoverageEvidenceRecovery,
   visualNecessityReview,
 }: {
   clusterDir: string;
@@ -3536,6 +4058,9 @@ function writeLearningUnitContractArtifacts({
   omissions: SourceArtifactOmission[];
   registeredArtifacts: RegisteredSourceArtifact[];
   sourceSetHash: string;
+  sourceFormulaReviewSetHash?: string;
+  sourceArtifactInventoryHash: string;
+  syllabusCoverageEvidenceRecovery?: SyllabusCoverageEvidenceRecoveryReceipt;
   visualNecessityReview?: GardenVisualNecessityPlan;
 }): {
   units: LearningUnitContract[];
@@ -3655,6 +4180,13 @@ function writeLearningUnitContractArtifacts({
   });
   const payload = {
     sourceSetHash,
+    sourceFormulaReviewSetHash,
+    sourceArtifactInventoryHash,
+    syllabusCoverageEvidenceRecoveryHash:
+      syllabusCoverageEvidenceRecovery?.integritySha256 ?? "",
+    ...(syllabusCoverageEvidenceRecovery
+      ? { syllabusCoverageEvidenceRecovery }
+      : {}),
     generatedAt: nowIso(),
     learningUnits: reconciledUnits,
     sourceArtifactAssignments: finalAssignments,
@@ -3676,6 +4208,7 @@ function writeLearningUnitContractArtifacts({
     "> **Artifact role:** Pre-executability planning summary. Its interaction controls are not authoritative until the executability ledger and final JSON contract are persisted.",
     "",
     `Source set hash: ${sourceSetHash}`,
+    `Source artifact inventory hash: ${sourceArtifactInventoryHash}`,
     `Learning units: ${reconciledUnits.length}`,
     `Source artifact assignments: ${finalAssignments.length}`,
     `Source artifact omissions: ${omissions.length}`,
@@ -3811,7 +4344,36 @@ function prematureVisualPlanningProblems(units: readonly LearningUnitContract[])
 }
 
 function isContractBackedLearningMap(map: StoredLearningMap | null | undefined): map is StoredLearningMap {
-  return Boolean(map && learningUnitsFromCoveragePlan(map.coveragePlan).length > 0);
+  if (!map || !/^[0-9a-f]{64}$/i.test(map.sourceArtifactInventoryHash)) return false;
+  const coverageInventoryHash = sourceArtifactInventoryHashFromCoveragePlan(map.coveragePlan);
+  const coverageRecord = planningRecord(map.coveragePlan);
+  const persistedRecovery = map.syllabusCoverage?.evidenceRecovery as unknown;
+  const plannedRecovery = coverageRecord.syllabusCoverageEvidenceRecovery;
+  const persistedRecoveryPresent = persistedRecovery !== undefined;
+  const plannedRecoveryPresent = plannedRecovery !== undefined;
+  if (Boolean(map.syllabusSourceId) !== Boolean(map.syllabusCoverage)) return false;
+  if (map.syllabusCoverage && !syllabusCoverageHasTeachableUnits(map.syllabusCoverage)) return false;
+  if (persistedRecoveryPresent !== plannedRecoveryPresent) return false;
+  if (persistedRecoveryPresent) {
+    if (!persistedRecovery || typeof persistedRecovery !== "object" || Array.isArray(persistedRecovery)) {
+      return false;
+    }
+    const receipt = persistedRecovery as SyllabusCoverageEvidenceRecoveryReceipt;
+    if (receipt.outcome !== "recovered" ||
+        !/^[0-9a-f]{64}$/.test(receipt.integritySha256) ||
+        coverageRecord.syllabusCoverageEvidenceRecoveryHash !== receipt.integritySha256 ||
+        JSON.stringify(plannedRecovery) !== JSON.stringify(receipt)) {
+      return false;
+    }
+  } else if (coverageRecord.syllabusCoverageEvidenceRecoveryHash !== undefined &&
+             coverageRecord.syllabusCoverageEvidenceRecoveryHash !== "") {
+    return false;
+  }
+  return Boolean(
+    coverageInventoryHash &&
+    coverageInventoryHash === map.sourceArtifactInventoryHash.toLowerCase() &&
+    learningUnitsFromCoveragePlan(map.coveragePlan).length > 0,
+  );
 }
 
 function sourceArtifactAssignmentsFromCoveragePlan(plan: unknown): SourceArtifactAssignment[] {
@@ -3950,12 +4512,18 @@ export async function runLearnPlanning({
     lease.release();
     throw error;
   }
-  const context = collectLearnSourceContext(
-    contentPath,
-    gardenId,
-    includedSourceIds,
-    syllabusSourceId,
-  );
+  let context: LearnSourceContext;
+  try {
+    context = collectLearnSourceContext(
+      contentPath,
+      gardenId,
+      includedSourceIds,
+      syllabusSourceId,
+    );
+  } catch (error) {
+    lease.release();
+    throw error;
+  }
   let leaseTransferred = false;
   let job: LearnJob;
   try {
@@ -4107,8 +4675,27 @@ export async function runLearnPlanning({
       onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
     });
 
+    const initialFormulaReview = await reviewAndBindSourceFormulas({
+      client,
+      model,
+      contentPath,
+      gardenId,
+      context,
+      checkpoint: () => throwIfLearnCancelled(job.id),
+      onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+    });
+    appendLearnEvent(contentPath, gardenId, "learn_source_formulas_reviewed", {
+      jobId: job.id,
+      stage: "planning_initial",
+      reviewSetHash: initialFormulaReview.reviewedFormulaSetHash,
+      formulaCount: initialFormulaReview.formulaIds.length,
+      replacementCount: initialFormulaReview.replacementFormulaIds.length,
+      cacheHitCount: initialFormulaReview.cacheHitFormulaIds.length,
+      modelCalls: initialFormulaReview.modelCalls,
+    });
+
     const structuralSourceAnchors = structuralSourceTextAnchorCatalog(context);
-    const canonicalSourceAnchorCatalog = [
+    let canonicalSourceAnchorCatalog = [
       ...structuralSourceAnchorPromptCatalog(structuralSourceAnchors),
       ...context.sourceFigures.map((figure) => ({
         id: figure.figureId,
@@ -4118,7 +4705,7 @@ export async function runLearnPlanning({
         kind: figure.kind,
       })),
     ];
-    const promptSourceContext = promptSources(context);
+    let promptSourceContext = promptSources(context);
     const hasSyllabus = Boolean(context.syllabus);
     const syllabusPayload = promptSyllabus(context);
     if (context.syllabus) {
@@ -4146,6 +4733,7 @@ export async function runLearnPlanning({
       gardenId,
       sourceIds: context.sources.map((source) => source.slug),
       sourceSetHash: context.sourceSetHash,
+      sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
     };
     const planningWarnings: string[] = [];
 
@@ -4188,7 +4776,7 @@ export async function runLearnPlanning({
         system: SYLLABUS_COVERAGE_PROMPT,
         user: compactJson({
           syllabusPlan,
-          selectedSourceCatalog: promptSyllabusCoverageSourceCatalog(context),
+          selectedSourceCatalog: promptSyllabusCoverageSourceCatalog(context, syllabusPlan),
         }),
         sourceContext: { ...planningSourceMeta, taskType: "syllabus_coverage" },
         contentPath,
@@ -4196,12 +4784,130 @@ export async function runLearnPlanning({
         stageLabel: "Syllabus coverage review",
         validate: (value) =>
           syllabusCoverageDecisionProblems(value, syllabusPlan, syllabusSourceIds),
+        preserveExactContent: true,
       });
       syllabusCoverage = projectModelAuthoredSyllabusCoverage(
         syllabusPlan,
         coverageCall.parsed,
         syllabusSourceIds,
       );
+
+      // A complete all-false verdict makes the downstream Learning Unit
+      // Contract impossible: the LUC author is forbidden to teach unteachable
+      // syllabus units. Before asking for a map or contract, give an independent
+      // model one bounded chance to select exact canonical page identities and
+      // rereview the whole coverage decision from the complete selected pages.
+      // Code never maps syllabus locators/topics/titles to source pages and it
+      // never flips a semantic verdict.
+      if (!syllabusCoverageHasTeachableUnits(syllabusCoverage)) {
+        appendLearnEvent(contentPath, gardenId, "learn_syllabus_coverage_evidence_recovery_started", {
+          jobId: job.id,
+          sourceSetHash: context.sourceSetHash,
+          sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
+          initialTeachableCount: 0,
+          maximumSelectorCandidates: 1,
+          maximumCoverageReviewCandidates: 1,
+        });
+        try {
+          const recovery = await runSyllabusCoverageEvidenceRecovery({
+            syllabusPlan,
+            initialCoverageRaw: coverageCall.content,
+            initialCoverageDecision: coverageCall.parsed,
+            sources: context.sources.map((source) => ({
+              sourceId: source.slug,
+              relPath: source.relPath,
+              body: source.body,
+            })),
+            anchors: structuralSourceAnchors,
+            sourceSetHash: context.sourceSetHash,
+            sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
+            model,
+            checkpoint: () => throwIfLearnCancelled(job.id),
+            provider: async (request: SyllabusCoverageRecoveryProviderRequest) => {
+              throwIfLearnCancelled(job.id);
+              const result = await callPlanningJsonWithRetry({
+                client,
+                model,
+                taskType: "source_map",
+                gardenId,
+                system: request.system,
+                user: request.user,
+                sourceContext: {
+                  ...planningSourceMeta,
+                  ...request.sourceContext,
+                },
+                contentPath,
+                jobId: job.id,
+                preserveExactContent: true,
+              });
+              throwIfLearnCancelled(job.id);
+              return {
+                rawResponse: result.content,
+                councilRunId: result.councilRunId,
+                model,
+              };
+            },
+          });
+          syllabusCoverage = recovery.coverage;
+          const recoveryLiveContext = collectLearnSourceContext(
+            contentPath,
+            gardenId,
+            context.selectedSourceIds,
+            context.syllabus?.slug,
+          );
+          const recoveryDriftProblems = syllabusCoverageRecoveryReceiptProblems({
+            receipt: recovery.receipt,
+            sources: syllabusCoverageRecoverySources(recoveryLiveContext),
+            anchors: structuralSourceTextAnchorCatalog(recoveryLiveContext),
+            coverage: recovery.coverage,
+            expectedSourceSetHash: recoveryLiveContext.sourceSetHash,
+            expectedSourceArtifactInventoryHash:
+              recoveryLiveContext.sourceArtifactInventoryHash,
+          });
+          if (recoveryLiveContext.sourceSetHash !== context.sourceSetHash ||
+              recoveryLiveContext.sourceArtifactInventoryHash !==
+                context.sourceArtifactInventoryHash ||
+              recoveryDriftProblems.length > 0) {
+            throw new LearnPipelineConflictError(
+              `Selected source or syllabus evidence changed during bounded coverage recovery: ${recoveryDriftProblems.join("; ") || "live evidence hashes changed"}. No Source Map or Learning Unit Contract was requested.`,
+            );
+          }
+          appendLearnEvent(contentPath, gardenId, "learn_syllabus_coverage_evidence_recovery_reviewed", {
+            jobId: job.id,
+            outcome: recovery.receipt.outcome,
+            receiptHash: recovery.receipt.integritySha256,
+            selectedPages: recovery.receipt.selectedPages.map((page) => ({
+              anchorId: page.anchorId,
+              sourceId: page.sourceId,
+              pageNumber: page.pageNumber,
+              exactTextSha256: page.exactTextSha256,
+            })),
+            selectorCouncilRunId: recovery.receipt.selectorAttempts[0].councilRunId,
+            coverageReviewCouncilRunId: recovery.receipt.coverageReviewAttempts[0].councilRunId,
+            semanticCandidates: 2,
+          });
+          if (!recovery.recovered) {
+            appendLearnEvent(contentPath, gardenId, "learn_syllabus_coverage_evidence_recovery_terminal", {
+              jobId: job.id,
+              outcome: recovery.receipt.outcome,
+              receiptHash: recovery.receipt.integritySha256,
+              sourceMapRequested: false,
+              learningUnitContractRequested: false,
+            });
+            throw new Error(
+              "Independent exact-page syllabus coverage rereview still found zero teachable units. No Source Map or Learning Unit Contract was requested.",
+            );
+          }
+        } catch (error) {
+          appendLearnEvent(contentPath, gardenId, "learn_syllabus_coverage_evidence_recovery_failed", {
+            jobId: job.id,
+            error: errorMessage(error),
+            sourceMapRequested: false,
+            learningUnitContractRequested: false,
+          });
+          throw error;
+        }
+      }
 
       if (syllabusCoverage) {
         const summary = summarizeSyllabusCoverage(syllabusCoverage);
@@ -4220,7 +4926,7 @@ export async function runLearnPlanning({
         }
         for (const unitTitle of syllabusCoverage.untaughtUnitTitles.slice(0, 8)) {
           planningWarnings.push(
-            `Syllabus item "${unitTitle}" has no available material in this garden and was left uncovered.`,
+            `Syllabus item "${unitTitle}" could not be fully supported by the available source material and was left uncovered.`,
           );
         }
       }
@@ -4235,66 +4941,176 @@ export async function runLearnPlanning({
       : undefined;
 
     throwIfLearnCancelled(job.id);
-    const sourceMapCall = await callValidatedPlanningJson({
-      client,
-      model,
-      taskType: "source_map",
-      gardenId,
-      system: withSyllabusRules(SOURCE_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
-      user: compactJson({
-        sourceOnly,
-        syllabus: syllabusPayload,
-        syllabusCoverage: syllabusCoveragePayload,
-        sourceContext: promptSourceContext,
-        canonicalSourceAnchors: canonicalSourceAnchorCatalog,
-      }),
-      sourceContext: { ...planningSourceMeta, taskType: "source_map" },
-      contentPath,
-      jobId: job.id,
-      stageLabel: "Source Map",
-      validate: (value) => sourceMapPlanProblems({
-        value,
-        sourceIds: context.sources.map((source) => source.slug),
-        registeredArtifacts: context.sourceFigures,
-        canonicalAnchors: canonicalSourceAnchorCatalog.map((anchor) => ({
-          id: String(anchor.id),
-          sourceId: String(anchor.sourceId),
-        })),
-      }),
-    });
-    throwIfLearnCancelled(job.id);
-    const sourceMap = sourceMapCall.parsed as Record<string, unknown>;
-    persistSelectedStructuralSourceAnchors({
-      clusterDir: clusterPath(contentPath, gardenId),
-      sourceMap,
-      selectedSourceIds: context.sources.map((source) => source.slug),
-      catalog: structuralSourceAnchors,
-    });
-    const selectedSourcePageHints = selectedStructuralSourcePageHints({
-      sourceMap,
-      catalog: structuralSourceAnchors,
-      selectedSources: context.sources,
-    });
-    if (selectedSourcePageHints.length > 0) {
-      const selectedPageDiscovery = await ensureReferencedSourceArtifactsExtracted({
-        client,
-        model,
+    const requestSourceMap = async () => {
+      // Snapshot immediately before the model call. Rebuilding the prompt from
+      // this exact ledger means a scan or cache mutation during a long model
+      // call cannot be silently adopted as the call's baseline afterward.
+      const artifactInventory = refreshSelectedSourceArtifactInventory(
         contentPath,
         gardenId,
         context,
-        units: [],
-        explicitPageHints: selectedSourcePageHints,
-        checkpoint: () => throwIfLearnCancelled(job.id),
-        onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
-      });
-      appendLearnEvent(contentPath, gardenId, "learn_source_map_pages_scanned", {
+      );
+      canonicalSourceAnchorCatalog = [
+        ...structuralSourceAnchorPromptCatalog(structuralSourceAnchors),
+        ...context.sourceFigures.map((figure) => ({
+          id: figure.figureId,
+          sourceId: figure.sourceId,
+          page: figure.page,
+          title: figure.caption,
+          kind: figure.kind,
+        })),
+      ];
+      promptSourceContext = promptSources(context);
+      planningSourceMeta.sourceSetHash = context.sourceSetHash;
+      planningSourceMeta.sourceArtifactInventoryHash = context.sourceArtifactInventoryHash;
+      const call = await callValidatedPlanningJson({
+        client,
+        model,
+        taskType: "source_map",
+        gardenId,
+        system: withSyllabusRules(SOURCE_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+        user: compactJson({
+          sourceOnly,
+          syllabus: syllabusPayload,
+          syllabusCoverage: syllabusCoveragePayload,
+          sourceContext: promptSourceContext,
+          canonicalSourceAnchors: canonicalSourceAnchorCatalog,
+        }),
+        sourceContext: { ...planningSourceMeta, taskType: "source_map" },
+        contentPath,
         jobId: job.id,
-        selectedAnchorIds: selectedSourcePageHints.map((hint) => hint.anchorId),
-        requestedPages: selectedPageDiscovery.requestedPages,
-        discoveredArtifactIds: selectedPageDiscovery.discoveredIds,
-        scanErrors: selectedPageDiscovery.scanErrors,
+        stageLabel: "Source Map",
+        validate: (value) => sourceMapPlanProblems({
+          value,
+          sourceIds: context.sources.map((source) => source.slug),
+          registeredArtifacts: context.sourceFigures,
+          canonicalAnchors: canonicalSourceAnchorCatalog.map((anchor) => ({
+            id: String(anchor.id),
+            sourceId: String(anchor.sourceId),
+          })),
+        }),
       });
+      return { call, artifactInventory };
+    };
+    let sourceMapRequest = await requestSourceMap();
+    let sourceMapCall = sourceMapRequest.call;
+    throwIfLearnCancelled(job.id);
+    let sourceMap = sourceMapCall.parsed as Record<string, unknown>;
+    let sourceMapArtifactInventory = sourceMapRequest.artifactInventory;
+    let sourceMapReplanAttempted = false;
+
+    // One complete re-authoring cycle is allowed when pages selected by the
+    // Source Map reveal a different registered artifact inventory. The second
+    // loop iteration checks even when the reauthored map selects no pages, so
+    // concurrent ledger drift cannot be laundered into scope planning.
+    for (;;) {
+      persistSelectedStructuralSourceAnchors({
+        clusterDir: clusterPath(contentPath, gardenId),
+        sourceMap,
+        selectedSourceIds: context.sources.map((source) => source.slug),
+        catalog: structuralSourceAnchors,
+      });
+      const selectedSourcePageHints = selectedStructuralSourcePageHints({
+        sourceMap,
+        catalog: structuralSourceAnchors,
+        selectedSources: context.sources,
+      });
+      if (selectedSourcePageHints.length > 0) {
+        const selectedPageDiscovery = await ensureReferencedSourceArtifactsExtracted({
+          client,
+          model,
+          contentPath,
+          gardenId,
+          context,
+          units: [],
+          explicitPageHints: selectedSourcePageHints,
+          checkpoint: () => throwIfLearnCancelled(job.id),
+          onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+        });
+        appendLearnEvent(contentPath, gardenId, "learn_source_map_pages_scanned", {
+          jobId: job.id,
+          sourceMapAttempt: sourceMapReplanAttempted ? 2 : 1,
+          selectedAnchorIds: selectedSourcePageHints.map((hint) => hint.anchorId),
+          requestedPages: selectedPageDiscovery.requestedPages,
+          discoveredArtifactIds: selectedPageDiscovery.discoveredIds,
+          scanErrors: selectedPageDiscovery.scanErrors,
+        });
+        const postSelectionReview = await reviewAndBindSourceFormulas({
+          client,
+          model,
+          contentPath,
+          gardenId,
+          context,
+          checkpoint: () => throwIfLearnCancelled(job.id),
+          onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+        });
+        appendLearnEvent(contentPath, gardenId, "learn_source_formulas_reviewed", {
+          jobId: job.id,
+          stage: sourceMapReplanAttempted
+            ? "planning_source_map_pages_replan"
+            : "planning_source_map_pages",
+          reviewSetHash: postSelectionReview.reviewedFormulaSetHash,
+          formulaCount: postSelectionReview.formulaIds.length,
+          replacementCount: postSelectionReview.replacementFormulaIds.length,
+          cacheHitCount: postSelectionReview.cacheHitFormulaIds.length,
+          modelCalls: postSelectionReview.modelCalls,
+        });
+      }
+
+      const postSelectedPageArtifactInventory = refreshSelectedSourceArtifactInventory(
+        contentPath,
+        gardenId,
+        context,
+      );
+      const inventoryTransition = sourceMapArtifactInventoryTransition({
+        before: sourceMapArtifactInventory,
+        after: postSelectedPageArtifactInventory,
+        replanAttempted: sourceMapReplanAttempted,
+      });
+      if (inventoryTransition === "stable") break;
+      if (inventoryTransition === "fail") {
+        throw new Error(
+          "Selected source-artifact inventory changed again after the bounded Source Map replan. Start Learn planning again so no map can be confirmed against stale artifact evidence.",
+        );
+      }
+
+      appendLearnEvent(contentPath, gardenId, "learn_source_artifact_inventory_changed", {
+        jobId: job.id,
+        stage: "planning_source_map_pages",
+        beforeHash: sourceMapArtifactInventory.sourceArtifactInventoryHash,
+        afterHash: postSelectedPageArtifactInventory.sourceArtifactInventoryHash,
+        beforeArtifactCount: sourceMapArtifactInventory.artifacts.length,
+        afterArtifactCount: postSelectedPageArtifactInventory.artifacts.length,
+        action: "reauthor_source_map",
+      });
+      sourceMapReplanAttempted = true;
+      sourceMapRequest = await requestSourceMap();
+      sourceMapCall = sourceMapRequest.call;
+      throwIfLearnCancelled(job.id);
+      sourceMap = sourceMapCall.parsed as Record<string, unknown>;
+      sourceMapArtifactInventory = sourceMapRequest.artifactInventory;
     }
+
+    // The model request validates its own candidate, but run the same strict
+    // registry check immediately before downstream scope reasoning as well.
+    // This protects against a cache/scan race and proves the final Source Map
+    // still partitions the exact current selected artifact inventory.
+    const currentSourceMapArtifactProblems = sourceMapPlanProblems({
+      value: sourceMap,
+      sourceIds: context.sources.map((source) => source.slug),
+      registeredArtifacts: context.sourceFigures,
+      canonicalAnchors: canonicalSourceAnchorCatalog.map((anchor) => ({
+        id: String(anchor.id),
+        sourceId: String(anchor.sourceId),
+      })),
+    });
+    if (currentSourceMapArtifactProblems.length > 0) {
+      throw new Error(
+        `The accepted Source Map is not valid against the current selected source-artifact inventory: ${currentSourceMapArtifactProblems.join("; ")}`,
+      );
+    }
+    const sourceMapBoundArtifactInventoryHash =
+      sourceMapArtifactInventory.sourceArtifactInventoryHash;
     appendLearnEvent(contentPath, gardenId, "learn_source_map_created", {
       jobId: job.id,
       councilRunId: sourceMapCall.councilRunId,
@@ -4361,11 +5177,7 @@ export async function runLearnPlanning({
       })),
       responseShape: "LearningUnitContract JSON",
     });
-    const topicMapUser = (repair?: {
-      repairAttempt: number;
-      invalidResponse: unknown;
-      validationProblems: string[];
-    }) =>
+    const topicMapUser = (repair?: LearningSpineFullRepairFeedback) =>
       compactJson({
         ...topicMapPlanningPacket(),
         ...(repair
@@ -4373,7 +5185,7 @@ export async function runLearnPlanning({
               repair: {
                 ...repair,
                 instruction:
-                  "The accepted candidate below failed these hard checks. Return a complete corrected replacement JSON object, not a patch or prose explanation. Preserve valid source assignments and omission reasons, regenerate 15-25 precise learningUnits, partition every registered artifact exactly once between an owning unit and sourceArtifactOmissions, keep semanticConcepts separate from readable knowledgeClaims, and do not return sections first. If a semanticConcept slug appears in multiple units, every occurrence must use exactly the same preferredLabel and exactly the same aliases array in the same order; author that identity yourself because code will never choose or merge it.",
+                  "The strongest rejected candidate below failed these hard checks. Return a complete corrected replacement JSON object, not a patch or prose explanation. The bounded repairHistory records the exact hard-check history and whether each prior response became the next repair incumbent. Preserve valid source assignments and omission reasons, regenerate 15-25 precise learningUnits, partition every registered artifact exactly once between an owning unit and sourceArtifactOmissions, keep semanticConcepts separate from readable knowledgeClaims, and do not return sections first. If a semanticConcept slug appears in multiple units, every occurrence must use exactly the same preferredLabel and exactly the same aliases array in the same order; author that identity yourself because code will never choose or merge it.",
               },
             }
           : {}),
@@ -4390,6 +5202,7 @@ export async function runLearnPlanning({
       sourceContext: { ...planningSourceMeta, taskType: "learning_spine" },
       contentPath,
       jobId: job.id,
+      preserveExactContent: true,
     });
     throwIfLearnCancelled(job.id);
     let latestSourceArtifactProblems: string[] = [];
@@ -4401,6 +5214,7 @@ export async function runLearnPlanning({
         requestedIds: [],
         unresolvedIds: [],
       };
+      const reviewHashBeforeExtraction = context.sourceFormulaReviewSetHash;
       try {
         resolution = await ensureReferencedSourceArtifactsExtracted({
           client,
@@ -4421,6 +5235,33 @@ export async function runLearnPlanning({
           reason: errorMessage(error),
         });
       }
+      const reconciledFormulaReview = await reviewAndBindSourceFormulas({
+        client,
+        model,
+        contentPath,
+        gardenId,
+        context,
+        checkpoint: () => throwIfLearnCancelled(job.id),
+        onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+      });
+      planningSourceMeta.sourceSetHash = context.sourceSetHash;
+      appendLearnEvent(contentPath, gardenId, "learn_source_formulas_reviewed", {
+        jobId: job.id,
+        stage: `planning_contract_${stage}`,
+        reviewSetHash: reconciledFormulaReview.reviewedFormulaSetHash,
+        formulaCount: reconciledFormulaReview.formulaIds.length,
+        replacementCount: reconciledFormulaReview.replacementFormulaIds.length,
+        cacheHitCount: reconciledFormulaReview.cacheHitFormulaIds.length,
+        modelCalls: reconciledFormulaReview.modelCalls,
+      });
+      if (
+        context.sourceFormulaReviewSetHash !== reviewHashBeforeExtraction ||
+        context.sourceArtifactInventoryHash !== sourceMapBoundArtifactInventoryHash
+      ) {
+        throw new Error(
+          "Referenced-page extraction changed the reviewed source-formula or full source-artifact inventory after the Source Map and Scope Contract were authored. No map was committed; restart Learn planning so every semantic plan is authored from the complete reviewed ledger.",
+        );
+      }
       const reconciliation = reconcileLearningUnitSourceArtifacts(
         candidateUnits,
         [],
@@ -4435,11 +5276,13 @@ export async function runLearnPlanning({
           removedArtifactIds: reconciliation.removedArtifactIds,
         });
       }
-      latestSourceArtifactProblems = reconciliation.removedArtifactIds.length > 0
-        ? [
+      latestSourceArtifactProblems = [
+        ...(reconciliation.removedArtifactIds.length > 0
+          ? [
             `model referenced unregistered structured source artifacts: ${reconciliation.removedArtifactIds.join(", ")}; return a complete replacement contract using only registered extractedSourceArtifacts`,
           ]
-        : [];
+          : []),
+      ];
       return candidateUnits;
     };
 
@@ -4485,32 +5328,38 @@ export async function runLearnPlanning({
       }),
     ];
 
+    let fullRepairLineage = startLearningSpineFullRepairLineage({
+      payload: {
+        call: topicMapCall,
+        units: learningUnits,
+        sourceArtifactOmissions,
+      },
+      invalidResponse: topicMapCall.content,
+      unitCount: learningUnits.length,
+      validationProblems: contractProblems,
+    });
+
     // Invalid pedagogy is repaired by the model that authored it. Keep the
-    // strongest complete candidate across two bounded full-contract repairs;
+    // strongest model-authored candidate across two bounded full-contract repairs;
     // code never invents a generic curriculum to make the gate go green.
     for (let repairAttempt = 1; repairAttempt <= 2 && contractProblems.length > 0; repairAttempt += 1) {
-      const acceptedResponseForRepair = topicMapCall.parsed ?? {
-        unparsedResponse: topicMapCall.content,
-      };
+      const repairFeedback = learningSpineFullRepairFeedback(fullRepairLineage, repairAttempt);
       const retryCall = await callPlanningJsonWithRetry({
         client,
         model,
         taskType: "learning_spine",
         gardenId,
         system: withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
-        user: topicMapUser({
-          repairAttempt,
-          invalidResponse: acceptedResponseForRepair,
-          validationProblems: contractProblems,
-        }),
+        user: topicMapUser(repairFeedback),
         sourceContext: {
           ...planningSourceMeta,
           taskType: "learning_spine_repair",
           repairAttempt,
-          validationProblems: contractProblems,
+          validationProblems: repairFeedback.validationProblems,
         },
         contentPath,
         jobId: job.id,
+        preserveExactContent: true,
       });
       let retryUnits = normalizeLearningUnits(retryCall.parsed, { modelAuthoredOnly: true });
       const retrySourceArtifactOmissions = projectModelAuthoredSourceArtifactOmissions(retryCall.parsed);
@@ -4553,18 +5402,34 @@ export async function runLearnPlanning({
           context,
         }),
       ];
+      fullRepairLineage = recordLearningSpineFullRepairCandidate({
+        lineage: fullRepairLineage,
+        semanticAttempt: repairAttempt + 1,
+        candidate: {
+          payload: {
+            call: retryCall,
+            units: retryUnits,
+            sourceArtifactOmissions: retrySourceArtifactOmissions,
+          },
+          invalidResponse: retryCall.content,
+          unitCount: retryUnits.length,
+          validationProblems: retryProblems,
+        },
+      });
+      const lineageReview = fullRepairLineage.history.at(-1);
       appendLearnEvent(contentPath, gardenId, "learn_learning_spine_repair_reviewed", {
         jobId: job.id,
         repairAttempt,
-        problemsBefore: contractProblems,
+        candidateUnitCount: retryUnits.length,
+        promotedToIncumbent: lineageReview?.promotedToIncumbent ?? false,
+        incumbentUnitCount: fullRepairLineage.incumbent.unitCount,
+        problemsBefore: repairFeedback.validationProblems,
         problemsAfter: retryProblems,
       });
-      if (retryProblems.length < contractProblems.length) {
-        topicMapCall = retryCall;
-        learningUnits = retryUnits;
-        sourceArtifactOmissions = retrySourceArtifactOmissions;
-        contractProblems = retryProblems;
-      }
+      topicMapCall = fullRepairLineage.incumbent.payload.call;
+      learningUnits = fullRepairLineage.incumbent.payload.units;
+      sourceArtifactOmissions = fullRepairLineage.incumbent.payload.sourceArtifactOmissions;
+      contractProblems = fullRepairLineage.incumbent.validationProblems;
     }
 
     // A whole-spine rewrite can leave one local identity failure while
@@ -4573,10 +5438,11 @@ export async function runLearnPlanning({
     // complete unit records explicitly implicated by unit-index/id failures or
     // concept conflicts. Any global/unscoped problem fails closed. The merge is
     // structural only; the model authors every field and all semantic choices.
+    let targetedRepairOutcome: { calls: number; status: string } | undefined;
     if (contractProblems.length > 0) {
-      const acceptedCandidateBeforeTargetedRepair = planningRecord(topicMapCall.parsed);
+      const incumbentCandidateBeforeTargetedRepair = planningRecord(topicMapCall.parsed);
       const targetedRepair = await runLearningSpineTargetedRepair({
-        candidate: acceptedCandidateBeforeTargetedRepair,
+        candidate: incumbentCandidateBeforeTargetedRepair,
         units: learningUnits,
         validationProblems: contractProblems,
         canonicalPlanningPacket: topicMapPlanningPacket(),
@@ -4680,7 +5546,11 @@ export async function runLearnPlanning({
         problemsAfter: targetedRepair.problems,
         unscopedProblems: targetedRepair.unscopedProblems,
       });
-      if (targetedRepair.candidate !== acceptedCandidateBeforeTargetedRepair) {
+      targetedRepairOutcome = {
+        calls: targetedRepair.calls,
+        status: targetedRepair.status,
+      };
+      if (targetedRepair.candidate !== incumbentCandidateBeforeTargetedRepair) {
         topicMapCall = {
           ...topicMapCall,
           parsed: targetedRepair.candidate,
@@ -4693,8 +5563,13 @@ export async function runLearnPlanning({
     }
 
     if (contractProblems.length > 0) {
+      const attemptDescription = describeLearningSpineRepairAttempts({
+        fullContractAttempts: 3,
+        targetedCalls: targetedRepairOutcome?.calls ?? 0,
+        targetedStatus: targetedRepairOutcome?.status ?? "not_run",
+      });
       throw new Error(
-        `The AI-authored Learning Unit Contract remained invalid after 3 bounded attempts plus bounded targeted model repair: ${contractProblems.join("; ")}. No fallback curriculum was written.`,
+        `The AI-authored Learning Unit Contract remained invalid ${attemptDescription}: ${contractProblems.join("; ")}. No fallback curriculum was written.`,
       );
     }
 
@@ -4754,6 +5629,7 @@ export async function runLearnPlanning({
       sourceArtifactAssignments,
       sourceArtifactOmissions,
       buildCanonicalSourceAnchors(clusterPath(contentPath, gardenId), { allowInferredFormulaText: false }),
+      syllabusCoverage,
     );
     const commitContext = collectLearnSourceContext(
       contentPath,
@@ -4761,11 +5637,20 @@ export async function runLearnPlanning({
       context.selectedSourceIds,
       context.syllabus?.slug,
     );
-    if (commitContext.sourceSetHash !== context.sourceSetHash) {
+    if (
+      commitContext.sourceSetHash !== context.sourceSetHash ||
+      commitContext.sourceArtifactInventoryHash !== context.sourceArtifactInventoryHash
+    ) {
       throw new LearnPipelineConflictError(
-        "The selected sources changed during planning. Run Learn again to review a map grounded in the current files.",
+        "The selected sources or their registered artifact inventory changed during planning. Run Learn again to review a map grounded in the current files.",
       );
     }
+    assertSyllabusCoverageRecoveryBinding({
+      context: commitContext,
+      coveragePlan,
+      syllabusCoverage,
+      stage: "Planning commit",
+    });
     throwIfLearnCancelled(job.id);
     if (!lease.heartbeat()) {
       throw new LearnPipelineConflictError(
@@ -4781,6 +5666,7 @@ export async function runLearnPlanning({
         learningMap,
         coveragePlan,
         sourceSetHash: context.sourceSetHash,
+        sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
         sourceIds: context.selectedSourceIds,
         syllabusSourceId: context.syllabus?.slug,
         syllabusCoverage,
@@ -4794,6 +5680,9 @@ export async function runLearnPlanning({
         omissions: sourceArtifactOmissions,
         registeredArtifacts: registeredArtifactsFromFigures(context.sourceFigures),
         sourceSetHash: context.sourceSetHash,
+        sourceFormulaReviewSetHash: context.sourceFormulaReviewSetHash,
+        sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
+        syllabusCoverageEvidenceRecovery: syllabusCoverage?.evidenceRecovery,
         visualNecessityReview,
       });
       learningUnits = contractWrite.units;
@@ -4807,17 +5696,24 @@ export async function runLearnPlanning({
         sourceArtifactAssignments,
         sourceArtifactOmissions,
         buildCanonicalSourceAnchors(clusterPath(contentPath, gardenId), { allowInferredFormulaText: false }),
+        syllabusCoverage,
       );
-      db.prepare(
+      const mapContractUpdate = db.prepare(
         `UPDATE learn_maps
          SET learning_map_json = ?, proposed_order_json = ?, coverage_plan_json = ?
-         WHERE id = ?`,
+         WHERE id = ? AND source_artifact_inventory_hash = ?`,
       ).run(
         jsonString(learningMap),
         jsonString(learningMap.sections),
         jsonString(repairedCoveragePlan),
         stored.id,
+        context.sourceArtifactInventoryHash,
       );
+      if (mapContractUpdate.changes !== 1) {
+        throw new LearnPipelineConflictError(
+          "The proposed Learning Map artifact-inventory binding changed before its contract could commit.",
+        );
+      }
       return {
         ...stored,
         learningMap,
@@ -4913,17 +5809,24 @@ export async function runLearnPlanning({
       sourceArtifactAssignments,
       sourceArtifactOmissions,
       buildCanonicalSourceAnchors(clusterPath(contentPath, gardenId), { allowInferredFormulaText: false }),
+      syllabusCoverage,
     );
-    db.prepare(
+    const routedMapUpdate = db.prepare(
       `UPDATE learn_maps
        SET learning_map_json = ?, proposed_order_json = ?, coverage_plan_json = ?
-       WHERE id = ?`,
+       WHERE id = ? AND source_artifact_inventory_hash = ?`,
     ).run(
       jsonString(learningMap),
       jsonString(learningMap.sections),
       jsonString(routedCoveragePlan),
       storedMap.id,
+      context.sourceArtifactInventoryHash,
     );
+    if (routedMapUpdate.changes !== 1) {
+      throw new LearnPipelineConflictError(
+        "The proposed Learning Map artifact-inventory binding changed during visual planning.",
+      );
+    }
     Object.assign(storedMap, {
       learningMap,
       proposedOrder: learningMap.sections,
@@ -4970,6 +5873,27 @@ export async function runLearnPlanning({
         duplicateOf: decision.duplicateOf,
       });
     }
+    const finalPlanningContext = collectLearnSourceContext(
+      contentPath,
+      gardenId,
+      context.selectedSourceIds,
+      context.syllabus?.slug,
+    );
+    if (
+      finalPlanningContext.sourceSetHash !== storedMap.sourceSetHash ||
+      finalPlanningContext.sourceArtifactInventoryHash !==
+        storedMap.sourceArtifactInventoryHash
+    ) {
+      throw new LearnPipelineConflictError(
+        "The selected sources or their artifact inventory changed before the Learning Map became confirmable. No stale map was retained; run Learn planning again.",
+      );
+    }
+    assertSyllabusCoverageRecoveryBinding({
+      context: finalPlanningContext,
+      coveragePlan: storedMap.coveragePlan,
+      syllabusCoverage: storedMap.syllabusCoverage,
+      stage: "Final planning",
+    });
     appendLearnEvent(contentPath, gardenId, "learn_learning_unit_contract_created", {
       jobId: job.id,
       councilRunId: topicMapCall.councilRunId,
@@ -5182,12 +6106,34 @@ export function confirmLearningMap({
           "This learning map was created before Learning Unit Contracts existed. Run Learn again to draft a new source-grounded map.",
         );
       }
-      if (map.status === "confirmed") return { map, jobId: map.jobId, changed: false };
-      if (map.status !== "proposed") {
+      const alreadyConfirmed = map.status === "confirmed";
+      if (!alreadyConfirmed && map.status !== "proposed") {
         throw new LearnPipelineConflictError(
           `Learning Map ${map.id} is ${map.status} and cannot be confirmed.`,
         );
       }
+      const confirmationContext = collectLearnSourceContext(
+        contentPath,
+        gardenId,
+        map.sourceIds.length > 0 ? map.sourceIds : undefined,
+        map.syllabusSourceId,
+      );
+      if (
+        confirmationContext.sourceSetHash !== map.sourceSetHash ||
+        confirmationContext.sourceArtifactInventoryHash !==
+          map.sourceArtifactInventoryHash
+      ) {
+        throw new LearnPipelineConflictError(
+          "The selected sources or their artifact inventory changed after this Learning Map was authored. Run Learn planning again before confirmation.",
+        );
+      }
+      assertSyllabusCoverageRecoveryBinding({
+        context: confirmationContext,
+        coveragePlan: map.coveragePlan,
+        syllabusCoverage: map.syllabusCoverage,
+        stage: "Map confirmation",
+      });
+      if (alreadyConfirmed) return { map, jobId: map.jobId, changed: false };
       const planningJob = getLearnJobById(map.jobId);
       if (
         !planningJob ||
@@ -5203,8 +6149,15 @@ export function confirmLearningMap({
       const mapUpdate = db.prepare(
         `UPDATE learn_maps
          SET status = 'confirmed', confirmed_at = ?
-         WHERE id = ? AND garden_id = ? AND status = 'proposed'`,
-      ).run(confirmedAt, map.id, gardenId);
+         WHERE id = ? AND garden_id = ? AND status = 'proposed'
+           AND source_set_hash = ? AND source_artifact_inventory_hash = ?`,
+      ).run(
+        confirmedAt,
+        map.id,
+        gardenId,
+        map.sourceSetHash,
+        map.sourceArtifactInventoryHash,
+      );
       if (mapUpdate.changes !== 1) {
         throw new LearnPipelineConflictError(
           "The Learning Map changed before confirmation could commit.",
@@ -5339,8 +6292,7 @@ function assessModelAuthoredLessonQuality(
     unavailableCitations: options.unavailableCitations,
   });
   const pageFormulas = new Set(
-    extractQuartzMath(normalizeQuartzMarkdown(body))
-      .filter((expression) => expression.display)
+    extractVerbatimDisplayMath(body)
       .map((expression) => normalizedFormulaForFrontmatter(expression.formula))
       .filter(Boolean),
   );
@@ -5795,6 +6747,9 @@ const LEARN_RUN_ROLLBACK_PATHS = [
   ".breadboard/concept-registry-history.json",
   ".breadboard/semantic-migration.json",
   ".breadboard/source-visuals.json",
+  ".breadboard/source-visual-source-index.json",
+  ".breadboard/source-formula-reviews",
+  ".breadboard/source-formula-review-set.json",
   ".breadboard/visual-index.json",
   ".breadboard/visual-contract-executability-reviews.json",
   ".breadboard/visual-decision-records.json",
@@ -5971,9 +6926,9 @@ function restoreLearnDatabaseSnapshot(
       `INSERT INTO learn_maps (
         id, garden_id, job_id, status, source_map_json, scope_contract_json,
         learning_map_json, proposed_order_json, visual_opportunities_json,
-        coverage_plan_json, source_set_hash, source_ids_json, syllabus_source_id,
-        syllabus_coverage_json, created_at, confirmed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        coverage_plan_json, source_set_hash, source_artifact_inventory_hash,
+        source_ids_json, syllabus_source_id, syllabus_coverage_json, created_at, confirmed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of baselineMaps) {
       insertMap.run(
@@ -5988,6 +6943,7 @@ function restoreLearnDatabaseSnapshot(
         row.visual_opportunities_json,
         row.coverage_plan_json,
         row.source_set_hash,
+        row.source_artifact_inventory_hash ?? "",
         // Snapshots taken before these columns existed have no value to restore.
         row.source_ids_json ?? "[]",
         row.syllabus_source_id ?? null,
@@ -5998,9 +6954,9 @@ function restoreLearnDatabaseSnapshot(
     }
     const insertVersion = db.prepare(
       `INSERT INTO learn_versions (
-        id, garden_id, job_id, learning_map_id, source_set_hash, page_count,
-        backup_dir, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, garden_id, job_id, learning_map_id, source_set_hash,
+        source_artifact_inventory_hash, page_count, backup_dir, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of baselineVersions) {
       insertVersion.run(
@@ -6009,6 +6965,7 @@ function restoreLearnDatabaseSnapshot(
         row.job_id,
         row.learning_map_id,
         row.source_set_hash,
+        row.source_artifact_inventory_hash ?? "",
         row.page_count,
         row.backup_dir,
         row.created_at,
@@ -6850,6 +7807,7 @@ export async function runTextbookGeneration({
 
   let map: StoredLearningMap;
   let context: LearnSourceContext;
+  let sourceFormulaReviewFinalizationContext!: SourceFormulaReviewFinalizationContext;
   let handoffJobId: string | undefined;
   try {
     let selectedMap = confirmedLearningMapId
@@ -6916,11 +7874,96 @@ export async function runTextbookGeneration({
       map.sourceIds.length > 0 ? map.sourceIds : undefined,
       map.syllabusSourceId,
     );
+    const confirmedFormulaReviewSetHash = sourceFormulaReviewSetHashFromCoveragePlan(
+      map.coveragePlan,
+    );
+    const confirmedArtifactInventoryHash =
+      sourceArtifactInventoryHashFromCoveragePlan(map.coveragePlan);
+    if (!confirmedFormulaReviewSetHash) {
+      throw new LearnPipelineConflictError(
+        "This confirmed Learning Map predates AI source-formula fidelity review. Run Learn planning again and review the new map before generating lessons.",
+      );
+    }
+    if (context.sourceFormulaReviewSetHash !== confirmedFormulaReviewSetHash) {
+      throw new LearnPipelineConflictError(
+        "The reviewed source-formula evidence changed after this Learning Map was created. Run Learn planning again before generating lessons.",
+      );
+    }
     if (context.sourceSetHash !== map.sourceSetHash) {
       throw new LearnPipelineConflictError(
         "The selected sources changed after this Learning Map was created. Run Learn planning again and review the updated map before generating lessons.",
       );
     }
+    if (
+      !confirmedArtifactInventoryHash ||
+      confirmedArtifactInventoryHash !== map.sourceArtifactInventoryHash ||
+      context.sourceArtifactInventoryHash !== confirmedArtifactInventoryHash
+    ) {
+      throw new LearnPipelineConflictError(
+        "The selected source-artifact inventory changed after this Learning Map was created. Run Learn planning again before generating lessons.",
+      );
+    }
+    assertSyllabusCoverageRecoveryBinding({
+      context,
+      coveragePlan: map.coveragePlan,
+      syllabusCoverage: map.syllabusCoverage,
+      stage: "Generation preflight",
+    });
+    const confirmedReviewManifest = loadSourceFormulaReviewSetManifest(contentPath, gardenId);
+    if (
+      !confirmedReviewManifest ||
+      confirmedReviewManifest.reviewSetHash !== confirmedFormulaReviewSetHash ||
+      confirmedReviewManifest.combinedSourceSetHash !== map.sourceSetHash ||
+      JSON.stringify(confirmedReviewManifest.sourceIds) !==
+        JSON.stringify(context.sources.map((source) => source.slug)) ||
+      confirmedReviewManifest.sourceIdentityMapHash !==
+        sourceVisualSourceIdentityMapHash(context.sourceVisualSourceIdentityMap) ||
+      JSON.stringify(confirmedReviewManifest.sourceIdentityMap) !==
+        JSON.stringify(context.sourceVisualSourceIdentityMap)
+    ) {
+      throw new LearnPipelineConflictError(
+        "The promoted source-formula review manifest does not match the confirmed Learning Map. Run planning again before generation.",
+      );
+    }
+    const confirmedReviewValidation = validateSourceFormulaReviewSet({
+      contentPath,
+      gardenSlug: gardenId,
+      requiredFormulaIds: confirmedReviewManifest.formulaIds,
+      expectedReviewSetHash: confirmedReviewManifest.reviewSetHash,
+      expectedModel: confirmedReviewManifest.model,
+      expectedSourceIds: confirmedReviewManifest.sourceIds,
+      sourceIdentityMap: context.sourceVisualSourceIdentityMap,
+      expectedTopologyReviewPageReceipts: confirmedReviewManifest.topologyReviewPageReceipts,
+    });
+    if (confirmedReviewValidation.problems.length > 0) {
+      throw new LearnPipelineConflictError(
+        `The promoted source-formula review evidence failed strict validation: ${confirmedReviewValidation.problems.join("; ")}`,
+      );
+    }
+    sourceFormulaReviewFinalizationContext = {
+      reviewSetHash: confirmedReviewManifest.reviewSetHash,
+      combinedSourceSetHash: map.sourceSetHash,
+      sourceArtifactInventoryHash: confirmedArtifactInventoryHash,
+      syllabusCoverageEvidenceRecoveryHash:
+        syllabusCoverageEvidenceRecoveryHashFromCoveragePlan(map.coveragePlan) ?? "",
+      ...(map.syllabusCoverage?.evidenceRecovery !== undefined
+        ? {
+            syllabusCoverageEvidenceRecovery: JSON.parse(JSON.stringify(
+              map.syllabusCoverage.evidenceRecovery,
+            )) as SyllabusCoverageEvidenceRecoveryReceipt,
+          }
+        : {}),
+      formulaIds: [...confirmedReviewManifest.formulaIds],
+      sourceIds: [...confirmedReviewManifest.sourceIds],
+      sourceIdentityMap: context.sourceVisualSourceIdentityMap.map((entry) => ({ ...entry })),
+      topologyReviewPageReceipts: confirmedReviewManifest.topologyReviewPageReceipts.map(
+        (receipt) => ({
+          ...receipt,
+          activeFormulaIds: [...receipt.activeFormulaIds],
+        }),
+      ),
+      model: confirmedReviewManifest.model,
+    };
   } catch (error) {
     if (ownsLease) lease.release();
     throw error;
@@ -7052,9 +8095,54 @@ export async function runTextbookGeneration({
         "Learn generation lost its garden lease while validating staged sources.",
       );
     }
+    if (
+      stagedContext.sourceFormulaReviewSetHash !==
+      sourceFormulaReviewSetHashFromCoveragePlan(map.coveragePlan)
+    ) {
+      throw new LearnPipelineConflictError(
+        "The staged reviewed source-formula evidence does not match the confirmed Learning Map. Run planning again before generating lessons.",
+      );
+    }
     if (stagedContext.sourceSetHash !== map.sourceSetHash) {
       throw new LearnPipelineConflictError(
         "The selected sources changed while Learn was preparing its isolated workspace. Run planning again before generating lessons.",
+      );
+    }
+    if (
+      stagedContext.sourceArtifactInventoryHash !==
+      map.sourceArtifactInventoryHash
+    ) {
+      throw new LearnPipelineConflictError(
+        "The selected source-artifact inventory changed while Learn was preparing its isolated workspace. Run planning again before generating lessons.",
+      );
+    }
+    assertSyllabusCoverageRecoveryBinding({
+      context: stagedContext,
+      coveragePlan: map.coveragePlan,
+      syllabusCoverage: map.syllabusCoverage,
+      stage: "Staged generation preflight",
+    });
+    // The workspace was seeded from the previously committed contract. Compare
+    // its independent receipt copy to the confirmed-map expectation before a
+    // generation writer can overwrite either field. This makes deletion from
+    // the map/coverage plan observable instead of laundering it into a fresh
+    // receipt-free contract.
+    const stagedPersistedSourceContext =
+      sourceFormulaReviewFinalizationContextFromGarden(workspace.stagingGardenDir);
+    const expectedRecoveryReceipt =
+      sourceFormulaReviewFinalizationContext.syllabusCoverageEvidenceRecovery;
+    const stagedRecoveryReceipt =
+      stagedPersistedSourceContext?.syllabusCoverageEvidenceRecovery;
+    if (!stagedPersistedSourceContext ||
+        stagedPersistedSourceContext.syllabusCoverageEvidenceRecoveryHash !==
+          sourceFormulaReviewFinalizationContext.syllabusCoverageEvidenceRecoveryHash ||
+        (stagedRecoveryReceipt !== undefined) !==
+          (expectedRecoveryReceipt !== undefined) ||
+        (stagedRecoveryReceipt !== undefined &&
+          JSON.stringify(stagedRecoveryReceipt) !==
+            JSON.stringify(expectedRecoveryReceipt))) {
+      throw new LearnPipelineConflictError(
+        "The staged Learning Unit Contract syllabus evidence-recovery receipt does not match the confirmed Learning Map. Run planning again before generation.",
       );
     }
     context = stagedContext;
@@ -7183,6 +8271,65 @@ export async function runTextbookGeneration({
       checkpoint: () => throwIfLearnCancelled(job.id),
       onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
     });
+    const generationFormulaReview = await reviewAndBindSourceFormulas({
+      client,
+      model,
+      contentPath: artifactContentPath,
+      gardenId,
+      context,
+      checkpoint: () => throwIfLearnCancelled(job.id),
+      onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+    });
+    ledgerVisuals = generationFormulaReview.visuals.filter((visual) =>
+      context.sources.some((source) => source.slug === visual.sourceId),
+    );
+    appendLearnEvent(contentPath, gardenId, "learn_source_formulas_reviewed", {
+      jobId: job.id,
+      textbookVersionId,
+      stage: "generation",
+      reviewSetHash: generationFormulaReview.reviewedFormulaSetHash,
+      formulaCount: generationFormulaReview.formulaIds.length,
+      replacementCount: generationFormulaReview.replacementFormulaIds.length,
+      newlyReplacedFormulaIds: generationFormulaReview.newlyReplacedFormulaIds,
+      cacheHitCount: generationFormulaReview.cacheHitFormulaIds.length,
+      modelCalls: generationFormulaReview.modelCalls,
+    });
+    const confirmedFormulaReviewSetHash = sourceFormulaReviewSetHashFromCoveragePlan(
+      map.coveragePlan,
+    );
+    if (
+      generationFormulaReview.newlyReplacedFormulaIds.length > 0 ||
+      !confirmedFormulaReviewSetHash ||
+      generationFormulaReview.reviewedFormulaSetHash !== confirmedFormulaReviewSetHash ||
+      context.sourceSetHash !== map.sourceSetHash ||
+      context.sourceArtifactInventoryHash !== map.sourceArtifactInventoryHash
+    ) {
+      throw new Error(
+        `Source formula fidelity review or source-artifact extraction found evidence that is not bound to the confirmed Learning Map${
+          generationFormulaReview.newlyReplacedFormulaIds.length > 0
+            ? ` (new replacements: ${generationFormulaReview.newlyReplacedFormulaIds.join(", ")})`
+            : ""
+        }. No learner pages were written; run Learn planning again and confirm the fresh AI-authored map.`,
+      );
+    }
+    if (
+      JSON.stringify(generationFormulaReview.formulaIds) !==
+        JSON.stringify(sourceFormulaReviewFinalizationContext.formulaIds) ||
+      JSON.stringify(context.sources.map((source) => source.slug)) !==
+        JSON.stringify(sourceFormulaReviewFinalizationContext.sourceIds) ||
+      context.sourceArtifactInventoryHash !==
+        sourceFormulaReviewFinalizationContext.sourceArtifactInventoryHash
+    ) {
+      throw new Error(
+        "Generation discovered a different source-formula/source identity/artifact inventory than the confirmed review context. No learner pages were written; replan first.",
+      );
+    }
+    assertSyllabusCoverageRecoveryBinding({
+      context,
+      coveragePlan: map.coveragePlan,
+      syllabusCoverage: map.syllabusCoverage,
+      stage: "Post-extraction generation",
+    });
     const sourceArtifactReconciliation = reconcileLearningUnitSourceArtifacts(
       confirmedLearningUnits,
       confirmedSourceArtifactAssignments,
@@ -7264,6 +8411,9 @@ export async function runTextbookGeneration({
       omissions: confirmedSourceArtifactOmissions,
       registeredArtifacts: registeredArtifactsFromFigures(context.sourceFigures),
       sourceSetHash: context.sourceSetHash,
+      sourceFormulaReviewSetHash: context.sourceFormulaReviewSetHash,
+      sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
+      syllabusCoverageEvidenceRecovery: map.syllabusCoverage?.evidenceRecovery,
       visualNecessityReview: generationVisualNecessityReview,
     });
     confirmedLearningUnits = contractWrite.units;
@@ -7955,6 +9105,7 @@ export async function runTextbookGeneration({
             learningUnitRole: subsection.learningUnitRole,
             learningVersionId: textbookVersionId,
             sourceSetHash: context.sourceSetHash,
+            sourceFormulaReviewSetHash: context.sourceFormulaReviewSetHash,
             generatedAt,
           }) + `${pageBody.trim()}\n`;
 
@@ -8269,6 +9420,7 @@ export async function runTextbookGeneration({
         preserveModelAuthoredVisuals: true,
         preserveModelAuthoredContent: true,
         expectedVisualContractExecutabilityContext: generationExecutabilityContext,
+        expectedSourceFormulaReviewContext: sourceFormulaReviewFinalizationContext,
         // Repair is model-only: there is no deterministic executor to fall back
         // to, so the repair pass always carries a live model executor.
         modelRepair: createOpenAIRepairExecutor({
@@ -8299,6 +9451,7 @@ export async function runTextbookGeneration({
         gardenSlug: gardenId,
         preserveModelAuthoredContent: true,
         expectedVisualContractExecutabilityContext: generationExecutabilityContext,
+        expectedSourceFormulaReviewContext: sourceFormulaReviewFinalizationContext,
       });
       appendLearnEvent(contentPath, gardenId, "learn_export_finalized", {
         jobId: job.id,
@@ -8314,6 +9467,7 @@ export async function runTextbookGeneration({
         gardenSlug: gardenId,
         strictModelApprovedVisuals: true,
         expectedVisualContractExecutabilityContext: generationExecutabilityContext,
+        expectedSourceFormulaReviewContext: sourceFormulaReviewFinalizationContext,
       });
       appendLearnEvent(contentPath, gardenId, "learn_final_artifact_verified", {
         jobId: job.id,
@@ -8325,7 +9479,11 @@ export async function runTextbookGeneration({
         unresolvedRepairFailures: verification.unresolvedRepairFailures,
       });
 
-      const audit = auditGardenForFinalization(clusterDir, gardenId);
+      const audit = auditGardenForFinalization(clusterDir, gardenId, {
+        strictModelApprovedVisuals: true,
+        expectedVisualContractExecutabilityContext: generationExecutabilityContext,
+        expectedSourceFormulaReviewContext: sourceFormulaReviewFinalizationContext,
+      });
       lastStateFingerprint = audit.stateFingerprint;
       if (finalizeReport.criticalProblems.length === 0 && verification.accepted) {
         finalizationStopReason = "passed";
@@ -8511,6 +9669,7 @@ export async function runTextbookGeneration({
           gardenSlug: gardenId,
           strictModelApprovedVisuals: true,
           expectedVisualContractExecutabilityContext: generationExecutabilityContext,
+          expectedSourceFormulaReviewContext: sourceFormulaReviewFinalizationContext,
         }).accepted,
     });
     previousPromotedGardenDir = promotion.previousPreservedAt;
@@ -8539,13 +9698,16 @@ export async function runTextbookGeneration({
       const mapUpdate = db.prepare(
         `UPDATE learn_maps
          SET coverage_plan_json = ?, learning_map_json = ?, proposed_order_json = ?
-         WHERE id = ? AND garden_id = ?`,
+         WHERE id = ? AND garden_id = ? AND status = 'confirmed'
+           AND source_set_hash = ? AND source_artifact_inventory_hash = ?`,
       ).run(
         jsonString(mapToCommit.coveragePlan),
         jsonString(mapToCommit.learningMap),
         jsonString(mapToCommit.proposedOrder),
         mapToCommit.id,
         gardenId,
+        mapToCommit.sourceSetHash,
+        mapToCommit.sourceArtifactInventoryHash,
       );
       if (mapUpdate.changes !== 1) {
         throw new LearnPipelineConflictError(
@@ -8558,6 +9720,7 @@ export async function runTextbookGeneration({
         jobId: job.id,
         learningMapId: mapToCommit.id,
         sourceSetHash: context.sourceSetHash,
+        sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
         pageCount: generatedPages.length + learningRelPaths.length + 1,
         backupDir,
       });
@@ -10913,29 +12076,87 @@ export function getLearnStatusSnapshot({
         }
       : null;
 
-  let sourceSetChanged = false;
-  if (latestVersion) {
-    const versionMap = getLearnMapById(latestVersion.learning_map_id, gardenId);
+  const versionMapCandidate = latestVersion
+    ? getLearnMapById(latestVersion.learning_map_id, gardenId)
+    : null;
+  const versionMap = isContractBackedLearningMap(versionMapCandidate)
+    ? versionMapCandidate
+    : null;
+  let sourceSetChanged = Boolean(latestVersion && !versionMap);
+  const sourceBindingMap = latestVersion
+    ? versionMap
+    : contractProposed ?? confirmedMap;
+  if (sourceBindingMap) {
     try {
       const selectedSources = selectLearnSources(
         context.sources,
-        versionMap?.sourceIds.length ? versionMap.sourceIds : undefined,
+        sourceBindingMap.sourceIds.length ? sourceBindingMap.sourceIds : undefined,
       );
       const syllabus = selectLearnSyllabus(
         context.sources,
-        versionMap?.syllabusSourceId,
+        sourceBindingMap.syllabusSourceId,
       );
       const teachingSources = excludeSyllabusFromSources(selectedSources, syllabus);
       if (syllabus && teachingSources.length === 0) {
         throw new Error("The saved source selection no longer contains teaching material.");
       }
-      const currentHash = sourceSetHashWithSyllabus(
+      const baseCurrentHash = sourceSetHashWithSyllabus(
         sourceSetHashForSources(teachingSources),
         syllabus,
       );
-      sourceSetChanged = latestVersion.source_set_hash !== currentHash;
+      let currentHash = baseCurrentHash;
+      const selectedSourceOrder = teachingSources.map((source) => source.slug);
+      const sourceIdentityMap = resolveSourceVisualSourceIdentityMap({
+        contentPath,
+        gardenSlug: gardenId,
+        sourceIds: selectedSourceOrder,
+        persist: false,
+      });
+      const selectedTeachingSourceIds = new Set(selectedSourceOrder);
+      const ledgerVisuals = loadSourceVisuals(contentPath, gardenId);
+      const formulaIds = ledgerVisuals
+        .filter((visual) => selectedTeachingSourceIds.has(visual.sourceId) && visual.type === "equation")
+        .map((visual) => visual.sourceVisualId)
+        .sort();
+      const manifest = loadSourceFormulaReviewSetManifest(contentPath, gardenId);
+      if (
+        manifest &&
+        manifest.baseSourceSetHash === baseCurrentHash &&
+        JSON.stringify(manifest.sourceIds) === JSON.stringify(selectedSourceOrder) &&
+        manifest.sourceIdentityMapHash === sourceVisualSourceIdentityMapHash(sourceIdentityMap) &&
+        JSON.stringify(manifest.sourceIdentityMap) === JSON.stringify(sourceIdentityMap) &&
+        JSON.stringify(manifest.formulaIds) === JSON.stringify(formulaIds) &&
+        computeSourceFormulaReviewSetHash(
+          ledgerVisuals,
+          formulaIds,
+          selectedSourceOrder,
+          sourceIdentityMap,
+          manifest.topologyReviewPageReceipts,
+        ) === manifest.reviewSetHash
+      ) {
+        currentHash = sourceSetHashWithReviewedFormulas(baseCurrentHash, manifest.reviewSetHash);
+      }
+      const currentArtifactInventoryHash = selectedSourceArtifactInventorySnapshot({
+        selectedSourceIds: selectedSourceOrder,
+        sourceIdentityMap,
+        visuals: ledgerVisuals,
+      }).sourceArtifactInventoryHash;
+      const expectedSourceSetHash = latestVersion
+        ? latestVersion.source_set_hash
+        : sourceBindingMap.sourceSetHash;
+      const expectedArtifactInventoryHash = latestVersion
+        ? latestVersion.source_artifact_inventory_hash
+        : sourceBindingMap.sourceArtifactInventoryHash;
+      sourceSetChanged =
+        expectedSourceSetHash !== currentHash ||
+        !/^[0-9a-f]{64}$/.test(expectedArtifactInventoryHash) ||
+        expectedArtifactInventoryHash !== currentArtifactInventoryHash ||
+        (latestVersion !== null &&
+          (latestVersion.source_set_hash !== sourceBindingMap.sourceSetHash ||
+            latestVersion.source_artifact_inventory_hash !==
+              sourceBindingMap.sourceArtifactInventoryHash));
     } catch {
-      // A selected source was removed after the last Learn version.
+      // A selected source/artifact was removed or its durable identity became invalid.
       sourceSetChanged = true;
     }
   }

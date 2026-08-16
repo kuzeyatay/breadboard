@@ -24,6 +24,37 @@ function splitCodeFences(markdown: string): Array<{ text: string; code: boolean 
   return parts;
 }
 
+function maskMarkdownRegion(value: string): string {
+  return value.replace(/[^\r\n]/g, " ");
+}
+
+/** Mask Markdown regions that are not learner-visible prose/math while
+ * preserving offsets and line breaks for diagnostics. This extractor is a
+ * grounding gate, so an equation hidden in metadata, a comment, or code must
+ * never satisfy a required displayed-formula contract. */
+function maskNonRenderedMarkdown(markdown: string): string {
+  let masked = markdown;
+  masked = masked.replace(
+    /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/,
+    (value) => maskMarkdownRegion(value),
+  );
+  masked = masked.replace(
+    /^( {0,3})(`{3,}|~{3,})[^\r\n]*(?:\r?\n|$)[\s\S]*?^(?: {0,3})\2[ \t]*(?:\r?\n|$)/gm,
+    (value) => maskMarkdownRegion(value),
+  );
+  // An unclosed fence makes the rest of the candidate code, not rendered
+  // lesson content. Over-masking is intentionally fail-closed here.
+  masked = masked.replace(
+    /^( {0,3})(`{3,}|~{3,})[^\r\n]*(?:\r?\n|$)[\s\S]*$/gm,
+    (value) => maskMarkdownRegion(value),
+  );
+  masked = masked.replace(/<!--[\s\S]*?(?:-->|$)/g, (value) =>
+    maskMarkdownRegion(value));
+  masked = masked.replace(/(`+)[^\r\n]*?\1/g, (value) =>
+    maskMarkdownRegion(value));
+  return masked;
+}
+
 function normalizeFormulaText(formula: string): string {
   let next = formula
     .replace(/\r\n/g, "\n")
@@ -101,6 +132,34 @@ export function normalizeQuartzMarkdown(markdown: string): string {
     .replace(/\n{4,}/g, "\n\n\n");
 
   return `${frontmatter}${normalizedBody}`;
+}
+
+/**
+ * Extract model-authored display equations without applying Quartz's rendering
+ * normalizations first. This is intentionally stricter than
+ * `extractQuartzMath(normalizeQuartzMarkdown(markdown))`: source-grounding
+ * checks need to see whether the model actually reproduced canonical notation
+ * such as `\\tag{...}`, even though the writer later lowers that notation to a
+ * KaTeX-safe equivalent.
+ */
+export function extractVerbatimDisplayMath(markdown: string): MathExpression[] {
+  const expressions: MathExpression[] = [];
+  const withoutCode = maskNonRenderedMarkdown(markdown);
+
+  for (const match of withoutCode.matchAll(/\$\$([\s\S]*?)\$\$|\\\[([\s\S]*?)\\\]/g)) {
+    if (match.index === undefined) continue;
+    const formula = (match[1] ?? match[2] ?? "").trim();
+    if (!formula) continue;
+    const line = withoutCode.slice(0, match.index).split(/\r?\n/).length;
+    expressions.push({
+      formula,
+      display: true,
+      line,
+      excerpt: formula.replace(/\s+/g, " ").slice(0, 160),
+    });
+  }
+
+  return expressions.sort((a, b) => a.line - b.line);
 }
 
 export function extractQuartzMath(markdown: string): MathExpression[] {

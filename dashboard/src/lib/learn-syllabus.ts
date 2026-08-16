@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import type { SyllabusCoverageEvidenceRecoveryReceipt } from "./learn-syllabus-coverage-recovery.ts";
+
 /**
  * Syllabus reading, material resolution, and the anti-hallucination gate.
  *
@@ -83,9 +86,16 @@ export interface SyllabusUnitCoverage {
   title: string;
   objectives: string[];
   topics: string[];
-  /** Documents this unit should be taught from, heavily. */
+  /**
+   * Exact selected documents that directly support this unit. This may record
+   * partial support even when the model judges the full unit unteachable.
+   */
   availableSourceIds: string[];
-  /** Citations this unit assigns that the garden does not contain. */
+  /**
+   * Exact citations of this unit's missing assigned material records, in
+   * syllabus material order. Repeats are intentional when distinct material
+   * ids share the same citation.
+   */
   missingCitations: string[];
   /** Model-authored verdict after reviewing this unit and the selected sources. */
   teachable: boolean;
@@ -117,8 +127,482 @@ export interface SyllabusCoverage {
   /** Every garden document a syllabus unit points at. */
   availableSourceIds: string[];
   missingCitations: string[];
-  /** Units with no available material at all — planning must not invent these. */
+  /**
+   * Units the model judges cannot be taught in full — planning must not
+   * invent lessons for these, even if partial source support is recorded.
+   */
   untaughtUnitTitles: string[];
+  /** Present only when an initially valid all-false coverage decision required
+   * a bounded model-selected exact-page rereview before planning could proceed. */
+  evidenceRecovery?: SyllabusCoverageEvidenceRecoveryReceipt;
+}
+
+// ---------------------------------------------------------------------------
+// Bounded source-catalog transport
+// ---------------------------------------------------------------------------
+
+/**
+ * The coverage model receives a source catalog before it decides whether a
+ * syllabus citation is present.  This transport budget applies only to source
+ * text; source metadata is intentionally small and remains outside it.
+ */
+const SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS = 120_000;
+const SYLLABUS_COVERAGE_RAW_PAGE_MIN_CHARS_PER_SOURCE = 2_000;
+const SYLLABUS_COVERAGE_RAW_PAGE_MAX_CHARS_PER_SOURCE = 24_000;
+export const SYLLABUS_COVERAGE_RAW_PAGE_MAX_PAGES_PER_SOURCE = 8;
+const SYLLABUS_COVERAGE_IDENTITY_PAGE_PREFIX = 8;
+
+export interface SyllabusCoverageCatalogSource {
+  /** Exact selected-source identity exposed to the coverage model. */
+  slug: string;
+  title: string;
+  description?: string;
+  relPath: string;
+  sourceType?: string;
+  sourceFile?: string;
+  excerpt?: string;
+  /** Source-note body with local frontmatter already removed. */
+  body?: string;
+}
+
+export interface CanonicalSourcePageEvidence {
+  /** Complete, verbatim document pages in original document order. */
+  pages: Array<{
+    sourceId: string;
+    pageNumber: number;
+    exactText: string;
+    complete: true;
+  }>;
+  /** Verbatim fallback for a source that does not declare canonical pages. */
+  unpagedEvidence?: {
+    sourceId: string;
+    exactText: string;
+    complete: boolean;
+  };
+  /** Number of whole canonical pages deliberately omitted by transport bounds. */
+  omittedPageCount: number;
+  /** True when a transport bound omitted raw bytes or complete pages. */
+  truncated: boolean;
+}
+
+/** A complete canonical Markdown page block, including its exact `## Page N`
+ * heading and every source byte up to the next canonical page heading.  This
+ * is intentionally distinct from the normalized structural-anchor catalog:
+ * models may use that compact catalog to choose identities, but provenance
+ * and rereview bind these original bytes. */
+export interface CanonicalSourceRawPageBlock {
+  sourceId: string;
+  pageNumber: number;
+  exactText: string;
+  complete: true;
+}
+
+export interface CanonicalSourceRawPageInput {
+  sourceId: string;
+  body?: string;
+}
+
+export interface CanonicalSourceRawPageSelection {
+  sourceId: string;
+  pageNumber: number;
+}
+
+export interface CanonicalSourceRawPageParseResult {
+  pages: CanonicalSourceRawPageBlock[];
+  /** Exact page-looking identities withheld because they occurred inside a
+   * fenced region or their page block would span one. They are diagnostic only
+   * and are never selector authority. */
+  ambiguousPageNumbers: number[];
+}
+
+interface MarkdownLineRecord {
+  start: number;
+  end: number;
+  content: string;
+  insideFence: boolean;
+}
+
+/** Return byte-offset-preserving Markdown lines while identifying fenced code.
+ * Canonical source headings are authority only outside a Markdown fence. */
+function markdownLineRecords(text: string): MarkdownLineRecord[] {
+  const records: MarkdownLineRecord[] = [];
+  let offset = 0;
+  let fence: { marker: "`" | "~"; length: number } | undefined;
+  for (const rawLine of text.match(/.*(?:\r\n|\n|$)/g) ?? []) {
+    if (rawLine === "") continue;
+    const content = rawLine.replace(/\r?\n$/, "");
+    const opening = /^(?: {0,3})(`{3,}|~{3,})/.exec(content);
+    const insideFence = fence !== undefined;
+    records.push({
+      start: offset,
+      end: offset + rawLine.length,
+      content,
+      insideFence,
+    });
+    if (fence) {
+      const closing = new RegExp(`^(?: {0,3})${fence.marker}{${fence.length},}[ \\t]*$`);
+      if (closing.test(content)) fence = undefined;
+    } else if (opening) {
+      fence = {
+        marker: opening[1]![0] as "`" | "~",
+        length: opening[1]!.length,
+      };
+    }
+    offset += rawLine.length;
+  }
+  return records;
+}
+
+export function canonicalSourceMaterialBody(body: string | undefined): string {
+  const text = String(body ?? "");
+  const exactMarkers = markdownLineRecords(text).filter(
+    (line) => /^## Source material[ \t]*$/.test(line.content),
+  );
+  const markers = exactMarkers.filter((line) => !line.insideFence);
+  if (exactMarkers.length !== markers.length) {
+    throw new Error("Canonical Source material marker occurs inside an ambiguous fenced region.");
+  }
+  if (markers.length > 1) {
+    throw new Error("Canonical source material contains duplicate Source material sections.");
+  }
+  return markers[0] ? text.slice(markers[0].end) : text;
+}
+
+/** Parse every canonical source page without changing CRLF/LF bytes, trimming
+ * whitespace, guessing a page number, or accepting a near-miss heading. */
+export function parseCanonicalSourceRawPages(
+  sourceId: string,
+  body: string | undefined,
+): CanonicalSourceRawPageParseResult {
+  if (!sourceId || sourceId.trim() !== sourceId) {
+    throw new Error("Canonical source-page evidence requires an exact non-empty source id.");
+  }
+  const material = canonicalSourceMaterialBody(body);
+  const lines = markdownLineRecords(material);
+  const visiblePageHeadingCandidates = lines.filter(
+    (line) => !line.insideFence && /^#{2,6}[ \t]*Page(?:[ \t]*\d|[ \t]+|$)/i.test(line.content),
+  );
+  for (const line of visiblePageHeadingCandidates) {
+    if (!/^## Page ([1-9]\d*)[ \t]*$/.test(line.content)) {
+      throw new Error("Canonical source-page evidence contains an unknown page identity.");
+    }
+  }
+
+  // A page-looking line inside a fence is ambiguous: it can be an example or a
+  // source-note exporter can have failed to close a page-local LaTeX fence.
+  // Continuity is not proof because an example can use consecutive numbers.
+  // Never promote such a line. Also withhold the preceding outside-fence page
+  // whose raw block would otherwise span the ambiguous boundary; resume only
+  // at a later unambiguous outside-fence delimiter.
+  const exactCandidates = lines.flatMap((line) => {
+    const match = /^## Page ([1-9]\d*)[ \t]*$/.exec(line.content);
+    if (!match) return [];
+    const pageNumber = Number(match[1]);
+    if (!Number.isSafeInteger(pageNumber)) {
+      throw new Error("Canonical source-page evidence contains a page identity outside the safe integer range.");
+    }
+    return [{ line, pageNumber }];
+  });
+  const allSeenPages = new Set<number>();
+  for (const candidate of exactCandidates) {
+    if (allSeenPages.has(candidate.pageNumber)) {
+      throw new Error(`Canonical source-page evidence contains duplicate Page ${candidate.pageNumber}.`);
+    }
+    allSeenPages.add(candidate.pageNumber);
+  }
+  const outsideCandidates = exactCandidates.filter((candidate) => !candidate.line.insideFence);
+  const pageHeadings = outsideCandidates.filter((candidate, index) => {
+    const nextOutsideStart = outsideCandidates[index + 1]?.line.start ?? material.length;
+    return !exactCandidates.some((possibleAmbiguous) =>
+      possibleAmbiguous.line.insideFence &&
+      possibleAmbiguous.line.start > candidate.line.start &&
+      possibleAmbiguous.line.start < nextOutsideStart);
+  });
+  const acceptedHeadingSet = new Set(pageHeadings);
+  const ambiguousPageNumbers = exactCandidates
+    .filter((candidate) => !acceptedHeadingSet.has(candidate))
+    .map((candidate) => candidate.pageNumber);
+  if (pageHeadings.length === 0) return { pages: [], ambiguousPageNumbers };
+
+  const seenPages = new Set<number>();
+  const pages = pageHeadings.map((heading) => {
+    const pageNumber = heading.pageNumber;
+    if (seenPages.has(pageNumber)) {
+      throw new Error(`Canonical source-page evidence contains duplicate Page ${pageNumber}.`);
+    }
+    seenPages.add(pageNumber);
+    const start = heading.line.start;
+    const exactIndex = exactCandidates.indexOf(heading);
+    const end = exactCandidates[exactIndex + 1]?.line.start ?? material.length;
+    return {
+      sourceId,
+      pageNumber,
+      exactText: material.slice(start, end),
+      complete: true as const,
+    };
+  });
+  return { pages, ambiguousPageNumbers };
+}
+
+export function canonicalSourceRawPageBlocks(
+  sourceId: string,
+  body: string | undefined,
+): CanonicalSourceRawPageBlock[] {
+  return parseCanonicalSourceRawPages(sourceId, body).pages;
+}
+
+/** Mechanically hydrate model-selected source/page identities to complete raw
+ * page blocks.  Selection order is retained exactly; duplicates, unknown
+ * sources/pages, and any page/character cap violation fail closed. */
+export function hydrateSelectedCanonicalSourceRawPages(input: {
+  sources: readonly CanonicalSourceRawPageInput[];
+  selections: readonly CanonicalSourceRawPageSelection[];
+  maxPages: number;
+  maxChars: number;
+}): CanonicalSourceRawPageBlock[] {
+  if (!Number.isSafeInteger(input.maxPages) || input.maxPages <= 0) {
+    throw new Error("Selected canonical source-page evidence requires a positive integer page cap.");
+  }
+  if (!Number.isSafeInteger(input.maxChars) || input.maxChars <= 0) {
+    throw new Error("Selected canonical source-page evidence requires a positive integer character cap.");
+  }
+  if (input.selections.length === 0) {
+    throw new Error("Selected canonical source-page evidence requires at least one model-selected page.");
+  }
+  if (input.selections.length > input.maxPages) {
+    throw new Error(
+      `Selected canonical source-page evidence exceeds the ${input.maxPages}-page recovery cap.`,
+    );
+  }
+
+  const sourceIds = new Set<string>();
+  const pagesBySource = new Map<string, Map<number, CanonicalSourceRawPageBlock>>();
+  for (const source of input.sources) {
+    if (!source.sourceId || source.sourceId.trim() !== source.sourceId) {
+      throw new Error("Selected canonical source-page evidence contains an invalid source id.");
+    }
+    if (sourceIds.has(source.sourceId)) {
+      throw new Error(`Selected canonical source-page evidence contains duplicate source "${source.sourceId}".`);
+    }
+    sourceIds.add(source.sourceId);
+    pagesBySource.set(
+      source.sourceId,
+      new Map(
+        canonicalSourceRawPageBlocks(source.sourceId, source.body)
+          .map((page) => [page.pageNumber, page]),
+      ),
+    );
+  }
+
+  const seen = new Set<string>();
+  const hydrated: CanonicalSourceRawPageBlock[] = [];
+  let totalChars = 0;
+  for (const [index, selection] of input.selections.entries()) {
+    if (!selection.sourceId || selection.sourceId.trim() !== selection.sourceId) {
+      throw new Error(`Selected canonical source-page evidence selection ${index + 1} has an invalid source id.`);
+    }
+    if (!Number.isSafeInteger(selection.pageNumber) || selection.pageNumber < 1) {
+      throw new Error(`Selected canonical source-page evidence selection ${index + 1} has an invalid page number.`);
+    }
+    const identity = `${selection.sourceId}\0${selection.pageNumber}`;
+    if (seen.has(identity)) {
+      throw new Error(
+        `Selected canonical source-page evidence repeats ${selection.sourceId} Page ${selection.pageNumber}.`,
+      );
+    }
+    seen.add(identity);
+    const page = pagesBySource.get(selection.sourceId)?.get(selection.pageNumber);
+    if (!page) {
+      throw new Error(
+        `Selected canonical source-page evidence references unknown ${selection.sourceId} Page ${selection.pageNumber}.`,
+      );
+    }
+    totalChars += page.exactText.length;
+    if (totalChars > input.maxChars) {
+      throw new Error(
+        `Selected canonical source-page evidence exceeds the ${input.maxChars}-character recovery cap; complete pages cannot be truncated.`,
+      );
+    }
+    hydrated.push(page);
+  }
+  return hydrated;
+}
+
+function sourcePlanningIndexForCoverage(
+  body: string | undefined,
+  maxChars: number,
+): { text: string; truncated: boolean } {
+  const text = String(body ?? "");
+  const boundary = text.search(/^## Internal planning[ \t]*\r?$/m);
+  const index = boundary >= 0 ? text.slice(0, boundary) : text;
+  if (maxChars <= 0) return { text: "", truncated: index.length > 0 };
+  return {
+    text: index.slice(0, maxChars),
+    truncated: index.length > maxChars,
+  };
+}
+
+/**
+ * Copy a bounded set of canonical source pages without summarizing, matching,
+ * or repairing them.  A source note that claims page structure must use unique
+ * positive integer `## Page N` headings: an ambiguous page identity is unsafe
+ * evidence for a citation decision and therefore fails closed before a model
+ * call.  Unpaged source material remains valid and is copied verbatim up to
+ * the caller's bounded transport budget.
+ */
+export function boundedCanonicalSourcePageEvidence(
+  sourceId: string,
+  body: string | undefined,
+  maxChars: number,
+  options: { maxPages?: number } = {},
+): CanonicalSourcePageEvidence {
+  const maxPages = options.maxPages ?? SYLLABUS_COVERAGE_RAW_PAGE_MAX_PAGES_PER_SOURCE;
+  if (!sourceId || sourceId.trim() !== sourceId) {
+    throw new Error("Canonical source-page evidence requires an exact non-empty source id.");
+  }
+  if (!Number.isSafeInteger(maxChars) || maxChars <= 0) {
+    throw new Error("Canonical source-page evidence requires a positive integer character budget.");
+  }
+  if (!Number.isSafeInteger(maxPages) || maxPages <= 0) {
+    throw new Error("Canonical source-page evidence requires a positive integer page budget.");
+  }
+
+  const material = canonicalSourceMaterialBody(body);
+  const parsedPages = parseCanonicalSourceRawPages(sourceId, body);
+  const allPages = parsedPages.pages;
+  if (allPages.length === 0) {
+    if (parsedPages.ambiguousPageNumbers.length > 0) {
+      return {
+        pages: [],
+        omittedPageCount: parsedPages.ambiguousPageNumbers.length,
+        truncated: true,
+      };
+    }
+    const complete = material.length <= maxChars;
+    return {
+      pages: [],
+      ...(material ? {
+        unpagedEvidence: {
+          sourceId,
+          exactText: material.slice(0, maxChars),
+          complete,
+        },
+      } : {}),
+      omittedPageCount: 0,
+      truncated: !complete,
+    };
+  }
+
+  const requiredRecords = allPages.slice(0, SYLLABUS_COVERAGE_IDENTITY_PAGE_PREFIX);
+  const lastRequiredPageNumber = requiredRecords.at(-1)?.pageNumber ?? 0;
+  if (parsedPages.ambiguousPageNumbers.some((pageNumber) => pageNumber <= lastRequiredPageNumber)) {
+    throw new Error(
+      `Canonical source-page evidence has an ambiguous fenced page boundary inside its fixed identity prefix for source "${sourceId}".`,
+    );
+  }
+  const requiredChars = requiredRecords.reduce((sum, page) => sum + page.exactText.length, 0);
+  if (requiredRecords.length > maxPages || requiredChars > maxChars) {
+    throw new Error(
+      `Canonical source-page evidence cannot carry its complete fixed identity prefix for source "${sourceId}" within its bounded transport budget.`,
+    );
+  }
+
+  const pages = requiredRecords.map((page) => ({
+    sourceId,
+    pageNumber: page.pageNumber,
+    exactText: page.exactText,
+    complete: true as const,
+  }));
+
+  return {
+    pages,
+    omittedPageCount:
+      allPages.length - pages.length + parsedPages.ambiguousPageNumbers.length,
+    truncated:
+      pages.length !== allPages.length || parsedPages.ambiguousPageNumbers.length > 0,
+  };
+}
+
+/**
+ * Copy exact authored locators into the coverage packet. They remain syllabus
+ * input, not source evidence: code never turns one into a source-page choice
+ * or a title/author/source match.
+ */
+export function authoredSyllabusLocatorCatalog(
+  materials: readonly Pick<SyllabusReferencedMaterial, "id" | "locator">[],
+): Array<{ materialId: string; locator: string }> {
+  return materials.flatMap((material) =>
+    typeof material.locator === "string"
+      ? [{ materialId: material.id, locator: material.locator }]
+      : [],
+  );
+}
+
+/**
+ * Build the coverage model's selected-source catalog.  The planning index is
+ * useful context but may be generated internal planning text; title, author,
+ * and locator evidence is deliberately carried separately as verbatim source
+ * pages.  The transport never decides whether either establishes a citation.
+ */
+export function buildSyllabusCoverageSourceCatalog(
+  sources: readonly SyllabusCoverageCatalogSource[],
+): Array<{
+  id: string;
+  relPath: string;
+  sourceType?: string;
+  sourceFile?: string;
+  navigationMetadata: {
+    title: string;
+    description?: string;
+    excerpt?: string;
+    planningIndex: string;
+    planningIndexTruncated: boolean;
+  };
+  canonicalRawSourceSha256: string;
+  canonicalRawPageEvidence: CanonicalSourcePageEvidence;
+}> {
+  const sourceIds = new Set<string>();
+  for (const source of sources) {
+    if (!source.slug || source.slug.trim() !== source.slug) {
+      throw new Error("Syllabus coverage source catalog contains an invalid source id.");
+    }
+    if (sourceIds.has(source.slug)) {
+      throw new Error(`Syllabus coverage source catalog contains duplicate source "${source.slug}".`);
+    }
+    sourceIds.add(source.slug);
+  }
+  const totalCharsPerSource = Math.floor(
+    SYLLABUS_COVERAGE_CATALOG_TOTAL_SOURCE_CHARS / Math.max(1, sources.length),
+  );
+  // Reserve raw canonical pages before allocating generated planning context,
+  // so an oversized preamble can never crowd out title/author/locator pages.
+  const rawPageChars = Math.min(
+    SYLLABUS_COVERAGE_RAW_PAGE_MAX_CHARS_PER_SOURCE,
+    Math.max(
+      Math.min(SYLLABUS_COVERAGE_RAW_PAGE_MIN_CHARS_PER_SOURCE, totalCharsPerSource),
+      Math.floor(totalCharsPerSource / 4),
+    ),
+  );
+  const planningIndexChars = Math.max(0, totalCharsPerSource - rawPageChars);
+  return sources.map((source) => {
+    const rawMaterial = canonicalSourceMaterialBody(source.body);
+    const planningIndex = sourcePlanningIndexForCoverage(source.body, planningIndexChars);
+    return {
+      id: source.slug,
+      relPath: source.relPath,
+      ...(source.sourceType !== undefined ? { sourceType: source.sourceType } : {}),
+      ...(source.sourceFile !== undefined ? { sourceFile: source.sourceFile } : {}),
+      navigationMetadata: {
+        title: source.title,
+        ...(source.description !== undefined ? { description: source.description } : {}),
+        ...(source.excerpt !== undefined ? { excerpt: source.excerpt } : {}),
+        planningIndex: planningIndex.text,
+        planningIndexTruncated: planningIndex.truncated,
+      },
+      canonicalRawSourceSha256: createHash("sha256").update(rawMaterial).digest("hex"),
+      canonicalRawPageEvidence: boundedCanonicalSourcePageEvidence(source.slug, source.body, rawPageChars),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -498,10 +982,11 @@ export function syllabusCoverageDecisionProblems(
     const missingCitations = exactStringArray(record.missingCitations)
       ? record.missingCitations
       : [];
-    for (const duplicate of duplicateStrings(missingCitations)) {
-      problems.push(`unit ${unitId || index}.missingCitations duplicates ${duplicate}`);
-    }
     if (unit) {
+      // Citations are display strings, not material identities. Distinct
+      // model-authored material ids may legitimately copy the same exact
+      // citation, so the ordered equality below is deliberately the sole
+      // multiplicity check for this array.
       const expectedMissing = unit.materialIds.flatMap((materialId) => {
         const resolution = resolutionById.get(materialId);
         return resolution?.status === "missing" ? [resolution.citation] : [];
@@ -526,12 +1011,13 @@ export function syllabusCoverageDecisionProblems(
       }
     }
 
+    // Teachability is a model-authored full-unit verdict. A false verdict may
+    // retain exact partial support above; this validator never promotes it or
+    // removes its source provenance to satisfy a mechanical array rule.
     if (typeof record.teachable !== "boolean") {
       problems.push(`unit ${unitId || index}.teachable must be boolean`);
     } else if (record.teachable && availableSourceIds.length === 0) {
       problems.push(`teachable unit ${unitId || index} must select at least one exact supporting source id`);
-    } else if (!record.teachable && availableSourceIds.length > 0) {
-      problems.push(`unteachable unit ${unitId || index} must not select supporting source ids`);
     }
     if (typeof record.coverageReason !== "string" || !record.coverageReason.trim()) {
       problems.push(`unit ${unitId || index}.coverageReason is required`);

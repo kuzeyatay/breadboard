@@ -3,6 +3,10 @@ import type Database from "better-sqlite3";
 import db from "../db.ts";
 import type { ConversationRow, ConversationMessageRow } from "./store.ts";
 import { conversationIsTemporary, listRecentConversationMessages } from "./store.ts";
+import {
+  isolatedGardenScopeIds,
+  memoryVisibleInContext,
+} from "./memory-isolation.ts";
 
 export interface ConversationWorkingState {
   currentGoal?: string;
@@ -289,7 +293,24 @@ export function retrieveDurableMemories(input: {
   const queryTerms = terms(input.query);
   const now = input.now ?? new Date();
 
+  // Gardens set to garden-only memory are sealed in both directions. This is a
+  // hard filter rather than a scope weight because weighting only makes a
+  // memory unlikely, and "hidden" has to mean hidden.
+  const isolatedGardenIds = isolatedGardenScopeIds(input.userId, database);
+  const currentGardenScopeId = input.gardenScopeId ?? null;
+  const currentGardenIsIsolated =
+    currentGardenScopeId !== null && isolatedGardenIds.has(currentGardenScopeId);
+
   return rows.flatMap((row): RankedDurableMemory[] => {
+    if (
+      !memoryVisibleInContext(row, {
+        currentGardenScopeId,
+        isolatedGardenIds,
+        currentGardenIsIsolated,
+      })
+    ) {
+      return [];
+    }
     // Current-chat exact/structured context is loaded separately at strength
     // 1.00. Durable rows from the same chat are still weak and deduplicated.
     const relevance = lexicalRelevance(queryTerms, terms(row.content));

@@ -159,6 +159,10 @@ interface Props {
   attachments?: ComposerAttachment[];
   onRemoveAttachment?: (index: number) => void;
   utilityActions?: ReactNode;
+  /**
+   * Accepted so the many call sites keep compiling, but nothing is drawn: the
+   * composer no longer shows a status line under the input.
+   */
   statusMessage?: string;
   headerContent?: ReactNode;
   className?: string;
@@ -404,7 +408,6 @@ export default function AssistantComposer({
   attachments = [],
   onRemoveAttachment,
   utilityActions,
-  statusMessage,
   headerContent,
   className = '',
   compact = false,
@@ -511,7 +514,9 @@ export default function AssistantComposer({
   const [shortsForm, setShortsForm] = useState<ShortsFormState>(initialShortsForm);
   const [formsmithForm, setFormsmithForm] = useState<FormsmithFormState>(initialFormsmithForm);
   const [activeAgencyAgent, setActiveAgencyAgent] = useState<ActiveAgencyAgent | null>(null);
-  const [agencyAgentNotice, setAgencyAgentNotice] = useState<string | null>(null);
+  // Kept only so the agency-agent fetches below still have somewhere to put a
+  // failure; nothing reads it now that the status line is gone.
+  const [, setAgencyAgentNotice] = useState<string | null>(null);
   const commandBackdropRef = useRef<HTMLDivElement | null>(null);
   const [directMode, setDirectMode] = useDirectMode();
   const [goalMode, setGoalMode] = useGoalMode();
@@ -2206,17 +2211,6 @@ export default function AssistantComposer({
           )}
         </div>
 
-        {statusMessage || agencyAgentNotice ? (
-          <div className="flex min-h-7 items-center gap-3 px-3 pb-1 pt-1.5 text-[11px]">
-            <p
-              className="min-w-0 flex-1 text-[#8a6f00]"
-              role="status"
-              aria-live="polite"
-            >
-              {statusMessage ?? agencyAgentNotice}
-            </p>
-          </div>
-        ) : null}
       </div>
 
       {activeLightbox ? (

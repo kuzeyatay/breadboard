@@ -581,7 +581,15 @@ describe("dashboard renders the tree", () => {
   test("the page keeps scrollable room under the fixed terminal dock", () => {
     assert.match(client, /querySelector\("\[data-terminal-dock\]"\)/);
     assert.match(client, /new ResizeObserver/);
-    assert.match(client, /paddingBottom: `calc\(\$\{Math\.round\(dockHeight\)\}px \+ 40vh\)`/);
+    assert.match(client, /paddingBottom: "calc\(var\(--bb-dock-height, 0px\) \+ 40vh\)"/);
+  });
+
+  // The observer fires on every frame of a dock drag. Routed through state it
+  // re-rendered every card on the page each time, so the measurement is written
+  // straight to the custom property the padding reads.
+  test("the dock measurement never goes through React state", () => {
+    assert.match(client, /setProperty\(\s*"--bb-dock-height"/);
+    assert.doesNotMatch(client, /setDockHeight/);
   });
 });
 

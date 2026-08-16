@@ -159,3 +159,22 @@ test("a startup chime leads the greeting in without putting anything on screen",
   // A refused autoplay is a complete outcome, not a reason to retry silently.
   assert.match(script, /introSound\.play\(\)\.catch\(\(\) => \{\s*introPlaying = false;/);
 });
+
+test("the chime can be muted, and a muted screen waits on nothing to hear", () => {
+  // The preference comes from the shell. Nothing the dashboard stores can be
+  // read here: this screen is shown before the dashboard serves anything and
+  // before anyone has signed in.
+  assert.match(script, /api\.getStartupSound\(\)/);
+  assert.doesNotMatch(script, /localStorage|fetch\(/);
+  assert.match(script, /function startIntro\(\): void \{\s*if \(!introEnabled \|\| introPlaying\) return;/);
+
+  // It is settled before the welcome opens. `enterWelcome` picks how long to
+  // hold the greeting back on whether a sound is leading it in, so an answer
+  // that arrived during the welcome would arrive too late to be used.
+  assert.match(script, /introPreference\.then\(\(\) => api\.awaitDashboardReady\(\)/);
+  assert.ok(script.indexOf("const introPreference") < script.indexOf("function beginWelcomeGate"));
+
+  // A shell that cannot answer leaves the chime on: muting is a choice somebody
+  // made, and a failed lookup is not one.
+  assert.match(script, /let introEnabled = true;/);
+});

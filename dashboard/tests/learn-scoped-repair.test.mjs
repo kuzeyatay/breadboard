@@ -259,6 +259,23 @@ describe("loop policy, UI, and regression scope", () => {
     assert.match(source, /newBlockers\.length === 0/);
     assert.match(source, /auditGardenForFinalization\(staging/);
     assert.match(source, /auditFinalGardenState\(buildFinalGardenState\(staging/);
+    assert.match(source, /sourceFormulaReviewFinalizationContextFromGarden\(input\.gardenDir\)/);
+    assert.match(source, /auditGardenForFinalization\(staging, input\.gardenId, \{[\s\S]*?expectedSourceFormulaReviewContext/);
+    assert.match(source, /verifyManifest:[\s\S]*?auditGardenForFinalization\(incoming, input\.gardenId, \{[\s\S]*?expectedSourceFormulaReviewContext/);
+    const finalizerSource = fs.readFileSync(path.join(repoRoot, "src/lib/garden-finalize.ts"), "utf8");
+    assert.match(
+      finalizerSource,
+      /if \(!manifest && !contract\.foundPath\) return undefined/,
+      "an inventory-bound contract must retain immutable authority even if its formula manifest is deleted",
+    );
+    assert.match(
+      finalizerSource,
+      /sourceArtifactInventoryHash:\s*contract\.sourceArtifactInventoryHash/,
+    );
+    assert.match(
+      finalizerSource,
+      /sourceIdentityMap:\s*sourceIdentityMap\.map/,
+    );
     assert.doesNotMatch(source, /runTextbookGeneration|runLearnPlanning|rebuildEntireGarden/);
   });
   test("30-34. UI explains repair, separates rebuild, and hides stale yellow diagnostics", () => {

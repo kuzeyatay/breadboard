@@ -28,7 +28,7 @@ test("reproduce renderer refresh persistence with authenticated Hermes", async (
   });
   await openGardenWorkspace(page, garden);
 
-  const marker = "HERMES_REFRESH_OK";
+  const marker = `HERMES-REFRESH-${Math.floor(100000 + Math.random() * 900000)}`;
   const prompt = `Reply with exactly ${marker}.`;
   const sessionRequests: Array<{
     method: string;
@@ -55,7 +55,7 @@ test("reproduce renderer refresh persistence with authenticated Hermes", async (
           return [{
             role: typeof value.role === "string" ? value.role : "unknown",
             contentLength: content.length,
-            markerHits: [marker, "HERMES_REFRESH_SECOND_OK"].filter((candidate) => content.includes(candidate)),
+            markerHits: [marker].filter((candidate) => content.includes(candidate)),
           }];
         }),
       });
@@ -91,13 +91,13 @@ test("reproduce renderer refresh persistence with authenticated Hermes", async (
   await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
   await assertGardenWorkspace(page, garden, [], 120_000);
   const after = await waitForExactAssistantMarker(page, marker, 45_000);
-  const afterSession = await sessionSummary(page, garden);
+  const afterSession = await sessionSummary(page, garden, marker);
 
   const receipt = {
     schemaVersion: 1,
     runId: qa.run.runId,
     generatedAt: new Date().toISOString(),
-    workflow: "send -> wait -> renderer reload -> wait -> send again",
+    workflow: "send -> await successful transcript PATCH -> renderer reload -> verify",
     marker,
     before,
     composerAfterFirst,
@@ -133,8 +133,8 @@ interface SessionSummary {
   }[];
 }
 
-async function sessionSummary(page: Page, garden: GardenInfo): Promise<SessionSummary> {
-  return page.evaluate(async (clusterSlug) => {
+async function sessionSummary(page: Page, garden: GardenInfo, marker: string): Promise<SessionSummary> {
+  return page.evaluate(async ({ clusterSlug, marker }) => {
     const response = await fetch(`/api/chat-sessions?clusterSlug=${encodeURIComponent(clusterSlug)}`);
     if (!response.ok) throw new Error(`chat session diagnostic failed: ${response.status}`);
     const payload = (await response.json()) as { sessions?: unknown };
@@ -152,9 +152,7 @@ async function sessionSummary(page: Page, garden: GardenInfo): Promise<SessionSu
         const item = message as Record<string, unknown>;
         if (typeof item.role === "string") roles.push(item.role);
         if (typeof item.content === "string") {
-          for (const marker of ["HERMES_REFRESH_OK", "HERMES_REFRESH_SECOND_OK"]) {
-            if (item.content.includes(marker)) markerHits.push(marker);
-          }
+          if (item.content.includes(marker)) markerHits.push(marker);
         }
       }
       return [{
@@ -170,7 +168,7 @@ async function sessionSummary(page: Page, garden: GardenInfo): Promise<SessionSu
       sessionId: selected?.id ?? null,
       sessions: normalized,
     };
-  }, garden.slug);
+  }, { clusterSlug: garden.slug, marker });
 }
 
 async function waitForPersistedTranscript(
@@ -180,7 +178,7 @@ async function waitForPersistedTranscript(
   timeoutMs: number,
 ): Promise<SessionSummary> {
   const deadline = Date.now() + timeoutMs;
-  let latest = await sessionSummary(page, garden);
+  let latest = await sessionSummary(page, garden, marker);
   while (Date.now() < deadline) {
     const session = latest.sessions.find((candidate) =>
       candidate.markerHits.includes(marker),
@@ -189,7 +187,7 @@ async function waitForPersistedTranscript(
       return latest;
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
-    latest = await sessionSummary(page, garden);
+    latest = await sessionSummary(page, garden, marker);
   }
   throw new Error(`Persisted transcript did not contain user and assistant rows for ${marker}.`);
 }

@@ -251,6 +251,7 @@ app.whenReady().then(async () => {
       "awaitDashboardReady",
       "continueToDashboard",
       "copyDiagnostics",
+      "getStartupSound",
       "getStartupState",
       "getVersions",
       "onStartupState",
@@ -259,6 +260,7 @@ app.whenReady().then(async () => {
       "pickFolder",
       "quit",
       "retryService",
+      "setStartupSound",
       "setTheme",
     ]);
     assert.equal(result.versions.app, "0.1.0");

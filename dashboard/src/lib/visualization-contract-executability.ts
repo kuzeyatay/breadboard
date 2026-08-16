@@ -46,18 +46,39 @@ import {
  * gates. It never infers a missing control, changes a goal, or demotes a visual.
  */
 
+/** The model response envelope remains independently versioned from the
+ * reviewer protocol and its durable audit ledger. */
 export const VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION = 1 as const;
 
-/** One review plus at most two semantic rereviews. Transport retries live below this boundary. */
+/**
+ * Version two separates byte/protocol failures from model-authored semantic
+ * candidates. This is deliberately a protocol/ledger change rather than a
+ * deterministic repair: every accepted replacement remains a complete model
+ * response.
+ */
+export const VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION = 2 as const;
+export const VISUAL_CONTRACT_EXECUTABILITY_LEDGER_SCHEMA_VERSION = 2 as const;
+
+/**
+ * At most three parsed semantic candidates are considered. Strictly malformed
+ * or empty provider text gets two bounded protocol retries, for a hard maximum
+ * of five physical provider invocations. `maximumTotalCalls` remains the
+ * legacy input name for the semantic-candidate ceiling.
+ */
 export const VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET = Object.freeze({
   initialCalls: 1,
   maximumRereviewCalls: 2,
   maximumTotalCalls: 3,
+  maximumProtocolRetries: 2,
+  maximumProviderInvocations: 5,
 });
 
 /** Keeps a malformed provider payload from turning the audit ledger into an unbounded file. */
 export const MAX_VISUAL_CONTRACT_EXECUTABILITY_RESPONSE_BYTES = 512_000;
-export const MAX_VISUAL_CONTRACT_EXECUTABILITY_LEDGER_BYTES = 4_000_000;
+/** Five bounded raw responses can also appear as exact feedback in later
+ * packets. Keep the ledger ceiling above that auditable worst case instead of
+ * truncating model text and falsely calling it exact. */
+export const MAX_VISUAL_CONTRACT_EXECUTABILITY_LEDGER_BYTES = 12_000_000;
 const MAX_VISUAL_CONTRACT_EXECUTABILITY_JSON_DIAGNOSTIC_CHARS = 240;
 const MAX_VISUAL_CONTRACT_EXECUTABILITY_JSON_CONTEXT_CHARS = 120;
 
@@ -97,6 +118,7 @@ export interface VisualContractExecutabilityUnitPacket {
 
 export interface VisualContractExecutabilityReviewPacket {
   schemaVersion: typeof VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION;
+  protocolVersion: typeof VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION;
   gardenId: string;
   auditContext?: VisualContractExecutabilityLedgerContext;
   units: VisualContractExecutabilityUnitPacket[];
@@ -107,7 +129,30 @@ export interface VisualContractExecutabilityReviewPacket {
   };
   wholeGardenConstraints?: VisualContractExecutabilityWholeGardenConstraints;
   previousRejectionReasons: string[];
-  previousResponse?: unknown;
+  /** A byte-level failure is supplemental feedback; it never erases the last
+   * parsed semantic candidate that still needs model-authored correction. */
+  previousProtocolFailure?: VisualContractExecutabilityProtocolFailure;
+  /** The complete prior parsed candidate, retained as exact provider text when
+   * available so JSON number spellings such as `1e999` cannot be normalized. */
+  previousSemanticFailure?: VisualContractExecutabilitySemanticFailure;
+}
+
+export interface VisualContractExecutabilityProtocolFailure {
+  providerInvocation: number;
+  protocolRetry: number;
+  responseEncoding: "exact_raw" | "undefined";
+  response: string | null;
+  exactRawResponseSha256: string | null;
+  rejectionReasons: string[];
+}
+
+export interface VisualContractExecutabilitySemanticFailure {
+  providerInvocation: number;
+  semanticCandidate: number;
+  responseEncoding: "exact_raw";
+  response: string;
+  exactRawResponseSha256: string;
+  rejectionReasons: string[];
 }
 
 export interface VisualContractExecutabilityWholeGardenConstraints {
@@ -345,10 +390,14 @@ export interface VisualContractExecutabilityProviderRequest {
   system: string;
   user: string;
   sourceContext: VisualContractExecutabilityReviewPacket;
-  /** One is the initial review; two and three are bounded semantic rereviews. */
+  /** Physical provider invocation. It is intentionally distinct from the
+   * semantic-candidate ordinal when an earlier response was malformed. */
   attempt: number;
   problems: VisualContractExecutabilityProblem[];
   unitIds: string[];
+  requestPurpose: "initial_semantic_review" | "protocol_retry" | "semantic_rereview";
+  semanticCandidatesBeforeRequest: number;
+  protocolRetriesBeforeRequest: number;
 }
 
 export type VisualContractExecutabilityProvider = (
@@ -356,9 +405,12 @@ export type VisualContractExecutabilityProvider = (
 ) => Promise<unknown>;
 
 export interface VisualContractExecutabilityAttempt {
+  /** Physical provider invocation, one-based and contiguous. */
   attempt: number;
   startedAt: string;
   completedAt: string;
+  requestPurpose: "initial_semantic_review" | "protocol_retry" | "semantic_rereview";
+  responseClassification: "protocol_rejection" | "semantic_candidate";
   packet: VisualContractExecutabilityReviewPacket;
   requestHash: string;
   packetHash: string;
@@ -367,14 +419,29 @@ export interface VisualContractExecutabilityAttempt {
   canonicalEvidenceHashes: Record<string, string>;
   wholeGardenConstraintsHash: string | null;
   transportAccounting: {
-    logicalSemanticCall: number;
+    providerInvocation: number;
+    semanticCandidate: number | null;
+    protocolRetry: number | null;
     providerInvocationsAtThisBoundary: 1;
     transportRetries: "owned_below_semantic_boundary_not_counted";
   };
   accepted: boolean;
-  responseEncoding: "json" | "undefined";
-  response: unknown;
+  responseEncoding: "exact_raw" | "undefined";
+  /** Exact provider text, or null only when the provider returned undefined. */
+  response: string | null;
+  /** SHA-256 of the byte-exact provider text. It is required for exact_raw
+   * responses and null for synthetic in-process JSON test providers. */
+  exactRawResponseSha256: string | null;
   rejectionReasons: VisualContractExecutabilityProblem[];
+}
+
+/** Raw Council text is carried as text all the way through the bounded review
+ * state machine. In particular, JSON.parse('{"step":1e999}') produces
+ * Infinity and JSON.stringify would silently turn it into null; this tagged
+ * carrier prevents that conversion before model feedback/audit linkage. */
+export interface VisualContractExecutabilityExactRawResponse {
+  kind: "visual_contract_executability_exact_raw_v2";
+  content: string;
 }
 
 function sha256Json(value: unknown): string {
@@ -385,20 +452,185 @@ function sha256Text(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
-function auditResponse(value: unknown): {
-  responseEncoding: "json" | "undefined";
-  response: unknown;
-} {
-  return value === undefined
-    ? { responseEncoding: "undefined", response: null }
-    : { responseEncoding: "json", response: value };
+function isExactRawProviderResponse(
+  value: unknown,
+): value is VisualContractExecutabilityExactRawResponse {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 2 &&
+    value.kind === "visual_contract_executability_exact_raw_v2" &&
+    typeof value.content === "string"
+  );
+}
+
+/** Synthetic in-process providers used by focused tests may return a value
+ * rather than Council text. Canonicalize it only when JSON serialization is
+ * lossless. This deliberately rejects Infinity, undefined object fields,
+ * duplicate runtime aliases, and other values that would otherwise be
+ * normalized before the durable raw-response audit is written. */
+function exactRawTextFromProviderResponse(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (isExactRawProviderResponse(value)) return value.content;
+  if (typeof value === "string") return value;
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch (error) {
+    throw new Error(
+      `Visual-contract executability provider returned a non-JSON-safe synthetic value: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (serialized === undefined) {
+    throw new Error("Visual-contract executability provider returned an unserializable synthetic value.");
+  }
+  let reparsed: unknown;
+  try {
+    reparsed = JSON.parse(serialized);
+  } catch {
+    throw new Error("Visual-contract executability synthetic serialization was not strict JSON.");
+  }
+  if (!isDeepStrictEqual(value, reparsed)) {
+    throw new Error(
+      "Visual-contract executability provider returned a synthetic value that JSON would normalize; return exact raw provider text instead.",
+    );
+  }
+  return serialized;
+}
+
+interface NormalizedVisualContractExecutabilityProviderResponse {
+  responseEncoding: "exact_raw" | "undefined";
+  response: string | null;
+  exactRawResponseSha256: string | null;
+  parsedValue: unknown;
+  protocolProblems: VisualContractExecutabilityProblem[] | null;
+  terminalProtocolFailure: boolean;
+}
+
+function normalizedVisualContractExecutabilityProviderResponse(
+  value: unknown,
+): NormalizedVisualContractExecutabilityProviderResponse {
+  const raw = exactRawTextFromProviderResponse(value);
+  if (raw === null) {
+    return {
+      responseEncoding: "undefined",
+      response: null,
+      exactRawResponseSha256: null,
+      parsedValue: null,
+      protocolProblems: [{
+        code: "invalid_protocol_response",
+        path: "response",
+        message: "provider returned no exact response text",
+      }],
+      terminalProtocolFailure: false,
+    };
+  }
+  const exactRawResponseSha256 = sha256Text(raw);
+  if (Buffer.byteLength(raw, "utf8") > MAX_VISUAL_CONTRACT_EXECUTABILITY_RESPONSE_BYTES) {
+    return {
+      responseEncoding: "exact_raw",
+      response: raw,
+      exactRawResponseSha256,
+      parsedValue: null,
+      protocolProblems: [{
+        code: "invalid_protocol_response",
+        path: "response",
+        message: `exact provider response exceeds ${MAX_VISUAL_CONTRACT_EXECUTABILITY_RESPONSE_BYTES} UTF-8 bytes`,
+      }],
+      // Exact bytes above the hard response ceiling cannot safely be embedded
+      // in another prompt/ledger. Do not truncate and pretend the feedback is
+      // exact; fail closed at this boundary instead.
+      terminalProtocolFailure: true,
+    };
+  }
+  if (raw.trim().length === 0) {
+    return {
+      responseEncoding: "exact_raw",
+      response: raw,
+      exactRawResponseSha256,
+      parsedValue: null,
+      protocolProblems: [{
+        code: "invalid_protocol_response",
+        path: "response",
+        message: "provider returned empty exact response text",
+      }],
+      terminalProtocolFailure: false,
+    };
+  }
+  try {
+    return {
+      responseEncoding: "exact_raw",
+      response: raw,
+      exactRawResponseSha256,
+      parsedValue: JSON.parse(raw) as unknown,
+      protocolProblems: null,
+      terminalProtocolFailure: false,
+    };
+  } catch {
+    return {
+      responseEncoding: "exact_raw",
+      response: raw,
+      exactRawResponseSha256,
+      parsedValue: null,
+      protocolProblems: [{
+        code: "invalid_protocol_response",
+        path: "response",
+        message: `response is not strict JSON; ${strictJsonSyntaxDiagnostic(raw) ?? "strict JSON.parse failed"}`,
+      }],
+      terminalProtocolFailure: false,
+    };
+  }
+}
+
+function parsedVisualContractExecutabilityAttemptResponse(
+  attempt: Pick<VisualContractExecutabilityAttempt, "responseEncoding" | "response" | "exactRawResponseSha256">,
+): unknown | null {
+  if (
+    attempt.responseEncoding !== "exact_raw" ||
+    typeof attempt.response !== "string" ||
+    attempt.exactRawResponseSha256 !== sha256Text(attempt.response)
+  ) return null;
+  try {
+    return JSON.parse(attempt.response) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function exactRawVisualContractExecutabilityAttemptParses(
+  attempt: Pick<VisualContractExecutabilityAttempt, "responseEncoding" | "response" | "exactRawResponseSha256">,
+): boolean {
+  if (
+    attempt.responseEncoding !== "exact_raw" ||
+    typeof attempt.response !== "string" ||
+    attempt.exactRawResponseSha256 !== sha256Text(attempt.response)
+  ) return false;
+  try {
+    JSON.parse(attempt.response);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export interface VisualContractExecutabilityRunResult<TPlan> {
   learningUnits: LearningUnitContract[];
   plan: TPlan;
+  /** Physical provider invocations, including bounded protocol retries. */
   calls: number;
+  /** Rejected parsed semantic candidates only. */
   rejectedReviews: number;
+  /** Rejected empty/malformed raw provider responses only. */
+  protocolRejections: number;
+  semanticCandidates: number;
+  protocolRetries: number;
+  callBudget: {
+    protocolVersion: typeof VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION;
+    maximumSemanticCandidates: number;
+    maximumProtocolRetries: number;
+    maximumProviderInvocations: number;
+  };
   approvedUnitIds: string[];
   replacedUnitIds: string[];
   acceptedResponse: VisualContractExecutabilityResponse | null;
@@ -411,11 +643,15 @@ export interface VisualContractExecutabilityRunResult<TPlan> {
 
 export class VisualContractExecutabilityReviewError extends Error {
   readonly calls: number;
+  readonly semanticCandidates: number;
+  readonly protocolRetries: number;
   readonly problems: VisualContractExecutabilityProblem[];
   readonly lastResponse: unknown;
 
   constructor(input: {
     calls: number;
+    semanticCandidates: number;
+    protocolRetries: number;
     problems: VisualContractExecutabilityProblem[];
     lastResponse: unknown;
   }) {
@@ -429,6 +665,8 @@ export class VisualContractExecutabilityReviewError extends Error {
     );
     this.name = "VisualContractExecutabilityReviewError";
     this.calls = input.calls;
+    this.semanticCandidates = input.semanticCandidates;
+    this.protocolRetries = input.protocolRetries;
     this.problems = input.problems;
     this.lastResponse = input.lastResponse;
   }
@@ -682,7 +920,8 @@ export function buildVisualContractExecutabilityReviewPacket(input: {
   auditContext?: VisualContractExecutabilityLedgerContext;
   wholeGardenConstraints?: VisualContractExecutabilityWholeGardenConstraints;
   previousRejectionReasons?: VisualContractExecutabilityProblem[];
-  previousResponse?: unknown;
+  previousProtocolFailure?: VisualContractExecutabilityProtocolFailure;
+  previousSemanticFailure?: VisualContractExecutabilitySemanticFailure;
 }): VisualContractExecutabilityReviewPacket {
   const gardenId = compact(input.gardenId);
   if (!gardenId) throw new Error("A garden id is required for visual-contract executability review.");
@@ -724,6 +963,7 @@ export function buildVisualContractExecutabilityReviewPacket(input: {
   });
   return {
     schemaVersion: VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION,
+    protocolVersion: VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION,
     gardenId,
     ...(input.auditContext ? { auditContext: cloneExact(input.auditContext) } : {}),
     units,
@@ -738,8 +978,11 @@ export function buildVisualContractExecutabilityReviewPacket(input: {
     previousRejectionReasons: (input.previousRejectionReasons ?? []).map(
       (item) => `${item.path}: ${item.message}`,
     ),
-    ...(input.previousResponse !== undefined
-      ? { previousResponse: cloneExact(input.previousResponse) }
+    ...(input.previousProtocolFailure
+      ? { previousProtocolFailure: cloneExact(input.previousProtocolFailure) }
+      : {}),
+    ...(input.previousSemanticFailure
+      ? { previousSemanticFailure: cloneExact(input.previousSemanticFailure) }
       : {}),
   };
 }
@@ -757,7 +1000,9 @@ export function visualContractExecutabilitySystemPrompt(): string {
     "For interactionGoal test_prediction, the learner must commit a prediction before the outcome is revealed or evaluated. Require three distinct authored controls in order: an evidence-grounded slider/number/select marked prediction_input, a protocol_action button/toggle marked commit_prediction, then a protocol_action button/toggle marked reveal_outcome or evaluate_prediction. The protocol default must keep the result hidden, and the later observable must retain the selected prediction while showing the result or evaluation.",
     "Use only the canonical evidence supplied with that same unit. Every source-semantic control label and option, observable label, and expected insight must be literally grounded by exact quotes at their anchors. Pure protocol_action controls instead require exactly empty evidence; their model-authored UI labels may express only interaction mechanics and never substantiate a subject claim, observable, or insight. Do not invent subject-matter claims, cases, variables, conditions, or units.",
     "When previousRejectionReasons are present, correct every listed problem in a fresh complete batch. Do not argue with or paraphrase the rejection reasons.",
-    "When previousResponse is a string, it is the exact malformed response from the prior attempt. Inspect its strict JSON syntax diagnostic, then author a fresh complete response; never return a patch, fragment, or commentary about the prior response.",
+    "previousSemanticFailure, when present, is the still-unresolved complete candidate. Its response field and exactRawResponseSha256 bind the exact provider output; correct that candidate's listed semantic failures in a fresh complete batch. A later previousProtocolFailure is supplemental syntax feedback and never replaces or clears previousSemanticFailure.",
+    "When previousProtocolFailure is present, its response is exact malformed or empty provider text plus a strict parser diagnostic. Inspect it only to produce a syntactically valid fresh complete JSON object; never return a patch, fragment, or commentary about it.",
+    "Every numeric control min, max, step, and numeric defaultValue you author must be a JavaScript-finite JSON number. Do not emit non-finite spellings or numeric overflow such as 1e999. This is a format/executability requirement, not an instruction to invent a value: choose only evidence-grounded values justified by the supplied contract.",
     "Before returning, validate the entire response with a strict JSON parser. Return one JSON object only, with no Markdown fence, wrapper, trailing token, or surplus delimiter.",
   ].join(" ");
 }
@@ -772,18 +1017,20 @@ export function buildVisualContractExecutabilityPrompt(
   };
 }
 
-/** Strict executability transport boundary. Valid JSON is decoded once from
- * the exact provider text; invalid nonempty text is returned byte-for-byte so
- * only a fresh bounded AI rereview can replace it. */
+/**
+ * Strict executability transport boundary. Keep all provider text as an exact
+ * tagged string, including valid JSON. Decoding happens transiently inside the
+ * reviewer loop and is repeated during ledger linkage; this prevents JSON
+ * number normalization (notably 1e999 -> Infinity -> null) from laundering
+ * model output before a fresh bounded rereview sees it.
+ */
 export function strictVisualContractExecutabilityResponseOrExactRaw(
   content: string,
-): unknown {
-  if (content.trim().length === 0) return null;
-  try {
-    return JSON.parse(content) as unknown;
-  } catch {
-    return content;
-  }
+): VisualContractExecutabilityExactRawResponse {
+  return {
+    kind: "visual_contract_executability_exact_raw_v2",
+    content,
+  };
 }
 
 export type ParseVisualContractExecutabilityResponseResult =
@@ -1097,6 +1344,26 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
   checkCancelled?: () => void;
   onEvent?: (type: string, data: Record<string, unknown>) => void;
 }): Promise<VisualContractExecutabilityRunResult<TPlan>> {
+  // `maxCalls` is retained as a public compatibility knob for parsed semantic
+  // candidates. It never expands the protocol or physical-invocation caps.
+  const maximumSemanticCandidates = Math.max(
+    1,
+    Math.min(
+      VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET.maximumTotalCalls,
+      input.maxCalls ?? VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET.maximumTotalCalls,
+    ),
+  );
+  const maximumProtocolRetries = VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET.maximumProtocolRetries;
+  const maximumProviderInvocations = Math.min(
+    VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET.maximumProviderInvocations,
+    maximumSemanticCandidates + maximumProtocolRetries,
+  );
+  const callBudget = {
+    protocolVersion: VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION,
+    maximumSemanticCandidates,
+    maximumProtocolRetries,
+    maximumProviderInvocations,
+  } as const;
   const activeUnits = input.learningUnits.filter((unit) => activeRequirement(unit));
   const activeUnitIds = activeUnits.map((unit) => unit.id);
   const beforeContracts = Object.fromEntries(
@@ -1108,6 +1375,10 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
       plan: input.validateAll(input.learningUnits),
       calls: 0,
       rejectedReviews: 0,
+      protocolRejections: 0,
+      semanticCandidates: 0,
+      protocolRetries: 0,
+      callBudget,
       approvedUnitIds: [],
       replacedUnitIds: [],
       acceptedResponse: null,
@@ -1123,24 +1394,30 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
   if (new Set(activeUnitIds).size !== activeUnitIds.length) {
     throw new Error("Visual-contract executability review requires unique active learning-unit ids.");
   }
-  const maxCalls = Math.max(
-    1,
-    Math.min(
-      VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET.maximumTotalCalls,
-      input.maxCalls ?? VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET.maximumTotalCalls,
-    ),
-  );
-  let previousProblems: VisualContractExecutabilityProblem[] = [];
-  let previousResponse: unknown;
   const attempts: VisualContractExecutabilityAttempt[] = [];
-  input.onEvent?.("visual_contract_executability_review_started", {
-    unitIds: activeUnitIds,
-    maximumCalls: maxCalls,
-  });
+  let providerInvocations = 0;
+  let semanticCandidates = 0;
+  /** Number of requests explicitly issued to repair a prior byte/protocol
+   * failure. The initial request is not itself a retry. */
+  let protocolRetries = 0;
+  let protocolRejections = 0;
+  let rejectedReviews = 0;
+  let previousResponseClassification: VisualContractExecutabilityAttempt["responseClassification"] | null = null;
+  let previousProtocolFailure: VisualContractExecutabilityProtocolFailure | undefined;
+  let previousSemanticFailure: VisualContractExecutabilitySemanticFailure | undefined;
+  let previousProtocolProblems: VisualContractExecutabilityProblem[] = [];
+  let previousSemanticProblems: VisualContractExecutabilityProblem[] = [];
 
-  for (let attempt = 1; attempt <= maxCalls; attempt += 1) {
-    input.checkCancelled?.();
-    const packet = buildVisualContractExecutabilityReviewPacket({
+  const primaryProblems = (): VisualContractExecutabilityProblem[] => [
+    ...(previousSemanticFailure ? previousSemanticProblems : []),
+    ...(previousProtocolFailure ? previousProtocolProblems : []),
+  ];
+  const primaryFailureResponse = (): string | null =>
+    previousResponseClassification === "protocol_rejection"
+      ? previousProtocolFailure?.response ?? null
+      : previousSemanticFailure?.response ?? previousProtocolFailure?.response ?? null;
+  const packetForNextRequest = (): VisualContractExecutabilityReviewPacket =>
+    buildVisualContractExecutabilityReviewPacket({
       gardenId: input.gardenId,
       learningUnits: input.learningUnits,
       canonicalEvidenceByUnit: input.canonicalEvidenceByUnit,
@@ -1148,56 +1425,116 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
       ...(input.wholeGardenConstraints
         ? { wholeGardenConstraints: input.wholeGardenConstraints }
         : {}),
-      previousRejectionReasons: previousProblems,
-      ...(previousResponse !== undefined ? { previousResponse } : {}),
+      previousRejectionReasons: primaryProblems(),
+      ...(previousProtocolFailure ? { previousProtocolFailure } : {}),
+      ...(previousSemanticFailure ? { previousSemanticFailure } : {}),
     });
-    const prompt = buildVisualContractExecutabilityPrompt(packet);
-    const startedAt = new Date().toISOString();
-    const attemptAudit = {
-      attempt,
-      startedAt,
-      packet: cloneExact(packet),
+  const rejectionReasonStrings = (reasons: VisualContractExecutabilityProblem[]): string[] =>
+    reasons.map((item) => `${item.path}: ${item.message}`);
+  const auditAttempt = (inputAttempt: {
+    packet: VisualContractExecutabilityReviewPacket;
+    startedAt: string;
+    requestPurpose: VisualContractExecutabilityAttempt["requestPurpose"];
+    responseClassification: VisualContractExecutabilityAttempt["responseClassification"];
+    semanticCandidate: number | null;
+    protocolRetry: number | null;
+    normalized: NormalizedVisualContractExecutabilityProviderResponse;
+    accepted: boolean;
+    rejectionReasons: VisualContractExecutabilityProblem[];
+  }): VisualContractExecutabilityAttempt => {
+    const prompt = buildVisualContractExecutabilityPrompt(inputAttempt.packet);
+    return {
+      attempt: providerInvocations,
+      startedAt: inputAttempt.startedAt,
+      completedAt: new Date().toISOString(),
+      requestPurpose: inputAttempt.requestPurpose,
+      responseClassification: inputAttempt.responseClassification,
+      packet: cloneExact(inputAttempt.packet),
       requestHash: sha256Json({ system: prompt.system, user: prompt.user }),
-      packetHash: sha256Json(packet),
+      packetHash: sha256Json(inputAttempt.packet),
       systemPromptHash: sha256Text(prompt.system),
       responseSchemaHash: VISUAL_CONTRACT_EXECUTABILITY_RESPONSE_SCHEMA_HASH,
       canonicalEvidenceHashes: Object.fromEntries(
-        packet.units.map((unit) => [unit.unitId, sha256Json(unit.canonicalEvidence)]),
+        inputAttempt.packet.units.map((unit) => [unit.unitId, sha256Json(unit.canonicalEvidence)]),
       ),
-      wholeGardenConstraintsHash: packet.wholeGardenConstraints
-        ? sha256Json(packet.wholeGardenConstraints)
+      wholeGardenConstraintsHash: inputAttempt.packet.wholeGardenConstraints
+        ? sha256Json(inputAttempt.packet.wholeGardenConstraints)
         : null,
       transportAccounting: {
-        logicalSemanticCall: attempt,
-        providerInvocationsAtThisBoundary: 1 as const,
-        transportRetries: "owned_below_semantic_boundary_not_counted" as const,
+        providerInvocation: providerInvocations,
+        semanticCandidate: inputAttempt.semanticCandidate,
+        protocolRetry: inputAttempt.protocolRetry,
+        providerInvocationsAtThisBoundary: 1,
+        transportRetries: "owned_below_semantic_boundary_not_counted",
       },
+      accepted: inputAttempt.accepted,
+      responseEncoding: inputAttempt.normalized.responseEncoding,
+      response: inputAttempt.normalized.response,
+      exactRawResponseSha256: inputAttempt.normalized.exactRawResponseSha256,
+      rejectionReasons: cloneExact(inputAttempt.rejectionReasons),
     };
+  };
+  input.onEvent?.("visual_contract_executability_review_started", {
+    unitIds: activeUnitIds,
+    maximumSemanticCandidates,
+    maximumProtocolRetries,
+    maximumProviderInvocations,
+  });
+
+  while (
+    providerInvocations < maximumProviderInvocations &&
+    semanticCandidates < maximumSemanticCandidates
+  ) {
+    input.checkCancelled?.();
+    const requestPurpose: VisualContractExecutabilityAttempt["requestPurpose"] =
+      providerInvocations === 0
+        ? "initial_semantic_review"
+        : previousResponseClassification === "protocol_rejection"
+          ? "protocol_retry"
+          : "semantic_rereview";
+    if (
+      requestPurpose === "protocol_retry" &&
+      protocolRetries >= maximumProtocolRetries
+    ) break;
+    const protocolRetryForRequest = requestPurpose === "protocol_retry"
+      ? protocolRetries + 1
+      : null;
+    if (protocolRetryForRequest !== null) protocolRetries = protocolRetryForRequest;
+    const packet = packetForNextRequest();
+    const prompt = buildVisualContractExecutabilityPrompt(packet);
+    const startedAt = new Date().toISOString();
+    providerInvocations += 1;
     // Deliberately no catch: a true transport/provider exception escapes this
-    // semantic budget after exactly one logical call.
+    // bounded reviewer state after exactly one physical provider invocation.
     let rawResponse: unknown;
     try {
       rawResponse = await input.provider({
         ...prompt,
-        attempt,
-        problems: cloneExact(previousProblems),
+        attempt: providerInvocations,
+        problems: cloneExact(primaryProblems()),
         unitIds: [...activeUnitIds],
+        requestPurpose,
+        semanticCandidatesBeforeRequest: semanticCandidates,
+        protocolRetriesBeforeRequest: protocolRetryForRequest === null
+          ? protocolRetries
+          : protocolRetries - 1,
       });
     } catch (error) {
       try {
         input.checkCancelled?.();
       } catch (cancelled) {
         input.onEvent?.("visual_contract_executability_review_cancelled", {
-          attempt,
+          attempt: providerInvocations,
           unitIds: activeUnitIds,
           reason: cancelled instanceof Error ? cancelled.message : String(cancelled),
         });
         throw cancelled;
       }
       input.onEvent?.("visual_contract_executability_review_transport_aborted", {
-        attempt,
+        attempt: providerInvocations,
         unitIds: activeUnitIds,
-        semanticRejectionsBeforeTransportFailure: attempt - 1,
+        semanticCandidatesBeforeTransportFailure: semanticCandidates,
+        protocolRetriesBeforeTransportFailure: protocolRetries,
         reason: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -1206,31 +1543,111 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
       input.checkCancelled?.();
     } catch (error) {
       input.onEvent?.("visual_contract_executability_review_cancelled", {
-        attempt,
+        attempt: providerInvocations,
         unitIds: activeUnitIds,
         reason: error instanceof Error ? error.message : String(error),
       });
       throw error;
     }
-    const exactResponse = cloneExact(rawResponse);
+    const normalized = normalizedVisualContractExecutabilityProviderResponse(rawResponse);
+    if (normalized.protocolProblems) {
+      protocolRejections += 1;
+      previousResponseClassification = "protocol_rejection";
+      if (normalized.terminalProtocolFailure) {
+        input.onEvent?.("visual_contract_executability_review_exhausted", {
+          calls: providerInvocations,
+          semanticCandidates,
+          protocolRetries,
+          protocolRejections,
+          maximumSemanticCandidates,
+          maximumProtocolRetries,
+          maximumProviderInvocations,
+          terminalProtocolFailure: true,
+          unitIds: activeUnitIds,
+          reasons: rejectionReasonStrings(normalized.protocolProblems),
+        });
+        throw new VisualContractExecutabilityReviewError({
+          calls: providerInvocations,
+          semanticCandidates,
+          protocolRetries,
+          problems: normalized.protocolProblems,
+          lastResponse: "[exact provider response omitted from feedback because it exceeded the bounded raw-response ceiling]",
+        });
+      }
+      previousProtocolProblems = cloneExact(normalized.protocolProblems);
+      previousProtocolFailure = {
+        providerInvocation: providerInvocations,
+        protocolRetry: protocolRetryForRequest ?? 0,
+        responseEncoding: normalized.responseEncoding,
+        response: normalized.response,
+        exactRawResponseSha256: normalized.exactRawResponseSha256,
+        rejectionReasons: rejectionReasonStrings(normalized.protocolProblems),
+      };
+      attempts.push(auditAttempt({
+        packet,
+        startedAt,
+        requestPurpose,
+        responseClassification: "protocol_rejection",
+        semanticCandidate: null,
+        protocolRetry: protocolRetryForRequest,
+        normalized,
+        accepted: false,
+        rejectionReasons: normalized.protocolProblems,
+      }));
+      input.onEvent?.("visual_contract_executability_review_rejected", {
+        attempt: providerInvocations,
+        requestPurpose,
+        responseClassification: "protocol_rejection",
+        semanticCandidates,
+        protocolRetries,
+        protocolRejections,
+        reasons: rejectionReasonStrings(normalized.protocolProblems),
+      });
+      continue;
+    }
+
+    semanticCandidates += 1;
+    // A parsed candidate is semantically actionable. It supersedes only the
+    // byte-level feedback, never a prior semantic failure until this candidate
+    // itself has been accepted or rejected below.
+    previousProtocolFailure = undefined;
+    previousProtocolProblems = [];
+    previousResponseClassification = "semantic_candidate";
     const parsed = parseVisualContractExecutabilityResponse({
-      value: exactResponse,
+      value: normalized.parsedValue,
       gardenId: input.gardenId,
       activeUnitIds,
     });
     if (!parsed.ok) {
-      previousProblems = parsed.problems;
-      previousResponse = exactResponse;
-      attempts.push({
-        ...attemptAudit,
-        completedAt: new Date().toISOString(),
+      rejectedReviews += 1;
+      previousSemanticProblems = cloneExact(parsed.problems);
+      previousSemanticFailure = {
+        providerInvocation: providerInvocations,
+        semanticCandidate: semanticCandidates,
+        responseEncoding: "exact_raw",
+        response: normalized.response as string,
+        exactRawResponseSha256: normalized.exactRawResponseSha256 as string,
+        rejectionReasons: rejectionReasonStrings(parsed.problems),
+      };
+      attempts.push(auditAttempt({
+        packet,
+        startedAt,
+        requestPurpose,
+        responseClassification: "semantic_candidate",
+        semanticCandidate: semanticCandidates,
+        protocolRetry: protocolRetryForRequest,
+        normalized,
         accepted: false,
-        ...auditResponse(exactResponse),
-        rejectionReasons: cloneExact(previousProblems),
-      });
+        rejectionReasons: parsed.problems,
+      }));
       input.onEvent?.("visual_contract_executability_review_rejected", {
-        attempt,
-        reasons: previousProblems.map((item) => `${item.path}: ${item.message}`),
+        attempt: providerInvocations,
+        requestPurpose,
+        responseClassification: "semantic_candidate",
+        semanticCandidates,
+        protocolRetries,
+        protocolRejections,
+        reasons: rejectionReasonStrings(parsed.problems),
       });
       continue;
     }
@@ -1240,36 +1657,70 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
       canonicalEvidenceByUnit: input.canonicalEvidenceByUnit,
     });
     if (!applied.ok) {
-      previousProblems = applied.problems;
-      previousResponse = exactResponse;
-      attempts.push({
-        ...attemptAudit,
-        completedAt: new Date().toISOString(),
+      rejectedReviews += 1;
+      previousSemanticProblems = cloneExact(applied.problems);
+      previousSemanticFailure = {
+        providerInvocation: providerInvocations,
+        semanticCandidate: semanticCandidates,
+        responseEncoding: "exact_raw",
+        response: normalized.response as string,
+        exactRawResponseSha256: normalized.exactRawResponseSha256 as string,
+        rejectionReasons: rejectionReasonStrings(applied.problems),
+      };
+      attempts.push(auditAttempt({
+        packet,
+        startedAt,
+        requestPurpose,
+        responseClassification: "semantic_candidate",
+        semanticCandidate: semanticCandidates,
+        protocolRetry: protocolRetryForRequest,
+        normalized,
         accepted: false,
-        ...auditResponse(exactResponse),
-        rejectionReasons: cloneExact(previousProblems),
-      });
+        rejectionReasons: applied.problems,
+      }));
       input.onEvent?.("visual_contract_executability_review_rejected", {
-        attempt,
-        reasons: previousProblems.map((item) => `${item.path}: ${item.message}`),
+        attempt: providerInvocations,
+        requestPurpose,
+        responseClassification: "semantic_candidate",
+        semanticCandidates,
+        protocolRetries,
+        protocolRejections,
+        reasons: rejectionReasonStrings(applied.problems),
       });
       continue;
     }
 
     const globalProblems = input.validateGlobal?.(applied.learningUnits) ?? [];
     if (globalProblems.length > 0) {
-      previousProblems = cloneExact(globalProblems);
-      previousResponse = exactResponse;
-      attempts.push({
-        ...attemptAudit,
-        completedAt: new Date().toISOString(),
+      rejectedReviews += 1;
+      previousSemanticProblems = cloneExact(globalProblems);
+      previousSemanticFailure = {
+        providerInvocation: providerInvocations,
+        semanticCandidate: semanticCandidates,
+        responseEncoding: "exact_raw",
+        response: normalized.response as string,
+        exactRawResponseSha256: normalized.exactRawResponseSha256 as string,
+        rejectionReasons: rejectionReasonStrings(globalProblems),
+      };
+      attempts.push(auditAttempt({
+        packet,
+        startedAt,
+        requestPurpose,
+        responseClassification: "semantic_candidate",
+        semanticCandidate: semanticCandidates,
+        protocolRetry: protocolRetryForRequest,
+        normalized,
         accepted: false,
-        ...auditResponse(exactResponse),
-        rejectionReasons: cloneExact(previousProblems),
-      });
+        rejectionReasons: globalProblems,
+      }));
       input.onEvent?.("visual_contract_executability_review_rejected", {
-        attempt,
-        reasons: previousProblems.map((item) => `${item.path}: ${item.message}`),
+        attempt: providerInvocations,
+        requestPurpose,
+        responseClassification: "semantic_candidate",
+        semanticCandidates,
+        protocolRetries,
+        protocolRejections,
+        reasons: rejectionReasonStrings(globalProblems),
       });
       continue;
     }
@@ -1278,33 +1729,55 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
     try {
       plan = input.validateAll(applied.learningUnits);
     } catch (error) {
-      previousProblems = [{
+      const validationProblems: VisualContractExecutabilityProblem[] = [{
         code: "global_contract_validation_failed",
         path: "whole_garden",
         message: error instanceof Error ? error.message : String(error),
       }];
-      previousResponse = exactResponse;
-      attempts.push({
-        ...attemptAudit,
-        completedAt: new Date().toISOString(),
+      rejectedReviews += 1;
+      previousSemanticProblems = cloneExact(validationProblems);
+      previousSemanticFailure = {
+        providerInvocation: providerInvocations,
+        semanticCandidate: semanticCandidates,
+        responseEncoding: "exact_raw",
+        response: normalized.response as string,
+        exactRawResponseSha256: normalized.exactRawResponseSha256 as string,
+        rejectionReasons: rejectionReasonStrings(validationProblems),
+      };
+      attempts.push(auditAttempt({
+        packet,
+        startedAt,
+        requestPurpose,
+        responseClassification: "semantic_candidate",
+        semanticCandidate: semanticCandidates,
+        protocolRetry: protocolRetryForRequest,
+        normalized,
         accepted: false,
-        ...auditResponse(exactResponse),
-        rejectionReasons: cloneExact(previousProblems),
-      });
+        rejectionReasons: validationProblems,
+      }));
       input.onEvent?.("visual_contract_executability_review_rejected", {
-        attempt,
-        reasons: previousProblems.map((item) => `${item.path}: ${item.message}`),
+        attempt: providerInvocations,
+        requestPurpose,
+        responseClassification: "semantic_candidate",
+        semanticCandidates,
+        protocolRetries,
+        protocolRejections,
+        reasons: rejectionReasonStrings(validationProblems),
       });
       continue;
     }
 
-    attempts.push({
-      ...attemptAudit,
-      completedAt: new Date().toISOString(),
+    attempts.push(auditAttempt({
+      packet,
+      startedAt,
+      requestPurpose,
+      responseClassification: "semantic_candidate",
+      semanticCandidate: semanticCandidates,
+      protocolRetry: protocolRetryForRequest,
+      normalized,
       accepted: true,
-      ...auditResponse(exactResponse),
       rejectionReasons: [],
-    });
+    }));
     const approvedUnitIds = parsed.response.reviews
       .filter((review) => review.verdict === "approve")
       .map((review) => review.unitId);
@@ -1314,16 +1787,23 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
         .map((unit) => [unit.id, completeVisualContractForUnit(unit)]),
     );
     input.onEvent?.("visual_contract_executability_review_completed", {
-      calls: attempt,
-      rejectedReviews: attempt - 1,
+      calls: providerInvocations,
+      semanticCandidates,
+      protocolRetries,
+      protocolRejections,
+      rejectedReviews,
       approvedUnitIds,
       replacedUnitIds: applied.replacedUnitIds,
     });
     return {
       learningUnits: applied.learningUnits,
       plan,
-      calls: attempt,
-      rejectedReviews: attempt - 1,
+      calls: providerInvocations,
+      rejectedReviews,
+      protocolRejections,
+      semanticCandidates,
+      protocolRetries,
+      callBudget,
       approvedUnitIds,
       replacedUnitIds: applied.replacedUnitIds,
       acceptedResponse: parsed.response,
@@ -1338,14 +1818,22 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
   }
 
   input.onEvent?.("visual_contract_executability_review_exhausted", {
-    calls: maxCalls,
+    calls: providerInvocations,
+    semanticCandidates,
+    protocolRetries,
+    protocolRejections,
+    maximumSemanticCandidates,
+    maximumProtocolRetries,
+    maximumProviderInvocations,
     unitIds: activeUnitIds,
-    reasons: previousProblems.map((item) => `${item.path}: ${item.message}`),
+    reasons: rejectionReasonStrings(primaryProblems()),
   });
   throw new VisualContractExecutabilityReviewError({
-    calls: maxCalls,
-    problems: previousProblems,
-    lastResponse: previousResponse,
+    calls: providerInvocations,
+    semanticCandidates,
+    protocolRetries,
+    problems: primaryProblems(),
+    lastResponse: primaryFailureResponse(),
   });
 }
 
@@ -1462,7 +1950,7 @@ function boundVisualizationOpportunity(
 }
 
 export interface VisualContractExecutabilityLedger {
-  schemaVersion: typeof VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION;
+  schemaVersion: typeof VISUAL_CONTRACT_EXECUTABILITY_LEDGER_SCHEMA_VERSION;
   gardenId: string;
   generatedAt: string;
   context: VisualContractExecutabilityLedgerContext;
@@ -1474,15 +1962,25 @@ export interface VisualContractExecutabilityLedger {
   };
   auditHashing: {
     algorithm: "sha256";
-    serialization: "JSON.stringify_utf8_v1";
+    serialization: "JSON.stringify_utf8_v2_exact_raw_provider_text";
     responseSchemaHash: string;
+    protocolVersion: typeof VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION;
   };
   callAccounting: {
-    semanticCalls: number;
-    providerInvocationsAtSemanticBoundary: number;
+    protocolVersion: typeof VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION;
+    maximumSemanticCandidates: number;
+    maximumProtocolRetries: number;
+    maximumProviderInvocations: number;
+    providerInvocations: number;
+    semanticCandidates: number;
+    protocolRetries: number;
+    protocolRejections: number;
     transportAttempts: "not_observable_below_provider_boundary";
   };
+  /** Rejected parsed candidate batches only; see callAccounting.protocolRejections
+   * for byte/protocol failures. */
   rejectedReviews: number;
+  protocolRejections: number;
   wholeGardenConstraints: VisualContractExecutabilityWholeGardenConstraints;
   authoritativePlanPolicy: {
     visualBudget: VisualizationPlan["visualBudget"];
@@ -1679,6 +2177,99 @@ function isTransportAccountingEnvelope(value: unknown): boolean {
   );
 }
 
+function isExecutabilityTransportAccountingEnvelope(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    exactKeySet(value, [
+      "providerInvocation",
+      "semanticCandidate",
+      "protocolRetry",
+      "providerInvocationsAtThisBoundary",
+      "transportRetries",
+    ]) &&
+    Number.isInteger(value.providerInvocation) &&
+    Number(value.providerInvocation) > 0 &&
+    (value.semanticCandidate === null ||
+      (Number.isInteger(value.semanticCandidate) && Number(value.semanticCandidate) > 0)) &&
+    (value.protocolRetry === null ||
+      (Number.isInteger(value.protocolRetry) && Number(value.protocolRetry) > 0)) &&
+    value.providerInvocationsAtThisBoundary === 1 &&
+    value.transportRetries === "owned_below_semantic_boundary_not_counted"
+  );
+}
+
+function isExactRawResponseEnvelope(input: {
+  responseEncoding: unknown;
+  response: unknown;
+  exactRawResponseSha256: unknown;
+}): boolean {
+  return (
+    input.responseEncoding === "exact_raw" &&
+    typeof input.response === "string" &&
+    Buffer.byteLength(input.response, "utf8") <=
+      MAX_VISUAL_CONTRACT_EXECUTABILITY_RESPONSE_BYTES &&
+    SHA256_HEX_PATTERN.test(String(input.exactRawResponseSha256 ?? "")) &&
+    input.exactRawResponseSha256 === sha256Text(input.response)
+  ) || (
+    input.responseEncoding === "undefined" &&
+    input.response === null &&
+    input.exactRawResponseSha256 === null
+  );
+}
+
+function isProtocolFailureEnvelope(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    exactKeySet(value, [
+      "providerInvocation",
+      "protocolRetry",
+      "responseEncoding",
+      "response",
+      "exactRawResponseSha256",
+      "rejectionReasons",
+    ]) &&
+    Number.isInteger(value.providerInvocation) &&
+    Number(value.providerInvocation) > 0 &&
+    Number.isInteger(value.protocolRetry) &&
+    Number(value.protocolRetry) >= 0 &&
+    (value.responseEncoding === "exact_raw" || value.responseEncoding === "undefined") &&
+    isExactRawResponseEnvelope({
+      responseEncoding: value.responseEncoding,
+      response: value.response,
+      exactRawResponseSha256: value.exactRawResponseSha256,
+    }) &&
+    isStringArray(value.rejectionReasons) &&
+    value.rejectionReasons.every((reason) => Boolean(compact(reason)))
+  );
+}
+
+function isSemanticFailureEnvelope(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    exactKeySet(value, [
+      "providerInvocation",
+      "semanticCandidate",
+      "responseEncoding",
+      "response",
+      "exactRawResponseSha256",
+      "rejectionReasons",
+    ]) &&
+    Number.isInteger(value.providerInvocation) &&
+    Number(value.providerInvocation) > 0 &&
+    Number.isInteger(value.semanticCandidate) &&
+    Number(value.semanticCandidate) > 0 &&
+    isExactRawResponseEnvelope({
+      responseEncoding: value.responseEncoding,
+      response: value.response,
+      exactRawResponseSha256: value.exactRawResponseSha256,
+    }) &&
+    value.responseEncoding === "exact_raw" &&
+    typeof value.response === "string" &&
+    isStringArray(value.rejectionReasons) &&
+    value.rejectionReasons.every((reason) => Boolean(compact(reason)))
+  );
+}
+
 function isLedgerContextEnvelope(value: unknown): value is VisualContractExecutabilityLedgerContext {
   if (!isRecord(value)) return false;
   if (value.phase === "planning") {
@@ -1741,26 +2332,32 @@ function isExecutabilityPacketEnvelope(value: unknown): boolean {
   if (!isRecord(value)) return false;
   const hasAuditContext = Object.prototype.hasOwnProperty.call(value, "auditContext");
   const hasConstraints = Object.prototype.hasOwnProperty.call(value, "wholeGardenConstraints");
-  const hasPreviousResponse = Object.prototype.hasOwnProperty.call(value, "previousResponse");
+  const hasPreviousProtocolFailure = Object.prototype.hasOwnProperty.call(value, "previousProtocolFailure");
+  const hasPreviousSemanticFailure = Object.prototype.hasOwnProperty.call(value, "previousSemanticFailure");
   if (!exactKeySet(value, [
     "schemaVersion",
+    "protocolVersion",
     "gardenId",
     ...(hasAuditContext ? ["auditContext"] : []),
     "units",
     "technicalCapabilities",
     ...(hasConstraints ? ["wholeGardenConstraints"] : []),
     "previousRejectionReasons",
-    ...(hasPreviousResponse ? ["previousResponse"] : []),
+    ...(hasPreviousProtocolFailure ? ["previousProtocolFailure"] : []),
+    ...(hasPreviousSemanticFailure ? ["previousSemanticFailure"] : []),
   ])) return false;
   if (
     value.schemaVersion !== VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION ||
+    value.protocolVersion !== VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION ||
     !compact(value.gardenId) ||
     !Array.isArray(value.units) ||
     !isStringArray(value.previousRejectionReasons) ||
     (hasAuditContext && !isLedgerContextEnvelope(value.auditContext)) ||
     !isRecord(value.technicalCapabilities) ||
     !exactKeySet(value.technicalCapabilities, ["manifestVersion", "manifestHash", "manifest"]) ||
-    (hasConstraints && !isWholeGardenConstraintsEnvelope(value.wholeGardenConstraints))
+    (hasConstraints && !isWholeGardenConstraintsEnvelope(value.wholeGardenConstraints)) ||
+    (hasPreviousProtocolFailure && !isProtocolFailureEnvelope(value.previousProtocolFailure)) ||
+    (hasPreviousSemanticFailure && !isSemanticFailureEnvelope(value.previousSemanticFailure))
   ) return false;
   return value.units.every((unit) =>
     isRecord(unit) &&
@@ -1834,6 +2431,7 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
     "auditHashing",
     "callAccounting",
     "rejectedReviews",
+    "protocolRejections",
     "wholeGardenConstraints",
     "authoritativePlanPolicy",
     "immutableGardenAllocation",
@@ -1845,7 +2443,7 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
   ])) {
     problems.push("executability ledger top-level fields are missing or unexpected");
   }
-  if (value.schemaVersion !== VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION) {
+  if (value.schemaVersion !== VISUAL_CONTRACT_EXECUTABILITY_LEDGER_SCHEMA_VERSION) {
     problems.push("executability ledger schemaVersion is invalid");
   }
   if (!compact(value.gardenId)) problems.push("executability ledger gardenId is missing");
@@ -1853,20 +2451,47 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
   if (
     !isRecord(value.callAccounting) ||
     !exactKeySet(value.callAccounting, [
-      "semanticCalls",
-      "providerInvocationsAtSemanticBoundary",
+      "protocolVersion",
+      "maximumSemanticCandidates",
+      "maximumProtocolRetries",
+      "maximumProviderInvocations",
+      "providerInvocations",
+      "semanticCandidates",
+      "protocolRetries",
+      "protocolRejections",
       "transportAttempts",
     ]) ||
-    !Number.isInteger(value.callAccounting.semanticCalls) ||
-    Number(value.callAccounting.semanticCalls) < 0 ||
-    value.callAccounting.providerInvocationsAtSemanticBoundary !==
-      value.callAccounting.semanticCalls ||
+    value.callAccounting.protocolVersion !== VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION ||
+    !Number.isInteger(value.callAccounting.maximumSemanticCandidates) ||
+    Number(value.callAccounting.maximumSemanticCandidates) < 1 ||
+    Number(value.callAccounting.maximumSemanticCandidates) >
+      VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET.maximumTotalCalls ||
+    value.callAccounting.maximumProtocolRetries !==
+      VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET.maximumProtocolRetries ||
+    !Number.isInteger(value.callAccounting.maximumProviderInvocations) ||
+    value.callAccounting.maximumProviderInvocations !==
+      Math.min(
+        VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET.maximumProviderInvocations,
+        Number(value.callAccounting.maximumSemanticCandidates) +
+          Number(value.callAccounting.maximumProtocolRetries),
+      ) ||
+    !Number.isInteger(value.callAccounting.providerInvocations) ||
+    Number(value.callAccounting.providerInvocations) < 0 ||
+    !Number.isInteger(value.callAccounting.semanticCandidates) ||
+    Number(value.callAccounting.semanticCandidates) < 0 ||
+    !Number.isInteger(value.callAccounting.protocolRetries) ||
+    Number(value.callAccounting.protocolRetries) < 0 ||
+    !Number.isInteger(value.callAccounting.protocolRejections) ||
+    Number(value.callAccounting.protocolRejections) < 0 ||
     value.callAccounting.transportAttempts !== "not_observable_below_provider_boundary"
   ) {
     problems.push("executability ledger semantic/transport call accounting is invalid");
   }
   if (!Number.isInteger(value.rejectedReviews) || Number(value.rejectedReviews) < 0) {
     problems.push("executability ledger rejectedReviews is invalid");
+  }
+  if (!Number.isInteger(value.protocolRejections) || Number(value.protocolRejections) < 0) {
+    problems.push("executability ledger protocolRejections is invalid");
   }
   if (!isWholeGardenConstraintsEnvelope(value.wholeGardenConstraints)) {
     problems.push("executability ledger whole-garden constraints are invalid");
@@ -1932,10 +2557,16 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
   }
   if (
     !isRecord(value.auditHashing) ||
-    !exactKeySet(value.auditHashing, ["algorithm", "serialization", "responseSchemaHash"]) ||
+    !exactKeySet(value.auditHashing, [
+      "algorithm",
+      "serialization",
+      "responseSchemaHash",
+      "protocolVersion",
+    ]) ||
     value.auditHashing.algorithm !== "sha256" ||
-    value.auditHashing.serialization !== "JSON.stringify_utf8_v1" ||
-    value.auditHashing.responseSchemaHash !== VISUAL_CONTRACT_EXECUTABILITY_RESPONSE_SCHEMA_HASH
+    value.auditHashing.serialization !== "JSON.stringify_utf8_v2_exact_raw_provider_text" ||
+    value.auditHashing.responseSchemaHash !== VISUAL_CONTRACT_EXECUTABILITY_RESPONSE_SCHEMA_HASH ||
+    value.auditHashing.protocolVersion !== VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION
   ) {
     problems.push("executability ledger audit hashing contract is invalid");
   }
@@ -2000,6 +2631,8 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
           "attempt",
           "startedAt",
           "completedAt",
+          "requestPurpose",
+          "responseClassification",
           "packet",
           "requestHash",
           "packetHash",
@@ -2011,17 +2644,28 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
           "accepted",
           "responseEncoding",
           "response",
+          "exactRawResponseSha256",
           "rejectionReasons",
         ]) ||
         !isRecord(attempt.canonicalEvidenceHashes) ||
         !Object.values(attempt.canonicalEvidenceHashes).every((hash) =>
           SHA256_HEX_PATTERN.test(String(hash))) ||
         !isExecutabilityPacketEnvelope(attempt.packet) ||
-        !isTransportAccountingEnvelope(attempt.transportAccounting) ||
+        !isExecutabilityTransportAccountingEnvelope(attempt.transportAccounting) ||
         !Array.isArray(attempt.rejectionReasons) ||
         !attempt.rejectionReasons.every(isExecutabilityProblemEnvelope) ||
         !Number.isInteger(attempt.attempt) ||
+        (attempt.requestPurpose !== "initial_semantic_review" &&
+          attempt.requestPurpose !== "protocol_retry" &&
+          attempt.requestPurpose !== "semantic_rereview") ||
+        (attempt.responseClassification !== "protocol_rejection" &&
+          attempt.responseClassification !== "semantic_candidate") ||
         typeof attempt.accepted !== "boolean" ||
+        !isExactRawResponseEnvelope({
+          responseEncoding: attempt.responseEncoding,
+          response: attempt.response,
+          exactRawResponseSha256: attempt.exactRawResponseSha256,
+        }) ||
         !isIsoTimestamp(attempt.startedAt) ||
         !isIsoTimestamp(attempt.completedAt)
       ) {
@@ -2075,6 +2719,166 @@ function visualContractExecutabilityLedgerEnvelopeProblems(value: unknown): stri
     problems.push("executability ledger integrityHash does not match its contents");
   }
   return problems;
+}
+
+/**
+ * Strict linkage must be able to replay a rejected parsed candidate rather
+ * than trusting the candidate's self-authored rejection text.  The durable
+ * ledger deliberately stores complete pre-review contracts and canonical
+ * evidence, so this only reprojects those signed inputs; it never repairs or
+ * fills a model contract.  A synthetic map is sufficient for the existing
+ * whole-plan validator because placement is not a semantic input to the
+ * executability review, while the original section/unit topology remains
+ * bound by `wholeGardenConstraints`.
+ */
+interface ExecutabilitySemanticReplayInput {
+  learningUnits: LearningUnitContract[];
+  canonicalEvidenceByUnit: VisualizationCanonicalEvidenceByUnit;
+  learningMap: ProposedLearningMap;
+}
+
+function executabilitySemanticReplayInputFromLedger(input: {
+  ledger: VisualContractExecutabilityLedger;
+  finalLearningUnits: LearningUnitContract[];
+}): ExecutabilitySemanticReplayInput | null {
+  const activeUnits = input.finalLearningUnits.filter((unit) => activeRequirement(unit));
+  const activeIds = activeUnits.map((unit) => unit.id);
+  const initialPacket = input.ledger.attempts[0]?.packet;
+  if (!initialPacket || !isDeepStrictEqual(initialPacket.units.map((unit) => unit.unitId), activeIds)) {
+    return null;
+  }
+  const ledgerByUnit = new Map(input.ledger.units.map((unit) => [unit.unitId, unit]));
+  const allocationByUnit = new Map(
+    input.ledger.immutableGardenAllocation.map((allocation) => [allocation.unitId, allocation]),
+  );
+  if (
+    activeUnits.some((unit) => !ledgerByUnit.has(unit.id)) ||
+    input.finalLearningUnits.some((unit) => !allocationByUnit.has(unit.id))
+  ) return null;
+  const canonicalEvidenceByUnit = Object.fromEntries(
+    initialPacket.units.map((unit) => [unit.unitId, cloneExact(unit.canonicalEvidence)]),
+  ) as VisualizationCanonicalEvidenceByUnit;
+  const beforeResponse: VisualContractExecutabilityResponse = {
+    schemaVersion: VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION,
+    gardenId: input.ledger.gardenId,
+    reviews: activeIds.map((unitId) => ({
+      unitId,
+      verdict: "replace" as const,
+      reason: "Rebind the immutable signed pre-review contract for strict ledger replay.",
+      replacement: cloneExact(ledgerByUnit.get(unitId)!.beforeReviewContract),
+    })),
+  };
+  // Final routed units may have a projected visual type in their decision.
+  // Rejected candidates were evaluated before that mechanical route existed,
+  // so restore the signed allocation and teaching-medium state first. The
+  // following verbatim replacement then restores the signed pre-review
+  // interaction contract for every active unit.
+  const preRoutingUnits: LearningUnitContract[] = [];
+  for (const unit of input.finalLearningUnits) {
+    const allocation = allocationByUnit.get(unit.id);
+    const plan = unit.interactiveVisualPlan;
+    if (!allocation || !plan || !isRecord(allocation.decisionBeforeMechanicalRouting)) return null;
+    preRoutingUnits.push({
+      ...unit,
+      interactiveVisualPlan: {
+        ...plan,
+        decision: cloneExact(
+          allocation.decisionBeforeMechanicalRouting,
+        ) as unknown as NonNullable<LearningUnitContract["interactiveVisualPlan"]>["decision"],
+      },
+      teachingMediumPlan: cloneExact(allocation.teachingMediumPlan),
+    });
+  }
+  const rebound = applyVerbatimReplacements({
+    learningUnits: preRoutingUnits,
+    response: beforeResponse,
+    canonicalEvidenceByUnit,
+  });
+  if (!rebound.ok) return null;
+
+  const sections = new Map<string, ProposedLearningMap["sections"][number]>();
+  for (const unit of rebound.learningUnits) {
+    const sectionId = input.ledger.wholeGardenConstraints.sectionByUnit[unit.id];
+    if (!compact(sectionId)) return null;
+    const section = sections.get(sectionId) ?? {
+      title: sectionId,
+      purpose: unit.sectionPlan?.purpose ?? sectionId,
+      sourceAnchors: [],
+      subsections: [],
+    };
+    if (!sections.has(sectionId)) sections.set(sectionId, section);
+    section.subsections.push({
+      title: unit.title,
+      purpose: unit.sectionPlan?.purpose ?? unit.learningQuestion,
+      sourceAnchors: [...unit.sourceAnchors],
+      visualOpportunities: [],
+      conceptTags: [...unit.newConcepts],
+      sourceVisualIds: [],
+      interactiveVisuals: [],
+      learningUnitId: unit.id,
+    });
+    for (const anchor of unit.sourceAnchors) {
+      if (!section.sourceAnchors.includes(anchor)) section.sourceAnchors.push(anchor);
+    }
+  }
+  return {
+    learningUnits: rebound.learningUnits,
+    canonicalEvidenceByUnit,
+    learningMap: {
+      gardenId: input.ledger.gardenId,
+      title: "Signed executability replay",
+      summary: "Strict replay-only map reconstructed from the ledger's immutable unit topology.",
+      sections: [...sections.values()],
+      warnings: [],
+      sourceOnly: true,
+      createdAt: input.ledger.generatedAt,
+    },
+  };
+}
+
+function replaySemanticCandidateRejectionProblems(input: {
+  ledger: VisualContractExecutabilityLedger;
+  replay: ExecutabilitySemanticReplayInput;
+  activeUnitIds: string[];
+  attempt: VisualContractExecutabilityAttempt;
+}): VisualContractExecutabilityProblem[] {
+  const parsed = parseVisualContractExecutabilityResponse({
+    value: parsedVisualContractExecutabilityAttemptResponse(input.attempt),
+    gardenId: input.ledger.gardenId,
+    activeUnitIds: input.activeUnitIds,
+  });
+  if (!parsed.ok) return cloneExact(parsed.problems);
+  const applied = applyVerbatimReplacements({
+    learningUnits: input.replay.learningUnits,
+    response: parsed.response,
+    canonicalEvidenceByUnit: input.replay.canonicalEvidenceByUnit,
+  });
+  if (!applied.ok) return cloneExact(applied.problems);
+  const globalProblems = reviewedWholeGardenConstraintProblems({
+    beforeUnits: input.replay.learningUnits,
+    reviewedUnits: applied.learningUnits,
+    constraints: input.ledger.wholeGardenConstraints,
+  });
+  if (globalProblems.length > 0) return cloneExact(globalProblems);
+  try {
+    buildVisualizationPlan({
+      gardenId: input.ledger.gardenId,
+      learningMap: input.replay.learningMap,
+      learningUnits: applied.learningUnits,
+      visualBudget: input.ledger.authoritativePlanPolicy.visualBudget,
+      canonicalEvidenceByUnit: input.replay.canonicalEvidenceByUnit,
+      necessityReviewCalls: input.ledger.authoritativePlanPolicy.necessityReviewCalls,
+      rejectedNecessityReviews: input.ledger.authoritativePlanPolicy.rejectedNecessityReviews,
+      visualDecisionOverrides: input.ledger.authoritativePlanPolicy.visualDecisionOverrides,
+    });
+  } catch (error) {
+    return [{
+      code: "global_contract_validation_failed",
+      path: "whole_garden",
+      message: error instanceof Error ? error.message : String(error),
+    }];
+  }
+  return [];
 }
 
 export function visualContractExecutabilityLinkageProblems(input: {
@@ -2230,22 +3034,66 @@ export function visualContractExecutabilityLinkageProblems(input: {
       );
     }
   }
-  if (ledger.callAccounting.semanticCalls !== ledger.attempts.length) {
-    problems.push("executability ledger semanticCalls does not equal its persisted attempt count");
+  if (ledger.callAccounting.providerInvocations !== ledger.attempts.length) {
+    problems.push("executability ledger providerInvocations does not equal its persisted attempt count");
   }
   if (
-    ledger.callAccounting.semanticCalls >
-    VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET.maximumTotalCalls
+    ledger.callAccounting.providerInvocations >
+    ledger.callAccounting.maximumProviderInvocations
   ) {
-    problems.push("executability ledger exceeds the bounded semantic model-call budget");
+    problems.push("executability ledger exceeds its bound physical provider-invocation budget");
   }
   const acceptedAttempts = ledger.attempts.filter((attempt) => attempt.accepted);
-  const rejectedAttempts = ledger.attempts.filter((attempt) => !attempt.accepted);
-  if (ledger.rejectedReviews !== rejectedAttempts.length) {
-    problems.push("executability ledger rejectedReviews does not equal its rejected attempt count");
+  const semanticAttempts = ledger.attempts.filter(
+    (attempt) => attempt.responseClassification === "semantic_candidate",
+  );
+  const protocolAttempts = ledger.attempts.filter(
+    (attempt) => attempt.responseClassification === "protocol_rejection",
+  );
+  const rejectedSemanticAttempts = semanticAttempts.filter((attempt) => !attempt.accepted);
+  const protocolRetryRequests = ledger.attempts.filter(
+    (attempt) => attempt.requestPurpose === "protocol_retry",
+  );
+  const semanticReplay = rejectedSemanticAttempts.length > 0
+    ? executabilitySemanticReplayInputFromLedger({
+      ledger,
+      finalLearningUnits: input.finalLearningUnits,
+    })
+    : null;
+  if (rejectedSemanticAttempts.length > 0 && !semanticReplay) {
+    problems.push(
+      "executability ledger cannot reconstruct signed pre-review inputs for semantic rejection replay",
+    );
+  }
+  if (ledger.callAccounting.semanticCandidates !== semanticAttempts.length) {
+    problems.push("executability ledger semanticCandidates does not equal its parsed-candidate attempt count");
+  }
+  if (ledger.callAccounting.protocolRejections !== protocolAttempts.length) {
+    problems.push("executability ledger protocolRejections does not equal its raw protocol-rejection count");
+  }
+  if (ledger.callAccounting.protocolRetries !== protocolRetryRequests.length) {
+    problems.push("executability ledger protocolRetries does not equal its protocol-retry request count");
+  }
+  if (
+    ledger.callAccounting.semanticCandidates >
+    ledger.callAccounting.maximumSemanticCandidates
+  ) {
+    problems.push("executability ledger exceeds its persisted semantic-candidate cap");
+  }
+  if (
+    ledger.callAccounting.protocolRetries >
+    ledger.callAccounting.maximumProtocolRetries
+  ) {
+    problems.push("executability ledger exceeds its persisted protocol-retry cap");
+  }
+  if (ledger.rejectedReviews !== rejectedSemanticAttempts.length) {
+    problems.push("executability ledger rejectedReviews does not equal its rejected parsed-candidate count");
+  }
+  if (ledger.protocolRejections !== protocolAttempts.length) {
+    problems.push("executability ledger protocolRejections does not equal its protocol-rejection attempt count");
   }
   if (activeIds.length === 0) {
-    if (ledger.callAccounting.semanticCalls !== 0 || acceptedAttempts.length !== 0) {
+    if (ledger.callAccounting.providerInvocations !== 0 || acceptedAttempts.length !== 0) {
       problems.push("executability ledger recorded model calls despite having no active units");
     }
   } else if (
@@ -2257,17 +3105,34 @@ export function visualContractExecutabilityLinkageProblems(input: {
   const initialEvidenceByUnit = new Map(
     (ledger.attempts[0]?.packet.units ?? []).map((unit) => [unit.unitId, unit.canonicalEvidence]),
   );
+  let expectedPreviousProtocolFailure: VisualContractExecutabilityProtocolFailure | undefined;
+  let expectedPreviousSemanticFailure: VisualContractExecutabilitySemanticFailure | undefined;
+  let expectedPreviousProtocolProblems: VisualContractExecutabilityProblem[] = [];
+  let expectedPreviousSemanticProblems: VisualContractExecutabilityProblem[] = [];
+  let expectedPreviousClassification: VisualContractExecutabilityAttempt["responseClassification"] | null = null;
+  let expectedSemanticCandidate = 0;
+  let expectedProtocolRetry = 0;
   ledger.attempts.forEach((attempt, index) => {
     const expectedAttempt = index + 1;
     const packet = attempt.packet;
+    const expectedRequestPurpose: VisualContractExecutabilityAttempt["requestPurpose"] =
+      index === 0
+        ? "initial_semantic_review"
+        : expectedPreviousClassification === "protocol_rejection"
+          ? "protocol_retry"
+          : "semantic_rereview";
+    if (expectedRequestPurpose === "protocol_retry") expectedProtocolRetry += 1;
     if (
       attempt.attempt !== expectedAttempt ||
-      attempt.transportAccounting?.logicalSemanticCall !== expectedAttempt ||
+      attempt.requestPurpose !== expectedRequestPurpose ||
+      attempt.transportAccounting?.providerInvocation !== expectedAttempt ||
+      attempt.transportAccounting?.protocolRetry !==
+        (expectedRequestPurpose === "protocol_retry" ? expectedProtocolRetry : null) ||
       attempt.transportAccounting?.providerInvocationsAtThisBoundary !== 1 ||
       attempt.transportAccounting?.transportRetries !==
         "owned_below_semantic_boundary_not_counted"
     ) {
-      problems.push(`executability ledger attempt ${expectedAttempt} has invalid logical/transport accounting`);
+      problems.push(`executability ledger attempt ${expectedAttempt} has invalid invocation/protocol accounting`);
     }
     if (
       !isIsoTimestamp(attempt.startedAt) ||
@@ -2318,6 +3183,7 @@ export function visualContractExecutabilityLinkageProblems(input: {
     }
     if (
       packet.schemaVersion !== VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION ||
+      packet.protocolVersion !== VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION ||
       packet.gardenId !== input.gardenId ||
       !isDeepStrictEqual(packet.auditContext, ledger.context) ||
       !isDeepStrictEqual(packet.technicalCapabilities, {
@@ -2402,22 +3268,22 @@ export function visualContractExecutabilityLinkageProblems(input: {
     if (!isDeepStrictEqual(attempt.canonicalEvidenceHashes, recomputedEvidenceHashes)) {
       problems.push(`executability ledger attempt ${expectedAttempt} evidence hashes do not match its packet`);
     }
-    const expectedPriorReasons = priorAttempt
-      ? priorAttempt.rejectionReasons.map((item) => `${item.path}: ${item.message}`)
-      : [];
+    const expectedPriorReasons = [
+      ...(expectedPreviousSemanticFailure
+        ? expectedPreviousSemanticProblems.map((item) => `${item.path}: ${item.message}`)
+        : []),
+      ...(expectedPreviousProtocolFailure
+        ? expectedPreviousProtocolProblems.map((item) => `${item.path}: ${item.message}`)
+        : []),
+    ];
     if (!isDeepStrictEqual(packet.previousRejectionReasons, expectedPriorReasons)) {
       problems.push(`executability ledger attempt ${expectedAttempt} previous rejection reasons are not exact`);
     }
-    const expectedPriorResponse = priorAttempt?.responseEncoding === "json"
-      ? priorAttempt.response
-      : undefined;
     if (
-      (expectedPriorResponse === undefined &&
-        Object.prototype.hasOwnProperty.call(packet, "previousResponse")) ||
-      (expectedPriorResponse !== undefined &&
-        !isDeepStrictEqual(packet.previousResponse, expectedPriorResponse))
+      !isDeepStrictEqual(packet.previousProtocolFailure, expectedPreviousProtocolFailure) ||
+      !isDeepStrictEqual(packet.previousSemanticFailure, expectedPreviousSemanticFailure)
     ) {
-      problems.push(`executability ledger attempt ${expectedAttempt} previous response is not exact`);
+      problems.push(`executability ledger attempt ${expectedAttempt} prior raw protocol/semantic feedback is not exact`);
     }
     if (!SHA256_HEX_PATTERN.test(String(attempt.wholeGardenConstraintsHash ?? ""))) {
       problems.push(`executability ledger attempt ${expectedAttempt} lacks a whole-garden constraints hash`);
@@ -2441,18 +3307,93 @@ export function visualContractExecutabilityLinkageProblems(input: {
     if (!attempt.accepted && attempt.rejectionReasons.length === 0) {
       problems.push(`executability ledger rejected attempt ${expectedAttempt} has no exact rejection reasons`);
     }
-    if (
-      (attempt.responseEncoding !== "json" && attempt.responseEncoding !== "undefined") ||
-      (attempt.responseEncoding === "undefined" && attempt.response !== null) ||
-      (attempt.accepted && attempt.responseEncoding !== "json")
-    ) {
+    if (!isExactRawResponseEnvelope({
+      responseEncoding: attempt.responseEncoding,
+      response: attempt.response,
+      exactRawResponseSha256: attempt.exactRawResponseSha256,
+    })) {
       problems.push(`executability ledger attempt ${expectedAttempt} response encoding is invalid`);
     }
+    const responseParses = exactRawVisualContractExecutabilityAttemptParses(attempt);
+    if (attempt.responseClassification === "protocol_rejection") {
+      const recomputedProtocol = normalizedVisualContractExecutabilityProviderResponse(
+        attempt.responseEncoding === "undefined" ? undefined : attempt.response,
+      );
+      if (
+        attempt.accepted ||
+        attempt.transportAccounting.semanticCandidate !== null ||
+        attempt.transportAccounting.protocolRetry !==
+          (expectedRequestPurpose === "protocol_retry" ? expectedProtocolRetry : null) ||
+        attempt.rejectionReasons.length === 0 ||
+        (attempt.responseEncoding === "exact_raw" && responseParses)
+      ) {
+        problems.push(`executability ledger protocol attempt ${expectedAttempt} is not an exact rejected raw response`);
+      }
+      if (
+        !recomputedProtocol.protocolProblems ||
+        recomputedProtocol.terminalProtocolFailure ||
+        !isDeepStrictEqual(attempt.rejectionReasons, recomputedProtocol.protocolProblems)
+      ) {
+        problems.push(`executability ledger protocol attempt ${expectedAttempt} rejection diagnostic is not exact`);
+      }
+      expectedPreviousProtocolFailure = {
+        providerInvocation: expectedAttempt,
+        protocolRetry: expectedRequestPurpose === "protocol_retry" ? expectedProtocolRetry : 0,
+        responseEncoding: attempt.responseEncoding,
+        response: attempt.response as string | null,
+        exactRawResponseSha256: attempt.exactRawResponseSha256,
+        rejectionReasons: attempt.rejectionReasons.map((item) => `${item.path}: ${item.message}`),
+      };
+      expectedPreviousProtocolProblems = cloneExact(attempt.rejectionReasons);
+    } else {
+      expectedSemanticCandidate += 1;
+      if (
+        !responseParses ||
+        attempt.transportAccounting.semanticCandidate !== expectedSemanticCandidate ||
+        attempt.transportAccounting.protocolRetry !==
+          (expectedRequestPurpose === "protocol_retry" ? expectedProtocolRetry : null)
+      ) {
+        problems.push(`executability ledger semantic candidate ${expectedAttempt} has invalid raw/invocation accounting`);
+      }
+      // A parseable candidate clears byte-level feedback before its semantic
+      // result is evaluated, matching the live dispatcher.
+      expectedPreviousProtocolFailure = undefined;
+      expectedPreviousProtocolProblems = [];
+      if (!attempt.accepted) {
+        const recomputedSemanticProblems = semanticReplay
+          ? replaySemanticCandidateRejectionProblems({
+            ledger,
+            replay: semanticReplay,
+            activeUnitIds: activeIds,
+            attempt,
+          })
+          : null;
+        if (
+          !recomputedSemanticProblems ||
+          recomputedSemanticProblems.length === 0 ||
+          !isDeepStrictEqual(attempt.rejectionReasons, recomputedSemanticProblems)
+        ) {
+          problems.push(
+            `executability ledger semantic candidate ${expectedAttempt} rejection diagnostic is not exact`,
+          );
+        }
+        expectedPreviousSemanticFailure = {
+          providerInvocation: expectedAttempt,
+          semanticCandidate: expectedSemanticCandidate,
+          responseEncoding: "exact_raw",
+          response: attempt.response as string,
+          exactRawResponseSha256: attempt.exactRawResponseSha256 as string,
+          rejectionReasons: attempt.rejectionReasons.map((item) => `${item.path}: ${item.message}`),
+        };
+        expectedPreviousSemanticProblems = cloneExact(attempt.rejectionReasons);
+      }
+    }
+    expectedPreviousClassification = attempt.responseClassification;
   });
 
   if (acceptedAttempts.length === 1) {
     const acceptedParsed = parseVisualContractExecutabilityResponse({
-      value: acceptedAttempts[0].response,
+      value: parsedVisualContractExecutabilityAttemptResponse(acceptedAttempts[0]),
       gardenId: input.gardenId,
       activeUnitIds: activeIds,
     });
@@ -3314,7 +4255,7 @@ export function buildVisualContractExecutabilityLedger(input: {
     };
   });
   const ledgerWithoutIntegrity: Omit<VisualContractExecutabilityLedger, "integrityHash"> = {
-    schemaVersion: VISUAL_CONTRACT_EXECUTABILITY_SCHEMA_VERSION,
+    schemaVersion: VISUAL_CONTRACT_EXECUTABILITY_LEDGER_SCHEMA_VERSION,
     gardenId: input.gardenId,
     generatedAt: input.generatedAt ?? new Date().toISOString(),
     context: cloneExact(input.context),
@@ -3326,15 +4267,23 @@ export function buildVisualContractExecutabilityLedger(input: {
     },
     auditHashing: {
       algorithm: "sha256",
-      serialization: "JSON.stringify_utf8_v1",
+      serialization: "JSON.stringify_utf8_v2_exact_raw_provider_text",
       responseSchemaHash: VISUAL_CONTRACT_EXECUTABILITY_RESPONSE_SCHEMA_HASH,
+      protocolVersion: VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION,
     },
     callAccounting: {
-      semanticCalls: input.review.calls,
-      providerInvocationsAtSemanticBoundary: input.review.calls,
+      protocolVersion: input.review.callBudget.protocolVersion,
+      maximumSemanticCandidates: input.review.callBudget.maximumSemanticCandidates,
+      maximumProtocolRetries: input.review.callBudget.maximumProtocolRetries,
+      maximumProviderInvocations: input.review.callBudget.maximumProviderInvocations,
+      providerInvocations: input.review.calls,
+      semanticCandidates: input.review.semanticCandidates,
+      protocolRetries: input.review.protocolRetries,
+      protocolRejections: input.review.protocolRejections,
       transportAttempts: "not_observable_below_provider_boundary",
     },
     rejectedReviews: input.review.rejectedReviews,
+    protocolRejections: input.review.protocolRejections,
     wholeGardenConstraints: cloneExact(input.review.wholeGardenConstraints),
     authoritativePlanPolicy: clonePersistedJson({
       visualBudget: cloneExact(input.finalVisualizationPlan.visualBudget),

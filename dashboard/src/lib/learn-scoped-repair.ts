@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { auditFinalGardenState, buildFinalGardenState } from "./final-garden-state.ts";
-import { auditGardenForFinalization } from "./garden-finalize.ts";
+import {
+  auditGardenForFinalization,
+  sourceFormulaReviewFinalizationContextFromGarden,
+  type SourceFormulaReviewFinalizationContext,
+} from "./garden-finalize.ts";
 import { issuesFromFinalGardenAudit } from "./garden-build/issue-adapters.ts";
 import { mergeGardenIssues } from "./garden-build/issue-identity.ts";
 import type { GardenIssue } from "./garden-build/issues.ts";
@@ -130,9 +134,12 @@ export function loadCurrentTypedGardenIssues(
   gardenDir: string,
   gardenId: string,
   state?: GardenBuildState,
+  expectedSourceFormulaReviewContext?: SourceFormulaReviewFinalizationContext,
 ): { state: GardenBuildState; issues: GardenIssue[] } {
   const imported = state ? { state, issues: [] as GardenIssue[] } : importLegacyGardenBuildState(gardenDir, gardenId);
-  const audit = auditGardenForFinalization(gardenDir, gardenId);
+  const audit = auditGardenForFinalization(gardenDir, gardenId, {
+    expectedSourceFormulaReviewContext,
+  });
   const context = pageLookup(imported.state);
   const issues = mergeGardenIssues([
     imported.issues,
@@ -377,7 +384,14 @@ export async function executeLearnScopedRepair(input: {
 }): Promise<LearnScopedRepairResult> {
   if (input.request.mode !== "repair") throw new Error("Scoped repair can run only with mode=repair.");
   input.onProgress?.({ step: "Analyzing validation issues" });
-  const current = loadCurrentTypedGardenIssues(input.gardenDir, input.gardenId);
+  const expectedSourceFormulaReviewContext =
+    sourceFormulaReviewFinalizationContextFromGarden(input.gardenDir);
+  const current = loadCurrentTypedGardenIssues(
+    input.gardenDir,
+    input.gardenId,
+    undefined,
+    expectedSourceFormulaReviewContext,
+  );
   const scope = buildLearnRepairScope(current.state, current.issues, input.request);
   const selectedIssues = current.issues.filter((issue) => scope.issueIds.includes(issue.issueId));
   if (selectedIssues.length === 0) throw new Error("No current typed validation issues matched the requested repair selection.");
@@ -442,9 +456,16 @@ export async function executeLearnScopedRepair(input: {
 
     renderScopedState(staging, current.state, state, scope, operations);
     input.onProgress?.({ step: "Revalidating garden", scope });
-    const finalizationAudit = auditGardenForFinalization(staging, input.gardenId);
+    const finalizationAudit = auditGardenForFinalization(staging, input.gardenId, {
+      expectedSourceFormulaReviewContext,
+    });
     const finalStateAudit = auditFinalGardenState(buildFinalGardenState(staging, input.gardenId));
-    const afterTyped = loadCurrentTypedGardenIssues(staging, input.gardenId);
+    const afterTyped = loadCurrentTypedGardenIssues(
+      staging,
+      input.gardenId,
+      undefined,
+      expectedSourceFormulaReviewContext,
+    );
     const blockersAfter = afterTyped.issues.filter((issue) => issue.severity === "blocking").map((issue) => issue.issueId).sort();
     const beforeBlockerSet = new Set(blockersBefore);
     const newBlockers = blockersAfter.filter((id) => !beforeBlockerSet.has(id));
@@ -489,7 +510,15 @@ export async function executeLearnScopedRepair(input: {
           destinationGardenDir: input.gardenDir,
           retainPreviousUntilCallerCommit: true,
           recoveryOwnerId: input.recoveryOwnerId,
-          verifyManifest: (incoming) => verifyScopedFileMutationPolicy(beforeFiles, fingerprintGardenFiles(incoming), policy).passed,
+          verifyManifest: (incoming) =>
+            verifyScopedFileMutationPolicy(
+              beforeFiles,
+              fingerprintGardenFiles(incoming),
+              policy,
+            ).passed &&
+            auditGardenForFinalization(incoming, input.gardenId, {
+              expectedSourceFormulaReviewContext,
+            }).passed,
           verifyCurrentDestination: (current) =>
             (input.verifyLease?.() ?? true) &&
             identicalFingerprints(

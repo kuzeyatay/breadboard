@@ -36,6 +36,13 @@ export const GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS = 3;
  * across independent geometry, runtime, and accessibility gates. Keep that
  * semantic loop finite and distinct from identical-request transport replay. */
 export const GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS = 8;
+/** Every semantic candidate can contribute one exact repair record. The history
+ * therefore remains bounded without dropping an earlier gate or critic reason. */
+export const GENERATED_VISUAL_REPAIR_HISTORY_MAX_ENTRIES =
+  GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS;
+/** Preview every reachable select state only while the matrix remains small
+ * enough to be useful as model evidence rather than an unbounded image burst. */
+export const GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES = 4;
 /** Complex declarative visual generation can legitimately take longer than a
  * general chat request. Keep one explicit, bounded per-request deadline while
  * preserving the separate three-replay transport ladder. */
@@ -170,6 +177,54 @@ export interface GeneratedVisualizationCandidate {
   tokenUsage?: GeneratedVisualTokenUsage;
 }
 
+/** The six model-authored candidate fields, carried verbatim into a repair. */
+export interface GeneratedVisualizationCandidateRepairSnapshot {
+  title: string;
+  explanation: string;
+  sourceCode: string;
+  testCases: GeneratedVisualizationTestCase[];
+  accessibilityDescription: string;
+  pedagogicalClaims: string[];
+  sourceHash: string;
+}
+
+export interface GeneratedVisualRepairHistoryEntry {
+  attempt: number;
+  failureCategory: "validation" | "runtime" | "critic" | "generation";
+  /** Exact gate messages in the order returned by the failing boundary. */
+  errors: string[];
+  /** Present for critic feedback so its reason and requested changes stay
+   * distinguishable rather than becoming an opaque concatenated string. */
+  critic?: {
+    reason: string;
+    requestedChanges: string[];
+  };
+  /** Binds the rejection to the full six-field candidate supplied to the next
+   * model, rather than to sourceCode alone. */
+  candidateSnapshotHash?: string;
+}
+
+export interface GeneratedVisualPreviewIdentity {
+  id: string;
+  viewport: { width: number; height: number };
+  theme: "light" | "dark";
+  /** Every authored select value represented by this preview. */
+  selectState: Array<{
+    controlId: string;
+    optionIndex: number;
+    optionLabel: string;
+  }>;
+  defaultState: boolean;
+  /** True only when more reachable select combinations existed than the fixed
+   * evidence cap allowed us to render. */
+  selectStateCoverageTruncated: boolean;
+}
+
+export interface GeneratedVisualPreviewArtifact
+  extends GeneratedVisualPreviewIdentity {
+  path: string;
+}
+
 export type GeneratedVisualizationStatus =
   | "draft"
   | "validated"
@@ -227,6 +282,10 @@ export interface GeneratedVisualTestsRecord {
     executable?: string;
     viewports: string[];
     screenshotCreated: boolean;
+    previewCount?: number;
+    selectStateCount?: number;
+    selectStateCoverageTruncated?: boolean;
+    previewMatrixComplete?: boolean;
   };
 }
 
@@ -287,6 +346,102 @@ function nowIso(): string {
 
 function sha256(value: string | Buffer): string {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function generatedVisualizationCandidateRepairSnapshot(
+  candidate: GeneratedVisualizationCandidate,
+): GeneratedVisualizationCandidateRepairSnapshot {
+  return {
+    title: candidate.title,
+    explanation: candidate.explanation,
+    sourceCode: candidate.sourceCode,
+    testCases: candidate.testCases.map((testCase) => ({
+      name: testCase.name,
+      inputs: { ...testCase.inputs },
+      expected: { ...testCase.expected },
+      ...(testCase.tolerance === undefined ? {} : { tolerance: testCase.tolerance }),
+    })),
+    accessibilityDescription: candidate.accessibilityDescription,
+    pedagogicalClaims: [...candidate.pedagogicalClaims],
+    sourceHash: sha256(candidate.sourceCode),
+  };
+}
+
+/** A canonical fingerprint prevents history from ambiguously linking a gate
+ * failure to another candidate with identical source but changed explanation,
+ * tests, accessibility text, title, or claims. */
+function canonicalGeneratedVisualJson(value: unknown): string {
+  if (Array.isArray(value))
+    return `[${value.map((entry) => canonicalGeneratedVisualJson(entry)).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${canonicalGeneratedVisualJson(record[key])}`,
+      )
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function generatedVisualizationCandidateSnapshotHash(
+  candidate: GeneratedVisualizationCandidate,
+): string {
+  return sha256(
+    canonicalGeneratedVisualJson(
+      generatedVisualizationCandidateRepairSnapshot(candidate),
+    ),
+  );
+}
+
+function appendGeneratedVisualRepairHistory(
+  history: GeneratedVisualRepairHistoryEntry[],
+  entry: GeneratedVisualRepairHistoryEntry,
+): void {
+  if (history.length >= GENERATED_VISUAL_REPAIR_HISTORY_MAX_ENTRIES) {
+    throw new Error(
+      "Generated visual repair history exceeded its semantic attempt ceiling",
+    );
+  }
+  history.push({
+    attempt: entry.attempt,
+    failureCategory: entry.failureCategory,
+    errors: [...entry.errors],
+    ...(entry.critic
+      ? {
+          critic: {
+            reason: entry.critic.reason,
+            requestedChanges: [...entry.critic.requestedChanges],
+          },
+        }
+      : {}),
+    ...(entry.candidateSnapshotHash
+      ? { candidateSnapshotHash: entry.candidateSnapshotHash }
+      : {}),
+  });
+}
+
+function generatedVisualRepairHistorySnapshot(
+  history: readonly GeneratedVisualRepairHistoryEntry[],
+): GeneratedVisualRepairHistoryEntry[] {
+  return history.map((entry) => ({
+    attempt: entry.attempt,
+    failureCategory: entry.failureCategory,
+    errors: [...entry.errors],
+    ...(entry.critic
+      ? {
+          critic: {
+            reason: entry.critic.reason,
+            requestedChanges: [...entry.critic.requestedChanges],
+          },
+        }
+      : {}),
+    ...(entry.candidateSnapshotHash
+      ? { candidateSnapshotHash: entry.candidateSnapshotHash }
+      : {}),
+  }));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2820,13 +2975,100 @@ function sandboxRuntimePath(): string {
   );
 }
 
+export interface GeneratedVisualSelectPreviewState {
+  id: string;
+  selectState: GeneratedVisualPreviewIdentity["selectState"];
+  defaultState: boolean;
+  selectStateCoverageTruncated: boolean;
+}
+
+export function planGeneratedVisualSelectPreviewStates(
+  definition: GeneratedVisualizationDefinition,
+): GeneratedVisualSelectPreviewState[] {
+  const authoredSelectControls = definition.controls.filter(
+    (control) => control.type === "select" && (control.options?.length ?? 0) > 0,
+  );
+  // `select_case` is the primary repair target, but other reviewed control
+  // kinds (for example process_position) may also be selects. Every authored
+  // select must appear in an identity so a critic never mistakes a partial
+  // state vector for full-state evidence.
+  const controls = authoredSelectControls.map((control) => ({
+    controlId: control.id,
+    options: [...(control.options ?? [])],
+    defaultIndex: Math.max(
+      0,
+      (control.options ?? []).indexOf(String(control.defaultValue)),
+    ),
+  }));
+  const defaultState = controls.map((control) => ({
+    controlId: control.controlId,
+    optionIndex: Math.min(control.defaultIndex, control.options.length - 1),
+    optionLabel:
+      control.options[Math.min(control.defaultIndex, control.options.length - 1)],
+  }));
+  let reachableStateCount = 1;
+  for (const control of controls) {
+    reachableStateCount = Math.min(
+      GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES + 1,
+      reachableStateCount * control.options.length,
+    );
+  }
+  const states: GeneratedVisualPreviewIdentity["selectState"][] = [defaultState];
+  const defaultKey = JSON.stringify(
+    defaultState.map(({ optionIndex }) => optionIndex),
+  );
+  const visit = (
+    index: number,
+    selected: GeneratedVisualPreviewIdentity["selectState"],
+  ): void => {
+    if (states.length >= GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES) return;
+    if (index >= controls.length) {
+      if (
+        JSON.stringify(selected.map(({ optionIndex }) => optionIndex)) !==
+        defaultKey
+      ) {
+        states.push(selected);
+      }
+      return;
+    }
+    const control = controls[index];
+    control.options.forEach((optionLabel, optionIndex) => {
+      if (states.length >= GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES) return;
+      visit(index + 1, [
+        ...selected,
+        { controlId: control.controlId, optionIndex, optionLabel },
+      ]);
+    });
+  };
+  visit(0, []);
+  const selectStateCoverageTruncated = reachableStateCount > states.length;
+  return states.map((selectState, index) => ({
+    id:
+      index === 0
+        ? "default"
+        : selectState
+            .map((entry) => `${entry.controlId}-${entry.optionIndex}`)
+            .join("__"),
+    selectState,
+    defaultState:
+      JSON.stringify(selectState.map(({ optionIndex }) => optionIndex)) ===
+      defaultKey,
+    selectStateCoverageTruncated,
+  }));
+}
+
 function previewHtml(
   definition: GeneratedVisualizationDefinition,
   runtime: string,
   theme: "light" | "dark" = "light",
+  previewState?: Pick<GeneratedVisualSelectPreviewState, "id" | "selectState">,
 ): string {
   const serialized = JSON.stringify(definition).replace(/</g, "\\u003c");
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><style>html,body{margin:0;padding:0;background:#f8f6ef;color:#10251c;font-family:system-ui,sans-serif}</style></head><body><div id="breadboard-generated-visual-root"></div><script>window.__BREADBOARD_VISUAL_TEST_MODE__=true;</script><script>${runtime.replace(/<\/script/gi, "<\\/script")}</script><script>window.postMessage({type:"breadboard-generated-visual:init",definition:${serialized},theme:${JSON.stringify(theme)}},"*");</script></body></html>`;
+  const serializedPreviewState = JSON.stringify(previewState ?? {
+    id: "default",
+    selectState: [],
+  }).replace(/</g, "\\u003c");
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><style>html,body{margin:0;padding:0;background:#f8f6ef;color:#10251c;font-family:system-ui,sans-serif}</style></head><body><div id="breadboard-generated-visual-root"></div><script>window.__BREADBOARD_VISUAL_TEST_MODE__=true;</script><script>${runtime.replace(/<\/script/gi, "<\\/script")}</script><script>window.postMessage({type:"breadboard-generated-visual:init",definition:${serialized},theme:${JSON.stringify(theme)}},"*");const previewState=${serializedPreviewState};let previewStateRetries=0;const applyPreviewState=()=>{const selects=Array.from(document.querySelectorAll("select[data-control-id]"));const missing=(previewState.selectState||[]).some((entry)=>!selects.some((node)=>node.dataset.controlId===entry.controlId));if(missing&&previewStateRetries<12){previewStateRetries+=1;window.setTimeout(applyPreviewState,25);return;}(previewState.selectState||[]).forEach((entry)=>{const input=selects.find((node)=>node.dataset.controlId===entry.controlId);if(!input||input.value===entry.optionLabel)return;input.value=entry.optionLabel;input.dispatchEvent(new Event("change",{bubbles:true}));});document.body.dataset.breadboardPreviewState=previewState.id;};window.setTimeout(applyPreviewState,25);</script></body></html>`;
 }
 
 const GENERATED_VISUAL_BROWSER_DIAGNOSTIC_MAX_ENTRIES = 12;
@@ -2870,6 +3112,7 @@ export function runGeneratedVisualBrowserTests(input: {
 }): {
   tests: GeneratedVisualTestsRecord["runtimeTests"];
   browser?: GeneratedVisualTestsRecord["browser"];
+  previews?: GeneratedVisualPreviewArtifact[];
 } {
   const executable = browserExecutable();
   if (!executable) {
@@ -2899,7 +3142,6 @@ export function runGeneratedVisualBrowserTests(input: {
     };
   }
   fs.mkdirSync(input.outputDir, { recursive: true });
-  const screenshotPath = path.join(input.outputDir, "preview.png");
   const timeout = input.timeoutMs ?? 20_000;
   const scenarios = [
     {
@@ -2992,56 +3234,170 @@ export function runGeneratedVisualBrowserTests(input: {
           : browserRuntimeFailureDetail(output)),
     });
   }
-  const screenshotHtmlPath = path.join(
-    input.outputDir,
-    "preview-screenshot.html",
-  );
-  htmlPaths.push(screenshotHtmlPath);
-  fs.writeFileSync(
-    screenshotHtmlPath,
-    previewHtml(input.definition, runtime, "light"),
-    "utf-8",
-  );
-  const screenshotUrl = pathToFileURL(screenshotHtmlPath).href;
-  const captureScreenshot = () =>
-    spawnIsolatedBrowser("screenshot", [
-      "--headless=new",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--disable-background-networking",
-      "--disable-dev-shm-usage",
-      "--no-first-run",
-      "--window-size=1000,720",
-      "--virtual-time-budget=2500",
-      `--screenshot=${screenshotPath}`,
-      screenshotUrl,
-    ]);
-  let screenshot = captureScreenshot();
-  let screenshotCreated =
-    screenshot.status === 0 && fs.existsSync(screenshotPath);
-  // Headless Edge can intermittently fail to create a screenshot while other
-  // browser checks are finishing. Retry only the capture once; lesson/model
-  // generation is not repeated for this disposable preview artifact.
-  if (!screenshotCreated) {
-    fs.rmSync(screenshotPath, { force: true });
-    screenshot = captureScreenshot();
-    screenshotCreated =
-      screenshot.status === 0 && fs.existsSync(screenshotPath);
+  const previewViewports = [
+    {
+      id: "mobile-375x667-light",
+      width: 375,
+      height: 667,
+      theme: "light" as const,
+    },
+    {
+      id: "desktop-1000x720-light",
+      width: 1000,
+      height: 720,
+      theme: "light" as const,
+    },
+  ];
+  const previewStates = planGeneratedVisualSelectPreviewStates(input.definition);
+  const previews: GeneratedVisualPreviewArtifact[] = [];
+  let screenshotCreated = false;
+  let screenshotFailureDetail = "Screenshot was not created";
+  for (const previewState of previewStates) {
+    for (const previewViewport of previewViewports) {
+      const isDefaultDesktop =
+        previewState.defaultState &&
+        previewViewport.id === "desktop-1000x720-light";
+      const screenshotPath = isDefaultDesktop
+        ? path.join(input.outputDir, "preview.png")
+        : path.join(
+            input.outputDir,
+            `preview-${previewViewport.id}-${previewState.id}.png`,
+          );
+      const screenshotHtmlPath = path.join(
+        input.outputDir,
+        `preview-${previewViewport.id}-${previewState.id}.html`,
+      );
+      htmlPaths.push(screenshotHtmlPath);
+      fs.writeFileSync(
+        screenshotHtmlPath,
+        previewHtml(input.definition, runtime, previewViewport.theme, previewState),
+        "utf-8",
+      );
+      const screenshotUrl = pathToFileURL(screenshotHtmlPath).href;
+      const captureScreenshot = () =>
+        spawnIsolatedBrowser(`screenshot-${previewViewport.id}-${previewState.id}`, [
+          "--headless=new",
+          "--disable-gpu",
+          "--disable-extensions",
+          "--disable-background-networking",
+          "--disable-dev-shm-usage",
+          "--no-first-run",
+          `--window-size=${previewViewport.width},${previewViewport.height}`,
+          "--virtual-time-budget=2500",
+          `--screenshot=${screenshotPath}`,
+          screenshotUrl,
+        ]);
+      let screenshot = captureScreenshot();
+      let created =
+        screenshot.status === 0 &&
+        isReadableGeneratedVisualPreviewFile(screenshotPath);
+      // Headless Edge can intermittently fail to create a screenshot while
+      // other browser checks are finishing. Retry only the capture once; this
+      // changes neither the model candidate nor its semantic attempt count.
+      if (!created) {
+        fs.rmSync(screenshotPath, { force: true });
+        screenshot = captureScreenshot();
+        created =
+          screenshot.status === 0 &&
+          isReadableGeneratedVisualPreviewFile(screenshotPath);
+      }
+      if (created) {
+        previews.push({
+          id: `${previewViewport.id}--${previewState.id}`,
+          viewport: {
+            width: previewViewport.width,
+            height: previewViewport.height,
+          },
+          theme: previewViewport.theme,
+          selectState: previewState.selectState.map((entry) => ({ ...entry })),
+          defaultState: previewState.defaultState,
+          selectStateCoverageTruncated:
+            previewState.selectStateCoverageTruncated,
+          path: screenshotPath,
+        });
+      }
+      if (isDefaultDesktop) {
+        screenshotCreated = created;
+        screenshotFailureDetail =
+          screenshot.error?.message ||
+          String(screenshot.stderr || "Screenshot was not created").slice(-500);
+      }
+    }
   }
   tests.push({
     name: "preview screenshot",
     passed: screenshotCreated,
     detail: screenshotCreated
       ? "created"
-      : screenshot.error?.message ||
-        String(screenshot.stderr || "Screenshot was not created").slice(-500),
+      : screenshotFailureDetail,
+  });
+  const expectedPreviewCount = previewStates.length * previewViewports.length;
+  const previewMatrixComplete = previews.length === expectedPreviewCount;
+  tests.push({
+    name: "repair preview matrix",
+    passed: previewMatrixComplete,
+    detail: previewMatrixComplete
+      ? `${previews.length} labelled captures for ${previewStates.length} bounded select state${previewStates.length === 1 ? "" : "s"}`
+      : `captured ${previews.length}/${expectedPreviewCount} required labelled previews`,
   });
   try {
     for (const htmlPath of htmlPaths) fs.rmSync(htmlPath, { force: true });
   } catch {
     // A debug preview HTML is harmless if the browser still has the file open.
   }
-  return { tests, browser: { executable, viewports, screenshotCreated } };
+  return {
+    tests,
+    browser: {
+      executable,
+      viewports,
+      screenshotCreated,
+      previewCount: previews.length,
+      selectStateCount: previewStates.length,
+      selectStateCoverageTruncated: previewStates.some(
+        (preview) => preview.selectStateCoverageTruncated,
+      ),
+      previewMatrixComplete,
+    },
+    previews,
+  };
+}
+
+function isReadableGeneratedVisualPreviewFile(filePath: string): boolean {
+  try {
+    const stats = fs.statSync(filePath);
+    return stats.isFile() && stats.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+function availableGeneratedVisualPreviews(
+  previews: readonly GeneratedVisualPreviewArtifact[] | undefined,
+): GeneratedVisualPreviewArtifact[] {
+  return (previews ?? []).filter((preview) =>
+    isReadableGeneratedVisualPreviewFile(preview.path),
+  );
+}
+
+function generatedVisualPreviewIdentities(
+  previews: readonly GeneratedVisualPreviewArtifact[],
+): GeneratedVisualPreviewIdentity[] {
+  return previews.map(({ path: _path, selectState, ...identity }) => ({
+    ...identity,
+    selectState: selectState.map((entry) => ({ ...entry })),
+  }));
+}
+
+function generatedVisualPreviewImageParts(
+  previews: readonly GeneratedVisualPreviewArtifact[],
+) {
+  return previews.map((preview) => ({
+    type: "image_url" as const,
+    image_url: {
+      url: `data:image/png;base64,${fs.readFileSync(preview.path).toString("base64")}`,
+      detail: "low" as const,
+    },
+  }));
 }
 
 export function buildGeneratedVisualBlock(id: string, version: number): string {
@@ -3591,6 +3947,9 @@ export async function generateVisualizationCandidate(input: {
   sourceFigureSummaries?: unknown[];
   formulaDefinitions?: unknown[];
   previousSourceCode?: string;
+  previousCandidate?: GeneratedVisualizationCandidate;
+  repairHistory?: GeneratedVisualRepairHistoryEntry[];
+  previews?: GeneratedVisualPreviewArtifact[];
   errors?: string[];
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -3670,10 +4029,102 @@ export default defineVisualization({
     "Copy the opportunity.requiredInputs array exactly and in order: same control count, id, kind, label, type, protocolRole, unit, min, max, step, options, and defaultValue. Do not add a control or a field the reviewed contract omits. Copy opportunity.requiredOutputs exactly and in order: same output count, id, label, and representation; never add or reorder learner-visible outputs. Keep any runtime-internal derived values inside scene or output expressions rather than declaring extra outputs. Use only source-backed relationships. Label illustrative or normalized values clearly. Every required control must materially change a numeric output or scene expression. " +
     "Before returning, perform a complete model-authored consistency check against the supplied evidence and the literal definition. Independently recompute every evaluable numeric or geometric relationship you authored: scalar values, signed directions, units and conversions, vector endpoint deltas and magnitudes, component-wise sums, resultants, and other aggregates. Make every coordinate, label, annotation, explanation, and accessibility statement agree at the authored precision. If a total is claimed to be the sum of displayed contributions, its components must equal that displayed sum; do not hide a discrepancy behind rounding or prose. If displayed elements are representative samples of a larger or continuous domain, do not construct or imply the whole-domain aggregate as their exact finite subtotal unless the supplied evidence explicitly establishes that equality; distinguish the sample contribution and whole-domain result in the geometry as well as the labels and non-visual explanation. When the evidence does not supply enough information to evaluate a sign, magnitude, scale, or aggregate, use explicitly qualitative or normalized encoding and do not invent or claim an evaluated value. The compiler and renderer will not infer or repair any of these relationships for you. " +
     "A select control is exposed to expressions as the stable zero-based index of its option in the declared options array (0 for the first option, 1 for the second, and so on), while the interface displays the option label; use conditional expressions against those numeric indices. Group or primitive visibleWhen counts as scene influence, so do not add a meaningless numeric output for the select. " +
+    "When repairContext is supplied, return a complete replacement candidate that addresses every exact history entry using only this candidate's six authored fields and the declared SDK. Its immutableContract controls and outputs are fixed by the reviewed planner: do not add, remove, rename, reorder, or request mutation of them, and do not rely on renderer, runtime, CSS, route, lesson, or planner changes. Use the labelled rendered previews only for the viewport and select state they identify; do not infer an unshown state or viewport. If previewCoverage.selectStateCoverageTruncated is true, the bounded matrix is not proof of complete or unshown select-state coverage. " +
     "Keep sourceCode below 16,000 bytes and use at most five scenes; prefer the smallest expression tree that teaches the objective. testCases should cover only simple derived outputs with numeric expectations you can compute exactly (an empty testCases array is allowed because Breadboard adds deterministic tests). " +
     "sourceCode must end immediately after the final ASCII semicolon; do not append Markdown fences, commentary, or non-ASCII punctuation. " +
     `This is a complete syntactically valid scalar/plot module template; follow its schema exactly:\n${validModuleTemplate}\n` +
     `This is a complete syntactically valid spatial module template; replace its generic labels and geometry with source-grounded content:\n${spatialModuleTemplate}`;
+  if (
+    (input.repairHistory?.length ?? 0) >
+    GENERATED_VISUAL_REPAIR_HISTORY_MAX_ENTRIES
+  ) {
+    throw new Error("Generated visual repair history exceeded its semantic attempt ceiling");
+  }
+  const availablePreviews = availableGeneratedVisualPreviews(input.previews);
+  const previewCoverage = {
+    renderedPreviewCount: availablePreviews.length,
+    selectStateCap: GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES,
+    selectStateCoverageTruncated: availablePreviews.some(
+      (preview) => preview.selectStateCoverageTruncated,
+    ),
+    policy:
+      "Labelled previews are evidence only for their stated viewport and select state. A truncated select-state matrix is a deliberate bounded subset, never proof of an unrendered state or full state coverage.",
+  };
+  const repairContext =
+    input.repairHistory?.length || input.errors?.length
+      ? {
+          // A repair is another model-authored revision. Preserve the complete
+          // prior six-field candidate, every exact gate/critic entry, and the
+          // identities of the rendered evidence; code never edits or
+          // summarizes their semantic content.
+          previousCandidate: input.previousCandidate
+            ? generatedVisualizationCandidateRepairSnapshot(input.previousCandidate)
+            : undefined,
+          // Preserve this legacy packet shape for direct callers that only have
+          // source text. Production retries use previousCandidate above.
+          previousSourceCode: input.previousCandidate
+            ? undefined
+            : input.previousSourceCode,
+          exactErrors: input.errors ? [...input.errors] : [],
+          exactHistory: input.repairHistory
+            ? generatedVisualRepairHistorySnapshot(input.repairHistory)
+            : undefined,
+          renderedPreviews: generatedVisualPreviewIdentities(availablePreviews),
+          previewCoverage,
+        }
+      : undefined;
+  const authorEvidence = {
+    opportunity: input.opportunity,
+    immutableContract: {
+      requiredInputs: input.opportunity.requiredInputs,
+      requiredOutputs: input.opportunity.requiredOutputs,
+    },
+    localTeachingText: input.pageMarkdown.slice(0, 14_000),
+    sourceContext: boundedGeneratedVisualEvidence(input.sourceContext, 10_000),
+    sourceFigureSummaries: boundedGeneratedVisualEvidence(
+      input.sourceFigureSummaries?.slice(0, 10),
+      8_000,
+    ),
+    formulaDefinitions: boundedGeneratedVisualEvidence(
+      input.formulaDefinitions?.slice(0, 12),
+      6_000,
+    ),
+    sdkDocumentation: {
+      version: GENERATED_VISUAL_CAPABILITY_MANIFEST.sdkVersion,
+      controlTypes: [
+        ...GENERATED_VISUAL_CAPABILITY_MANIFEST.runtimeControls.types,
+      ],
+      controlKinds: [
+        ...GENERATED_VISUAL_CAPABILITY_MANIFEST.requiredContractControls.kinds,
+      ],
+      controlProtocolRoles: [
+        ...GENERATED_VISUAL_CAPABILITY_MANIFEST
+          .requiredContractControls.protocolRoles,
+      ],
+      outputTypes: [
+        ...GENERATED_VISUAL_CAPABILITY_MANIFEST.outputs.representations,
+      ],
+      sceneTypes: [...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.kinds],
+      spatialPrimitiveTypes: [
+        ...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.primitiveKinds,
+      ],
+      spatialProjectionTypes: [
+        ...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.projections,
+      ],
+      spatialInteractionTypes: [
+        ...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.interactions,
+      ],
+      spatialViewDefaults:
+        GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.defaults,
+      maxControls: MAX_CONTROLS,
+      maxSelectOptions: MAX_SELECT_OPTIONS,
+      maxScenes: MAX_SCENES,
+      maxSpatialGroups: MAX_SPATIAL_GROUPS,
+      maxSpatialPrimitives: MAX_SPATIAL_PRIMITIVES,
+      maxSpatialPolygonPoints: MAX_SPATIAL_POLYGON_POINTS,
+    },
+    repairContext,
+  };
   const response = await input.client.chat.completions.create(
     withCouncil(
       {
@@ -3682,72 +4133,12 @@ export default defineVisualization({
           { role: "system", content: system },
           {
             role: "user",
-            content: JSON.stringify({
-              opportunity: input.opportunity,
-              localTeachingText: input.pageMarkdown.slice(0, 14_000),
-              sourceContext: boundedGeneratedVisualEvidence(
-                input.sourceContext,
-                10_000,
-              ),
-              sourceFigureSummaries: boundedGeneratedVisualEvidence(
-                input.sourceFigureSummaries?.slice(0, 10),
-                8_000,
-              ),
-              formulaDefinitions: boundedGeneratedVisualEvidence(
-                input.formulaDefinitions?.slice(0, 12),
-                6_000,
-              ),
-              sdkDocumentation: {
-                version: GENERATED_VISUAL_CAPABILITY_MANIFEST.sdkVersion,
-                controlTypes: [
-                  ...GENERATED_VISUAL_CAPABILITY_MANIFEST.runtimeControls.types,
-                ],
-                controlKinds: [
-                  ...GENERATED_VISUAL_CAPABILITY_MANIFEST
-                    .requiredContractControls.kinds,
-                ],
-                controlProtocolRoles: [
-                  ...GENERATED_VISUAL_CAPABILITY_MANIFEST
-                    .requiredContractControls.protocolRoles,
-                ],
-                outputTypes: [
-                  ...GENERATED_VISUAL_CAPABILITY_MANIFEST.outputs
-                    .representations,
-                ],
-                sceneTypes: [
-                  ...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.kinds,
-                ],
-                spatialPrimitiveTypes: [
-                  ...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial
-                    .primitiveKinds,
-                ],
-                spatialProjectionTypes: [
-                  ...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial
-                    .projections,
-                ],
-                spatialInteractionTypes: [
-                  ...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial
-                    .interactions,
-                ],
-                spatialViewDefaults:
-                  GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.defaults,
-                maxControls: MAX_CONTROLS,
-                maxSelectOptions: MAX_SELECT_OPTIONS,
-                maxScenes: MAX_SCENES,
-                maxSpatialGroups: MAX_SPATIAL_GROUPS,
-                maxSpatialPrimitives: MAX_SPATIAL_PRIMITIVES,
-                maxSpatialPolygonPoints: MAX_SPATIAL_POLYGON_POINTS,
-              },
-              repairContext: input.errors?.length
-                ? {
-                    // A repair is another model-authored revision. Preserve the
-                    // exact prior artifact and every gate/critic message so code
-                    // never silently edits or summarizes its semantic context.
-                    previousSourceCode: input.previousSourceCode,
-                    exactErrors: input.errors,
-                  }
-                : undefined,
-            }),
+            content: availablePreviews.length
+              ? [
+                  { type: "text", text: JSON.stringify(authorEvidence) },
+                  ...generatedVisualPreviewImageParts(availablePreviews),
+                ]
+              : JSON.stringify(authorEvidence),
           },
         ],
         max_completion_tokens: Math.max(
@@ -4146,6 +4537,7 @@ async function reviewGeneratedVisualization(input: {
   sourceFigureSummaries?: unknown[];
   formulaDefinitions?: unknown[];
   previewPath?: string;
+  previews?: GeneratedVisualPreviewArtifact[];
   tests?: GeneratedVisualTestsRecord;
   /** Why the previous critic reply was unusable, quoted back so a retry
    * corrects the shape instead of repeating the identical prompt. */
@@ -4153,8 +4545,40 @@ async function reviewGeneratedVisualization(input: {
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<GeneratedVisualCriticRecord> {
+  const legacyPreview: GeneratedVisualPreviewArtifact[] =
+    input.previewPath && fs.existsSync(input.previewPath)
+      ? [
+          {
+            id: "legacy-desktop-default",
+            viewport: { width: 1000, height: 720 },
+            theme: "light",
+            selectState: [],
+            defaultState: true,
+            selectStateCoverageTruncated: false,
+            path: input.previewPath,
+          },
+        ]
+      : [];
+  const availablePreviews = availableGeneratedVisualPreviews(
+    input.previews?.length ? input.previews : legacyPreview,
+  );
+  const previewCoverage = {
+    renderedPreviewCount: availablePreviews.length,
+    selectStateCap: GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES,
+    selectStateCoverageTruncated: availablePreviews.some(
+      (preview) => preview.selectStateCoverageTruncated,
+    ),
+    policy:
+      "Labelled previews are evidence only for their stated viewport and select state. A truncated select-state matrix is a deliberate bounded subset, never proof of an unrendered state or full state coverage.",
+  };
   const evidence = {
     opportunity: input.opportunity,
+    immutableContract: {
+      requiredInputs: input.opportunity.requiredInputs,
+      requiredOutputs: input.opportunity.requiredOutputs,
+    },
+    capabilityManifest: GENERATED_VISUAL_CAPABILITY_MANIFEST,
+    capabilityManifestHash: GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
     explanation: input.candidate.explanation,
     pedagogicalClaims: input.candidate.pedagogicalClaims,
     accessibilityDescription: input.candidate.accessibilityDescription,
@@ -4168,7 +4592,9 @@ async function reviewGeneratedVisualization(input: {
       input.formulaDefinitions?.slice(0, 8),
       5_000,
     ),
-    previewGenerated: Boolean(input.previewPath),
+    previewGenerated: availablePreviews.length > 0,
+    renderedPreviews: generatedVisualPreviewIdentities(availablePreviews),
+    previewCoverage,
     runtimeEvidence: input.tests
       ? {
           passed: input.tests.passed,
@@ -4189,10 +4615,6 @@ async function reviewGeneratedVisualization(input: {
         }
       : undefined,
   };
-  const previewData =
-    input.previewPath && fs.existsSync(input.previewPath)
-      ? `data:image/png;base64,${fs.readFileSync(input.previewPath).toString("base64")}`
-      : "";
   const response = await input.client.chat.completions.create(
     withCouncil(
       {
@@ -4207,22 +4629,19 @@ async function reviewGeneratedVisualization(input: {
               "Reply with one JSON object and nothing else:\n" +
               `{"approved": <boolean>, "reason": <string>, "requestedChanges": [<string>, ...], "scores": {${CRITIC_RUBRIC_KEYS.map((key) => `"${key}": <0-1 number>`).join(", ")}}}\n` +
               "Score every one of those dimensions as a number from 0 to 1 — an approval that leaves any dimension unscored is discarded. " +
-              "Leave requestedChanges empty when you approve; otherwise list the specific revisions. " +
+              "Leave requestedChanges empty when you approve; otherwise list the complete bounded inventory of every blocking revision visible in the supplied evidence, not only the first issue discovered. " +
               "Compare every rendered primitive's actual topology and domain against its labels, explanation, interaction contract, and source evidence. Explicitly distinguish centered/full from bounded/clipped/one-sided/sector geometry and open from closed geometry. Reject any mismatch even when a label or prose renames the rendered shape; relabeling does not change topology or domain. " +
               "Independently recompute every evaluable relationship from the literal definition rather than trusting its labels, explanation, pedagogical claims, or screenshot. Check scalar values, signs, directions, units and conversions, every vector's endpoint delta and magnitude, component-wise sums, resultants, rounding, and other aggregates. A claimed sum must equal the displayed contributions at the authored precision. If displayed elements are representative samples of a larger or continuous domain, reject a whole-domain aggregate that is constructed or implied as their exact finite subtotal unless the source evidence explicitly establishes that equality; require the distinction in geometry, labels, and the non-visual explanation. If source evidence does not establish a sign, magnitude, scale, or aggregate, require explicitly qualitative or normalized encoding and reject unsupported evaluated claims. Treat every such check as part of both sourceClaimsAndUnits and primitiveTopologyAndDomain, and score either below its publication threshold when any check fails. " +
               "For a spatial scene, verify that its explicitly authored orthographic/perspective and fixed/orbit view is pedagogically useful rather than decorative, preserves legibility and truthful geometry, and is explained accessibly when orbit navigation is enabled. Omitted camera fields are the fixed orthographic legacy default; never infer a different mode from the screenshot or subject matter. " +
               "For test_prediction, verify the actual control and output behavior follows the reviewed input, then commit, then reveal/evaluate order; reject an artifact that reveals or evaluates the outcome before commitment, whose outcome changes initially, during prediction, or at commit alone, ignores any protocol stage, or merely describes the sequence in prose. The trusted runtime uses exact protocolRole values (never labels or subject inference) to keep prediction inputs editable until commit, lock them after commit, mutation-guard reveal/evaluate until commitment, and clear/unlock on Reset. There is no retained hidden-state snapshot; the mechanism is a UI/state lock and guard, not a semantic prediction snapshot invented by the runtime. Require the authored outcome expression or visibility to be gated by both commit and reveal/evaluate. " +
-              "Approve only if interaction improves understanding, belongs in this subsection, uses meaningful controls, has a useful default state, introduces every variable, preserves source claims and units, matches primitive topology and domain, avoids duplication and unnecessary complexity, and is accessible.",
+              "The immutableContract controls and outputs are planner-owned and cannot be changed in this candidate loop. Reject only with requestedChanges that a complete replacement candidate can make through its six authored fields and sourceCode using the supplied capabilityManifest. Requested changes must be sourceCode/SDK-feasible: never request a contract, planner, lesson, route, renderer, runtime, CSS, or unavailable SDK mutation. Use each labelled rendered preview only as evidence for its stated viewport and select state; do not claim a mobile or alternate-state defect from a different or unshown preview. When previewCoverage.selectStateCoverageTruncated is true, it is bounded representative evidence rather than proof of complete or unshown select-state coverage. Approve only if interaction improves understanding, belongs in this subsection, uses meaningful controls, has a useful default state, introduces every variable, preserves source claims and units, matches primitive topology and domain, avoids duplication and unnecessary complexity, and is accessible.",
           },
           {
             role: "user",
-            content: previewData
+            content: availablePreviews.length
               ? [
                   { type: "text", text: JSON.stringify(evidence) },
-                  {
-                    type: "image_url",
-                    image_url: { url: previewData, detail: "low" },
-                  },
+                  ...generatedVisualPreviewImageParts(availablePreviews),
                 ]
               : JSON.stringify(evidence),
           },
@@ -4777,7 +5196,10 @@ async function createGeneratedVisualizationWithSlot(
     input.candidateProvider ?? generateVisualizationCandidate;
   const criticProvider = input.criticProvider ?? reviewGeneratedVisualization;
   let previousSourceCode = "";
+  let previousCandidate: GeneratedVisualizationCandidate | undefined;
+  let previousPreviews: GeneratedVisualPreviewArtifact[] = [];
   let repairErrors: string[] = [];
+  const repairHistory: GeneratedVisualRepairHistoryEntry[] = [];
   let lastFailure: GeneratedVisualResult["failureCategory"] = "generation";
   let transportExhaustedWithoutFallback = false;
   const requestTimeoutMs = Math.max(
@@ -4791,8 +5213,33 @@ async function createGeneratedVisualizationWithSlot(
         ) || GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS),
     ),
   );
+  let currentRepairAttempt = 0;
+  const recordRepairFailure = (entry: Omit<
+    GeneratedVisualRepairHistoryEntry,
+    "attempt" | "candidateSnapshotHash"
+  > & {
+    candidate?: GeneratedVisualizationCandidate | null;
+  }) => {
+    // A provider/generation failure has no newly returned candidate. Do not
+    // misattribute it to the prior repair candidate; that candidate remains
+    // separately available to the next author request.
+    const linkedCandidate = entry.candidate ?? undefined;
+    appendGeneratedVisualRepairHistory(repairHistory, {
+      attempt: currentRepairAttempt,
+      failureCategory: entry.failureCategory,
+      errors: entry.errors,
+      ...(entry.critic ? { critic: entry.critic } : {}),
+      ...(linkedCandidate
+        ? {
+            candidateSnapshotHash:
+              generatedVisualizationCandidateSnapshotHash(linkedCandidate),
+          }
+        : {}),
+    });
+  };
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    currentRepairAttempt = attempt;
     input.checkCancelled?.();
     if (input.abortSignal?.aborted)
       throw new Error("generated visualization was cancelled");
@@ -4823,6 +5270,14 @@ async function createGeneratedVisualizationWithSlot(
       sourceFigureSummaries: input.sourceFigureSummaries,
       formulaDefinitions: input.formulaDefinitions,
       previousSourceCode: previousSourceCode || undefined,
+      previousCandidate,
+      // Each provider request receives an immutable time-of-request snapshot;
+      // later semantic failures must not mutate evidence already supplied to a
+      // model or a custom candidate boundary.
+      repairHistory: repairHistory.length
+        ? generatedVisualRepairHistorySnapshot(repairHistory)
+        : undefined,
+      previews: previousPreviews.length ? previousPreviews : undefined,
       errors: repairErrors.length ? repairErrors : undefined,
       timeoutMs: requestTimeoutMs,
     };
@@ -4857,6 +5312,10 @@ async function createGeneratedVisualizationWithSlot(
       repairErrors = [
         error instanceof Error ? error.message : "candidate generation failed",
       ];
+      recordRepairFailure({
+        failureCategory: "generation",
+        errors: repairErrors,
+      });
       if (error instanceof GeneratedVisualProviderTransportExhaustedError) {
         transportExhaustedWithoutFallback = true;
         writeRejectedAttempt(
@@ -4901,6 +5360,8 @@ async function createGeneratedVisualizationWithSlot(
       continue;
     }
     previousSourceCode = candidate.sourceCode;
+    previousCandidate = candidate;
+    previousPreviews = [];
     emit(input.onEvent, "visual_model_generation_completed", {
       visualizationId: id,
       attempt,
@@ -4915,6 +5376,11 @@ async function createGeneratedVisualizationWithSlot(
     if (!compilation.definition) {
       lastFailure = "validation";
       repairErrors = compilation.validation.errors;
+      recordRepairFailure({
+        failureCategory: "validation",
+        errors: repairErrors,
+        candidate,
+      });
       writeRejectedAttempt(
         input.gardenDir,
         id,
@@ -4990,7 +5456,14 @@ async function createGeneratedVisualizationWithSlot(
             },
           ],
           browser: undefined,
+          previews: undefined,
         };
+    // Never teach a repair model from a partial matrix. The runtime gate below
+    // rejects an incomplete capture, and only a complete labelled matrix can
+    // become evidence for a later model-authored revision.
+    previousPreviews = browser.browser?.previewMatrixComplete
+      ? [...(browser.previews ?? [])]
+      : [];
     emit(input.onEvent, "visual_browser_tests_completed", {
       visualizationId: id,
       attempt,
@@ -5017,6 +5490,11 @@ async function createGeneratedVisualizationWithSlot(
       ]
         .filter((test) => !test.passed)
         .map((test) => `${test.name}: ${test.detail ?? "failed"}`);
+      recordRepairFailure({
+        failureCategory: "runtime",
+        errors: repairErrors,
+        candidate,
+      });
       writeRejectedAttempt(
         input.gardenDir,
         id,
@@ -5077,6 +5555,7 @@ async function createGeneratedVisualizationWithSlot(
         previewPath: browser.browser?.screenshotCreated
           ? path.join(stagingDir, "preview.png")
           : undefined,
+        previews: browser.previews,
         tests: deterministicTests,
         priorCriticFailure,
         timeoutMs: requestTimeoutMs,
@@ -5144,6 +5623,11 @@ async function createGeneratedVisualizationWithSlot(
       if (criticTransportExhausted) {
         transportExhaustedWithoutFallback = true;
         repairErrors = [criticTransportExhausted.message];
+        recordRepairFailure({
+          failureCategory: "critic",
+          errors: repairErrors,
+          candidate,
+        });
         writeRejectedAttempt(
           input.gardenDir,
           id,
@@ -5163,6 +5647,11 @@ async function createGeneratedVisualizationWithSlot(
       repairErrors = [
         `Critic review could not complete after ${criticAttempts} attempt${criticAttempts === 1 ? "" : "s"}: ${criticFailure}`,
       ];
+      recordRepairFailure({
+        failureCategory: "critic",
+        errors: repairErrors,
+        candidate,
+      });
       writeRejectedAttempt(
         input.gardenDir,
         id,
@@ -5199,6 +5688,15 @@ async function createGeneratedVisualizationWithSlot(
       repairErrors = [critic.reason, ...critic.requestedChanges].filter(
         Boolean,
       );
+      recordRepairFailure({
+        failureCategory: "critic",
+        errors: repairErrors,
+        critic: {
+          reason: critic.reason,
+          requestedChanges: critic.requestedChanges,
+        },
+        candidate,
+      });
       writeRejectedAttempt(
         input.gardenDir,
         id,

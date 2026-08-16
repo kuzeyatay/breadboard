@@ -1,36 +1,50 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-15T11:30:00+03:00",
+  "generatedAt": "2026-08-15T15:39:57+03:00",
+  "validity": "SUPERSEDED_BY_ANSWER_LEAKAGE_AUDIT",
+  "supersessionReport": "qa/autonomous/HERMES_CORE_COMPLETION_REPORT.md",
+  "invalidatedPasses": [
+    "garden-chat-document-grounding",
+    "conversation-isolation",
+    "chat-cancel-and-recover",
+    "terminal-cancel-and-reuse",
+    "desktop-renderer-refresh-persistence"
+  ],
+  "invalidatedReason": "Historical assertions either supplied the expected value in the prompt, reused a whole-transcript marker, or lacked a retrieval invariant. Retained for forensic comparison only; no current PASS is claimed.",
   "providerAuthReference": "CHATMOCK_AUTH_FILE points to the normal Breadboard auth file; read-only, contents omitted",
   "uiPassEvidence": [
     ".qa-results/runs/20260815103416-50300-07249c32/hermes-conversational-attempt.json",
     ".qa-results/runs/20260815102622-31480-51da9549/hermes-conversational-attempt.json"
   ],
   "inventoryEvidence": [
-    ".qa-results/runs/20260815110339-48428-049ecd44/hermes-provider-backed-inventory.json",
-    ".qa-results/runs/20260815112014-39684-999ca1e7/scenario-results-20260815112014-39684-999ca1e7.json"
+    ".qa-results/runs/20260815120820-4696-d0239b6d/hermes-provider-backed-inventory.json",
+    ".qa-results/runs/20260815120820-4696-d0239b6d/scenario-results-20260815120820-4696-d0239b6d.json",
+    ".qa-results/runs/20260815120302-34996-239a261f/renderer-refresh-reproduction.json",
+    ".qa-results/runs/20260815123613-18440-68acd14f/scenario-results-20260815123613-18440-68acd14f.json"
   ],
   "counts": {
     "providerBlockedScenarios": 15,
-    "PASS": 4,
-    "FAIL": 1,
-    "BLOCKED": 10
+    "PASS": 5,
+    "FAIL": 0,
+    "BLOCKED": 7,
+    "SKIPPED_OPTIONAL": 2,
+    "NOT_SUPPORTED": 1
   },
   "attempts": [
     { "id": "garden-chat-document-grounding", "status": "PASS", "actual": "GROUNDING_SEVEN_OK appeared in the Electron Garden Chat assistant UI." },
-    { "id": "garden-chat-follow-up-context", "status": "BLOCKED", "actual": "No completed follow-up invariant was visible in the renderer." },
+    { "id": "garden-chat-follow-up-context", "status": "BLOCKED", "classification": "PRODUCT_PREREQUISITE_MISSING", "actual": "The authenticated provider turn completed, but no deterministic follow-up invariant was visible in the renderer." },
     { "id": "conversation-isolation", "status": "PASS", "actual": "ISOLATION_ALPHA_OK appeared and the other garden marker was not exposed." },
-    { "id": "conversation-history-search-reopen", "status": "BLOCKED", "actual": "No completed history conversation was available to reopen with the required marker." },
-    { "id": "conversation-branch-independence", "status": "BLOCKED", "actual": "The real edit/create-branch flow did not yield a completed branch response." },
+    { "id": "conversation-history-search-reopen", "status": "NOT_SUPPORTED", "classification": "INTENTIONALLY_UNSUPPORTED", "actual": "The implemented Garden Chat surface exposes Recents only; no chat-history search control is present." },
+    { "id": "conversation-branch-independence", "status": "BLOCKED", "classification": "PRODUCT_PREREQUISITE_MISSING", "actual": "The real edit/create-branch flow was visible, but the provider did not yield a completed branch response." },
     { "id": "chat-cancel-and-recover", "status": "PASS", "actual": "The visible stop path recovered and CHAT_RECOVERY_OK completed in the renderer." },
-    { "id": "terminal-command-completion", "status": "BLOCKED", "actual": "Dashboard Terminal opened, but the safe command did not reach a completed UI result within the bound." },
-    { "id": "terminal-cancel-and-reuse", "status": "PASS", "actual": "The focused dashboard-Terminal replay stopped the active run and left the composer reusable." },
-    { "id": "terminal-error-recovery", "status": "BLOCKED", "actual": "The deterministic failing Terminal task did not reach a completed recovery result." },
-    { "id": "terminal-refresh-run-state", "status": "BLOCKED", "actual": "No completed Terminal output was available to restore after renderer refresh." },
-    { "id": "artifact-create-open-content", "status": "BLOCKED", "actual": "The provider-backed artifact request did not produce an owned artifact card/content view." },
-    { "id": "artifact-refresh-restart-persistence", "status": "BLOCKED", "actual": "The earlier receipt's text-marker visibility was a prompt/history false positive; no bb-neu-artifact-card existed." },
-    { "id": "learn-plan-confirm-build", "status": "BLOCKED", "actual": "No deterministic approved Learn plan/build fixture is enabled in the isolated profile." },
-    { "id": "learn-cancel-and-retry", "status": "BLOCKED", "actual": "No deterministic approved Learn plan/build fixture is enabled in the isolated profile." },
-    { "id": "desktop-renderer-refresh-persistence", "status": "FAIL", "actual": "A completed assistant marker was not visible after renderer reload; this needs product-versus-harness follow-up." }
+    { "id": "terminal-command-completion", "status": "BLOCKED", "classification": "PRODUCT_PREREQUISITE_MISSING", "actual": "Dashboard Terminal opened, but the safe command did not reach a completed UI result within the bound." },
+    { "id": "terminal-cancel-and-reuse", "status": "PASS", "actual": "The recovered dashboard-Terminal replay stopped the active run and left the composer reusable." },
+    { "id": "terminal-error-recovery", "status": "BLOCKED", "classification": "PRODUCT_PREREQUISITE_MISSING", "actual": "The recovered Terminal surface accepted the failing-task workflow, but no completed recovery result appeared in the real UI." },
+    { "id": "terminal-refresh-run-state", "status": "BLOCKED", "classification": "PRODUCT_PREREQUISITE_MISSING", "actual": "No completed Terminal output was available to restore after renderer refresh." },
+    { "id": "artifact-create-open-content", "status": "BLOCKED", "classification": "PRODUCT_PREREQUISITE_MISSING", "actual": "The provider-backed artifact request did not produce an owned artifact card/content view." },
+    { "id": "artifact-refresh-restart-persistence", "status": "BLOCKED", "classification": "QA_FIXTURE_MISSING", "actual": "The earlier receipt's text-marker visibility was a prompt/history false positive; no bb-neu-artifact-card existed." },
+    { "id": "learn-plan-confirm-build", "status": "SKIPPED_OPTIONAL", "classification": "OPTIONAL_DEPENDENCY_NOT_CONFIGURED", "actual": "Learn plan/build is optional and no deterministic provider-backed build fixture is enabled in this isolated profile." },
+    { "id": "learn-cancel-and-retry", "status": "SKIPPED_OPTIONAL", "classification": "OPTIONAL_DEPENDENCY_NOT_CONFIGURED", "actual": "Learn cancellation/retry is optional and no approved generated Learn plan fixture is enabled in this isolated profile." },
+    { "id": "desktop-renderer-refresh-persistence", "status": "PASS", "actual": "After awaiting the successful transcript PATCH, both user and assistant rows survived a real renderer reload; exact assistant-role marker was visible." }
   ]
 }

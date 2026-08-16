@@ -591,6 +591,11 @@ export default function AgentRuntimePanel({
   const externalRunActive =
     externalRunLaunching || messages.some(externalAgentRunInFlight);
   const runInFlight = activeRun || externalRunActive;
+  // Until the transcript has landed there is no history to answer against, and
+  // the arriving one would overwrite whatever the turn had already put on
+  // screen. Everything that writes to the conversation waits for it: the
+  // composer, a retry, and a question asked of a selection.
+  const conversationLocked = Boolean(disabled) || loadingTranscript;
   // The composer's stop has to reach whatever is actually working. A Hermes
   // turn is stopped through the session; an external agent runs outside that
   // state machine and is stopped at its own endpoint. Both can be true when a
@@ -1007,7 +1012,7 @@ export default function AgentRuntimePanel({
   }
 
   function retryAssistantAsBranch(assistantMessageIndex: number) {
-    if (!onRetryMessage || activeRun || disabled) return;
+    if (!onRetryMessage || activeRun || conversationLocked) return;
     const userMessageIndex = previousUserMessageIndex(
       messages,
       assistantMessageIndex,
@@ -1083,7 +1088,7 @@ export default function AgentRuntimePanel({
   }
 
   function receiveTextSelection(selection: ChatTextSelectionCandidate) {
-    if (!onAskSelection || activeRun || disabled) return;
+    if (!onAskSelection || activeRun || conversationLocked) return;
     const overlapping = (
       annotationsByMessage.get(selection.sourceMessageId) ?? []
     ).find((annotation) => chatTextSelectionsOverlap(annotation, selection));
@@ -1133,12 +1138,15 @@ export default function AgentRuntimePanel({
   }
 
   function submitComposer() {
+    // Voice mode submits through here without going near the send button, so
+    // the lock is re-checked rather than left to the disabled control.
+    if (loadingTranscript) return;
     if (!composerSelection || !onAskSelection) {
       onSubmit();
       return;
     }
     const question = input.trim();
-    if (!question || activeRun || disabled) return;
+    if (!question || activeRun || conversationLocked) return;
     const selection = composerSelection;
     setComposerSelection(null);
     setSelectionMenu(null);
@@ -2377,8 +2385,10 @@ export default function AgentRuntimePanel({
           onSubmit={submitComposer}
           onRunWorkflow={onRunWorkflow}
           textareaRef={composerTextareaRef}
-          placeholder={placeholder ?? "Ask the agent…"}
-          disabled={disabled}
+          placeholder={
+            loadingTranscript ? "Loading this chat…" : placeholder ?? "Ask the agent…"
+          }
+          disabled={conversationLocked}
           isSending={streaming}
           canSubmit={Boolean(input.trim() || (!streaming && attachments?.length))}
           model={model ?? ""}

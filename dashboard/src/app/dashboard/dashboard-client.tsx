@@ -284,10 +284,6 @@ export default function DashboardClient({
   const [bgImage, setBgImage] = useState<string | null>(null);
   const [showBgModal, setShowBgModal] = useState(false);
   const [appTheme, setAppTheme] = useState<AppTheme>("light");
-  // The terminal dock is fixed to the bottom of the viewport, so it covers the
-  // end of the page rather than pushing it. Measuring it keeps the last row of
-  // cards scrollable into view however far the dock is dragged open.
-  const [dockHeight, setDockHeight] = useState(0);
 
   // Which garden or cluster is being written to a file right now, keyed
   // "garden:<slug>" / "cluster:<path>"; "import" while one is being read back.
@@ -326,15 +322,28 @@ export default function DashboardClient({
     applyAppTheme(theme);
   }
 
-  // Track the dock's height so the page keeps scrollable room beneath it.
+  // The terminal dock is fixed to the bottom of the viewport, so it covers the
+  // end of the page rather than pushing it. Tracking its height keeps the last
+  // row of cards scrollable into view however far the dock is dragged open.
+  //
+  // The measurement goes straight to a custom property rather than through
+  // state: this fires on every frame of a dock drag, and a state update here
+  // re-rendered the entire dashboard — every garden card — once per frame. A
+  // variable moves the padding without React hearing about it at all.
   useEffect(() => {
     const dock = document.querySelector("[data-terminal-dock]");
     if (!dock) return;
     const observer = new ResizeObserver(([entry]) => {
-      setDockHeight(entry.contentRect.height);
+      document.documentElement.style.setProperty(
+        "--bb-dock-height",
+        `${Math.round(entry.contentRect.height)}px`,
+      );
     });
     observer.observe(dock);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      document.documentElement.style.removeProperty("--bb-dock-height");
+    };
   }, []);
 
   // Re-render once a second while uploading so elapsed-time markers tick up.
@@ -1709,6 +1718,10 @@ export default function DashboardClient({
     let duplicateCount = 0;
     let snapshotCount = 0;
     const screenshotWarnings: string[] = [];
+    // Kept apart from the other warnings so it can be raised first and with a
+    // title: this one is about whether the document can be trusted, not about
+    // how well it was read.
+    const hiddenContentWarnings: string[] = [];
 
     for (const file of uploadFiles) {
       if (controller.signal.aborted) break;
@@ -1799,6 +1812,7 @@ export default function DashboardClient({
             duplicate?: boolean;
             imageCount?: number;
             screenshotWarning?: string;
+            hiddenContentWarning?: string;
             visionError?: string;
             durationMs?: number;
             tokenUsage?: IngestTokenUsage;
@@ -1860,6 +1874,7 @@ export default function DashboardClient({
             duplicate?: boolean;
             imageCount?: number;
             screenshotWarning?: string;
+            hiddenContentWarning?: string;
             visionError?: string;
             durationMs?: number;
             tokenUsage?: IngestTokenUsage;
@@ -1890,6 +1905,9 @@ export default function DashboardClient({
                 `${file.name}: ${data.screenshotWarning}`,
               );
             }
+            if (typeof data.hiddenContentWarning === "string") {
+              hiddenContentWarnings.push(data.hiddenContentWarning);
+            }
           }
         } else {
           if (controller.signal.aborted) break;
@@ -1914,6 +1932,11 @@ export default function DashboardClient({
         addToast(
           `Added ${successCount} file${successCount > 1 ? "s" : ""} to ${uploadCluster.name}${vlmUploadEnabled ? " with VLM parsing" : anydocUploadEnabled ? " with anydoc conversion" : isHandwriting && hasHandwritingCompatibleFile ? " with handwriting OCR" : ""}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""} in ${totalDuration}`,
         );
+        // Ahead of the extraction warnings: the message already names the file,
+        // and it is the one a user should read before acting on the document.
+        for (const warning of hiddenContentWarnings) {
+          addToast(warning, "error", "Hidden content detected");
+        }
         for (const warning of screenshotWarnings) addToast(warning);
         router.refresh();
       } else if (duplicateCount > 0) {
@@ -1965,7 +1988,7 @@ export default function DashboardClient({
       style={{
         // Clear the fixed dock, then a screenful of slack so the bottom of the
         // grid can always be scrolled up to a comfortable reading position.
-        paddingBottom: `calc(${Math.round(dockHeight)}px + 40vh)`,
+        paddingBottom: "calc(var(--bb-dock-height, 0px) + 40vh)",
         ...(bgImage
           ? {
               backgroundImage: `url(${bgImage})`,

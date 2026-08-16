@@ -1527,6 +1527,7 @@ export function buildLearningPageFrontmatter({
   learningUnitRole,
   learningVersionId,
   sourceSetHash,
+  sourceFormulaReviewSetHash,
   generatedAt,
   pageId,
   generatedByBuildId,
@@ -1556,6 +1557,7 @@ export function buildLearningPageFrontmatter({
   learningUnitRole?: LearningUnitRole;
   learningVersionId: string;
   sourceSetHash?: string;
+  sourceFormulaReviewSetHash?: string;
   generatedAt: string;
   /** Active-build ownership (convergent finalization). Emitted only when a
    * build id is supplied, so legacy output is byte-for-byte unchanged. Page
@@ -1599,6 +1601,7 @@ export function buildLearningPageFrontmatter({
     learningVersion: visibleVersionId,
     learningVersionId: visibleVersionId,
     sourceSetHash,
+    sourceFormulaReviewSetHash,
     // Active-build ownership (only present under convergent finalization).
     pageId: generatedByBuildId ? (pageId ?? (learningUnitId ? `page:${learningUnitId}` : undefined)) : undefined,
     generatedByBuildId: generatedByBuildId || undefined,

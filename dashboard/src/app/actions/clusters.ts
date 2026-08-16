@@ -4,7 +4,7 @@ import db from "@/lib/db";
 import fs from "fs";
 import path from "path";
 import { revalidatePath } from "next/cache";
-import { refreshClusterIndex } from "@/lib/knowledge";
+import { countClusterMarkdown, refreshClusterIndex } from "@/lib/knowledge";
 import {
   refreshPrivateQuartzIndex,
   refreshPublicQuartzIndex,
@@ -22,6 +22,11 @@ import {
   renameFolder,
   reorderFolder,
 } from "@/lib/cluster-folders";
+import {
+  isGardenMemoryScope,
+  MAX_GARDEN_INSTRUCTIONS,
+  type GardenMemoryScope,
+} from "@/lib/garden-settings";
 
 export interface Cluster {
   id: number;
@@ -122,13 +127,12 @@ function normalizeCardHeight(value: number | null | undefined): number {
   );
 }
 
+// Notes live in sub-folders: an uploaded document lands in `sources/`, study
+// pages under `learning/`. A flat read of the Garden root therefore reports 0
+// for a Garden that is full, which is why this walks the tree.
 function countNotes(contentPath: string, slug: string): number {
   try {
-    const dir = path.join(contentPath, slug);
-    if (!fs.existsSync(dir)) return 0;
-    return fs
-      .readdirSync(dir)
-      .filter((f) => f.endsWith(".md") && f !== "_index.md").length;
+    return countClusterMarkdown(path.join(contentPath, slug));
   } catch {
     return 0;
   }
@@ -559,6 +563,54 @@ export async function setClusterChatAccessible(
       err instanceof Error
         ? err.message
         : "Failed to update garden accessibility",
+    );
+  }
+}
+
+/**
+ * Standing instructions for a garden, appended to the system prompt of every
+ * turn that happens in it. Empty clears them.
+ */
+export async function setClusterInstructions(
+  clusterId: number,
+  instructions: string,
+): Promise<void> {
+  try {
+    const userId = await requireUserId();
+    const cleaned = instructions.trim().slice(0, MAX_GARDEN_INSTRUCTIONS);
+    const result = db
+      .prepare("UPDATE clusters SET instructions = ? WHERE id = ? AND user_id = ?")
+      .run(cleaned, clusterId, userId);
+    if (result.changes !== 1) throw new Error("Garden not found");
+    revalidatePath("/dashboard");
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? err.message : "Failed to save garden instructions",
+    );
+  }
+}
+
+/**
+ * Whether this garden's durable memories are sealed inside it.
+ *
+ * The enforcement is a hard filter in retrieveDurableMemories, not a ranking
+ * nudge — see src/lib/conversations/memory-isolation.ts.
+ */
+export async function setClusterMemoryScope(
+  clusterId: number,
+  scope: GardenMemoryScope,
+): Promise<void> {
+  try {
+    const userId = await requireUserId();
+    if (!isGardenMemoryScope(scope)) throw new Error("Unknown memory setting");
+    const result = db
+      .prepare("UPDATE clusters SET memory_scope = ? WHERE id = ? AND user_id = ?")
+      .run(scope, clusterId, userId);
+    if (result.changes !== 1) throw new Error("Garden not found");
+    revalidatePath("/dashboard");
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? err.message : "Failed to update garden memory setting",
     );
   }
 }

@@ -1,6 +1,10 @@
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
-import { extractQuartzMath, normalizeQuartzMarkdown } from "../src/lib/quartz-markdown.ts";
+import {
+  extractQuartzMath,
+  extractVerbatimDisplayMath,
+  normalizeQuartzMarkdown,
+} from "../src/lib/quartz-markdown.ts";
 
 describe("Quartz markdown normalization", () => {
   test("converts bracket display math to Quartz dollar blocks", () => {
@@ -21,6 +25,50 @@ describe("Quartz markdown normalization", () => {
     assert.match(markdown, /\\Delta t \\geq 1, 100\\% \\qquad \\text\{\(2\)\}/);
     assert.doesNotMatch(markdown, /\\tag/);
     assert.equal(extractQuartzMath(markdown).length, 1);
+  });
+
+  test("extracts canonical display math before rendering normalization rewrites tags", () => {
+    const canonical = String.raw`D_{n1}=D_{n2}\tag{35}`;
+    const markdown = [
+      `$$\n${canonical}\n$$`,
+      `\\[\n${canonical}\n\\]`,
+      `\`\`\`txt\n$$\n${canonical}\n$$\n\`\`\``,
+    ].join("\n\n");
+
+    assert.deepEqual(
+      extractVerbatimDisplayMath(markdown).map((expression) => expression.formula),
+      [canonical, canonical],
+    );
+    assert.doesNotMatch(extractVerbatimDisplayMath(markdown)[0].formula, /\\qquad \\text/);
+    assert.match(normalizeQuartzMarkdown(markdown), /\\qquad \\text\{\(35\)\}/);
+  });
+
+  test("does not count display-like text hidden in non-rendered Markdown regions", () => {
+    const hidden = String.raw`D_{n1}=D_{n2}\tag{35}`;
+    const visible = String.raw`D_{t1}=D_{t2}\tag{33}`;
+    const markdown = [
+      "---",
+      `formula: "$$${hidden}$$"`,
+      "---",
+      `<!-- $$${hidden}$$ -->`,
+      `\`$$${hidden}$$\``,
+      "~~~txt",
+      `$$${hidden}$$`,
+      "~~~",
+      "```txt",
+      `\\[${hidden}\\]`,
+      "```",
+      `$$\n${visible}\n$$`,
+    ].join("\n");
+
+    assert.deepEqual(
+      extractVerbatimDisplayMath(markdown).map((expression) => expression.formula),
+      [visible],
+    );
+    assert.deepEqual(
+      extractVerbatimDisplayMath(`~~~txt\n$$${hidden}$$`).map((expression) => expression.formula),
+      [],
+    );
   });
 
   test("never normalizes LaTeX delimiters inside YAML frontmatter", () => {

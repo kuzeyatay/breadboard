@@ -541,6 +541,23 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
   box-shadow: none;
 }
 
+/* The openers of a temporary chat are the first thing the user types, so they
+   are drawn on the same broken outline their message is about to wear. The
+   dashed line is the mode's whole vocabulary; the cards borrow it rather than
+   inventing a second signal for the same fact. */
+[data-temporary-chat="true"] .bb-terminal-suggestion {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--botanical) 55%, var(--paper-raised));
+  box-shadow: none;
+}
+
+/* Hover has to answer, and here the answer cannot be the raised shadow the
+   ordinary card uses — so the broken line darkens instead. */
+[data-temporary-chat="true"] .bb-terminal-suggestion:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--botanical) 88%, var(--paper-raised));
+  box-shadow: none;
+}
+
 /* Breadboard workspace materials. These classes are deliberately visual-only:
    panel motion, sizing, overflow, positioning, and disclosure state stay in
    their existing component classes. */
@@ -726,33 +743,39 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
 }
 
 /* A garden card's two actions are extruded from the card rather than painted on
-   it: same warm paper as the card, raised by light alone. The generic
-   `neu-button` fill is `--paper-raised`, which reads as a white slab against
-   that paper, so these keep `--paper-surface` and let the shadow pair do the
-   lifting. */
+   it: the same warm paper as the card, shaped by light alone. That is the whole
+   idea of the material here — no fill contrast, no drawn border, just a dark
+   shadow low-right and a lit highlight up-left, so the button looks pressed out
+   of the surface it sits on. The generic `neu-button` fill is `--paper-raised`,
+   which reads as a white slab against that paper, so these keep
+   `--paper-surface`.
+
+   The border stays transparent rather than absent so the box metrics don't
+   shift between states, and the depth runs a full three-step sequence: raised
+   at rest, lifted a little higher on hover, and genuinely pressed in on click
+   (inset shadows, plus a 1px nudge down). */
 .bb-garden-card-action {
-  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+  border: 1px solid transparent;
   background-color: var(--paper-surface);
   color: var(--ink);
-  box-shadow:
-    3px 3px 8px var(--neu-shadow-soft),
-    -3px -3px 8px color-mix(in srgb, var(--neu-highlight) 58%, transparent);
+  box-shadow: var(--neu-raised-shadow);
   transition:
     box-shadow var(--neu-duration) var(--neu-easing),
-    border-color var(--neu-duration) var(--neu-easing),
     background-color var(--neu-duration) var(--neu-easing),
     color var(--neu-duration) var(--neu-easing),
     transform 90ms ease-out;
 }
 
 .bb-garden-card-action:hover {
-  border-color: color-mix(in srgb, var(--line-strong) 72%, transparent);
-  background-color: color-mix(in srgb, var(--paper-surface) 86%, var(--paper-strong));
   color: var(--ink-heading);
-  box-shadow: var(--neu-hover-shadow);
+  box-shadow:
+    6px 6px 15px var(--neu-shadow),
+    -6px -6px 15px var(--neu-highlight),
+    inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 74%, transparent);
 }
 
 .bb-garden-card-action:active {
+  background-color: var(--neu-surface-pressed);
   box-shadow: var(--neu-inset-shadow);
   transform: translateY(1px);
 }
@@ -1469,6 +1492,29 @@ b {
 
 .terminal-boot-conceal {
   animation: terminal-boot-conceal 0.32s cubic-bezier(0.55, 0, 0.68, 0.4) both;
+}
+
+/* The navigation bar creeps to its ceiling in a few seconds, but a dev-mode
+   route compile can keep the page waiting far longer than that. Once the creep
+   stops, this is what says the wait is still live rather than stuck. */
+@keyframes bb-nav-progress-stalled {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.bb-nav-progress-stalled {
+  animation: bb-nav-progress-stalled 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bb-nav-progress-stalled {
+    animation: none;
+  }
 }
 
 @keyframes learn-progress-pulse {
@@ -2784,11 +2830,6 @@ html[data-theme="dark"] .dashboard-shell {
   background-image: none;
 }
 
-html[data-theme="dark"] .auth-page-shell {
-  background-color: var(--paper-bg);
-  background-image: none;
-}
-
 html[data-theme="dark"] .dashboard-garden-card,
 html[data-theme="dark"] [aria-label^="Use border color"] {
   filter: none;
@@ -4101,316 +4142,5 @@ html[data-breadboard-desktop="true"] body > .bb-wm-shell {
 
   .bb-wm-live-dot {
     animation: none;
-  }
-}
-
-/* ─── Auth screens: the drawn breadboard ──────────────────────────────────────
-   The sign-in and register cards sit on a board that draws itself once on load:
-   hole field, power rails, traces routing in to solder pads either side of the
-   card, then a few parts, dimensions and sheet labels. Geometry is in
-   `src/app/auth/auth-board.tsx`; every stroke here uses palette tokens, so the
-   board follows the theme without a second set of colours. */
-
-/* No `overflow: hidden` here on purpose — the register card can outgrow a short
-   window, and clipping the shell would make it unreachable. The board layer
-   clips its own paint instead, and nothing it draws leaves that box. */
-.bb-auth-shell {
-  position: relative;
-  isolation: isolate;
-}
-
-.bb-auth-board {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  contain: layout paint;
-}
-
-/* Perfboard holes, faded out under the card so the form always wins. */
-.bb-auth-holes {
-  position: absolute;
-  inset: 0;
-  /* The wash is painted over the holes rather than masked out of them: a
-     `mask-image` is silently ignored on some Chromium builds, and a top layer in
-     the page's own background colour clears the middle just as well. */
-  background-image:
-    radial-gradient(
-      ellipse 44% 56% at 50% 50%,
-      var(--paper-bg) 0%,
-      color-mix(in srgb, var(--paper-bg) 72%, transparent) 48%,
-      transparent 78%
-    ),
-    radial-gradient(
-      circle at center,
-      transparent 0 1.7px,
-      color-mix(in srgb, var(--line-strong) 52%, transparent) 1.7px 2.7px,
-      transparent 2.8px
-    );
-  background-size:
-    100% 100%,
-    30px 30px;
-  background-repeat: no-repeat, repeat;
-  opacity: 0;
-  animation: bb-auth-fade 1.4s var(--neu-easing) forwards;
-}
-
-.bb-auth-schematic {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-
-/* One rule draws every generated line: normalised `pathLength` means the dash
-   pattern is the same length as the path whatever its real geometry. */
-.bb-auth-rule,
-.bb-auth-trace,
-.bb-auth-rail,
-.bb-auth-corner-line {
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-dasharray: 1;
-  stroke-dashoffset: 1;
-  animation: bb-auth-draw 1.05s var(--neu-easing) forwards;
-  animation-delay: var(--bb-d, 0s);
-}
-
-.bb-auth-rule {
-  stroke: color-mix(in srgb, var(--line-strong) 82%, transparent);
-  stroke-width: 1.25;
-}
-
-.bb-auth-trace {
-  stroke: color-mix(in srgb, var(--botanical) 46%, transparent);
-  stroke-width: 1.75;
-}
-
-.bb-auth-rail {
-  stroke: color-mix(in srgb, var(--line-strong) 62%, transparent);
-  stroke-width: 1.25;
-  animation-duration: 1.6s;
-}
-
-.bb-auth-rail-pos {
-  stroke: color-mix(in srgb, var(--botanical) 40%, transparent);
-}
-
-.bb-auth-rail-neg {
-  stroke: color-mix(in srgb, var(--botanical-2) 40%, transparent);
-}
-
-/* Static linework — parts, dimensions, registration mark — fades rather than
-   draws, so the eye follows the traces and not everything at once. */
-.bb-auth-rule-static {
-  fill: none;
-  stroke: color-mix(in srgb, var(--line-strong) 76%, transparent);
-  stroke-width: 1.25;
-  stroke-linecap: round;
-}
-
-.bb-auth-chip-body {
-  fill: color-mix(in srgb, var(--paper-strong) 38%, transparent);
-  stroke: color-mix(in srgb, var(--line-strong) 76%, transparent);
-  stroke-width: 1.25;
-}
-
-.bb-auth-mark,
-.bb-auth-chip,
-.bb-auth-dim,
-.bb-auth-titles {
-  opacity: 0;
-  animation: bb-auth-fade 0.9s var(--neu-easing) forwards;
-  animation-delay: var(--bb-d, 0s);
-}
-
-.bb-auth-label {
-  fill: color-mix(in srgb, var(--ink-muted) 72%, transparent);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 15px;
-  letter-spacing: 0.18em;
-}
-
-.bb-auth-label-lead {
-  fill: color-mix(in srgb, var(--ink-muted) 88%, transparent);
-  letter-spacing: 0.32em;
-}
-
-.bb-auth-label-dim {
-  font-size: 13px;
-  letter-spacing: 0.1em;
-  text-anchor: middle;
-}
-
-/* Solder pads pop in behind their trace's arrival. */
-.bb-auth-pad {
-  opacity: 0;
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: bb-auth-pad-set 0.45s var(--neu-easing) forwards;
-  animation-delay: var(--bb-d, 0s);
-}
-
-.bb-auth-pad-ring {
-  fill: none;
-  stroke: color-mix(in srgb, var(--botanical) 62%, transparent);
-  stroke-width: 2;
-}
-
-.bb-auth-pad-hole {
-  fill: var(--paper-bg);
-  stroke: color-mix(in srgb, var(--botanical) 34%, transparent);
-  stroke-width: 1;
-}
-
-/* A dash the length of 6% of the trace, running from the sheet edge inward to
-   the pad: `stroke-dashoffset: 0 -> 1` walks the dash end-to-start. */
-.bb-auth-pulse {
-  fill: none;
-  stroke: var(--botanical);
-  stroke-width: 2.5;
-  stroke-linecap: round;
-  stroke-dasharray: 0.06 0.94;
-  stroke-dashoffset: 0;
-  opacity: 0;
-  animation: bb-auth-pulse 9s linear infinite;
-  animation-delay: var(--bb-d, 0s);
-}
-
-/* Corner brackets around the card itself. Each is its own square SVG so it can
-   be mirrored with a transform instead of a stretched viewBox. */
-.bb-auth-corner {
-  position: absolute;
-  overflow: visible;
-  opacity: 0;
-  animation: bb-auth-fade 0.5s var(--neu-easing) forwards;
-  animation-delay: var(--bb-d, 0s);
-}
-
-.bb-auth-corner-line {
-  stroke: color-mix(in srgb, var(--botanical) 55%, transparent);
-  stroke-width: 1.5;
-  animation-duration: 0.7s;
-}
-
-.bb-auth-corner-tl {
-  top: -12px;
-  left: -12px;
-}
-
-.bb-auth-corner-tr {
-  top: -12px;
-  right: -12px;
-  transform: scaleX(-1);
-}
-
-.bb-auth-corner-bl {
-  bottom: -12px;
-  left: -12px;
-  transform: scaleY(-1);
-}
-
-.bb-auth-corner-br {
-  right: -12px;
-  bottom: -12px;
-  transform: scale(-1);
-}
-
-.bb-auth-card {
-  opacity: 0;
-  animation: bb-auth-seat 0.7s var(--neu-easing) 0.12s forwards;
-}
-
-@keyframes bb-auth-draw {
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-
-@keyframes bb-auth-fade {
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes bb-auth-pad-set {
-  from {
-    opacity: 0;
-    transform: scale(0.35);
-  }
-
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes bb-auth-seat {
-  from {
-    opacity: 0;
-    transform: translateY(10px) scale(0.985);
-  }
-
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes bb-auth-pulse {
-  0%,
-  6% {
-    stroke-dashoffset: 0;
-    opacity: 0;
-  }
-
-  13% {
-    opacity: 0.85;
-  }
-
-  34% {
-    opacity: 0.85;
-  }
-
-  40%,
-  100% {
-    stroke-dashoffset: 1;
-    opacity: 0;
-  }
-}
-
-/* Below the small breakpoint the card fills the screen and the routing would
-   only ever be cropped, so the board keeps just its hole field. */
-@media (max-width: 640px) {
-  .bb-auth-schematic {
-    display: none;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .bb-auth-holes,
-  .bb-auth-mark,
-  .bb-auth-chip,
-  .bb-auth-dim,
-  .bb-auth-titles,
-  .bb-auth-pad,
-  .bb-auth-corner,
-  .bb-auth-card {
-    opacity: 1;
-    animation: none;
-    transform: none;
-  }
-
-  .bb-auth-rule,
-  .bb-auth-trace,
-  .bb-auth-rail,
-  .bb-auth-corner-line {
-    stroke-dashoffset: 0;
-    animation: none;
-  }
-
-  .bb-auth-pulse {
-    display: none;
   }
 }
