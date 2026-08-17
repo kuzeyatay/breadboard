@@ -172,6 +172,66 @@ function prepareSnapshotIndex(
 }
 
 /**
+ * Drop live database clusters from the prepared index.
+ *
+ * A running database rewrites its own files whether or not an agent is working
+ * — a lock heartbeat, a checkpoint, a WAL segment — so a bracket that contains
+ * one reports the engine's activity as the agent's edits. Worse, it offers to
+ * undo them, and writing a stale page back under a live Postgres is exactly how
+ * a cluster gets corrupted. Ignore rules do not help here: a cluster committed
+ * to the repository is tracked at HEAD, which `prepareSnapshotIndex` correctly
+ * refuses to evict. So it is removed from the snapshot tree itself, leaving the
+ * card structurally unable to name it and undo unable to touch it.
+ *
+ * Clusters are found by the `PG_VERSION` marker every Postgres (and therefore
+ * PGLite) data directory carries at its root, so one committed anywhere in any
+ * connected repository is covered without being named here. A repository that
+ * is *itself* a cluster is left alone: excluding everything would leave nothing
+ * to snapshot, and the undo button is better lost than silently emptied.
+ */
+function dropLiveDatabaseClusters(
+  repositoryPath: string,
+  env: NodeJS.ProcessEnv,
+): void {
+  const markers = git(
+    repositoryPath,
+    ["ls-files", "--cached", "-z", "--", "*/PG_VERSION"],
+    env,
+  )
+    .split("\0")
+    .filter(Boolean);
+  if (markers.length === 0) return;
+
+  // Every subdirectory of a cluster carries its own marker, so keep only the
+  // outermost of each nest — one pathspec per cluster, not one per segment.
+  const directories = new Set(
+    markers.map((marker) => marker.slice(0, marker.lastIndexOf("/"))),
+  );
+  const roots = [...directories].filter(
+    (candidate) =>
+      ![...directories].some(
+        (other) => other !== candidate && candidate.startsWith(`${other}/`),
+      ),
+  );
+  if (roots.length === 0) return;
+
+  const indexed = git(
+    repositoryPath,
+    ["ls-files", "--cached", "-z", "--", ...roots],
+    env,
+  )
+    .split("\0")
+    .filter(Boolean);
+  if (indexed.length === 0) return;
+  gitWithInput(
+    repositoryPath,
+    ["update-index", "--force-remove", "-z", "--stdin"],
+    `${indexed.join("\0")}\0`,
+    env,
+  );
+}
+
+/**
  * Record the current working tree, including files git does not track yet.
  * Returns null when the repository cannot be snapshotted, which only costs the
  * run its undo button.
@@ -184,6 +244,8 @@ export function captureSnapshot(repositoryPath: string): string | null {
     // generated output can be enormous (and may contain incomplete nested Git
     // repositories); none of them belongs in an undo snapshot.
     git(repositoryPath, ["add", "--all", "--"], env);
+    // After the add, because `--all` re-stages a tracked cluster every time.
+    dropLiveDatabaseClusters(repositoryPath, env);
     const tree = git(repositoryPath, ["write-tree"], env).trim();
     if (!isSnapshotId(tree)) return null;
     const commit = git(

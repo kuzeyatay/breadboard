@@ -13,7 +13,7 @@ their phone. `messaging_send` delivers it to their own WhatsApp self-chat or
 their own Telegram thread with the bot they linked.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [dashboard_terminal, garden_chat]
   requiredTools:
     - messaging_send

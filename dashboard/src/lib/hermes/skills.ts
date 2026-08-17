@@ -57,6 +57,11 @@ const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
   // as implementation would confine the skill to scoped implementation mode —
   // which is to say, make it unselectable on the turns it exists for.
   "audio-analysis",
+  // A diagram is a rendered artifact, not repository code. Its guidance is full
+  // of SVG and HTML because that is what a drawing is made of here, and the
+  // classifier reads a manifest of markup as implementation work — which would
+  // confine "draw me an architecture diagram" to scoped implementation mode.
+  "diagram-design",
 ]);
 
 export type SkillEligibility =
@@ -555,7 +560,7 @@ export function listFirstPartySkills(
       classification: requiresOpenCode
         ? "eligible_coding_conditional"
         : "eligible_general",
-      category: requiresOpenCode ? "Implementation" : "Prebuilt",
+      category: requiresOpenCode ? "Implementation" : "Featured",
       reasons: [
         requiresOpenCode
           ? "This first-party software capability is reviewed and must execute through OpenCode."

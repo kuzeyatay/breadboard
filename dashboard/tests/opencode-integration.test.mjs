@@ -155,7 +155,7 @@ test("Garden cards connect repositories using the private desktop folder picker"
   assert.match(database, /repo_path TEXT/);
   assert.match(actions, /setClusterRepository/);
   assert.match(actions, /WHERE id = \? AND user_id = \?/);
-  assert.match(actions, /const \{ repo_path: repoPath, \.\.\.safeRow \} = row/);
+  assert.match(actions, /const \{ repo_path: repoPath,[^}]*\.\.\.safeRow \} = row/);
   assert.match(cards, /breadboardDesktop\?: \{ pickFolder:/);
   assert.match(cards, /await desktop\.pickFolder\(\)/);
   assert.match(cards, /aria-label=\{/);

@@ -8,12 +8,20 @@ import NewNoteButton from "@/app/components/new-note-button";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { quartzUrl } from "@/lib/quartz-url";
 import {
+  refreshOrganizationQuartzIndex,
   refreshPrivateQuartzIndex,
   refreshPublicQuartzIndex,
 } from "@/lib/quartz-garden-index";
+import { organizationIdsForUser } from "@/lib/organizations/store";
 import LibraryGardenClient from "./library-garden-client";
 
-type QuartzView = "private" | "public";
+type QuartzView = "private" | "organization" | "public";
+
+const VIEW_TITLES: Record<QuartzView, string> = {
+  private: "My garden",
+  organization: "Organization garden",
+  public: "Public garden",
+};
 
 function switchClass(active: boolean): string {
   return active
@@ -31,12 +39,20 @@ export default async function GardenHomePage({
 
   const userId = Number((session.user as { id?: string }).id);
   const { view: rawView } = await searchParams;
-  const view: QuartzView = rawView === "public" ? "public" : "private";
+  const inOrganization = organizationIdsForUser(userId).length > 0;
+  const view: QuartzView =
+    rawView === "public"
+      ? "public"
+      : rawView === "organization" && inOrganization
+        ? "organization"
+        : "private";
 
   const quartzSlug =
     view === "public"
       ? refreshPublicQuartzIndex()
-      : refreshPrivateQuartzIndex(userId);
+      : view === "organization"
+        ? refreshOrganizationQuartzIndex(userId)
+        : refreshPrivateQuartzIndex(userId);
 
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
@@ -46,7 +62,7 @@ export default async function GardenHomePage({
           <BackLink fallbackHref="/dashboard" fallbackLabel="Back to dashboard" />
           <span className="text-gray-700">/</span>
           <h1 className="text-sm font-semibold text-white truncate max-w-xs">
-            {view === "public" ? "Public garden" : "My garden"}
+            {VIEW_TITLES[view]}
           </h1>
         </div>
         <div className="relative z-10 flex items-center gap-2">
@@ -70,13 +86,22 @@ export default async function GardenHomePage({
             >
               Public garden
             </Link>
+            {inOrganization && (
+              <Link
+                href="/garden?view=organization"
+                aria-current={view === "organization" ? "page" : undefined}
+                className={switchClass(view === "organization")}
+              >
+                Organization
+              </Link>
+            )}
           </nav>
         </div>
       </header>
 
       <LibraryGardenClient
         src={quartzSlug ? quartzUrl(quartzSlug) : quartzUrl()}
-        title={view === "public" ? "Public garden" : "My garden"}
+        title={VIEW_TITLES[view]}
       />
     </div>
   );

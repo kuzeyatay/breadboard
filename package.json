@@ -47,6 +47,13 @@
     "qa:electron:headed": "node qa/electron/run-qa.mjs --project=critical --headed --preserve-runtime",
     "qa:electron:trace": "node qa/electron/run-qa.mjs --project=critical --trace --preserve-runtime",
     "qa:electron:typecheck": "tsc --noEmit -p qa/electron/tsconfig.json",
+    "qa:selftest": "node qa/harness-selftest/run-selftest.mjs",
+    "qa:selftest:unit": "node --test qa/harness-selftest/*.test.mjs",
+    "qa:selftest:harness": "node qa/electron/run-qa.mjs --project=selftest --skip-desktop-build",
+    "qa:selftest:electron": "node qa/harness-selftest/run-injected.mjs",
+    "qa:selftest:burn-in": "node qa/harness-selftest/run-burn-in.mjs",
+    "qa:selftest:secrets": "node qa/harness-selftest/scan-artifacts.mjs",
+    "qa:repair:experiments": "node qa/autonomous/run-repair-experiment.mjs",
     "cliproxy": "node scripts/start-cliproxy.mjs"
   },
   "devDependencies": {

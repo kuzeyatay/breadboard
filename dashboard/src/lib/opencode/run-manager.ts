@@ -16,6 +16,7 @@ import {
 } from "node:child_process";
 import type { ChatMessageAttachment } from "../chat-attachments.ts";
 import { finalizeRunSnapshot } from "../agent-edits/snapshot.ts";
+import type { GraftRunContext, GraftServer } from "../code-index/index-service.ts";
 
 export interface OpenCodeEvent {
   sequenceNumber: number;
@@ -233,9 +234,75 @@ export function withRequestedModel(
   };
 }
 
+/**
+ * OpenCode reaches the graft code index through MCP rather than its shell tool:
+ * the `breadboard` agent denies `external_directory` and asks before every bash
+ * command, and the graph is deliberately kept outside the connected repository.
+ * Registering the server per run is what keeps it scoped to the repository this
+ * run was pointed at.
+ */
+export function withGraftServer(
+  config: Record<string, unknown>,
+  server: GraftServer | null,
+): { config: Record<string, unknown>; changed: boolean } {
+  if (!server) return { config, changed: false };
+  const existing =
+    config.mcp && typeof config.mcp === "object" && !Array.isArray(config.mcp)
+      ? (config.mcp as Record<string, unknown>)
+      : {};
+  return {
+    config: {
+      ...withGraftFirstPrompt(config),
+      mcp: {
+        ...existing,
+        graft: {
+          type: "local",
+          command: [server.command, ...server.args],
+          enabled: true,
+          timeout: 120_000,
+        },
+      },
+    },
+    changed: true,
+  };
+}
+
+/**
+ * The `breadboard` agent's own prompt tells it to open every run against the
+ * codebase-memory index. Registering a second index without saying which comes
+ * first leaves that habit in place, so the ordering is stated in the same
+ * prompt — and only for the runs that actually have graft attached.
+ */
+function withGraftFirstPrompt(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  const agents =
+    config.agent && typeof config.agent === "object" && !Array.isArray(config.agent)
+      ? (config.agent as Record<string, unknown>)
+      : null;
+  const breadboard =
+    agents?.breadboard &&
+    typeof agents.breadboard === "object" &&
+    !Array.isArray(agents.breadboard)
+      ? (agents.breadboard as Record<string, unknown>)
+      : null;
+  if (!breadboard || typeof breadboard.prompt !== "string") return config;
+  return {
+    ...config,
+    agent: {
+      ...agents,
+      breadboard: {
+        ...breadboard,
+        prompt: `${breadboard.prompt} This repository is indexed by graft: reach for the graft tools first to locate code, read a file's API, or trace who calls a symbol — they answer from a prebuilt graph with exact file:line. Use codebase memory only for what graft cannot answer.`,
+      },
+    },
+  };
+}
+
 function runConfigPath(
   basePath: string,
   model: string,
+  graftServer: GraftServer | null,
 ): { path: string; cleanup: () => void } {
   const noCleanup = { path: basePath, cleanup: () => undefined };
   let parsed: Record<string, unknown>;
@@ -248,7 +315,10 @@ function runConfigPath(
     return noCleanup;
   }
 
-  const { config, changed } = withRequestedModel(parsed, model);
+  const withModel = withRequestedModel(parsed, model);
+  const withGraft = withGraftServer(withModel.config, graftServer);
+  const config = withGraft.config;
+  const changed = withModel.changed || withGraft.changed;
   if (!changed) return noCleanup;
 
   // Outside the repository: a config file inside it would land in the run's
@@ -496,6 +566,7 @@ export function startRun(input: {
   repositoryName: string;
   gardenSlug: string;
   attachments?: readonly OpenCodeImageAttachment[];
+  graft?: GraftRunContext | null;
 }): { runId: string; status: RunStatus } {
   const availability = runtimeAvailability();
   const launcher = resolveLauncher();
@@ -530,7 +601,8 @@ export function startRun(input: {
   };
   runs.set(runId, run);
 
-  const runConfig = runConfigPath(configPath, input.model);
+  const graft = input.graft ?? null;
+  const runConfig = runConfigPath(configPath, input.model, graft?.server ?? null);
 
   let materialized: ReturnType<typeof materializeImageAttachments>;
   try {
@@ -547,7 +619,11 @@ export function startRun(input: {
     input.repositoryPath,
     materialized.paths,
   );
-  const instruction = [input.instruction ?? input.task, attachmentContext]
+  const instruction = [
+    input.instruction ?? input.task,
+    attachmentContext,
+    graft?.instruction ?? "",
+  ]
     .filter(Boolean)
     .join("\n\n");
 
@@ -721,6 +797,7 @@ export function startRun(input: {
     gardenSlug: input.gardenSlug,
     opencodeVersion: launcher.version,
     memory: "codebase-memory-mcp",
+    codeIndex: graft ? "graft" : "none",
     attachmentCount: materialized.paths.length,
     ...(input.skill
       ? {

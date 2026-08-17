@@ -2,6 +2,8 @@
 
 import {
   type ChangeEvent,
+  memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -18,7 +20,13 @@ import {
   chatAutoScrollContentKey,
   chatAutoScrollResponseKey,
   useChatAutoScroll,
+  useChatVirtualBridge,
 } from '@/app/components/use-chat-auto-scroll';
+import VirtualizedMessageList from '@/app/components/chat/virtualized-message-list';
+import {
+  chatRowKey,
+  estimateChatRowHeight,
+} from '@/app/components/chat/chat-row-identity';
 import ChatJumpToBottom from '@/app/components/chat-jump-to-bottom';
 import ChatMarkdown from '@/app/components/chat-markdown';
 import ChatTimeSeparator from '@/app/components/chat-time-separator';
@@ -161,6 +169,74 @@ function persistSessions(scope: TerminalScope, sessions: ChatSession[]) {
   );
 }
 
+/** Wrapped so the list's `(item, index)` call cannot land on the options bag. */
+const estimateTerminalRowHeight = (message: ChatMessage) =>
+  estimateChatRowHeight(message);
+
+type TranscriptRowProps = {
+  message: ChatMessage;
+  /** The separator that belongs above this message, if any. */
+  separatorLabel: string | null;
+  /** True only for the newest answer while it is still being written. */
+  responding: boolean;
+  onRetry?: () => void;
+};
+
+/**
+ * One transcript row. Extracted and memoized so a streaming answer re-renders
+ * only itself, not every message still mounted around the fold.
+ */
+const TranscriptRow = memo(function TranscriptRow({
+  message,
+  separatorLabel,
+  responding,
+  onRetry,
+}: TranscriptRowProps) {
+  return (
+    <div className={separatorLabel ? 'space-y-3' : undefined}>
+      {separatorLabel ? (
+        <ChatTimeSeparator
+          label={separatorLabel}
+          dateTime={message.createdAt}
+        />
+      ) : null}
+      <div className={message.role === 'user' ? 'flex justify-end' : ''}>
+        <div className={message.role === 'user' ? 'max-w-[80%]' : 'w-full'}>
+        {message.role === 'user' ? (
+          <div className="neu-chat-message neu-chat-message-user rounded-2xl rounded-br-sm px-4 py-2.5 text-sm leading-6">
+            <UserMessageText content={message.content} />
+            {message.attachmentNames?.length ? (
+              <p className="mt-1.5 text-[11px] text-[var(--ink-muted)]">
+                {message.attachmentNames.join(' · ')}
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <div className="text-sm leading-7 text-gray-200">
+            <AssistantResponseMeta
+              active={responding}
+              usage={message.usage}
+              responseDurationMs={message.responseDurationMs}
+            />
+            {message.content ? (
+              <ChatMarkdown content={message.content} compact />
+            ) : (
+              <span className="text-gray-500">Reading across your gardens...</span>
+            )}
+            {!responding ? (
+              <AssistantMessageActions
+                content={message.content || 'Response unavailable'}
+                onRetry={onRetry}
+              />
+            ) : null}
+          </div>
+        )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export default function KnowledgeTerminal({ scope }: Props) {
   const resizeStartRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const preferredOpenHeightRef = useRef<number | null>(null);
@@ -274,6 +350,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
     window.localStorage.setItem(HEIGHT_KEY, String(preferredHeight));
   }, [height]);
 
+  const transcriptVirtual = useChatVirtualBridge();
   const {
     ref: transcriptScrollRef,
     awayFromBottom: transcriptAwayFromBottom,
@@ -283,6 +360,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
     responseKey: chatAutoScrollResponseKey(messages),
     contentKey: chatAutoScrollContentKey(messages),
     enabled: isOpen,
+    virtual: transcriptVirtual,
   });
 
   function updateSessionMessages(sessionId: number, nextMessages: ChatMessage[], title?: string) {
@@ -537,6 +615,24 @@ export default function KnowledgeTerminal({ scope }: Props) {
     void sendMessage(previousUser.content, messages.slice(0, userIndex));
   }
 
+  const renderTranscriptRow = useCallback(
+    (message: ChatMessage, index: number) => {
+      const isNewest = index === messages.length - 1;
+      return (
+        <TranscriptRow
+          message={message}
+          separatorLabel={timeSeparators[index] ?? null}
+          responding={isStreaming && isNewest}
+          onRetry={isNewest ? () => retryAssistantMessage(index) : undefined}
+        />
+      );
+    },
+    // `retryAssistantMessage` is re-declared every render and is reachable only
+    // from the newest row, which re-renders anyway.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [messages.length, timeSeparators, isStreaming],
+  );
+
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -577,7 +673,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
     resizeStartRef.current = { startY: event.clientY, startHeight: height };
     event.currentTarget.setPointerCapture(event.pointerId);
     setIsResizing(true);
-    document.body.style.cursor = 'row-resize';
+    document.body.style.cursor = 'var(--bb-cursor-row-resize, row-resize)';
     document.body.style.userSelect = 'none';
   }
 
@@ -828,58 +924,19 @@ export default function KnowledgeTerminal({ scope }: Props) {
                   </div>
                 </div>
               ) : (
-                <div className="space-y-5">
-                  {messages.map((message, index) => (
-                    <div
-                      key={`${message.role}-${index}`}
-                      className={timeSeparators[index] ? 'space-y-3' : undefined}
-                    >
-                      {timeSeparators[index] ? (
-                        <ChatTimeSeparator
-                          label={timeSeparators[index]}
-                          dateTime={message.createdAt}
-                        />
-                      ) : null}
-                      <div className={message.role === 'user' ? 'flex justify-end' : ''}>
-                        <div className={message.role === 'user' ? 'max-w-[80%]' : 'w-full'}>
-                        {message.role === 'user' ? (
-                          <div className="neu-chat-message neu-chat-message-user rounded-2xl rounded-br-sm px-4 py-2.5 text-sm leading-6">
-                            <UserMessageText content={message.content} />
-                            {message.attachmentNames?.length ? (
-                              <p className="mt-1.5 text-[11px] text-[var(--ink-muted)]">
-                                {message.attachmentNames.join(' · ')}
-                              </p>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <div className="text-sm leading-7 text-gray-200">
-                            <AssistantResponseMeta
-                              active={isStreaming && index === messages.length - 1}
-                              usage={message.usage}
-                              responseDurationMs={message.responseDurationMs}
-                            />
-                            {message.content ? (
-                              <ChatMarkdown content={message.content} compact />
-                            ) : (
-                              <span className="text-gray-500">Reading across your gardens...</span>
-                            )}
-                            {!(isStreaming && index === messages.length - 1) ? (
-                              <AssistantMessageActions
-                                content={message.content || 'Response unavailable'}
-                                onRetry={
-                                  index === messages.length - 1
-                                    ? () => retryAssistantMessage(index)
-                                    : undefined
-                                }
-                              />
-                            ) : null}
-                          </div>
-                        )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <VirtualizedMessageList
+                  surface="knowledge-terminal"
+                  className="w-full"
+                  items={messages}
+                  scrollRef={transcriptScrollRef}
+                  bridge={transcriptVirtual}
+                  // What `space-y-5` drew between rows.
+                  gap={20}
+                  resetKey={activeId}
+                  getItemKey={chatRowKey}
+                  estimateSize={estimateTerminalRowHeight}
+                  renderItem={renderTranscriptRow}
+                />
               )}
             </div>
           </div>

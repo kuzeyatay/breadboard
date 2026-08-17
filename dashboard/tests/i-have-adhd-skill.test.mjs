@@ -51,7 +51,7 @@ test("i-have-adhd is a ready prebuilt skill on both authenticated chat surfaces"
     // vocabulary alone would classify it as coding-conditional and force it
     // through OpenCode. It shapes answers about anything, so it must not.
     assert.equal(skill.classification, "eligible_general");
-    assert.equal(skill.category, "Prebuilt");
+    assert.equal(skill.category, "Featured");
     // An output style claims nothing. It reads no file and calls no tool.
     assert.deepEqual(skill.capabilityContract?.requiredTools, []);
     assert.deepEqual(skill.capabilityContract?.requiredRuntimes, []);

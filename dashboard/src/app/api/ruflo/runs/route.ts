@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUserId, RouteError } from "@/lib/server-auth.ts";
 import { resolveConnectedRepository } from "@/lib/opencode/repository.ts";
+import { graftRunContext } from "@/lib/code-index/garden.ts";
 import { startRun } from "@/lib/ruflo/run-manager.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { rufloDefaults } from "@/lib/agent-settings/defaults.ts";
@@ -85,6 +86,7 @@ export async function POST(request: Request) {
       repositoryName: repository.name,
       gardenSlug: repository.gardenSlug,
       attachments,
+      graft: graftRunContext(userId, repository),
     });
     rememberRunSnapshot(run.runId, repository.path, snapshotBefore);
     return NextResponse.json(

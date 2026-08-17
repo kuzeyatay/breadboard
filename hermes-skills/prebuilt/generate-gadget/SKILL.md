@@ -11,7 +11,7 @@ can be revised in place. It is the right output when the user wants something to
 *use*, not something to read.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [garden_chat, dashboard_terminal]
   requiredTools:
     - gadget_bindings

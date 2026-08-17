@@ -1,0 +1,255 @@
+{
+  "schemaVersion": 1,
+  "document": "Breadboard Week 2 Completion Certification",
+  "generatedAt": "2026-08-17T15:22:43.408Z",
+  "runId": "w2c-20260817T145051Z",
+  "evidenceRoot": ".qa-results/week2-completion/w2c-20260817T145051Z",
+  "decision": "NOT READY FOR WEEK 3",
+  "sourceRevision": {
+    "baseCommit": "91ed121d7709d89c872de63b84d16e55aa3be95c",
+    "sourceSnapshotFingerprint": "ec91e70d0f895165859c40a96fa32d56302dd67a02e3b785577ac1474a807f62",
+    "trackedDiffBytes": 244609,
+    "untrackedFileCount": 107,
+    "note": "baseCommit and sourceSnapshotFingerprint are distinct identities; the commit has not moved while the source has changed continuously."
+  },
+  "previousBlockers": [
+    {
+      "id": "W2-2",
+      "previousState": "NOT_MET",
+      "newEvidence": "source-snapshot-validation.json",
+      "newState": "PARTIAL"
+    },
+    {
+      "id": "W2-3",
+      "previousState": "NOT_MET",
+      "newEvidence": null,
+      "newState": "NOT_MET"
+    },
+    {
+      "id": "W2-1",
+      "previousState": "NOT_MET",
+      "newEvidence": null,
+      "newState": "NOT_MET"
+    },
+    {
+      "id": "W2-4",
+      "previousState": "OPEN",
+      "newEvidence": null,
+      "newState": "NOT_MET"
+    },
+    {
+      "id": "W2-5",
+      "previousState": "FLAKY_UNREPRODUCED",
+      "newEvidence": null,
+      "newState": "UNCHANGED"
+    },
+    {
+      "id": "W2-6",
+      "previousState": "OPEN",
+      "newEvidence": null,
+      "newState": "UNCHANGED"
+    },
+    {
+      "id": "W2-7",
+      "previousState": "BLOCKED",
+      "newEvidence": null,
+      "newState": "UNCHANGED"
+    }
+  ],
+  "sourceSnapshot": {
+    "generatedAt": "2026-08-17T15:21:12.836Z",
+    "objective": "W2-2: bind a repair to the exact source state that produced the finding, instead of to whatever HEAD happens to be.",
+    "mechanism": {
+      "identities": {
+        "baseCommit": "which commit the repository is on",
+        "sourceFingerprint": "what the source actually was when the scenario ran"
+      },
+      "capture": "git diff HEAD --binary over the repository minus generated paths (quartz/public, gbrain/pglite, node_modules, QA outputs), plus every untracked source-extension file in the same scope, content-hashed.",
+      "reconstruct": "detached worktree at baseCommit, git apply of the captured patch, untracked files written back, then re-captured and compared. A fingerprint mismatch throws and the worktree is destroyed.",
+      "binding": "issueRepairCapability refuses unless finding.sourceSnapshotFingerprint equals the worktree fingerprint (stale-source-snapshot).",
+      "unauthorisedChangeDetection": "On a snapshot worktree git status reports the user in-flight work too, so finalize compares content manifests taken before and after the repair instead.",
+      "userTree": "Capture is read-only. Nothing commits, stashes, resets or cleans."
+    },
+    "unitValidation": {
+      "suite": "qa/harness-selftest/source-snapshot.test.mjs",
+      "tests": 15,
+      "passed": 15,
+      "covers": [
+        "clean HEAD snapshot",
+        "single tracked modification",
+        "multiple tracked modifications",
+        "relevant untracked product file",
+        "unrelated untracked runtime artifact excluded",
+        "source change after reproduction detected as stale",
+        "capability refused on fingerprint mismatch",
+        "patch conflict fails safely and leaves no worktree",
+        "user working tree byte-identical through capture, reconstruct and cleanup",
+        "untracked in-flight file survives cleanup",
+        "unauthorised changes visible on a deliberately dirty worktree",
+        "user in-flight work not mistaken for an unauthorised change",
+        "assertion-integrity still applies",
+        "content manifest reports exactly which files changed",
+        "write through a linked external root denied and user copy untouched"
+      ]
+    },
+    "liveRepositoryProof": {
+      "baseCommit": "91ed121d7709d89c872de63b84d16e55aa3be95c",
+      "sourceFingerprint": "ec91e70d0f895165859c40a96fa32d56302dd67a02e3b785577ac1474a807f62",
+      "trackedDiffBytes": 244609,
+      "untrackedFileCount": 107,
+      "reconstructionFingerprintMatched": true,
+      "userTreeUntouched": true
+    },
+    "baselineEquivalence": {
+      "status": "NOT_DEMONSTRATED",
+      "measurements": [
+        {
+          "scope": "allow-list roots",
+          "workingTree": 52,
+          "cleanHead": 121,
+          "snapshotWorktree": 146
+        },
+        {
+          "scope": "deny-list whole repo",
+          "workingTree": 81,
+          "cleanHead": 139,
+          "snapshotWorktree": 169
+        },
+        {
+          "scope": "deny-list + linked vendored roots",
+          "workingTree": 50,
+          "cleanHead": 120,
+          "snapshotWorktree": 227
+        }
+      ],
+      "obstacles": [
+        "The working tree is edited continuously by its developer: the same suite measured 52, 81 and 50 failures within one hour, so there is no stable reference to converge on.",
+        "Roughly 98 dashboard tests read gitignored vendored clones (for example watermarks-remover, referenced directly by dashboard/src/lib/watermarks/scripts.ts). No git worktree can contain gitignored content.",
+        "Linking those clones in as junctions made the suite fail more (227), so they are not resolution-neutral and the effect is unexplained."
+      ],
+      "conclusion": "The snapshot mechanism is correct and tested, but full dashboard-suite equivalence between a reconstructed snapshot and the live working tree is NOT proven. Repairs are now bound to a fingerprint, so a silent baseline mismatch can no longer pass unnoticed; equivalence of the surrounding environment remains open."
+    },
+    "residualRisk": "A repair whose verification depends on tests that read gitignored vendored clones cannot currently be verified in a reconstructed snapshot. Such repairs must be treated as BLOCKED rather than verified."
+  },
+  "dashboardContractReview": {
+    "status": "NOT_EXECUTED",
+    "carriedForward": {
+      "needsProductContractReview": 41,
+      "needsReproduction": 2
+    },
+    "evidence": ".qa-results/week2/week2-20260817T130915Z/dashboard-triage.json"
+  },
+  "ingestion": {
+    "status": "NOT_EXECUTED",
+    "evidence": null
+  },
+  "routing": {
+    "status": "NOT_EXECUTED",
+    "evidence": null
+  },
+  "persistenceMatrix": {
+    "status": "NOT_EXECUTED",
+    "evidence": null
+  },
+  "raceAbuse": {
+    "status": "NOT_EXECUTED",
+    "evidence": null
+  },
+  "electronLifecycle": {
+    "status": "NOT_EXECUTED",
+    "evidence": null
+  },
+  "security": {
+    "status": "NOT_EXECUTED",
+    "evidence": null
+  },
+  "serviceSupervision": {
+    "status": "NOT_EXECUTED",
+    "evidence": null
+  },
+  "importExport": {
+    "status": "NOT_EXECUTED",
+    "note": "Product support for a round trip was not established, so this is unknown rather than NOT_SUPPORTED."
+  },
+  "productFindings": [],
+  "sh1Repairs": {
+    "attempted": 0,
+    "verified": 0,
+    "blocked": 0,
+    "note": "No new PRODUCT_BUG reached reproduction. The snapshot-bound capability is covered by unit tests but has NOT been exercised through a full seeded-defect experiment."
+  },
+  "criticalBurnIn": {
+    "status": "NOT_EXECUTED",
+    "runs": 1,
+    "denominator": "1 run carried forward from Week 2",
+    "note": "No new samples taken."
+  },
+  "remainingFlakes": [
+    {
+      "scenario": "markdown-upload-ingestion",
+      "state": "FLAKY, unexplained"
+    },
+    {
+      "scenario": "the dashboard terminal opens and closes through visible controls",
+      "state": "FLAKY, uninvestigated"
+    },
+    {
+      "scenario": "local-account-onboarding",
+      "state": "one unexplained Week 1 sighting"
+    }
+  ],
+  "harnessSelfTests": {
+    "total": 111,
+    "passed": 111,
+    "failed": 0,
+    "sourceSnapshotSuite": {
+      "total": 15,
+      "passed": 15
+    }
+  },
+  "invariants": {
+    "mainTreeProductRepairs": 0,
+    "unauthorisedRepairChanges": 0,
+    "assertionWeakening": 0,
+    "sh1FalseGreen": 0,
+    "normalUserDataTouched": 0,
+    "secretsInArtifacts": 0,
+    "userWorkingTreeCommittedOrStashed": false
+  },
+  "readyCriteria": {
+    "met": [
+      "2 baseline mismatch cannot silently invalidate verification",
+      "3 no direct main-working-tree mutation",
+      "20 SH1 false-green zero",
+      "21 assertion weakening zero",
+      "22 unauthorized repair changes zero",
+      "23 normal user data touched zero",
+      "24 no leaked QA processes",
+      "25 no secrets in artifacts"
+    ],
+    "partial": [
+      "1 repairs verified against the exact source state (binding proven, environment equivalence not)"
+    ],
+    "notMet": [
+      "4 dashboard contract review",
+      "5 core ingestion",
+      "6 markdown ingestion",
+      "7 pdf ingestion",
+      "8 unsupported/corrupt ingestion",
+      "9 source/quartz routing",
+      "10 cross-garden leakage check",
+      "11 persistence matrix",
+      "12 service restart persistence",
+      "13 UX/race abuse",
+      "14 electron lifecycle/security",
+      "15 import/export",
+      "18 zero unexplained critical intermittents",
+      "19 meaningful burn-in sample"
+    ]
+  },
+  "nextActions": [
+    "Exercise the snapshot-bound capability through a full seeded-defect experiment.",
+    "Decide the gitignored-vendored-clone question explicitly rather than implicitly.",
+    "Then: ingestion, routing, persistence, races, critical burn-in, lifecycle/security, import/export."
+  ]
+}

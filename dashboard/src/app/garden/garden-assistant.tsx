@@ -2,11 +2,13 @@
 
 import {
   type ChangeEvent,
+  memo,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
@@ -17,7 +19,13 @@ import {
   chatAutoScrollContentKey,
   chatAutoScrollResponseKey,
   useChatAutoScroll,
+  useChatVirtualBridge,
 } from '@/app/components/use-chat-auto-scroll';
+import VirtualizedMessageList from '@/app/components/chat/virtualized-message-list';
+import {
+  chatRowKey,
+  estimateChatRowHeight,
+} from '@/app/components/chat/chat-row-identity';
 import ChatJumpToBottom from '@/app/components/chat-jump-to-bottom';
 import ChatTimeSeparator from '@/app/components/chat-time-separator';
 import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
@@ -369,6 +377,102 @@ function persistQuartzChatSessions(clusterSlug: string | null, sessions: ChatSes
   );
 }
 
+type AgentActivityProps = ComponentProps<typeof ActivityPanel>;
+
+/** Referentially stable, so a historical row's props never change mid-answer. */
+const NO_ACTIVITIES: AgentActivityProps['activities'] = [];
+
+type TranscriptRowProps = {
+  message: ChatMessage;
+  /** The separator that belongs above this message, if any. */
+  separatorLabel: string | null;
+  /** Live agent state belongs to the newest answer alone. */
+  activities: AgentActivityProps['activities'];
+  connection: AgentActivityProps['connection'];
+  pendingPermission: AgentActivityProps['pendingPermission'];
+  onPermissionDecision: AgentActivityProps['onPermissionDecision'];
+  /** Withheld while the answer is still being written. */
+  showActions: boolean;
+  onRetry?: () => void;
+};
+
+/** Wrapped so the list's `(item, index)` call cannot land on the options bag. */
+const estimateAssistantRowHeight = (message: ChatMessage) =>
+  estimateChatRowHeight(message);
+
+/**
+ * One transcript row. Extracted and memoized because virtualization keeps the
+ * rows around the fold mounted, and a streaming answer re-renders the panel on
+ * every token — the messages above it have no reason to follow along.
+ */
+
+/**
+ * One transcript row. Extracted and memoized because virtualization keeps the
+ * rows around the fold mounted, and a streaming answer re-renders the panel on
+ * every token — the messages above it have no reason to follow along.
+ */
+const TranscriptRow = memo(function TranscriptRow({
+  message,
+  separatorLabel,
+  activities,
+  connection,
+  pendingPermission,
+  onPermissionDecision,
+  showActions,
+  onRetry,
+}: TranscriptRowProps) {
+  return (
+    <div className={separatorLabel ? 'space-y-3' : undefined}>
+      {separatorLabel ? (
+        <ChatTimeSeparator
+          label={separatorLabel}
+          dateTime={message.createdAt}
+        />
+      ) : null}
+      <div className={message.role === 'user' ? 'ml-6' : 'mr-2'}>
+        <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-gray-500">
+          {message.role === 'user' ? 'You' : 'Assistant'}
+        </div>
+        <div
+          className={
+            message.role === 'user'
+              ? 'neu-chat-message neu-chat-message-user rounded-xl rounded-tr-sm px-3 py-2 text-sm leading-6'
+              : 'text-sm leading-6 text-gray-200'
+          }
+        >
+        {message.role === 'assistant' ? (
+          <>
+            <ActivityPanel
+              activities={activities}
+              connection={connection}
+              pendingPermission={pendingPermission}
+              usage={message.usage}
+              responseDurationMs={message.responseDurationMs}
+              onPermissionDecision={onPermissionDecision}
+            />
+            {message.content ? <ChatMarkdown content={message.content} compact /> : null}
+          </>
+        ) : (
+          <UserMessageText content={message.content} />
+        )}
+        {message.attachmentNames?.length ? (
+          <p className="mt-1.5 text-[11px] text-gray-500">
+            {message.attachmentNames.join(' · ')}
+          </p>
+        ) : null}
+        </div>
+        {message.role === 'assistant' && showActions ? (
+          <AssistantMessageActions
+            content={message.content || 'Response unavailable'}
+            verification={message.verification}
+            onRetry={onRetry}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+});
+
 export default function GardenAssistant({
   activeClusterSlug,
   activeClusterName,
@@ -592,6 +696,7 @@ export default function GardenAssistant({
     };
   }, [activeClusterSlug]);
 
+  const transcriptVirtual = useChatVirtualBridge();
   const {
     ref: transcriptScrollRef,
     awayFromBottom: transcriptAwayFromBottom,
@@ -601,6 +706,7 @@ export default function GardenAssistant({
     responseKey: chatAutoScrollResponseKey(messages),
     contentKey: chatAutoScrollContentKey(messages),
     enabled: chatOpen,
+    virtual: transcriptVirtual,
   });
 
   function updateSessionMessages(sessionId: number, nextMessages: ChatMessage[], title?: string) {
@@ -1121,6 +1227,49 @@ export default function GardenAssistant({
     );
   }
 
+  // Ownership stays with the chat's activity layer, not with the row: the
+  // newest answer's panel unmounts whenever it is scrolled out of view, and
+  // rebuilds from this state when it comes back.
+  const respondToPermission = agentActivity.respondToPermission;
+  const handlePermissionDecision = useCallback<
+    NonNullable<AgentActivityProps['onPermissionDecision']>
+  >(
+    (decision) => {
+      void respondToPermission(decision);
+    },
+    [respondToPermission],
+  );
+
+  const renderTranscriptRow = useCallback(
+    (message: ChatMessage, index: number) => {
+      const isNewest = index === messages.length - 1;
+      return (
+        <TranscriptRow
+          message={message}
+          separatorLabel={timeSeparators[index] ?? null}
+          activities={isNewest ? agentActivity.activities : NO_ACTIVITIES}
+          connection={isNewest ? agentActivity.connection : 'idle'}
+          pendingPermission={isNewest ? agentActivity.pendingPermission : null}
+          onPermissionDecision={handlePermissionDecision}
+          showActions={!(isStreaming && isNewest)}
+          onRetry={isNewest ? () => retryAssistantMessage(index) : undefined}
+        />
+      );
+    },
+    // `retryAssistantMessage` is re-declared every render and is reachable only
+    // from the newest row, which re-renders anyway.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      messages.length,
+      timeSeparators,
+      agentActivity.activities,
+      agentActivity.connection,
+      agentActivity.pendingPermission,
+      handlePermissionDecision,
+      isStreaming,
+    ],
+  );
+
   function handlePanelResizeStart(event: ReactPointerEvent<HTMLButtonElement>) {
     event.preventDefault();
 
@@ -1130,7 +1279,7 @@ export default function GardenAssistant({
     };
     event.currentTarget.setPointerCapture(event.pointerId);
     setIsResizing(true);
-    document.body.style.cursor = 'col-resize';
+    document.body.style.cursor = 'var(--bb-cursor-col-resize, col-resize)';
     document.body.style.userSelect = 'none';
   }
 
@@ -1399,68 +1548,19 @@ export default function GardenAssistant({
             </div>
           </div>
         ) : (
-          <div className="space-y-4">
-            {messages.map((message, index) => (
-              <div
-                key={`${message.role}-${index}`}
-                className={timeSeparators[index] ? 'space-y-3' : undefined}
-              >
-                {timeSeparators[index] ? (
-                  <ChatTimeSeparator
-                    label={timeSeparators[index]}
-                    dateTime={message.createdAt}
-                  />
-                ) : null}
-                <div className={message.role === 'user' ? 'ml-6' : 'mr-2'}>
-                  <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-gray-500">
-                    {message.role === 'user' ? 'You' : 'Assistant'}
-                  </div>
-                  <div
-                    className={
-                      message.role === 'user'
-                        ? 'neu-chat-message neu-chat-message-user rounded-xl rounded-tr-sm px-3 py-2 text-sm leading-6'
-                        : 'text-sm leading-6 text-gray-200'
-                    }
-                  >
-                  {message.role === 'assistant' ? (
-                    <>
-                      <ActivityPanel
-                        activities={index === messages.length - 1 ? agentActivity.activities : []}
-                        connection={index === messages.length - 1 ? agentActivity.connection : 'idle'}
-                        pendingPermission={index === messages.length - 1 ? agentActivity.pendingPermission : null}
-                        usage={message.usage}
-                        responseDurationMs={message.responseDurationMs}
-                        onPermissionDecision={(decision) =>
-                          void agentActivity.respondToPermission(decision)
-                        }
-                      />
-                      {message.content ? <ChatMarkdown content={message.content} compact /> : null}
-                    </>
-                  ) : (
-                    <UserMessageText content={message.content} />
-                  )}
-                  {message.attachmentNames?.length ? (
-                    <p className="mt-1.5 text-[11px] text-gray-500">
-                      {message.attachmentNames.join(' · ')}
-                    </p>
-                  ) : null}
-                  </div>
-                  {message.role === 'assistant' &&
-                  !(isStreaming && index === messages.length - 1) ? (
-                    <AssistantMessageActions
-                      content={message.content || 'Response unavailable'}
-                      verification={message.verification}
-                      onRetry={
-                        index === messages.length - 1
-                          ? () => retryAssistantMessage(index)
-                          : undefined
-                      }
-                    />
-                  ) : null}
-                </div>
-              </div>
-            ))}
-          </div>
+          <VirtualizedMessageList
+            surface="garden-assistant"
+            className="w-full"
+            items={messages}
+            scrollRef={transcriptScrollRef}
+            bridge={transcriptVirtual}
+            // What `space-y-4` drew between rows.
+            gap={16}
+            resetKey={activeChatId}
+            getItemKey={chatRowKey}
+            estimateSize={estimateAssistantRowHeight}
+            renderItem={renderTranscriptRow}
+          />
         )}
       </div>
         <ChatJumpToBottom

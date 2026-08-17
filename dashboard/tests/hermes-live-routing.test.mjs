@@ -312,7 +312,7 @@ test("the unified slash hub embeds Skills.sh discovery and the reviewed promotio
   assert.match(catalog, /role="menuitemradio"/);
   for (const label of [
     "All",
-    "Prebuilt",
+    "Featured",
     "Scientific",
     "Official",
     "OpenCode",

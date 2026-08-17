@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type RefObject,
@@ -54,11 +55,63 @@ export function chatAutoScrollContentKey(
   return `${messages.length}:${message.role}:${message.clientMessageId ?? message.id ?? message.createdAt ?? ""}:${content.length}:${content.slice(-32)}`;
 }
 
+/**
+ * The seam between a virtualized transcript and this hook.
+ *
+ * A virtualized transcript keeps only the rows around the fold in the DOM, so
+ * two things this hook used to read straight off the element stop being true:
+ * "scroll to the bottom of the content" has to be asked of the virtualizer,
+ * which knows where the newest row will land once it is mounted; and a scroll
+ * the virtualizer performs itself while replacing an estimated row height with
+ * the measured one must not be mistaken for the reader scrolling upward.
+ *
+ * The bridge is created by the surface and handed to both sides, so neither
+ * has to import the other.
+ */
+export type ChatVirtualBridge = {
+  /** Raised while the virtualizer is correcting the scroller after a measurement. */
+  programmaticRef: RefObject<boolean>;
+  /** True once a virtualized list has claimed this bridge. */
+  activeRef: RefObject<boolean>;
+  /** Puts the newest row at the foot of the viewport. */
+  scrollToEnd: (behavior: ScrollBehavior) => void;
+  /** Called by the virtualized list as it mounts and unmounts. */
+  attach: (scrollToEnd: ((behavior: ScrollBehavior) => void) | null) => void;
+};
+
+/**
+ * Creates the bridge above. Safe to call on a surface that is not virtualized:
+ * an unclaimed bridge leaves this hook on its original element-based path.
+ */
+export function useChatVirtualBridge(): ChatVirtualBridge {
+  const programmaticRef = useRef(false);
+  const activeRef = useRef(false);
+  const scrollToEndRef = useRef<((behavior: ScrollBehavior) => void) | null>(
+    null,
+  );
+
+  return useMemo(
+    () => ({
+      programmaticRef,
+      activeRef,
+      scrollToEnd: (behavior: ScrollBehavior) =>
+        scrollToEndRef.current?.(behavior),
+      attach: (scrollToEnd: ((behavior: ScrollBehavior) => void) | null) => {
+        scrollToEndRef.current = scrollToEnd;
+        activeRef.current = scrollToEnd !== null;
+      },
+    }),
+    [],
+  );
+}
+
 type ChatAutoScrollOptions = {
   isResponding: boolean;
   responseKey: string;
   contentKey: string;
   enabled?: boolean;
+  /** Present when the transcript below this scroller is virtualized. */
+  virtual?: ChatVirtualBridge;
 };
 
 export type ChatAutoScroll<T extends HTMLElement> = {
@@ -83,6 +136,7 @@ export function useChatAutoScroll<T extends HTMLElement>({
   responseKey,
   contentKey,
   enabled = true,
+  virtual,
 }: ChatAutoScrollOptions): ChatAutoScroll<T> {
   const containerRef = useRef<T>(null);
   const followingRef = useRef(true);
@@ -119,6 +173,13 @@ export function useChatAutoScroll<T extends HTMLElement>({
       typeof window !== "undefined" &&
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // A virtualized transcript's scrollHeight is only an estimate for the rows
+    // that are not mounted, so the glide has to be aimed by the virtualizer,
+    // which re-aims it as those rows are measured on the way down.
+    if (virtual?.activeRef.current) {
+      virtual.scrollToEnd(reduceMotion ? "auto" : "smooth");
+      return;
+    }
     if (typeof container.scrollTo === "function") {
       container.scrollTo({
         top: container.scrollHeight,
@@ -127,7 +188,7 @@ export function useChatAutoScroll<T extends HTMLElement>({
     } else {
       container.scrollTop = container.scrollHeight;
     }
-  }, []);
+  }, [virtual]);
 
   const scheduleScrollToBottom = useCallback((finishResponse = false) => {
     if (typeof window === "undefined") return;
@@ -142,11 +203,15 @@ export function useChatAutoScroll<T extends HTMLElement>({
       ) {
         return;
       }
-      container.scrollTop = container.scrollHeight;
+      if (virtual?.activeRef.current) {
+        virtual.scrollToEnd("auto");
+      } else {
+        container.scrollTop = container.scrollHeight;
+      }
       lastScrollTopRef.current = container.scrollTop;
       measureDistance();
     });
-  }, [measureDistance]);
+  }, [measureDistance, virtual]);
 
   useEffect(() => {
     const responding = enabled && isResponding;
@@ -201,6 +266,14 @@ export function useChatAutoScroll<T extends HTMLElement>({
     };
     const handleScroll = () => {
       const nextScrollTop = container.scrollTop;
+      // A virtualizer nudges the scroller backwards when a row above the fold
+      // turns out to be shorter than its estimate. That is bookkeeping, not the
+      // reader deciding to read upward, so it must not end follow mode.
+      if (virtual?.programmaticRef.current) {
+        lastScrollTopRef.current = nextScrollTop;
+        measureDistance();
+        return;
+      }
       if (nextScrollTop < lastScrollTopRef.current - 1) {
         jumpingRef.current = false;
         stopFollowing();
@@ -215,7 +288,7 @@ export function useChatAutoScroll<T extends HTMLElement>({
       container.removeEventListener("wheel", handleWheel);
       container.removeEventListener("scroll", handleScroll);
     };
-  }, [measureDistance]);
+  }, [measureDistance, virtual]);
 
   useEffect(() => {
     const container = containerRef.current;

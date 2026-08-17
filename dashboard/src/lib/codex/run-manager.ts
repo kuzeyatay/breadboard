@@ -16,6 +16,7 @@ import {
 } from "node:child_process";
 import type { ChatMessageAttachment } from "../chat-attachments.ts";
 import type { ChatTokenUsage } from "../chat-token-usage.ts";
+import type { GraftRunContext, GraftServer } from "../code-index/index-service.ts";
 
 export interface CodexEvent {
   sequenceNumber: number;
@@ -359,6 +360,27 @@ function ingestCodexEvent(run: RunState, value: Record<string, unknown>): void {
   emit(run, "tool.completed", { tool, title, summary, status });
 }
 
+/**
+ * The run is launched with `--ignore-user-config`, so the graft code index has
+ * to arrive as `-c` overrides. Codex parses each override value as TOML, which
+ * is why the command and every argument go through JSON.stringify — TOML basic
+ * strings take the same escapes, and a Windows path is nothing but escapes.
+ */
+export function graftConfigOverrides(server: GraftServer | null): string[] {
+  if (!server) return [];
+  const args = server.args.map((value) => JSON.stringify(value)).join(", ");
+  return [
+    "-c",
+    `mcp_servers.graft.command=${JSON.stringify(server.command)}`,
+    "-c",
+    `mcp_servers.graft.args=[${args}]`,
+    // A cold graph is read from disk before the server answers; the default
+    // startup budget is tight enough to lose a large repository's index.
+    "-c",
+    "mcp_servers.graft.startup_timeout_sec=60",
+  ];
+}
+
 export function startRun(input: {
   userId: number;
   task: string;
@@ -372,6 +394,7 @@ export function startRun(input: {
   repositoryName: string;
   gardenSlug: string;
   attachments?: readonly CodexImageAttachment[];
+  graft?: GraftRunContext | null;
 }): { runId: string; status: RunStatus } {
   const launcher = resolveLauncher();
   if (!launcher) {
@@ -405,6 +428,7 @@ export function startRun(input: {
     throw error;
   }
   run.cleanup = materialized.cleanup;
+  const graft = input.graft ?? null;
   const codexHome = process.env.CODEX_HOME?.trim() || path.resolve(process.cwd(), ".runtime", "codex-agent");
   mkdirSync(codexHome, { recursive: true });
   const effort = ["none", "low", "medium", "high", "xhigh"].includes(input.reasoningEffort)
@@ -446,6 +470,7 @@ export function startRun(input: {
     'approval_policy="never"',
     "-c",
     `model_reasoning_effort=${JSON.stringify(effort)}`,
+    ...graftConfigOverrides(graft?.server ?? null),
     ...materialized.paths.flatMap((filePath) => ["--image", filePath]),
     "-",
   ];
@@ -462,7 +487,11 @@ export function startRun(input: {
       CHATMOCK_MODEL: input.model,
     },
   }) as ChildProcessWithoutNullStreams;
-  child.stdin.end(input.instruction ?? input.task);
+  child.stdin.end(
+    [input.instruction ?? input.task, graft?.instruction ?? ""]
+      .filter(Boolean)
+      .join("\n\n"),
+  );
   run.child = child;
   run.status = "running";
   emit(run, "run.started", {
@@ -472,6 +501,7 @@ export function startRun(input: {
     codexVersion: launcher.version,
     provider: "chatmock",
     sandbox: sandboxMode,
+    codeIndex: graft ? "graft" : "none",
     attachmentCount: materialized.paths.length,
     ...(input.skill ? { skill: input.skill } : {}),
   });

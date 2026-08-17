@@ -1,0 +1,654 @@
+{
+  "schemaVersion": 1,
+  "document": "Breadboard QA Week 2 Certification",
+  "generatedAt": "2026-08-17T14:32:17.758Z",
+  "runId": "week2-20260817T130915Z",
+  "evidenceRoot": ".qa-results/week2/week2-20260817T130915Z",
+  "decision": "NOT READY FOR WEEK 3",
+  "decisionRationale": [
+    "Phases 2, 5, 6, 7 and 9 were not executed: Electron lifecycle/security, document ingestion, Quartz/source routing, import/export and UX abuse/races.",
+    "A clean worktree at HEAD fails 123 dashboard tests, and SH1 repair worktrees are cut from HEAD, so repairs currently verify against that baseline.",
+    "The Week 1 intermittent scenarios are not root-caused; the upload/backdrop case did not reproduce in 10 controlled attempts, which is evidence against a persistent defect but not an explanation."
+  ],
+  "revision": {
+    "sha": "91ed121d7709d89c872de63b84d16e55aa3be95c",
+    "branch": "master",
+    "workingTree": "dirty and preserved; 134+ uncommitted entries, actively edited by the developer during this session",
+    "note": "A clean-worktree run at this same revision produced 123 dashboard failures versus 51 in the working tree, so the uncommitted work is net-fixing. Repair worktrees are cut from HEAD and therefore start from the larger failure set."
+  },
+  "environment": {
+    "os": "Windows 11 Enterprise 10.0.26200 (win32 x64)",
+    "node": "v24.14.1",
+    "npm": "11.12.1",
+    "electron": "33.4.11",
+    "playwright": "1.62.1",
+    "playwrightTest": "1.62.1",
+    "typescript": "5.9.3"
+  },
+  "weekOneConditionClosure": {
+    "B-2": {
+      "status": "CLOSED",
+      "mechanism": "The gate is now the issuer of the only supported writer. applyGatedMutation is the sole write path, and finalizeRepairCapability compares the worktree diff against the files the capability actually wrote, so any ungated edit is detected and the repair cannot be certified.",
+      "enforcedInvariants": [
+        "classification !== PRODUCT_BUG => no capability",
+        "no reproduction => no capability",
+        "no root cause or responsible code path => no capability",
+        "main working tree => no capability",
+        "worktree outside .qa-worktrees => no capability",
+        "finding revision != worktree HEAD => no capability (stale replay)",
+        "forbidden trust boundary in allowedPaths => no capability",
+        "existing QA oracle declared as the regression test => no capability",
+        "write outside allowedPaths => denied",
+        "write to a forbidden path => denied",
+        "write to an existing QA oracle with a product capability => denied",
+        "path traversal out of the worktree => denied",
+        "tampered capability (finding, scope, signature) => denied",
+        "reuse after finalize, after revoke, or after expiry => denied",
+        "unauthorised worktree change at finalize => repair cannot be certified",
+        "receipt validation requires a finalized capability whose findingId matches"
+      ],
+      "attackTests": {
+        "total": 28,
+        "passed": 28,
+        "failed": 0
+      },
+      "endToEndExperiments": 5,
+      "residualLimitation": "A correctness boundary inside the QA controller, not an OS sandbox. It does not stop an arbitrary process from editing files; it makes an ungated edit impossible to certify as a repair."
+    },
+    "B-1/B-9": {
+      "status": "NOT_CLOSED_EVIDENCE_GATHERED",
+      "markdown-upload-ingestion": {
+        "investigated": true,
+        "iterations": 10,
+        "backdropLifecycleClean": 10,
+        "clickIntercepted": 0,
+        "conclusion": "Unresolved. Evidence argues against a persistent product defect. Remains FLAKY and repair-ineligible.",
+        "harnessImprovement": "captureFailure now inventories every large fixed/absolute overlay into the failure diagnostics on any scenario failure."
+      },
+      "dashboard-terminal-open-close": {
+        "investigated": false,
+        "conclusion": "Not investigated in Week 2. Open."
+      },
+      "local-account-onboarding": {
+        "investigated": "partially",
+        "conclusion": "Two Week 2 sightings traced to my own spec re-registering a taken account (TEST_ENVIRONMENT, fixed). The Week 1 sighting remains unexplained."
+      }
+    }
+  },
+  "baseline": {
+    "suites": [
+      {
+        "suite": "qa:electron:typecheck",
+        "status": "PASS",
+        "total": null,
+        "pass": null,
+        "fail": 0,
+        "skip": 0,
+        "durationMs": 2126,
+        "exitCode": 0
+      },
+      {
+        "suite": "qa:selftest",
+        "status": "PASS",
+        "total": null,
+        "pass": null,
+        "fail": 0,
+        "skip": 0,
+        "durationMs": 4682,
+        "exitCode": 0,
+        "notes": "Harness unit suites plus the Playwright selftest project, now including the repair-capability attack suite."
+      },
+      {
+        "suite": "desktop:test",
+        "status": "PASS",
+        "total": 140,
+        "pass": 140,
+        "fail": 0,
+        "skip": 0,
+        "durationMs": 34992,
+        "exitCode": 0
+      },
+      {
+        "suite": "test:dashboard",
+        "status": "FAIL",
+        "total": 5044,
+        "pass": 4972,
+        "fail": 51,
+        "skip": 21,
+        "durationMs": 148661,
+        "exitCode": 1,
+        "notes": "Individually triaged in dashboard-triage.json; 43 of these also fail at clean HEAD."
+      },
+      {
+        "suite": "test:gbrain",
+        "status": "PASS",
+        "total": 47,
+        "pass": 46,
+        "fail": 0,
+        "skip": 1,
+        "durationMs": 34827,
+        "exitCode": 0
+      },
+      {
+        "suite": "test:ui-tars",
+        "status": "PASS",
+        "total": 66,
+        "pass": 66,
+        "fail": 0,
+        "skip": 0,
+        "durationMs": 1950,
+        "exitCode": 0
+      },
+      {
+        "suite": "qa:electron:lifecycle",
+        "status": "FAIL",
+        "total": 5,
+        "pass": 4,
+        "fail": 0,
+        "blocked": 1,
+        "skip": 0,
+        "durationMs": 492000,
+        "exitCode": 1,
+        "notes": "New Week 2 project. 4 pass; the rename scenario is BLOCKED (TEST_ENVIRONMENT) because no verified semantic path to the rename control was found. Run four times; the first three exposed defects in the spec itself."
+      },
+      {
+        "suite": "qa:electron:critical",
+        "status": "PASS",
+        "total": 13,
+        "pass": 12,
+        "fail": 0,
+        "skip": 1,
+        "durationMs": 420000,
+        "exitCode": 0,
+        "notes": "One Week 2 run. Both Week 1 intermittent scenarios passed here. A single pass does not refresh the Week 1 flake rates and is not a burn-in."
+      },
+      {
+        "suite": "qa:electron:explore",
+        "status": "NOT_EXECUTED",
+        "total": null,
+        "pass": null,
+        "fail": null,
+        "skip": null,
+        "durationMs": null,
+        "exitCode": null,
+        "notes": "Not run in Week 2."
+      }
+    ],
+    "pending": []
+  },
+  "dashboardTriage": {
+    "runnerTotals": {
+      "tests": 5044,
+      "suites": 185,
+      "pass": 4972,
+      "fail": 51,
+      "cancelled": 0,
+      "skipped": 21,
+      "todo": 0
+    },
+    "parsed": {
+      "failureEntries": 50,
+      "individualTestFailures": 50,
+      "fileRollups": 0,
+      "distinctFiles": 37
+    },
+    "byStatus": {
+      "NEEDS_PRODUCT_CONTRACT_REVIEW": 41,
+      "TRIAGED": 7,
+      "NEEDS_REPRODUCTION": 2
+    },
+    "untriaged": 0,
+    "headComparison": {
+      "revision": "91ed121d7709d89c872de63b84d16e55aa3be95c",
+      "workingTreeFailing": 50,
+      "headFailing": 123,
+      "failsInBoth": 43,
+      "failsOnlyInWorkingTree": 7,
+      "failsOnlyAtHead": 80,
+      "note": "The committed revision has more dashboard failures than the working tree: the uncommitted developer work is net-fixing. SH1 repair worktrees are created from HEAD, so they start from the larger failure set."
+    },
+    "coreAdjacentCandidates": [
+      {
+        "file": "tests/app-theme.test.mjs",
+        "test": "dark mode uses charcoal paper and Breadboard's pastel utility bridge",
+        "status": "NEEDS_PRODUCT_CONTRACT_REVIEW"
+      },
+      {
+        "file": "tests/garden-workspace-external-agents.test.mjs",
+        "test": "the run card shows only the agent name and can close a finished timeline",
+        "status": "NEEDS_PRODUCT_CONTRACT_REVIEW"
+      },
+      {
+        "file": "tests/neumorphic-workspaces.test.mjs",
+        "test": "workspace neumorphism is built from shared visual-only materials",
+        "status": "NEEDS_PRODUCT_CONTRACT_REVIEW"
+      },
+      {
+        "file": "tests/quartz-ai-parity.test.mjs",
+        "test": "session transcript presentation is shared, not duplicated",
+        "status": "NEEDS_PRODUCT_CONTRACT_REVIEW"
+      },
+      {
+        "file": "tests/vlm-ocr-figures.test.mjs",
+        "test": "the ingest route persists figures as page assets and counts them",
+        "status": "NEEDS_PRODUCT_CONTRACT_REVIEW"
+      }
+    ],
+    "limitations": [
+      "The 41 deterministic source-contract failures were classified as a bucket, not individually root-caused. Each needs the product contract behind its pattern read before either side is changed.",
+      "The 80 failures unique to HEAD were not evaluated individually; they are fixed by the uncommitted work and so are not current-state defects."
+    ]
+  },
+  "headComparison": {
+    "revision": "91ed121d7709d89c872de63b84d16e55aa3be95c",
+    "workingTreeFailing": 50,
+    "headFailing": 123,
+    "failsInBoth": 43,
+    "failsOnlyInWorkingTree": 7,
+    "failsOnlyAtHead": 80
+  },
+  "gardens": {
+    "scenarios": [
+      {
+        "id": "garden-hostile-names",
+        "status": "PASS",
+        "runs": 3,
+        "passes": 3,
+        "detail": "Eight hostile names (unicode, emoji, apostrophe, double quote, forward and back slash, punctuation, 180-char) each created a garden whose card shows the exact typed name and whose minted slug is unique across the set.",
+        "assertsAuthoritativeState": true
+      },
+      {
+        "id": "garden-empty-and-whitespace-name-rejected",
+        "status": "PASS",
+        "runs": 3,
+        "passes": 3,
+        "detail": "Create stays disabled for an empty name and for a whitespace-only name, and no garden is created.",
+        "assertsAuthoritativeState": true
+      },
+      {
+        "id": "garden-rename-persistence",
+        "status": "BLOCKED",
+        "runs": 3,
+        "passes": 0,
+        "classification": "TEST_ENVIRONMENT",
+        "detail": "Could not drive the rename control. Three selector strategies were tried across three Electron runs: the New-garden modal shape, the garden settings dialog (role=dialog), and the dashboard edit modal headed \"Edit garden\". None opened after clicking the card control named \"Edit garden\".",
+        "prerequisite": "A verified semantic path from the dashboard garden card to the rename control, confirmed by reading the rendered DOM rather than the source.",
+        "note": "Recorded as BLOCKED, not FAIL: no evidence was gathered about whether renaming persists, so this says nothing about Breadboard."
+      },
+      {
+        "id": "garden-durable-across-electron-restart",
+        "status": "PASS",
+        "runs": 3,
+        "passes": 3,
+        "detail": "A created garden survives a full Electron relaunch into the same isolated profile, its workspace reopens on the same server-minted slug, and Quartz content on disk mentions that slug.",
+        "assertsAuthoritativeState": true,
+        "evidence": "UI after relaunch plus the Quartz content tree under the disposable data root"
+      },
+      {
+        "id": "garden-rapid-switching-context",
+        "status": "PASS",
+        "runs": 3,
+        "passes": 3,
+        "detail": "Four alternating navigations between two gardens without waiting for idle; each render shows the target garden and never the other one.",
+        "assertsAuthoritativeState": false
+      }
+    ],
+    "accounting": {
+      "total": 5,
+      "pass": 4,
+      "blocked": 1,
+      "fail": 0,
+      "notRun": 0,
+      "note": "BLOCKED is not PASS. Scenario accounting is 100%: every scenario has a status and the blocked one names its exact prerequisite."
+    }
+  },
+  "persistenceMatrix": {
+    "generatedAt": "2026-08-17T14:23:18.589Z",
+    "scope": "Partial. Only the garden entity was exercised; folders, notes, imported sources, selected-garden and settings were not.",
+    "method": "Each row was verified immediately, then after a renderer refresh, then after a full Electron relaunch into the same isolated profile. Service-restart persistence was not exercised.",
+    "rows": [
+      {
+        "entity": "garden (create)",
+        "immediate": "PASS",
+        "rendererRefresh": "PASS",
+        "electronRestart": "PASS",
+        "serviceRestart": "NOT_TESTED",
+        "authority": "UI after relaunch plus Quartz content on disk"
+      },
+      {
+        "entity": "garden name (rename)",
+        "immediate": "BLOCKED",
+        "rendererRefresh": "BLOCKED",
+        "electronRestart": "BLOCKED",
+        "serviceRestart": "NOT_TESTED",
+        "authority": "none gathered",
+        "blockedBy": "garden-rename-persistence"
+      },
+      {
+        "entity": "garden description",
+        "immediate": "NOT_TESTED",
+        "rendererRefresh": "NOT_TESTED",
+        "electronRestart": "NOT_TESTED",
+        "serviceRestart": "NOT_TESTED"
+      },
+      {
+        "entity": "garden slug / workspace route",
+        "immediate": "PASS",
+        "rendererRefresh": "PASS",
+        "electronRestart": "PASS",
+        "serviceRestart": "NOT_TESTED",
+        "authority": "workspace reopens on the same server-minted slug"
+      },
+      {
+        "entity": "folder",
+        "immediate": "NOT_TESTED",
+        "rendererRefresh": "NOT_TESTED",
+        "electronRestart": "NOT_TESTED",
+        "serviceRestart": "NOT_TESTED"
+      },
+      {
+        "entity": "note",
+        "immediate": "NOT_TESTED",
+        "rendererRefresh": "NOT_TESTED",
+        "electronRestart": "NOT_TESTED",
+        "serviceRestart": "NOT_TESTED"
+      },
+      {
+        "entity": "imported source",
+        "immediate": "NOT_TESTED",
+        "rendererRefresh": "NOT_TESTED",
+        "electronRestart": "NOT_TESTED",
+        "serviceRestart": "NOT_TESTED"
+      },
+      {
+        "entity": "account session",
+        "immediate": "PASS",
+        "rendererRefresh": "PASS",
+        "electronRestart": "PASS",
+        "serviceRestart": "NOT_TESTED",
+        "authority": "sign-in survives relaunch; ensureAuthenticatedDashboard re-authenticates only when required"
+      }
+    ]
+  },
+  "notExecuted": [
+    {
+      "phase": 2,
+      "name": "Electron lifecycle",
+      "note": "Week 1 critical coverage inherited only; the Week 2 additions were not authored."
+    },
+    {
+      "phase": 2,
+      "name": "Electron security",
+      "note": "navigation-security and preload least-privilege inherited from Week 1; unknown routes, custom protocols, external URL policy and IPC surface not tested."
+    },
+    {
+      "phase": 2,
+      "name": "Service supervision",
+      "note": "No dedicated scenarios; one incidental startup-timeout observation recorded."
+    },
+    {
+      "phase": 4,
+      "name": "Folders and notes",
+      "note": "No scenarios authored."
+    },
+    {
+      "phase": 5,
+      "name": "Document ingestion",
+      "note": "PDF, unsupported-extension, corrupt, duplicate and interrupted fixtures not built. Week 1 blocker remains open."
+    },
+    {
+      "phase": 6,
+      "name": "Quartz / source routing",
+      "note": "Covered only by the single Week 1 critical scenario."
+    },
+    {
+      "phase": 7,
+      "name": "Import / export round-trips",
+      "note": "Not performed."
+    },
+    {
+      "phase": 9,
+      "name": "UX abuse / races",
+      "note": "Only rapid garden switching was exercised."
+    },
+    {
+      "phase": 11,
+      "name": "Burn-in",
+      "note": "critical was run once in Week 2, not repeatedly. Week 1 flake rates were not refreshed."
+    }
+  ],
+  "productBugs": [],
+  "flakeAnalysis": {
+    "generatedAt": "2026-08-17T14:30:26.021Z",
+    "retriesEnabled": false,
+    "note": "qa:electron:critical was run once in Week 2, not repeatedly. Week 1 rates are carried forward explicitly labelled as Week 1 data and were not refreshed.",
+    "scenarios": [
+      {
+        "scenario": "a deterministic Markdown fixture ingests through Add documents",
+        "week1": {
+          "runs": 3,
+          "passes": 2,
+          "flakeRate": 0.333
+        },
+        "week2": {
+          "runs": 1,
+          "passes": 1,
+          "note": "passed in the single Week 2 critical run"
+        },
+        "investigation": {
+          "iterations": 10,
+          "backdropLifecycleClean": 10,
+          "clickIntercepted": 0,
+          "conclusion": "Unresolved. Evidence argues against a persistent product defect."
+        },
+        "classification": "FLAKY",
+        "repairEligible": false
+      },
+      {
+        "scenario": "the dashboard terminal opens and closes through visible controls",
+        "week1": {
+          "runs": 3,
+          "passes": 2,
+          "flakeRate": 0.333
+        },
+        "week2": {
+          "runs": 1,
+          "passes": 1
+        },
+        "investigation": null,
+        "classification": "FLAKY",
+        "repairEligible": false,
+        "note": "Not investigated in Week 2."
+      },
+      {
+        "scenario": "local-account-onboarding (exploratory)",
+        "week1": {
+          "runs": 1,
+          "passes": 0
+        },
+        "week2": {
+          "runs": 0,
+          "passes": 0,
+          "note": "exploratory suite not run in Week 2"
+        },
+        "investigation": {
+          "conclusion": "Two Week 2 sightings traced to the QA spec re-registering a taken account; that was a test defect, now fixed. The Week 1 sighting is still unexplained."
+        },
+        "classification": "FLAKY",
+        "repairEligible": false
+      }
+    ],
+    "newObservations": [
+      {
+        "observation": "Electron workspace failed to start with health check timed out after 300000ms while a dashboard suite compiled in a parallel worktree; the next launch came up in ~20s.",
+        "classification": "TEST_ENVIRONMENT",
+        "implication": "Electron startup readiness is sensitive to machine load; a 5-minute budget is not generous under contention."
+      }
+    ],
+    "unexplainedCriticalFlakes": 2
+  },
+  "sh1Statistics": {
+    "repairAttempts": 5,
+    "verifiedRepairs": 5,
+    "failedRepairs": 0,
+    "blockedRepairs": 0,
+    "allWrittenThroughCapability": true,
+    "capabilityBypassAttemptsDenied": 28,
+    "meanRepairIterations": 1,
+    "maxRepairIterations": 1,
+    "mainTreeProductRepairs": 0,
+    "unrelatedFilesChanged": 0,
+    "note": "These are the controlled seeded-defect experiments re-run through the new capability, not repairs of naturally discovered defects. No naturally discovered finding reached a reproduced PRODUCT_BUG this week."
+  },
+  "outstandingBlockers": [
+    {
+      "id": "W2-1",
+      "summary": "Phases 2, 5, 6, 7, 9 not executed"
+    },
+    {
+      "id": "W2-2",
+      "summary": "HEAD fails 123 dashboard tests; repair worktrees start from that baseline"
+    },
+    {
+      "id": "W2-3",
+      "summary": "41 dashboard failures need product-contract review before either side is changed"
+    },
+    {
+      "id": "W2-4",
+      "summary": "2 dashboard failures are thrown errors and need runtime reproduction"
+    },
+    {
+      "id": "W2-5",
+      "summary": "markdown-upload-ingestion interception unreproduced after 10 attempts"
+    },
+    {
+      "id": "W2-6",
+      "summary": "dashboard terminal open/close intermittent not investigated"
+    },
+    {
+      "id": "W2-7",
+      "summary": "garden rename scenario BLOCKED: no verified semantic path to the rename control"
+    },
+    {
+      "id": "W2-8",
+      "summary": "Ingestion fixtures still missing (open since Week 1)"
+    },
+    {
+      "id": "W2-9",
+      "summary": "loop-contract.yaml formal validation still NOT_RUN; activation_allowed remains false"
+    },
+    {
+      "id": "W2-10",
+      "summary": "Preserved QA run roots accumulate without an age-based sweep"
+    }
+  ],
+  "knownLimitations": [
+    "The capability gate is a controller boundary, not a sandbox: it makes an ungated edit uncertifiable, not impossible.",
+    "The 41 contract failures were classified as an evidence-backed bucket, not individually root-caused.",
+    "The 80 HEAD-only failures were not evaluated individually; they are fixed by the working tree.",
+    "The repository was edited by its developer throughout the session, so every baseline number is a point-in-time snapshot.",
+    "Electron startup is sensitive to machine load; one launch hit a 300s readiness timeout under contention."
+  ],
+  "exitCriteria": [
+    {
+      "id": 1,
+      "criterion": "Week 1 repair-gate opt-in weakness structurally closed",
+      "result": "MET"
+    },
+    {
+      "id": 2,
+      "criterion": "Supported SH1 mutation cannot bypass finding/reproduction/classification/worktree/allowed-path/assertion-integrity checks",
+      "result": "MET"
+    },
+    {
+      "id": 3,
+      "criterion": "The three Week 1 intermittent scenarios have root causes or concrete non-product evidence",
+      "result": "PARTIAL"
+    },
+    {
+      "id": 4,
+      "criterion": "No unresolved unexplained critical Electron flake",
+      "result": "NOT_MET"
+    },
+    {
+      "id": 5,
+      "criterion": "Electron lifecycle tests pass or have classified blockers",
+      "result": "NOT_MET"
+    },
+    {
+      "id": 6,
+      "criterion": "Security-boundary tests have no unexplained failure",
+      "result": "PARTIAL"
+    },
+    {
+      "id": 7,
+      "criterion": "Gardens lifecycle comprehensively covered",
+      "result": "PARTIAL"
+    },
+    {
+      "id": 8,
+      "criterion": "Core folders/notes behavior covered",
+      "result": "NOT_MET"
+    },
+    {
+      "id": 9,
+      "criterion": "Deterministic Markdown and PDF ingestion tested",
+      "result": "NOT_MET"
+    },
+    {
+      "id": 10,
+      "criterion": "Unsupported/corrupt ingestion behavior tested",
+      "result": "NOT_MET"
+    },
+    {
+      "id": 11,
+      "criterion": "Source/Quartz routing regression-covered",
+      "result": "NOT_MET"
+    },
+    {
+      "id": 12,
+      "criterion": "Persistence survives renderer refresh and Electron restart",
+      "result": "PARTIAL"
+    },
+    {
+      "id": 13,
+      "criterion": "Service-restart persistence behaves correctly",
+      "result": "NOT_MET"
+    },
+    {
+      "id": 14,
+      "criterion": "UX race/abuse scenarios expose no unresolved P0/P1",
+      "result": "PARTIAL"
+    },
+    {
+      "id": 15,
+      "criterion": "Dashboard failures individually classified",
+      "result": "MET"
+    },
+    {
+      "id": 16,
+      "criterion": "All SH1 repairs have reproduction, root cause, minimal patch, non-vacuous regression, replay, isolated worktree, clean diff, receipt",
+      "result": "MET"
+    },
+    {
+      "id": 17,
+      "criterion": "No SH1 repair touched main-tree product source",
+      "result": "MET"
+    },
+    {
+      "id": 18,
+      "criterion": "No normal user Breadboard data touched",
+      "result": "MET"
+    },
+    {
+      "id": 19,
+      "criterion": "No QA-owned process remains after successful runs",
+      "result": "MET"
+    },
+    {
+      "id": 20,
+      "criterion": "No secrets in QA textual artifacts",
+      "result": "MET"
+    }
+  ]
+}

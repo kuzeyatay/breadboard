@@ -1822,6 +1822,21 @@ export function useAgentSession(
       } else {
         externalThinkingTurnIdsRef.current.add(clientMessageId);
         setConnection("streaming");
+        // Start the pending row's clock here, where the person pressed send.
+        // The launch still has to settle the conversation, the run API and the
+        // turn write before an inline card exists to time itself, and a row
+        // handed an empty activity list renders with no elapsed time at all --
+        // so a launch that is working normally reads as one where nothing
+        // happened. The card replaces this the moment it mounts.
+        setActivities([
+          {
+            id: "reasoning",
+            kind: "reasoning",
+            label: "Thinking",
+            status: "running",
+            startedAt: createdAt,
+          },
+        ]);
       }
       setMessages((current) => {
         if (
@@ -1941,7 +1956,14 @@ export function useAgentSession(
         delegatedExternalTurnIdsRef.current.delete(input.clientMessageId);
         if (showedThinking) {
           externalThinkingTurnIdsRef.current.delete(input.clientMessageId);
-          if (!isActiveAgentRunState(runStateRef.current)) setConnection("idle");
+          if (!isActiveAgentRunState(runStateRef.current)) {
+            setConnection("idle");
+            // Retire the pending row's clock with the row itself. Left behind,
+            // it would keep timing from the launch under whatever renders next
+            // -- a start failure has no inline card to take the measurement
+            // over, so it would show the wait as its own duration.
+            setActivities([]);
+          }
         }
       }
     },

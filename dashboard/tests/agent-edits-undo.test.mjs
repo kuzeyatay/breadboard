@@ -250,3 +250,40 @@ test("a finished run's bracket is closed once, at the moment it finished", () =>
   fs.rmSync(path.join(repo, "my-own-work.ts"));
   snapshot.undoAgentEdits(repo, atRunEnd);
 });
+
+test("a live database cluster is never part of a run's bracket", () => {
+  // A data directory committed to the repository is tracked at HEAD, so no
+  // ignore rule can keep it out of a snapshot — and the engine rewrites it on
+  // its own schedule while the agent works.
+  write("data/pg/PG_VERSION", "17\n");
+  write("data/pg/base/1/PG_VERSION", "17\n");
+  write("data/pg/.engine-lock/lock", '{"refreshed_at":1}\n');
+  write("data/pg/base/1/2608", "a page\n");
+  git("add", "-A");
+  git("commit", "-m", "commit a live cluster");
+
+  const before = snapshot.captureSnapshot(repo);
+  assert.ok(snapshot.isSnapshotId(before));
+  assert.doesNotMatch(git("ls-tree", "-r", "--name-only", before), /^data\/pg\//m);
+  snapshot.rememberRunSnapshot("run-5", repo, before);
+
+  // A heartbeat and a checkpoint land mid-run. Neither is the agent's work.
+  write("data/pg/.engine-lock/lock", '{"refreshed_at":2}\n');
+  write("data/pg/base/1/2608", "a checkpointed page\n");
+  write("real-agent-edit.ts", "what the agent actually wrote\n");
+
+  const ref = snapshot.finalizeRunSnapshot("run-5", repo);
+  assert.ok(ref);
+  assert.deepEqual(
+    snapshot.summarizeAgentEdits(repo, ref).files.map((file) => file.path),
+    ["real-agent-edit.ts"],
+  );
+
+  // Undo is therefore structurally unable to write a stale page back under a
+  // running engine, which is how a cluster gets corrupted.
+  assert.deepEqual(snapshot.undoAgentEdits(repo, ref).restored, ["real-agent-edit.ts"]);
+  assert.equal(
+    fs.readFileSync(path.join(repo, "data/pg/base/1/2608"), "utf8"),
+    "a checkpointed page\n",
+  );
+});

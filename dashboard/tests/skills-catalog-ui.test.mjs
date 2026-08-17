@@ -11,7 +11,7 @@ test("Skills uses the live compact catalog with every required view", () => {
   const ui = read("src/app/components/hermes/skills-catalog-panel.tsx");
   const cache = read("src/lib/hermes/skills-catalog-client-cache.ts");
   assert.match(ui, /Search every public skill/);
-  assert.match(ui, /"all"[\s\S]*"prebuilt"[\s\S]*"scientific"[\s\S]*"coding"[\s\S]*"trending"[\s\S]*"hot"[\s\S]*"official"[\s\S]*"installed"[\s\S]*"updates"[\s\S]*"audited"[\s\S]*"unreviewed"/);
+  assert.match(ui, /"all"[\s\S]*"featured"[\s\S]*"scientific"[\s\S]*"coding"[\s\S]*"trending"[\s\S]*"hot"[\s\S]*"official"[\s\S]*"installed"[\s\S]*"updates"[\s\S]*"audited"[\s\S]*"unreviewed"/);
   assert.match(cache, /\/api\/hermes\/skills\?/);
   assert.match(cache, /\/api\/hermes\/skills\/search/);
   assert.match(ui, /loadCachedSkillsCatalog/);

@@ -14,6 +14,7 @@ const modalSources = [
   "src/app/components/learn-confirmation-dialog.tsx",
   "src/app/components/learn-error-dialog.tsx",
   "src/app/components/settings-dialog.tsx",
+  "src/app/components/person-profile-dialog.tsx",
   "src/app/components/agents/browser-operator.tsx",
   "src/app/dashboard/dashboard-client.tsx",
   "src/app/garden/garden-assistant.tsx",

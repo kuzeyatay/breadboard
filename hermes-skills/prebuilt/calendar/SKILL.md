@@ -15,7 +15,7 @@ The user's own schedule, the same events `/calendar` draws. Four tools, all of
 them reads.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [dashboard_terminal, garden_chat]
   requiredTools:
     - calendar_list_calendars

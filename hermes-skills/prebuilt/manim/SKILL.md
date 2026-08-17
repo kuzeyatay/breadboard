@@ -11,7 +11,7 @@ verifies the MP4, and attaches it to the response. Do not use the terminal,
 write files, or call `artifact_import` yourself.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [garden_chat, dashboard_terminal]
   requiredTools:
     - manim_create

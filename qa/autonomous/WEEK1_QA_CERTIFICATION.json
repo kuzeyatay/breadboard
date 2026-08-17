@@ -1,0 +1,778 @@
+{
+  "schemaVersion": 1,
+  "document": "Breadboard QA Week 1 Certification",
+  "generatedAt": "2026-08-17T12:51:49.122Z",
+  "runId": "week1-20260817T113438Z",
+  "evidenceRoot": ".qa-results/week1/week1-20260817T113438Z",
+  "revision": {
+    "sha": "91ed121d7709d89c872de63b84d16e55aa3be95c",
+    "branch": "master",
+    "workingTreeAtCapture": "dirty: 35 uncommitted entries (18 modified, 13 untracked, 4 other)",
+    "note": "The repository is edited concurrently by its developer. The working tree grew to 111 entries during this session from unrelated authored feature work (for example dashboard/src/app/components/back-link.tsx gaining a `fixed` prop). None of that drift was produced by a QA run; every QA launch writes only below its disposable run root."
+  },
+  "environment": {
+    "os": "Windows 11 Enterprise 10.0.26200 (win32 x64)",
+    "node": "v24.14.1",
+    "npm": "11.12.1",
+    "electron": "33.4.11",
+    "playwright": "1.62.1",
+    "playwrightTest": "1.62.1",
+    "typescript": "5.9.3",
+    "shell": "Git Bash (MINGW64) and PowerShell 5.1"
+  },
+  "baseline": {
+    "suites": [
+      {
+        "suite": "qa:electron:typecheck",
+        "status": "PASS",
+        "total": null,
+        "pass": null,
+        "fail": 0,
+        "skip": 0,
+        "blocked": 0,
+        "durationMs": 3185,
+        "exitCode": 0,
+        "notes": "tsc --noEmit over the whole QA project; no test counting."
+      },
+      {
+        "suite": "desktop:test",
+        "status": "PASS",
+        "total": 140,
+        "pass": 140,
+        "fail": 0,
+        "skip": 0,
+        "blocked": 0,
+        "durationMs": 37950,
+        "exitCode": 0,
+        "notes": "Desktop main-process unit and lifecycle suite."
+      },
+      {
+        "suite": "test:dashboard",
+        "status": "FAIL",
+        "total": 4983,
+        "pass": 4911,
+        "fail": 51,
+        "skip": 21,
+        "blocked": 0,
+        "durationMs": 200499,
+        "exitCode": 1,
+        "notes": "51 pre-existing failures on the dirty working tree, concentrated in Hermes/Terminal/skills/Learn UI assertions and one upload-route source assertion (figureCount: vlmFigureCount). Not investigated or repaired: they are outside Week 1 scope and are recorded as pre-existing evidence, not as new regressions."
+      },
+      {
+        "suite": "test:gbrain",
+        "status": "PASS",
+        "total": 47,
+        "pass": 46,
+        "fail": 0,
+        "skip": 1,
+        "blocked": 0,
+        "durationMs": 49818,
+        "exitCode": 0,
+        "notes": "Bun test over gbrain-adapter; 118 migrations applied."
+      },
+      {
+        "suite": "test:ui-tars",
+        "status": "PASS",
+        "total": 66,
+        "pass": 66,
+        "fail": 0,
+        "skip": 0,
+        "blocked": 0,
+        "durationMs": 1934,
+        "exitCode": 0,
+        "notes": null
+      },
+      {
+        "suite": "qa:electron:critical",
+        "status": "FAIL",
+        "total": 13,
+        "pass": 7,
+        "fail": 1,
+        "skip": 1,
+        "blocked": 4,
+        "durationMs": 342756,
+        "exitCode": 1,
+        "notes": "markdown-upload-ingestion timed out clicking the source link because the upload modal backdrop still intercepted pointer events. The 4 blocked entries did not run: a harness defect in trace teardown killed the worker (see WEEK1 finding H-1/H-2, both repaired)."
+      },
+      {
+        "suite": "qa:electron:explore",
+        "status": "FAIL",
+        "total": 38,
+        "pass": 3,
+        "fail": 1,
+        "skip": 0,
+        "blocked": 1,
+        "notRun": 33,
+        "durationMs": 249707,
+        "exitCode": 1,
+        "notes": "38 manifest scenarios. 3 PASS (desktop-preload-least-privilege P0, desktop-startup-welcome-gate P1, desktop-required-service-readiness P1). 1 FAIL: local-account-onboarding (P1) hit a 120s step timeout and was classified PRODUCT_BUG by the oracle on a single unreproduced observation, so it is NOT repair eligible. 1 BLOCKED: qa-state-isolation (P0) correctly classified TEST_ENVIRONMENT because its account prerequisite was never established. The remaining 33 are NOT_RUN because that scenario's manifest blocker policy sets continueInventory=false; they are recorded as truthful non-passes, not as passes."
+      }
+    ],
+    "notRun": [
+      {
+        "suite": "qa:electron:packaged",
+        "reason": "An installed Breadboard.exe IS present at %LOCALAPPDATA%\\Programs\\Breadboard\\Breadboard.exe, so this suite is available, not environment-blocked. It was deferred past the burn-in so two Electron runs never contend for loopback ports, and run separately; see packaged-probe.json."
+      },
+      {
+        "suite": "qa:electron:hermes",
+        "reason": "Not part of the Week 1 deterministic core path; it depends on a configured provider that the credential-free QA profile deliberately does not have."
+      }
+    ]
+  },
+  "harnessSelfTest": {
+    "unitAndPlaywright": {
+      "passed": true,
+      "stages": [
+        {
+          "stage": "harness-unit",
+          "command": "node.exe --test C:\\Users\\20252082\\breadboard\\qa\\harness-selftest\\repair-gate.test.mjs C:\\Users\\20252082\\breadboard\\qa\\harness-selftest\\assertion-integrity.test.mjs C:\\Users\\20252082\\breadboard\\qa\\harness-selftest\\receipt.test.mjs C:\\Users\\20252082\\breadboard\\qa\\harness-selftest\\repair-worktree.test.mjs",
+          "exitCode": 0,
+          "durationMs": 1586
+        },
+        {
+          "stage": "harness-playwright",
+          "command": "node.exe C:\\Users\\20252082\\breadboard\\node_modules\\@playwright\\test\\cli.js test --config C:\\Users\\20252082\\breadboard\\qa\\electron\\playwright.config.ts --project=selftest --reporter=line",
+          "exitCode": 0,
+          "durationMs": 2212
+        }
+      ]
+    },
+    "injectedFaultMetaRun": {
+      "harnessReportedFaultsCorrectly": true,
+      "runExitCode": 1,
+      "playwrightStats": {
+        "startTime": "2026-08-17T11:59:13.892Z",
+        "duration": 187104.924,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 2,
+        "flaky": 0
+      },
+      "checks": [
+        {
+          "category": "A: renderer assertion failure",
+          "scenario": "INJECTED-A renderer assertion failure is reported with evidence",
+          "passed": true,
+          "statuses": [
+            "failed"
+          ],
+          "reportedErrors": [
+            "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed"
+          ],
+          "evidence": {
+            "screenshot": true,
+            "diagnostics": true,
+            "trace": true,
+            "evidenceGaps": []
+          },
+          "problems": []
+        },
+        {
+          "category": "B: renderer uncaught exception",
+          "scenario": "INJECTED-B renderer uncaught exception fails the scenario",
+          "passed": true,
+          "statuses": [
+            "failed"
+          ],
+          "reportedErrors": [
+            "Error: an uncaught renderer exception must fail the scenario"
+          ],
+          "evidence": {
+            "screenshot": true,
+            "diagnostics": true,
+            "trace": true,
+            "evidenceGaps": []
+          },
+          "problems": []
+        },
+        {
+          "category": "worker survival after injected failures",
+          "scenario": "INJECTED-C the worker survives earlier injected failures",
+          "passed": true,
+          "statuses": [
+            "passed"
+          ],
+          "reportedErrors": [],
+          "evidence": {
+            "screenshot": false,
+            "diagnostics": false,
+            "trace": false,
+            "evidenceGaps": []
+          },
+          "problems": []
+        },
+        {
+          "category": "run exit code",
+          "passed": true,
+          "detail": "exit 1"
+        }
+      ]
+    }
+  },
+  "controlledExperiments": {
+    "total": 5,
+    "verified": 5,
+    "allPassed": true,
+    "experiments": [
+      {
+        "id": "seed-hermes-url-route",
+        "title": "wrong route construction in the Hermes service URL",
+        "category": "wrong route construction",
+        "seededFile": "desktop/src/main/service-definitions.ts",
+        "reproduced": true,
+        "deterministic": true,
+        "classification": "PRODUCT_BUG",
+        "gateScope": "production-source",
+        "scopeGuardVerdict": "REVIEW_REQUIRED",
+        "assertionIntegrityVerdict": "REVIEW_REQUIRED",
+        "filesChanged": [
+          "desktop/src/main/service-definitions.ts",
+          "desktop/tests/qa-regression-hermes-url.test.ts"
+        ],
+        "unrelatedFilesChanged": [],
+        "scenarioReplayPassed": true,
+        "regressionDetectsDefect": true,
+        "regressionPassesOnRepair": true,
+        "mainTreeUnchanged": true,
+        "worktreeRemoved": true,
+        "finalStatus": "VERIFIED_REPAIR",
+        "receipt": {
+          "json": ".qa-results/week1/week1-20260817T113438Z/experiments/receipts/seed-hermes-url-route.receipt.json",
+          "markdown": ".qa-results/week1/week1-20260817T113438Z/experiments/receipts/seed-hermes-url-route.receipt.md"
+        }
+      },
+      {
+        "id": "seed-folder-path-chain",
+        "title": "incorrect pure-data transformation of a folder path chain",
+        "category": "incorrect pure-data transformation",
+        "seededFile": "dashboard/src/lib/cluster-folders.ts",
+        "reproduced": true,
+        "deterministic": true,
+        "classification": "PRODUCT_BUG",
+        "gateScope": "production-source",
+        "scopeGuardVerdict": "REVIEW_REQUIRED",
+        "assertionIntegrityVerdict": "REVIEW_REQUIRED",
+        "filesChanged": [
+          "dashboard/src/lib/cluster-folders.ts",
+          "dashboard/tests/qa-regression-folder-path-chain.test.mjs"
+        ],
+        "unrelatedFilesChanged": [],
+        "scenarioReplayPassed": true,
+        "regressionDetectsDefect": true,
+        "regressionPassesOnRepair": true,
+        "mainTreeUnchanged": true,
+        "worktreeRemoved": true,
+        "finalStatus": "VERIFIED_REPAIR",
+        "receipt": {
+          "json": ".qa-results/week1/week1-20260817T113438Z/experiments/receipts/seed-folder-path-chain.receipt.json",
+          "markdown": ".qa-results/week1/week1-20260817T113438Z/experiments/receipts/seed-folder-path-chain.receipt.md"
+        }
+      },
+      {
+        "id": "seed-garden-rename-nesting",
+        "title": "garden rename nests the folder under itself instead of renaming it",
+        "category": "garden rename/persistence logic defect",
+        "seededFile": "dashboard/src/lib/cluster-folders.ts",
+        "reproduced": true,
+        "deterministic": true,
+        "classification": "PRODUCT_BUG",
+        "gateScope": "production-source",
+        "scopeGuardVerdict": "REVIEW_REQUIRED",
+        "assertionIntegrityVerdict": "REVIEW_REQUIRED",
+        "filesChanged": [
+          "dashboard/src/lib/cluster-folders.ts",
+          "dashboard/tests/qa-regression-folder-rename.test.mjs"
+        ],
+        "unrelatedFilesChanged": [],
+        "scenarioReplayPassed": true,
+        "regressionDetectsDefect": true,
+        "regressionPassesOnRepair": true,
+        "mainTreeUnchanged": true,
+        "worktreeRemoved": true,
+        "finalStatus": "VERIFIED_REPAIR",
+        "receipt": {
+          "json": ".qa-results/week1/week1-20260817T113438Z/experiments/receipts/seed-garden-rename-nesting.receipt.json",
+          "markdown": ".qa-results/week1/week1-20260817T113438Z/experiments/receipts/seed-garden-rename-nesting.receipt.md"
+        }
+      },
+      {
+        "id": "seed-dialog-wrong-handler",
+        "title": "the new-cluster dialog submit is wired to the wrong local handler",
+        "category": "deterministic UI action wired to the wrong local handler",
+        "seededFile": "dashboard/src/app/dashboard/dashboard-client.tsx",
+        "reproduced": true,
+        "deterministic": true,
+        "classification": "PRODUCT_BUG",
+        "gateScope": "production-source",
+        "scopeGuardVerdict": "REVIEW_REQUIRED",
+        "assertionIntegrityVerdict": "REVIEW_REQUIRED",
+        "filesChanged": [
+          "dashboard/src/app/dashboard/dashboard-client.tsx",
+          "dashboard/tests/qa-regression-cluster-dialog-handler.test.mjs"
+        ],
+        "unrelatedFilesChanged": [],
+        "scenarioReplayPassed": true,
+        "regressionDetectsDefect": true,
+        "regressionPassesOnRepair": true,
+        "mainTreeUnchanged": true,
+        "worktreeRemoved": true,
+        "finalStatus": "VERIFIED_REPAIR",
+        "receipt": {
+          "json": ".qa-results/week1/week1-20260817T113438Z/experiments/receipts/seed-dialog-wrong-handler.receipt.json",
+          "markdown": ".qa-results/week1/week1-20260817T113438Z/experiments/receipts/seed-dialog-wrong-handler.receipt.md"
+        }
+      },
+      {
+        "id": "seed-readiness-predicate",
+        "title": "service readiness predicate accepts a failing HTTP status",
+        "category": "service readiness predicate returning the wrong value",
+        "seededFile": "desktop/src/main/health-checker.ts",
+        "reproduced": true,
+        "deterministic": true,
+        "classification": "PRODUCT_BUG",
+        "gateScope": "production-source",
+        "scopeGuardVerdict": "REVIEW_REQUIRED",
+        "assertionIntegrityVerdict": "REVIEW_REQUIRED",
+        "filesChanged": [
+          "desktop/src/main/health-checker.ts",
+          "desktop/tests/qa-regression-readiness-predicate.test.ts"
+        ],
+        "unrelatedFilesChanged": [],
+        "scenarioReplayPassed": true,
+        "regressionDetectsDefect": true,
+        "regressionPassesOnRepair": true,
+        "mainTreeUnchanged": true,
+        "worktreeRemoved": true,
+        "finalStatus": "VERIFIED_REPAIR",
+        "receipt": {
+          "json": ".qa-results/week1/week1-20260817T113438Z/experiments/receipts/seed-readiness-predicate.receipt.json",
+          "markdown": ".qa-results/week1/week1-20260817T113438Z/experiments/receipts/seed-readiness-predicate.receipt.md"
+        }
+      }
+    ]
+  },
+  "burnIn": {
+    "generatedAt": "2026-08-17T12:44:50.980Z",
+    "rounds": 3,
+    "retriesEnabled": false,
+    "suites": [
+      {
+        "id": "qa:electron:typecheck",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 3576,
+        "maxDurationMs": 4740
+      },
+      {
+        "id": "desktop:test",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 35544,
+        "maxDurationMs": 36223
+      },
+      {
+        "id": "qa:selftest",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 7387,
+        "maxDurationMs": 7998
+      },
+      {
+        "id": "qa:electron:critical",
+        "runs": 3,
+        "passes": 1,
+        "failures": 2,
+        "flakeRate": 0.667,
+        "intermittent": true,
+        "medianDurationMs": 391505,
+        "maxDurationMs": 534626
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario": "qa:electron:critical :: actual Electron starts in isolated QA mode and reaches local auth",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "statuses": [
+          "passed",
+          "passed",
+          "passed"
+        ],
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 96907,
+        "maxDurationMs": 114116
+      },
+      {
+        "scenario": "qa:electron:critical :: rejects a symlink or junction runtime root before creating a run child",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "statuses": [
+          "passed",
+          "passed",
+          "passed"
+        ],
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 19,
+        "maxDurationMs": 21
+      },
+      {
+        "scenario": "qa:electron:critical :: rejects a runtime root whose real path escapes through a linked ancestor",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "statuses": [
+          "passed",
+          "passed",
+          "passed"
+        ],
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 9,
+        "maxDurationMs": 10
+      },
+      {
+        "scenario": "qa:electron:critical :: intentional QA failure retains screenshot trace and diagnostics",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "statuses": [
+          "skipped",
+          "skipped",
+          "skipped"
+        ],
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 0,
+        "maxDurationMs": 0
+      },
+      {
+        "scenario": "qa:electron:critical :: cold startup uses a least-privilege renderer and reaches local auth",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "statuses": [
+          "passed",
+          "passed",
+          "passed"
+        ],
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 64122,
+        "maxDurationMs": 65355
+      },
+      {
+        "scenario": "qa:electron:critical :: a disposable invited user can register, sign in, and refresh",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "statuses": [
+          "passed",
+          "passed",
+          "passed"
+        ],
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 76031,
+        "maxDurationMs": 77496
+      },
+      {
+        "scenario": "qa:electron:critical :: garden creation remains inside the isolated QA tree",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "statuses": [
+          "passed",
+          "passed",
+          "passed"
+        ],
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 1278,
+        "maxDurationMs": 1503
+      },
+      {
+        "scenario": "qa:electron:critical :: a deterministic Markdown fixture ingests through Add documents",
+        "runs": 3,
+        "passes": 2,
+        "failures": 1,
+        "statuses": [
+          "passed",
+          "passed",
+          "failed"
+        ],
+        "flakeRate": 0.333,
+        "intermittent": true,
+        "medianDurationMs": 98854,
+        "maxDurationMs": 139247
+      },
+      {
+        "scenario": "qa:electron:critical :: renderer refresh preserves the garden and uploaded source",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "statuses": [
+          "passed",
+          "passed",
+          "skipped"
+        ],
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 17153,
+        "maxDurationMs": 27181
+      },
+      {
+        "scenario": "qa:electron:critical :: the dashboard terminal opens and closes through visible controls",
+        "runs": 3,
+        "passes": 2,
+        "failures": 1,
+        "statuses": [
+          "passed",
+          "failed",
+          "skipped"
+        ],
+        "flakeRate": 0.333,
+        "intermittent": true,
+        "medianDurationMs": 24236,
+        "maxDurationMs": 31901
+      },
+      {
+        "scenario": "qa:electron:critical :: restart with the same isolated profile preserves durable state",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "statuses": [
+          "passed",
+          "skipped",
+          "skipped"
+        ],
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 0,
+        "maxDurationMs": 117056
+      },
+      {
+        "scenario": "qa:electron:critical :: clean shutdown exits the main process and releases owned ports",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "statuses": [
+          "passed",
+          "skipped",
+          "skipped"
+        ],
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 0,
+        "maxDurationMs": 24053
+      },
+      {
+        "scenario": "qa:electron:critical :: an arbitrary local file cannot replace the Electron dashboard",
+        "runs": 3,
+        "passes": 3,
+        "failures": 0,
+        "statuses": [
+          "passed",
+          "passed",
+          "passed"
+        ],
+        "flakeRate": 0,
+        "intermittent": false,
+        "medianDurationMs": 6606,
+        "maxDurationMs": 11357
+      }
+    ],
+    "intermittentScenarios": [
+      "qa:electron:critical :: a deterministic Markdown fixture ingests through Add documents",
+      "qa:electron:critical :: the dashboard terminal opens and closes through visible controls"
+    ],
+    "deterministicFailures": []
+  },
+  "exitCriteria": [
+    {
+      "id": 1,
+      "criterion": "Fresh current-head baseline exists",
+      "result": "MET"
+    },
+    {
+      "id": 2,
+      "criterion": "Harness detects every practically injectable failure type",
+      "result": "MET"
+    },
+    {
+      "id": 3,
+      "criterion": "Evidence captured correctly",
+      "result": "MET"
+    },
+    {
+      "id": 4,
+      "criterion": "Classification tests pass",
+      "result": "MET"
+    },
+    {
+      "id": 5,
+      "criterion": "TEST_ENVIRONMENT cannot trigger product edits",
+      "result": "MET"
+    },
+    {
+      "id": 6,
+      "criterion": "EXTERNAL_DEPENDENCY cannot trigger product edits",
+      "result": "MET"
+    },
+    {
+      "id": 7,
+      "criterion": "FLAKY cannot trigger automatic production edits",
+      "result": "MET"
+    },
+    {
+      "id": 8,
+      "criterion": "Assertion-integrity guard rejects obvious test weakening",
+      "result": "MET"
+    },
+    {
+      "id": 9,
+      "criterion": "Controlled PRODUCT_BUG experiments detected, reproduced, repaired in isolation, regression-tested, replayed",
+      "result": "MET"
+    },
+    {
+      "id": 10,
+      "criterion": "No controlled repair modified the main working tree",
+      "result": "MET"
+    },
+    {
+      "id": 11,
+      "criterion": "No repair touched unrelated files",
+      "result": "MET"
+    },
+    {
+      "id": 12,
+      "criterion": "No QA run touched normal user Breadboard data",
+      "result": "MET"
+    },
+    {
+      "id": 13,
+      "criterion": "No credential or token in textual QA artifacts",
+      "result": "MET"
+    },
+    {
+      "id": 14,
+      "criterion": "No QA-owned processes remain after successful runs",
+      "result": "MET"
+    },
+    {
+      "id": 15,
+      "criterion": "No unexplained P0/P1 defect in the Week 1 infrastructure",
+      "result": "MET"
+    }
+  ],
+  "harnessDefects": [
+    {
+      "id": "H-1",
+      "summary": "tracing.stopChunk rejected while persisting a failure trace; the required Playwright trace was lost",
+      "severity": "P1",
+      "status": "REPAIRED",
+      "file": "qa/electron/fixtures.ts"
+    },
+    {
+      "id": "H-2",
+      "summary": "traceChunkActive left set after a failed trace write, producing a spurious second teardown error",
+      "severity": "P2",
+      "status": "REPAIRED",
+      "file": "qa/electron/fixtures.ts"
+    },
+    {
+      "id": "H-3",
+      "summary": "receipt secret scanner could not match camelCase secret keys such as hermesCapabilitySecret",
+      "severity": "P1",
+      "status": "REPAIRED",
+      "file": "qa/autonomous/lib/receipt.mjs"
+    },
+    {
+      "id": "H-4",
+      "summary": "locate() returned undefined for an unrecognised selector kind instead of throwing",
+      "severity": "P2",
+      "status": "REPAIRED",
+      "file": "qa/electron/selectors.ts"
+    },
+    {
+      "id": "H-5",
+      "summary": "assertion-integrity guard rejected a valid repair because a brand-new test file introduced a timeout",
+      "severity": "P1",
+      "status": "REPAIRED",
+      "file": "qa/autonomous/lib/assertion-integrity.mjs"
+    }
+  ],
+  "corrections": [
+    "The four \"did not run\" entries in the baseline were first attributed to H-2; they are test.describe.serial semantics. Burn-in round 2 reproduced the cascade with H-1/H-2 repaired.",
+    "qa:electron:packaged was first recorded as ENVIRONMENT_BLOCKED; an installed Breadboard.exe does exist on this host, so it is available but out of the Phase 1 suite list and was not run.",
+    "The baseline Markdown-ingestion failure was first classified PRODUCT_BUG by the harness classifier; the burn-in reclassified it FLAKY (2 of 3 passes).",
+    "The exploratory suite was initially deferred and listed as not-run at baseline; it was run after the burn-in and its result is now part of the baseline."
+  ],
+  "outstandingBlockers": [
+    {
+      "id": "B-1",
+      "summary": "Two intermittent critical scenarios remain FLAKY and un-root-caused"
+    },
+    {
+      "id": "B-2",
+      "summary": "The repair gate is enforced within the repair tooling, but the tooling is not yet the only writer"
+    },
+    {
+      "id": "B-3",
+      "summary": "51 pre-existing test:dashboard failures are untriaged"
+    },
+    {
+      "id": "B-4",
+      "summary": "No seeded experiment was replayed through a full Electron relaunch"
+    },
+    {
+      "id": "B-5",
+      "summary": "The UI-handler oracle is source-level rather than a rendered interaction"
+    },
+    {
+      "id": "B-6",
+      "summary": "loop-contract.yaml formal validation remains NOT_RUN; activation_allowed stays false"
+    },
+    {
+      "id": "B-7",
+      "summary": "Preserved QA run roots accumulate and need an age-based sweep"
+    },
+    {
+      "id": "B-8",
+      "summary": "qa:electron:packaged available but not run"
+    },
+    {
+      "id": "B-9",
+      "summary": "local-account-onboarding failed once in the exploratory inventory (120s step timeout), unreproduced and contradicted by the critical suite passing 3/3; not repair eligible"
+    }
+  ],
+  "decision": "READY FOR SH1",
+  "decisionMeaning": "The autonomous controller may diagnose a reproduced PRODUCT_BUG and create a candidate repair plus regression test in an isolated worktree.",
+  "decisionExcludes": [
+    "automatic commit",
+    "automatic push",
+    "automatic PR",
+    "automatic merge",
+    "automatic deployment"
+  ],
+  "sh1Conditions": [
+    "Every repair must run through tooling that calls evaluateRepairGate, enforceChangedFiles and reviewAssertionIntegrity, and must emit a validated receipt.",
+    "A REJECTED assertion-integrity verdict discards the candidate; REVIEW_REQUIRED stops for a human.",
+    "qa:electron:critical may not be the sole verification gate while B-1 stands.",
+    "An intermittently failing scenario stays FLAKY until root-caused and may never be repaired, retried, or quarantined automatically.",
+    "No repair may touch a path classifyPath calls forbidden, regardless of classification.",
+    "activation_allowed in loop-contract.yaml stays false until B-6 is complete."
+  ]
+}

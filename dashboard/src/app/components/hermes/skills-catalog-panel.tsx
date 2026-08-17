@@ -23,7 +23,7 @@ import {
 type CatalogFilter =
   | "all"
   | "recent"
-  | "prebuilt"
+  | "featured"
   | "scientific"
   | "reverse"
   | "design"
@@ -217,7 +217,7 @@ const FILTER_GROUPS: Array<{
     filters: [
       { id: "all", label: "All" },
       { id: "recent", label: "Recent" },
-      { id: "prebuilt", label: "Prebuilt" },
+      { id: "featured", label: "Featured" },
       { id: "scientific", label: "Scientific" },
       { id: "reverse", label: "Reverse" },
       { id: "design", label: "Design" },
@@ -1001,7 +1001,7 @@ export default function SkillsCatalogPanel({
 
 /**
  * Skills Breadboard ships or holds locally, with no skills.sh catalog record
- * behind them: `first-party` prebuilt capabilities and `local-install` entries
+ * behind them: `first-party` featured capabilities and `local-install` entries
  * that live only in the reviewed store. Neither has an upstream page to open,
  * a detail snapshot to fetch, or an update to re-review.
  */
@@ -1026,7 +1026,7 @@ function applyClientFilter(
       .filter((skill) => positions.has(skill.upstreamId))
       .sort((left, right) => positions.get(left.upstreamId)! - positions.get(right.upstreamId)!);
   }
-  if (filter === "prebuilt") return skills.filter((skill) => skill.sourceType === "first-party");
+  if (filter === "featured") return skills.filter((skill) => skill.sourceType === "first-party");
   if (filter === "scientific") return skills.filter((skill) => skill.source === "k-dense-ai/scientific-agent-skills");
   if (filter === "reverse") return skills.filter((skill) => skill.source === "zhaoxuya520/reverse-skill");
   if (filter === "design") return skills.filter((skill) => skill.source === "emilkowalski/skills");

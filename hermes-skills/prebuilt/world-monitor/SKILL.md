@@ -17,7 +17,7 @@ together: a **reported** layer — what news sources are saying, classified and
 corroborated — and a **measured** layer — what observational archives recorded.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [dashboard_terminal, garden_chat]
   requiredTools:
     - worldmonitor_catalog

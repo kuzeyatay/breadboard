@@ -108,7 +108,7 @@ test("Audio Analysis is a ready prebuilt skill on both conversational surfaces",
     );
     assert.ok(skill, `expected the skill on ${surface}`);
     assert.equal(skill.availability, "ready");
-    assert.equal(skill.category, "Prebuilt");
+    assert.equal(skill.category, "Featured");
     assert.deepEqual(skill.capabilityContract?.requiredTools, ["audio_analyze"]);
   }
 

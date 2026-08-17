@@ -24,7 +24,7 @@ export function skillsCatalogUrl({
   recentSkillIds?: string[];
 }): string {
   const normalizedQuery = query.trim();
-  if (normalizedQuery && filter !== "prebuilt" && filter !== "recent") {
+  if (normalizedQuery && filter !== "featured" && filter !== "recent") {
     const search = new URLSearchParams({ q: normalizedQuery, surface });
     return `/api/hermes/skills/search?${search}`;
   }

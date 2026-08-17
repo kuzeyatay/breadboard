@@ -76,6 +76,10 @@ import {
   IMAGE_TO_3D_SKILL,
 } from "../hermes/image-3d-intent.ts";
 import {
+  diagramCommandText,
+  DIAGRAM_DESIGN_SKILL,
+} from "../hermes/diagram-intent.ts";
+import {
   hasReconstructableAttachment,
   hasReconstructableImages,
   mergeImages,
@@ -526,11 +530,20 @@ export async function startConversationTurn(
     hasAudioAttachment: hasAnalyzableAttachment(input.attachments),
     hasRecentAudioAttachment: hasRecentAnalyzableAudio(earlierMessages),
   });
+  // After the attachment-driven selections, because a video, a picture or a
+  // track is the subject of its turn and "diagram what happens in this clip"
+  // needs Watch to see the clip first. Before messaging, which is an errand.
+  const diagramSelection = diagramCommandText({
+    text: audioSelection.text,
+    surface: input.surface,
+    authenticated: true,
+    priorMessages: currentConversationMessages,
+  });
   // Last in the chain on purpose: "send this to my WhatsApp" is an errand
   // attached to whatever the turn was already about, so any skill that claimed
   // the turn on its own wording keeps it.
   const messagingSelection = messagingCommandText({
-    text: audioSelection.text,
+    text: diagramSelection.text,
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
@@ -555,7 +568,8 @@ export async function startConversationTurn(
     if (
       !watchSelection.automatic &&
       !imageTo3dSelection.automatic &&
-      !audioSelection.automatic
+      !audioSelection.automatic &&
+      !diagramSelection.automatic
     ) {
       throw error;
     }
@@ -584,6 +598,11 @@ export async function startConversationTurn(
   const automaticAudioAnalysis = audioSelection.automatic &&
     resolved.invocations.some(
       (invocation) => invocation.kind === "skill" && invocation.slug === AUDIO_ANALYSIS_SKILL,
+    );
+  const automaticDiagramDesign = diagramSelection.automatic &&
+    resolved.invocations.some(
+      (invocation) =>
+        invocation.kind === "skill" && invocation.slug === DIAGRAM_DESIGN_SKILL,
     );
   let turnConversation = reservation.conversation;
   let activeAgencyAgent: AgencyAgentDefinition | null = null;
@@ -616,6 +635,7 @@ export async function startConversationTurn(
       automaticWatch,
       automaticImageTo3d,
       automaticAudioAnalysis,
+      automaticDiagramDesign,
       activeAgencyAgentSlug: activeAgencyAgent?.slug ?? null,
     },
   });

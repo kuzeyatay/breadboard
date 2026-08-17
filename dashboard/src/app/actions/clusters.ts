@@ -6,9 +6,16 @@ import path from "path";
 import { revalidatePath } from "next/cache";
 import { countClusterMarkdown, refreshClusterIndex } from "@/lib/knowledge";
 import {
+  refreshOrganizationQuartzIndex,
   refreshPrivateQuartzIndex,
   refreshPublicQuartzIndex,
 } from "@/lib/quartz-garden-index";
+import {
+  memberRole,
+  organizationClusterClause,
+} from "@/lib/organizations/store";
+import { prepareGraftIndex } from "@/lib/code-index/garden";
+import type { GraftIndexState } from "@/lib/code-index/index-service";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { requireUserId } from "@/lib/server-auth";
 import { uniqueGardenSlug } from "@/lib/garden-slug";
@@ -35,6 +42,8 @@ export interface Cluster {
   slug: string;
   description: string | null;
   visibility: ClusterVisibility;
+  organization_id: number | null;
+  organizationName?: string | null;
   border_color: string;
   card_width: number;
   card_height: number;
@@ -50,9 +59,11 @@ export interface Cluster {
   isOwner?: boolean;
   repo_connected: boolean;
   repo_name: string | null;
+  /** Coding agents in this garden query the graft index of that repository. */
+  graft_enabled: boolean;
 }
 
-export type ClusterVisibility = "private" | "public";
+export type ClusterVisibility = "private" | "organization" | "public";
 
 const DEFAULT_BORDER_COLOR = "#a9c1b1";
 const DEFAULT_CARD_WIDTH = 392;
@@ -66,6 +77,7 @@ type ClusterRow = Omit<
   Cluster,
   | "noteCount"
   | "visibility"
+  | "organization_id"
   | "border_color"
   | "card_width"
   | "card_height"
@@ -75,8 +87,10 @@ type ClusterRow = Omit<
   | "last_viewed_at"
   | "repo_connected"
   | "repo_name"
+  | "graft_enabled"
 > & {
   visibility?: string | null;
+  organization_id?: number | null;
   border_color?: string | null;
   card_width?: number | null;
   card_height?: number | null;
@@ -85,12 +99,15 @@ type ClusterRow = Omit<
   view_count?: number | null;
   last_viewed_at?: string | null;
   repo_path?: string | null;
+  graft_enabled?: number | null;
 };
 
 function normalizeVisibility(
   value: string | null | undefined,
 ): ClusterVisibility {
-  return value === "public" ? "public" : "private";
+  if (value === "public") return "public";
+  if (value === "organization") return "organization";
+  return "private";
 }
 
 function normalizeBorderColor(value: string | null | undefined): string {
@@ -143,12 +160,17 @@ function toCluster(
   noteCount: number,
   userId?: number,
 ): Cluster {
-  const { repo_path: repoPath, ...safeRow } = row;
+  const { repo_path: repoPath, graft_enabled: graftEnabled, ...safeRow } = row;
   const isOwner =
     typeof userId === "number" ? row.user_id === userId : Boolean(row.isOwner);
+  const visibility = normalizeVisibility(row.visibility);
   return {
     ...safeRow,
-    visibility: normalizeVisibility(row.visibility),
+    visibility,
+    organization_id:
+      visibility === "organization" && typeof row.organization_id === "number"
+        ? row.organization_id
+        : null,
     border_color: normalizeBorderColor(row.border_color),
     card_width: normalizeCardWidth(row.card_width),
     card_height: normalizeCardHeight(row.card_height),
@@ -164,6 +186,8 @@ function toCluster(
     isOwner,
     repo_connected: isOwner && Boolean(repoPath),
     repo_name: isOwner && repoPath ? path.basename(repoPath) : null,
+    // Gardens created before the column read as on, which is the default.
+    graft_enabled: graftEnabled !== 0,
   };
 }
 
@@ -261,6 +285,38 @@ export async function getPublicClusters(userId: number): Promise<Cluster[]> {
     );
   } catch {
     throw new Error("Failed to load public gardens");
+  }
+}
+
+/**
+ * Every garden shared with an organization the account belongs to, including
+ * its own, so the owner can see what it has put in front of the group.
+ */
+export async function getOrganizationClusters(
+  userId: number,
+): Promise<Cluster[]> {
+  try {
+    const shared = organizationClusterClause(userId, "c");
+    if (shared === "0") return [];
+
+    const rows = db
+      .prepare(
+        `SELECT c.*, u.email AS ownerEmail, u.username AS ownerUsername,
+                o.name AS organizationName
+         FROM clusters c
+         JOIN users u ON u.id = c.user_id
+         LEFT JOIN organizations o ON o.id = c.organization_id
+         WHERE ${shared}
+         ORDER BY c.created_at DESC`,
+      )
+      .all() as ClusterRow[];
+
+    const contentPath = process.env.QUARTZ_CONTENT_PATH ?? "";
+    return rows.map((c) =>
+      toCluster(c, countNotes(contentPath, c.slug), userId),
+    );
+  } catch {
+    throw new Error("Failed to load organization gardens");
   }
 }
 
@@ -379,6 +435,7 @@ export async function updateClusterDetails(
 export async function setClusterVisibility(
   clusterId: number,
   visibility: ClusterVisibility,
+  organizationId?: number | null,
 ): Promise<void> {
   try {
     const userId = await requireUserId();
@@ -388,16 +445,25 @@ export async function setClusterVisibility(
       .get(clusterId, userId) as { slug: string } | undefined;
     if (!cluster) throw new Error("Garden not found");
 
+    let nextOrganizationId: number | null = null;
+    if (nextVisibility === "organization") {
+      nextOrganizationId = Number(organizationId);
+      if (!memberRole(nextOrganizationId, userId)) {
+        throw new Error("You are not in that organization");
+      }
+    }
+
     const result = db
       .prepare(
-        "UPDATE clusters SET visibility = ? WHERE id = ? AND user_id = ?",
+        "UPDATE clusters SET visibility = ?, organization_id = ? WHERE id = ? AND user_id = ?",
       )
-      .run(nextVisibility, clusterId, userId);
+      .run(nextVisibility, nextOrganizationId, clusterId, userId);
 
     if (result.changes !== 1) throw new Error("Garden not found");
 
     refreshPrivateQuartzIndex(userId);
     refreshPublicQuartzIndex();
+    refreshOrganizationQuartzIndex(userId);
     const scope = nextVisibility === "public" ? "publish" : "unpublish";
     await publishQuartzAfterMutation(`${scope} cluster ${cluster.slug}`);
     revalidatePath("/dashboard");
@@ -642,7 +708,7 @@ export async function setClusterForkAllowed(
 export async function setClusterRepository(
   clusterId: number,
   repositoryPath: string,
-): Promise<{ connected: true; repoName: string }> {
+): Promise<{ connected: true; repoName: string; codeIndex: GraftIndexState }> {
   try {
     const userId = await requireUserId();
     const requestedPath = repositoryPath.trim();
@@ -665,11 +731,41 @@ export async function setClusterRepository(
       .run(resolvedPath, clusterId, userId);
     if (result.changes !== 1) throw new Error("Garden not found");
 
+    // Start the code index now rather than on the first coding agent run, so
+    // the graph is usually ready by the time somebody asks for a change.
+    const codeIndex = prepareGraftIndex(resolvedPath);
+
     revalidatePath("/dashboard");
-    return { connected: true, repoName: path.basename(resolvedPath) };
+    return { connected: true, repoName: path.basename(resolvedPath), codeIndex };
   } catch (err) {
     throw new Error(
       err instanceof Error ? err.message : "Failed to connect repository",
+    );
+  }
+}
+
+export async function setClusterGraftEnabled(
+  clusterId: number,
+  enabled: boolean,
+): Promise<void> {
+  try {
+    const userId = await requireUserId();
+    const row = db
+      .prepare("SELECT repo_path FROM clusters WHERE id = ? AND user_id = ?")
+      .get(clusterId, userId) as { repo_path?: string | null } | undefined;
+    if (!row) throw new Error("Garden not found");
+    db.prepare(
+      "UPDATE clusters SET graft_enabled = ? WHERE id = ? AND user_id = ?",
+    ).run(enabled ? 1 : 0, clusterId, userId);
+
+    // Turning it back on for a repository connected while it was off still
+    // needs a graph before the next run can use one.
+    if (enabled && row.repo_path) prepareGraftIndex(row.repo_path);
+
+    revalidatePath("/dashboard");
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? err.message : "Failed to update the code index setting",
     );
   }
 }
@@ -885,10 +981,14 @@ export async function getReadableCluster(
   try {
     const row = db
       .prepare(
-        `SELECT c.*, u.email AS ownerEmail, u.username AS ownerUsername
+        `SELECT c.*, u.email AS ownerEmail, u.username AS ownerUsername,
+                o.name AS organizationName
          FROM clusters c
          JOIN users u ON u.id = c.user_id
-         WHERE c.slug = ? AND (c.user_id = ? OR c.visibility = 'public')`,
+         LEFT JOIN organizations o ON o.id = c.organization_id
+         WHERE c.slug = ?
+           AND (c.user_id = ? OR c.visibility = 'public'
+                OR ${organizationClusterClause(userId, "c")})`,
       )
       .get(slug, userId) as ClusterRow | undefined;
 

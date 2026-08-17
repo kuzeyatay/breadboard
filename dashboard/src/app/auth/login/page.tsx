@@ -11,8 +11,8 @@ function RegisteredBanner() {
   const searchParams = useSearchParams();
   if (searchParams.get('registered') !== 'true') return null;
   return (
-    <p className="rounded-lg bg-green-950 border border-green-800 text-green-400 text-sm px-4 py-3 mb-6">
-      Account created — sign in below.
+    <p className="text-green-600 text-sm mb-6">
+      Account created, sign in below.
     </p>
   );
 }

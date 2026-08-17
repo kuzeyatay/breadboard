@@ -15,7 +15,7 @@ test("Save to Garden is a ready prebuilt skill on both authenticated chat surfac
     );
     assert.ok(skill, `missing on ${surface}`);
     assert.equal(skill.availability, "ready");
-    assert.equal(skill.category, "Prebuilt");
+    assert.equal(skill.category, "Featured");
     assert.deepEqual(skill.capabilityContract?.requiredTools, [
       "garden_list",
       "garden_save_note",

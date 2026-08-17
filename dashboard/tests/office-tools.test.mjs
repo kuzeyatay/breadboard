@@ -102,7 +102,7 @@ test("the skill resolves ready on the authenticated surfaces, and not on Quartz"
     const skill = listFirstPartySkills(surface).find((entry) => entry.slug === "office");
     assert.ok(skill, `office missing on ${surface}`);
     assert.equal(skill.availability, "ready", `office not ready on ${surface}`);
-    assert.equal(skill.category, "Prebuilt");
+    assert.equal(skill.category, "Featured");
     assert.deepEqual(skill.capabilityContract?.requiredTools, [...OFFICE_TOOLS]);
   }
   assert.equal(

@@ -14,6 +14,10 @@
 
 import db from "@/lib/db";
 import {
+  organizationClusterClause,
+  organizationIdsForUser,
+} from "@/lib/organizations/store";
+import {
   getAgentRuntime,
   getAgentRuntimeByKind,
   getFallbackAgentRuntime,
@@ -73,7 +77,8 @@ interface ClusterRow {
   id: number;
   slug: string;
   user_id: number;
-  visibility: "private" | "public";
+  visibility: "private" | "organization" | "public";
+  organization_id: number | null;
   chat_accessible: number;
 }
 
@@ -118,9 +123,25 @@ async function createWithConfiguredRuntimeFallback(
 
 function loadClusterBySlug(slug: string): ClusterRow | null {
   const row = db
-    .prepare("SELECT id, slug, user_id, visibility, chat_accessible FROM clusters WHERE slug = ?")
+    .prepare(
+      "SELECT id, slug, user_id, visibility, organization_id, chat_accessible FROM clusters WHERE slug = ?",
+    )
     .get(slug) as ClusterRow | undefined;
   return row ?? null;
+}
+
+/**
+ * Gardens a non-owner may chat in: public ones, and ones shared with an
+ * organization they belong to. Both still require chat to be switched on.
+ */
+function chatOpenToUser(cluster: ClusterRow, userId: number | null): boolean {
+  if (cluster.chat_accessible !== 1) return false;
+  if (cluster.visibility === "public") return true;
+  if (cluster.visibility !== "organization" || userId === null) return false;
+  return (
+    typeof cluster.organization_id === "number" &&
+    organizationIdsForUser(userId).includes(cluster.organization_id)
+  );
 }
 
 function canonicalizeRuntimePolicy(row: RuntimeSessionRow): RuntimeSessionRow {
@@ -158,7 +179,8 @@ function canonicalizeRuntimePolicy(row: RuntimeSessionRow): RuntimeSessionRow {
 
 /**
  * Verify a user may open an interactive session against a garden. Owners always
- * may; non-owners may only when the garden is public AND chat-accessible.
+ * may; non-owners only when the garden is chat-accessible and either public or
+ * shared with an organization they are in.
  */
 export function authorizeGardenAccess(
   userId: number | null,
@@ -167,7 +189,7 @@ export function authorizeGardenAccess(
   const cluster = loadClusterBySlug(gardenSlug);
   if (!cluster) throw new ApiError(404, "garden_not_found", "Garden not found.");
   const isOwner = userId !== null && cluster.user_id === userId;
-  if (!isOwner && !(cluster.visibility === "public" && cluster.chat_accessible === 1)) {
+  if (!isOwner && !chatOpenToUser(cluster, userId)) {
     // Do not disclose existence of private gardens to unauthorized users.
     throw new ApiError(404, "garden_not_found", "Garden not found.");
   }
@@ -438,8 +460,10 @@ export interface AuthorizedGardenSummary {
 export function listAuthorizedGardens(userId: number): AuthorizedGardenSummary[] {
   const rows = db.prepare(`
     SELECT id, slug, name, CASE WHEN user_id = ? THEN 1 ELSE 0 END AS is_owner
-    FROM clusters
-    WHERE user_id = ? OR (visibility = 'public' AND chat_accessible = 1)
+    FROM clusters c
+    WHERE c.user_id = ?
+       OR (c.chat_accessible = 1
+           AND (c.visibility = 'public' OR ${organizationClusterClause(userId, "c")}))
     ORDER BY is_owner DESC, lower(name), id
   `).all(userId, userId) as Array<{
     id: number;
@@ -836,8 +860,10 @@ function canonicalRuntimeMessages(
 
 function normalizedAuthorizedGardens(userId: number): AuthorizedGardenSummary[] {
   const rows = db.prepare(`
-    SELECT id, slug, name, user_id FROM clusters
-    WHERE user_id = ? OR (visibility = 'public' AND chat_accessible = 1)
+    SELECT id, slug, name, user_id FROM clusters c
+    WHERE c.user_id = ?
+       OR (c.chat_accessible = 1
+           AND (c.visibility = 'public' OR ${organizationClusterClause(userId, "c")}))
     ORDER BY CASE WHEN user_id = ? THEN 0 ELSE 1 END, lower(name), id
   `).all(userId, userId) as Array<{ id: number; slug: string; name: string; user_id: number }>;
   return rows.map((row) => ({ ...row, isOwner: row.user_id === userId }));

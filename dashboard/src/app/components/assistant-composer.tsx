@@ -139,6 +139,12 @@ interface Props {
   textareaStyle?: CSSProperties;
   placeholder: string;
   disabled?: boolean;
+  /**
+   * The conversation under the composer is still arriving. Typing stays open —
+   * the box keeps its own placeholder — and only sending is held back, with the
+   * send button spinning in place of its arrow rather than greying out.
+   */
+  loading?: boolean;
   isSending?: boolean;
   canSubmit: boolean;
   model: string;
@@ -375,6 +381,26 @@ function Spinner() {
   );
 }
 
+// How far the field may grow before it starts scrolling instead. Pasting a page
+// of text used to grow the composer without limit, which pushed the whole
+// conversation off screen; past this many lines the extra text scrolls inside
+// the field. The viewport share keeps that promise on a short window, where ten
+// lines would already be most of the screen, and the floor keeps at least a few
+// lines visible however short the window gets.
+const COMPOSER_MAX_LINES = 10;
+const COMPOSER_MIN_LINES = 3;
+const COMPOSER_MAX_VIEWPORT_SHARE = 0.35;
+
+function composerMaxHeight(lineHeight: number) {
+  const roomy = lineHeight * COMPOSER_MAX_LINES;
+  const viewport = typeof window === 'undefined' ? 0 : window.innerHeight;
+  if (!viewport) return roomy;
+  return Math.max(
+    lineHeight * COMPOSER_MIN_LINES,
+    Math.min(roomy, Math.round(viewport * COMPOSER_MAX_VIEWPORT_SHARE)),
+  );
+}
+
 type ActiveAgencyAgent = {
   id: string;
   slug: string;
@@ -396,6 +422,7 @@ export default function AssistantComposer({
   textareaStyle,
   placeholder,
   disabled = false,
+  loading = false,
   isSending = false,
   canSubmit,
   model,
@@ -664,12 +691,47 @@ export default function AssistantComposer({
     }));
   }, [shortsSeed]);
 
+  // The mirror that paints command tokens and links sits on top of the
+  // textarea, so once the field scrolls the two layers have to scroll together —
+  // otherwise the colouring drifts away from the text it belongs to.
+  const syncCommandBackdrop = useCallback(() => {
+    const textarea = internalTextareaRef.current;
+    const backdrop = commandBackdropRef.current;
+    if (!textarea || !backdrop) return;
+    backdrop.scrollTop = textarea.scrollTop;
+  }, []);
+
   const resizeTextarea = useCallback(() => {
     const textarea = internalTextareaRef.current;
     if (!textarea) return;
+    // Measure with the scrollbar suppressed: an `auto` scrollbar that appears
+    // mid-measurement narrows the field, rewraps the text and inflates the
+    // height it reports.
+    textarea.style.overflowY = 'hidden';
     textarea.style.height = 'auto';
-    textarea.style.height = `${textarea.scrollHeight}px`;
-  }, []);
+    const natural = textarea.scrollHeight;
+    const lineHeight =
+      Number.parseFloat(window.getComputedStyle(textarea).lineHeight) || (compact ? 20 : 24);
+    const cap = composerMaxHeight(lineHeight);
+    const capped = natural > cap;
+    textarea.style.height = `${capped ? cap : natural}px`;
+    // Uncapped, the class-level `overflow-y-hidden` stays in charge.
+    textarea.style.overflowY = capped ? 'auto' : '';
+
+    const backdrop = commandBackdropRef.current;
+    if (backdrop) {
+      // Centring is what keeps the mirror on a one-line field; once the text is
+      // taller than the box it would instead hide the first lines above the top
+      // edge, out of reach of any scroll.
+      backdrop.style.alignItems = capped ? 'flex-start' : '';
+      // Give the mirror the same usable width as the scrolling field, so both
+      // layers wrap at the same place.
+      backdrop.style.paddingRight = capped
+        ? `${Math.max(0, textarea.offsetWidth - textarea.clientWidth)}px`
+        : '';
+    }
+    syncCommandBackdrop();
+  }, [compact, syncCommandBackdrop]);
 
   useLayoutEffect(() => {
     resizeTextarea();
@@ -1889,6 +1951,10 @@ export default function AssistantComposer({
                         return;
                       }
                       event.preventDefault();
+                      // A chat that has not finished loading takes no Enter at
+                      // all — not even as a queued steer, since there is no
+                      // settled conversation to queue against yet.
+                      if (loading) return;
                       if (runInFlight) {
                         queueSteer();
                         return;
@@ -1897,6 +1963,7 @@ export default function AssistantComposer({
                       onSubmit();
                     }}
                     onPaste={handlePaste}
+                    onScroll={syncCommandBackdrop}
                     rows={1}
                     wrap="soft"
                     placeholder={placeholder}
@@ -2190,36 +2257,43 @@ export default function AssistantComposer({
                   ? queueSteer()
                   : onSubmit()
             }
-            disabled={!canSend || isSending || disabled || (Boolean(formAgent) && runInFlight)}
-            className={`neu-button-accent flex shrink-0 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)] ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
+            disabled={loading || !canSend || isSending || disabled || (Boolean(formAgent) && runInFlight)}
+            // While the chat loads the button keeps its accent colour and turns
+            // into a spinner: greying it out reads as "nothing to send", where
+            // this is "not yet". Every other block still greys out as before.
+            className={`neu-button-accent flex shrink-0 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] ${loading ? 'disabled:cursor-wait disabled:opacity-55' : 'disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)]'} ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
             aria-label={
-              tradingAgentsAgent
-                ? 'Run analysis'
-                : shortsAgent
-                  ? 'Cut the clips'
-                  : formsmithAgent
-                    ? 'Reconstruct the picture'
-                    : paperTraderSelection
-                      ? 'Open the trading desk'
-                  : externalRunActive ? 'Queue message' : 'Send'
-            }
-            title={
-              formAgent
-                ? runInFlight
-                  ? 'Wait for the running agent to finish'
-                  : tradingAgentsAgent
-                    ? 'Run the analysis'
-                    : shortsAgent
-                      ? 'Cut the clips'
+              loading
+                ? 'Loading this chat'
+                : tradingAgentsAgent
+                  ? 'Run analysis'
+                  : shortsAgent
+                    ? 'Cut the clips'
+                    : formsmithAgent
+                      ? 'Reconstruct the picture'
                       : paperTraderSelection
                         ? 'Open the trading desk'
-                        : 'Reconstruct the picture'
-                : externalRunActive
-                  ? 'Queue until the running agent finishes'
-                  : 'Send'
+                        : externalRunActive ? 'Queue message' : 'Send'
+            }
+            title={
+              loading
+                ? 'Loading this chat…'
+                : formAgent
+                  ? runInFlight
+                    ? 'Wait for the running agent to finish'
+                    : tradingAgentsAgent
+                      ? 'Run the analysis'
+                      : shortsAgent
+                        ? 'Cut the clips'
+                        : paperTraderSelection
+                          ? 'Open the trading desk'
+                          : 'Reconstruct the picture'
+                  : externalRunActive
+                    ? 'Queue until the running agent finishes'
+                    : 'Send'
             }
           >
-            {isSending ? (
+            {isSending || loading ? (
               <Spinner />
             ) : (
               <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>

@@ -20,7 +20,7 @@ or "make this 3D". One picture is the entire input. The reconstruction runs
 locally on Stability AI's Stable Fast 3D; nothing is uploaded anywhere.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [garden_chat, dashboard_terminal]
   requiredTools:
     - image_to_3d

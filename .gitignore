@@ -73,6 +73,8 @@ dashboard/playwright-report/
 # local account state, screenshots and traces, so they are never committed.
 /.qa-runtime/
 /.qa-results/
+# Disposable isolated worktrees used for bounded QA repair experiments.
+/.qa-worktrees/
 
 # ---------------------------------------------------------------------------
 # Databases and runtime state
@@ -130,6 +132,7 @@ hermes-skills/approved/
 /daily_stock_analysis/
 /deep-research/
 /deer-flow/
+/diagram-design/
 /emilkowalski-skills/
 /hallmark/
 /harvey-labs/

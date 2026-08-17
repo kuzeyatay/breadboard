@@ -8,6 +8,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import db from "../db.ts";
+import { organizationIdsForUser } from "../organizations/store.ts";
 import { ApiError } from "./route-core.ts";
 
 // --- CORS -----------------------------------------------------------------
@@ -84,21 +85,35 @@ interface QuartzCluster {
   slug: string;
   name: string;
   user_id: number;
-  visibility: "private" | "public";
+  visibility: "private" | "organization" | "public";
+  organization_id: number | null;
   chat_accessible: number;
 }
 
 export function loadQuartzCluster(gardenId: string): QuartzCluster | null {
   const row = db
-    .prepare("SELECT id, slug, name, user_id, visibility, chat_accessible FROM clusters WHERE slug = ?")
+    .prepare(
+      "SELECT id, slug, name, user_id, visibility, organization_id, chat_accessible FROM clusters WHERE slug = ?",
+    )
     .get(gardenId) as QuartzCluster | undefined;
   return row ?? null;
 }
 
+/** True when the caller shares an organization with a garden shared into one. */
+function sharedWithCaller(
+  cluster: { visibility: string; organization_id: number | null },
+  userId: number | null,
+): boolean {
+  if (cluster.visibility !== "organization" || userId === null) return false;
+  if (typeof cluster.organization_id !== "number") return false;
+  return organizationIdsForUser(userId).includes(cluster.organization_id);
+}
+
 /**
- * Authorize a Quartz AI request. For public gardens, chat must be explicitly
- * enabled (chat_accessible). For private gardens, an authenticated owner is
- * required. Returns the cluster and whether the caller is the owner.
+ * Authorize a Quartz AI request. For public gardens and gardens shared with an
+ * organization, chat must be explicitly enabled (chat_accessible). For private
+ * gardens, an authenticated owner is required. Returns the cluster and whether
+ * the caller is the owner.
  */
 export function authorizeQuartzAccess(
   gardenId: string,
@@ -108,8 +123,10 @@ export function authorizeQuartzAccess(
   if (!cluster) throw new ApiError(404, "garden_not_found", "Garden not found.");
   const isOwner = userId !== null && cluster.user_id === userId;
   if (isOwner) return { cluster, isOwner };
-  if (cluster.visibility === "public" && cluster.chat_accessible === 1) {
-    return { cluster, isOwner: false };
+  if (cluster.chat_accessible === 1) {
+    if (cluster.visibility === "public" || sharedWithCaller(cluster, userId)) {
+      return { cluster, isOwner: false };
+    }
   }
   // Private, or public with chat disabled: not accessible to this caller.
   throw new ApiError(403, "quartz_ai_forbidden", "AI chat is not enabled for this page.");

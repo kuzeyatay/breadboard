@@ -219,20 +219,78 @@ function emailRoutingRule(): string {
   ].join("\n");
 }
 
+/** Runtime agents that can reach the open web, in the order they are offered. */
+const RESEARCH_AGENT_IDS = [
+  "deep-research",
+  "agent-reach",
+  "agent-browser",
+  "get-doc",
+] as const;
+
 /**
- * Keep a multi-round research agent distinct from the inline lookup tool.
+ * Web research is a staffing decision, not a single tool call.
  *
- * Without an explicit boundary, the model sees that both can reach the web and
- * reasonably chooses the tool it can run in the current turn. That defeats the
- * point of Super Agent for questions whose answer depends on comparing a body
- * of evidence rather than retrieving one fact.
+ * Two failures made this section necessary, and both looked like an answer.
+ * The first is scope collapse: `web_search` is the instrument the model can run
+ * inside its own turn, so a request to survey a whole field became one batch of
+ * searches, and the answer was assembled from result snippets — no page was
+ * ever opened. The second is silent degradation: when a research worker returns
+ * nothing, or a tool errors, the turn continues and quietly falls back to what
+ * it already had, presenting snippet-derived numbers as if they had been read.
+ *
+ * So the rule names the instruments that exist, says a broad request earns more
+ * than one of them, and makes reading the authoritative page a step rather than
+ * an option. It also states the sequencing plainly: launches are queued one at
+ * a time and each returns to this agent as an internal turn, so briefs must not
+ * depend on each other's output — coordination happens here, on the way back.
  */
-function researchRoutingRule(): string {
+function researchRoutingRule(inventory: SuperAgentInventory): string {
+  const available = new Set(
+    inventory.runtimeAgents
+      .filter((agent) => agent.launchable)
+      .map((agent) => agent.id),
+  );
+  const instruments: string[] = [];
+  if (available.has("deep-research")) {
+    instruments.push(
+      "- `deep-research` — the multi-round worker. Give it breadth: the parts of the question that need many sources compared against each other. Questions about whether a method works, its benefits or harms, and whether learning is retained are its work too, even when the user wants a normal conversational answer. Begin the brief with `--answer` when they want a sourced answer rather than a report; use its report form only when they asked for a report, review, survey, or write-up.",
+    );
+  }
+  if (available.has("agent-reach")) {
+    instruments.push(
+      "- `agent-reach` — retrieval from named sources. Give it depth: specific sites, directories, or listings to open and pull structured detail out of, when you know where the answer lives and the work is reading it.",
+    );
+  }
+  if (available.has("agent-browser")) {
+    instruments.push(
+      "- `agent-browser` — a real browser. The only instrument for pages that need clicking, scrolling, or JavaScript to show their content, which is what `web_extract` reporting an empty page usually means.",
+    );
+  }
+  if (available.has("get-doc")) {
+    instruments.push(
+      "- `get-doc` — papers and reports. Use it when the evidence is a publication rather than a web page.",
+    );
+  }
+
   return [
-    "## Substantive research goes to Deep Research",
-    "Use `web_search` yourself for a narrow lookup: one current fact, one page, or one source that can settle the question. Do not turn it into a long batch of searches inside this Hermes turn.",
-    "When the user explicitly asks you to research, search into, or investigate a topic and the answer requires comparing evidence across sources, call `agent_launch` with agent id `deep-research`. Questions about whether a method works, its benefits or harms, and whether learning is retained are Deep Research work even when the user wants a normal conversational answer rather than a formal report.",
-    "For a normal question, begin the Deep Research brief with `--answer` so the worker does the full research loop but returns a direct sourced answer. Use its report output only when the user asks for a report, review, survey, or detailed write-up.",
+    "## Web research: read pages, and use more than one instrument",
+    "`web_search` and `web_extract` are yours to run in this turn. Search finds candidates; extract opens them. A narrow lookup — one fact, one page — is finished here, and needs nobody else.",
+    "",
+    "Anything wider is not. A request to survey, enumerate, or investigate a topic — every X, which are active, how many members, what changed over time — is answered by reading the authoritative pages, never by quoting search-result snippets. Open the official page with `web_extract` first: it is the spine every other finding hangs on.",
+    ...(instruments.length
+      ? [
+          "",
+          "Then staff the rest. A broad request earns more than one worker, each with the part it is actually good at:",
+          ...instruments,
+          "",
+          "Three things about how launches work here, all of which change how you write a brief:",
+          "- They run one at a time, in order, and each returns to you as an internal turn. So write each brief to stand alone — a brief that assumes another worker's findings will arrive first is a brief that fails.",
+          "- Each worker is blind to this conversation. Name the subject, the sources you already trust, the shape of the result you need, and what it should do when a source is missing.",
+          "- You are the one who reconciles. When their results come back, merge them, resolve the disagreements, and say plainly which parts are complete and which are partial. A published total that does not match what you counted is a gap to report, not a number to smooth over.",
+        ]
+      : []),
+    "",
+    "And say what actually happened. A tool that returned an error did no work: name the failure and what you did instead. Never present a figure taken from a search snippet as something you read on the page, and never fill a gap from memory — an unverified list of names is the one answer this turn must not produce.",
   ].join("\n");
 }
 
@@ -357,14 +415,12 @@ export function renderSuperAgentDirective(
     ) {
       sections.push(emailRoutingRule());
     }
-    if (
-      inventory.runtimeAgents.some(
-        (agent) => agent.id === "deep-research" && agent.launchable,
-      )
-    ) {
-      sections.push(researchRoutingRule());
-    }
   }
+
+  // Unconditional, unlike the routing rules above it: most of this section is
+  // about the tools this turn runs itself, and a surface with no research
+  // worker still has `web_search` and `web_extract` to misuse.
+  sections.push(researchRoutingRule(inventory));
 
   return sections.join("\n\n");
 }

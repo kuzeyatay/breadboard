@@ -34,7 +34,7 @@ test("Manim is a ready prebuilt skill on both authenticated chat surfaces", () =
   for (const surface of ["dashboard_terminal", "garden_chat"]) {
     const skill = listFirstPartySkills(surface).find((candidate) => candidate.slug === MANIM_SKILL);
     assert.ok(skill, `expected Manim on ${surface}`);
-    assert.equal(skill.category, "Prebuilt");
+    assert.equal(skill.category, "Featured");
     assert.equal(skill.availability, "ready");
     assert.deepEqual(skill.capabilityContract?.requiredTools, [MANIM_TOOL]);
     assert.deepEqual(skill.capabilityContract?.requiredArtifactKinds, ["video"]);

@@ -107,7 +107,9 @@ test("repairing artifacts keep an accessible status without a visible Repairing 
 
 test("response actions sit below response-owned artifacts on every artifact chat surface", () => {
   for (const transcript of [runtimePanel, gardenWorkspace]) {
-    const messagesStart = transcript.indexOf("messages.map");
+    // Both transcripts are virtualized, so the row body is the list's
+    // `renderItem` rather than a `messages.map`.
+    const messagesStart = transcript.indexOf("renderItem={");
     const ownerCard = transcript.indexOf("<InlineArtifactCards", messagesStart);
     const actions = transcript.indexOf("<AssistantMessageActions", ownerCard);
     assert.ok(messagesStart >= 0);
@@ -128,7 +130,9 @@ test("a run card's own actions land below the artifacts too", () => {
   assert.match(actions, /return slot \? createPortal\(actions, slot\) : actions;/);
 
   for (const transcript of [runtimePanel, gardenWorkspace]) {
-    const messagesStart = transcript.indexOf("messages.map");
+    // Both transcripts are virtualized, so the row body is the list's
+    // `renderItem` rather than a `messages.map`.
+    const messagesStart = transcript.indexOf("renderItem={");
     const slotOpen = transcript.indexOf("<MessageActionsSlot", messagesStart);
     const ownerCard = transcript.indexOf("<InlineArtifactCards", messagesStart);
     const slotClose = transcript.indexOf("</MessageActionsSlot>", ownerCard);
@@ -173,11 +177,11 @@ test("gadgets use the standard artifact placeholder until opened", () => {
 test("both runtime and legacy garden chats pin artifact cards to their owning message", () => {
   assert.match(
     runtimePanel,
-    /<InlineArtifactCardsProvider[\s\S]*conversationId=\{surface !== "quartz_ai" \? sessionId : null\}[\s\S]*messages\.map[\s\S]*<InlineArtifactCards[\s\S]*ownerMessageId=\{[\s\S]*message\.artifactMessageId \?\? message\.id \?\? null/,
+    /<InlineArtifactCardsProvider[\s\S]*conversationId=\{surface !== "quartz_ai" \? sessionId : null\}[\s\S]*renderItem=\{[\s\S]*<InlineArtifactCards[\s\S]*ownerMessageId=\{[\s\S]*message\.artifactMessageId \?\? message\.id \?\? null/,
   );
   assert.match(
     gardenWorkspace,
-    /<InlineArtifactCardsProvider[\s\S]*legacyChatSessionId=\{chatSessionId\}[\s\S]*messages\.map[\s\S]*<InlineArtifactCards[\s\S]*ownerMessageId=\{msg\.artifactMessageId \?\? msg\.id \?\? null\}/,
+    /<InlineArtifactCardsProvider[\s\S]*legacyChatSessionId=\{chatSessionId\}[\s\S]*renderItem=\{[\s\S]*<InlineArtifactCards[\s\S]*ownerMessageId=\{msg\.artifactMessageId \?\? msg\.id \?\? null\}/,
   );
   assert.match(agentSession, /artifactMessageId:\s*payload\.assistantMessageId/);
   assert.match(gardenWorkspace, /assistantMsg\.artifactMessageId = event\.assistantMessageId/);

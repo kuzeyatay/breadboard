@@ -15,7 +15,7 @@ executes one OfficeCLI command, `office_export` hands the finished file to the
 user.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [dashboard_terminal, garden_chat]
   requiredTools:
     - office_run

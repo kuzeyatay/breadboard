@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth/next';
 import { NextResponse } from 'next/server';
 import { authOptions } from '@/lib/auth-options';
 import db from '@/lib/db';
+import { organizationClusterClause } from '@/lib/organizations/store';
 
 export class RouteError extends Error {
   status: number;
@@ -18,7 +19,7 @@ export interface OwnedCluster {
   name: string;
   slug: string;
   description: string | null;
-  visibility: 'private' | 'public';
+  visibility: 'private' | 'organization' | 'public';
   border_color: string;
   created_at: string;
 }
@@ -61,8 +62,10 @@ export function requireReadableCluster(userId: number, clusterSlug: string): Own
   const cluster = db
     .prepare(
       `SELECT *
-       FROM clusters
-       WHERE slug = ? AND (user_id = ? OR visibility = 'public')`,
+       FROM clusters c
+       WHERE c.slug = ?
+         AND (c.user_id = ? OR c.visibility = 'public'
+              OR ${organizationClusterClause(userId, 'c')})`,
     )
     .get(slug, userId) as OwnedCluster | undefined;
 
@@ -84,5 +87,13 @@ export function routeErrorResponse(error: unknown): NextResponse {
   }
 
   const message = error instanceof Error ? error.message : 'Internal server error';
+
+  // Errors raised deeper in the stack can still name their own status, so a
+  // refused action answers with its real reason instead of a blanket 500.
+  const status = (error as { status?: unknown } | null)?.status;
+  if (typeof status === 'number' && status >= 400 && status < 600) {
+    return NextResponse.json({ error: message }, { status });
+  }
+
   return NextResponse.json({ error: message }, { status: 500 });
 }

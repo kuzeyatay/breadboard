@@ -38,7 +38,7 @@ export const runtime = "nodejs";
 type SkillsRouteFilter = CatalogFilter | "recent";
 
 const FILTERS = new Set<SkillsRouteFilter>([
-  "all", "recent", "prebuilt", "scientific", "reverse", "design", "engineering", "office", "documents", "omh", "coding", "trending", "hot", "official", "installed", "updates", "audited", "unreviewed",
+  "all", "recent", "featured", "scientific", "reverse", "design", "engineering", "office", "documents", "omh", "coding", "trending", "hot", "official", "installed", "updates", "audited", "unreviewed",
 ]);
 
 /**
@@ -160,7 +160,7 @@ export async function GET(request: Request) {
       filter,
     });
   }
-  if (filter === "prebuilt") {
+  if (filter === "featured") {
     const query = (url.searchParams.get("q") ?? "").trim().toLowerCase();
     const skills = surface === "quartz_ai"
       ? []
@@ -344,7 +344,7 @@ function publicLocalInstallSkill(
   return {
     ...publicFirstPartySkill(skill),
     source: skill.source ?? "Breadboard",
-    // Not "first-party": that is what puts a skill in the Prebuilt tab, and
+    // Not "first-party": that is what puts a skill in the Featured tab, and
     // these are installed skills rather than shipped ones.
     sourceType: "local-install",
     reviewStatus: "approved",

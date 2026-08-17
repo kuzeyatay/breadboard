@@ -3,6 +3,7 @@ import { redirect, notFound } from "next/navigation";
 import { authOptions } from "@/lib/auth-options";
 import { getCluster, getReadableCluster } from "@/app/actions/clusters";
 import db from "@/lib/db";
+import { organizationClusterClause } from "@/lib/organizations/store";
 import WorkspaceClient from "./workspace-client";
 
 export default async function WorkspacePage({
@@ -21,10 +22,14 @@ export default async function WorkspacePage({
   let isOwner = true;
 
   if (!cluster) {
-    // Fall back to public + chat_accessible access
+    // Fall back to chat-accessible gardens shared publicly or with one of the
+    // organizations this account is in.
     const row = db
       .prepare(
-        `SELECT * FROM clusters WHERE slug = ? AND visibility = 'public' AND chat_accessible = 1`,
+        `SELECT * FROM clusters c
+         WHERE c.slug = ? AND c.chat_accessible = 1
+           AND (c.visibility = 'public'
+                OR ${organizationClusterClause(userId, "c")})`,
       )
       .get(clusterSlug) as { id: number; name: string } | undefined;
 
@@ -44,6 +49,7 @@ export default async function WorkspacePage({
         slug: clusterSlug,
         description: (fullRow.description as string | null) ?? null,
         visibility: "public",
+        organization_id: null,
         border_color: (fullRow.border_color as string) ?? "#a9c1b1",
         card_width: Number(fullRow.card_width) || 392,
         card_height: Number(fullRow.card_height) || 244,
@@ -57,6 +63,7 @@ export default async function WorkspacePage({
         isOwner: false,
         repo_connected: false,
         repo_name: null,
+        graft_enabled: true,
       };
     }
     isOwner = false;

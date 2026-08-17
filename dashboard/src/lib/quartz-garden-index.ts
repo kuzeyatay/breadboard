@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import db from "@/lib/db";
 import { scanClusterKnowledge } from "@/lib/knowledge";
+import { organizationClusterClause } from "@/lib/organizations/store";
 
 interface GardenClusterRow {
   id: number;
@@ -9,7 +10,7 @@ interface GardenClusterRow {
   name: string;
   slug: string;
   description: string | null;
-  visibility: "private" | "public";
+  visibility: "private" | "organization" | "public";
   border_color: string;
   view_count: number | null;
   folder: string | null;
@@ -25,6 +26,7 @@ interface GardenCluster {
 
 const PRIVATE_LIBRARY_ROOT = "private-library";
 const PUBLIC_LIBRARY_ROOT = "public-library";
+const ORGANIZATION_LIBRARY_ROOT = "organization-library";
 
 // `clusters.folder` holds a materialized path, so clusters can nest.
 const FOLDER_SEPARATOR = "/";
@@ -103,7 +105,7 @@ function writeGardenIndex({
   pageSlug: string;
   title: string;
   description: string;
-  scope: "private" | "public";
+  scope: "private" | "organization" | "public";
   clusters: GardenCluster[];
   emptyText: string;
 }): string {
@@ -130,7 +132,7 @@ function writeGardenIndex({
     index: number,
   ): string => {
     const owner =
-      scope === "public" && (row.ownerUsername || row.ownerEmail)
+      scope !== "private" && (row.ownerUsername || row.ownerEmail)
         ? ` by ${row.ownerUsername ?? row.ownerEmail}`
         : "";
     const popularity =
@@ -246,6 +248,39 @@ export function refreshPrivateQuartzIndex(userId: number): string | null {
     scope: "private",
     clusters: rows.map((row) => readClusterStats(baseContentPath, row)),
     emptyText: "No private gardens yet.",
+  });
+}
+
+/**
+ * One index per account rather than per organization, because someone can be in
+ * several and the tab shows all of them at once.
+ */
+export function refreshOrganizationQuartzIndex(userId: number): string | null {
+  const baseContentPath = contentPath();
+  if (!baseContentPath || !Number.isFinite(userId)) return null;
+
+  const shared = organizationClusterClause(userId, "c");
+  const rows =
+    shared === "0"
+      ? []
+      : (db
+          .prepare(
+            `SELECT c.*, u.username AS ownerUsername, u.email AS ownerEmail
+             FROM clusters c
+             JOIN users u ON u.id = c.user_id
+             WHERE ${shared}
+             ORDER BY c.created_at DESC`,
+          )
+          .all() as GardenClusterRow[]);
+
+  return writeGardenIndex({
+    baseContentPath,
+    pageSlug: `${ORGANIZATION_LIBRARY_ROOT}/user-${userId}`,
+    title: "Organization garden",
+    description: "Gardens shared with the organizations you are in.",
+    scope: "organization",
+    clusters: rows.map((row) => readClusterStats(baseContentPath, row)),
+    emptyText: "No gardens shared with your organizations yet.",
   });
 }
 
