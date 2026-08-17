@@ -4,6 +4,7 @@ import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
 import { startRun } from "@/lib/career-ops/run-manager.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { maxStepsSetting } from "@/lib/agent-settings/defaults.ts";
+import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -40,7 +41,17 @@ export async function POST(request: Request) {
     const { baseURL } = resolveChatmockBaseUrl(request);
     // How long a run may work before it has to answer, from the user's settings.
     const maxSteps = maxStepsSetting(agentSettingsFor(userId, "career-ops"), 24);
-    const run = startRun({ userId, task, model, reasoningEffort, baseUrl: baseURL, maxSteps });
+    const run = startRun({
+      userId,
+      task,
+      model,
+      reasoningEffort,
+      baseUrl: baseURL,
+      maxSteps,
+      // The chat this was launched from, so a task that refers back to it
+      // resolves instead of arriving as a bare fragment.
+      conversationContext: conversationContextFromBody(userId, body),
+    });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {
     if (error instanceof SyntaxError) {

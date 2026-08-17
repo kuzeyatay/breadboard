@@ -24,6 +24,8 @@ import { useAssistantIntelligence } from '@/app/components/use-assistant-intelli
 import ActivityPanel from '@/app/components/hermes/activity-panel';
 import { UserMessageText } from '@/app/components/hermes/command-text';
 import { useLegacyAgentActivity } from '@/app/components/hermes/use-legacy-agent-activity';
+import { useChatDraft } from '@/app/components/hermes/use-chat-draft';
+import { forgetChatDrafts } from '@/lib/conversations/drafts';
 import ChatMarkdown from '@/app/components/chat-markdown';
 import { useAssistantModels } from '@/app/components/use-assistant-models';
 import {
@@ -102,6 +104,7 @@ type LearnStatus =
   | 'generating_visuals'
   | 'writing_quartz'
   | 'building_navigation'
+  | 'paused'
   | 'complete'
   | 'failed'
   | 'cancelled';
@@ -167,7 +170,9 @@ function isAssistantLearnActive(status?: LearnStatus): boolean {
     status === 'generating_textbook' ||
     status === 'generating_visuals' ||
     status === 'writing_quartz' ||
-    status === 'building_navigation'
+    status === 'building_navigation' ||
+    // A paused run still owns the garden, so the assistant must not start one.
+    status === 'paused'
   );
 }
 
@@ -381,6 +386,10 @@ export default function GardenAssistant({
   );
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
+  // Raised for as long as a turn this tab started owns what is on screen. The
+  // transcript is put up before the chat row that will hold it exists, so the
+  // empty session arriving must not be allowed to wipe it.
+  const localTurnRef = useRef(false);
   const [showHistory, setShowHistory] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
@@ -429,6 +438,18 @@ export default function GardenAssistant({
     setInput('');
     setShowHistory(false);
   }, [activeClusterSlug]);
+
+  // Unsent text outlives a reload, filed under the chat it was typed in — and
+  // under the cluster, since that is what the chats themselves are kept by.
+  // Declared after the cluster-switch reset above so that on a switch the draft
+  // of the cluster being opened has the last word over the emptying.
+  const draftSurface = `garden_assistant:${activeClusterSlug ?? 'none'}`;
+  useChatDraft({
+    surface: draftSurface,
+    sessionId: activeChatId === null ? null : String(activeChatId),
+    value: input,
+    onRestore: setInput,
+  });
 
   useEffect(() => {
     // The local cache is a fast first paint only. Server-side chat sessions are
@@ -481,6 +502,7 @@ export default function GardenAssistant({
   }, [activeClusterSlug]);
 
   useEffect(() => {
+    if (localTurnRef.current) return;
     setMessages(activeChat?.messages ?? []);
   }, [activeChat?.id, activeChat?.messages]);
 
@@ -610,7 +632,12 @@ export default function GardenAssistant({
    * `chat_session_not_found` before reaching the runtime. The id must be
    * server-issued for the session to be addressable at all.
    */
-  async function createChatSession(title = 'New chat'): Promise<ChatSession | null> {
+  async function createChatSession(
+    title = 'New chat',
+    // A session created by a turn already has that turn on screen: blanking
+    // the transcript here would take the message back off it.
+    options: { keepMessages?: boolean } = {},
+  ): Promise<ChatSession | null> {
     if (!activeClusterSlug) return null;
     try {
       const response = await fetch('/api/chat-sessions', {
@@ -633,7 +660,7 @@ export default function GardenAssistant({
         return sessions;
       });
       setActiveChatId(session.id);
-      setMessages([]);
+      if (!options.keepMessages) setMessages([]);
       return session;
     } catch {
       return null;
@@ -646,6 +673,7 @@ export default function GardenAssistant({
 
   async function startNewChat() {
     if (isStreaming) return;
+    localTurnRef.current = false;
     const session = await createChatSession();
     if (session) {
       setMessages([]);
@@ -655,6 +683,7 @@ export default function GardenAssistant({
 
   function openChatSession(session: ChatSession) {
     if (isStreaming) return;
+    localTurnRef.current = false;
     setActiveChatId(session.id);
     setMessages(session.messages ?? []);
     setShowHistory(false);
@@ -662,6 +691,7 @@ export default function GardenAssistant({
 
   function deleteChatSession(sessionId: number) {
     if (isStreaming) return;
+    forgetChatDrafts(window.localStorage, draftSurface, [String(sessionId)]);
     setChatSessions((previous) => {
       const sessions = previous.filter((session) => session.id !== sessionId);
       persistQuartzChatSessions(activeClusterSlug, sessions);
@@ -690,31 +720,6 @@ export default function GardenAssistant({
     const attachmentNames = pendingAttachments.map((attachment) => attachment.name);
     const displayText = text || 'Please review the attached document(s).';
     const turnCreatedAt = new Date().toISOString();
-    let session = activeChat;
-    let sessionTitle: string | undefined;
-    if (!session || session.isOwn === false) {
-      session = await createChatSession();
-      if (!session) {
-        setMessages([
-          ...messages,
-          {
-            role: 'user',
-            content: displayText,
-            createdAt: turnCreatedAt,
-            attachmentNames,
-            attachments: chatMessageAttachments(pendingAttachments),
-          },
-          {
-            role: 'assistant',
-            content: 'I could not create a chat history entry yet.',
-            createdAt: turnCreatedAt,
-            sources: [],
-          },
-        ]);
-        return;
-      }
-    }
-
     const userMessage: ChatMessage = {
       role: 'user',
       content: displayText,
@@ -731,13 +736,40 @@ export default function GardenAssistant({
     };
     const responseStartedAt = performance.now();
 
+    // Everything below needs a chat row, and on a fresh chat that is a round
+    // trip to the server. The message goes up first: what was typed appears
+    // the moment it is sent, not when the server has somewhere to keep it.
+    localTurnRef.current = true;
     setInput('');
     setChatAttachments([]);
     setAttachmentStatus('');
     setIsStreaming(true);
     setMessages([...nextMessages, assistantMessage]);
+    // Thinking belongs to the turn, not to the request that answers it, so it
+    // is raised here rather than once there is a chat row to send against.
+    const turnSignal = agentActivity.start();
+    let activityStarted = true;
 
-    let activityStarted = false;
+    let session = activeChat;
+    let sessionTitle: string | undefined;
+    if (!session || session.isOwn === false) {
+      session = await createChatSession(undefined, { keepMessages: true });
+      if (!session) {
+        setMessages([
+          ...nextMessages,
+          {
+            ...assistantMessage,
+            content: 'I could not create a chat history entry yet.',
+          },
+        ]);
+        agentActivity.finish(true);
+        activityStarted = false;
+        setIsStreaming(false);
+        localTurnRef.current = false;
+        return;
+      }
+    }
+
     let agentFailed = false;
     let pendingApproval: PermissionRequest | null = null;
     try {
@@ -815,8 +847,7 @@ export default function GardenAssistant({
         return;
       }
 
-      const signal = agentActivity.start();
-      activityStarted = true;
+      const signal = turnSignal;
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1000,6 +1031,9 @@ export default function GardenAssistant({
     } finally {
       if (activityStarted) agentActivity.finish(agentFailed);
       setIsStreaming(false);
+      // The transcript this turn wrote has been persisted, so the session row
+      // is authoritative again and may sync into the view.
+      localTurnRef.current = false;
     }
   }
 

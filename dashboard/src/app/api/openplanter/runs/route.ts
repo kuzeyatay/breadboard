@@ -3,6 +3,7 @@ import { requireUserId, RouteError } from "@/lib/server-auth";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
 import { chatmockApiKeyValue } from "@/lib/agent-browser/provider.ts";
 import { startRun } from "@/lib/openplanter/run-manager.ts";
+import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -40,6 +41,9 @@ export async function POST(request: Request) {
       reasoningEffort,
       baseUrl: baseURL,
       apiKey: chatmockApiKeyValue(),
+      // The chat this was launched from, so a request that refers back to
+      // it resolves instead of arriving as a bare fragment.
+      conversationContext: conversationContextFromBody(userId, body, { maxChars: 6_000 }),
     });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {

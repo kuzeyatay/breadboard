@@ -15,6 +15,7 @@ import type { KeyboardEvent } from "react";
 import { CommandHub, type CommandHubHandle } from "./command-hub";
 import SlashCommandMenu, { type SlashCommandMenuHandle } from "./slash-command-menu";
 import type { CommandHubItem } from "@/lib/hermes/commands.ts";
+import { slashQueryAt, slashQueryReplacementRange } from "@/lib/hermes/slash-query";
 import { AGENT_TARS_SLASH_COMMAND } from "@/lib/ui-tars/identity.ts";
 import { AGENT_BROWSER_SLASH_COMMAND } from "@/lib/agent-browser/identity.ts";
 import { AGENT_REACH_COMMAND } from "@/lib/agent-reach/identity.ts";
@@ -131,6 +132,8 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+  // The token under the caret, which is what the menu filters on.
+  const [slashQuery, setSlashQuery] = useState("");
   const [title, setTitle] = useState("");
 
   // Cadence controls, used only while the advanced panel is open.
@@ -187,9 +190,9 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
   function insertToken(command: string) {
     const node = inputRef.current;
     const token = `${command} `;
-    const replacingSlashQuery = /^\/[^\s]*$/.test(text.trim());
-    const start = replacingSlashQuery ? 0 : node?.selectionStart ?? text.length;
-    const end = replacingSlashQuery ? text.length : node?.selectionEnd ?? start;
+    const replaced = slashQueryReplacementRange(text, node?.selectionStart);
+    const start = replaced ? replaced.start : node?.selectionStart ?? text.length;
+    const end = replaced ? replaced.end : node?.selectionEnd ?? start;
     const before = text.slice(0, start);
     const after = text.slice(end);
     const spacer = before && !/\s$/.test(before) ? " " : "";
@@ -334,7 +337,7 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
           <SlashCommandMenu
             ref={slashMenuRef}
             open={slashMenuOpen}
-            value={text}
+            query={slashQuery}
             surface={surface}
             availableRuntimeAgentIds={SCHEDULE_RUNTIME_AGENT_IDS}
             placement="below"
@@ -398,11 +401,14 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
               onChange={(event) => {
                 const next = event.target.value;
                 setText(next);
-                // Typing a slash filters ready commands without opening the
-                // full capability manager. Backspacing to "/" stays quiet.
+                // Typing in a leading slash token filters ready commands without
+                // opening the full capability manager — including the token of a
+                // sentence that already has a body, so an existing capability can
+                // be swapped. Backspacing to "/" stays quiet.
                 const { inputType } = event.nativeEvent as Partial<InputEvent>;
-                const slashQuery = /^\/[^\s]*$/.test(next);
+                const slashQuery = slashQueryAt(next, event.target.selectionStart);
                 if (slashQuery && (slashMenuOpen || !inputType?.startsWith("delete"))) {
+                  setSlashQuery(slashQuery.query);
                   setSlashMenuOpen(true);
                   setPaletteOpen(false);
                 } else if (slashMenuOpen) {

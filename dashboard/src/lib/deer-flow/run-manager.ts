@@ -33,6 +33,7 @@ import { deerFlowRunLabel } from "./identity.ts";
 import { invalidateHealth } from "./runtime.ts";
 import { ensureService, serviceLog, type DeerFlowService } from "./service.ts";
 import { runContext, type DeerFlowSettings } from "./settings.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface DeerFlowEvent {
   sequenceNumber: number;
@@ -269,6 +270,8 @@ export interface StartRunInput {
   settings: DeerFlowSettings;
   /** The chat the run was launched from, captured now rather than looked up later. */
   conversationPublicId: string;
+  /** The chat this was launched from, so a request can refer back to it. */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
@@ -358,7 +361,14 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
 
   const body = JSON.stringify({
     assistant_id: "lead_agent",
-    input: { messages: [{ type: "human", content: run.task }] },
+    input: {
+      messages: [
+        {
+          type: "human",
+          content: promptWithContext(run.task, input.conversationContext),
+        },
+      ],
+    },
     config: { configurable: { thread_id: threadId } },
     context: runContext(input.settings, {
       model: input.model,

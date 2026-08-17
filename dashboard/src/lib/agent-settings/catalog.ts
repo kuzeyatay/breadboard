@@ -1136,6 +1136,41 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
     ],
   },
   {
+    id: "wardrobe",
+    name: "Wardrobe",
+    command: "/agents:wardrobe",
+    summary:
+      "Turns photos of your clothes into catalog cutouts and modeled photos, and files them in your wardrobe.",
+    appliesWhen:
+      "Applies to every import you start from chat. A flag typed in the message wins over either of these, and changing the image quality restarts the wardrobe server on the next run.",
+    fields: [
+      {
+        key: "maxItemsPerPhoto",
+        kind: "number",
+        label: "Pieces per photo",
+        help: "How many garments one photograph may contribute. A full outfit shot yields five or six; a single laid-out item yields one. Anything found past this is named in the result rather than dropped silently.",
+        flag: "--items 4",
+        min: 1,
+        max: 8,
+        default: 6,
+      },
+      {
+        key: "quality",
+        kind: "select",
+        label: "Image quality",
+        help: "How hard the provider works on each cutout and modeled photo. Every piece costs two images, so a batch of holiday photos is where the lower settings earn their keep.",
+        flag: "--quality medium",
+        options: [
+          { value: "auto", label: "Automatic", help: "Let the provider decide per image." },
+          { value: "low", label: "Low", help: "Fastest and cheapest. Rough cutouts." },
+          { value: "medium", label: "Medium", help: "Good enough for a browsable wardrobe." },
+          { value: "high", label: "High", help: "The default. Detail survives on patterns and logos." },
+        ],
+        default: "high",
+      },
+    ],
+  },
+  {
     id: "deer-flow",
     name: "DeerFlow",
     command: "/agents:deer-flow",

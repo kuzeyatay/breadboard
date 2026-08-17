@@ -41,6 +41,7 @@ import {
 import { cadServiceConfigured, cadServiceListening } from "./service.ts";
 import type { ParametricCADArtifact } from "./types.ts";
 import type { ParametricCadRequest } from "./identity.ts";
+import { conversationContextTranscript } from "../conversations/agent-context.ts";
 
 export { MAX_BUILD_ATTEMPTS };
 
@@ -296,6 +297,11 @@ async function drive(run: RunState, input: StartCadRunInput): Promise<void> {
 
 Start a new project; do not modify the design already in this conversation.`
       : input.parsed.brief,
+    // The conversation is already resolved here, so the chat is read from it
+    // directly. It stays out of `brief`, which the safety assessment reads.
+    conversationContext: conversationContextTranscript(conversation, {
+      ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+    }),
     baseUrl: input.baseUrl,
     model: input.model,
     reasoningEffort: input.reasoningEffort,

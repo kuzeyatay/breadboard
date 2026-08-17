@@ -269,7 +269,9 @@ test("Ruflo plans with its own CLI and executes through Claude Code", () => {
 
   assert.match(route, /resolveConnectedRepository\(userId, gardenSlug\)/);
   assert.match(route, /executionTarget: "ruflo"/);
-  assert.match(route, /instruction: resolved\.text/);
+  // The resolved skill text is still what the swarm runs; it now arrives
+  // behind the chat the objective was typed into.
+  assert.match(route, /instruction: withConversationContext\(\n\s+resolved\.text,/);
 });
 
 test("Coding skills may run through Codex, Ruflo, or OpenCode", () => {

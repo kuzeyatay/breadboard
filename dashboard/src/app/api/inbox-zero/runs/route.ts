@@ -6,6 +6,7 @@ import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts"
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { inboxZeroDefaults } from "@/lib/agent-settings/defaults.ts";
 import { startRun } from "@/lib/inbox-zero/run-manager.ts";
+import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -62,6 +63,9 @@ export async function POST(request: Request) {
       chatmockBaseUrl: baseURL,
       chatmockApiKey: chatmockApiKeyValue(),
       model,
+      // The chat this was launched from, so a request that refers back to
+      // it resolves instead of arriving as a bare fragment.
+      conversationContext: conversationContextFromBody(userId, body),
     });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {

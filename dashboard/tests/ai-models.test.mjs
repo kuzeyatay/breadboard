@@ -46,6 +46,17 @@ test('model labels drop the release-date stamp and spell versions with a dot', (
     formatAssistantModelName('anthropic/claude-haiku-4-5-20251001'),
     'Claude Haiku 4.5',
   );
+  // The pxpipe route is an aside about how the request travels, not a version:
+  // spelled as a version it would read "Claude Fable 5 Efficient", which sounds
+  // like a smaller model rather than the same one sent more cheaply.
+  assert.equal(
+    formatAssistantModelName('cliproxy/claude-fable-5-efficient'),
+    'Claude Fable 5 (Efficient)',
+  );
+  assert.equal(
+    assistantModelVendor('cliproxy/claude-fable-5-efficient').label,
+    'Anthropic',
+  );
   // Sibling models must stay distinguishable: stripping the date must never
   // collapse two ids onto one label.
   assert.notEqual(

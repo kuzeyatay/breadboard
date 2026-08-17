@@ -11,6 +11,10 @@ import {
 import { resolveCommandMessage } from "@/lib/hermes/commands.ts";
 import { ApiError } from "@/lib/hermes/route-core.ts";
 import { normalizeChatMessageAttachments } from "@/lib/chat-attachments.ts";
+import {
+  contextConversationFromBody,
+  withConversationContext,
+} from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -59,7 +63,13 @@ export async function POST(request: Request) {
     const run = startRun({
       userId,
       objective: task,
-      instruction: resolved.text,
+      // The chat this was typed into, so an objective that refers back to it
+      // resolves instead of reaching the swarm as a bare fragment.
+      instruction: withConversationContext(
+        resolved.text,
+        contextConversationFromBody(userId, body),
+        { clientMessageId: typeof body.clientMessageId === "string" ? body.clientMessageId : undefined },
+      ),
       skill: selectedSkill
         ? {
             id: selectedSkill.id,

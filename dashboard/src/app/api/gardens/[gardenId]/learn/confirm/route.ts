@@ -85,7 +85,10 @@ export async function POST(
     return NextResponse.json({ success: true, learningMap });
   } catch (error) {
     if (error instanceof LearnPipelineConflictError) {
-      return NextResponse.json({ error: error.message }, { status: 409 });
+      return NextResponse.json(
+        { error: error.message, requiresReplan: error.requiresReplan },
+        { status: 409 },
+      );
     }
     return routeErrorResponse(error);
   }

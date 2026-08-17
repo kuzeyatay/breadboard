@@ -71,6 +71,7 @@ import {
   deleteArtifact,
   getArtifactById,
 } from "../hermes/artifact-store.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface VideoUseRunEvent {
   sequenceNumber: number;
@@ -142,6 +143,8 @@ export interface StartVideoUseRunInput {
   reasoningEffort?: string;
   /** ChatMock's OpenAI-compatible base URL, already resolved for this request. */
   baseUrl: string;
+  /** The chat this was launched from, so a request can refer back to it. */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartVideoUseRunInput): { runId: string; status: RunStatus } {
@@ -488,7 +491,7 @@ async function drive(run: RunState, input: StartVideoUseRunInput): Promise<void>
     program,
     packedTranscript: packed ? clipPackedTranscript(packed) : null,
     silenceMap,
-    prompt: run.request.prompt,
+    prompt: promptWithContext(run.request.prompt, input.conversationContext),
     signal: run.controller.signal,
     onTransportRetry: (detail) =>
       emit(run, "stage.updated", { stage: "plan", status: "running", label: detail }),

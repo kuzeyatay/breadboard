@@ -23,6 +23,7 @@ import { retrieveGraphRag, type RetrievalGarden } from '@/lib/semantic-retrieval
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { withCouncil } from '@/lib/council';
 import { requireUserId, routeErrorResponse } from '@/lib/server-auth';
+import { cogniviaSection } from '@/lib/cognivia/index.ts';
 import { directModeSection } from '@/lib/hermes/direct-mode.ts';
 import { responseStylePrompt } from '@/lib/hermes/system-prompts.ts';
 import { createEmDashFilter } from '@/lib/prose-punctuation.ts';
@@ -268,6 +269,11 @@ export async function POST(request: Request) {
       'and $$...$$ on its own line for display/block equations. ' +
       'Never write math in plain text with ^ or bracket notation - always use proper LaTeX.\n\n' +
       `${gardenContext}\n\nGraphRAG-lite retrieved evidence (BM25, aliases, optional embeddings, and bounded one-hop relationships):\n\n${notesContext}`;
+
+    // A mental-health turn is answered as a CBT copilot on every surface,
+    // including the cross-garden knowledge chat.
+    const cognivia = cogniviaSection({ userText: lastUserMessage?.content ?? '' });
+    if (cognivia) systemPrompt += `\n\n${cognivia}`;
 
     const urlLinkContext = await buildUrlLinkContext(chatMessages);
     if (urlLinkContext.context) {

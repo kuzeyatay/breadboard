@@ -49,6 +49,7 @@ import {
   getConversationById,
   updateConversation,
 } from "../conversations/store.ts";
+import { generateAndApplyConversationTitle } from "../conversations/title-service.ts";
 import { composeMemoryContext } from "../conversations/memory.ts";
 import { loadConversationMemoryBundleHybrid } from "../mem0/retrieval.ts";
 import { gardenInstructions } from "../garden-settings.ts";
@@ -65,6 +66,7 @@ import { parseChatAttachments } from "../chat-attachments-request.ts";
 import { resolveDocumentAttachments } from "../document-attachments-server.ts";
 import { visualizerCommandText } from "./interactive-visualizer-intent.ts";
 import { premortemCommandText } from "./premortem-intent.ts";
+import { factcheckCommandText } from "./factcheck-intent.ts";
 import { agentLoopCommandText } from "./agent-loop-intent.ts";
 import { messagingCommandText } from "./messaging-intent.ts";
 import { imageTo3dCommandText, IMAGE_TO_3D_SKILL } from "./image-3d-intent.ts";
@@ -148,6 +150,23 @@ export async function openGardenAgentChat(
     chatSessionId,
     userId,
   );
+  // Garden Chat's own copy of the first-turn titling in
+  // conversations/turn-service.ts. This surface persists its transcript through
+  // the legacy chat-session route rather than reserveConversationTurn, so the
+  // canonical pipeline's `order_index === 0` test is not available here; the
+  // payload carrying exactly one user message is the same first turn. Awaiting
+  // matches the Terminal, where the title lands before the run is dispatched.
+  // applyGeneratedConversationTitle writes chat_sessions too, so the Garden
+  // sidebar reads the same title, and its compare-and-swap on the observed
+  // title means a manual rename racing this call still wins.
+  if (isFirstUserTurn(messages)) {
+    conversation =
+      (await generateAndApplyConversationTitle({
+        conversation,
+        firstPrompt: text,
+        model: payload.model,
+      })) ?? conversation;
+  }
   // A greeting does not need a 600k-word garden, memories, tools, or an agent
   // run. Keep this intentionally narrow and fail closed for attachments,
   // task-bearing text, and active personas, all of which need the full path.
@@ -199,8 +218,14 @@ export async function openGardenAgentChat(
     authenticated: true,
     priorMessages: messages,
   });
-  const visualizerSelection = visualizerCommandText({
+  const factcheckSelection = factcheckCommandText({
     text: premortemSelection.text,
+    surface: "garden_chat",
+    authenticated: true,
+    priorMessages: messages,
+  });
+  const visualizerSelection = visualizerCommandText({
+    text: factcheckSelection.text,
     surface: "garden_chat",
     authenticated: true,
     priorMessages: messages,
@@ -323,6 +348,7 @@ export async function openGardenAgentChat(
       reasoningEffortAdjusted: engine.adjusted,
       commands: resolved.invocations,
       automaticPremortem: premortemSelection.automatic,
+      automaticFactcheck: factcheckSelection.automatic,
       automaticInteractiveVisualizer: visualizerSelection.automatic,
       capabilityDecisionId: storedDecision.id,
       capabilityMode: decision.mode,
@@ -469,6 +495,14 @@ function parseMessages(value: unknown): ChatMessage[] {
       return [];
     return [{ role, content }];
   });
+}
+
+/**
+ * The transcript the composer just sent holds one user message and nothing
+ * before it: this send is the chat's first turn, the one that names it.
+ */
+function isFirstUserTurn(messages: ChatMessage[]): boolean {
+  return messages.filter((message) => message.role === "user").length === 1;
 }
 
 function parseActivePage(

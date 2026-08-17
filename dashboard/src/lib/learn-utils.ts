@@ -34,6 +34,10 @@ export const LEARN_STATUSES = [
   "generating_visuals",
   "writing_quartz",
   "building_navigation",
+  // Held at a checkpoint by the user. The worker, its garden lease, and its
+  // in-memory run state all stay alive; Resume returns the row to the status
+  // recorded in paused_from_status.
+  "paused",
   "complete",
   "failed",
   "cancelled",

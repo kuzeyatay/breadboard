@@ -281,7 +281,14 @@ test("the legal agent takes memory as a system-prompt section, never as the brie
   assert.match(route, /memoryContext: memory\?\.text \?\? ""/);
 
   const manager = source("src/lib/legal/run-manager.ts");
-  assert.match(manager, /userContext: input\.memoryContext/);
+  // Memory shares this field with the chat the assignment was given in.
+  // Both are harness background; neither may reach the assignment.
+  assert.match(manager, /userContext: \[input\.memoryContext, contextSection\(/);
+  assert.doesNotMatch(
+    manager,
+    /task: run\.request\.task,[\s\S]{0,200}memoryContext/,
+    "the assignment is the brief; memory must not be folded into it",
+  );
 
   const bridge = repoSource("scripts/legal-bridge.py");
   assert.match(bridge, /user_context=str\(job\.get\("userContext"\) or ""\)/);
@@ -300,9 +307,11 @@ test("the stock analyst prefixes at the wire, keeping the saved task the user's 
   assert.match(route, /memoryContext: memory\?\.text \?\? ""/);
 
   const manager = source("src/lib/stock-analyst/run-manager.ts");
+  // Still prefixed at the wire, now through the shared context composer that
+  // also carries the chat this question was asked in.
   assert.match(
     manager,
-    /message: memoryContext \? `\$\{memoryContext\}\\n\\n\$\{run\.task\}` : run\.task/,
+    /message: promptWithContext\(\n\s+memoryContext \? `\$\{memoryContext\}\\n\\n\$\{run\.task\}` : run\.task,/,
   );
   assert.match(
     manager,
@@ -314,7 +323,9 @@ test("the stock analyst prefixes at the wire, keeping the saved task the user's 
 test("deep research sends memory beside the question, never inside it", () => {
   const service = source("src/lib/deep-research/service.ts");
   assert.match(service, /agentId: "deep_research"/);
-  assert.match(service, /userContext: memory\?\.text \?\? ""/);
+  // Memory keeps its own field; it now shares it with the chat the run was
+  // launched from, which is background for the same reason memory is.
+  assert.match(service, /userContext: \[\n\s+memory\?\.text \?\? "",/);
   assert.doesNotMatch(
     service,
     /query: `\$\{/,

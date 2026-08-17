@@ -14,9 +14,28 @@ The user explicitly authorized continuing autonomously while they sleep. Do not 
 
 ## Current state
 
-A fresh plan is running: `learn_job_msvzpn6g_gqfy55f`, launched 2026-08-16T15:59:09Z.
+No Learn job is active. **Do not launch another one until the user explicitly says so** — they cancelled the last run themselves and asked for a full stop.
 
-Pre-launch check passed immediately before launch: dashboard and ChatMock health both `ok`, all four Learn locks absent, no active Learn job, the latest failed job (`learn_job_msvlxbbp_22jqa3h`) had zero map and zero version rows, and neither `quartz/content/electromagnetism-1/learning` nor its public counterpart existed. The model resolved dynamically from the owner's setting to `cliproxy/claude-opus-5`; nothing was substituted. The session quota that ended the previous plan had long since reset.
+`learn_job_msvzpn6g_gqfy55f` (launched 2026-08-16T15:59:09Z) was paused twice from the UI and then stopped by the user at 17:04:58Z, during the syllabus stage at 4%. It was not a pipeline failure: `error` is null. Rollback verified clean afterwards — status `cancelled`, zero map rows, zero version rows, all four Learn locks absent, no `learning/` directory in content or public, no active job, and the runner process exited. Final usage was 4,970,967 input tokens (3,031,766 of them cache reads), 232,151 output, 52 completed requests.
+
+It did get further than any recent attempt: it cleared the whole source-formula-review stage, which is what the previous three failures died in.
+
+### Open cost finding: review-stage images
+
+Measured this session, not estimated. The formula-review call sends the full rendered page plus one labeled crop per equation, all at `detail: "high"` (`source-visuals.ts` around line 2843). Page 398 of the Hayt source renders at 1600x1985, a 437 KB PNG, which is 596,748 characters of base64.
+
+Observed cost was about 102k input tokens per call. Native-image billing for that page would be roughly 4.2k; billing the same page as base64 text would be roughly 170k. The observed figure sits an order of magnitude above native-image billing, which suggests the data URLs reach the provider as text rather than as native image blocks through the cliproxy path. That is likely, not proven: ChatMock exposes no per-request accounting endpoint to confirm it.
+
+Two independent amplifiers, both generic to every garden:
+
+- The detection stage caps images at `DETECTION_IMAGE_MAX_DIMENSION` (768, `source-visuals.ts:92`), but the review path never applies that cap and sends the page at 1600 px.
+- Every crop re-sends a region already inside the page image, with a floor of 50% width by 7.5% height (`expandedCropBBox`, around line 433), so the smallest possible equation crop is still 36 KB.
+
+Confirm the transport-encoding question before capping the review image, since capping alone would cut roughly 4x and would be wasted work if the real cost is base64-as-text. Nothing here was changed: the run was live, and altering the renderer or crop geometry would invalidate every formula-review cache key.
+
+### Launch preconditions, when the user asks for a rerun
+
+The pre-launch check that passed immediately before this run was: dashboard and ChatMock health both `ok`, all four Learn locks absent, no active Learn job, the latest failed job (`learn_job_msvlxbbp_22jqa3h`) had zero map and zero version rows, and neither `quartz/content/electromagnetism-1/learning` nor its public counterpart existed. The model resolved dynamically from the owner's setting to `cliproxy/claude-opus-5`; nothing was substituted. The session quota that ended the previous plan had long since reset.
 
 ### Launcher
 

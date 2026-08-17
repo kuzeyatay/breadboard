@@ -25,6 +25,7 @@ import { externalAgentActivityFromRunEvents } from "@/lib/conversations/external
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { hardwarePreferences } from "@/lib/agent-settings/defaults.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
+import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -122,6 +123,9 @@ export async function POST(request: Request) {
       reasoningEffort,
       baseUrl: baseURL,
       preferences: hardwarePreferences(agentSettingsFor(userId, "hardware-blueprint")),
+      // The chat this was launched from, so a brief that refers back to it
+      // resolves instead of arriving as a bare fragment.
+      conversationContext: conversationContextFromBody(userId, body),
     });
     // Terminal launches are made durable on the server before this response is
     // returned. That closes both races: switching chats cannot move the turn,

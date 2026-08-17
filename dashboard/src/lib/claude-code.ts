@@ -23,6 +23,14 @@ export const CLAUDE_CODE_MODELS = [
   // Last because it is not a rung on the Opus/Sonnet/Haiku ladder: Fable is a
   // separate model picked for what it writes, not for how much it costs.
   "claude-fable-5",
+  // The same Fable 5 on the same subscription, reached through the local pxpipe
+  // proxy: it renders the system prompt, tool docs and older history into dense
+  // images, which cost tokens by their pixel size rather than by their text. The
+  // suffix names the route, not a different model, and ChatMock strips it before
+  // the CLI ever sees it (`chatmock/providers/pxpipe.py`). Both entries exist
+  // because the compression is lossy for long exact strings buried in old
+  // context, so byte-exact work belongs on the plain id.
+  "claude-fable-5-efficient",
 ] as const;
 
 /** A virtual account id. It contains no credential and is safe to send to UI. */

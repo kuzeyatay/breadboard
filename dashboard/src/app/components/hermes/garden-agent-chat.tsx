@@ -44,6 +44,8 @@ import {
   useAgentSession,
   type ExternalAgentTurnResult,
 } from "./use-agent-session";
+import { chatDraftKey, clearChatDraft, forgetChatDrafts } from "@/lib/conversations/drafts";
+import { useChatDraft } from "./use-chat-draft";
 import { useWorkflowAutomation } from "./use-workflow-automation";
 import { useDeepResearchAgent } from "./use-deep-research-agent";
 import { taskFromDeepResearchCommand } from "@/lib/deep-research/identity.ts";
@@ -140,6 +142,15 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
   const deepResearchDispatchingRef = useRef(false);
   const [researchNotice, setResearchNotice] = useState("");
   const session = useAgentSession("garden_chat", { gardenSlug, title: `${gardenName ?? gardenSlug} chat` });
+  // Unsent text survives a reload here too. The garden is part of the surface
+  // key: an unstarted chat belongs to the garden it was opened from.
+  const draftSurface = `garden_chat:${gardenSlug}`;
+  useChatDraft({
+    surface: draftSurface,
+    sessionId: session.sessionId,
+    value: input,
+    onRestore: setInput,
+  });
   const runWorkflowAutomation = useWorkflowAutomation(session);
   const finishExternalAgentTurn = session.finishExternalAgentTurn;
   const deepResearch = useDeepResearchAgent(session, setResearchNotice);
@@ -552,6 +563,8 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
     ruflo.clear();
     session.reset();
     setInput("");
+    // A new chat starts with an empty box rather than the last unstarted draft.
+    clearChatDraft(window.localStorage, chatDraftKey(draftSurface, null));
     setView("chat");
   }
 
@@ -582,6 +595,7 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
     }
     invalidateHermesSessionSummaries("garden_chat");
     setHistory((current) => current.filter((entry) => entry.id !== item.id));
+    forgetChatDrafts(window.localStorage, draftSurface, [item.id]);
     // The open chat no longer exists; fall back to an empty one.
     if (item.id === session.sessionId) startNewChat();
   }

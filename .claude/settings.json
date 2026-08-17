@@ -64,10 +64,82 @@
       "Bash(node --experimental-strip-types \"C:\\\\Users\\\\20252082\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard\\\\5c34f316-262c-47e4-acfa-55e2fa711f7a\\\\scratchpad\\\\f24.mjs\")",
       "Bash(node --experimental-strip-types \"C:\\\\Users\\\\20252082\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard\\\\5c34f316-262c-47e4-acfa-55e2fa711f7a\\\\scratchpad\\\\finalcap.mjs\")",
       "PowerShell(node --test tests/dashboard-agent-terminal-ui.test.mjs)",
-      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(p.dependencies&&p.dependencies['lucide-react']?\\('lucide-react '+p.dependencies['lucide-react']\\):'NOT a dependency'\\)\")"
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(p.dependencies&&p.dependencies['lucide-react']?\\('lucide-react '+p.dependencies['lucide-react']\\):'NOT a dependency'\\)\")",
+      "Bash(graft:*)",
+      "Bash(npx graft:*)",
+      "Bash(graft-dev:*)",
+      "Bash(node dist/cli.js:*)"
     ],
     "additionalDirectories": [
       "\\tmp"
     ]
-  }
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-statusline.cjs\""
+  },
+  "subagentStatusLine": {
+    "type": "command",
+    "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-statusline.cjs\""
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-hooks.cjs\" post-edit",
+            "timeout": 10000
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|mcp__graft__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-hooks.cjs\" tool-savings",
+            "timeout": 8000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-hooks.cjs\" prompt",
+            "timeout": 15000
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-hooks.cjs\" session-start",
+            "timeout": 8000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-hooks.cjs\" stop",
+            "timeout": 8000
+          }
+        ]
+      }
+    ]
+  },
+  "footerLinksRegexes": [
+    "graft/[\\w./-]+\\.md"
+  ]
 }

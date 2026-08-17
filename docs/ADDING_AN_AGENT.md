@@ -109,6 +109,42 @@ The shape every agent uses:
   `lib/tradingagents/credentials.ts`), never into `brain.db`, and are never read
   back to the browser — health reports *whether* a key is set, never its value.
 
+### The chat the run was launched from
+
+An agent that is handed only its task cannot resolve a request that leans on the
+conversation — "yes", "do the second one", "fix the bug you just described" — and
+answers that it has nothing pending. So the run route reads the chat and the run
+manager puts it in front of the prompt:
+
+```ts
+// route: the chat arrives in the body as conversationId / conversationPublicId
+// / chatSessionId, and clientMessageId keeps the launching turn from being
+// repeated back to the agent as its own context.
+conversationContext: conversationContextFromBody(userId, body),
+
+// run manager: compose where the prompt is actually built, so the `task` that
+// labels the card stays the label.
+promptWithContext(instruction, input.conversationContext)
+```
+
+Three rules:
+
+- **Never fold it into the task.** `task`/`brief` is also the run label, the
+  replay signature and often the input to a parser or safety check. Carry the
+  chat in its own field and join it at the prompt.
+- **It is best effort, never a precondition.** `contextConversationFromBody`
+  returns `null` for a chat it cannot resolve and the run starts with a bare
+  task, exactly as before.
+- **A runtime that takes a structured request gets nothing.** Shorts,
+  TradingAgents, Paper Trader, Formsmith and Money Printer never send free text
+  to a model on the user's behalf, so there is nowhere to put a conversation
+  that would not corrupt the request. `tests/agent-conversation-context-coverage.test.mjs`
+  names them, so excluding a new agent is a decision rather than an oversight.
+
+If the runtime's prompt cannot take the block first — Deep Tutor retrieves over
+the whole user message, so a transcript on top would decide the retrieval — use
+`contextSection()` and place it after the person's own words.
+
 ---
 
 ## 4. Register the run kind — `src/lib/conversations/external-agent-runs.ts`
@@ -342,6 +378,7 @@ Structural tests do not prove an agent runs. Before calling it done:
 [ ] capability-combinations.ts     runtime profile
 [ ] agent-settings/catalog.ts      run defaults, if there are any
 [ ] artifacts                      conversationPublicId from launch → createArtifact
+[ ] conversation context           route passes conversationContextFromBody, manager composes it
 [ ] tests/<agent>-agent.test.mjs   + RUN_ROUTES entry
 [ ] a real run, then clean up after it
 ```

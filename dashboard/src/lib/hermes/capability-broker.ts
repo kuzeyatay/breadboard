@@ -38,6 +38,7 @@ import {
   IMAGE_TO_3D_TOOLS,
   AUDIO_ANALYSIS_TOOLS,
   PREMORTEM_TOOLS,
+  FACTCHECK_TOOLS,
   RECALL_TOOLS,
   SUPER_AGENT_TOOLS,
   WATCH_TOOLS,
@@ -216,6 +217,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...SKILL_LESSON_TOOLS,
       ...DOCUMENT_SKILL_TOOLS,
       ...PREMORTEM_TOOLS,
+      ...FACTCHECK_TOOLS,
       ...WATCH_TOOLS,
       ...IMAGE_TO_3D_TOOLS,
       ...AUDIO_ANALYSIS_TOOLS,
@@ -682,6 +684,14 @@ function buildToolMap(
   for (const tool of PREMORTEM_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  // "Is this video bullshit?" is a knowledge question, not coding work, so like
+  // the premortem callback this does not depend on the turn's capability class.
+  // What it reaches is a public URL and the turn's own workspace; the scripts
+  // are read-only apart from the report gate rewriting a line in a report this
+  // same turn wrote.
+  for (const tool of FACTCHECK_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   // Loop design is a knowledge-work activity: it reads and writes only the
   // session's own workspace, so it does not depend on the turn's coding class.
   for (const tool of AGENT_LOOP_TOOLS) {
@@ -798,6 +808,9 @@ function buildToolMap(
     for (const tool of ARTIFACT_TOOLS) map[tool] = false;
     for (const tool of GADGET_TOOLS) map[tool] = false;
     for (const tool of PREMORTEM_TOOLS) map[tool] = false;
+    // Fetching arbitrary URLs and writing files belongs to a signed-in
+    // workspace, not to the anonymous public surface.
+    for (const tool of FACTCHECK_TOOLS) map[tool] = false;
     for (const tool of AGENT_LOOP_TOOLS) map[tool] = false;
     for (const tool of OMH_TOOLS) map[tool] = false;
     for (const tool of MESSAGING_TOOLS) map[tool] = false;

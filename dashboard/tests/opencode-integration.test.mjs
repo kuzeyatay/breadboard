@@ -73,6 +73,31 @@ test("OpenCode is configured for ChatMock with repository-scoped codebase memory
   assert.equal(config.agent.breadboard.permission.bash["git push"], "deny");
 });
 
+test("OpenCode declares the requested model, including provider-prefixed ids", () => {
+  const base = JSON.parse(source("../opencode-config/opencode.json"));
+
+  // The picker's provider-prefixed ids are the ones the static map can never
+  // hold; without this, OpenCode fails the run with "Unexpected server error".
+  const prefixed = runManager.withRequestedModel(base, "cliproxy/claude-opus-5");
+  assert.equal(prefixed.changed, true);
+  const added = prefixed.config.provider.chatmock.models["cliproxy/claude-opus-5"];
+  assert.equal(added.name, "cliproxy/claude-opus-5");
+  assert.equal(added.attachment, true);
+  assert.deepEqual(added.modalities.input, ["text", "image"]);
+  for (const effort of ["none", "low", "medium", "high", "xhigh", "max"]) {
+    assert.equal(added.variants[effort].reasoningEffort, effort);
+  }
+  // Deriving a config must never mutate the checked-in one.
+  assert.equal(
+    Object.hasOwn(base.provider.chatmock.models, "cliproxy/claude-opus-5"),
+    false,
+  );
+
+  const declared = runManager.withRequestedModel(base, "gpt-5.6-sol");
+  assert.equal(declared.changed, false);
+  assert.equal(declared.config, base);
+});
+
 test("OpenCode launches in the connected Garden repository without a shell", () => {
   const route = source("src/app/api/opencode/runs/route.ts");
   const repository = source("src/lib/opencode/repository.ts");
@@ -84,10 +109,12 @@ test("OpenCode launches in the connected Garden repository without a shell", () 
   assert.match(route, /resolveConnectedRepository\(userId, gardenSlug\)/);
   assert.match(route, /resolveCommandMessage\(/);
   assert.match(route, /executionTarget: "opencode"/);
-  assert.match(route, /instruction: resolved\.text/);
+  // The resolved skill text is still what the agent runs; it now arrives
+  // behind the chat the task was typed into.
+  assert.match(route, /instruction: withConversationContext\(\n\s+resolved\.text,/);
   assert.match(route, /resolveChatmockBaseUrl\(request\)/);
   assert.match(manager, /opencode-ai@\$\{version\}/);
-  assert.match(manager, /OPENCODE_CONFIG: configPath/);
+  assert.match(manager, /OPENCODE_CONFIG: runConfig\.path/);
   assert.match(manager, /CHATMOCK_BASE_URL: input\.baseUrl/);
   assert.match(manager, /BREADBOARD_OPENCODE_REPO: input\.repositoryPath/);
   assert.match(manager, /CBM_ALLOWED_ROOT: input\.repositoryPath/);

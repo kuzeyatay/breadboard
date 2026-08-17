@@ -35,6 +35,7 @@ import {
   WorkspaceError,
   type HyperframesArtifact,
 } from "./workspace.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface HyperframesEvent {
   sequenceNumber: number;
@@ -440,6 +441,8 @@ export function startRun(input: {
   reasoningEffort: string;
   baseUrl: string;
   apiKey: string;
+  /** The chat this was launched from, so a request can refer back to it. */
+  conversationContext?: string;
 }): { runId: string; status: RunStatus } {
   const availability = runtimeAvailability();
   if (!availability.available || !availability.toolchain.cli.found) {
@@ -510,7 +513,10 @@ export function startRun(input: {
         reasoningEffort: input.reasoningEffort,
         baseUrl: input.baseUrl,
         apiKey: input.apiKey,
-        instruction: runInstruction({ ...promptInput, brief: input.brief }),
+        instruction: promptWithContext(
+          runInstruction({ ...promptInput, brief: input.brief }),
+          input.conversationContext,
+        ),
       });
     } catch (error) {
       if (run.status === "aborted") return;

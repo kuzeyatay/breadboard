@@ -193,7 +193,7 @@ export function useDeepResearchAgent(session: SessionLike, onStatus?: (message: 
         const response = await fetch("/api/deep-research/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...request, conversationPublicId }),
+          body: JSON.stringify({ ...request, conversationPublicId, clientMessageId }),
         });
         const data = (await response.json().catch(() => ({}))) as {
           error?: string;

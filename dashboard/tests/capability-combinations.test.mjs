@@ -57,6 +57,7 @@ const RUN_ROUTES = {
   formsmith: ["shaper", "runs"],
   "money-printer": ["money-printer", "runs"],
   legal: ["legal", "runs"],
+  wardrobe: ["wardrobe", "runs"],
   "video-use": ["video-use", "runs"],
   "agent-browser": ["agent-browser", "agents", "[agentId]", "runs"],
   "agent-tars": ["ui-tars", "agents", "[agentId]", "runs"],
@@ -124,7 +125,7 @@ test("acceptsAttachments matches which run routes actually take files", () => {
   // launch it with nothing but a sentence.
   assert.deepEqual(
     attachmentRuntimeAgents().map((agent) => agent.id),
-    ["codex", "opencode", "ruflo", "meeting-notes", "video-use", "legal"],
+    ["codex", "opencode", "ruflo", "meeting-notes", "video-use", "legal", "wardrobe"],
   );
 });
 
@@ -218,7 +219,7 @@ test("attachments are allowed only for the agents whose route forwards them", ()
     assert.match(conflict.message, /Remove the 2 attached files/);
     assert.match(
       conflict.message,
-      /Codex, OpenCode, Ruflo, Meeting Notes, Video Use, and Legal Agent/,
+      /Codex, OpenCode, Ruflo, Meeting Notes, Video Use, Legal Agent, and Wardrobe/,
     );
   }
 });

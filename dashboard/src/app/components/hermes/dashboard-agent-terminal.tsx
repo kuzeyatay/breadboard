@@ -36,6 +36,8 @@ import {
   sameChatIds,
   writeUnreadChats,
 } from "@/lib/conversations/unread";
+import { chatDraftKey, clearChatDraft, forgetChatDrafts } from "@/lib/conversations/drafts";
+import { useChatDraft } from "./use-chat-draft";
 import {
   invalidateHermesSessionSummaries,
   HERMES_SESSIONS_CHANGED_EVENT,
@@ -176,6 +178,11 @@ import {
   legalUserMessage,
   taskFromLegalCommand,
 } from "@/lib/legal/identity.ts";
+import {
+  taskFromWardrobeCommand,
+  wardrobeRunLabel,
+  wardrobeUserMessage,
+} from "@/lib/wardrobe/identity.ts";
 import {
   parametricCadUserMessage,
   taskFromParametricCadCommand,
@@ -633,6 +640,7 @@ function RuntimeTerminal({
   const [launchingVimaxRun, setLaunchingVimaxRun] = useState(false);
   const [launchingMoneyPrinterRun, setLaunchingMoneyPrinterRun] = useState(false);
   const [launchingLegalRun, setLaunchingLegalRun] = useState(false);
+  const [launchingWardrobeRun, setLaunchingWardrobeRun] = useState(false);
   const [launchingCadRun, setLaunchingCadRun] = useState(false);
   const [launchingHyperframesRun, setLaunchingHyperframesRun] = useState(false);
   const [launchingResource2SkillRun, setLaunchingResource2SkillRun] = useState(false);
@@ -656,6 +664,7 @@ function RuntimeTerminal({
   const vimaxDispatchingRef = useRef(false);
   const moneyPrinterDispatchingRef = useRef(false);
   const legalDispatchingRef = useRef(false);
+  const wardrobeDispatchingRef = useRef(false);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
 
   const isOpen = height > COLLAPSED_HEIGHT + 8;
@@ -746,6 +755,16 @@ function RuntimeTerminal({
     [temporaryChat],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
+  // A half-written message survives a reload, and stays with the chat it was
+  // written in. A temporary chat is excluded: it keeps no record anywhere else,
+  // so it may not leave one here either.
+  useChatDraft({
+    surface: "dashboard_terminal",
+    sessionId: session.sessionId,
+    value: input,
+    onRestore: setInput,
+    enabled: !temporaryChat,
+  });
   const runWorkflowAutomation = useWorkflowAutomation(session);
   const deepResearch = useDeepResearchAgent(session, setAttachmentStatus);
   const { clear: clearDeepResearch } = deepResearch;
@@ -808,6 +827,7 @@ function RuntimeTerminal({
     launchingVimaxRun ||
     launchingMoneyPrinterRun ||
     launchingLegalRun ||
+    launchingWardrobeRun ||
     launchingCadRun ||
     launchingHyperframesRun ||
     launchingResource2SkillRun ||
@@ -2004,10 +2024,20 @@ function RuntimeTerminal({
       clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
       let runStarted = false;
       try {
+        // The run reads the chat it was launched from, so the conversation is
+        // materialized before it starts. The call is idempotent and the turn
+        // binds to the same conversation either way.
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/openplanter/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, model, reasoningEffort }),
+          body: JSON.stringify({
+            task,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+            clientMessageId,
+          }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
@@ -2068,10 +2098,20 @@ function RuntimeTerminal({
       clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
       let runStarted = false;
       try {
+        // The run reads the chat it was launched from, so the conversation is
+        // materialized before it starts. The call is idempotent and the turn
+        // binds to the same conversation either way.
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/agent-reach/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, model, reasoningEffort }),
+          body: JSON.stringify({
+            task,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+            clientMessageId,
+          }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
@@ -2223,10 +2263,20 @@ function RuntimeTerminal({
       clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
       let runStarted = false;
       try {
+        // The run reads the chat it was launched from, so the conversation is
+        // materialized before it starts. The call is idempotent and the turn
+        // binds to the same conversation either way.
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/get-doc/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, model, reasoningEffort }),
+          body: JSON.stringify({
+            task,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+            clientMessageId,
+          }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
@@ -2288,10 +2338,20 @@ function RuntimeTerminal({
       clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
       let runStarted = false;
       try {
+        // The run reads the chat it was launched from, so the conversation is
+        // materialized before it starts. The call is idempotent and the turn
+        // binds to the same conversation either way.
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/deep-tutor/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, model, reasoningEffort }),
+          body: JSON.stringify({
+            task,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+            clientMessageId,
+          }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
@@ -2353,10 +2413,20 @@ function RuntimeTerminal({
       clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
       let runStarted = false;
       try {
+        // The run reads the chat it was launched from, so the conversation is
+        // materialized before it starts. The call is idempotent and the turn
+        // binds to the same conversation either way.
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/career-ops/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, model, reasoningEffort }),
+          body: JSON.stringify({
+            task,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+            clientMessageId,
+          }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
@@ -2413,10 +2483,20 @@ function RuntimeTerminal({
       clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
       let runStarted = false;
       try {
+        // The run reads the chat it was launched from, so the conversation is
+        // materialized before it starts. The call is idempotent and the turn
+        // binds to the same conversation either way.
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/vibe-trading/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, model, reasoningEffort }),
+          body: JSON.stringify({
+            task,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+            clientMessageId,
+          }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
@@ -2481,7 +2561,7 @@ function RuntimeTerminal({
         const response = await fetch("/api/stock-analyst/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, model, conversationPublicId }),
+          body: JSON.stringify({ task, model, conversationPublicId, clientMessageId }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
@@ -4126,6 +4206,130 @@ function RuntimeTerminal({
     [launchLegalRun],
   );
 
+  /**
+   * Start one wardrobe import.
+   *
+   * The attachments are the clothes: this agent has no useful run without them,
+   * so they travel with the request and are recorded on the user's turn, which
+   * is what makes a reopened chat show which photos were handed over. The typed
+   * text is optional direction rather than the task.
+   */
+  const launchWardrobeRun = useCallback(
+    async (
+      direction: string,
+      attachments: readonly ChatAttachment[],
+      options: { branchGroupId?: string } = {},
+    ) => {
+      if (wardrobeDispatchingRef.current) return;
+      wardrobeDispatchingRef.current = true;
+      setLaunchingWardrobeRun(true);
+      let clientMessageId = crypto.randomUUID();
+      const userContent = wardrobeUserMessage(direction);
+      const turnAttachments = chatMessageAttachments(attachments);
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+        attachments: turnAttachments,
+        branchGroupId: options.branchGroupId,
+      });
+      let runStarted = false;
+      try {
+        // The cutouts and modeled photos are artifacts of this conversation, so
+        // the conversation has to exist before the run that makes them.
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const response = await fetch("/api/wardrobe/runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            task: direction,
+            model,
+            attachments,
+            conversationPublicId,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.run?.runId) {
+          throw new Error(
+            typeof data?.message === "string"
+              ? data.message
+              : typeof data?.error === "string"
+                ? data.error
+                : "The import could not start.",
+          );
+        }
+        runStarted = true;
+        await session.appendExternalAgentTurn({
+          clientMessageId,
+          userContent,
+          attachments: turnAttachments,
+          run: {
+            kind: "wardrobe",
+            runId: String(data.run.runId),
+            task: wardrobeRunLabel({
+              photos: attachments.filter((item) => item.type === "image").length,
+              direction,
+            }),
+          },
+          branchGroupId: options.branchGroupId,
+        });
+      } catch (cause) {
+        if (runStarted) {
+          setAttachmentStatus(
+            cause instanceof Error
+              ? cause.message
+              : "The import started, but its chat turn could not be saved.",
+          );
+          return;
+        }
+        const assistantContent = `The import could not start: ${
+          cause instanceof Error ? cause.message : "unknown error"
+        }`;
+        try {
+          await session.appendExternalAgentTurn({
+            clientMessageId,
+            userContent,
+            assistantContent,
+            outcome: "failed",
+            branchGroupId: options.branchGroupId,
+          });
+        } catch (persistenceError) {
+          setAttachmentStatus(
+            persistenceError instanceof Error
+              ? persistenceError.message
+              : "The Wardrobe turn could not be saved.",
+          );
+        }
+      } finally {
+        wardrobeDispatchingRef.current = false;
+        setLaunchingWardrobeRun(false);
+      }
+    },
+    [model, session],
+  );
+
+  /**
+   * Unlike every other agent's router, a bare token still launches: the photos
+   * are the request, so `/agents:wardrobe` with pictures attached is a complete
+   * instruction. A send with no pictures reaches the run route, which refuses it
+   * with a sentence saying what is missing.
+   */
+  const routeWardrobeCommand = useCallback(
+    (
+      text: string,
+      attachments: readonly ChatAttachment[] = [],
+      options: { branchGroupId?: string } = {},
+    ): boolean => {
+      const direction = taskFromWardrobeCommand(text);
+      if (direction === null) return false;
+      setAttachmentStatus("");
+      if (!wardrobeDispatchingRef.current) {
+        void launchWardrobeRun(direction, attachments, options);
+      }
+      return true;
+    },
+    [launchWardrobeRun],
+  );
+
   const routeMoneyPrinterCommand = useCallback(
     (text: string, options: { branchGroupId?: string } = {}): boolean => {
       const brief = briefFromMoneyPrinterCommand(text);
@@ -4514,6 +4718,16 @@ function RuntimeTerminal({
       routeLegalCommand(text, pendingAttachments);
       return;
     }
+    // Wardrobe is routed here for the same reason: the photographs are its
+    // input, so they have to be taken and cleared in the step that starts the
+    // run rather than left in the tray for the next message.
+    if (taskFromWardrobeCommand(text) !== null) {
+      const pendingAttachments = chatAttachments;
+      setInput("");
+      setChatAttachments([]);
+      routeWardrobeCommand(text, pendingAttachments);
+      return;
+    }
     if (
       routeSocialsManagerCommand(text) ||
       routeHardwareBlueprintCommand(text) ||
@@ -4793,6 +5007,7 @@ function RuntimeTerminal({
     routeVimaxCommand,
     routeMoneyPrinterCommand,
     routeLegalCommand,
+    routeWardrobeCommand,
     runtimeUnavailable,
     session,
   ]);
@@ -5123,7 +5338,8 @@ function RuntimeTerminal({
       routeInboxZeroCommand(trimmed) ||
       routeVimaxCommand(trimmed) ||
       routeMoneyPrinterCommand(trimmed) ||
-      routeLegalCommand(trimmed)
+      routeLegalCommand(trimmed) ||
+      routeWardrobeCommand(trimmed)
     ) {
       return;
     }
@@ -5150,6 +5366,7 @@ function RuntimeTerminal({
     routeVimaxCommand,
     routeMoneyPrinterCommand,
     routeLegalCommand,
+    routeWardrobeCommand,
     runtimeUnavailable,
     session,
   ]);
@@ -5208,7 +5425,8 @@ function RuntimeTerminal({
         routeInboxZeroCommand(text, { branchGroupId }) ||
         routeVimaxCommand(text, { branchGroupId }) ||
         routeMoneyPrinterCommand(text, { branchGroupId }) ||
-        routeLegalCommand(text, [], { branchGroupId })
+        routeLegalCommand(text, [], { branchGroupId }) ||
+        routeWardrobeCommand(text, [], { branchGroupId })
       ) {
         return;
       }
@@ -5241,6 +5459,7 @@ function RuntimeTerminal({
     routeVimaxCommand,
     routeMoneyPrinterCommand,
     routeLegalCommand,
+    routeWardrobeCommand,
       runtimeUnavailable,
       session,
     ],
@@ -5304,7 +5523,8 @@ function RuntimeTerminal({
         routeInboxZeroCommand(text) ||
         routeVimaxCommand(text) ||
         routeMoneyPrinterCommand(text) ||
-        routeLegalCommand(text)
+        routeLegalCommand(text) ||
+        routeWardrobeCommand(text)
       ) {
         return;
       }
@@ -5333,6 +5553,7 @@ function RuntimeTerminal({
     routeVimaxCommand,
     routeMoneyPrinterCommand,
     routeLegalCommand,
+    routeWardrobeCommand,
       runtimeUnavailable,
       session,
     ],
@@ -5355,7 +5576,8 @@ function RuntimeTerminal({
           routeInboxZeroCommand(previousUser.content, { branchGroupId }) ||
           routeVimaxCommand(previousUser.content, { branchGroupId }) ||
           routeMoneyPrinterCommand(previousUser.content, { branchGroupId }) ||
-          routeLegalCommand(previousUser.content, [], { branchGroupId })
+          routeLegalCommand(previousUser.content, [], { branchGroupId }) ||
+          routeWardrobeCommand(previousUser.content, [], { branchGroupId })
         ) {
           return;
         }
@@ -5405,6 +5627,7 @@ function RuntimeTerminal({
     routeVimaxCommand,
     routeMoneyPrinterCommand,
     routeLegalCommand,
+    routeWardrobeCommand,
       runtimeUnavailable,
       session,
     ],
@@ -5432,6 +5655,9 @@ function RuntimeTerminal({
     setPaperTraderAgent(null);
     session.reset();
     setInput("");
+    // Asking for a new chat means an empty box, so the draft left in the
+    // unstarted-chat bucket goes with it rather than reappearing here.
+    clearChatDraft(window.localStorage, chatDraftKey("dashboard_terminal", null));
     setChatAttachments([]);
     setAttachmentStatus("");
   }
@@ -5520,6 +5746,7 @@ function RuntimeTerminal({
     invalidateHermesSessionSummaries("dashboard_terminal");
     setHistory((current) => current.filter((entry) => entry.id !== item.id));
     forgetUnreadChats([item.id]);
+    forgetChatDrafts(window.localStorage, "dashboard_terminal", [item.id]);
     // The open chat no longer exists; fall back to an empty one.
     if (item.id === session.sessionId) startNewChat();
   }
@@ -5554,6 +5781,7 @@ function RuntimeTerminal({
       invalidateHermesSessionSummaries("dashboard_terminal");
       setHistory((current) => current.filter((entry) => !deleted.has(entry.id)));
       forgetUnreadChats(deleted);
+      forgetChatDrafts(window.localStorage, "dashboard_terminal", deleted);
       // The open chat may have been one of them; fall back to an empty one.
       if (session.sessionId && deleted.has(session.sessionId)) startNewChat();
     }
@@ -6247,6 +6475,7 @@ function RuntimeTerminal({
                 onSelectVimax={() => {}}
                 onSelectMoneyPrinter={() => {}}
                 onSelectLegal={() => {}}
+                onSelectWardrobe={() => {}}
                 onClearOpenPlanter={() => {
                   setOpenPlanterAgent(null);
                   setAttachmentStatus("");

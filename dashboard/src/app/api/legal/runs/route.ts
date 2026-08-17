@@ -15,6 +15,7 @@ import {
   legalSettingsFrom,
   requestDefaultsFrom,
 } from "@/lib/legal/settings.ts";
+import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -114,6 +115,9 @@ export async function POST(request: Request) {
       baseUrl: baseURL,
       conversationPublicId,
       memoryContext: memory?.text ?? "",
+      // The chat the assignment was given in, so a brief that refers back to
+      // it resolves instead of arriving as a bare fragment.
+      conversationContext: conversationContextFromBody(userId, body),
     });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {

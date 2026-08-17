@@ -115,6 +115,7 @@ test("Claude subscription model ids are stable and isolated from other subscript
     "claude-sonnet-5",
     "claude-haiku-4-5-20251001",
     "claude-fable-5",
+    "claude-fable-5-efficient",
   ]);
   assert.equal(claudeCode.isClaudeCodeModel("cliproxy/claude-sonnet-5"), true);
   assert.equal(claudeCode.isClaudeCodeModel("gemini-3-pro"), false);

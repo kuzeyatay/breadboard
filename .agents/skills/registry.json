@@ -115,6 +115,63 @@
       },
       "reviewedAt": "2026-08-05T00:00:00.000Z",
       "approvedAt": "2026-08-05T00:00:00.000Z"
+    },
+    "bullshit-detector": {
+      "name": "bullshit-detector",
+      "slug": "bullshit-detector",
+      "slashCommand": "bullshit-detector",
+      "upstreamId": "breadboard:bullshit-detector",
+      "package": "breadboard/bullshit-detector",
+      "source": "Breadboard",
+      "exactVersion": "0.14.0",
+      "localHash": "bae5e051dc44ffb0ccfa0e6972eb968ebdfb6aaff137dfc47efe9eed44e1aeab",
+      "files": [
+        "SKILL.md"
+      ],
+      "fileHashes": {
+        "SKILL.md": "bae5e051dc44ffb0ccfa0e6972eb968ebdfb6aaff137dfc47efe9eed44e1aeab"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "bullshit-detector",
+      "requestedPermissions": [],
+      "discoveredScripts": [],
+      "externalNetworkRequirements": [],
+      "installedAt": "2026-08-17T00:00:00.000Z",
+      "nameCollision": false,
+      "integrityVerified": true,
+      "risks": [],
+      "riskSummary": "First-party Breadboard guidance over the bounded factcheck_run allowlist, built from the pinned SerhiiKorniienko/bullshit-detector clone. The skill itself ships no scripts; the clone's four scripts run server-side behind a command allowlist that confines paths to the conversation workspace and fetches only http(s).",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-garden"
+      ],
+      "approvedPermissions": [],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "Extracts and verifies claims from public content and publishes a Markdown report; it performs no repository engineering."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "SKILL.md"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden"
+        ],
+        "classifiedAt": "2026-08-17T00:00:00.000Z"
+      },
+      "reviewedAt": "2026-08-17T00:00:00.000Z",
+      "approvedAt": "2026-08-17T00:00:00.000Z"
     }
   }
 }

@@ -31,6 +31,7 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "money_printer",
   "video_use",
   "legal_agent",
+  "wardrobe",
 ] as const;
 
 export type ExternalAgentRunKind = (typeof EXTERNAL_AGENT_RUN_KINDS)[number];
@@ -70,6 +71,7 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   money_printer: "MoneyPrinter",
   video_use: "Video Use",
   legal_agent: "Legal Agent",
+  wardrobe: "Wardrobe",
 } as const satisfies Record<ExternalAgentRunKind, string>;
 
 export function externalAgentDisplayName(kind: ExternalAgentRunKind): string {
@@ -115,6 +117,7 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   money_printer: "money-printer",
   video_use: "video-use",
   legal_agent: "legal",
+  wardrobe: "wardrobe",
 } as const satisfies Record<ExternalAgentRunKind, string>;
 
 /**
@@ -506,6 +509,16 @@ export type ExternalAgentRun =
       task: string;
     }
   | {
+      kind: "wardrobe";
+      runId: string;
+      /**
+       * What the import was — "5 photos", or the direction that shaped it. The
+       * photographs themselves are the request and they are not repeated here:
+       * a transcript holds a label, and the garments end up as artifacts.
+       */
+      task: string;
+    }
+  | {
       kind: "codex";
       runId: string;
       task: string;
@@ -752,6 +765,12 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     return { kind: "legal_agent", runId, task };
   }
 
+  if (candidate.kind === "wardrobe") {
+    const task = boundedString(candidate.task, MAX_TASK_LENGTH);
+    if (!task) return null;
+    return { kind: "wardrobe", runId, task };
+  }
+
   if (
     candidate.kind === "codex" ||
     candidate.kind === "opencode" ||
@@ -804,6 +823,7 @@ interface ExternalAgentRunFields {
   moneyPrinterRun?: { runId: string } | null;
   videoUseRun?: { runId: string } | null;
   legalRun?: { runId: string } | null;
+  wardrobeRun?: { runId: string } | null;
   openCodeRun?: { runId: string } | null;
   codexRun?: { runId: string } | null;
   rufloRun?: { runId: string } | null;
@@ -855,6 +875,7 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   money_printer: "moneyPrinterRun",
   video_use: "videoUseRun",
   legal_agent: "legalRun",
+  wardrobe: "wardrobeRun",
 } as const satisfies Record<ExternalAgentRunKind, keyof ExternalAgentRunFields>;
 
 const EXTERNAL_AGENT_RUN_FIELDS = EXTERNAL_AGENT_RUN_KINDS.map(
@@ -918,6 +939,7 @@ export function externalAgentMessageFields(
   moneyPrinterRun?: { runId: string; brief: string };
   videoUseRun?: { runId: string; task: string; quiet?: boolean };
   legalRun?: { runId: string; task: string };
+  wardrobeRun?: { runId: string; task: string };
   openCodeRun?: {
     runId: string;
     task: string;
@@ -1166,6 +1188,12 @@ export function externalAgentMessageFields(
   if (run.kind === "legal_agent") {
     return {
       legalRun: { runId: run.runId, task: run.task },
+      ...outcomeField,
+    };
+  }
+  if (run.kind === "wardrobe") {
+    return {
+      wardrobeRun: { runId: run.runId, task: run.task },
       ...outcomeField,
     };
   }

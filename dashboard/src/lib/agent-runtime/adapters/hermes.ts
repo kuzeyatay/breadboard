@@ -369,6 +369,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "interactive_visualizer_cancel",
       "manim_create",
       "premortem_run",
+      "factcheck_run",
       "watch_run",
       "agent_loop_run",
       "messaging_send",

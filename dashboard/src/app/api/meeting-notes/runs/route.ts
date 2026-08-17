@@ -11,6 +11,7 @@ import {
   parseMeetingNotesRequestBody,
 } from "@/lib/meeting-notes/identity.ts";
 import { startRun } from "@/lib/meeting-notes/run-manager.ts";
+import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -88,6 +89,9 @@ export async function POST(request: Request) {
       model,
       reasoningEffort,
       baseUrl: baseURL,
+      // The chat this was launched from, so a request that refers back to
+      // it resolves instead of arriving as a bare fragment.
+      conversationContext: conversationContextFromBody(userId, body),
     });
     return NextResponse.json({ ok: true, run, request: parsed }, { status: 201 });
   } catch (error) {

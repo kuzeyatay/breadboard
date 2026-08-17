@@ -299,6 +299,11 @@ export interface AgentMessage {
    */
   legalRun?: { runId: string; task: string };
   /**
+   * Present when this assistant turn is a Wardrobe import. The card streams one
+   * row per garment; the cutouts and modeled photos become artifacts.
+   */
+  wardrobeRun?: { runId: string; task: string };
+  /**
    * Present when this assistant turn is an OpenWork run. The card streams the
    * answer as the workspace writes it and links anything left in the outbox.
    */
@@ -598,6 +603,7 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["videoUseRun", "video_use"],
   ["moneyPrinterRun", "money_printer"],
   ["legalRun", "legal_agent"],
+  ["wardrobeRun", "wardrobe"],
   ["openworkRun", "openwork"],
   ["openscienceRun", "openscience"],
   ["inboxZeroRun", "inbox_zero"],

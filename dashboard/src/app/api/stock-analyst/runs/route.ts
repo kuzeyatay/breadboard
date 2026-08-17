@@ -10,6 +10,7 @@ import {
   DEFAULT_STOCK_ANALYST_SETTINGS,
   stockAnalystSettingsFrom,
 } from "@/lib/stock-analyst/settings.ts";
+import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -59,6 +60,9 @@ export async function POST(request: Request) {
       baseUrl: baseURL,
       settings,
       memoryContext: memory?.text ?? "",
+      // The chat this was launched from, so a request that refers back to
+      // it resolves instead of arriving as a bare fragment.
+      conversationContext: conversationContextFromBody(userId, body),
     });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {

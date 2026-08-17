@@ -31,6 +31,8 @@ import {
   finishExternalAgentTurn,
   recordExternalAgentTurn,
 } from "@/lib/conversations/external-agent-turns.ts";
+import { generateAndApplyConversationTitle } from "@/lib/conversations/title-service.ts";
+import { withConversationContext } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -121,7 +123,9 @@ export async function POST(request: Request) {
     const run = startRun({
       userId,
       task,
-      instruction: resolved.text,
+      // The chat this was typed into, so a task that refers back to it ("yes",
+      // "the second one") resolves instead of reaching Codex as a bare word.
+      instruction: withConversationContext(resolved.text, conversation, { clientMessageId }),
       skill: selectedSkill
         ? {
             id: selectedSkill.id,
@@ -156,7 +160,7 @@ export async function POST(request: Request) {
             run: externalRun,
           });
         } else {
-          recordExternalAgentTurn({
+          const turn = recordExternalAgentTurn({
             conversation: durableConversation,
             clientMessageId,
             surface: durableConversation.surface,
@@ -164,6 +168,16 @@ export async function POST(request: Request) {
             run: externalRun,
             attachments,
           });
+          // Same first-prompt naming the Terminal gets from the external-turns
+          // route: a Garden launch reaches this route instead, and without this
+          // the chat it started stays "New chat" forever.
+          if (turn.userMessage.order_index === 0) {
+            await generateAndApplyConversationTitle({
+              conversation: durableConversation,
+              firstPrompt: turn.userMessage.content,
+              model,
+            });
+          }
         }
         setRunTerminalHandler(userId, run.runId, (result) => {
           try {

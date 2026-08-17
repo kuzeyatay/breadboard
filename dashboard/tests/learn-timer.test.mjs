@@ -216,7 +216,12 @@ test("Learn failures stay in the panel without opening a dialog or toast", () =>
   );
   assert.match(
     learnActionCatch,
-    /if \(isCancel \|\| endpoint === "clear"\) \{[\s\S]*?addToast\(message\)/,
+    // Cancel, Pause/Resume, and Clear are direct user commands whose refusals
+    // must be spoken. A start the server refuses outright creates no job, so
+    // the panel has nothing to show and it must be spoken too — that silence is
+    // what made a rejected Learn run look like a dead button. A generation that
+    // ran and failed does leave a failed job, and stays in the panel instead.
+    /if \([\s\S]*?isCancel \|\|[\s\S]*?isPauseAction \|\|[\s\S]*?endpoint === "clear" \|\|[\s\S]*?refreshed\?\.job\?\.status !== "failed"[\s\S]*?\) \{[\s\S]*?addToast\(message\)/,
   );
   assert.doesNotMatch(learnActionCatch, /else[\s\S]*?addToast\(message\)/);
 });

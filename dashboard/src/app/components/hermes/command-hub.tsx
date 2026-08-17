@@ -61,6 +61,7 @@ import { INBOX_ZERO_COMMAND } from "@/lib/inbox-zero/identity.ts";
 import { VIMAX_COMMAND } from "@/lib/vimax/identity.ts";
 import { MONEY_PRINTER_COMMAND } from "@/lib/money-printer/identity.ts";
 import { LEGAL_COMMAND } from "@/lib/legal/identity.ts";
+import { WARDROBE_COMMAND } from "@/lib/wardrobe/identity.ts";
 import { CODEX_COMMAND } from "@/lib/codex/identity.ts";
 import { OPENCODE_COMMAND } from "@/lib/opencode/identity.ts";
 import { RUFLO_COMMAND } from "@/lib/ruflo/identity.ts";
@@ -113,6 +114,11 @@ const OpenworkSettingsDialog = dynamic(
 
 const OpenscienceSettingsDialog = dynamic(
   () => import("./openscience-settings-dialog"),
+  { ssr: false },
+);
+
+const WardrobeSettingsDialog = dynamic(
+  () => import("./wardrobe-settings-dialog"),
   { ssr: false },
 );
 
@@ -268,6 +274,8 @@ interface Props {
   onSelectMoneyPrinter?: () => void;
   /** When provided, selecting the Legal Agent inserts its canonical command. */
   onSelectLegal?: () => void;
+  /** When provided, selecting Wardrobe inserts its canonical command. */
+  onSelectWardrobe?: () => void;
   /** When provided, selecting OpenCode inserts its canonical command. */
   onSelectOpenCode?: () => void;
   /** When provided, selecting Codex inserts its canonical command. */
@@ -453,6 +461,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onSelectVimax,
       onSelectMoneyPrinter,
       onSelectLegal,
+      onSelectWardrobe,
       onSelectOpenCode,
       onSelectCodex,
       onSelectRuflo,
@@ -493,6 +502,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const [openMontageSettingsOpen, setOpenMontageSettingsOpen] = useState(false);
     const [openworkSettingsOpen, setOpenworkSettingsOpen] = useState(false);
     const [openscienceSettingsOpen, setOpenscienceSettingsOpen] = useState(false);
+    const [wardrobeSettingsOpen, setWardrobeSettingsOpen] = useState(false);
     const [inboxZeroSettingsOpen, setInboxZeroSettingsOpen] = useState(false);
     const [tradingAgentsSettingsOpen, setTradingAgentsSettingsOpen] = useState(false);
     // The agent whose generic settings panel is open, if any.
@@ -909,6 +919,14 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         "Legal Agent",
         LEGAL_COMMAND,
         "legal lawyer law contract agreement nda spa clause review redline markup diligence memo counsel litigation corporate compliance regulation privacy employment tax real estate ip antitrust arbitration",
+      );
+    const showWardrobe =
+      surface !== "quartz_ai" &&
+      Boolean(onSelectWardrobe) &&
+      matchesAgentSearch(
+        "Wardrobe",
+        WARDROBE_COMMAND,
+        "wardrobe clothes clothing garment outfit fashion closet cutout catalog lookbook shirt jacket trousers shoes accessories photo import style",
       );
     const showOpenCode =
       surface !== "quartz_ai" &&
@@ -2384,6 +2402,41 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                       </li>
                       ) }]
                       : []),
+                    ...(showWardrobe
+                      ? [{ name: "Wardrobe", node: (
+                      <li key="wardrobe"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForId("agent:wardrobe"))}
+                      >
+                        <button
+                          id="wardrobe-entry"
+                          type="button"
+                          onClick={() => {
+                            onSelectWardrobe?.();
+                            onOpenChange(false);
+                          }}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{WARDROBE_COMMAND}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Attach photos of your clothes — worn, hung up or laid out. Finds each garment, cuts it out on its own, makes a photo of you wearing it, and files the piece in a wardrobe you can browse.
+                          </span>
+                        </button>
+                        <AgentSettingsButton
+                          name="Wardrobe"
+                          onOpen={() => {
+                            setWardrobeSettingsOpen(true);
+                            onOpenChange(false);
+                          }}
+                        />
+                        <FavoriteBox
+                          color={highlightColorForId("agent:wardrobe")}
+                          onColorChange={(color) => setHighlightId("agent:wardrobe", color)}
+                          label="Choose Wardrobe highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
                     ...(showOpenCode
                       ? [{ name: "OpenCode", node: (
                       <li key="opencode"
@@ -2789,6 +2842,9 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         ) : null}
         {surface === "quartz_ai" ? null : openscienceSettingsOpen ? (
           <OpenscienceSettingsDialog onClose={() => setOpenscienceSettingsOpen(false)} />
+        ) : null}
+        {surface === "quartz_ai" ? null : wardrobeSettingsOpen ? (
+          <WardrobeSettingsDialog onClose={() => setWardrobeSettingsOpen(false)} />
         ) : null}
         {surface === "quartz_ai" ? null : inboxZeroSettingsOpen ? (
           <InboxZeroSettingsDialog onClose={() => setInboxZeroSettingsOpen(false)} />

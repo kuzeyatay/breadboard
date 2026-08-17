@@ -34,6 +34,7 @@ import {
   type OpenMontageArtifact,
   type ProductionState,
 } from "./workspace.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface OpenMontageEvent {
   sequenceNumber: number;
@@ -449,6 +450,8 @@ export function startRun(input: {
   reasoningEffort: string;
   baseUrl: string;
   apiKey: string;
+  /** The chat this was launched from, so a request can refer back to it. */
+  conversationContext?: string;
 }): { runId: string; status: RunStatus } {
   const availability = runtimeAvailability();
   if (!availability.available || !availability.root) {
@@ -512,12 +515,15 @@ export function startRun(input: {
         reasoningEffort: input.reasoningEffort,
         baseUrl: input.baseUrl,
         apiKey: input.apiKey,
-        instruction: runInstruction({
-          brief: input.brief,
-          root,
-          projectsDirectory: workspace.projectsDirectory,
-          projectId: run.projectId,
-        }),
+        instruction: promptWithContext(
+          runInstruction({
+            brief: input.brief,
+            root,
+            projectsDirectory: workspace.projectsDirectory,
+            projectId: run.projectId,
+          }),
+          input.conversationContext,
+        ),
       });
     } catch (error) {
       if (run.status === "aborted") return;

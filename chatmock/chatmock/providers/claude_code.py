@@ -25,6 +25,7 @@ from typing import Any, Dict, Iterator, List
 
 import requests
 
+from . import pxpipe
 from .store import ResolvedCredentials
 from .types import ModelCall, ProviderError
 
@@ -339,7 +340,10 @@ def _run_cli(payload: Dict[str, Any], model: str) -> Dict[str, Any]:
             executable,
             "-p",
             "--model",
-            model,
+            # `claude-fable-5-efficient` names a Breadboard route, not a model
+            # the CLI could ask for; it is served by plain Fable through the
+            # pxpipe proxy configured below.
+            pxpipe.upstream_model(model),
             "--output-format",
             "json",
             # Structured output is implemented as an SDK tool round-trip. Give
@@ -368,6 +372,13 @@ def _run_cli(payload: Dict[str, Any], model: str) -> Dict[str, Any]:
         env = os.environ.copy()
         env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         env["NO_COLOR"] = "1"
+        if pxpipe.is_efficient_model(model):
+            # The whole of the efficient route: the CLI sends its request to a
+            # loopback proxy that images the bulky parts before forwarding them
+            # to Anthropic. The subscription credential still belongs to Claude
+            # Code and travels untouched — pxpipe passes its OAuth bearer
+            # through rather than holding a key of its own.
+            env["ANTHROPIC_BASE_URL"] = pxpipe.base_url()
         budget = _request_timeout_seconds()
         try:
             completed = subprocess.run(

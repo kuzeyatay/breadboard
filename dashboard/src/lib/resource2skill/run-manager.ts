@@ -8,6 +8,7 @@ import {
   scanArtifacts,
   type Resource2SkillArtifact,
 } from "./workspace.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface Resource2SkillEvent {
   sequenceNumber: number;
@@ -128,6 +129,12 @@ export function startRun(input: {
   maxIterations?: number;
   baseUrl: string;
   apiKey: string;
+  /**
+   * The chat this was launched from. Reaches the bridge inside the `--task`
+   * argument, so the route keeps it short: a command line has a hard length
+   * limit on Windows and this shares it with every other flag.
+   */
+  conversationContext?: string;
 }): { runId: string; status: RunStatus } {
   const runtime = resource2SkillAvailability();
   if (!runtime.available || !runtime.root || !runtime.python) throw new Error(runtime.reason ?? "Resource2Skill is unavailable.");
@@ -149,7 +156,7 @@ export function startRun(input: {
     "--root", runtime.root,
     "--workspace", workspace,
     "--domain", input.domain,
-    "--task", input.task,
+    "--task", promptWithContext(input.task, input.conversationContext),
     "--model", input.model,
     "--reasoning", input.reasoningEffort,
     "--max-iter", String(Math.max(1, Math.min(input.maxIterations ?? 60, 120))),

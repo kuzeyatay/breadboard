@@ -9,6 +9,7 @@ import {
   DEFAULT_VIBE_TRADING_SETTINGS,
   vibeTradingSettingsFrom,
 } from "@/lib/vibe-trading/settings.ts";
+import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -57,6 +58,9 @@ export async function POST(request: Request) {
       reasoningEffort,
       baseUrl: baseURL,
       settings,
+      // The chat this was launched from, so a request that refers back to
+      // it resolves instead of arriving as a bare fragment.
+      conversationContext: conversationContextFromBody(userId, body),
     });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {

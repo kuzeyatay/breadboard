@@ -34,6 +34,7 @@ import { HYPERFRAMES_COMMAND } from "../hyperframes/identity.ts";
 import { RESOURCE2SKILL_COMMAND } from "../resource2skill/identity.ts";
 import { INBOX_ZERO_COMMAND } from "../inbox-zero/identity.ts";
 import { LEGAL_COMMAND } from "../legal/identity.ts";
+import { WARDROBE_COMMAND } from "../wardrobe/identity.ts";
 import { MEETING_NOTES_COMMAND } from "../meeting-notes/identity.ts";
 import { MONEY_PRINTER_COMMAND } from "../money-printer/identity.ts";
 import { OPENCODE_COMMAND } from "../opencode/identity.ts";
@@ -274,6 +275,16 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   // produces a confident answer about nothing, so the person picks it
   // themselves, with the files in hand.
   profile("legal", LEGAL_COMMAND, "Legal Agent", {
+    acceptsAttachments: true,
+    launchableByModel: false,
+  }),
+  // Wardrobe is the seventh attachment-shaped agent, and the plainest of them:
+  // the photographs of the clothes are the entire request, and the message is
+  // only direction for the generator, so nothing stacked onto it would survive.
+  // Not model-launchable, for the same reason as Formsmith, Video Use and the
+  // Legal Agent — a delegated launch carries a sentence and no photos, which
+  // could only ever fail.
+  profile("wardrobe", WARDROBE_COMMAND, "Wardrobe", {
     acceptsAttachments: true,
     launchableByModel: false,
   }),

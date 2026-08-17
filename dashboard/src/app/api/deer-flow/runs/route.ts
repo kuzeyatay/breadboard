@@ -8,6 +8,7 @@ import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts"
 import { DEER_FLOW_AGENT_ID } from "@/lib/deer-flow/identity.ts";
 import { startRun } from "@/lib/deer-flow/run-manager.ts";
 import { DEFAULT_DEER_FLOW_SETTINGS, deerFlowSettingsFrom } from "@/lib/deer-flow/settings.ts";
+import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -90,6 +91,9 @@ export async function POST(request: Request) {
       baseUrl: baseURL,
       settings,
       conversationPublicId,
+      // The chat this was launched from, so a request that refers back to
+      // it resolves instead of arriving as a bare fragment.
+      conversationContext: conversationContextFromBody(userId, body),
     });
     return NextResponse.json({ ok: true, run }, { status: 201 });
   } catch (error) {

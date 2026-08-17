@@ -1,12 +1,30 @@
 import type { AgentMessage } from "./use-agent-session";
 
-export interface ConversationBranchGroup {
-  id: string;
-  activeIndex: number;
-  variants: AgentMessage[][];
+/**
+ * The little a transcript has to expose to be branchable. Terminal and Garden
+ * chat carry different message shapes; only these fields decide where a branch
+ * boundary is and which group a variant belongs to.
+ */
+export interface BranchableMessage {
+  id?: string;
+  clientMessageId?: string;
+  branchGroupId?: string;
+  role: string;
+  content: string;
 }
 
-export function messageBranchId(message: AgentMessage, index: number): string {
+export interface ConversationBranchGroup<
+  T extends BranchableMessage = AgentMessage,
+> {
+  id: string;
+  activeIndex: number;
+  variants: T[][];
+}
+
+export function messageBranchId(
+  message: BranchableMessage,
+  index: number,
+): string {
   return (
     message.branchGroupId ??
     message.clientMessageId ??
@@ -15,16 +33,24 @@ export function messageBranchId(message: AgentMessage, index: number): string {
   );
 }
 
-export function cloneMessages(messages: AgentMessage[]): AgentMessage[] {
-  return messages.map((message) => ({
-    ...message,
-    sources: message.sources ? [...message.sources] : undefined,
-    tools: message.tools ? message.tools.map((tool) => ({ ...tool })) : undefined,
-  }));
+export function cloneMessages<T extends BranchableMessage>(messages: T[]): T[] {
+  return messages.map((message) => {
+    const copy = { ...message } as T & {
+      sources?: unknown[];
+      tools?: unknown[];
+    };
+    if (Array.isArray(copy.sources)) copy.sources = [...copy.sources];
+    if (Array.isArray(copy.tools)) {
+      copy.tools = copy.tools.map((tool) =>
+        tool && typeof tool === "object" ? { ...tool } : tool,
+      );
+    }
+    return copy;
+  });
 }
 
 export function previousUserMessageIndex(
-  messages: AgentMessage[],
+  messages: BranchableMessage[],
   assistantMessageIndex: number,
 ): number {
   for (let index = assistantMessageIndex - 1; index >= 0; index -= 1) {
@@ -38,16 +64,26 @@ export function previousUserMessageIndex(
  * remains one variant; the new variant contains only the selected branch's
  * history before that user message, followed by the resent/edited prompt.
  */
-export function createConversationBranch(input: {
-  messages: AgentMessage[];
-  branchGroups: Record<string, ConversationBranchGroup>;
+export function createConversationBranch<T extends BranchableMessage>(input: {
+  messages: T[];
+  branchGroups: Record<string, ConversationBranchGroup<T>>;
   userMessageIndex: number;
   content: string;
   createId: () => string;
+  /**
+   * The empty assistant row the new variant waits on. Surfaces whose message
+   * shape is not the Terminal's pass their own so a branch snapshot never
+   * carries fields that transcript does not know how to persist.
+   */
+  createAssistantPlaceholder?: (seed: {
+    id: string;
+    clientMessageId: string;
+    branchGroupId: string;
+  }) => T;
 }): {
   groupId: string;
-  group: ConversationBranchGroup;
-  variant: AgentMessage[];
+  group: ConversationBranchGroup<T>;
+  variant: T[];
 } {
   const sourceUser = input.messages[input.userMessageIndex];
   if (!sourceUser || sourceUser.role !== "user") {
@@ -64,7 +100,17 @@ export function createConversationBranch(input: {
 
   const userId = input.createId();
   const assistantId = input.createId();
-  const variant: AgentMessage[] = [
+  const createAssistantPlaceholder =
+    input.createAssistantPlaceholder ??
+    ((seed: { id: string; clientMessageId: string; branchGroupId: string }) =>
+      ({
+        ...seed,
+        role: "assistant",
+        content: "",
+        sources: [],
+        tools: [],
+      }) as unknown as T);
+  const variant: T[] = [
     ...cloneMessages(input.messages.slice(0, input.userMessageIndex)),
     {
       ...sourceUser,
@@ -73,15 +119,11 @@ export function createConversationBranch(input: {
       content: input.content,
       branchGroupId: groupId,
     },
-    {
+    createAssistantPlaceholder({
       id: assistantId,
       clientMessageId: userId,
-      role: "assistant",
-      content: "",
-      sources: [],
-      tools: [],
       branchGroupId: groupId,
-    },
+    }),
   ];
   const activeIndex = variants.length;
   variants.push(variant);

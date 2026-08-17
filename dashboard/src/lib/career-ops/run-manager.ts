@@ -31,6 +31,7 @@ import {
   runNode,
   type CareerOpsHealth,
 } from "./runtime.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface CareerOpsEvent {
   sequenceNumber: number;
@@ -366,6 +367,8 @@ export interface StartRunInput {
   reasoningEffort: string;
   baseUrl: string;
   maxSteps?: number;
+  /** The chat this was launched from, so a task can refer back to it. */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
@@ -445,7 +448,10 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
 
   const messages: ChatMessage[] = [
     { role: "system", content: prompt },
-    { role: "user", content: request.task || run.task },
+    {
+      role: "user",
+      content: promptWithContext(request.task || run.task, input.conversationContext),
+    },
   ];
 
   const usage = { inputTokens: 0, outputTokens: 0, calls: 0 };

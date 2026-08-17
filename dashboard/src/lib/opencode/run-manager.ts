@@ -6,6 +6,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   spawn,
@@ -170,6 +171,95 @@ function resolveConfigPath(env: NodeJS.ProcessEnv = process.env): string | null 
     path.resolve(process.cwd(), "..", "opencode-config", "opencode.json"),
   ].filter((candidate): candidate is string => Boolean(candidate));
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+/**
+ * OpenCode resolves `--model chatmock/<id>` against the `models` map its
+ * config declares, and fails the run outright when the id is missing — the
+ * failure surfaces as a bare "Unexpected server error". Breadboard's model
+ * picker is a live ChatMock catalog (provider-prefixed ids like
+ * `cliproxy/claude-opus-5` included), so the static map can never keep up.
+ * Declaring the requested model per run is what keeps the two in step.
+ */
+export function withRequestedModel(
+  config: Record<string, unknown>,
+  model: string,
+): { config: Record<string, unknown>; changed: boolean } {
+  const providers =
+    config.provider && typeof config.provider === "object" && !Array.isArray(config.provider)
+      ? (config.provider as Record<string, unknown>)
+      : null;
+  const chatmock =
+    providers?.chatmock && typeof providers.chatmock === "object" && !Array.isArray(providers.chatmock)
+      ? (providers.chatmock as Record<string, unknown>)
+      : null;
+  const models =
+    chatmock?.models && typeof chatmock.models === "object" && !Array.isArray(chatmock.models)
+      ? (chatmock.models as Record<string, unknown>)
+      : null;
+  if (!models || !model || Object.hasOwn(models, model)) {
+    return { config, changed: false };
+  }
+
+  // The `default` entry is the shape every ChatMock model shares: reasoning
+  // variants for `--variant`, and image input for `--file` attachments.
+  const template =
+    models.default && typeof models.default === "object" && !Array.isArray(models.default)
+      ? (models.default as Record<string, unknown>)
+      : {
+          reasoning: true,
+          attachment: true,
+          modalities: { input: ["text", "image"], output: ["text"] },
+          variants: Object.fromEntries(
+            ["none", "low", "medium", "high", "xhigh", "max"].map((effort) => [
+              effort,
+              { reasoningEffort: effort },
+            ]),
+          ),
+        };
+
+  return {
+    config: {
+      ...config,
+      provider: {
+        ...providers,
+        chatmock: {
+          ...chatmock,
+          models: { ...models, [model]: { ...template, name: model } },
+        },
+      },
+    },
+    changed: true,
+  };
+}
+
+function runConfigPath(
+  basePath: string,
+  model: string,
+): { path: string; cleanup: () => void } {
+  const noCleanup = { path: basePath, cleanup: () => undefined };
+  let parsed: Record<string, unknown>;
+  try {
+    const value = JSON.parse(readFileSync(basePath, "utf8")) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return noCleanup;
+    parsed = value as Record<string, unknown>;
+  } catch {
+    // An unreadable config is OpenCode's problem to report, not ours to mask.
+    return noCleanup;
+  }
+
+  const { config, changed } = withRequestedModel(parsed, model);
+  if (!changed) return noCleanup;
+
+  // Outside the repository: a config file inside it would land in the run's
+  // own undo snapshot and diff.
+  const directory = mkdtempSync(path.join(tmpdir(), "breadboard-opencode-config-"));
+  const filePath = path.join(directory, "opencode.json");
+  writeFileSync(filePath, JSON.stringify(config, null, 2), "utf8");
+  return {
+    path: filePath,
+    cleanup: () => rmSync(directory, { recursive: true, force: true }),
+  };
 }
 
 function clonedVersion(root: string): string {
@@ -440,6 +530,8 @@ export function startRun(input: {
   };
   runs.set(runId, run);
 
+  const runConfig = runConfigPath(configPath, input.model);
+
   let materialized: ReturnType<typeof materializeImageAttachments>;
   try {
     materialized = materializeImageAttachments(
@@ -447,6 +539,7 @@ export function startRun(input: {
       input.attachments ?? [],
     );
   } catch (error) {
+    runConfig.cleanup();
     runs.delete(runId);
     throw error;
   }
@@ -458,7 +551,10 @@ export function startRun(input: {
     .filter(Boolean)
     .join("\n\n");
 
-  run.cleanup = materialized.cleanup;
+  run.cleanup = () => {
+    materialized.cleanup();
+    runConfig.cleanup();
+  };
   const cleanup = () => {
     run.cleanup?.();
     run.cleanup = null;
@@ -499,7 +595,7 @@ export function startRun(input: {
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
-          OPENCODE_CONFIG: configPath,
+          OPENCODE_CONFIG: runConfig.path,
           OPENCODE_DISABLE_AUTOUPDATE: "1",
           OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
           OPENCODE_DISABLE_PROJECT_CONFIG: "1",

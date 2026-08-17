@@ -26,7 +26,7 @@ function runKinds() {
     /export const EXTERNAL_AGENT_RUN_KINDS = \[([\s\S]*?)\] as const;/,
   );
   assert.ok(block, "EXTERNAL_AGENT_RUN_KINDS must be a readable literal");
-  return [...block[1].matchAll(/"([a-z_]+)"/g)].map((match) => match[1]);
+  return [...block[1].matchAll(/"([a-z0-9_]+)"/g)].map((match) => match[1]);
 }
 
 /** kind -> {module, fn}, read from the dynamic imports in the abort table. */

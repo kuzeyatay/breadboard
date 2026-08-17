@@ -27,6 +27,7 @@ import {
   type AgentReachRuntime,
   type ChannelHealth,
 } from "./runtime.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface AgentReachEvent {
   sequenceNumber: number;
@@ -329,6 +330,8 @@ export interface StartRunInput {
   reasoningEffort: string;
   baseUrl: string;
   maxSteps?: number;
+  /** The chat this was launched from, so a task can refer back to it. */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
@@ -397,7 +400,7 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
         workspace: run.workspace,
       }),
     },
-    { role: "user", content: run.task },
+    { role: "user", content: promptWithContext(run.task, input.conversationContext) },
   ];
 
   const usage = { inputTokens: 0, outputTokens: 0, calls: 0 };

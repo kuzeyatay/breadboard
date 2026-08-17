@@ -5,6 +5,7 @@ import { chatmockApiKeyValue } from "@/lib/agent-browser/provider.ts";
 import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
 import { parseResource2SkillBrief } from "@/lib/resource2skill/identity.ts";
 import { startRun } from "@/lib/resource2skill/run-manager.ts";
+import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -44,6 +45,9 @@ export async function POST(request: Request) {
       maxIterations,
       baseUrl: baseURL,
       apiKey: chatmockApiKeyValue(),
+      // The chat this was launched from, so a request that refers back to
+      // it resolves instead of arriving as a bare fragment.
+      conversationContext: conversationContextFromBody(userId, body, { maxChars: 6_000 }),
     });
     return NextResponse.json({ ok: true, run, domain: parsed.domain }, { status: 201 });
   } catch (error) {

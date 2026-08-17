@@ -23,6 +23,7 @@ import {
   type FirmwareLogic,
   type HardwareTurn,
 } from "./schemas.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 const REQUEST_TIMEOUT_MS = 120_000;
 
@@ -349,6 +350,8 @@ const TURN_SYSTEM_PROMPT = [
 
 export interface InterpretTurnInput extends ModelTarget {
   brief: string;
+  /** The chat this was launched from, so a brief can refer back to it. */
+  conversationContext?: string;
   /** Compact description of the blueprint already in this conversation. */
   existingDesignSummary?: string;
   /**
@@ -374,7 +377,7 @@ export async function interpretTurn(input: InterpretTurnInput): Promise<Hardware
     ...(input.preferenceNote
       ? [{ role: "system" as const, content: input.preferenceNote }]
       : []),
-    { role: "user", content: input.brief },
+    { role: "user", content: promptWithContext(input.brief, input.conversationContext) },
   ];
 
   const tool = {

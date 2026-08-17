@@ -123,6 +123,7 @@ hermes-skills/approved/
 /audio-analyzer-rs/
 /auto-claude-code-research-in-sleep/
 /book-to-skill/
+/bullshit-detector/
 /career-ops/
 /codex/
 /comfyui/
@@ -229,3 +230,6 @@ dashboard/db/
 dashboard/database/
 dashboard/artifacts/[0-9]*/
 dashboard/chat-videos/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+graft/

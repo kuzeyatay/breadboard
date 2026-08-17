@@ -13,10 +13,23 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
+import { useChatDraft } from "@/app/components/hermes/use-chat-draft";
+import {
+  chatDraftKey,
+  clearChatDraft,
+  forgetChatDrafts,
+} from "@/lib/conversations/drafts";
 import AssistantMessageActions, {
   MessageActionsSlot,
 } from "@/app/components/assistant-message-actions";
 import { isDirectModeEnabled } from "@/app/components/use-direct-mode";
+import {
+  cloneMessages,
+  createConversationBranch,
+  messageBranchId,
+  previousUserMessageIndex,
+  type ConversationBranchGroup,
+} from "@/app/components/hermes/conversation-branches";
 import {
   chatAutoScrollContentKey,
   chatAutoScrollResponseKey,
@@ -94,6 +107,7 @@ import InlineInboxZeroRun from "@/app/components/hermes/inline-inbox-zero-run";
 import InlineVimaxRun from "@/app/components/hermes/inline-vimax-run";
 import InlineMoneyPrinterRun from "@/app/components/hermes/inline-money-printer-run";
 import InlineLegalRun from "@/app/components/hermes/inline-legal-run";
+import InlineWardrobeRun from "@/app/components/hermes/inline-wardrobe-run";
 import InlineShortsRun from "@/app/components/hermes/inline-shorts-run";
 import InlineFormsmithRun from "@/app/components/hermes/inline-formsmith-run";
 import InlineVideoUseRun from "@/app/components/hermes/inline-video-use-run";
@@ -139,6 +153,11 @@ import {
   legalUserMessage,
   taskFromLegalCommand,
 } from "@/lib/legal/identity.ts";
+import {
+  taskFromWardrobeCommand,
+  wardrobeRunLabel,
+  wardrobeUserMessage,
+} from "@/lib/wardrobe/identity.ts";
 import LearnConfirmationDialog, {
   type LearnDestructiveAction,
 } from "@/app/components/learn-confirmation-dialog";
@@ -156,6 +175,7 @@ import {
 } from "@/lib/chat-token-usage";
 import { formatAssistantModelName } from "@/lib/ai-models";
 import { chatTimeSeparatorLabels } from "@/lib/chat-time-separators";
+import { requestChatTitleFromFirstMessage } from "@/lib/chat-session-title";
 import type { LocalWorkflowSummary, WorkflowRunResponse } from "@/lib/workflows/types";
 import {
   attachAudioFile,
@@ -319,6 +339,9 @@ import { gardenDocumentHref } from "@/lib/garden-document-route";
 interface Message {
   id?: string;
   artifactMessageId?: string;
+  /** Set on messages that live in a retry branch; see conversation-branches. */
+  clientMessageId?: string;
+  branchGroupId?: string;
   role: "user" | "assistant";
   content: string;
   /** Model-to-model hand-back; retained in context but hidden from the user. */
@@ -372,6 +395,7 @@ interface Message {
   vimaxRun?: { runId: string; brief: string };
   moneyPrinterRun?: { runId: string; brief: string };
   legalRun?: { runId: string; task: string };
+  wardrobeRun?: { runId: string; task: string };
   shortsRun?: { runId: string; task: string };
   formsmithRun?: { runId: string; task: string };
   videoUseRun?: { runId: string; task: string; quiet?: boolean };
@@ -408,6 +432,37 @@ interface ChatSession {
 interface ExternalAgentSelection {
   id: string;
   name: string;
+}
+
+/**
+ * Retry branches are a reading of this transcript, not part of it: the chat row
+ * stores the variant currently on screen, and the siblings live beside it in
+ * this browser — the same arrangement the Terminal uses.
+ */
+const BRANCH_STORAGE_PREFIX = "breadboard:garden-conversation-branches:";
+
+function loadBranchGroups(
+  chatId: number,
+): Record<string, ConversationBranchGroup<Message>> {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(`${BRANCH_STORAGE_PREFIX}${chatId}`) ?? "{}",
+    ) as Record<string, ConversationBranchGroup<Message>>;
+    if (!parsed || typeof parsed !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, group]) =>
+        Boolean(
+          group &&
+            typeof group.id === "string" &&
+            Number.isInteger(group.activeIndex) &&
+            Array.isArray(group.variants) &&
+            group.variants.length > 1,
+        ),
+      ),
+    );
+  } catch {
+    return {};
+  }
 }
 
 /** Shared by the two repository-scoped agents (OpenCode and Ruflo). */
@@ -520,6 +575,7 @@ type LearnStatus =
   | "generating_visuals"
   | "writing_quartz"
   | "building_navigation"
+  | "paused"
   | "complete"
   | "failed"
   | "cancelled";
@@ -871,6 +927,21 @@ function isLearnActive(status?: LearnStatus): boolean {
     status === "generating_textbook" ||
     status === "generating_visuals" ||
     status === "writing_quartz" ||
+    status === "building_navigation" ||
+    // A paused run still owns the garden: it can be resumed or stopped, but
+    // nothing else may start while it holds its worker and lease.
+    status === "paused"
+  );
+}
+
+/** Phases the server will hold at a checkpoint. Scoped repair and publication
+ * run as single atomic steps and offer Stop only. */
+function isLearnPausable(status?: LearnStatus): boolean {
+  return (
+    status === "planning" ||
+    status === "generating_learning_pages" ||
+    status === "generating_textbook" ||
+    status === "generating_visuals" ||
     status === "building_navigation"
   );
 }
@@ -906,6 +977,7 @@ function hasRunningExternalAgent(message: Message): boolean {
         message.vimaxRun ||
         message.moneyPrinterRun ||
         message.legalRun ||
+        message.wardrobeRun ||
         message.shortsRun ||
         message.formsmithRun ||
         message.videoUseRun ||
@@ -928,6 +1000,8 @@ interface ChatTranscriptProps {
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   onEditMessage: (messageIndex: number, text: string) => void;
   onRetryAssistant: (messageIndex: number) => void;
+  branchGroups: Record<string, ConversationBranchGroup<Message>>;
+  onSwitchBranch: (groupId: string, direction: -1 | 1) => void;
   onExternalAgentTerminal: (
     runId: string,
     result: ExternalAgentTerminalResult,
@@ -948,6 +1022,8 @@ const ChatTranscript = memo(function ChatTranscript({
   onPermissionDecision,
   onEditMessage,
   onRetryAssistant,
+  branchGroups,
+  onSwitchBranch,
   onExternalAgentTerminal,
   inlineArtifactRetireVersion,
 }: ChatTranscriptProps) {
@@ -992,6 +1068,20 @@ const ChatTranscript = memo(function ChatTranscript({
   function beginMessageEdit(message: Message, messageId: string) {
     setEditingMessageId(messageId);
     setMessageEditText(message.content);
+  }
+
+  /** The sibling answers this one shares a user message with, if any. */
+  function branchForAssistant(
+    message: Message,
+    messageIndex: number,
+  ): ConversationBranchGroup<Message> | null {
+    if (message.role !== "assistant") return null;
+    const userIndex = previousUserMessageIndex(messages, messageIndex);
+    if (userIndex < 0) return null;
+    const groupId =
+      message.branchGroupId ?? messageBranchId(messages[userIndex], userIndex);
+    const group = branchGroups[groupId];
+    return group && group.variants.length > 1 ? group : null;
   }
 
   function saveMessageEdit(messageIndex: number) {
@@ -1081,6 +1171,7 @@ const ChatTranscript = memo(function ChatTranscript({
           msg.vimaxRun ??
           msg.moneyPrinterRun ??
           msg.legalRun ??
+          msg.wardrobeRun ??
           msg.shortsRun ??
           msg.formsmithRun ??
           msg.videoUseRun ??
@@ -1736,6 +1827,21 @@ const ChatTranscript = memo(function ChatTranscript({
                     onExternalAgentTerminal(msg.legalRun!.runId, result)
                   }
                 />
+              ) : msg.wardrobeRun ? (
+                <InlineWardrobeRun
+                  runId={msg.wardrobeRun.runId}
+                  task={msg.wardrobeRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.wardrobeRun!.runId, result)
+                  }
+                />
               ) : msg.shortsRun ? (
                 <InlineShortsRun
                   runId={msg.shortsRun.runId}
@@ -1811,6 +1917,17 @@ const ChatTranscript = memo(function ChatTranscript({
                 <AssistantMessageActions
                   content={msg.content || "Response unavailable"}
                   verification={msg.verification}
+                  branch={(() => {
+                    const branch = branchForAssistant(msg, i);
+                    return branch
+                      ? {
+                          current: branch.activeIndex + 1,
+                          total: branch.variants.length,
+                          onPrevious: () => onSwitchBranch(branch.id, -1),
+                          onNext: () => onSwitchBranch(branch.id, 1),
+                        }
+                      : undefined;
+                  })()}
                   onRetry={
                     i === lastAssistantIndex
                       ? () => onRetryAssistant(i)
@@ -2087,10 +2204,33 @@ export default function WorkspaceClient({
   // draft selected until its first turn creates the real row. A ref keeps
   // background history reconciliation from reopening the previous chat.
   const pendingNewChatRef = useRef(false);
+  // The person's own words, held here for the one gap where there is nowhere
+  // else to put them: a first turn on a blank chat has to POST
+  // /api/chat-sessions before any message has a session to be stored under,
+  // and every write below is keyed by session id. Waiting for that round trip
+  // is what made a typed message appear seconds after it was sent. The draft
+  // renders in that gap and is dropped as soon as the real transcript exists.
+  const [draftMessages, setDraftMessages] = useState<Message[] | null>(null);
   // As in the Terminal rail, history responses that overlapped a rename are
   // stale by definition. Dropping them prevents a slow refresh from briefly
   // restoring the old title over the optimistic one.
   const chatHistoryEpoch = useRef(0);
+  // Retrying an answer opens a sibling branch here exactly as it does in the
+  // Terminal: the transcript being replaced is kept as a variant of the same
+  // user message instead of being resent underneath it.
+  const [branchGroups, setBranchGroups] = useState<
+    Record<string, ConversationBranchGroup<Message>>
+  >({});
+  const [branchStorageChatId, setBranchStorageChatId] = useState<number | null>(
+    null,
+  );
+  // A retried external-agent turn re-enters through the launchers, which append
+  // to whatever the transcript holds. This is how they learn the retried turn
+  // is being replaced rather than followed — the Terminal does the same thing
+  // inside its session hook.
+  const retryBranchRef = useRef<{ chatId: number; historyLength: number } | null>(
+    null,
+  );
   const [inlineArtifactRetireVersion, setInlineArtifactRetireVersion] = useState(0);
   const [loadingChats, setLoadingChats] = useState(true);
   const [viewPublicChats, setViewPublicChats] = useState(false);
@@ -2102,6 +2242,15 @@ export default function WorkspaceClient({
   const [editingChatTitle, setEditingChatTitle] = useState("");
   const [isForking, setIsForking] = useState(false);
   const [input, setInput] = useState("");
+  // Unsent text outlives a reload, filed under the chat it was typed in and the
+  // garden that chat belongs to.
+  const draftSurface = `garden_workspace:${clusterSlug}`;
+  useChatDraft({
+    surface: draftSurface,
+    sessionId: activeChatId === null ? null : String(activeChatId),
+    value: input,
+    onRestore: setInput,
+  });
   const [agentBrowserAgent, setAgentBrowserAgent] =
     useState<ExternalAgentSelection | null>(null);
   const [deepResearchAgent, setDeepResearchAgent] =
@@ -2172,6 +2321,7 @@ export default function WorkspaceClient({
     | "vimax"
     | "money-printer"
     | "legal"
+    | "wardrobe"
     | "shorts"
     | "formsmith"
     | "socials-manager"
@@ -2205,6 +2355,7 @@ export default function WorkspaceClient({
     | "vimax"
     | "money-printer"
     | "legal"
+    | "wardrobe"
     | "shorts"
     | "formsmith"
     | "socials-manager"
@@ -2294,6 +2445,11 @@ export default function WorkspaceClient({
   );
   const [learnBusy, setLearnBusy] = useState(false);
   const [learnCancelBusy, setLearnCancelBusy] = useState(false);
+  const [learnPauseBusy, setLearnPauseBusy] = useState(false);
+  // Set when the server rejects generation because the confirmed Learning Map
+  // itself is unusable. Read by the primary action, which plans again rather
+  // than leaving the Learn button permanently rejected.
+  const learnRequiresReplanRef = useRef(false);
   const [learnPanelOpen, setLearnPanelOpen] = useState(false);
   const [gardenSettingsOpen, setGardenSettingsOpen] = useState(false);
   const [learnConfirmationAction, setLearnConfirmationAction] =
@@ -2427,10 +2583,14 @@ export default function WorkspaceClient({
         `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/status`,
       );
       const data = (await res.json().catch(() => ({}))) as LearnStatusResponse;
-      if (res.ok) setLearnState(data);
+      if (res.ok) {
+        setLearnState(data);
+        return data;
+      }
     } catch {
       // Status polling should never interrupt the workspace.
     }
+    return null;
   }, [clusterSlug]);
 
   useEffect(() => {
@@ -2529,6 +2689,43 @@ export default function WorkspaceClient({
     }
   }, [addToast, canViewPublicChats, clusterSlug, viewPublicChats]);
 
+  // The server names a chat from its first prompt, the same way it names a
+  // Terminal one. The Terminal sees that name arrive through its history poll;
+  // this rail loads once, so pull the names back after a first turn instead.
+  // Only titles are merged: replacing the whole session list would drop the
+  // in-flight transcript of any chat still streaming in another tab of the rail.
+  const refreshChatTitles = useCallback(async () => {
+    const epoch = chatHistoryEpoch.current;
+    try {
+      const params = new URLSearchParams({ clusterSlug });
+      if (canViewPublicChats && viewPublicChats)
+        params.set("includePublicChats", "1");
+      const res = await fetch(`/api/chat-sessions?${params.toString()}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const sessions = (data.sessions ?? []) as ChatSession[];
+      // A rename or delete that landed while this was in flight owns the title
+      // now, exactly as it does for the full reload above.
+      if (
+        chatHistoryEpoch.current !== epoch ||
+        editingChatIdRef.current !== null
+      ) {
+        return;
+      }
+      const titles = new Map(sessions.map((session) => [session.id, session.title]));
+      setChatSessions((previous) =>
+        previous.map((session) => {
+          const title = titles.get(session.id);
+          return title && title !== session.title
+            ? { ...session, title }
+            : session;
+        }),
+      );
+    } catch {
+      // An unnamed chat is cosmetic; the next load of the rail picks it up.
+    }
+  }, [canViewPublicChats, clusterSlug, viewPublicChats]);
+
   useEffect(() => {
     fetchChatSessions();
   }, [fetchChatSessions]);
@@ -2537,7 +2734,35 @@ export default function WorkspaceClient({
   }, [canViewPublicChats]);
 
   const activeChat = chatSessions.find((s) => s.id === activeChatId) ?? null;
-  const messages = activeChat?.messages ?? EMPTY_MESSAGES;
+  const persistedMessages = activeChat?.messages ?? EMPTY_MESSAGES;
+  // The draft only ever stands in for an empty transcript, so a real message
+  // arriving retires it without a frame where both could be on screen.
+  const showingDraft = persistedMessages.length === 0 && draftMessages !== null;
+  const messages =
+    showingDraft && draftMessages ? draftMessages : persistedMessages;
+  useEffect(() => {
+    retryBranchRef.current = null;
+    if (activeChatId === null) {
+      setBranchGroups({});
+      setBranchStorageChatId(null);
+      return;
+    }
+    setBranchGroups(loadBranchGroups(activeChatId));
+    setBranchStorageChatId(activeChatId);
+  }, [activeChatId]);
+
+  useEffect(() => {
+    if (activeChatId === null || branchStorageChatId !== activeChatId) return;
+    try {
+      window.localStorage.setItem(
+        `${BRANCH_STORAGE_PREFIX}${activeChatId}`,
+        JSON.stringify(branchGroups),
+      );
+    } catch {
+      // Branch switching still works for this page even if storage is full.
+    }
+  }, [activeChatId, branchGroups, branchStorageChatId]);
+
   // Selecting a chat is enough to ask for its artifacts; waiting for the
   // transcript to mount its cards is what made them appear a beat late.
   useInlineArtifactPrefetch({
@@ -2553,7 +2778,11 @@ export default function WorkspaceClient({
   // Agent selection/health checks happen before the concrete launcher's flag
   // rises. Keep the originating assistant turn active across that whole gap.
   const [delegatedAgentLaunching, setDelegatedAgentLaunching] = useState(false);
+  // A drafted turn is already under way even though no session id exists yet
+  // to mark as streaming, so the thinking row comes up with the message rather
+  // than after the chat has been created.
   const isStreaming =
+    showingDraft ||
     (activeChatId !== null && streamingChatIds.has(activeChatId)) ||
     hasRunningExternalAgentInActiveChat;
   const {
@@ -3700,9 +3929,12 @@ export default function WorkspaceClient({
     pendingNewChatRef.current = true;
     chatHistoryEpoch.current += 1;
     setActiveChatId(null);
+    setDraftMessages(null);
     setConfirmDeleteChatId(null);
     cancelRenameChat();
     setInput("");
+    // A new chat starts with an empty box rather than the last unstarted draft.
+    clearChatDraft(window.localStorage, chatDraftKey(draftSurface, null));
     setChatAttachments([]);
     setAttachmentDistillStatus(null);
     setExternalAgentStatus("");
@@ -3751,6 +3983,7 @@ export default function WorkspaceClient({
     const targetSession = chatSessions.find((s) => s.id === targetId);
     if (!targetSession || (targetSession.isOwn === false && !isOwner)) return;
     setConfirmDeleteChatId(null);
+    forgetChatDrafts(window.localStorage, draftSurface, [String(targetId)]);
     const remaining = chatSessions.filter((s) => s.id !== targetId);
     setChatSessions(remaining);
     if (activeChatId === targetId) setActiveChatId(remaining[0]?.id ?? null);
@@ -3944,15 +4177,22 @@ export default function WorkspaceClient({
         | "regenerate"
         | "rebuild"
         | "clear"
-        | "cancel",
+        | "cancel"
+        | "pause"
+        | "resume",
       body: Record<string, unknown> = {},
     ) => {
       const isCancel = endpoint === "cancel";
-      if (!isCancel) {
+      // Pause and Resume act on the run already on screen, so they neither open
+      // the panel nor claim the Learn-start busy flag.
+      const isPauseAction = endpoint === "pause" || endpoint === "resume";
+      if (!isCancel && !isPauseAction) {
         setLearnPanelOpen(true);
       }
       if (isCancel) {
         setLearnCancelBusy(true);
+      } else if (isPauseAction) {
+        setLearnPauseBusy(true);
       } else {
         setLearnBusy(true);
       }
@@ -3985,7 +4225,20 @@ export default function WorkspaceClient({
         );
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.error) {
+          learnRequiresReplanRef.current = data.requiresReplan === true;
           throw new Error(data.error ?? "Learn action failed");
+        }
+        learnRequiresReplanRef.current = false;
+
+        if (isPauseAction) {
+          await fetchLearnStatus();
+          addToast(
+            endpoint === "pause"
+              ? "Pausing after the current step"
+              : "Learn run resumed",
+            "success",
+          );
+          return true;
         }
 
         if (data.accepted === true) {
@@ -4041,16 +4294,28 @@ export default function WorkspaceClient({
         }
         return true;
       } catch (error) {
-        await fetchLearnStatus();
+        const refreshed = await fetchLearnStatus();
         const message =
           error instanceof Error ? error.message : "Learn action failed";
-        if (isCancel || endpoint === "clear") {
+        // Cancel, Pause/Resume, and Clear are direct user commands whose
+        // refusals must be spoken. So must a start the server refused outright:
+        // that never creates a job, so the panel has no failure to show and the
+        // button simply looks dead. A generation that ran and failed does leave
+        // a failed job, and stays in the panel as before.
+        if (
+          isCancel ||
+          isPauseAction ||
+          endpoint === "clear" ||
+          refreshed?.job?.status !== "failed"
+        ) {
           addToast(message);
         }
         return false;
       } finally {
         if (isCancel) {
           setLearnCancelBusy(false);
+        } else if (isPauseAction) {
+          setLearnPauseBusy(false);
         } else {
           setLearnBusy(false);
         }
@@ -4081,6 +4346,18 @@ export default function WorkspaceClient({
     await postLearnAction("cancel", { expectedJobId: learnState?.job?.id });
   }
 
+  async function handlePauseLearn() {
+    const status = learnState?.job?.status;
+    if (learnPauseBusy || learnCancelBusy || !isLearnPausable(status)) return;
+    await postLearnAction("pause", { expectedJobId: learnState?.job?.id });
+  }
+
+  async function handleResumeLearn() {
+    if (learnPauseBusy || learnCancelBusy || learnState?.job?.status !== "paused")
+      return;
+    await postLearnAction("resume", { expectedJobId: learnState?.job?.id });
+  }
+
   async function handleLearnPrimary() {
     if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status))
       return;
@@ -4100,10 +4377,14 @@ export default function WorkspaceClient({
       return;
     }
     if (learnState?.confirmedLearningMapId) {
-      await postLearnAction("generate", {
+      const generated = await postLearnAction("generate", {
         confirmedLearningMapId: learnState.confirmedLearningMapId,
       });
-      return;
+      // The confirmed map no longer matches the sources it was planned from, so
+      // generation can never succeed from it. Planning again is the documented
+      // recovery and the only one reachable from this button.
+      if (generated || !learnRequiresReplanRef.current) return;
+      addToast("Planning a new Learning Map for these sources");
     }
     await postLearnAction("plan");
   }
@@ -4183,21 +4464,89 @@ export default function WorkspaceClient({
     postLearnAction,
   ]);
 
+  /**
+   * Retrying does not resend the question underneath the answer it is meant to
+   * replace. As in the Terminal, the transcript on screen becomes one variant
+   * of this user message and the new attempt becomes another, so nothing is
+   * lost and nothing is duplicated.
+   */
   function handleRetryAssistant(messageIndex: number) {
     if (isStreaming || !activeChat) return;
-    let userIndex = messageIndex - 1;
-    while (userIndex >= 0 && messages[userIndex]?.role !== "user") {
-      userIndex -= 1;
-    }
+    const userIndex = previousUserMessageIndex(messages, messageIndex);
     const previousUser = messages[userIndex];
     if (!previousUser || previousUser.role !== "user") return;
     const retryAttachments = reusableChatAttachments(previousUser.attachments);
+    const failedAttempt = messages[messageIndex];
+    const attemptDiedEmpty =
+      failedAttempt?.role === "assistant" &&
+      !failedAttempt.content?.trim() &&
+      !assistantExternalAgentRunId(failedAttempt) &&
+      messageIndex === messages.length - 1;
+    // An attempt that produced no words at all is not worth keeping: re-run
+    // the turn in place rather than parking a blank variant the switcher would
+    // keep offering. Only safe for the last message, since retrying an earlier
+    // one relies on the snapshot to preserve everything after it.
+    if (!attemptDiedEmpty) {
+      const branch = createConversationBranch<Message>({
+        messages,
+        branchGroups,
+        userMessageIndex: userIndex,
+        content: previousUser.content,
+        createId: () => crypto.randomUUID(),
+        createAssistantPlaceholder: (seed) => ({
+          ...seed,
+          role: "assistant",
+          content: "",
+          sources: [],
+        }),
+      });
+      setBranchGroups((current) => ({
+        ...current,
+        [branch.groupId]: branch.group,
+      }));
+    }
+    // External agents re-enter through their launchers, which know nothing
+    // about this history argument; the ref is how they learn to replace the
+    // retried turn instead of appending after it.
+    retryBranchRef.current = {
+      chatId: activeChat.id,
+      historyLength: userIndex,
+    };
     setInlineArtifactRetireVersion((current) => current + 1);
     void handleSubmit(
       previousUser.content,
       messages.slice(0, userIndex),
       retryAttachments,
     );
+  }
+
+  /** The transcript a retried turn is appended to, with the replaced turn gone. */
+  function transcriptForRetriedTurn(session: ChatSession): Message[] {
+    const pending = retryBranchRef.current;
+    if (!pending || pending.chatId !== session.id) return session.messages;
+    return session.messages.slice(0, pending.historyLength);
+  }
+
+  function switchBranch(groupId: string, direction: -1 | 1) {
+    if (isStreaming || !activeChat) return;
+    const group = branchGroups[groupId];
+    if (!group) return;
+    const targetIndex = Math.min(
+      group.variants.length - 1,
+      Math.max(0, group.activeIndex + direction),
+    );
+    if (targetIndex === group.activeIndex) return;
+
+    const variants = group.variants.map((variant) => cloneMessages(variant));
+    variants[group.activeIndex] = cloneMessages(messages);
+    setBranchGroups((current) => ({
+      ...current,
+      [groupId]: { ...group, activeIndex: targetIndex, variants },
+    }));
+    const nextMessages = cloneMessages(variants[targetIndex]);
+    setInlineArtifactRetireVersion((current) => current + 1);
+    updateChatMessages(activeChat.id, nextMessages);
+    void persistChatSession(activeChat.id, nextMessages);
   }
 
   function handleEditUserMessage(messageIndex: number, text: string) {
@@ -4894,9 +5243,17 @@ export default function WorkspaceClient({
     return selected;
   }
 
-  async function prepareExternalAgentSession(userContent: string) {
-    // The external-turn route owns first-prompt title generation.
-    void userContent;
+  // Where a launch is made durable on the server, the route that records the
+  // turn owns first-prompt title generation, and this returns no title. The
+  // rest of the agents here write their turn through the legacy session writer,
+  // which reaches no such route, so the name is requested from the same
+  // title-only completion and handed to `commitExternalAgentTurn` to persist —
+  // a canonical rename, so the Terminal's view of the chat is renamed too.
+  async function prepareExternalAgentSession(
+    userContent: string,
+    userMessageFields: Pick<Message, "attachmentNames" | "attachments"> = {},
+    options: { serverNamesTheChat?: boolean } = {},
+  ) {
     const writableActiveChat = activeChat?.isOwn === false ? null : activeChat;
     if (delegatedAgentLaunchRef.current) {
       if (!writableActiveChat) {
@@ -4907,11 +5264,37 @@ export default function WorkspaceClient({
       }
       return { session: writableActiveChat, title: undefined };
     }
+    // A launch on a blank chat is the one case with no session to write to
+    // yet. Show what was typed now; the launcher replaces this with the real
+    // row the moment the session exists. Delegated launches never reach here,
+    // so the `/agents:*` bubble they exist to avoid is still never drawn.
+    if (!writableActiveChat) {
+      setDraftMessages([
+        {
+          role: "user",
+          content: userContent,
+          createdAt: new Date().toISOString(),
+          ...userMessageFields,
+        },
+      ]);
+    }
     const session = writableActiveChat ?? (await createChatSession());
-    if (!session) return null;
+    if (!session) {
+      setDraftMessages(null);
+      // No turn will be written, so a retry waiting to replace one must not be
+      // left pending for whatever launches next.
+      retryBranchRef.current = null;
+      return null;
+    }
     return {
       session,
-      title: undefined,
+      // Only the turn that opens a chat names it; a launch into a chat that
+      // already holds messages leaves the existing name alone.
+      title:
+        session.messages.length === 0 && !options.serverNamesTheChat
+          ? ((await requestChatTitleFromFirstMessage(userContent, model)) ??
+            undefined)
+          : undefined,
     };
   }
 
@@ -4979,10 +5362,12 @@ export default function WorkspaceClient({
       return;
     }
     const nextMessages: Message[] = [
-      ...session.messages,
+      ...transcriptForRetriedTurn(session),
       { role: "user", content: userContent, createdAt, ...userMessageFields },
       { ...assistantMessage, createdAt },
     ];
+    // The retried turn now has its replacement; a later launch appends again.
+    retryBranchRef.current = null;
     updateChatMessages(session.id, nextMessages);
     await persistChatSession(session.id, nextMessages, title);
   }
@@ -5126,7 +5511,12 @@ export default function WorkspaceClient({
       const response = await fetch("/api/deep-research/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(request),
+        body: JSON.stringify({
+          ...request,
+          // Read-only here: the turn is committed below, and this only lets
+          // the run see the chat it was launched from.
+          chatSessionId: prepared.session.id,
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.run?.runId) {
@@ -5189,7 +5579,14 @@ export default function WorkspaceClient({
       const response = await fetch("/api/openplanter/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ task, model, reasoningEffort }),
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          // Read-only here: the turn is committed below, and this only lets
+          // the run see the chat it was launched from.
+          chatSessionId: prepared.session.id,
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.run?.runId) {
@@ -5320,7 +5717,14 @@ export default function WorkspaceClient({
       const response = await fetch("/api/get-doc/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ task, model, reasoningEffort }),
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          // Read-only here: the turn is committed below, and this only lets
+          // the run see the chat it was launched from.
+          chatSessionId: prepared.session.id,
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.run?.runId) {
@@ -5389,6 +5793,9 @@ export default function WorkspaceClient({
           model,
           reasoningEffort,
           gardenSlug: clusterSlug,
+          // Read-only here: the turn is committed below, and this only lets
+          // the run see the chat it was launched from.
+          chatSessionId: prepared.session.id,
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -5453,7 +5860,14 @@ export default function WorkspaceClient({
       const response = await fetch("/api/agent-reach/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ task, model, reasoningEffort }),
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          // Read-only here: the turn is committed below, and this only lets
+          // the run see the chat it was launched from.
+          chatSessionId: prepared.session.id,
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.run?.runId) {
@@ -5944,7 +6358,14 @@ export default function WorkspaceClient({
       const response = await fetch("/api/career-ops/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ task, model, reasoningEffort }),
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          // Read-only here: the turn is committed below, and this only lets
+          // the run see the chat it was launched from.
+          chatSessionId: prepared.session.id,
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.run?.runId) {
@@ -6008,7 +6429,14 @@ export default function WorkspaceClient({
       const response = await fetch("/api/vibe-trading/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ task, model, reasoningEffort }),
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          // Read-only here: the turn is committed below, and this only lets
+          // the run see the chat it was launched from.
+          chatSessionId: prepared.session.id,
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.run?.runId) {
@@ -6132,7 +6560,13 @@ export default function WorkspaceClient({
       const response = await fetch("/api/stock-analyst/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ task, model }),
+        body: JSON.stringify({
+          task,
+          model,
+          // Read-only here: the turn is committed below, and this only lets
+          // the run see the chat it was launched from.
+          chatSessionId: prepared.session.id,
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.run?.runId) {
@@ -6260,7 +6694,7 @@ export default function WorkspaceClient({
       return;
     }
     updateChatMessages(prepared.session.id, [
-      ...prepared.session.messages,
+      ...transcriptForRetriedTurn(prepared.session),
       {
         id: `socials-manager-pending-${crypto.randomUUID()}`,
         role: "user",
@@ -6334,7 +6768,7 @@ export default function WorkspaceClient({
       return;
     }
     updateChatMessages(prepared.session.id, [
-      ...prepared.session.messages,
+      ...transcriptForRetriedTurn(prepared.session),
       {
         id: `hardware-pending-${crypto.randomUUID()}`,
         role: "user",
@@ -6413,7 +6847,7 @@ export default function WorkspaceClient({
       return;
     }
     updateChatMessages(prepared.session.id, [
-      ...prepared.session.messages,
+      ...transcriptForRetriedTurn(prepared.session),
       {
         id: `cad-pending-${crypto.randomUUID()}`,
         role: "user",
@@ -6493,7 +6927,7 @@ export default function WorkspaceClient({
       return;
     }
     updateChatMessages(prepared.session.id, [
-      ...prepared.session.messages,
+      ...transcriptForRetriedTurn(prepared.session),
       {
         id: `vimax-pending-${crypto.randomUUID()}`,
         role: "user",
@@ -6575,7 +7009,7 @@ export default function WorkspaceClient({
       return;
     }
     updateChatMessages(prepared.session.id, [
-      ...prepared.session.messages,
+      ...transcriptForRetriedTurn(prepared.session),
       {
         id: `legal-pending-${crypto.randomUUID()}`,
         role: "user",
@@ -6638,6 +7072,97 @@ export default function WorkspaceClient({
   }
 
   /**
+   * Wardrobe works on the photographs attached to the message: they are the
+   * request, not decoration on it, so a bare command with pictures is a
+   * complete instruction and the typed text is only direction for the
+   * generator. Every cutout and modeled photo comes back as an artifact of this
+   * Garden's chat.
+   */
+  async function launchWardrobe(direction: string, attachments: readonly ChatAttachment[]) {
+    if (externalAgentLaunchRef.current) return;
+    if (!attachments.some((attachment) => attachment.type === "image")) {
+      setExternalAgentStatus("Attach photos of the clothes you want imported.");
+      return;
+    }
+    externalAgentLaunchRef.current = "wardrobe";
+    setLaunchingExternalAgent("wardrobe");
+    setExternalAgentStatus("");
+    const userContent = wardrobeUserMessage(direction);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...transcriptForRetriedTurn(prepared.session),
+      {
+        id: `wardrobe-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+        attachments: chatMessageAttachments(attachments),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/wardrobe/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task: direction,
+          model,
+          attachments,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The import could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          wardrobeRun: {
+            runId: String(data.run.runId),
+            task: wardrobeRunLabel({
+              photos: attachments.filter((item) => item.type === "image").length,
+              direction,
+            }),
+          },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The import could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  /**
    * MoneyPrinter cuts stock footage to a script it writes itself, so the turn
    * carries only the subject of the video. The finished MP4 comes back as an
    * artifact of this Garden's chat rather than as text.
@@ -6658,7 +7183,7 @@ export default function WorkspaceClient({
       return;
     }
     updateChatMessages(prepared.session.id, [
-      ...prepared.session.messages,
+      ...transcriptForRetriedTurn(prepared.session),
       {
         id: `money-printer-pending-${crypto.randomUUID()}`,
         role: "user",
@@ -6738,7 +7263,7 @@ export default function WorkspaceClient({
       return;
     }
     updateChatMessages(prepared.session.id, [
-      ...prepared.session.messages,
+      ...transcriptForRetriedTurn(prepared.session),
       {
         id: `openwork-pending-${crypto.randomUUID()}`,
         role: "user",
@@ -6821,7 +7346,7 @@ export default function WorkspaceClient({
       return;
     }
     updateChatMessages(prepared.session.id, [
-      ...prepared.session.messages,
+      ...transcriptForRetriedTurn(prepared.session),
       {
         id: `inbox-zero-pending-${crypto.randomUUID()}`,
         role: "user",
@@ -6901,7 +7426,7 @@ export default function WorkspaceClient({
       return;
     }
     updateChatMessages(prepared.session.id, [
-      ...prepared.session.messages,
+      ...transcriptForRetriedTurn(prepared.session),
       {
         id: `openscience-pending-${crypto.randomUUID()}`,
         role: "user",
@@ -6977,7 +7502,7 @@ export default function WorkspaceClient({
       return;
     }
     updateChatMessages(prepared.session.id, [
-      ...prepared.session.messages,
+      ...transcriptForRetriedTurn(prepared.session),
       {
         id: `hyperframes-pending-${crypto.randomUUID()}`,
         role: "user",
@@ -7053,7 +7578,7 @@ export default function WorkspaceClient({
       return;
     }
     updateChatMessages(prepared.session.id, [
-      ...prepared.session.messages,
+      ...transcriptForRetriedTurn(prepared.session),
       { id: `resource2skill-pending-${crypto.randomUUID()}`, role: "user", content: userContent, createdAt: new Date().toISOString() },
     ]);
     try {
@@ -7103,7 +7628,7 @@ export default function WorkspaceClient({
       return;
     }
     updateChatMessages(prepared.session.id, [
-      ...prepared.session.messages,
+      ...transcriptForRetriedTurn(prepared.session),
       {
         id: `openmontage-pending-${crypto.randomUUID()}`,
         role: "user",
@@ -7185,7 +7710,12 @@ export default function WorkspaceClient({
           attachments: persistedAttachments,
         }
       : {};
-    const prepared = await prepareExternalAgentSession(userContent);
+    const prepared = await prepareExternalAgentSession(
+      userContent,
+      userMessageFields,
+      // The runs route records this turn durably and names the chat from it.
+      { serverNamesTheChat: true },
+    );
     if (!prepared) {
       externalAgentLaunchRef.current = null;
       setLaunchingExternalAgent(null);
@@ -7193,7 +7723,7 @@ export default function WorkspaceClient({
     }
     if (!delegatedRequest) {
       updateChatMessages(prepared.session.id, [
-        ...prepared.session.messages,
+        ...transcriptForRetriedTurn(prepared.session),
         {
           id: `codex-pending-${clientMessageId}`,
           role: "user",
@@ -7248,7 +7778,7 @@ export default function WorkspaceClient({
         } else {
           const createdAt = new Date().toISOString();
           updateChatMessages(prepared.session.id, [
-            ...prepared.session.messages,
+            ...transcriptForRetriedTurn(prepared.session),
             { role: "user", content: userContent, createdAt, ...userMessageFields },
             { ...assistantMessage, createdAt },
           ]);
@@ -7304,7 +7834,10 @@ export default function WorkspaceClient({
           attachments: persistedAttachments,
         }
       : {};
-    const prepared = await prepareExternalAgentSession(userContent);
+    const prepared = await prepareExternalAgentSession(
+      userContent,
+      userMessageFields,
+    );
     if (!prepared) {
       externalAgentLaunchRef.current = null;
       setLaunchingExternalAgent(null);
@@ -7312,7 +7845,7 @@ export default function WorkspaceClient({
     }
     if (!delegatedAgentLaunchRef.current) {
       updateChatMessages(prepared.session.id, [
-        ...prepared.session.messages,
+        ...transcriptForRetriedTurn(prepared.session),
         {
           id: `opencode-pending-${crypto.randomUUID()}`,
           role: "user",
@@ -7331,6 +7864,9 @@ export default function WorkspaceClient({
           model,
           reasoningEffort,
           gardenSlug: clusterSlug,
+          // Read-only here: the turn is committed below, and this only lets the
+          // run see the chat it was launched from.
+          chatSessionId: prepared.session.id,
           attachments: attachments.filter(
             (attachment) => attachment.type === "image",
           ),
@@ -7408,7 +7944,10 @@ export default function WorkspaceClient({
           attachments: persistedAttachments,
         }
       : {};
-    const prepared = await prepareExternalAgentSession(userContent);
+    const prepared = await prepareExternalAgentSession(
+      userContent,
+      userMessageFields,
+    );
     if (!prepared) {
       externalAgentLaunchRef.current = null;
       setLaunchingExternalAgent(null);
@@ -7416,7 +7955,7 @@ export default function WorkspaceClient({
     }
     if (!delegatedAgentLaunchRef.current) {
       updateChatMessages(prepared.session.id, [
-        ...prepared.session.messages,
+        ...transcriptForRetriedTurn(prepared.session),
         {
           id: `ruflo-pending-${crypto.randomUUID()}`,
           role: "user",
@@ -7433,6 +7972,9 @@ export default function WorkspaceClient({
         body: JSON.stringify({
           task,
           gardenSlug: clusterSlug,
+          // Read-only here: the turn is committed below, and this only lets the
+          // swarm see the chat it was launched from.
+          chatSessionId: prepared.session.id,
           attachments: attachments.filter(
             (attachment) => attachment.type === "image",
           ),
@@ -7554,6 +8096,9 @@ export default function WorkspaceClient({
     attachmentOverride?: readonly ChatAttachment[],
     internalAgentContinuation = false,
   ) {
+    // Only a retry sets the branch it is replacing, and only a retry passes a
+    // history. Anything else that reaches a launcher appends as usual.
+    if (historyOverride === undefined) retryBranchRef.current = null;
     const text = (textOverride ?? input).trim();
     const pendingAttachments: ChatAttachment[] = attachmentOverride
       ? [...attachmentOverride]
@@ -7903,6 +8448,16 @@ export default function WorkspaceClient({
       return;
     }
 
+    // Same for Wardrobe, whose attachments are the photographs it reads.
+    const wardrobeDirection = taskFromWardrobeCommand(text);
+    if (wardrobeDirection !== null) {
+      const wardrobePhotos = pendingAttachments;
+      setInput("");
+      setChatAttachments([]);
+      void launchWardrobe(wardrobeDirection, wardrobePhotos);
+      return;
+    }
+
     const deepResearchTask = taskFromDeepResearchCommand(text);
     if (deepResearchTask !== null) {
       setInput("");
@@ -8022,20 +8577,6 @@ export default function WorkspaceClient({
 
     const responseStartedAt = performance.now();
 
-    const writableActiveChat = activeChat?.isOwn === false ? null : activeChat;
-    const session = writableActiveChat ?? (await createChatSession());
-    if (!session) return;
-
-    const sessionId = session.id;
-    if (streamingChatIdsRef.current.has(sessionId)) return;
-    const history = historyOverride ?? session.messages;
-    // The canonical first-turn pipeline replaces "New chat" with the title
-    // returned by its dedicated plain-LLM request. Do not race it with a
-    // browser-side heuristic when this transcript is persisted.
-    const title: string | undefined = undefined;
-    const steerContext = { sessionId, messages: [] as Message[] };
-    activeSteerContextRef.current = steerContext;
-
     // Snapshot attachments and clear them immediately
     const attachmentNames = pendingAttachments.map((a) => a.name);
 
@@ -8055,6 +8596,66 @@ export default function WorkspaceClient({
         ? { attachments: chatMessageAttachments(pendingAttachments) }
         : {}),
     };
+
+    // Nothing below can run until the chat exists, and on a blank chat that is
+    // a round trip. Empty the composer and put the message up first so a send
+    // reads as instant; both are undone if the turn never starts.
+    const writableActiveChat = activeChat?.isOwn === false ? null : activeChat;
+    const composerSend = textOverride === undefined;
+    const showedDraft = !writableActiveChat && !internalAgentContinuation;
+    if (composerSend) {
+      setInput("");
+      setChatAttachments([]);
+    }
+    // The empty assistant row rides along so the answer's own bubble, and the
+    // thinking indicator inside it, is up as early as the question is. Thinking
+    // belongs to the turn rather than to the response, so the activity starts
+    // here instead of when the runtime request goes out.
+    let agentSignal: AbortSignal | undefined;
+    if (showedDraft) {
+      setDraftMessages([
+        userMsg,
+        {
+          role: "assistant",
+          content: "",
+          createdAt: turnCreatedAt,
+          sources: [],
+          thinking: "",
+        },
+      ]);
+      agentSignal = agentActivity.start();
+    }
+    const abandonTurn = () => {
+      if (showedDraft) setDraftMessages(null);
+      if (agentSignal) agentActivity.finish(false, agentSignal);
+      if (composerSend) {
+        setInput(text);
+        setChatAttachments(pendingAttachments);
+      }
+    };
+
+    const session = writableActiveChat ?? (await createChatSession());
+    if (!session) {
+      abandonTurn();
+      return;
+    }
+
+    const sessionId = session.id;
+    if (streamingChatIdsRef.current.has(sessionId)) {
+      abandonTurn();
+      return;
+    }
+    // Past every launcher: this turn is answered here, and the history above
+    // already excludes the retried turn, so the launcher hand-off is spent.
+    retryBranchRef.current = null;
+    const history = historyOverride ?? session.messages;
+    // The canonical first-turn pipeline replaces "New chat" with the title
+    // returned by its dedicated plain-LLM request. Do not race it with a
+    // browser-side heuristic when this transcript is persisted.
+    const title: string | undefined = undefined;
+    const steerContext = { sessionId, messages: [] as Message[] };
+    activeSteerContextRef.current = steerContext;
+
     const nextMessages = [...history, userMsg];
     const assistantMsg: Message = {
       role: "assistant",
@@ -8074,6 +8675,8 @@ export default function WorkspaceClient({
     setChatAttachments([]);
     setChatStreaming(sessionId, true);
     updateChatMessages(sessionId, finalMessages);
+    // The real transcript now holds this turn; the stand-in has done its job.
+    if (showedDraft) setDraftMessages(null);
     if (title) {
       setChatSessions((prev) =>
         prev.map((item) => (item.id === sessionId ? { ...item, title } : item)),
@@ -8117,6 +8720,9 @@ export default function WorkspaceClient({
             : "Failed to save this to the garden.";
       } finally {
         setIsGenerating(false);
+        // Answered without the runtime, so the Thinking a drafted turn raised
+        // has to be put down here.
+        if (agentSignal) agentActivity.finish(false, agentSignal);
         assistantMsg.responseDurationMs = Math.round(
           performance.now() - responseStartedAt,
         );
@@ -8159,6 +8765,9 @@ export default function WorkspaceClient({
             ? err.message
             : "Failed to update markdown tags.";
       } finally {
+        // These branches answer without the runtime, so the Thinking a drafted
+        // turn raised has to be put down here.
+        if (agentSignal) agentActivity.finish(false, agentSignal);
         assistantMsg.responseDurationMs = Math.round(
           performance.now() - responseStartedAt,
         );
@@ -8177,9 +8786,9 @@ export default function WorkspaceClient({
     let agentFailed = false;
     let agentCompleted = false;
     let agentReportedError = false;
-    let agentSignal: AbortSignal | undefined;
     try {
-      agentSignal = agentActivity.start();
+      // A drafted turn already raised Thinking when the message went up.
+      agentSignal = agentSignal ?? agentActivity.start();
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -8371,6 +8980,9 @@ export default function WorkspaceClient({
       finalMessages = messagesWithAssistant();
       updateChatMessages(sessionId, finalMessages);
       await persistChatSession(sessionId, finalMessages, title);
+      // Only a first turn names a chat, and the name it gets is generated on
+      // the server during that turn, so this is the one send worth asking for.
+      if (history.length === 0) void refreshChatTitles();
       setChatStreaming(sessionId, false);
       if (
         agentCompleted &&
@@ -8727,6 +9339,16 @@ export default function WorkspaceClient({
         : progress;
     const learnTeachingSourceSlugs = effectiveLearnIncludedSourceSlugs;
     const hasSelectedLearnSources = learnTeachingSourceSlugs.length > 0;
+    const paused = status === "paused";
+    // Kept mounted across the request so the control does not flicker away
+    // between the click and the next status poll.
+    const showPauseControl = paused || isLearnPausable(status);
+    // While a run is in flight the chip must name the model actually placing
+    // the calls, which is fixed for the life of that run. Once it settles the
+    // chip names the model the next run will use, so changing the Intelligence
+    // picker in the chat bar is reflected here immediately instead of leaving
+    // the last run's model on screen.
+    const learnPanelModel = active ? (job?.model ?? model) : model;
     const canStart =
       Boolean(learnState?.hasSources) &&
       hasSelectedLearnSources &&
@@ -8767,6 +9389,7 @@ export default function WorkspaceClient({
       generating_visuals: "Generating lesson visuals",
       writing_quartz: "Writing Quartz files",
       building_navigation: "Validating and rebuilding navigation",
+      paused: "Paused",
     };
     const statusMessage = active
       ? null
@@ -8804,6 +9427,9 @@ export default function WorkspaceClient({
       status === "awaiting_confirmation" && !staleReviewForExistingGarden
         ? "Pipeline paused for review; timer stopped."
         : null,
+      paused
+        ? "Timer stopped. Everything written so far is kept and the run continues from here."
+        : null,
     ].filter((detail): detail is string => Boolean(detail));
     const learnTokenUsage = job?.tokenUsage;
     const learnElapsedMs = currentLearnElapsedMs(
@@ -8813,7 +9439,7 @@ export default function WorkspaceClient({
       },
       learnTimerNowMs,
     );
-    const learnTimerPaused = status === "awaiting_confirmation";
+    const learnTimerPaused = status === "awaiting_confirmation" || paused;
     const hasLearnTokenActivity = (learnTokenUsage?.startedCalls ?? 0) > 0;
     const showLearnTokenUsage = Boolean(
       learnTokenUsage && (active || hasLearnTokenActivity),
@@ -8850,7 +9476,7 @@ export default function WorkspaceClient({
             </div>
 
             <div className="flex min-w-0 flex-1 items-start gap-2">
-              <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-2 gap-y-1.5 md:flex-nowrap">
               <div className="relative">
                 <button
                   ref={learnDocumentMenuButtonRef}
@@ -8859,7 +9485,7 @@ export default function WorkspaceClient({
                     setLearnSyllabusMenuOpen(false);
                     setLearnDocumentMenuOpen((open) => !open);
                   }}
-                  className="neu-button flex items-center gap-1.5 rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
+                  className="neu-button flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-gray-800 px-2 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
                   aria-expanded={learnDocumentMenuOpen}
                   aria-haspopup="menu"
                   title="Choose which source documents Learn may use"
@@ -8998,7 +9624,7 @@ export default function WorkspaceClient({
                   </ViewportPopover>
                 ) : null}
               </div>
-              <div className="relative">
+              <div className="relative min-w-0">
                 <button
                   ref={learnSyllabusMenuButtonRef}
                   type="button"
@@ -9006,13 +9632,13 @@ export default function WorkspaceClient({
                     setLearnDocumentMenuOpen(false);
                     setLearnSyllabusMenuOpen((open) => !open);
                   }}
-                  className="neu-button flex items-center gap-1.5 rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
+                  className="neu-button flex h-[30px] w-full min-w-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-gray-800 px-2 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
                   aria-expanded={learnSyllabusMenuOpen}
                   aria-haspopup="menu"
                   title="Choose a syllabus or study guide for Learn to plan against"
                 >
                   <svg
-                    className="h-3.5 w-3.5"
+                    className="h-3.5 w-3.5 shrink-0"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -9031,7 +9657,7 @@ export default function WorkspaceClient({
                     />
                   </svg>
                   <span
-                    className="max-w-28 truncate sm:max-w-32"
+                    className="min-w-0 flex-1 max-w-28 truncate sm:max-w-32"
                     title={
                       learnSyllabusDocument
                         ? learnSyllabusDocument.name ||
@@ -9044,7 +9670,7 @@ export default function WorkspaceClient({
                       : "Syllabus: none"}
                   </span>
                   <svg
-                    className={`h-3 w-3 transition-transform ${learnSyllabusMenuOpen ? "rotate-180" : ""}`}
+                    className={`h-3 w-3 shrink-0 transition-transform ${learnSyllabusMenuOpen ? "rotate-180" : ""}`}
                     viewBox="0 0 20 20"
                     fill="currentColor"
                     aria-hidden="true"
@@ -9315,7 +9941,7 @@ export default function WorkspaceClient({
                   </ViewportPopover>
                 ) : null}
               </div>
-              <label className="flex items-center gap-1.5 text-xs text-gray-500">
+              <label className="flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-gray-500">
                 <input
                   type="checkbox"
                   checked={learnSourceOnly}
@@ -9326,7 +9952,7 @@ export default function WorkspaceClient({
                 Source-only
               </label>
               <label
-                className="flex items-center gap-1.5 text-xs text-gray-500"
+                className="flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-gray-500"
                 title="Automatically confirm the learning map and continue generating lessons"
               >
                 <input
@@ -9350,7 +9976,7 @@ export default function WorkspaceClient({
                   onClick={handleRepairIssues}
                   disabled={!canStart}
                   title="Repairs only failing pages and components; unaffected content is preserved"
-                  className="neu-button-primary flex h-[30px] items-center gap-1.5 px-3 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="neu-button-primary flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap px-3 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {learnBusy ? (
                     <Spinner className="h-3.5 w-3.5" />
@@ -9382,7 +10008,7 @@ export default function WorkspaceClient({
                   type="button"
                   onClick={handleFullRebuild}
                   disabled={!canStart}
-                  className="neu-button-destructive h-[30px] rounded-lg border border-red-900/70 px-3 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="neu-button-destructive h-[30px] shrink-0 whitespace-nowrap rounded-lg border border-red-900/70 px-3 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
                   title="Destructive: recreate the Learning Map, contract, all pages, and visuals"
                 >
                   Rebuild entire garden
@@ -9393,10 +10019,10 @@ export default function WorkspaceClient({
                   type="button"
                   onClick={handleClearLearnData}
                   disabled={learnBusy || learnCancelBusy || active}
-                  className="neu-button-destructive h-[30px] rounded-lg border border-red-900/70 px-3 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="neu-button-destructive h-[30px] shrink-0 whitespace-nowrap rounded-lg border border-red-900/70 px-3 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
                   title="Destructive: remove generated Learn content and Learn history while preserving sources and non-Learn notes"
                 >
-                  Clear Learn data
+                  Clear data
                 </button>
               )}
               {showPrimaryAction && !active && (
@@ -9413,7 +10039,7 @@ export default function WorkspaceClient({
                     learnCancelBusy ||
                     (!canStart && status !== "awaiting_confirmation")
                   }
-                  className="neu-button-primary flex h-[30px] items-center gap-1.5 rounded-lg bg-white px-3 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="neu-button-primary flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-white px-3 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {learnBusy || active ? (
                     <Spinner className="h-3.5 w-3.5" />
@@ -9437,16 +10063,65 @@ export default function WorkspaceClient({
                       : (learnState?.buttonLabel ?? "Learn")}
                 </button>
               )}
+              {active && showPauseControl && (
+                <button
+                  type="button"
+                  onClick={paused ? handleResumeLearn : handlePauseLearn}
+                  disabled={learnPauseBusy || learnCancelBusy}
+                  className={
+                    paused
+                      ? "neu-button-primary flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-white text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-wait disabled:opacity-60"
+                      : "neu-button flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg border border-gray-800 text-gray-300 transition-colors hover:border-gray-700 hover:text-gray-100 disabled:cursor-wait disabled:opacity-60"
+                  }
+                  aria-label={
+                    learnPauseBusy
+                      ? paused
+                        ? "Resuming Learn run"
+                        : "Pausing Learn run"
+                      : paused
+                        ? "Resume Learn run"
+                        : "Pause Learn run"
+                  }
+                  title={
+                    paused
+                      ? "Resume this Learn run from the checkpoint it stopped at"
+                      : "Hold this Learn run at the next checkpoint. Nothing is discarded and the timer stops."
+                  }
+                >
+                  {learnPauseBusy ? (
+                    <Spinner className="h-3.5 w-3.5" />
+                  ) : paused ? (
+                    <svg
+                      className="h-3.5 w-3.5"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.7-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14Z" />
+                    </svg>
+                  ) : (
+                    <svg
+                      className="h-3.5 w-3.5"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <rect x="6" y="4.5" width="4" height="15" rx="1" />
+                      <rect x="14" y="4.5" width="4" height="15" rx="1" />
+                    </svg>
+                  )}
+                </button>
+              )}
               {active && (
                 <button
                   type="button"
                   onClick={handleCancelLearn}
                   disabled={learnCancelBusy}
-                  className="neu-button-destructive flex h-[30px] items-center gap-1.5 rounded-lg border border-red-900/60 bg-red-950/30 px-3 text-sm font-medium text-red-300 transition-colors hover:border-red-700 hover:text-red-200 disabled:cursor-wait disabled:opacity-60"
-                  title="Stop this Learn run"
+                  className="neu-button-destructive flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-red-900/60 bg-red-950/30 px-3 text-sm font-medium text-red-300 transition-colors hover:border-red-700 hover:text-red-200 disabled:cursor-wait disabled:opacity-60"
+                  title="Cancel this Learn run and roll back what it wrote"
                 >
                   {learnCancelBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
-                  {learnCancelBusy ? "Stopping..." : "Stop"}
+                  {learnCancelBusy ? "Cancelling..." : "Cancel"}
                 </button>
               )}
               </div>
@@ -9595,14 +10270,18 @@ export default function WorkspaceClient({
                           : formatLearnMetricTokenCount(metric.value)}
                       </dd>
                     </div>
-                    {metric.label === "Total" && job?.model ? (
+                    {metric.label === "Total" && learnPanelModel ? (
                       <div className="flex items-baseline gap-1">
                         <dt className="text-gray-600">Model:</dt>
                         <dd
                           className="font-mono tabular-nums text-gray-200"
-                          title={`Model making these calls: ${job.model}`}
+                          title={
+                            active
+                              ? `Model making these calls: ${learnPanelModel}`
+                              : `Model the next Learn run will use: ${learnPanelModel}`
+                          }
                         >
-                          {formatAssistantModelName(job.model)}
+                          {formatAssistantModelName(learnPanelModel)}
                         </dd>
                       </div>
                     ) : null}
@@ -11212,6 +11891,7 @@ export default function WorkspaceClient({
                                 onClick={() => {
                                   pendingNewChatRef.current = false;
                                   setActiveChatId(session.id);
+                                  setDraftMessages(null);
                                 }}
                                 onDoubleClick={() => startRenameChat(session)}
                                 className={[
@@ -11652,6 +12332,8 @@ export default function WorkspaceClient({
               }
               onEditMessage={handleEditUserMessage}
               onRetryAssistant={handleRetryAssistant}
+              branchGroups={branchGroups}
+              onSwitchBranch={switchBranch}
               onExternalAgentTerminal={handleExternalAgentTerminal}
               inlineArtifactRetireVersion={inlineArtifactRetireVersion}
             />
@@ -11801,6 +12483,7 @@ export default function WorkspaceClient({
               onSelectVimax={() => {}}
               onSelectMoneyPrinter={() => {}}
               onSelectLegal={() => {}}
+              onSelectWardrobe={() => {}}
               onClearOpenPlanter={() => {
                 setOpenPlanterAgent(null);
                 setExternalAgentStatus("");
