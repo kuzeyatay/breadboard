@@ -8,6 +8,7 @@ import {
   useEffect,
   useCallback,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
 } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -34,7 +35,14 @@ import {
   chatAutoScrollContentKey,
   chatAutoScrollResponseKey,
   useChatAutoScroll,
+  useChatVirtualBridge,
+  type ChatVirtualBridge,
 } from "@/app/components/use-chat-auto-scroll";
+import VirtualizedMessageList from "@/app/components/chat/virtualized-message-list";
+import {
+  chatRowKey,
+  estimateChatRowHeight,
+} from "@/app/components/chat/chat-row-identity";
 import ChatTimeSeparator from "@/app/components/chat-time-separator";
 import ChatMessageAttachments from "@/app/components/chat-message-attachments";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
@@ -690,7 +698,7 @@ interface Props {
   clusterSlug: string;
   clusterName: string;
   isOwner?: boolean;
-  clusterVisibility: "private" | "public";
+  clusterVisibility: "private" | "organization" | "public";
   chatAccessible: boolean;
   forkAllowed: boolean;
 }
@@ -1007,7 +1015,25 @@ interface ChatTranscriptProps {
     result: ExternalAgentTerminalResult,
   ) => void;
   inlineArtifactRetireVersion: number;
+  /** The scroller this transcript is drawn inside, owned by the workspace. */
+  transcriptScrollRef: RefObject<HTMLElement | null>;
+  transcriptVirtual: ChatVirtualBridge;
 }
+
+/**
+ * A message paired with its position in the whole conversation. Rows that draw
+ * nothing are dropped before they reach the virtualizer — a zero-height row
+ * would still claim the spacing on both sides of itself — so the original index
+ * has to travel with the message: editing, retrying, branching and the
+ * newest-answer checks are all still expressed against it.
+ */
+type TranscriptRow = { index: number; message: Message };
+
+const transcriptRowKey = (row: TranscriptRow) =>
+  chatRowKey(row.message, row.index);
+
+const transcriptRowHeight = (row: TranscriptRow) =>
+  estimateChatRowHeight(row.message, { minimum: 88 });
 
 const ChatTranscript = memo(function ChatTranscript({
   clusterName,
@@ -1026,6 +1052,8 @@ const ChatTranscript = memo(function ChatTranscript({
   onSwitchBranch,
   onExternalAgentTerminal,
   inlineArtifactRetireVersion,
+  transcriptScrollRef,
+  transcriptVirtual,
 }: ChatTranscriptProps) {
   const copiedUserTimerRef = useRef<number | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -1038,6 +1066,24 @@ const ChatTranscript = memo(function ChatTranscript({
     -1,
   );
   const timeSeparators = chatTimeSeparatorLabels(messages);
+
+  // The worker result belongs to the hidden observer, not to the Super Agent's
+  // visible assistant message — resolved here so a row's measured height and
+  // its drawn height come from the same text.
+  const transcriptRows: TranscriptRow[] = [];
+  messages.forEach((storedMessage, index) => {
+    if (storedMessage.internalAgentContinuation === true) return;
+    transcriptRows.push({
+      index,
+      message:
+        storedMessage.delegatedAgentRun === true
+          ? {
+              ...storedMessage,
+              content: externalAgentCardContent(storedMessage),
+            }
+          : storedMessage,
+    });
+  });
 
   useEffect(
     () => () => {
@@ -1131,17 +1177,19 @@ const ChatTranscript = memo(function ChatTranscript({
         )
       )}
 
-      {messages.map((storedMessage, i) => {
-        // The worker result belongs to the hidden observer, not to the Super
-        // Agent's visible assistant message.
-        const msg =
-          storedMessage.delegatedAgentRun === true
-            ? {
-                ...storedMessage,
-                content: externalAgentCardContent(storedMessage),
-              }
-            : storedMessage;
-        if (msg.internalAgentContinuation === true) return null;
+      {transcriptRows.length > 0 ? (
+      <VirtualizedMessageList
+        surface="garden-chat"
+        className="w-full"
+        items={transcriptRows}
+        scrollRef={transcriptScrollRef}
+        bridge={transcriptVirtual}
+        // What `gap-6` drew between rows.
+        gap={24}
+        resetKey={chatSessionId}
+        getItemKey={transcriptRowKey}
+        estimateSize={transcriptRowHeight}
+        renderItem={({ message: msg, index: i }) => {
         const messageInteractionId = msg.id ?? `user-message-${i}`;
         const externalRun =
           msg.agentBrowserRun ??
@@ -1177,10 +1225,7 @@ const ChatTranscript = memo(function ChatTranscript({
           msg.videoUseRun ??
           msg.rufloRun;
         return (
-        <div
-          key={i}
-          className="flex w-full flex-col gap-3"
-        >
+        <div className="flex w-full flex-col gap-3">
           {timeSeparators[i] ? (
             <ChatTimeSeparator
               label={timeSeparators[i]}
@@ -1941,7 +1986,9 @@ const ChatTranscript = memo(function ChatTranscript({
           </div>
         </div>
         );
-      })}
+        }}
+      />
+      ) : null}
       {chatSessionId ? (
         <InlineArtifactCards ownerMessageId={null} />
       ) : null}
@@ -2137,7 +2184,7 @@ export default function WorkspaceClient({
     const startX = event.clientX;
     const startWidth = leftSidebarOpen ? leftSidebarWidth : LEFT_SIDEBAR_RAIL;
     setLeftSidebarResizing(true);
-    document.body.style.cursor = "col-resize";
+    document.body.style.cursor = "var(--bb-cursor-col-resize, col-resize)";
     document.body.style.userSelect = "none";
 
     const handleMove = (e: PointerEvent) => {
@@ -2785,6 +2832,7 @@ export default function WorkspaceClient({
     showingDraft ||
     (activeChatId !== null && streamingChatIds.has(activeChatId)) ||
     hasRunningExternalAgentInActiveChat;
+  const transcriptVirtual = useChatVirtualBridge();
   const {
     ref: transcriptScrollRef,
     awayFromBottom: transcriptAwayFromBottom,
@@ -2793,6 +2841,7 @@ export default function WorkspaceClient({
     isResponding: isStreaming,
     responseKey: chatAutoScrollResponseKey(messages),
     contentKey: chatAutoScrollContentKey(messages),
+    virtual: transcriptVirtual,
   });
 
   // A runtime agent a super-agent turn asked for, and the follow-up turn its
@@ -12336,6 +12385,8 @@ export default function WorkspaceClient({
               onSwitchBranch={switchBranch}
               onExternalAgentTerminal={handleExternalAgentTerminal}
               inlineArtifactRetireVersion={inlineArtifactRetireVersion}
+              transcriptScrollRef={transcriptScrollRef}
+              transcriptVirtual={transcriptVirtual}
             />
             </main>
             <ChatJumpToBottom

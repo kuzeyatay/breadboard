@@ -199,6 +199,27 @@ test("every external agent answers the send with a thinking row before its run e
   assert.match(previewBody.slice(0, 4_000), /external-thinking-\$\{clientMessageId\}/);
   assert.match(previewBody.slice(0, 1_800), /setConnection\("streaming"\)/);
   assert.doesNotMatch(session, /showThinking/);
+
+  // The row also has to carry the moment the person pressed send. Handed an
+  // empty activity list it renders with no elapsed time at all, so the whole
+  // launch round trip reads as a turn where nothing happened.
+  assert.match(
+    previewBody.slice(0, 2_600),
+    /setActivities\(\[\s*\{[^}]*kind: "reasoning"[^}]*startedAt: createdAt/,
+  );
+
+  // And the clock is retired with the row, so a start failure — which has no
+  // inline card to take the measurement over — cannot inherit the wait as its
+  // own duration.
+  const appendBody = session.slice(
+    session.indexOf("const appendExternalAgentTurn = useCallback"),
+  );
+  const teardown = appendBody.slice(
+    appendBody.indexOf("} finally {"),
+    appendBody.indexOf("} finally {") + 900,
+  );
+  assert.match(teardown, /setConnection\("idle"\)/);
+  assert.match(teardown, /setActivities\(\[\]\)/);
 });
 
 test("Garden workspace wires retry into every external agent it hosts", () => {

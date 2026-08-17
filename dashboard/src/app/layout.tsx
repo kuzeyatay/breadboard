@@ -27,6 +27,17 @@ const ibmPlexMono = IBM_Plex_Mono({
 
 const themeInitializationScript = `try{const theme=localStorage.getItem("breadboard:theme");if(theme==="dark")document.documentElement.dataset.theme="dark"}catch{}`;
 
+/**
+ * Electron's preload exposes `window.breadboardDesktop` before any page script
+ * runs, so the desktop flag belongs here rather than in a client effect. It has
+ * to be set before the first paint: the native caption buttons are painted by
+ * the window itself from the moment it loads, while the 32px strip that reserves
+ * room for them — and the `calc(100vh - …)` height on every page shell — only
+ * exists once this attribute does. Setting it after hydration made the whole app
+ * shove down a row a few frames into every refresh.
+ */
+const desktopChromeScript = `try{if("breadboardDesktop" in window)document.documentElement.dataset.breadboardDesktop="true"}catch{}`;
+
 export const metadata: Metadata = {
   title: "breadboard",
   description: "breadboard — your personal knowledge garden",
@@ -58,6 +69,7 @@ export default function RootLayout({
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitializationScript }} />
+        <script dangerouslySetInnerHTML={{ __html: desktopChromeScript }} />
       </head>
       <body className="min-h-full flex flex-col">
         <AppThemeRuntime />

@@ -4144,3 +4144,123 @@ html[data-breadboard-desktop="true"] body > .bb-wm-shell {
     animation: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Cursors
+
+   Windows draws the I-beam and the resize arrows in whatever pointer scheme the
+   OS is set to. On a white or inverted scheme they disappear against the paper
+   surfaces — the chat composer being the worst case, since it is nearly white.
+   These replace the two families with black glyphs carrying a white halo, so
+   they read on the paper theme and the dark theme alike. Every var ends in the
+   native keyword, which is what applies if the image fails to load, and the
+   var() call sites pass the keyword again as the fallback for the var itself.
+
+   Applied in the utilities layer so an explicit Tailwind cursor class on an
+   input (a readonly field acting as a button, say) still wins on specificity.
+   --------------------------------------------------------------------------- */
+:root {
+  --bb-cursor-text:
+    url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><g fill='none' stroke-linecap='round'><path d='M10.2 5h3.6M10.2 19h3.6M12 5v14' stroke='%23ffffff' stroke-width='2.4'/><path d='M10.2 5h3.6M10.2 19h3.6M12 5v14' stroke='%23000000' stroke-width='1'/></g></svg>")
+      12 12,
+    text;
+  --bb-cursor-col-resize:
+    url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><g fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M12 4.5v15M9 12h-3.5M5.5 12l2.2-2M5.5 12l2.2 2M15 12h3.5M18.5 12l-2.2-2M18.5 12l-2.2 2' stroke='%23ffffff' stroke-width='2.4'/><path d='M12 4.5v15M9 12h-3.5M5.5 12l2.2-2M5.5 12l2.2 2M15 12h3.5M18.5 12l-2.2-2M18.5 12l-2.2 2' stroke='%23000000' stroke-width='1'/></g></svg>")
+      12 12,
+    col-resize;
+  --bb-cursor-row-resize:
+    url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><g fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M4.5 12h15M12 9v-3.5M12 5.5l-2 2.2M12 5.5l2 2.2M12 15v3.5M12 18.5l-2-2.2M12 18.5l2-2.2' stroke='%23ffffff' stroke-width='2.4'/><path d='M4.5 12h15M12 9v-3.5M12 5.5l-2 2.2M12 5.5l2 2.2M12 15v3.5M12 18.5l-2-2.2M12 18.5l2-2.2' stroke='%23000000' stroke-width='1'/></g></svg>")
+      12 12,
+    row-resize;
+  --bb-cursor-ew-resize:
+    url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><g fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M5.5 12h13M5.5 12l2.6-2.4M5.5 12l2.6 2.4M18.5 12l-2.6-2.4M18.5 12l-2.6 2.4' stroke='%23ffffff' stroke-width='2.4'/><path d='M5.5 12h13M5.5 12l2.6-2.4M5.5 12l2.6 2.4M18.5 12l-2.6-2.4M18.5 12l-2.6 2.4' stroke='%23000000' stroke-width='1'/></g></svg>")
+      12 12,
+    ew-resize;
+  --bb-cursor-ns-resize:
+    url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><g fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M12 5.5v13M12 5.5l-2.4 2.6M12 5.5l2.4 2.6M12 18.5l-2.4-2.6M12 18.5l2.4-2.6' stroke='%23ffffff' stroke-width='2.4'/><path d='M12 5.5v13M12 5.5l-2.4 2.6M12 5.5l2.4 2.6M12 18.5l-2.4-2.6M12 18.5l2.4-2.6' stroke='%23000000' stroke-width='1'/></g></svg>")
+      12 12,
+    ns-resize;
+  --bb-cursor-nwse-resize:
+    url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><g fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M6.5 6.5l11 11M6.5 6.5v4M6.5 6.5h4M17.5 17.5v-4M17.5 17.5h-4' stroke='%23ffffff' stroke-width='2.4'/><path d='M6.5 6.5l11 11M6.5 6.5v4M6.5 6.5h4M17.5 17.5v-4M17.5 17.5h-4' stroke='%23000000' stroke-width='1'/></g></svg>")
+      12 12,
+    nwse-resize;
+  --bb-cursor-nesw-resize:
+    url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><g fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M17.5 6.5l-11 11M17.5 6.5h-4M17.5 6.5v4M6.5 17.5h4M6.5 17.5v-4' stroke='%23ffffff' stroke-width='2.4'/><path d='M17.5 6.5l-11 11M17.5 6.5h-4M17.5 6.5v4M6.5 17.5h4M6.5 17.5v-4' stroke='%23000000' stroke-width='1'/></g></svg>")
+      12 12,
+    nesw-resize;
+}
+
+@layer utilities {
+  input:where(
+      :not(
+          [type="checkbox"],
+          [type="radio"],
+          [type="range"],
+          [type="color"],
+          [type="file"],
+          [type="image"],
+          [type="button"],
+          [type="submit"],
+          [type="reset"]
+        )
+    ),
+  textarea,
+  [contenteditable="true"],
+  [contenteditable=""] {
+    cursor: var(--bb-cursor-text, text);
+  }
+
+  .cursor-text {
+    cursor: var(--bb-cursor-text, text);
+  }
+
+  .cursor-col-resize {
+    cursor: var(--bb-cursor-col-resize, col-resize);
+  }
+
+  .cursor-row-resize {
+    cursor: var(--bb-cursor-row-resize, row-resize);
+  }
+
+  .cursor-ew-resize {
+    cursor: var(--bb-cursor-ew-resize, ew-resize);
+  }
+
+  .cursor-ns-resize {
+    cursor: var(--bb-cursor-ns-resize, ns-resize);
+  }
+
+  .cursor-nwse-resize {
+    cursor: var(--bb-cursor-nwse-resize, nwse-resize);
+  }
+
+  .cursor-nesw-resize {
+    cursor: var(--bb-cursor-nesw-resize, nesw-resize);
+  }
+
+  /* Chromium points the plain arrow at a disabled field; keep that. */
+  input:disabled,
+  textarea:disabled {
+    cursor: default;
+  }
+
+  /* An assistant reply is a block of prose, so the whole body is a text target.
+     Left at `cursor: auto` it falls back to the OS I-beam, which is the one
+     place the white pointer scheme still showed through. Descendants opt back
+     out below — an inherited cursor only lands where the element declares none
+     of its own, so anything already carrying a cursor is untouched. */
+  .chat-markdown {
+    cursor: var(--bb-cursor-text, text);
+  }
+
+  .chat-markdown a,
+  .chat-markdown button,
+  .chat-markdown summary,
+  .chat-markdown [role="button"] {
+    cursor: pointer;
+  }
+
+  .chat-markdown :where(img, svg, canvas, video) {
+    cursor: default;
+  }
+}

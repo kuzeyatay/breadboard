@@ -82,6 +82,15 @@ writeFileSync(
     "  - web",
     "web:",
     "  search_backend: ddgs",
+    // Search without extract is the worst shape research can have: the model
+    // gets titles and snippets it can never open, and answers from them as
+    // though it had read the pages. Every extract backend Hermes ships —
+    // Firecrawl, Tavily, Exa, Parallel — is a paid reader behind an API key,
+    // so with none set `web_extract` failed on every call and the turn quietly
+    // degraded to snippet-quoting. `fetch` is Breadboard's bundled provider
+    // (plugins/web/fetch): it requests the page itself and strips it to text,
+    // with the same SSRF and website-policy gates Firecrawl's loop applies.
+    "  extract_backend: fetch",
     // Hermes ships a Mixture-of-Agents preset named "default" and, when no
     // provider is given, a plain model switch to a name matching an enabled
     // preset pivots the session onto the MoA virtual provider. Breadboard sends

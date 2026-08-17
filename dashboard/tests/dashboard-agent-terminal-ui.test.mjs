@@ -34,6 +34,10 @@ const terminalSidebar = fs.readFileSync(
   new URL("../src/app/components/hermes/terminal-sidebar.tsx", import.meta.url),
   "utf8",
 );
+const composer = fs.readFileSync(
+  new URL("../src/app/components/assistant-composer.tsx", import.meta.url),
+  "utf8",
+);
 
 test("Hermes terminal uses the original Breadboard terminal shell", () => {
   assert.match(terminal, /breadboard:knowledge-terminal-height/);
@@ -274,14 +278,27 @@ test("a message cannot be sent into a chat that is still loading", () => {
   assert.doesNotMatch(agentSession, /(?<!set)\bsetLoadingSession\(true\)/);
   assert.match(agentSession, /if \(loadingSessionRef\.current\) return;/);
 
-  // The composer is disabled for the same window, so the block is visible
+  // The composer is locked for the same window, so the block is visible
   // rather than a send button that silently does nothing.
   assert.match(
     runtime,
     /const conversationLocked = Boolean\(disabled\) \|\| loadingTranscript;/,
   );
   assert.match(runtime, /disabled=\{conversationLocked\}/);
-  assert.match(runtime, /loadingTranscript \? "Loading this chat…"/);
+
+  // The wait is shown on the send button, not in the box: the placeholder is
+  // the ordinary invitation and the field takes typing throughout.
+  assert.match(runtime, /placeholder=\{placeholder \?\? "Ask the agent…"\}/);
+  assert.doesNotMatch(runtime, /loadingTranscript \? "Loading this chat…"/);
+  assert.match(runtime, /loading=\{loadingTranscript\}/);
+  assert.match(composer, /\{isSending \|\| loading \? \(\s*<Spinner \/>/);
+  assert.match(
+    composer,
+    /disabled=\{loading \|\| !canSend \|\| isSending \|\| disabled/,
+  );
+  // Loading keeps the accent colour; every other block still greys out.
+  assert.match(composer, /\$\{loading \? 'disabled:cursor-wait/);
+  assert.match(composer, /if \(loading\) return;/);
   // Voice mode submits without touching the send button.
   assert.match(
     runtime,

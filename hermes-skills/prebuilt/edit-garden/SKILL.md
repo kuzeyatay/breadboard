@@ -12,7 +12,7 @@ multi-step reorganization needs: read the whole tree first, plan the moves,
 confirm anything destructive, and report what actually changed.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [garden_chat, dashboard_terminal]
   requiredTools:
     - garden_list

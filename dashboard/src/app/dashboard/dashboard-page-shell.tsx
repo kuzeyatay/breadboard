@@ -4,8 +4,10 @@ import { authOptions } from "@/lib/auth-options";
 import {
   getClusters,
   getClusterFolders,
+  getOrganizationClusters,
   getPublicClusters,
 } from "@/app/actions/clusters";
+import { listOrganizations } from "@/lib/organizations/store";
 import { getNavbarShortcuts } from "@/lib/profile/navbar-shortcuts-store.ts";
 import type { TerminalPanel } from "@/app/components/hermes/terminal-sidebar";
 import DashboardClient from "./dashboard-client";
@@ -34,7 +36,12 @@ export default async function DashboardPageShell({
   const username = session.user.name ?? userEmail;
   const clusters = await getClusters(userId);
   const publicClusters = await getPublicClusters(userId);
+  const organizationClusters = await getOrganizationClusters(userId);
   const clusterFolders = await getClusterFolders(userId);
+  const organizations = listOrganizations(userId).map((organization) => ({
+    id: organization.id,
+    name: organization.name,
+  }));
 
   return (
     <DashboardClient
@@ -42,6 +49,8 @@ export default async function DashboardPageShell({
       username={username}
       initialClusters={clusters}
       initialPublicClusters={publicClusters}
+      initialOrganizationClusters={organizationClusters}
+      organizations={organizations}
       initialClusterFolders={clusterFolders}
       navbarShortcuts={getNavbarShortcuts(userId)}
       initialTerminalPanel={initialTerminalPanel}

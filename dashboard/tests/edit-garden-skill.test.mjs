@@ -21,7 +21,7 @@ test("Edit Garden is a ready prebuilt skill on both authenticated chat surfaces"
     );
     assert.ok(skill, `missing on ${surface}`);
     assert.equal(skill.availability, "ready");
-    assert.equal(skill.category, "Prebuilt");
+    assert.equal(skill.category, "Featured");
     // Organizing notes is knowledge work; it must not be pushed onto OpenCode.
     assert.equal(skill.classification, "eligible_general");
     assert.deepEqual(skill.capabilityContract?.requiredTools, [

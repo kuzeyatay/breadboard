@@ -14,6 +14,7 @@ import { signOut } from "next-auth/react";
 
 import BackLink from "@/app/components/back-link";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
+import OrganizationPanel from "./organization-panel";
 import {
   MONTH_ABBREVIATIONS,
   WEEKDAY_ABBREVIATIONS,
@@ -1825,6 +1826,7 @@ export default function ProfileClient({
   initialShortcuts: NavbarShortcuts;
 }) {
   const { account, totals, streaks, habit, surfaces, gardens, artifactKinds, agents } = stats;
+  const [tab, setTab] = useState<"profile" | "organization">("profile");
 
   const surfaceMax = surfaces.reduce((best, entry) => Math.max(best, entry.count), 0);
   const gardenMax = gardens.reduce((best, entry) => Math.max(best, entry.prompts), 0);
@@ -1836,12 +1838,36 @@ export default function ProfileClient({
       <header className="breadboard-flower-navbar relative flex shrink-0 items-center justify-between gap-4 border-b border-gray-800 px-6 py-3.5">
         <NavbarFlowerWind />
         <div className="relative z-10 flex min-w-0 items-center gap-3">
-          <BackLink fallbackHref="/dashboard" fallbackLabel="Back to dashboard" />
+          <BackLink fallbackHref="/dashboard" fallbackLabel="Back to dashboard" fixed />
           <span className="text-gray-700">/</span>
-          <h1 className="truncate text-sm font-semibold text-white">Profile</h1>
+          <h1 className="truncate text-sm font-semibold text-white">
+            {tab === "organization" ? "Organization" : "Profile"}
+          </h1>
         </div>
+        <nav className="relative z-10 inline-flex shrink-0 items-center rounded-md border border-gray-800 bg-gray-900/80 p-1 shadow-inner">
+          {(["profile", "organization"] as const).map((name) => (
+            <button
+              key={name}
+              type="button"
+              onClick={() => setTab(name)}
+              aria-current={tab === name ? "page" : undefined}
+              className={
+                tab === name
+                  ? "rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950 shadow-sm"
+                  : "rounded-md px-3 py-1.5 text-xs font-medium text-gray-400 transition hover:text-white"
+              }
+            >
+              {name === "profile" ? "Profile" : "Organization"}
+            </button>
+          ))}
+        </nav>
       </header>
 
+      {tab === "organization" ? (
+        <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-8">
+          <OrganizationPanel username={account.username} />
+        </main>
+      ) : (
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
         {/* ------------------------------------------------------ identity */}
         <section className="neu-surface-raised flex flex-wrap items-center gap-5 rounded-2xl border border-gray-800 p-5">
@@ -2081,6 +2107,7 @@ export default function ProfileClient({
         {/* ---------------------------------------------------------- about */}
         <AboutBreadboard />
       </main>
+      )}
     </div>
   );
 }

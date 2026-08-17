@@ -1,6 +1,5 @@
 import type { ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
-import * as net from "node:net";
 import * as path from "node:path";
 import {
   expect,
@@ -18,6 +17,7 @@ import {
   launchBreadboard,
   type BreadboardElectron,
 } from "./launch-breadboard";
+import { waitForPortsReleased } from "./process-ports";
 import { ScenarioRecorder } from "./scenario-recorder";
 
 const PORT_RELEASE_TIMEOUT_MS = 30_000;
@@ -72,6 +72,7 @@ export class ElectronQaHarness {
   private traceStarted = false;
   private traceChunkActive = false;
   private activeTrace: ActiveTrace | null = null;
+  private readonly traceCaptureFailures: string[] = [];
   private failed = false;
 
   constructor(run: QaRunEnvironment) {
@@ -194,6 +195,11 @@ export class ElectronQaHarness {
     return [...active.paths];
   }
 
+  /** Evidence that a trace could not be written, so a gap is never silent. */
+  get traceFailures(): readonly string[] {
+    return [...this.traceCaptureFailures];
+  }
+
   async captureFailure(testInfo: TestInfo): Promise<readonly string[]> {
     this.markFailed();
     const artifacts: string[] = [];
@@ -219,6 +225,60 @@ export class ElectronQaHarness {
           message: error instanceof Error ? error.message : String(error),
           actionable: false,
         });
+      }
+    }
+
+    if (page) {
+      // Week 2: a click intercepted by a leftover overlay was the single most
+      // expensive Week 1 failure to diagnose, because the evidence bundle said
+      // nothing about what was covering the page. Capture every fixed overlay
+      // at the moment of failure so the next occurrence identifies itself.
+      try {
+        const overlays = await page.evaluate(() => {
+          const interesting = new Set(["fixed", "sticky", "absolute"]);
+          return [...document.querySelectorAll("body *")]
+            .filter((element) => {
+              const style = window.getComputedStyle(element);
+              if (!interesting.has(style.position)) return false;
+              if (style.pointerEvents === "none") return false;
+              if (style.visibility === "hidden" || style.display === "none") return false;
+              const rect = element.getBoundingClientRect();
+              // Only overlays large enough to swallow a click on something else.
+              return rect.width >= window.innerWidth * 0.5 && rect.height >= window.innerHeight * 0.5;
+            })
+            .slice(0, 20)
+            .map((element) => {
+              const style = window.getComputedStyle(element);
+              const rect = element.getBoundingClientRect();
+              return {
+                className: typeof element.className === "string" ? element.className : null,
+                tagName: element.tagName,
+                position: style.position,
+                zIndex: style.zIndex,
+                pointerEvents: style.pointerEvents,
+                opacity: style.opacity,
+                rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+                headings: [...element.querySelectorAll("h1,h2,h3")]
+                  .map((heading) => (heading.textContent ?? "").trim())
+                  .slice(0, 4),
+                text: (element.textContent ?? "").trim().slice(0, 200),
+              };
+            });
+        });
+        this.currentDiagnostics?.record({
+          source: "renderer",
+          level: overlays.length > 0 ? "warning" : "info",
+          event: "failure-overlay-inventory",
+          message:
+            overlays.length > 0
+              ? `${overlays.length} full-page overlay(s) were present when the scenario failed`
+              : "no full-page overlay was present when the scenario failed",
+          actionable: false,
+          data: { overlays },
+        });
+      } catch {
+        // A closed or crashed page cannot be inventoried; the screenshot and
+        // diagnostics above remain the evidence.
       }
     }
 
@@ -382,9 +442,23 @@ export class ElectronQaHarness {
     this.traceChunkActive = true;
   }
 
+  /**
+   * Stop the active trace chunk.
+   *
+   * Playwright can reject `stopChunk` while the Electron context is already
+   * tearing down ("file data stream has unexpected number of bytes"). Letting
+   * that reject would replace the real scenario failure with a trace error and,
+   * worse, leave `traceChunkActive` true so teardown tries to stop a chunk that
+   * no longer exists and kills the whole worker. A missing trace is recorded as
+   * an evidence gap; it is never allowed to abort the run or hide the failure
+   * that was being traced.
+   */
   private async stopTraceChunk(persist: boolean): Promise<void> {
     if (!this.currentApp || !this.traceChunkActive) return;
     const trace = this.activeTrace;
+    // Reset first: every exit path below leaves this chunk unusable.
+    this.traceChunkActive = false;
+    const tracing = this.currentApp.application.context().tracing;
     if (persist && trace) {
       trace.segment += 1;
       const traceDir = path.join(this.resultsDir, "traces");
@@ -393,21 +467,49 @@ export class ElectronQaHarness {
         traceDir,
         `${trace.slug}-segment-${trace.segment}.zip`,
       );
-      await this.currentApp.application.context().tracing.stopChunk({
-        path: tracePath,
-      });
-      trace.paths.push(tracePath);
-    } else {
-      await this.currentApp.application.context().tracing.stopChunk();
+      try {
+        await tracing.stopChunk({ path: tracePath });
+        trace.paths.push(tracePath);
+      } catch (error) {
+        this.recordTraceCaptureFailure(tracePath, error);
+      }
+      return;
     }
-    this.traceChunkActive = false;
+    try {
+      await tracing.stopChunk();
+    } catch (error) {
+      this.recordTraceCaptureFailure(null, error);
+    }
+  }
+
+  private recordTraceCaptureFailure(tracePath: string | null, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const detail = tracePath
+      ? `Playwright trace could not be written to ${tracePath}: ${message}`
+      : `Playwright trace chunk could not be discarded cleanly: ${message}`;
+    this.traceCaptureFailures.push(detail);
+    (this.currentDiagnostics ?? this.lastDiagnostics)?.record({
+      source: "electron",
+      level: "warning",
+      event: "trace-capture-failed",
+      message: detail,
+      // An evidence gap is a harness problem, not a Breadboard defect.
+      actionable: false,
+    });
   }
 
   private async stopContextTrace(persistActiveChunk: boolean): Promise<void> {
     if (!this.currentApp || !this.traceStarted) return;
     if (this.traceChunkActive) await this.stopTraceChunk(persistActiveChunk);
-    await this.currentApp.application.context().tracing.stop();
     this.traceStarted = false;
+    try {
+      await this.currentApp.application.context().tracing.stop();
+    } catch (error) {
+      // Same reasoning as stopTraceChunk: a tracing teardown problem is an
+      // evidence gap to report, not a reason to abandon shutdown checks such as
+      // process exit and port release.
+      this.recordTraceCaptureFailure(null, error);
+    }
   }
 
   private failurePage(): Page | null {
@@ -475,12 +577,17 @@ export const test = playwrightTest.extend<QaTestFixtures, QaWorkerFixtures>({
       await use();
       const failed = testInfo.status !== testInfo.expectedStatus;
       if (failed) await qa.captureFailure(testInfo);
+      const knownTraceFailures = qa.traceFailures.length;
       const traces = await qa.finishTestTrace(failed);
       for (const trace of traces) {
         await testInfo.attach("electron-trace", {
           path: trace,
           contentType: "application/zip",
         });
+      }
+      // An unwritable trace is a reportable evidence gap, never a silent one.
+      for (const gap of qa.traceFailures.slice(knownTraceFailures)) {
+        testInfo.annotations.push({ type: "qa-evidence-gap", description: gap });
       }
     },
     { auto: true },
@@ -505,60 +612,6 @@ function criticalOwnedPorts(endpoints: QaRuntimeEndpoints): number[] {
     ports.add(port);
   }
   return [...ports].sort((left, right) => left - right);
-}
-
-async function waitForPortsReleased(
-  ports: readonly number[],
-  timeoutMs: number,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let unavailable = [...ports];
-  while (Date.now() <= deadline) {
-    const states = await Promise.all(
-      ports.map(async (port) => ({ port, free: await isLoopbackPortFree(port) })),
-    );
-    unavailable = states.filter((state) => !state.free).map((state) => state.port);
-    if (unavailable.length === 0) return;
-    await boundedDelay(100);
-  }
-  throw new Error(
-    `QA-owned loopback ports were not released within ${timeoutMs}ms: ${unavailable.join(", ")}`,
-  );
-}
-
-async function isLoopbackPortFree(port: number): Promise<boolean> {
-  return (await canBindPort(port)) && !(await canConnectToPort(port));
-}
-
-function canBindPort(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.unref();
-    const finish = (free: boolean): void => {
-      server.removeAllListeners();
-      resolve(free);
-    };
-    server.once("error", () => finish(false));
-    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
-      server.close(() => finish(true));
-    });
-  });
-}
-
-function canConnectToPort(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host: "127.0.0.1", port });
-    let settled = false;
-    const finish = (connected: boolean): void => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(connected);
-    };
-    socket.setTimeout(400, () => finish(false));
-    socket.once("connect", () => finish(true));
-    socket.once("error", () => finish(false));
-  });
 }
 
 function observeProcessExit(

@@ -29,6 +29,26 @@ test("the root layout includes minimal desktop-only window chrome", () => {
   assert.doesNotMatch(titleBar, />breadboard</i);
 });
 
+test("the desktop chrome flag is set before the first paint, not after hydration", () => {
+  // The native caption buttons are painted by the window from the moment it
+  // loads. If the attribute that reserves room for them waited for a client
+  // effect, every refresh shoved the whole page down a row a few frames in.
+  assert.match(
+    layout,
+    /const desktopChromeScript = `try\{if\("breadboardDesktop" in window\)document\.documentElement\.dataset\.breadboardDesktop="true"\}catch\{\}`/,
+  );
+  assert.match(
+    layout,
+    /<head>[\s\S]*dangerouslySetInnerHTML=\{\{ __html: desktopChromeScript \}\}[\s\S]*<\/head>/,
+  );
+  // The client component may keep a fallback, but it must not undo or re-apply
+  // what the head script already established.
+  assert.match(
+    titleBar,
+    /dataset\.breadboardDesktop === "true"\) return/,
+  );
+});
+
 test("desktop chrome reserves space and exposes a draggable title area", () => {
   assert.match(globals, /--breadboard-titlebar-height:\s*32px/);
   assert.match(globals, /background:\s*var\(--paper-surface\)/);

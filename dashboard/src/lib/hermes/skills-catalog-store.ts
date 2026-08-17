@@ -14,7 +14,7 @@ import type {
 
 export type CatalogFilter =
   | "all"
-  | "prebuilt"
+  | "featured"
   | "scientific"
   | "reverse"
   | "design"

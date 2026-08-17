@@ -21,7 +21,7 @@ Kaneo model: a project holds columns, a column holds cards, and a card is a
 piece of work. Nine tools — five reads and four writes.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [dashboard_terminal, garden_chat]
   requiredTools:
     - plan_list_projects

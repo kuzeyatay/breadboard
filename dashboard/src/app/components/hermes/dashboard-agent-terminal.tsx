@@ -693,7 +693,14 @@ function RuntimeTerminal({
   const [glideMoving, setGlideMoving] = useState(false);
   const glideTimer = useRef<number | null>(null);
   const glideRaf = useRef<number | null>(null);
+  // Set while a press on the collapsed bar has already built the opening
+  // glide's first frame, before the release that asks for it. See prewarmOpen.
+  const prewarmRef = useRef(false);
   const bodyMounted = isOpen || glide === "closing";
+  // The body is in the DOM slightly wider than the dock counts as open: a
+  // prewarming press mounts it while the finger is still down, so the release
+  // has nothing left to build and can start moving on its next frame.
+  const bodyRendered = bodyMounted || glide === "opening";
 
   // Keep the header items mounted through their exit animation so they can
   // retract (not just vanish) when the terminal collapses. `headerMounted`
@@ -5924,9 +5931,27 @@ function RuntimeTerminal({
       window.cancelAnimationFrame(glideRaf.current);
       glideRaf.current = null;
     }
+    prewarmRef.current = false;
     setGlide(null);
     setGlideBox(null);
     setGlideShift(0);
+    setGlideMoving(false);
+  }
+
+  // Pressing the collapsed bar builds the opening glide's first frame there and
+  // then — the box at its open size, pushed far enough down that only the bar
+  // shows, which is pixel for pixel what was already on screen. Nothing moves,
+  // but the body mounts and lays out while the finger is still down, so the
+  // release only has to flip the offset. Without this the release paid for the
+  // mount of the most expensive box on the page before it could move at all,
+  // and that wait is the lag between the click and the dock answering it.
+  function prewarmOpen() {
+    if (isOpen || glide || prefersReducedMotion()) return;
+    const box = Math.max(openHeight(preferredOpenHeightRef.current), MIN_HEIGHT);
+    prewarmRef.current = true;
+    setGlide("opening");
+    setGlideBox(box);
+    setGlideShift(box - COLLAPSED_HEIGHT);
     setGlideMoving(false);
   }
 
@@ -5948,7 +5973,16 @@ function RuntimeTerminal({
     // Read the edge before cancelling: a glide caught mid-flight is reversed
     // from wherever it had got to, not from where it was headed.
     const from = visualHeight();
-    cancelGlide();
+    // Whether the dock is mid-travel decides how it may be restarted, and it
+    // has to be read before the state below is rewritten. A prewarm is not
+    // travel: it holds a start frame and moves nothing.
+    const moving = glideMoving;
+    // A prewarmed open must not be torn down and rebuilt: the frame it starts
+    // from is the one already on screen, and cancelling would throw away the
+    // mount this release was waiting for.
+    const warm = open && prewarmRef.current;
+    if (!warm) cancelGlide();
+    prewarmRef.current = false;
     const reduced = prefersReducedMotion();
     if (open) {
       // Fully open, the dock is the page: everything the reader had scrolled
@@ -5960,35 +5994,57 @@ function RuntimeTerminal({
     }
     const target = open ? openHeight(preferredOpenHeightRef.current) : COLLAPSED_HEIGHT;
     setHeight(target);
-    if (reduced) return;
+    if (reduced) {
+      cancelGlide();
+      return;
+    }
     // Opening, the box takes the size it will end at; closing, it keeps the one
     // it had. Either way the height above has already settled what counts as
     // open, so the header retracts and the body learns it is on its way out
     // while the box it lives in stays exactly as big as it was.
     const box = Math.max(open ? target : from, MIN_HEIGHT);
+    const settle = () => {
+      glideTimer.current = window.setTimeout(
+        () => {
+          glideTimer.current = null;
+          setGlide(null);
+          setGlideBox(null);
+          setGlideShift(0);
+          setGlideMoving(false);
+        },
+        open ? DOCK_OPEN_MS : DOCK_CLOSE_MS,
+      );
+    };
     setGlide(open ? "opening" : "closing");
     setGlideBox(box);
-    setGlideShift(open ? box - from : 0);
-    // Two frames of stillness before anything moves. Opening mounts the entire
+
+    // A dock standing still is already painting the frame its glide starts
+    // from: a prewarmed open has been holding its offset since the press, and a
+    // close starts from the dock's own resting position, which this commit
+    // leaves where it is because glideBox holds the height the box already had.
+    // Neither has anything to wait for, so the move goes in this commit and the
+    // dock is travelling on the very next frame.
+    if (!moving && (warm || !open)) {
+      setGlideMoving(true);
+      setGlideShift(open ? 0 : box - COLLAPSED_HEIGHT);
+      settle();
+      return;
+    }
+
+    // Everything else owes two frames of stillness first. A cold open —
+    // keyboard, or a press that never got to prewarm — mounts the entire
     // terminal in the commit above, and a transition started in the same frame
-    // spends its first stretch waiting on that work — the stutter this exists
-    // to remove. By the time these run, the box is built, laid out and painted,
-    // and sliding it is the only thing left to do.
+    // spends its first stretch waiting on that work, which is the stutter this
+    // exists to remove. A reversal has a subtler debt: the box is mid-travel
+    // and about to be resized under itself, so its new resting offset has to be
+    // painted once before it can be animated away from, or the dock jumps.
+    setGlideShift(open ? box - from : 0);
     glideRaf.current = window.requestAnimationFrame(() => {
       glideRaf.current = window.requestAnimationFrame(() => {
         glideRaf.current = null;
         setGlideMoving(true);
         setGlideShift(open ? 0 : box - COLLAPSED_HEIGHT);
-        glideTimer.current = window.setTimeout(
-          () => {
-            glideTimer.current = null;
-            setGlide(null);
-            setGlideBox(null);
-            setGlideShift(0);
-            setGlideMoving(false);
-          },
-          open ? DOCK_OPEN_MS : DOCK_CLOSE_MS,
-        );
+        settle();
       });
     });
   }
@@ -6007,8 +6063,11 @@ function RuntimeTerminal({
     };
     event.currentTarget.setPointerCapture(event.pointerId);
     setIsResizing(true);
-    document.body.style.cursor = "row-resize";
+    document.body.style.cursor = "var(--bb-cursor-row-resize, row-resize)";
     document.body.style.userSelect = "none";
+    // Only the header toggles on release, so only a press there is worth
+    // prewarming; the thin edge handle above it is always a drag.
+    if (event.currentTarget.tagName === "HEADER" && !isOpen) prewarmOpen();
   }
 
   function handleResizeMove(event: ReactPointerEvent<HTMLElement>) {
@@ -6035,6 +6094,11 @@ function RuntimeTerminal({
     document.body.style.userSelect = "";
     if (!moved && event.type !== "pointercancel" && clickedHeader) {
       toggleDock(!start.wasOpen);
+    } else if (prewarmRef.current) {
+      // The press prewarmed an open this release turned out not to want — a
+      // cancelled pointer, or a drag that ended within the click threshold.
+      // Nothing of it was ever visible, so putting it back is invisible too.
+      cancelGlide();
     }
   }
 
@@ -6151,7 +6215,12 @@ function RuntimeTerminal({
         ref={barRef}
         style={{ background: glassActive ? "transparent" : "var(--terminal-bar)" }}
         className={`bb-neu-toolbar flex shrink-0 cursor-row-resize touch-none select-none items-center gap-3 border-b border-[rgba(169,193,177,0.55)] px-4 ${
-          headerMounted ? "py-2.5" : "h-full justify-center py-0"
+          // The collapsed bar is the dock's own height — except while a press
+          // has prewarmed the box to its open size, where `h-full` would
+          // stretch the bar to the full 600-odd pixels and centre its contents
+          // somewhere below the fold. The one height it is ever collapsed at,
+          // stated outright, survives that.
+          headerMounted ? "py-2.5" : "h-12 justify-center py-0"
         } ${glassActive ? "bb-terminal-glass-bar" : ""}`}
       >
         {headerMounted ? (
@@ -6243,7 +6312,7 @@ function RuntimeTerminal({
         ) : null}
       </header>
 
-      {bodyMounted ? (
+      {bodyRendered ? (
         // Carries the surface the dock used to paint itself. Without it the
         // wallpaper layer behind the glass bar would show through the chat.
         //

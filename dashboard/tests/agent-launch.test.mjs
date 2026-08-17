@@ -277,13 +277,15 @@ test("agent-result continuations stay in context without impersonating the user"
     garden,
     /handleSubmit\(continuation, undefined, undefined, true\)/,
   );
+  // Both transcripts are virtualized, so a continuation is dropped while the
+  // row list is built rather than returned as a null row from a map.
   assert.match(
     runtimePanel,
-    /message\.internalAgentContinuation === true/,
+    /storedMessage\.internalAgentContinuation === true/,
   );
   assert.match(
     garden,
-    /if \(msg\.internalAgentContinuation === true\) return null/,
+    /if \(storedMessage\.internalAgentContinuation === true\) return;/,
   );
   assert.match(
     sessionHook,
@@ -296,11 +298,14 @@ test("agent-result continuations stay in context without impersonating the user"
 });
 
 test("a delegated research hand-back renders as one coherent turn", () => {
+  // A delegated turn whose continuation has landed used to render as a
+  // `display: none` row. In a virtualized transcript a zero-height row still
+  // claims the spacing on both sides of itself, so it is dropped from the row
+  // list instead — the same nothing, drawn in the same place.
   assert.match(
     runtimePanel,
-    /delegatedTurnHasContinuation[\s\S]*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+    /storedMessage\.delegatedAgentRun === true &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
   );
-  assert.match(runtimePanel, /delegatedTurnHasContinuation\s*\? "hidden"/);
   assert.match(runtimePanel, /"Synthesizing research"/);
   assert.match(runtimePanel, /"Research synthesized"/);
   assert.match(

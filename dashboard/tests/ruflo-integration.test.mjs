@@ -211,7 +211,7 @@ test("Ruflo carries image attachments through the chat, route, and swarm objecti
   assert.match(manager, /materializeRufloImageAttachments/);
   assert.match(manager, /\[baseObjective, attachmentContext\]/);
   assert.match(manager, /part\.replace\(\/\\s\+\/g, " "\)/);
-  assert.match(manager, /\[prompt, attachmentContext\]/);
+  assert.match(manager, /\[prompt, attachmentContext[,\]]/);
   assert.match(manager, /spawnExecutor\(executorPrompt\)/);
   assert.match(manager, /attachmentCount: materialized\.paths\.length/);
 });

@@ -3,6 +3,7 @@ import { requireUserId, RouteError } from "@/lib/server-auth.ts";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server.ts";
 import { chatmockApiKeyValue } from "@/lib/agent-browser/provider.ts";
 import { resolveConnectedRepository } from "@/lib/opencode/repository.ts";
+import { graftRunContext } from "@/lib/code-index/garden.ts";
 import { startRun } from "@/lib/opencode/run-manager.ts";
 import {
   captureSnapshot,
@@ -101,6 +102,7 @@ export async function POST(request: Request) {
       repositoryName: repository.name,
       gardenSlug: repository.gardenSlug,
       attachments,
+      graft: graftRunContext(userId, repository),
     });
     rememberRunSnapshot(run.runId, repository.path, snapshotBefore);
     return NextResponse.json(

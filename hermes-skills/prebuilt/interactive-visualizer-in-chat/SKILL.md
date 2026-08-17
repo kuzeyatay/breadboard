@@ -10,7 +10,7 @@ and in Artifacts. This is generative UI, not a dashboard template. The visual
 must feel designed for the exact concept in the request.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [garden_chat, dashboard_terminal]
   requiredTools:
     - interactive_visualizer_create

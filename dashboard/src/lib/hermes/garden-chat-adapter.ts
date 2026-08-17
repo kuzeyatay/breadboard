@@ -70,6 +70,7 @@ import { factcheckCommandText } from "./factcheck-intent.ts";
 import { agentLoopCommandText } from "./agent-loop-intent.ts";
 import { messagingCommandText } from "./messaging-intent.ts";
 import { imageTo3dCommandText, IMAGE_TO_3D_SKILL } from "./image-3d-intent.ts";
+import { diagramCommandText } from "./diagram-intent.ts";
 import { audioAnalysisCommandText, AUDIO_ANALYSIS_SKILL } from "./audio-intent.ts";
 import {
   hasAnalyzableAttachment,
@@ -258,9 +259,19 @@ export async function openGardenAgentChat(
     authenticated: true,
     hasAudioAttachment: hasAnalyzableAttachment(attachments),
   });
+  // The same second copy of the chain: a request to draw something has to
+  // select the skill here exactly as it does in conversations/turn-service.ts,
+  // and for the same reason it sits after the attachment-driven selections
+  // there.
+  const diagramSelection = diagramCommandText({
+    text: audioSelection.text,
+    surface: "garden_chat",
+    authenticated: true,
+    priorMessages: messages,
+  });
   // Last in the chain: see the same call in conversations/turn-service.ts.
   const messagingSelection = messagingCommandText({
-    text: audioSelection.text,
+    text: diagramSelection.text,
     surface: "garden_chat",
     authenticated: true,
     priorMessages: messages,
@@ -279,7 +290,11 @@ export async function openGardenAgentChat(
     session.activeDirectory,
     commandContext,
   ).catch(async (error: unknown) => {
-    if (!imageTo3dSelection.automatic && !audioSelection.automatic) throw error;
+    if (
+      !imageTo3dSelection.automatic &&
+      !audioSelection.automatic &&
+      !diagramSelection.automatic
+    ) throw error;
     return await resolveCommandMessage(
       userId,
       messagingCommandText({
@@ -350,6 +365,7 @@ export async function openGardenAgentChat(
       automaticPremortem: premortemSelection.automatic,
       automaticFactcheck: factcheckSelection.automatic,
       automaticInteractiveVisualizer: visualizerSelection.automatic,
+      automaticDiagramDesign: diagramSelection.automatic,
       capabilityDecisionId: storedDecision.id,
       capabilityMode: decision.mode,
       intendedOutcome: prepared.plan.intendedOutcome,

@@ -28,7 +28,13 @@ import AssistantMessageActions, {
 import {
   chatAutoScrollResponseKey,
   useChatAutoScroll,
+  useChatVirtualBridge,
 } from "@/app/components/use-chat-auto-scroll";
+import VirtualizedMessageList from "@/app/components/chat/virtualized-message-list";
+import {
+  chatRowKey,
+  estimateChatRowHeight,
+} from "@/app/components/chat/chat-row-identity";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
 import ActivityPanel from "./activity-panel";
@@ -419,6 +425,20 @@ function loadBranchGroups(sessionId: string): Record<string, ConversationBranchG
   }
 }
 
+/**
+ * A message paired with its position in the whole conversation. The rows the
+ * transcript draws are a subset of the messages it holds, and everything the
+ * row body does — editing, retrying, branching, "is this the newest answer" —
+ * is expressed against the position in the full list, so it travels along.
+ */
+type TranscriptRow = { index: number; message: AgentMessage };
+
+const transcriptRowKey = (row: TranscriptRow) =>
+  chatRowKey(row.message, row.index);
+
+const transcriptRowHeight = (row: TranscriptRow) =>
+  estimateChatRowHeight(row.message, { minimum: 88 });
+
 export default function AgentRuntimePanel({
   messages,
   connection,
@@ -683,6 +703,41 @@ export default function AgentRuntimePanel({
 
     return { byAssistantIndex, hiddenMessageIndices };
   }, [messages]);
+  // Every message that actually draws something, paired with its position in
+  // the whole conversation. Rows that drew nothing before — a continuation, an
+  // inline selection, a folded course correction, a delegated turn whose visible
+  // content moved to its continuation — are dropped rather than kept as
+  // zero-height rows, which would still claim the spacing on both sides of
+  // themselves. The original index travels with the message because editing,
+  // retrying, branching and the newest-answer checks all speak in those terms.
+  const transcriptRows = useMemo(() => {
+    const rows: TranscriptRow[] = [];
+    messages.forEach((storedMessage, index) => {
+      if (
+        storedMessage.internalAgentContinuation === true ||
+        storedMessage.textSelection?.mode === "inline" ||
+        inlinedCourseCorrections.hiddenMessageIndices.has(index) ||
+        (storedMessage.delegatedAgentRun === true &&
+          messages[index + 1]?.internalAgentContinuation === true)
+      ) {
+        return;
+      }
+      rows.push({
+        index,
+        // Delegated worker output is persisted separately so the Super Agent's
+        // own message remains intact. Resolved here so a row's measured height
+        // and its drawn height come from the same text.
+        message:
+          storedMessage.delegatedAgentRun === true
+            ? {
+                ...storedMessage,
+                content: externalAgentCardContent(storedMessage),
+              }
+            : storedMessage,
+      });
+    });
+    return rows;
+  }, [messages, inlinedCourseCorrections]);
   const inlineSelectionThreads = useMemo(() => {
     const byId = new Map<string, InlineSelectionThread>();
     for (const selection of savedInlineSelections) {
@@ -748,6 +803,7 @@ export default function AgentRuntimePanel({
     activeRun && messages.at(-1)?.textSelection?.mode === "inline";
   const transcriptResponding =
     (activeRun || streaming) && !respondingToInlineSelection;
+  const transcriptVirtual = useChatVirtualBridge();
   const {
     ref: transcriptScrollRef,
     awayFromBottom: transcriptAwayFromBottom,
@@ -756,6 +812,7 @@ export default function AgentRuntimePanel({
     isResponding: transcriptResponding,
     responseKey: visibleResponseKey,
     contentKey: visibleScrollKey,
+    virtual: transcriptVirtual,
   });
 
   // An external agent writes its artifacts from a background run, so no chat
@@ -1228,44 +1285,31 @@ export default function AgentRuntimePanel({
               retireVersion={inlineArtifactRetireVersion}
             >
             <div className="space-y-5">
-              {messages.map((storedMessage, index) => {
-                // Delegated worker output is persisted separately so the
-                // Super Agent's own message remains intact. Only the hidden
-                // observer card reads the worker result as its content.
-                const message =
-                  storedMessage.delegatedAgentRun === true
-                    ? {
-                        ...storedMessage,
-                        content: externalAgentCardContent(storedMessage),
-                      }
-                    : storedMessage;
+              <VirtualizedMessageList
+                surface={surface === "quartz_ai" ? "quartz-ai" : "hermes-chat"}
+                className="w-full"
+                items={transcriptRows}
+                scrollRef={transcriptScrollRef}
+                bridge={transcriptVirtual}
+                // What `space-y-5` drew between rows.
+                gap={20}
+                resetKey={sessionId}
+                getItemKey={transcriptRowKey}
+                estimateSize={transcriptRowHeight}
+                renderItem={({ message, index }) => {
                 const responseInterrupted = Boolean(
                   message.role === "assistant" &&
                     !isExternalAgentRunMessage(message) &&
                     (message.interrupted ||
                       (failureInline && index === lastAssistantIndex)),
                 );
-                const delegatedTurnHasContinuation = Boolean(
-                  message.delegatedAgentRun === true &&
-                    messages[index + 1]?.internalAgentContinuation === true,
-                );
                 const isAgentContinuationResponse = Boolean(
                   message.role === "assistant" &&
                     messages[index - 1]?.internalAgentContinuation === true,
                 );
-                return message.internalAgentContinuation === true ||
-                message.textSelection?.mode === "inline" ||
-                inlinedCourseCorrections.hiddenMessageIndices.has(index) ? null : (
+                return (
                 <div
-                  key={message.id ?? `${message.role}-${index}`}
-                  className={
-                    delegatedTurnHasContinuation
-                      ? "hidden"
-                      : timeSeparators[index]
-                        ? "space-y-3"
-                        : undefined
-                  }
-                  aria-hidden={delegatedTurnHasContinuation || undefined}
+                  className={timeSeparators[index] ? "space-y-3" : undefined}
                 >
                   {timeSeparators[index] ? (
                     <ChatTimeSeparator
@@ -1286,9 +1330,10 @@ export default function AgentRuntimePanel({
                         attachmentNames={message.attachmentNames}
                       />
                     ) : null}
+                    {/* A delegated turn whose continuation has landed never
+                        reaches here — it was dropped from the row list. */}
                     {message.role === "assistant" &&
-                    message.delegatedAgentPreamble &&
-                    !delegatedTurnHasContinuation ? (
+                    message.delegatedAgentPreamble ? (
                       <div className="mb-3 text-sm leading-7 text-gray-200">
                         <SelectableAssistantMarkdown
                           content={message.delegatedAgentPreamble}
@@ -2299,7 +2344,8 @@ export default function AgentRuntimePanel({
                   </div>
                 </div>
               );
-              })}
+              }}
+              />
               {sessionId && surface !== "quartz_ai" ? (
                 <InlineArtifactCards ownerMessageId={null} />
               ) : null}
@@ -2409,10 +2455,12 @@ export default function AgentRuntimePanel({
           onSubmit={submitComposer}
           onRunWorkflow={onRunWorkflow}
           textareaRef={composerTextareaRef}
-          placeholder={
-            loadingTranscript ? "Loading this chat…" : placeholder ?? "Ask the agent…"
-          }
+          // A chat that is still arriving keeps its ordinary invitation and
+          // stays typable: the wait belongs on the send button, which spins,
+          // and not in the box, where it looked like the field was dead.
+          placeholder={placeholder ?? "Ask the agent…"}
           disabled={conversationLocked}
+          loading={loadingTranscript}
           isSending={streaming}
           canSubmit={Boolean(input.trim() || (!streaming && attachments?.length))}
           model={model ?? ""}

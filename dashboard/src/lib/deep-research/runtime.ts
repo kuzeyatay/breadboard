@@ -36,16 +36,41 @@ function loopbackServiceUrl(env: NodeJS.ProcessEnv): URL | null {
   }
 }
 
+function repoCandidates(env: NodeJS.ProcessEnv): string[] {
+  return [
+    env.BREADBOARD_REPO_ROOT?.trim(),
+    process.cwd(),
+    path.resolve(process.cwd(), ".."),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+}
+
+/**
+ * The Hermes interpreter, handed to the engine for keyless search.
+ *
+ * The engine's fallback backend queries DuckDuckGo, which answers a plain HTTP
+ * client with a challenge page often enough to be unreliable. Hermes already
+ * carries `ddgs`, which gets through because it impersonates a browser's TLS
+ * fingerprint, so the engine borrows that interpreter rather than shipping a
+ * scraper that works half the time. Absent it, the engine scrapes directly.
+ */
+function ddgsPython(env: NodeJS.ProcessEnv): string | null {
+  const relative =
+    process.platform === "win32"
+      ? path.join(".venv", "Scripts", "python.exe")
+      : path.join(".venv", "bin", "python");
+  for (const root of repoCandidates(env)) {
+    const interpreter = path.join(root, "hermes-agent", relative);
+    if (fs.existsSync(interpreter)) return interpreter;
+  }
+  return null;
+}
+
 function resolveEngine(env: NodeJS.ProcessEnv): {
   root: string;
   entry: string;
   tsx: string;
 } | null {
-  const candidates = [
-    env.BREADBOARD_REPO_ROOT?.trim(),
-    process.cwd(),
-    path.resolve(process.cwd(), ".."),
-  ].filter((candidate): candidate is string => Boolean(candidate));
+  const candidates = repoCandidates(env);
   for (const root of candidates) {
     const engineRoot = path.join(root, "deep-research");
     const entry = path.join(engineRoot, "src", "api.ts");
@@ -121,6 +146,9 @@ async function startLocalService(env: NodeJS.ProcessEnv): Promise<boolean> {
           env.DEEP_RESEARCH_MAX_CONCURRENT_RUNS?.trim() || "2",
         DEEP_RESEARCH_SEARCH_PROVIDER:
           env.DEEP_RESEARCH_SEARCH_PROVIDER?.trim() || "auto",
+        ...(ddgsPython(env)
+          ? { DEEP_RESEARCH_DDGS_PYTHON: ddgsPython(env) as string }
+          : {}),
         DEEP_RESEARCH_SEARCH_TIMEOUT_MS:
           env.DEEP_RESEARCH_SEARCH_TIMEOUT_MS?.trim() || "300000",
         DEEP_RESEARCH_CONCURRENCY:

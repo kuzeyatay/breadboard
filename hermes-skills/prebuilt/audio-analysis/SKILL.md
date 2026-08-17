@@ -17,7 +17,7 @@ Symphonia decodes the file, and the same techniques used in music information
 retrieval produce the numbers. Nothing is uploaded anywhere.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [garden_chat, dashboard_terminal]
   requiredTools:
     - audio_analyze

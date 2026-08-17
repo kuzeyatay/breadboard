@@ -32,7 +32,7 @@ test("Watch is a ready ChatMock-compatible prebuilt Terminal skill", () => {
   );
   assert.ok(terminal);
   assert.equal(terminal.availability, "ready");
-  assert.equal(terminal.category, "Prebuilt");
+  assert.equal(terminal.category, "Featured");
   assert.deepEqual(terminal.capabilityContract?.requiredTools, ["watch_run"]);
   assert.deepEqual(terminal.capabilityContract?.requiredBinaries, [
     "python",

@@ -25,7 +25,7 @@ provider when needed, and extracts representative JPEG frames. Combine both
 evidence streams; do not claim to have seen content that neither stream shows.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [dashboard_terminal]
   requiredTools:
     - watch_run

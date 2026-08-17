@@ -132,7 +132,7 @@ test("the skill resolves ready on the authenticated surfaces, and not on Quartz"
     const skill = listFirstPartySkills(surface).find((entry) => entry.slug === "remove-ai-marks");
     assert.ok(skill, `remove-ai-marks missing on ${surface}`);
     assert.equal(skill.availability, "ready", `remove-ai-marks not ready on ${surface}`);
-    assert.equal(skill.category, "Prebuilt");
+    assert.equal(skill.category, "Featured");
     assert.deepEqual(skill.capabilityContract?.requiredTools, [...WATERMARK_TOOLS]);
   }
   assert.equal(

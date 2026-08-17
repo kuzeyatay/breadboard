@@ -8,7 +8,7 @@ import {
   type ElectronQaHarness,
 } from "../../fixtures";
 import { isPathInside } from "../../environment";
-import type { DiagnosticEntry } from "../../diagnostics";
+import { classifyProbeFailure } from "../../classification";
 import {
   locate,
   SELECTORS,
@@ -350,51 +350,6 @@ function annotateAttempt(
     type: `scenario-${attempt.status.toLowerCase()}`,
     description: `${attempt.id}: ${attempt.actual}`,
   });
-}
-
-function classifyProbeFailure(
-  error: unknown,
-  diagnostics: readonly DiagnosticEntry[],
-): ScenarioFailureDecision {
-  const productEvents = new Set([
-    "renderer-crash",
-    "page-error",
-    "unhandled-rejection",
-    "uncaught-exception",
-    "main-process-error",
-  ]);
-  if (
-    diagnostics.some(
-      (entry) => entry.actionable !== false && productEvents.has(entry.event),
-    )
-  ) {
-    return { classification: "PRODUCT_BUG" };
-  }
-
-  const environmentEvidence = diagnostics.some((entry) => {
-    if (entry.event === "service-startup-failure") return true;
-    if (
-      entry.data &&
-      typeof entry.data === "object" &&
-      !Array.isArray(entry.data)
-    ) {
-      return entry.data["category"] === "port-conflict";
-    }
-    return false;
-  });
-  const message = error instanceof Error ? error.message : String(error);
-  if (
-    environmentEvidence ||
-    /(?:EADDRINUSE|ECONNREFUSED|ENOENT|runtime endpoints? omit|QA runtime marker|service readiness file|manifest dependencies changed|does not declare optional dependency)/i.test(
-      message,
-    )
-  ) {
-    return { classification: "TEST_ENVIRONMENT" };
-  }
-
-  // Assertion failures and renderer-visible timeouts default to product
-  // failures unless the run captured concrete environment evidence above.
-  return { classification: "PRODUCT_BUG" };
 }
 
 async function probePreloadSecurity({
@@ -1025,7 +980,7 @@ async function probeSkillsCatalog({
   const filterMenu = qa.page.getByRole("menu", { name: "Filter skills", exact: true });
   await expect(filterMenu).toBeVisible();
   await filterMenu
-    .getByRole("menuitemradio", { name: "Prebuilt", exact: true })
+    .getByRole("menuitemradio", { name: "Featured", exact: true })
     .click();
   const search = locate(qa.page, SELECTORS.capabilities.searchSkills);
   const catalogResponse = qa.page.waitForResponse(
@@ -1033,7 +988,7 @@ async function probeSkillsCatalog({
       const url = new URL(response.url());
       return (
         url.pathname === "/api/hermes/skills" &&
-        url.searchParams.get("filter") === "prebuilt" &&
+        url.searchParams.get("filter") === "featured" &&
         url.searchParams.get("q") === "plan"
       );
     },

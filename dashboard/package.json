@@ -22,6 +22,7 @@
     "@firecrawl/anydoc": "^0.1.7",
     "@langchain/core": "^1.2.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@tanstack/react-virtual": "^3.14.9",
     "@vercel/oidc": "^3.8.0",
     "@wokwi/elements": "^1.9.2",
     "@ybouane/liquidglass": "^1.0.3",

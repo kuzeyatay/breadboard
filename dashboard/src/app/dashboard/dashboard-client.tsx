@@ -18,6 +18,7 @@ import {
   moveClusterFolder,
   reorderClusterFolder,
   setClusterRepository,
+  setClusterGraftEnabled,
 } from "@/app/actions/clusters";
 import type { Cluster, ClusterVisibility } from "@/app/actions/clusters";
 import {
@@ -34,6 +35,7 @@ import type { NavbarShortcuts } from "@/lib/profile/navbar-shortcuts.ts";
 import DashboardAgentTerminal from "@/app/components/hermes/dashboard-agent-terminal";
 import type { TerminalPanel } from "@/app/components/hermes/terminal-sidebar";
 import ScheduledChatsDock from "@/app/components/scheduled-chats-dock";
+import PersonProfileDialog from "@/app/components/person-profile-dialog.tsx";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
 import {
@@ -71,6 +73,9 @@ interface Props {
   username: string;
   initialClusters: Cluster[];
   initialPublicClusters: Cluster[];
+  initialOrganizationClusters: Cluster[];
+  /** Organizations this account belongs to, for the tab and the share menu. */
+  organizations: { id: number; name: string }[];
   initialClusterFolders: string[];
   /** Optional navbar entries this account switched on from its profile page. */
   navbarShortcuts: NavbarShortcuts;
@@ -116,7 +121,7 @@ function cardGridSpan(sizePx: number): number {
 }
 
 type FileStatus = "pending" | "uploading" | "done" | "error";
-type ClusterView = "mine" | "public";
+type ClusterView = "mine" | "organization" | "public";
 type ResizeDirection = "right" | "bottom" | "corner";
 
 interface ResizeSession {
@@ -190,6 +195,8 @@ export default function DashboardClient({
   username,
   initialClusters,
   initialPublicClusters,
+  initialOrganizationClusters,
+  organizations,
   initialClusterFolders,
   navbarShortcuts,
   initialTerminalPanel = null,
@@ -212,6 +219,9 @@ export default function DashboardClient({
   const [searchQuery, setSearchQuery] = useState("");
   const [myClusters, setMyClusters] = useState(initialClusters);
   const [publicClusters, setPublicClusters] = useState(initialPublicClusters);
+  const [organizationClusters, setOrganizationClusters] = useState(
+    initialOrganizationClusters,
+  );
   const [clusterFolders, setClusterFolders] = useState<string[]>(
     initialClusterFolders,
   );
@@ -284,6 +294,26 @@ export default function DashboardClient({
   const [bgImage, setBgImage] = useState<string | null>(null);
   const [showBgModal, setShowBgModal] = useState(false);
   const [appTheme, setAppTheme] = useState<AppTheme>("light");
+  // Whoever shared a garden with you, opened over the dashboard rather than
+  // instead of it.
+  const [openPerson, setOpenPerson] = useState<string | null>(null);
+
+  // An old /profile/<handle> link redirects here carrying the handle. Open the
+  // popup for it once, then tidy the address so a later refresh does not
+  // reopen a profile nobody asked for again.
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    const person = query.get("person");
+    if (!person) return;
+    setOpenPerson(person);
+    query.delete("person");
+    const rest = query.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${rest ? `?${rest}` : ""}`,
+    );
+  }, []);
 
   // Which garden or cluster is being written to a file right now, keyed
   // "garden:<slug>" / "cluster:<path>"; "import" while one is being read back.
@@ -381,7 +411,16 @@ export default function DashboardClient({
     setPublicClusters(initialPublicClusters);
   }, [initialPublicClusters]);
 
-  const activeClusters = clusterView === "mine" ? myClusters : publicClusters;
+  useEffect(() => {
+    setOrganizationClusters(initialOrganizationClusters);
+  }, [initialOrganizationClusters]);
+
+  const activeClusters =
+    clusterView === "mine"
+      ? myClusters
+      : clusterView === "organization"
+        ? organizationClusters
+        : publicClusters;
   const filteredClusters = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return activeClusters;
@@ -1260,6 +1299,11 @@ export default function DashboardClient({
         cluster.id === clusterId ? updater(cluster) : cluster,
       ),
     );
+    setOrganizationClusters((previous) =>
+      previous.map((cluster) =>
+        cluster.id === clusterId ? updater(cluster) : cluster,
+      ),
+    );
   }
 
   function handleCreate(e: React.FormEvent) {
@@ -1343,25 +1387,36 @@ export default function DashboardClient({
     });
   }
 
-  async function handleVisibilityChange(cluster: Cluster) {
+  async function handleVisibilityChange(
+    cluster: Cluster,
+    nextVisibility: ClusterVisibility,
+    organizationId: number | null = null,
+  ) {
     if (!cluster.isOwner) return;
 
     const previousVisibility = cluster.visibility;
-    const nextVisibility: ClusterVisibility =
-      previousVisibility === "public" ? "private" : "public";
+    const previousOrganizationId = cluster.organization_id;
     setConfirmVisibilityId(null);
+    if (
+      previousVisibility === nextVisibility &&
+      previousOrganizationId === organizationId
+    ) {
+      return;
+    }
     updateLocalCluster(cluster.id, (item) => ({
       ...item,
       visibility: nextVisibility,
+      organization_id: organizationId,
     }));
 
     try {
-      await setClusterVisibility(cluster.id, nextVisibility);
+      await setClusterVisibility(cluster.id, nextVisibility, organizationId);
       router.refresh();
     } catch (err) {
       updateLocalCluster(cluster.id, (item) => ({
         ...item,
         visibility: previousVisibility,
+        organization_id: previousOrganizationId,
       }));
       addToast(
         err instanceof Error
@@ -1413,6 +1468,33 @@ export default function DashboardClient({
     }
   }
 
+  async function handleGraftEnabledToggle(cluster: Cluster) {
+    if (!cluster.isOwner) return;
+    const next = !cluster.graft_enabled;
+    updateLocalCluster(cluster.id, (item) => ({ ...item, graft_enabled: next }));
+    setEditingCluster((current) =>
+      current && current.id === cluster.id
+        ? { ...current, graft_enabled: next }
+        : current,
+    );
+    try {
+      await setClusterGraftEnabled(cluster.id, next);
+    } catch (err) {
+      updateLocalCluster(cluster.id, (item) => ({
+        ...item,
+        graft_enabled: !next,
+      }));
+      setEditingCluster((current) =>
+        current && current.id === cluster.id
+          ? { ...current, graft_enabled: !next }
+          : current,
+      );
+      addToast(
+        err instanceof Error ? err.message : "Failed to update the code index",
+      );
+    }
+  }
+
   async function handleConnectRepository(cluster: Cluster) {
     if (!cluster.isOwner || linkingRepoId !== null) return;
     const desktop = (
@@ -1438,7 +1520,11 @@ export default function DashboardClient({
         repo_name: result.repoName,
       }));
       addToast(
-        `${result.repoName} is now available to OpenCode in this Garden.`,
+        result.codeIndex === "unavailable"
+          ? `${result.repoName} is now available to the coding agents in this Garden. Install graft (npm i -g @nanonets/graft) to give them a code index of it.`
+          : result.codeIndex === "ready"
+            ? `${result.repoName} is now available to the coding agents in this Garden, graft code index and all.`
+            : `${result.repoName} is now available to the coding agents in this Garden. Indexing it with graft — a run started before that finishes just searches the repository directly.`,
         "success",
         "Repository connected",
       );
@@ -1536,10 +1622,10 @@ export default function DashboardClient({
     const previousUserSelect = document.body.style.userSelect;
     document.body.style.cursor =
       direction === "right"
-        ? "ew-resize"
+        ? "var(--bb-cursor-ew-resize, ew-resize)"
         : direction === "bottom"
-          ? "ns-resize"
-          : "nwse-resize";
+          ? "var(--bb-cursor-ns-resize, ns-resize)"
+          : "var(--bb-cursor-nwse-resize, nwse-resize)";
     document.body.style.userSelect = "none";
 
     const handleMove = (event: PointerEvent) => {
@@ -2057,7 +2143,9 @@ export default function DashboardClient({
               <p className="text-sm text-gray-500 mt-1">
                 {clusterView === "mine"
                   ? "Your knowledge gardens"
-                  : "Public knowledge gardens"}
+                  : clusterView === "organization"
+                    ? "Gardens shared with your organizations"
+                    : "Public knowledge gardens"}
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -2096,6 +2184,20 @@ export default function DashboardClient({
               >
                 Public gardens
               </button>
+              {organizations.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setClusterView("organization")}
+                  className={[
+                    "px-3 py-1.5 text-sm rounded-md transition-colors",
+                    clusterView === "organization"
+                      ? "bg-white text-gray-950"
+                      : "text-gray-400 hover:text-white",
+                  ].join(" ")}
+                >
+                  Organization
+                </button>
+              )}
             </div>
 
             <div className="relative min-w-0 flex-1">
@@ -2118,7 +2220,9 @@ export default function DashboardClient({
                 placeholder={
                   clusterView === "mine"
                     ? "Search your gardens"
-                    : "Search public gardens"
+                    : clusterView === "organization"
+                      ? "Search organization gardens"
+                      : "Search public gardens"
                 }
                 className="neu-control w-full rounded-lg border border-gray-800 bg-gray-900 px-9 py-2 text-sm text-white placeholder-gray-600 outline-none transition-colors focus:border-gray-600"
               />
@@ -2222,14 +2326,18 @@ export default function DashboardClient({
                 ? "No matching gardens."
                 : clusterView === "mine"
                   ? "No gardens yet."
-                  : "No public gardens yet."}
+                  : clusterView === "organization"
+                    ? "No gardens shared here yet."
+                    : "No public gardens yet."}
             </p>
             <p className="text-sm mt-1">
               {searchQuery
                 ? "Try a different search."
                 : clusterView === "mine"
                   ? "Create one to get started."
-                  : "Make one of your gardens public to share it here."}
+                  : clusterView === "organization"
+                    ? "Share one of your gardens with your organization."
+                    : "Make one of your gardens public to share it here."}
             </p>
           </div>
         ) : (
@@ -2435,29 +2543,64 @@ export default function DashboardClient({
                             {canManage &&
                               confirmDeleteId !== cluster.id &&
                               confirmVisibilityId === cluster.id && (
-                                <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 shadow-lg">
-                                  <span className="text-xs text-gray-400">
-                                    Make{" "}
-                                    {cluster.visibility === "public"
-                                      ? "private"
-                                      : "public"}
-                                    ?
-                                  </span>
+                                <div className="absolute top-2.5 right-2.5 flex w-48 flex-col gap-0.5 rounded-lg border border-gray-700 bg-gray-900 p-1 shadow-lg">
+                                  {[
+                                    {
+                                      key: "private",
+                                      label: "Keep private",
+                                      visibility: "private" as ClusterVisibility,
+                                      organizationId: null as number | null,
+                                      active:
+                                        cluster.visibility === "private",
+                                    },
+                                    ...organizations.map((organization) => ({
+                                      key: `organization-${organization.id}`,
+                                      label: `Share with ${organization.name}`,
+                                      visibility:
+                                        "organization" as ClusterVisibility,
+                                      organizationId:
+                                        organization.id as number | null,
+                                      active:
+                                        cluster.visibility === "organization" &&
+                                        cluster.organization_id ===
+                                          organization.id,
+                                    })),
+                                    {
+                                      key: "public",
+                                      label: "Share publicly",
+                                      visibility: "public" as ClusterVisibility,
+                                      organizationId: null as number | null,
+                                      active: cluster.visibility === "public",
+                                    },
+                                  ].map((option) => (
+                                    <button
+                                      key={option.key}
+                                      data-card-action="true"
+                                      type="button"
+                                      onClick={() =>
+                                        handleVisibilityChange(
+                                          cluster,
+                                          option.visibility,
+                                          option.organizationId,
+                                        )
+                                      }
+                                      className={[
+                                        "truncate rounded px-2 py-1 text-left text-xs transition-colors",
+                                        option.active
+                                          ? "bg-gray-800 text-white"
+                                          : "text-gray-400 hover:bg-gray-800 hover:text-white",
+                                      ].join(" ")}
+                                    >
+                                      {option.label}
+                                    </button>
+                                  ))}
                                   <button
                                     data-card-action="true"
-                                    onClick={() =>
-                                      handleVisibilityChange(cluster)
-                                    }
-                                    className="text-xs text-gray-200 hover:text-white font-medium transition-colors"
-                                  >
-                                    Yes
-                                  </button>
-                                  <button
-                                    data-card-action="true"
+                                    type="button"
                                     onClick={() => setConfirmVisibilityId(null)}
-                                    className="text-xs text-gray-500 hover:text-white transition-colors"
+                                    className="mt-0.5 rounded border-t border-gray-800 px-2 py-1 text-left text-[10px] text-gray-600 transition-colors hover:text-white"
                                   >
-                                    No
+                                    Close
                                   </button>
                                 </div>
                               )}
@@ -2570,9 +2713,12 @@ export default function DashboardClient({
                                       setConfirmVisibilityId(cluster.id)
                                     }
                                     className="shrink-0 rounded-full border border-gray-700 px-2.5 py-0.5 text-[11px] text-gray-300 transition-colors hover:border-gray-500 hover:text-white"
-                                    title={`Make ${cluster.visibility === "public" ? "private" : "public"}`}
+                                    title="Change who can see this garden"
                                   >
-                                    {cluster.visibility}
+                                    {cluster.visibility === "organization"
+                                      ? (cluster.organizationName ??
+                                        "organization")
+                                      : cluster.visibility}
                                   </button>
                                   <button
                                     data-card-action="true"
@@ -2605,7 +2751,9 @@ export default function DashboardClient({
                               )}
                             {!canManage && (
                               <span className="absolute top-3 right-3 shrink-0 rounded-full border border-gray-700 px-2.5 py-0.5 text-[11px] text-gray-400">
-                                {cluster.visibility}
+                                {cluster.visibility === "organization"
+                                  ? (cluster.organizationName ?? "organization")
+                                  : cluster.visibility}
                               </span>
                             )}
 
@@ -2616,15 +2764,6 @@ export default function DashboardClient({
                                     {cluster.name}
                                   </h2>
                                 </div>
-                                {clusterView === "public" &&
-                                  (cluster.ownerUsername ||
-                                    cluster.ownerEmail) && (
-                                    <p className="mt-1 truncate text-xs text-gray-600">
-                                      by{" "}
-                                      {cluster.ownerUsername ??
-                                        cluster.ownerEmail}
-                                    </p>
-                                  )}
                                 {cluster.noteCount === 0 ? (
                                   <div className="mt-3 flex items-center gap-2 rounded-lg border border-dashed border-gray-800 px-3 py-2.5">
                                     <svg
@@ -2683,7 +2822,7 @@ export default function DashboardClient({
                             </div>
 
                             <div className="flex shrink-0 flex-col gap-2 pt-3 border-t border-gray-800">
-                              {canManage && cluster.visibility === "public" && (
+                              {canManage && cluster.visibility !== "private" && (
                                 <>
                                   <button
                                     data-card-action="true"
@@ -2772,6 +2911,29 @@ export default function DashboardClient({
                                   Open garden view
                                 </Link>
                               )}
+
+                              {/* Who put this garden in front of you. */}
+                              {clusterView !== "mine" &&
+                                (cluster.ownerUsername ||
+                                  cluster.ownerEmail) && (
+                                  <span className="self-start truncate text-[11px] text-gray-600">
+                                    Shared by{" "}
+                                    {cluster.ownerUsername ? (
+                                      <button
+                                        type="button"
+                                        data-card-action="true"
+                                        onClick={() =>
+                                          setOpenPerson(cluster.ownerUsername!)
+                                        }
+                                        className="text-gray-500 transition-colors hover:text-white"
+                                      >
+                                        {cluster.ownerUsername}
+                                      </button>
+                                    ) : (
+                                      cluster.ownerEmail
+                                    )}
+                                  </span>
+                                )}
                             </div>
 
                             {canManage && (
@@ -3029,6 +3191,41 @@ export default function DashboardClient({
                   className="neu-control w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors resize-none"
                 />
               </div>
+              {editingCluster.repo_connected && (
+                <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-800 px-4 py-3">
+                  <div>
+                    <p className="text-sm text-gray-200">Graft code index</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Coding agents answer from a prebuilt graph of{" "}
+                      {editingCluster.repo_name ?? "the connected repository"} —
+                      exact file:line, and who calls what — instead of grepping
+                      it from scratch.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={editingCluster.graft_enabled}
+                    aria-label="Use the graft code index for coding agents"
+                    onClick={() => void handleGraftEnabledToggle(editingCluster)}
+                    className={[
+                      "neu-button mt-0.5 h-6 w-11 shrink-0 rounded-full border transition-colors",
+                      editingCluster.graft_enabled
+                        ? "border-[var(--botanical)] bg-[var(--botanical)]/30"
+                        : "border-gray-700 bg-gray-900",
+                    ].join(" ")}
+                  >
+                    <span
+                      className={[
+                        "block h-4 w-4 rounded-full bg-white transition-transform",
+                        editingCluster.graft_enabled
+                          ? "translate-x-6"
+                          : "translate-x-1",
+                      ].join(" ")}
+                    />
+                  </button>
+                </div>
+              )}
               {editError && <p className="text-sm text-red-400">{editError}</p>}
               <div className="flex gap-3 pt-1">
                 <button
@@ -3434,6 +3631,14 @@ export default function DashboardClient({
             </div>
           </div>
         </div>
+      )}
+
+      {openPerson && (
+        <PersonProfileDialog
+          key={openPerson}
+          username={openPerson}
+          onClose={() => setOpenPerson(null)}
+        />
       )}
 
       <Toaster toasts={toasts} onDismiss={dismissToast} />

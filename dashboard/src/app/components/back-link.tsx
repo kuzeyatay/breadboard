@@ -10,6 +10,14 @@ interface Props {
   fallbackHref: string;
   fallbackLabel: string;
   className?: string;
+  /**
+   * Ignore the trail and always go to `fallbackHref`. For a page that is a
+   * destination rather than a step, reached from anywhere and sitting under one
+   * obvious parent. Without it, a sibling page visited from here becomes this
+   * page's back target the moment the browser's own back button returns the
+   * user, since that does not unwind the trail.
+   */
+  fixed?: boolean;
 }
 
 const DEFAULT_CLASS =
@@ -19,14 +27,19 @@ const DEFAULT_CLASS =
  * A back control that returns to the page the user actually arrived from,
  * falling back to a fixed parent when the trail cannot answer.
  */
-export default function BackLink({ fallbackHref, fallbackLabel, className }: Props) {
+export default function BackLink({
+  fallbackHref,
+  fallbackLabel,
+  className,
+  fixed = false,
+}: Props) {
   const pathname = usePathname();
 
   // The trail is read relative to wherever we are standing, so a route change
   // has to produce a fresh snapshot even when the trail itself is unchanged.
   const getSnapshot = useCallback(
-    () => resolveBackHref(pathname, fallbackHref),
-    [fallbackHref, pathname],
+    () => (fixed ? fallbackHref : resolveBackHref(pathname, fallbackHref)),
+    [fallbackHref, fixed, pathname],
   );
   const getServerSnapshot = useCallback(() => fallbackHref, [fallbackHref]);
 

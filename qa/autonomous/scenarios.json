@@ -1102,5 +1102,139 @@
       "continueInventory": true,
       "repairEligible": false
     }
+  },
+  {
+    "id": "long-conversation-mounts-a-viewport",
+    "priority": "P1",
+    "task": "Open a Terminal conversation of a thousand messages and count what the transcript actually put in the document.",
+    "successCriteria": [
+      "the transcript reports a message count of 1000",
+      "no more than forty message rows are mounted at once",
+      "the number of mounted rows matches the number of row elements in the document",
+      "the scroller still stands for the whole conversation rather than the mounted slice"
+    ],
+    "dependencies": {
+      "required": ["actual Electron launch entrypoint", "an authenticated dashboard", "a seeded thousand-message Terminal conversation"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": false,
+      "repairEligible": true
+    }
+  },
+  {
+    "id": "long-conversation-scrolls-without-blanks",
+    "priority": "P1",
+    "task": "Scroll rapidly upward and then rapidly downward through the whole conversation.",
+    "successCriteria": [
+      "rows remain mounted throughout, so no blank band is ever on screen",
+      "the mounted-row ceiling holds during fast scrolling",
+      "no row index is drawn twice",
+      "the drawn row indexes are contiguous, so no row is missing from the middle"
+    ],
+    "dependencies": {
+      "required": ["actual Electron launch entrypoint", "an authenticated dashboard", "a seeded thousand-message Terminal conversation"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": false,
+      "repairEligible": true
+    }
+  },
+  {
+    "id": "long-conversation-text-stays-selectable",
+    "priority": "P1",
+    "task": "Select the text of a historical message in a virtualized transcript.",
+    "successCriteria": [
+      "a selection made inside a mounted row returns its text",
+      "virtualization does not prevent ordinary text selection"
+    ],
+    "dependencies": {
+      "required": ["actual Electron launch entrypoint", "an authenticated dashboard", "a seeded thousand-message Terminal conversation"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": false,
+      "repairEligible": true
+    }
+  },
+  {
+    "id": "long-conversation-returns-to-the-newest-message",
+    "priority": "P1",
+    "task": "Scroll away from the newest message and use the existing jump control to come back.",
+    "successCriteria": [
+      "the jump control appears once the reader is away from the bottom",
+      "pressing it lands within one line of the foot of the transcript",
+      "the newest message is on screen afterwards"
+    ],
+    "dependencies": {
+      "required": ["actual Electron launch entrypoint", "an authenticated dashboard", "a seeded thousand-message Terminal conversation"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": false,
+      "repairEligible": true
+    }
+  },
+  {
+    "id": "reading-upward-keeps-the-viewport",
+    "priority": "P1",
+    "task": "Park the viewport partway up a long transcript and confirm nothing steals it back.",
+    "successCriteria": [
+      "the scroll position after reading upward is greater than zero",
+      "the viewport is unchanged after the transcript settles",
+      "measurement corrections never move the reader more than a few pixels"
+    ],
+    "dependencies": {
+      "required": ["actual Electron launch entrypoint", "an authenticated dashboard", "a seeded thousand-message Terminal conversation"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": false,
+      "repairEligible": true
+    }
+  },
+  {
+    "id": "switching-conversations-does-not-reuse-measurements",
+    "priority": "P1",
+    "task": "Switch from the long conversation to a short one and back again.",
+    "successCriteria": [
+      "the short conversation reports its own message count and its own height",
+      "no row from the other conversation is present after a switch",
+      "each conversation opens at the top rather than partway through",
+      "the mounted-row ceiling holds after switching back"
+    ],
+    "dependencies": {
+      "required": ["actual Electron launch entrypoint", "an authenticated dashboard", "a seeded thousand-message Terminal conversation"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": false,
+      "repairEligible": true
+    }
   }
 ]

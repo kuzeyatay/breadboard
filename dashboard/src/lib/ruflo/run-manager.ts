@@ -34,6 +34,7 @@ import {
 } from "./runtime.ts";
 import { finalizeRunSnapshot } from "../agent-edits/snapshot.ts";
 import type { ChatMessageAttachment } from "../chat-attachments.ts";
+import type { GraftRunContext, GraftServer } from "../code-index/index-service.ts";
 
 export interface RufloEvent {
   sequenceNumber: number;
@@ -248,7 +249,11 @@ export function rufloImageInstruction(
  * Generate one per run from the resolved launcher and keep it outside the
  * user's repository so a swarm never leaves stray config behind.
  */
-function writeMcpConfig(runId: string, launcher: RufloLauncher): {
+function writeMcpConfig(
+  runId: string,
+  launcher: RufloLauncher,
+  graftServer: GraftServer | null,
+): {
   configPath: string;
   cleanup: () => void;
 } {
@@ -265,6 +270,16 @@ function writeMcpConfig(runId: string, launcher: RufloLauncher): {
             args: [...launcher.args, "mcp", "start"],
             env: { CLAUDE_FLOW_HEADLESS: "true" },
           },
+          // Every worker in the swarm reads the same repository, so a shared
+          // code index is what keeps them from each grepping it from scratch.
+          ...(graftServer
+            ? {
+                graft: {
+                  command: graftServer.command,
+                  args: [...graftServer.args],
+                },
+              }
+            : {}),
         },
       },
       null,
@@ -431,6 +446,7 @@ export interface StartRunInput {
   repositoryName: string;
   gardenSlug: string;
   attachments?: readonly RufloImageAttachment[];
+  graft?: GraftRunContext | null;
 }
 
 export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
@@ -497,9 +513,10 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
         .join(" ")
     : baseObjective;
 
+  const graft = input.graft ?? null;
   let mcp: ReturnType<typeof writeMcpConfig>;
   try {
-    mcp = writeMcpConfig(runId, launcher);
+    mcp = writeMcpConfig(runId, launcher, graft?.server ?? null);
   } catch (error) {
     materialized.cleanup();
     runs.delete(runId);
@@ -536,6 +553,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
     consensus,
     topology,
     requestedWorkers: workers,
+    codeIndex: graft ? "graft" : "none",
     attachmentCount: materialized.paths.length,
     ...(input.skill
       ? {
@@ -715,7 +733,9 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
           workerCount: run.plan.workerCount,
           workerTypes: run.plan.workerTypes,
         });
-        const executorPrompt = [prompt, attachmentContext]
+        // The coordination prompt is Ruflo's; the code index is Breadboard's
+        // and belongs with the executor, not in the one-line planner objective.
+        const executorPrompt = [prompt, attachmentContext, graft?.instruction ?? ""]
           .filter(Boolean)
           .join("\n\n");
         spawnExecutor(executorPrompt);

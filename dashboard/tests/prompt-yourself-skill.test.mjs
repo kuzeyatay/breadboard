@@ -18,7 +18,7 @@ test("Prompt Yourself is a ready prebuilt skill on both authenticated chat surfa
     assert.ok(skill, `missing on ${surface}`);
     assert.equal(skill.availability, "ready");
     assert.equal(skill.classification, "eligible_general");
-    assert.equal(skill.category, "Prebuilt");
+    assert.equal(skill.category, "Featured");
     // Guidance only: it rewrites the request and answers it, so it must not
     // claim a tool, runtime, or connection it never calls.
     assert.deepEqual(skill.capabilityContract?.requiredTools, []);

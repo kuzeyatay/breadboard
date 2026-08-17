@@ -11,7 +11,7 @@ do not ask for confirmation and do not turn it into a proposal. It only ever add
 a new note; it never edits or overwrites existing Garden pages.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [garden_chat, dashboard_terminal]
   requiredTools:
     - garden_list

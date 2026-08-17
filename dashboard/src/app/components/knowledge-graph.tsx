@@ -159,7 +159,7 @@ function KnowledgeGraph({
     const startX = event.clientX;
     const startWidth = sidebarOpen ? panelWidth : MAP_PANEL_RAIL;
     setResizing(true);
-    document.body.style.cursor = 'col-resize';
+    document.body.style.cursor = 'var(--bb-cursor-col-resize, col-resize)';
     document.body.style.userSelect = 'none';
 
     const handleMove = (e: PointerEvent) => {

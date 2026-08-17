@@ -90,6 +90,13 @@ export function locate(root: SelectorRoot, selector: SemanticSelector): Locator 
       return root.getByText(selector.text, {
         ...(selector.exact === undefined ? {} : { exact: selector.exact }),
       });
+    default:
+      // A selector constant with an unrecognised kind is a harness defect.
+      // Returning `undefined` here would make a downstream truthiness check
+      // pass while nothing was ever queried, so fail loudly instead.
+      throw new Error(
+        `Unsupported QA selector kind: ${JSON.stringify((selector as { kind?: unknown }).kind)}`,
+      );
   }
 }
 

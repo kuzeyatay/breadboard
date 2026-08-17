@@ -44,7 +44,7 @@ test("Image to 3D is a ready prebuilt skill on both conversational surfaces", ()
     );
     assert.ok(skill, `expected the skill on ${surface}`);
     assert.equal(skill.availability, "ready");
-    assert.equal(skill.category, "Prebuilt");
+    assert.equal(skill.category, "Featured");
     assert.deepEqual(skill.capabilityContract?.requiredTools, ["image_to_3d"]);
   }
 

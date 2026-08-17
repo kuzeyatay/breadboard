@@ -9,7 +9,7 @@ Create one prompt-specific coded interface as a persistent artifact. This is
 generative UI, not a fixed scene template or a dashboard.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [garden_chat, dashboard_terminal]
   requiredTools:
     - interactive_visualizer_create

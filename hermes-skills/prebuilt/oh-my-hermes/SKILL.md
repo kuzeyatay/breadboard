@@ -14,7 +14,7 @@ is computed from OMH's own catalogs on disk, so it is fast, repeatable, and
 makes no network call of any kind.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [dashboard_terminal, garden_chat]
   requiredTools:
     - omh_run

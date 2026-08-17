@@ -15,7 +15,7 @@ reports what a piece of text or a file carries, `watermark_clean` strips it, and
 `watermark_audit` sweeps the whole workspace. Nothing leaves the machine.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [dashboard_terminal, garden_chat]
   requiredTools:
     - watermark_inspect

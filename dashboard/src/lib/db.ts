@@ -5,6 +5,7 @@ import { ensureVideoTranscriptionSchema } from "./scriberr/job-store.ts";
 import { databaseDir } from "./runtime-paths.ts";
 import { ensureConversationSchema } from "./conversations/schema.ts";
 import { ensureDocumentSkillSchema } from "./document-skills/schema.ts";
+import { ensureOrganizationSchema } from "./organizations/schema.ts";
 import { ensureArtifactSchema } from "./hermes/artifact-schema.ts";
 import { ensureGBrainSchema } from "./gbrain/schema.ts";
 import { ensureMem0Schema } from "./mem0/schema.ts";
@@ -72,6 +73,7 @@ if (!globalWithDb.db) {
       last_viewed_at TEXT,
       fork_allowed INTEGER NOT NULL DEFAULT 0,
       repo_path   TEXT,
+      graft_enabled INTEGER NOT NULL DEFAULT 1,
       created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -362,6 +364,17 @@ ensureColumn(
   "fork_allowed INTEGER NOT NULL DEFAULT 0",
 );
 ensureColumn("clusters", "repo_path", "repo_path TEXT");
+// On by default: the coding agents in this garden (Codex, OpenCode, Ruflo) get
+// the graft code index of the connected repository as an MCP server. See
+// src/lib/code-index/garden.ts.
+ensureColumn(
+  "clusters",
+  "graft_enabled",
+  "graft_enabled INTEGER NOT NULL DEFAULT 1",
+);
+// Set together with visibility = 'organization': which organization the garden
+// is shared with. Null for every other visibility.
+ensureColumn("clusters", "organization_id", "organization_id INTEGER");
 // Per-garden standing instructions, appended to the system prompt of every turn
 // in this garden. See src/lib/hermes/garden-chat-adapter.ts.
 ensureColumn("clusters", "instructions", "instructions TEXT NOT NULL DEFAULT ''");
@@ -867,6 +880,10 @@ db.exec(`
 // Skills distilled from selected or uploaded documents, keyed by content hash
 // so the same document is only ever distilled once.
 ensureDocumentSkillSchema(db);
+
+// --- Organizations ---------------------------------------------------------
+// Groups of accounts that can see each other's gardens shared with the group.
+ensureOrganizationSchema(db);
 
 // --- Video transcription (Scriberr integration) ----------------------------
 // Additive table for asynchronous video transcription jobs; the schema lives

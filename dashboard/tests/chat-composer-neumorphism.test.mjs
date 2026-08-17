@@ -39,7 +39,7 @@ test("dashboard chat surfaces share a borderless neumorphic composer", () => {
   assert.doesNotMatch(garden, /border-t border-gray-800 p-3/);
 });
 
-test("the composer centers one line and grows longer drafts without a scrollbar", () => {
+test("the composer centers one line and grows longer drafts up to its cap", () => {
   assert.match(
     composer,
     /relative flex min-w-0 flex-1 items-center.*compact \? 'min-h-9' : 'min-h-11'/,
@@ -48,7 +48,11 @@ test("the composer centers one line and grows longer drafts without a scrollbar"
     composer,
     /block w-full min-w-0 max-w-full resize-none overflow-y-hidden bg-transparent px-1 py-0/,
   );
-  assert.match(composer, /textarea\.style\.height = `\$\{textarea\.scrollHeight\}px`/);
+  // Growth, and the cap it stops at — see tests/assistant-composer-autogrow.test.mjs.
+  assert.match(
+    composer,
+    /textarea\.style\.height = `\$\{capped \? cap : natural\}px`/,
+  );
   assert.doesNotMatch(composer, /max-h-40 w-full resize-none overflow-y-auto/);
   assert.match(
     composer,

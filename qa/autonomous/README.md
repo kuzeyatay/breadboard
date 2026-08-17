@@ -291,6 +291,41 @@ Stop, preserve evidence, and write a receipt when:
 Trying unrelated alternatives after a stop condition is automated damage, not
 resilience.
 
+## Week 1 self-test and repair tooling
+
+The contract above says what the loop must do. These modules make the safety
+half of it structural rather than advisory, so a model cannot talk its way past
+a boundary:
+
+| Module | Responsibility |
+| --- | --- |
+| `qa/electron/classification.ts` | The failure classifier the exploratory probes use, extracted so it can be exercised with deterministic fixtures. |
+| `qa/autonomous/lib/repair-gate.mjs` | `classification !== PRODUCT_BUG` ⇒ no production source mutation. Also classifies every repo path and refuses forbidden trust boundaries outright. |
+| `qa/autonomous/lib/assertion-integrity.mjs` | Reads the candidate diff and rejects the obvious ways an oracle gets softened; flags ambiguous oracle edits for a human. |
+| `qa/autonomous/lib/repair-worktree.mjs` | Disposable `.qa-worktrees/<finding-id>/` isolation, scoped main-tree comparison, rollback text. |
+| `qa/autonomous/lib/receipt.mjs` | Validates and secret-scans a receipt before it is written; `VERIFIED_REPAIR` cannot be claimed without a passing replay, a regression test, verified isolation, and a non-rejected guard verdict. |
+
+Commands:
+
+```text
+npm run qa:selftest            # harness unit suites + the Playwright selftest project
+npm run qa:selftest:electron   # injected-fault meta-run; passes when the harness fails correctly
+npm run qa:selftest:burn-in    # repeated deterministic core path, no retries
+npm run qa:repair:experiments  # the controlled seeded-defect self-heal experiments
+```
+
+`npm run qa:selftest:electron` runs the `injected` Playwright project, which is
+*expected to fail*. The meta-runner asserts that each injected fault became a
+reported failure carrying a screenshot, a diagnostics bundle, and a trace, and
+that the run exited non-zero. A green exit from that command means the harness
+failed correctly; a red one means it cannot be trusted to notice a real defect.
+
+The seeded-defect experiments in `qa/autonomous/experiments/seeded-defects.mjs`
+are deliberately thrown away with their worktree. Their point is to prove the
+loop can repair, not to keep artificial fixes. Each one must also demonstrate
+that its new regression test *fails* when the defect is reintroduced; a
+regression test that still passes is recorded as vacuous and fails the run.
+
 ## Findings and receipts
 
 Write per-run findings beneath the harness's ignored QA-results directory and

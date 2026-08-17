@@ -175,6 +175,18 @@ test("garden chat leaves to the dashboard rather than following the trail", () =
   assert.match(gardenChat, /href="\/dashboard"[\s\S]{0,900}Back to dashboard/);
 });
 
+test("the profile page leaves to the dashboard rather than following the trail", () => {
+  // A person page is reached from the profile's own member list, so deferring
+  // to the trail makes the two each other's back target as soon as the
+  // browser's back button returns the user without unwinding it.
+  const profile = fs.readFileSync(
+    new URL("../src/app/profile/profile-client.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(profile, /<BackLink[^>]*fallbackHref="\/dashboard"[^>]*\sfixed\b/);
+});
+
 test("reloading the embedded garden does not stack a history entry", () => {
   const gardenClient = fs.readFileSync(
     new URL("../src/app/garden/[clusterSlug]/garden-client.tsx", import.meta.url),

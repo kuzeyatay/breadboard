@@ -29,7 +29,7 @@ test("the in-chat visualizer is a separate ready prebuilt skill", () => {
   assert.equal(
     skills.some((skill) =>
       skill.slug === INTERACTIVE_VISUALIZER_IN_CHAT_SKILL &&
-      skill.category === "Prebuilt" &&
+      skill.category === "Featured" &&
       skill.availability === "ready"),
     true,
   );

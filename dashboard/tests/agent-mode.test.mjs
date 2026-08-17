@@ -234,23 +234,35 @@ test("a super-agent turn selects the whole inventory for itself", () => {
   assert.match(turnService, /renderSuperAgentDirective\(superAgentInventory\)/);
 });
 
-test("super agent delegates substantive evidence questions to Deep Research", () => {
+test("super agent staffs web research across every instrument it has", () => {
   assert.match(
     superAgentDirective,
-    /## Substantive research goes to Deep Research/,
+    /## Web research: read pages, and use more than one instrument/,
   );
+  // The failure this replaced: a survey answered out of search-result snippets
+  // because `web_search` was the tool the turn could run by itself.
   assert.match(
     superAgentDirective,
-    /research, search into, or investigate a topic/,
+    /never by quoting search-result snippets/,
   );
+  assert.match(superAgentDirective, /Open the official page with `web_extract` first/);
+  // Each research worker is offered for the part it is actually good at, and
+  // only when it is launchable on this surface.
+  for (const id of ["deep-research", "agent-reach", "agent-browser", "get-doc"]) {
+    assert.match(superAgentDirective, new RegExp("`" + id + "` —"));
+    assert.match(superAgentDirective, new RegExp('"' + id + '"'));
+  }
   assert.match(
     superAgentDirective,
     /whether a method works, its benefits or harms, and whether learning is retained/,
   );
-  assert.match(superAgentDirective, /agent id `deep-research`/);
-  assert.match(superAgentDirective, /begin the Deep Research brief with `--answer`/);
-  assert.match(
-    superAgentDirective,
-    /does the full research loop but returns a direct sourced answer/,
-  );
+  assert.match(superAgentDirective, /Begin the brief with `--answer`/);
+  assert.match(superAgentDirective, /A broad request earns more than one worker/);
+  // Launches are serial, so a brief that waits on another worker's findings
+  // cannot work — the reconciliation happens in this agent instead.
+  assert.match(superAgentDirective, /They run one at a time, in order/);
+  assert.match(superAgentDirective, /write each brief to stand alone/);
+  assert.match(superAgentDirective, /You are the one who reconciles/);
+  // And the silent-degradation rule: a failed tool is reported, not papered over.
+  assert.match(superAgentDirective, /A tool that returned an error did no work/);
 });

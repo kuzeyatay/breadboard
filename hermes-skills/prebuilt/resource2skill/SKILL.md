@@ -9,7 +9,7 @@ Delegate the complete artifact build to the dedicated runtime agent. Do not use
 terminal commands or call the cloned Python runtime directly.
 
 breadboard:
-  category: prebuilt
+  category: featured
   surfaces: [garden_chat, dashboard_terminal]
   requiredTools: []
   requiredArtifactKinds: []
