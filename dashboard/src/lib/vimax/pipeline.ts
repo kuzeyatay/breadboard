@@ -89,6 +89,8 @@ export async function produceFilm(input: {
    * being revised rather than writing something unrelated into its next version.
    */
   previousFilm?: string;
+  /** The chat this was launched from, so a brief can refer back to it. */
+  conversationContext?: string;
 }): Promise<VimaxProduction> {
   const { request, target, hooks } = input;
   const { emit, signal } = hooks;
@@ -105,6 +107,7 @@ export async function produceFilm(input: {
       idea: request.brief,
       userRequirement: request.userRequirement,
       ...(input.previousFilm ? { previousFilm: input.previousFilm } : {}),
+      ...(input.conversationContext ? { conversation: input.conversationContext } : {}),
     });
     title = draft.title;
     logline = draft.logline;

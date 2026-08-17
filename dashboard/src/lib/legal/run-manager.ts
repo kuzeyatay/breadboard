@@ -35,6 +35,7 @@ import {
   removeWorkspace,
   type LegalWorkspace,
 } from "./workspace.ts";
+import { contextSection } from "../conversations/agent-context.ts";
 
 export interface LegalEvent {
   sequenceNumber: number;
@@ -155,6 +156,12 @@ export interface StartRunInput {
    * It reaches the harness as a system-prompt section, never as the assignment.
    */
   memoryContext: string;
+  /**
+   * The chat this assignment was given in. Travels with `memoryContext` as
+   * harness background rather than as part of the brief, which is what keeps
+   * an earlier message from reading as a second instruction.
+   */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
@@ -243,9 +250,12 @@ function drive(
     shellTimeout: input.settings.shellTimeout,
     skills: run.request.skills,
     allowShell: run.request.allowShell,
-    // Background about the user, if any survived selection. The bridge renders
-    // it as its own system-prompt section so it can never read as the brief.
-    userContext: input.memoryContext,
+    // Background about the user, if any survived selection, and the chat the
+    // assignment was given in. The bridge renders this as its own
+    // system-prompt section so it can never read as the brief.
+    userContext: [input.memoryContext, contextSection(input.conversationContext)]
+      .filter((section) => section.trim())
+      .join("\n\n"),
     // What was staged, so the assignment can name each original, say what is
     // in it, and say which ones can be rewritten in place rather than leaving
     // the agent to infer any of that from a directory listing.

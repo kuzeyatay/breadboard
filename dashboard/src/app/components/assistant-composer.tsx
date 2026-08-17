@@ -26,6 +26,7 @@ import SlashCommandMenu, {
   type SlashCommandMenuHandle,
 } from '@/app/components/hermes/slash-command-menu';
 import { splitLeadingCommandTokens } from '@/app/components/hermes/command-text';
+import { slashQueryAt, slashQueryReplacementRange } from '@/lib/hermes/slash-query';
 import { useDirectMode } from '@/app/components/use-direct-mode';
 import { useGoalMode } from '@/app/components/use-goal-mode';
 import { useYoloMode } from '@/app/components/use-yolo-mode';
@@ -95,6 +96,7 @@ import { INBOX_ZERO_COMMAND } from '@/lib/inbox-zero/identity.ts';
 import { VIMAX_COMMAND } from '@/lib/vimax/identity.ts';
 import { MONEY_PRINTER_COMMAND } from '@/lib/money-printer/identity.ts';
 import { LEGAL_COMMAND } from '@/lib/legal/identity.ts';
+import { WARDROBE_COMMAND } from '@/lib/wardrobe/identity.ts';
 import { describeDocumentSummary, type DocumentAttachmentSummary } from '@/lib/document-attachments.ts';
 import type { ModelAttachmentSummary } from '@/lib/model-attachments.ts';
 import { OPENCODE_COMMAND } from '@/lib/opencode/identity.ts';
@@ -314,6 +316,8 @@ interface Props {
   onSelectMoneyPrinter?: () => void;
   /** The Legal Agent likewise: the command carries the assignment. */
   onSelectLegal?: () => void;
+  /** Wardrobe likewise: the photos are attached and the command carries direction. */
+  onSelectWardrobe?: () => void;
   /** Active OpenCode agent for a Garden-linked local repository. */
   openCodeAgent?: { id: string; name: string } | null;
   onClearOpenCode?: () => void;
@@ -484,6 +488,7 @@ export default function AssistantComposer({
   onSelectVimax,
   onSelectMoneyPrinter,
   onSelectLegal,
+  onSelectWardrobe,
   openCodeAgent,
   onClearOpenCode,
   onSelectOpenCode,
@@ -501,6 +506,9 @@ export default function AssistantComposer({
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('account');
   const [showCommandHub, setShowCommandHub] = useState(false);
   const [showSlashCommands, setShowSlashCommands] = useState(false);
+  // The token the caret was in when the picker opened — the picker's filter,
+  // which is not the whole box once the sentence has a body after the token.
+  const [slashQuery, setSlashQuery] = useState('');
   // The TradingAgents request lives here rather than in the host: it is the
   // composer's input while that agent is selected, exactly as `value` is
   // otherwise, and no host needs to know its shape to route a send.
@@ -905,13 +913,18 @@ export default function AssistantComposer({
         codexAgent || /^\/agents:codex(?:\s+|$)/i.test(value.trimStart())
           ? CODEX_COMMAND
           : OPENCODE_COMMAND;
-      const replacingSlashQuery = /^\/[^\s]*$/.test(value);
-      const existing =
-        replacingSlashQuery
-          ? ""
-          : value
-              .trimStart()
-              .replace(/^\/agents:(?:codex|opencode)(?:\s+|$)/i, "");
+      // Whatever the sentence says minus the token being replaced, and minus a
+      // coding runtime it already names — the prefix below puts one back.
+      const replaced = slashQueryReplacementRange(
+        value,
+        internalTextareaRef.current?.selectionStart,
+      );
+      const remainder = replaced
+        ? `${value.slice(0, replaced.start)}${value.slice(replaced.end)}`
+        : value;
+      const existing = remainder
+        .trimStart()
+        .replace(/^\/agents:(?:codex|opencode)(?:\s+|$)/i, "");
       const prefix = `${codingCommand} /${item.token}`;
       const next = `${prefix}${existing ? ` ${existing}` : " "}`;
       onChange(next);
@@ -926,20 +939,19 @@ export default function AssistantComposer({
 
   function insertCommandToken(command: string) {
     const node = internalTextareaRef.current;
-    let start = 0;
-    let end = 0;
-    const replacingSlashQuery = /^\/[^\s]*$/.test(value);
-    if (replacingSlashQuery) {
-      start = 0;
-      end = value.length;
-    }
+    // A token being edited is overwritten in place; anything else (the palette
+    // button, an agent shortcut) goes to the head of the sentence, where a
+    // capability selector has to sit anyway.
+    const replaced = slashQueryReplacementRange(value, node?.selectionStart);
+    const start = replaced?.start ?? 0;
+    const end = replaced?.end ?? 0;
     const token = `${command} `;
     const next = `${value.slice(0, start)}${token}${value.slice(end)}`;
     onChange(next);
     window.setTimeout(() => {
       node?.focus();
-      const cursor = replacingSlashQuery
-        ? token.length
+      const cursor = replaced
+        ? start + token.length
         : token.length + (node?.selectionStart ?? value.length);
       node?.setSelectionRange(cursor, cursor);
     }, 0);
@@ -996,6 +1008,7 @@ export default function AssistantComposer({
     onSelectVimax ? 'vimax' : null,
     onSelectMoneyPrinter ? 'money-printer' : null,
     onSelectLegal ? 'legal' : null,
+    onSelectWardrobe ? 'wardrobe' : null,
     onSelectOpenCode ? 'opencode' : null,
     onSelectCodex ? 'codex' : null,
     onSelectRuflo ? 'ruflo' : null,
@@ -1007,7 +1020,7 @@ export default function AssistantComposer({
         <SlashCommandMenu
           ref={slashCommandMenuRef}
           open={showSlashCommands}
-          value={value}
+          query={slashQuery}
           sessionId={capabilitySessionId}
           surface={capabilitySurface}
           availableRuntimeAgentIds={availableRuntimeAgentIds}
@@ -1710,6 +1723,9 @@ export default function AssistantComposer({
               onSelectMoneyPrinter ? () => insertCommandToken(MONEY_PRINTER_COMMAND) : undefined
             }
             onSelectLegal={onSelectLegal ? () => insertCommandToken(LEGAL_COMMAND) : undefined}
+            onSelectWardrobe={
+              onSelectWardrobe ? () => insertCommandToken(WARDROBE_COMMAND) : undefined
+            }
             onSelectOpenCode={onSelectOpenCode ? () => insertCommandToken(OPENCODE_COMMAND) : undefined}
             onSelectCodex={onSelectCodex ? () => insertCommandToken(CODEX_COMMAND) : undefined}
             onSelectRuflo={onSelectRuflo ? () => insertCommandToken(RUFLO_COMMAND) : undefined}
@@ -1842,15 +1858,18 @@ export default function AssistantComposer({
                         setShowCommandHub(false);
                         return;
                       }
-                      // Typing a leading slash opens the direct command picker,
-                      // never the full capability manager. Backspacing a
-                      // command down to "/" still does not reopen anything.
+                      // Typing in a leading slash token opens the direct command
+                      // picker, never the full capability manager — including
+                      // the token of a sentence that already has a body, which
+                      // is how an existing capability gets swapped. Backspacing
+                      // a command down to "/" still does not reopen anything.
                       const { inputType } = event.nativeEvent as Partial<InputEvent>;
-                      const slashQuery = /^\/[^\s]*$/.test(next);
+                      const slashQuery = slashQueryAt(next, event.target.selectionStart);
                       if (
                         slashQuery &&
                         (showSlashCommands || !inputType?.startsWith('delete'))
                       ) {
+                        setSlashQuery(slashQuery.query);
                         setShowSlashCommands(true);
                         setShowCommandHub(false);
                       } else if (showSlashCommands) {

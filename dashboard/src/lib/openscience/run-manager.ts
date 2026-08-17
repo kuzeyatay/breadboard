@@ -27,6 +27,7 @@ import {
 import { PROVIDER_ID } from "./config.ts";
 import { ensureService } from "./service.ts";
 import { runInstruction, sessionTitle, type PromptOptions } from "./prompt.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface OpenscienceEvent {
   sequenceNumber: number;
@@ -66,6 +67,8 @@ interface RunState {
   runId: string;
   userId: number;
   task: string;
+  /** The chat this run was launched from, rendered once by the route. */
+  conversationContext: string;
   model: string;
   variant: string;
   options: PromptOptions;
@@ -490,6 +493,8 @@ export interface StartInput {
   baseUrl: string;
   apiKey: string;
   options: PromptOptions;
+  /** The chat this was launched from, so a goal can refer back to it. */
+  conversationContext?: string;
 }
 
 async function execute(run: RunState, input: StartInput): Promise<void> {
@@ -528,7 +533,10 @@ async function execute(run: RunState, input: StartInput): Promise<void> {
       providerId: PROVIDER_ID,
       model: run.model,
       variant: run.variant,
-      text: runInstruction(run.task, run.options),
+      text: promptWithContext(
+        runInstruction(run.task, run.options),
+        run.conversationContext,
+      ),
       signal: run.abort.signal,
     });
 
@@ -589,6 +597,7 @@ export function startRun(input: StartInput): OpenscienceRunSummary {
     runId: randomUUID(),
     userId: input.userId,
     task: input.task,
+    conversationContext: input.conversationContext ?? "",
     model: input.model,
     variant: input.reasoningEffort,
     options: input.options,

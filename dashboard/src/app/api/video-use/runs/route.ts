@@ -10,6 +10,7 @@ import {
   VIDEO_USE_AGENT_ID,
 } from "@/lib/video-use/identity.ts";
 import { startRun } from "@/lib/video-use/run-manager.ts";
+import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -72,6 +73,9 @@ export async function POST(request: Request) {
       model,
       reasoningEffort: defaults.reasoningEffort,
       baseUrl: baseURL,
+      // The chat this was launched from, so a request that refers back to
+      // it resolves instead of arriving as a bare fragment.
+      conversationContext: conversationContextFromBody(userId, body),
     });
     return NextResponse.json({ ok: true, run, request: parsed }, { status: 201 });
   } catch (error) {

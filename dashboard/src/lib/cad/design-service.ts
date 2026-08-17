@@ -24,6 +24,7 @@ import {
 } from "./safety.ts";
 import type { CadToolContext } from "./tools.ts";
 import type { CADValidationIssue, ManufacturingProcess, ParametricCADArtifact } from "./types.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 /** Automatic model-driven builds per user turn, before the agent must stop. */
 export const MAX_BUILD_ATTEMPTS = 3;
@@ -34,6 +35,8 @@ export interface DesignCadPartInput {
   clusterId: number | null;
   /** The design brief, in the user's words plus whatever context the caller adds. */
   brief: string;
+  /** The chat this was launched from, so a brief can refer back to it. */
+  conversationContext?: string;
   /** Provider endpoint and model. Never hardcoded — the caller passes what the user chose. */
   baseUrl: string;
   model: string;
@@ -449,7 +452,10 @@ function userMessageFor(input: DesignCadPartInput): string {
       "The person works in inches; state dimensions both ways and keep the geometry metric.",
     );
   }
-  return notes.length ? `${input.brief}\n\n${notes.join(" ")}` : input.brief;
+  const brief = notes.length ? `${input.brief}\n\n${notes.join(" ")}` : input.brief;
+  // Kept out of `brief` on purpose: that string is also what the safety
+  // assessment reads and what labels the run.
+  return promptWithContext(brief, input.conversationContext);
 }
 
 /**

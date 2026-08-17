@@ -400,7 +400,12 @@ const DECOMPOSITION_TOOL: ToolDefinition = {
 
 export function developStory(
   target: ModelTarget,
-  input: { idea: string; userRequirement: string; previousFilm?: string },
+  input: {
+    idea: string;
+    userRequirement: string;
+    previousFilm?: string;
+    conversation?: string;
+  },
 ): Promise<StoryDraft> {
   return structuredStage<StoryDraft>(target, {
     system: SCREENWRITER_STORY_SYSTEM,

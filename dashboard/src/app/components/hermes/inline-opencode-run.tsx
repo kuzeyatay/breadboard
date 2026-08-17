@@ -58,12 +58,6 @@ function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function elapsedLabel(seconds: number): string {
-  const rounded = Math.max(0, Math.round(seconds));
-  if (rounded < 60) return `${rounded}s`;
-  return `${Math.floor(rounded / 60)}m ${String(rounded % 60).padStart(2, "0")}s`;
-}
-
 function appendActivity(
   current: ActivityEvent[],
   event: ActivityEvent,
@@ -122,7 +116,12 @@ export default function InlineOpenCodeRun({
   const [activity, setActivity] = useState<ActivityEvent[]>(
     () => persistedActivity ?? [],
   );
-  const [activityOpen, setActivityOpen] = useState(true);
+  // The call list is expanded while the run is live and folds itself away once
+  // the run lands, so an active card shows its work and a finished one stays
+  // compact. Either state is still a click away.
+  const [activityOpen, setActivityOpen] = useState(
+    () => !(persistedOutcome && persistedOutcome !== "running"),
+  );
   const [edits, setEdits] = useState<ExternalAgentEdits | null>(persistedEdits ?? null);
   const [result, setResult] = useState(
     persistedOutcome === "completed" ? persistedContent : "",
@@ -329,7 +328,13 @@ export default function InlineOpenCodeRun({
     return () => window.clearInterval(timer);
   }, [status]);
 
+  useEffect(() => {
+    if (TERMINAL.has(status)) setActivityOpen(false);
+  }, [status]);
+
   const terminal = TERMINAL.has(status);
+  const callCount = timeline.filter((item) => item.kind === "tool").length;
+  const callLabel = `${callCount} ${callCount === 1 ? "call" : "calls"}`;
   const terminalContent =
     result.trim() ||
     failure.trim() ||
@@ -352,12 +357,7 @@ export default function InlineOpenCodeRun({
       <header className="bb-agent-run-header">
         <p className="bb-agent-run-title truncate">{agentName}</p>
         <div className="flex shrink-0 items-center gap-[8px]">
-          {timeline.length ? (
-            <span className="bb-agent-run-label tabular-nums">
-              {timeline.length} step{timeline.length === 1 ? "" : "s"}
-            </span>
-          ) : null}
-          <span className="bb-agent-run-label inline-flex items-center gap-1.5 capitalize">
+          <span className="bb-agent-run-label inline-flex items-center gap-1.5">
             <span
               className={`bb-agent-run-led h-1.5 w-1.5 ${
                 status === "completed"
@@ -367,13 +367,17 @@ export default function InlineOpenCodeRun({
                     : "animate-pulse bg-[var(--botanical-2)]"
               }`}
             />
-            {terminal ? status : `coding · ${elapsedLabel(elapsed)}`}
+            {terminal ? (
+              <span className="capitalize">{status}</span>
+            ) : (
+              <span className="tabular-nums">{callLabel}</span>
+            )}
           </span>
         </div>
       </header>
 
       <div className="space-y-[13px] p-[21px]">
-      {timeline.length && terminal ? (
+      {timeline.length ? (
         <button
           type="button"
           onClick={() => setActivityOpen((open) => !open)}
@@ -391,12 +395,12 @@ export default function InlineOpenCodeRun({
           >
             <path strokeLinecap="round" strokeLinejoin="round" d="m9 6 6 6-6 6" />
           </svg>
-          {timeline.length} {timeline.length === 1 ? "step" : "steps"}
+          {callLabel}
           <span className="ml-auto">{activityOpen ? "Hide" : "Show"}</span>
         </button>
       ) : null}
 
-      {timeline.length && (!terminal || activityOpen) ? (
+      {timeline.length && activityOpen ? (
         <ol
           id={timelineId}
           className="relative space-y-4 py-1"

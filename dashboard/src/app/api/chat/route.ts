@@ -27,6 +27,7 @@ import { readHermesConfig } from '@/lib/hermes/config.ts';
 import { openGardenAgentChat } from '@/lib/hermes/garden-chat-adapter.ts';
 import { apiErrorResponse } from '@/lib/hermes/route-helpers.ts';
 import { recordAuditEvent } from '@/lib/hermes/runtime-store.ts';
+import { cogniviaSection } from '@/lib/cognivia/index.ts';
 import { directModeSection } from '@/lib/hermes/direct-mode.ts';
 import { responseStylePrompt } from '@/lib/hermes/system-prompts.ts';
 import { createEmDashFilter } from '@/lib/prose-punctuation.ts';
@@ -405,6 +406,11 @@ export async function POST(request: Request) {
       'and $$...$$ on its own line for display/block equations. ' +
       'Never write math in plain text with ^ or bracket notation - always use proper LaTeX.\n\n' +
       `${graphContext}${selectedDocumentContext}${activeMarkdownPromptContext}\n\nGraphRAG-lite retrieved evidence (BM25, aliases, optional embeddings, and bounded one-hop relationships):\n\n${notesContext}`;
+
+    // A mental-health turn is answered as a CBT copilot on every surface, and
+    // this legacy garden route is one of them.
+    const cognivia = cogniviaSection({ userText: lastUserMessage?.content ?? '' });
+    if (cognivia) systemPrompt += `\n\n${cognivia}`;
 
     const urlLinkContext = await buildUrlLinkContext(chatMessages);
     if (urlLinkContext.context) {

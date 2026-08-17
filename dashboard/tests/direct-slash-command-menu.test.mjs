@@ -100,6 +100,10 @@ test("slash queries filter commands without exposing the full manager", () => {
   assert.deepEqual(items.map((item) => item.token), ["agents:deep-research"]);
 
   const composer = source("../src/app/components/assistant-composer.tsx");
-  assert.ok(composer.includes("const replacingSlashQuery = /^\\/[^\\s]*$/.test(value);"));
+  // The token being replaced is the one under the caret, which is not the whole
+  // box once the sentence has a body after the capability.
+  assert.ok(
+    composer.includes("slashQueryReplacementRange(value, node?.selectionStart)"),
+  );
   assert.match(composer, /slashCommandMenuRef\.current\?\.handleKeyDown\(event\)/);
 });

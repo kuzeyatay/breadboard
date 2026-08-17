@@ -32,6 +32,7 @@ import {
   resolveDeepTutorRoot,
   venvPython,
 } from "./runtime.ts";
+import { contextSection } from "../conversations/agent-context.ts";
 
 export interface DeepTutorEvent {
   sequenceNumber: number;
@@ -46,6 +47,8 @@ interface RunState {
   runId: string;
   userId: number;
   request: TutorRequest;
+  /** The chat this run was launched from, rendered once by the route. */
+  conversationContext: string;
   scope: TutorScope;
   status: RunStatus;
   sequence: number;
@@ -172,6 +175,8 @@ export interface StartRunInput {
   reasoningEffort: string;
   /** ChatMock's OpenAI-compatible base URL, already resolved for this request. */
   baseUrl: string;
+  /** The chat this was launched from, so a question can refer back to it. */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
@@ -202,6 +207,7 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
     runId,
     userId: input.userId,
     request: input.request,
+    conversationContext: input.conversationContext ?? "",
     scope,
     status: "queued",
     sequence: 0,
@@ -430,6 +436,10 @@ function composeMessage(
       `Attached because they look relevant: ${names}. There is more where those came from — search the rest before assuming something is missing.`,
     );
   }
+  // Last of the notes for the same reason the notes exist at all: the
+  // question has to stay at the front of what DeepTutor retrieves over.
+  const chat = contextSection(run.conversationContext);
+  if (chat) notes.push(chat);
   if (!notes.length) return run.request.message;
 
   // The question goes first, and the standing context after it. DeepTutor runs

@@ -106,6 +106,8 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../video-use/run-manager.ts")).abortRun(userId, runId),
   legal_agent: async (userId, runId) =>
     (await import("../legal/run-manager.ts")).abortRun(userId, runId),
+  wardrobe: async (userId, runId) =>
+    (await import("../wardrobe/run-manager.ts")).abortRun(userId, runId),
 } as const satisfies Record<
   ExternalAgentRunKind,
   (userId: number, runId: string) => Promise<unknown>

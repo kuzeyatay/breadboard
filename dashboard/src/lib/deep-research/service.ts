@@ -18,6 +18,10 @@ import {
 } from "./config.ts";
 import { ensureDeepResearchService } from "./runtime.ts";
 import { composeAgentMemoryContext } from "../conversations/agent-memory-context.ts";
+import {
+  contextSection,
+  conversationContextFromBody,
+} from "../conversations/agent-context.ts";
 
 export class DeepResearchError extends Error {
   status: number;
@@ -155,7 +159,19 @@ export async function startRun(userId: number, body: unknown): Promise<RunSummar
     return await client().createRun({
       ownerUserId: userId,
       ...validated.value,
-      userContext: memory?.text ?? "",
+      // The chat travels here for the same reason the memory does: the query
+      // is what gets searched for, and an earlier message is background.
+      userContext: [
+        memory?.text ?? "",
+        contextSection(
+          conversationContextFromBody(
+            userId,
+            body && typeof body === "object" ? (body as Record<string, unknown>) : {},
+          ),
+        ),
+      ]
+        .filter((section) => section.trim())
+        .join("\n\n"),
     });
   } catch (error) {
     throw translate(error);

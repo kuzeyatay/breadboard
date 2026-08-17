@@ -26,6 +26,7 @@ import {
 } from "./client.ts";
 import { runInstruction, sessionTitle, type PromptOptions } from "./prompt.ts";
 import { ensureService } from "./service.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface OpenworkEvent {
   sequenceNumber: number;
@@ -59,6 +60,8 @@ interface RunState {
   runId: string;
   userId: number;
   task: string;
+  /** The chat this run was launched from, rendered once by the route. */
+  conversationContext: string;
   model: string;
   variant: string;
   status: RunStatus;
@@ -387,7 +390,7 @@ async function execute(run: RunState, options: StartInput): Promise<void> {
 
     const session = await createSession(run.connection, {
       title: sessionTitle(run.task),
-      prompt: runInstruction(run.task),
+      prompt: promptWithContext(runInstruction(run.task), run.conversationContext),
       model: run.model,
       variant: run.variant,
     });
@@ -459,6 +462,8 @@ export interface StartInput {
   apiKey: string;
   /** The agent's stored preferences, resolved by the run route. */
   prompt: PromptOptions;
+  /** The chat this was launched from, so a task can refer back to it. */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartInput): OpenworkRunSummary {
@@ -466,6 +471,7 @@ export function startRun(input: StartInput): OpenworkRunSummary {
     runId: randomUUID(),
     userId: input.userId,
     task: input.task,
+    conversationContext: input.conversationContext ?? "",
     model: input.model,
     variant: input.reasoningEffort,
     status: "queued",

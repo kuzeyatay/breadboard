@@ -67,6 +67,7 @@ import { runtimeMessagesForBranch } from "./branch-history.ts";
 import { visualizerCommandText } from "../hermes/interactive-visualizer-intent.ts";
 import { selectedInteractiveVisualizerSkill } from "../hermes/interactive-visualizer-skills.ts";
 import { premortemCommandText } from "../hermes/premortem-intent.ts";
+import { factcheckCommandText } from "../hermes/factcheck-intent.ts";
 import { agentLoopCommandText } from "../hermes/agent-loop-intent.ts";
 import { messagingCommandText } from "../hermes/messaging-intent.ts";
 import { watchCommandText } from "../hermes/watch-intent.ts";
@@ -459,8 +460,14 @@ export async function startConversationTurn(
     authenticated: true,
     priorMessages: currentConversationMessages,
   });
-  const visualizerSelection = visualizerCommandText({
+  const factcheckSelection = factcheckCommandText({
     text: premortemSelection.text,
+    surface: input.surface,
+    authenticated: true,
+    priorMessages: currentConversationMessages,
+  });
+  const visualizerSelection = visualizerCommandText({
+    text: factcheckSelection.text,
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
@@ -603,6 +610,7 @@ export async function startConversationTurn(
     metadata: {
       commands: resolved.invocations,
       automaticPremortem: premortemSelection.automatic,
+      automaticFactcheck: factcheckSelection.automatic,
       automaticInteractiveVisualizer: visualizerSelection.automatic,
       automaticMessaging: messagingSelection.automatic,
       automaticWatch,
@@ -743,6 +751,7 @@ export async function startConversationTurn(
         : {}),
       allowedTools: decision.allowedTools,
       automaticPremortem: premortemSelection.automatic,
+      automaticFactcheck: factcheckSelection.automatic,
       automaticInteractiveVisualizer: visualizerSelection.automatic,
       automaticWatch,
       automaticImageTo3d,

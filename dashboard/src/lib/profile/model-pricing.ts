@@ -38,6 +38,11 @@ export interface ModelRate {
  */
 export const MODEL_RATES: Readonly<Record<string, ModelRate>> = {
   "claude-fable-5": { input: 10, output: 50 },
+  // Same model at the same published rate. The pxpipe route saves money by
+  // sending far fewer input tokens for the same context, not by buying them
+  // cheaper — so the discount has to show up in the token counts, and a lower
+  // rate here would double-count it.
+  "claude-fable-5-efficient": { input: 10, output: 50 },
   "claude-mythos-5": { input: 10, output: 50 },
   "claude-opus-5": { input: 5, output: 25 },
   "claude-opus-4-8": { input: 5, output: 25 },

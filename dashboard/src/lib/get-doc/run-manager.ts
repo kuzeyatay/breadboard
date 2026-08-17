@@ -17,6 +17,7 @@ import { describeDocuments, planSearch } from "./query-plan.ts";
 import { searchDocuments } from "./search.ts";
 import type { DocumentSearchRequest, DocumentSourceId } from "./identity.ts";
 import type { DocumentHit, SourceReport } from "./types.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface GetDocEvent {
   sequenceNumber: number;
@@ -156,12 +157,15 @@ export function summarizeDocuments(input: {
 
 // ---- lifecycle --------------------------------------------------------------
 
+
 export interface StartRunInput {
   userId: number;
   request: DocumentSearchRequest;
   model: string;
   reasoningEffort: string;
   baseUrl: string;
+  /** The chat this was launched from, so a search can refer back to it. */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
@@ -205,7 +209,9 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
     baseUrl: input.baseUrl,
     model: input.model,
     reasoningEffort: input.reasoningEffort,
-    task: request.query,
+    // The planner turns this into catalog queries, so a request like "the
+    // paper he mentioned" only resolves if the chat comes with it.
+    task: promptWithContext(request.query, input.conversationContext),
   });
   if (run.aborted) return;
   usage.inputTokens += planned.usage.inputTokens;

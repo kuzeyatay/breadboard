@@ -50,6 +50,7 @@ import {
   recordAuditEvent,
 } from "../hermes/runtime-store.ts";
 import { getActiveRuntimeRun } from "../hermes/run-store.ts";
+import { cogniviaSection } from "../cognivia/index.ts";
 import { directModeSection } from "../hermes/direct-mode.ts";
 import { responseStylePrompt } from "../hermes/system-prompts.ts";
 import {
@@ -114,10 +115,14 @@ type DirectStreamEvent =
 function directSystemPrompt(
   directMode: boolean,
   currentLocationContext = "",
+  userText = "",
 ): string {
   return [
     responseStylePrompt(),
     directMode ? directModeSection() : "",
+    // A mental-health turn is answered as a CBT copilot wherever it is
+    // answered, including here, where there is no runtime behind the model.
+    cogniviaSection({ userText }) ?? "",
     [
       "# direct_provider_turn",
       "Agent mode is switched off for this message, so you are answering as the model alone.",
@@ -390,6 +395,7 @@ export async function startDirectProviderTurn(
               ),
               location: input.currentLocation,
             }),
+        input.text,
       ),
       input: [
         ...historyInput(input.conversation, input.clientMessageId),

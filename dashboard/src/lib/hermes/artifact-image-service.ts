@@ -71,6 +71,19 @@ function imageProviderError(error: unknown): ArtifactImageServiceError {
   );
 }
 
+/** The output sizes the Responses image tool accepts. */
+export const GENERATED_IMAGE_SIZES = [
+  "auto",
+  "1024x1024",
+  "1024x1536",
+  "1536x1024",
+] as const;
+export type GeneratedImageSize = (typeof GENERATED_IMAGE_SIZES)[number];
+
+export function isGeneratedImageSize(value: unknown): value is GeneratedImageSize {
+  return typeof value === "string" && (GENERATED_IMAGE_SIZES as readonly string[]).includes(value);
+}
+
 export interface ImageGenerationResult {
   buffer: Buffer;
   providerItemId: string | null;
@@ -143,17 +156,29 @@ export async function generateArtifactImage(input: {
   baseURL: string;
   prompt: string;
   sourceImage?: { dataUrl: string } | null;
+  /**
+   * References when one is not enough. The Wardrobe agent's modeled shot needs
+   * two — the person and the garment — and an outfit needs one per piece, so the
+   * single-reference field is the common case rather than the only one. When
+   * both are given the list wins; order is preserved, because a prompt that says
+   * "the person in Image 1 wearing Image 2" is reading positions.
+   */
+  sourceImages?: ReadonlyArray<{ dataUrl: string }>;
+  /** Requested output size. Defaults to letting the model pick. */
+  size?: GeneratedImageSize;
 }): Promise<ImageGenerationResult> {
   const content: Array<
     | { type: "input_text"; text: string }
     | { type: "input_image"; image_url: string; detail: "auto" }
   > = [{ type: "input_text", text: input.prompt }];
-  if (input.sourceImage) {
-    content.push({
-      type: "input_image",
-      image_url: input.sourceImage.dataUrl,
-      detail: "auto",
-    });
+  const references =
+    input.sourceImages && input.sourceImages.length
+      ? input.sourceImages
+      : input.sourceImage
+        ? [input.sourceImage]
+        : [];
+  for (const reference of references) {
+    content.push({ type: "input_image", image_url: reference.dataUrl, detail: "auto" });
   }
   const messages: EasyInputMessage[] = [
     {
@@ -179,11 +204,11 @@ export async function generateArtifactImage(input: {
       tools: [
         {
           type: "image_generation",
-          action: input.sourceImage ? "edit" : "generate",
+          action: references.length ? "edit" : "generate",
           background: "auto",
           output_format: "png",
           quality: "auto",
-          size: "auto",
+          size: input.size ?? "auto",
         },
       ],
       tool_choice: { type: "image_generation" },

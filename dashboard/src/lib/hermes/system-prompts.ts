@@ -4,6 +4,7 @@ import type { HermesSurface } from "./config.ts";
 import type { CapabilityDecision } from "./capability-policy.ts";
 import { directModeSection } from "./direct-mode.ts";
 import { metaPromptSection, metaPromptingEnabled } from "./meta-prompting.ts";
+import { cogniviaSection } from "../cognivia/index.ts";
 import { loopStateSection } from "../loopx/governance.ts";
 import { goalModeSection, type GoalModeState } from "../goal-mode.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
@@ -112,6 +113,13 @@ export function composeHermesSystemPrompt(input: {
     decision,
   });
   if (metaPrompt) sections.push(metaPrompt);
+  // A turn about the user's mental health is answered as a CBT copilot rather
+  // than as a general assistant, on every surface. It sits after the turn's
+  // structure because it governs the answer more tightly than the structure
+  // does, and it ships only when the turn is actually about that.
+  // See lib/cognivia/index.ts.
+  const cognivia = cogniviaSection({ userText: input.userText });
+  if (cognivia) sections.push(cognivia);
   // A governed conversation carries its loop state next: the objective and the
   // open gate frame everything in the evidence that follows. Reading it is a
   // local file read, never a call into the control plane.

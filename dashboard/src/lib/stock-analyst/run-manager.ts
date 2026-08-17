@@ -20,6 +20,7 @@ import { ensureService, serviceLog, type StockAnalystService } from "./service.t
 import { invalidateHealth } from "./runtime.ts";
 import type { StockAnalystSettings } from "./settings.ts";
 import { stockAnalystRunLabel } from "./identity.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface StockAnalystEvent {
   sequenceNumber: number;
@@ -151,6 +152,8 @@ export interface StartRunInput {
    * label and the saved message all show what the user actually asked.
    */
   memoryContext: string;
+  /** The chat this was launched from, so a question can refer back to it. */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
@@ -220,7 +223,14 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
   const requestId = randomUUID();
   run.session = { url: service.url, sessionId, requestId };
 
-  const response = await streamRequest(run, service, sessionId, requestId, input.memoryContext);
+  const response = await streamRequest(
+    run,
+    service,
+    sessionId,
+    requestId,
+    input.memoryContext,
+    input.conversationContext ?? "",
+  );
   await consume(run, response);
 
   // The stream ended without a terminal event — the backend died, or the
@@ -245,12 +255,16 @@ async function streamRequest(
   sessionId: string,
   requestId: string,
   memoryContext: string,
+  conversationContext: string,
 ): Promise<Response> {
   const response = await fetch(new URL("/api/v1/agent/chat/stream", service.url), {
     method: "POST",
     headers: { "content-type": "application/json", accept: "text/event-stream" },
     body: JSON.stringify({
-      message: memoryContext ? `${memoryContext}\n\n${run.task}` : run.task,
+      message: promptWithContext(
+        memoryContext ? `${memoryContext}\n\n${run.task}` : run.task,
+        conversationContext,
+      ),
       session_id: sessionId,
       request_id: requestId,
     }),

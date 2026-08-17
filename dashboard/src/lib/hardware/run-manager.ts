@@ -171,6 +171,8 @@ export interface StartHardwareRunInput {
    * brief asked for" is already known.
    */
   preferences?: HardwarePreferences;
+  /** The chat this was launched from, so a brief can refer back to it. */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartHardwareRunInput): { runId: string; status: RunStatus } {
@@ -316,6 +318,9 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
     signal: run.controller.signal,
     onUsage,
     brief: run.brief,
+    ...(input.conversationContext
+      ? { conversationContext: input.conversationContext }
+      : {}),
     ...(previousDesign ? { existingDesignSummary: summariseDesignForModel(previousDesign) } : {}),
     ...(preferenceNote ? { preferenceNote } : {}),
   });

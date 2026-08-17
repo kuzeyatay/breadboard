@@ -15,6 +15,7 @@ import { newChatId, runAssistantTurn, summarizeToolValue } from "./client.ts";
 import { resolveInboxZeroConfig } from "./config.ts";
 import { instruction } from "./identity.ts";
 import { ensureReady, type SetupStatus } from "./service.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface InboxZeroEvent {
   sequenceNumber: number;
@@ -196,6 +197,8 @@ export interface StartRunInput {
   chatmockBaseUrl: string;
   chatmockApiKey: string;
   model: string;
+  /** The chat this was launched from, so a request can refer back to it. */
+  conversationContext?: string;
 }
 
 
@@ -265,7 +268,10 @@ async function execute(run: RunState, input: StartRunInput): Promise<void> {
         config: resolveInboxZeroConfig(),
         session: ready.session,
         chatId,
-        message: instruction(run.task, input.allowActions),
+        message: promptWithContext(
+          instruction(run.task, input.allowActions),
+          input.conversationContext,
+        ),
         signal: run.abort.signal,
       },
       {

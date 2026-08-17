@@ -74,7 +74,7 @@ test("abandoned Learn recovery states the observed failure without claiming an a
 test("Learn keeps controls up and current-step copy below the progress bar", () => {
   assert.match(
     workspaceSource,
-    /<div className="flex flex-col gap-2">[\s\S]*?<div className="flex min-h-8 items-start justify-between gap-3">[\s\S]*?<div className="flex h-8 shrink-0 items-center gap-2">[\s\S]*?<p className="text-sm font-medium text-white">Learn<\/p>[\s\S]*?<div className="flex min-w-0 flex-1 items-start gap-2">[\s\S]*?<div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">/,
+    /<div className="flex flex-col gap-2">[\s\S]*?<div className="flex min-h-8 items-start justify-between gap-3">[\s\S]*?<div className="flex h-8 shrink-0 items-center gap-2">[\s\S]*?<p className="text-sm font-medium text-white">Learn<\/p>[\s\S]*?<div className="flex min-w-0 flex-1 items-start gap-2">[\s\S]*?<div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-2 gap-y-1\.5 md:flex-nowrap">/,
   );
   assert.match(
     workspaceSource,
@@ -89,7 +89,7 @@ test("Learn keeps controls up and current-step copy below the progress bar", () 
 test("an active Learn run shows one action instead of wrapping disabled actions", () => {
   assert.match(workspaceSource, /\{hasLearnData && !active && \(/);
   assert.match(workspaceSource, /\{showPrimaryAction && !active && \(/);
-  assert.match(workspaceSource, /\{active && \([\s\S]*?Stopping\.\.\./);
+  assert.match(workspaceSource, /\{active && \([\s\S]*?Cancelling\.\.\./);
 });
 
 test("model call labels are plain text without a badge or status dot", () => {
@@ -99,7 +99,14 @@ test("model call labels are plain text without a badge or status dot", () => {
   );
   assert.match(
     workspaceSource,
-    /metric\.label === "Total" && job\?\.model[\s\S]*?<dt className="text-gray-600">Model:<\/dt>[\s\S]*?<dd[\s\S]*?className="font-mono tabular-nums text-gray-200"/,
+    /metric\.label === "Total" && learnPanelModel[\s\S]*?<dt className="text-gray-600">Model:<\/dt>[\s\S]*?<dd[\s\S]*?className="font-mono tabular-nums text-gray-200"/,
+  );
+  // In flight, the chip names the model actually placing the calls. Idle, it
+  // names the model the next run will use, so changing the Intelligence picker
+  // in the chat bar is reflected without waiting for another run.
+  assert.match(
+    workspaceSource,
+    /const learnPanelModel = active \? \(job\?\.model \?\? model\) : model;/,
   );
   assert.doesNotMatch(
     modelCallIndicatorSource,
@@ -111,11 +118,33 @@ test("a long syllabus name cannot push the Learn close button into the controls"
   assert.match(workspaceSource, /max-w-28 truncate sm:max-w-32/);
   assert.match(
     workspaceSource,
-    /<div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">[\s\S]*?<\/div>\s*\{!active &&[\s\S]*?aria-label="Close Learn panel"/,
+    /<div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-2 gap-y-1\.5 md:flex-nowrap">[\s\S]*?<\/div>\s*\{!active &&[\s\S]*?aria-label="Close Learn panel"/,
   );
   assert.match(
     workspaceSource,
     /aria-label="Close Learn panel"[\s\S]*?className="h-3\.5 w-3\.5"/,
+  );
+});
+
+test("Learn controls stay on one row and the syllabus name absorbs the pressure", () => {
+  assert.match(workspaceSource, /justify-end gap-x-2 gap-y-1\.5 md:flex-nowrap/);
+  assert.match(
+    workspaceSource,
+    /ref=\{learnSyllabusMenuButtonRef\}[\s\S]*?className="neu-button flex h-\[30px\] w-full min-w-0 items-center/,
+  );
+  assert.match(workspaceSource, /className="min-w-0 flex-1 max-w-28 truncate sm:max-w-32"/);
+  for (const label of ["Clear data", "Generate", "Source-only", "Skip review"]) {
+    assert.ok(workspaceSource.includes(label), `${label} control is missing`);
+  }
+  const rowStart = workspaceSource.indexOf(
+    'justify-end gap-x-2 gap-y-1.5 md:flex-nowrap',
+  );
+  const rowEnd = workspaceSource.indexOf('aria-label="Close Learn panel"');
+  const row = workspaceSource.slice(rowStart, rowEnd);
+  const controlHeights = row.match(/h-\[30px\]/g) ?? [];
+  assert.ok(
+    controlHeights.length >= 6,
+    "every Learn control should share the 30px row height",
   );
 });
 

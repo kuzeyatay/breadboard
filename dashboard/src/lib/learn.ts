@@ -275,6 +275,8 @@ export interface LearnJob {
   syllabusSourceId?: string;
   sourceOnly: boolean;
   includeSourceSnapshots: boolean;
+  /** Set only while `status` is "paused": the status Resume returns to. */
+  pausedFromStatus?: LearnStatus;
   tokenUsage: LearnTokenUsage;
   elapsedMs: number;
   timerStartedAt?: string;
@@ -383,6 +385,7 @@ interface LearnJobRow {
   syllabus_source_id: string | null;
   source_only: number | null;
   include_source_snapshots: number | null;
+  paused_from_status: LearnStatus | null;
   active_elapsed_ms: number | null;
   timer_started_at: string | null;
   created_at: string;
@@ -994,6 +997,7 @@ function ensureLearnTables(): void {
       syllabus_source_id         TEXT,
       source_only                INTEGER NOT NULL DEFAULT 1,
       include_source_snapshots   INTEGER NOT NULL DEFAULT 0,
+      paused_from_status         TEXT,
       active_elapsed_ms          INTEGER NOT NULL DEFAULT 0,
       timer_started_at           TEXT,
       created_at                 TEXT NOT NULL,
@@ -1115,6 +1119,9 @@ function ensureLearnTables(): void {
   }
   if (!learnJobColumns.has("model")) {
     db.exec("ALTER TABLE learn_jobs ADD COLUMN model TEXT NOT NULL DEFAULT 'gpt-5.6-sol'");
+  }
+  if (!learnJobColumns.has("paused_from_status")) {
+    db.exec("ALTER TABLE learn_jobs ADD COLUMN paused_from_status TEXT");
   }
 
   const learnMapColumns = new Set(
@@ -1380,6 +1387,7 @@ function rowToJob(row: LearnJobRow | undefined): LearnJob | null {
     syllabusSourceId: row.syllabus_source_id ?? undefined,
     sourceOnly: Boolean(row.source_only ?? 1),
     includeSourceSnapshots: Boolean(row.include_source_snapshots ?? 0),
+    pausedFromStatus: row.paused_from_status ?? undefined,
     tokenUsage: learnTokenUsageForJob(row.id),
     elapsedMs: Math.max(0, Number(row.active_elapsed_ms ?? 0)),
     timerStartedAt: row.timer_started_at ?? undefined,
@@ -1509,6 +1517,30 @@ const leaseLostLearnJobs = new Set<string>();
 const LEARN_JOB_HEARTBEAT_INTERVAL_MS = 15_000;
 const LEARN_CANCELLATION_REQUESTED_STEP =
   "Cancellation requested; waiting for the Learn worker to stop";
+const LEARN_PAUSE_REQUESTED_STEP =
+  "Pause requested; finishing the step already in flight";
+const LEARN_PAUSED_STEP = "Paused; press Resume to continue this run";
+const LEARN_PAUSE_POLL_INTERVAL_MS = 500;
+/**
+ * A paused run is suspended, not saved: the worker keeps its in-memory run
+ * state, its fenced garden lease, and its HTTP task alive so Resume can carry
+ * straight on. None of that can be held indefinitely, so a pause that is never
+ * resumed ends the same way Cancel would.
+ */
+const LEARN_MAX_PAUSE_MS = 60 * 60_000;
+/**
+ * Statuses whose phase reaches an awaitable checkpoint often enough for Pause
+ * to land promptly. Scoped repair runs as one atomic transaction whose progress
+ * callback is synchronous, and publication is the non-interruptible commit
+ * section, so neither is offered a pause.
+ */
+const LEARN_PAUSABLE_STATUSES: readonly LearnStatus[] = [
+  "planning",
+  "generating_learning_pages",
+  "generating_textbook",
+  "generating_visuals",
+  "building_navigation",
+];
 /** Publication is a short, non-cancellable commit section. Cancelling after the
  * atomic swap but before the DB/version commit could otherwise strand a valid
  * tree behind a cancelled job. */
@@ -1549,6 +1581,43 @@ function throwIfLearnCancelled(jobId: string): void {
       "This Learn worker lost ownership after recovery marked its job failed.",
     );
   }
+}
+
+/**
+ * Cooperative pause. Unlike Cancel, this unwinds nothing: the worker parks here
+ * with every local variable of the run intact until the row leaves "paused".
+ * Cancel still wins while parked, and an unresumed pause eventually cancels.
+ */
+async function awaitLearnPauseGate(jobId: string): Promise<void> {
+  if (jobStatusById(jobId) !== "paused") return;
+  const pausedAtMs = Date.now();
+  let announcedPause = false;
+  for (;;) {
+    throwIfLearnCancelled(jobId);
+    if (jobStatusById(jobId) !== "paused") return;
+    if (!announcedPause) {
+      announcedPause = true;
+      // The request only asked for a pause; this is the worker confirming it
+      // actually reached a checkpoint and stopped.
+      updateLearnJob(jobId, { currentStep: LEARN_PAUSED_STEP });
+    }
+    if (Date.now() - pausedAtMs >= LEARN_MAX_PAUSE_MS) {
+      updateLearnJob(jobId, {
+        status: "cancelled",
+        currentStep: LEARN_CANCELLATION_REQUESTED_STEP,
+        progressPercent: 0,
+      });
+      throw new LearnCancelledError();
+    }
+    await new Promise((resolve) => setTimeout(resolve, LEARN_PAUSE_POLL_INTERVAL_MS));
+  }
+}
+
+/** Cancel and Pause are observed at the same boundaries: Cancel throws out of
+ * the run, Pause holds it here. */
+async function learnCheckpoint(jobId: string): Promise<void> {
+  throwIfLearnCancelled(jobId);
+  await awaitLearnPauseGate(jobId);
 }
 
 function isLearnCancellation(jobId: string, error: unknown): boolean {
@@ -1682,6 +1751,13 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
   const next = {
     ...current,
     ...updates,
+    // The status to resume into exists only while the row is paused. Any
+    // transition off "paused" — Resume, Cancel, or a worker that raced past the
+    // gate — drops it so a later pause can never resume into a stale phase.
+    pausedFromStatus:
+      nextStatus === "paused"
+        ? (updates.pausedFromStatus ?? current.pausedFromStatus)
+        : undefined,
     elapsedMs: timer.elapsedMs,
     timerStartedAt: timer.startedAt,
     updatedAt,
@@ -1703,6 +1779,7 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
          source_ids_json = ?,
          source_only = ?,
          include_source_snapshots = ?,
+         paused_from_status = ?,
          active_elapsed_ms = ?,
          timer_started_at = ?,
          updated_at = ?
@@ -1723,6 +1800,7 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
     jsonString(next.sourceIds),
     next.sourceOnly ? 1 : 0,
     next.includeSourceSnapshots ? 1 : 0,
+    next.pausedFromStatus ?? null,
     next.elapsedMs,
     next.timerStartedAt ?? null,
     next.updatedAt,
@@ -4747,7 +4825,7 @@ export async function runLearnPlanning({
         currentStep: "Reading the syllabus",
         progressPercent: 4,
       });
-      throwIfLearnCancelled(job.id);
+      await learnCheckpoint(job.id);
       const syllabusCall = await callValidatedPlanningJson({
         client,
         model,
@@ -4767,7 +4845,7 @@ export async function runLearnPlanning({
         currentStep: "Checking syllabus coverage against selected sources",
         progressPercent: 4,
       });
-      throwIfLearnCancelled(job.id);
+      await learnCheckpoint(job.id);
       const coverageCall = await callValidatedPlanningJson({
         client,
         model,
@@ -4824,7 +4902,7 @@ export async function runLearnPlanning({
             model,
             checkpoint: () => throwIfLearnCancelled(job.id),
             provider: async (request: SyllabusCoverageRecoveryProviderRequest) => {
-              throwIfLearnCancelled(job.id);
+              await learnCheckpoint(job.id);
               const result = await callPlanningJsonWithRetry({
                 client,
                 model,
@@ -4940,7 +5018,7 @@ export async function runLearnPlanning({
         }
       : undefined;
 
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
     const requestSourceMap = async () => {
       // Snapshot immediately before the model call. Rebuilding the prompt from
       // this exact ledger means a scan or cache mutation during a long model
@@ -4994,7 +5072,7 @@ export async function runLearnPlanning({
     };
     let sourceMapRequest = await requestSourceMap();
     let sourceMapCall = sourceMapRequest.call;
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
     let sourceMap = sourceMapCall.parsed as Record<string, unknown>;
     let sourceMapArtifactInventory = sourceMapRequest.artifactInventory;
     let sourceMapReplanAttempted = false;
@@ -5086,7 +5164,7 @@ export async function runLearnPlanning({
       sourceMapReplanAttempted = true;
       sourceMapRequest = await requestSourceMap();
       sourceMapCall = sourceMapRequest.call;
-      throwIfLearnCancelled(job.id);
+      await learnCheckpoint(job.id);
       sourceMap = sourceMapCall.parsed as Record<string, unknown>;
       sourceMapArtifactInventory = sourceMapRequest.artifactInventory;
     }
@@ -5121,7 +5199,7 @@ export async function runLearnPlanning({
       progressPercent: 35,
     });
 
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
     const scopeCall = await callValidatedPlanningJson({
       client,
       model,
@@ -5144,7 +5222,7 @@ export async function runLearnPlanning({
       stageLabel: "Scope Contract",
       validate: scopeContractProblems,
     });
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
     const scopeContract = scopeCall.parsed as Record<string, unknown>;
     appendLearnEvent(contentPath, gardenId, "learn_scope_contract_created", {
       jobId: job.id,
@@ -5191,7 +5269,7 @@ export async function runLearnPlanning({
           : {}),
       });
 
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
     let topicMapCall = await callPlanningJsonWithRetry({
       client,
       model,
@@ -5204,7 +5282,7 @@ export async function runLearnPlanning({
       jobId: job.id,
       preserveExactContent: true,
     });
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
     let latestSourceArtifactProblems: string[] = [];
     const reconcilePlannedSourceArtifacts = async (
       candidateUnits: LearningUnitContract[],
@@ -5452,7 +5530,7 @@ export async function runLearnPlanning({
         ),
         maxAttempts: 2,
         provider: async (request) => {
-          throwIfLearnCancelled(job.id);
+          await learnCheckpoint(job.id);
           const result = await callPlanningJsonWithRetry({
             client,
             model,
@@ -5573,7 +5651,7 @@ export async function runLearnPlanning({
       );
     }
 
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
     const visualNecessityReview = await planAndReviewVisualNecessity({
       client,
       model,
@@ -7882,16 +7960,19 @@ export async function runTextbookGeneration({
     if (!confirmedFormulaReviewSetHash) {
       throw new LearnPipelineConflictError(
         "This confirmed Learning Map predates AI source-formula fidelity review. Run Learn planning again and review the new map before generating lessons.",
+        { requiresReplan: true },
       );
     }
     if (context.sourceFormulaReviewSetHash !== confirmedFormulaReviewSetHash) {
       throw new LearnPipelineConflictError(
         "The reviewed source-formula evidence changed after this Learning Map was created. Run Learn planning again before generating lessons.",
+        { requiresReplan: true },
       );
     }
     if (context.sourceSetHash !== map.sourceSetHash) {
       throw new LearnPipelineConflictError(
         "The selected sources changed after this Learning Map was created. Run Learn planning again and review the updated map before generating lessons.",
+        { requiresReplan: true },
       );
     }
     if (
@@ -7901,6 +7982,7 @@ export async function runTextbookGeneration({
     ) {
       throw new LearnPipelineConflictError(
         "The selected source-artifact inventory changed after this Learning Map was created. Run Learn planning again before generating lessons.",
+        { requiresReplan: true },
       );
     }
     assertSyllabusCoverageRecoveryBinding({
@@ -7923,6 +8005,7 @@ export async function runTextbookGeneration({
     ) {
       throw new LearnPipelineConflictError(
         "The promoted source-formula review manifest does not match the confirmed Learning Map. Run planning again before generation.",
+        { requiresReplan: true },
       );
     }
     const confirmedReviewValidation = validateSourceFormulaReviewSet({
@@ -7937,7 +8020,8 @@ export async function runTextbookGeneration({
     });
     if (confirmedReviewValidation.problems.length > 0) {
       throw new LearnPipelineConflictError(
-        `The promoted source-formula review evidence failed strict validation: ${confirmedReviewValidation.problems.join("; ")}`,
+        `The promoted source-formula review evidence failed strict validation: ${confirmedReviewValidation.problems.join("; ")} Run Learn planning again before generating lessons.`,
+        { requiresReplan: true },
       );
     }
     sourceFormulaReviewFinalizationContext = {
@@ -8591,7 +8675,7 @@ export async function runTextbookGeneration({
         if (!identity) throw new Error(`Formula pre-write guard: ${formula.id} has no canonical source record.`);
       }
     }
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
     updateLearnJob(job.id, {
       status: "generating_learning_pages",
       currentStep: "Writing overview pages",
@@ -8602,7 +8686,7 @@ export async function runTextbookGeneration({
     let lastOverviewDraft = "";
     let lastOverviewProblems = ["no usable overview draft was returned"];
     for (let attempt = 0; attempt < 3 && !overviewBody; attempt += 1) {
-      throwIfLearnCancelled(job.id);
+      await learnCheckpoint(job.id);
       try {
         const overviewCall = await callCouncilText({
           client,
@@ -8655,7 +8739,7 @@ export async function runTextbookGeneration({
         `The AI-authored Topic Overview remained invalid after 3 bounded attempts: ${lastOverviewProblems.join("; ")}. No fallback overview was written.`,
       );
     }
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
 
     // Learner-facing planning pages live in learning/. Everything else is
     // internal and is written under .breadboard/planning/ so it never appears
@@ -8696,7 +8780,7 @@ export async function runTextbookGeneration({
     ];
 
     for (const page of learningRelPaths) {
-      throwIfLearnCancelled(job.id);
+      await learnCheckpoint(job.id);
       writeMarkdownWithBackup({
         clusterDir,
         relPath: page.relPath,
@@ -8712,7 +8796,7 @@ export async function runTextbookGeneration({
       });
     }
     for (const page of internalPlanningPages) {
-      throwIfLearnCancelled(job.id);
+      await learnCheckpoint(job.id);
       writeMarkdownWithBackup({
         clusterDir,
         relPath: page.relPath,
@@ -8741,7 +8825,7 @@ export async function runTextbookGeneration({
       const sectionTitle = section.title;
       const sectionFolder = learningSectionFolder(sectionNumber, sectionTitle);
       const sectionIndexRelPath = `${sectionFolder}/_index.md`;
-      throwIfLearnCancelled(job.id);
+      await learnCheckpoint(job.id);
       writeMarkdownWithBackup({
         clusterDir,
         relPath: sectionIndexRelPath,
@@ -8762,7 +8846,9 @@ export async function runTextbookGeneration({
       });
 
       for (let subsectionIndex = 0; subsectionIndex < section.subsections.length; subsectionIndex += 1) {
-        throwIfLearnCancelled(job.id);
+        // Pause lands between whole pages, so a resumed run never restarts
+        // half-written Markdown.
+        await learnCheckpoint(job.id);
         const subsection = section.subsections[subsectionIndex];
         const subsectionNumber = subsectionIndex + 1;
         const subsectionTitle = subsection.title;
@@ -9177,7 +9263,7 @@ export async function runTextbookGeneration({
     // from earlier runs linger. Rewrite it to exactly the interactive visuals
     // this run embedded, and delete orphan spec files, so the index never
     // advertises a visual no current page references.
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
     {
       const liveVisualIds = new Set(generatedPages.flatMap((page) => page.visualIds));
       const pruned = pruneVisualArtifacts(artifactContentPath, gardenId, liveVisualIds);
@@ -9248,7 +9334,7 @@ export async function runTextbookGeneration({
       }
     }
 
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
     writeMarkdownWithBackup({
       clusterDir,
       relPath: ".breadboard/planning/Source Coverage.md",
@@ -9276,7 +9362,7 @@ export async function runTextbookGeneration({
       currentSectionTitle: undefined,
       currentPageTitle: undefined,
     });
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
     refreshClusterIndex(artifactContentPath, gardenId, { migrateSources: false });
 
     updateLearnJob(job.id, {
@@ -9286,7 +9372,7 @@ export async function runTextbookGeneration({
       currentSectionTitle: undefined,
       currentPageTitle: undefined,
     });
-    throwIfLearnCancelled(job.id);
+    await learnCheckpoint(job.id);
     // Learner-facing repair is model-only. Validation remains deterministic;
     // a rejected or unavailable model candidate leaves the blocker visible.
     const repairExecutorMode = "model" as const;
@@ -9988,9 +10074,19 @@ async function restorePreviousPromotedGarden(
 }
 
 export class LearnPipelineConflictError extends Error {
-  constructor(message: string) {
+  /**
+   * Set when the confirmed Learning Map itself is the obstacle: its promoted
+   * evidence no longer describes the sources on disk, so no amount of retrying
+   * generation can clear it and only a fresh planning run will. Callers use
+   * this to route the user forward instead of leaving Learn dead-ended on a map
+   * that can never generate.
+   */
+  readonly requiresReplan: boolean;
+
+  constructor(message: string, options?: { requiresReplan?: boolean }) {
     super(message);
     this.name = "LearnPipelineConflictError";
+    this.requiresReplan = options?.requiresReplan === true;
   }
 }
 
@@ -10546,6 +10642,106 @@ export class LearnCancelConflictError extends Error {
     super(message);
     this.name = "LearnCancelConflictError";
   }
+}
+
+export class LearnPauseConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LearnPauseConflictError";
+  }
+}
+
+/**
+ * Hold the running Learn worker at its next checkpoint. Nothing is rolled back
+ * and nothing is committed: the run keeps its pages, its lease, and its place
+ * in the pipeline, and the stopwatch stops because "paused" is not a running
+ * status. Stop remains available while paused.
+ */
+export function pauseLatestLearnJob({
+  gardenId,
+  contentPath,
+  expectedJobId,
+}: {
+  gardenId: string;
+  contentPath: string;
+  expectedJobId?: string;
+}): LearnJob {
+  assertNoPendingLearnClear(gardenId);
+  const latest = getLatestLearnJob(gardenId);
+  if (!latest) {
+    throw new LearnPauseConflictError(
+      "The pending Learn operation no longer exists. Refresh and try again.",
+    );
+  }
+  if (expectedJobId && latest.id !== expectedJobId) {
+    throw new LearnPauseConflictError(
+      `The visible Learn operation (${expectedJobId}) is no longer current. Refresh before pausing ${latest.id}.`,
+    );
+  }
+  if (latest.status === "paused") return latest;
+  if (committingLearnJobs.has(latest.id) || !LEARN_PAUSABLE_STATUSES.includes(latest.status)) {
+    throw new LearnPauseConflictError(
+      `Learn operation ${latest.id} is ${latest.status} and cannot be paused. Scoped repair and publication run as single atomic steps; use Cancel to end the run instead.`,
+    );
+  }
+  const next = updateLearnJobExpectStatus(latest.id, {
+    status: "paused",
+    pausedFromStatus: latest.status,
+    currentStep: LEARN_PAUSE_REQUESTED_STEP,
+  });
+  appendLearnEvent(contentPath, gardenId, "learn_pause_requested", {
+    jobId: latest.id,
+    pausedFromStatus: latest.status,
+  });
+  return next;
+}
+
+/** Release a paused worker back into the phase it was holding. */
+export function resumeLatestLearnJob({
+  gardenId,
+  contentPath,
+  expectedJobId,
+}: {
+  gardenId: string;
+  contentPath: string;
+  expectedJobId?: string;
+}): LearnJob {
+  assertNoPendingLearnClear(gardenId);
+  const latest = getLatestLearnJob(gardenId);
+  if (!latest) {
+    throw new LearnPauseConflictError(
+      "The pending Learn operation no longer exists. Refresh and try again.",
+    );
+  }
+  if (expectedJobId && latest.id !== expectedJobId) {
+    throw new LearnPauseConflictError(
+      `The visible Learn operation (${expectedJobId}) is no longer current. Refresh before resuming ${latest.id}.`,
+    );
+  }
+  // A worker that raced past the gate before the pause landed is already
+  // running again; that is the requested end state, not an error.
+  if (latest.status !== "paused" && activeStatus(latest.status)) return latest;
+  if (latest.status !== "paused") {
+    throw new LearnPauseConflictError(
+      `Learn operation ${latest.id} is ${latest.status} and is no longer paused.`,
+    );
+  }
+  const resumeStatus = latest.pausedFromStatus;
+  if (!resumeStatus || !LEARN_PAUSABLE_STATUSES.includes(resumeStatus)) {
+    throw new LearnPauseConflictError(
+      `Learn operation ${latest.id} did not record the phase it paused in and cannot be resumed. Cancel the run and start again.`,
+    );
+  }
+  const next = updateLearnJobExpectStatus(latest.id, {
+    status: resumeStatus,
+    pausedFromStatus: undefined,
+    currentStep: "Resuming the paused Learn run",
+  });
+  appendLearnEvent(contentPath, gardenId, "learn_resumed", {
+    jobId: latest.id,
+    resumedIntoStatus: resumeStatus,
+  });
+  return next;
 }
 
 export async function cancelLatestLearnJob({
@@ -11724,7 +11920,10 @@ export async function recoverAbandonedLearnJobs({
              'idle', 'planning', 'analyzing_issues', 'repairing', 'revalidating',
              'publishing_repair', 'generating_learning_pages',
              'generating_textbook', 'generating_visuals', 'writing_quartz',
-             'building_navigation'
+             'building_navigation',
+             -- A live pause heartbeats every 15s, so only a paused job whose
+             -- worker actually died can fall past the abandoned cutoff.
+             'paused'
            )
            OR (status = 'cancelled' AND current_step = ?)
          )
@@ -11956,6 +12155,10 @@ function activeStatus(status: LearnStatus): boolean {
     "generating_visuals",
     "writing_quartz",
     "building_navigation",
+    // A paused job still owns a live worker and the garden lease, so every
+    // guard that keeps a second run out — and the heartbeat that keeps
+    // recovery from reclaiming it — must treat it as active.
+    "paused",
   ].includes(status);
 }
 
@@ -11976,6 +12179,7 @@ function buttonLabelForSnapshot({
   hasTextbook: boolean;
   sourceSetChanged: boolean;
 }): string {
+  if (latestJob?.status === "paused") return "Paused";
   if (latestJob && activeStatus(latestJob.status)) return "Learning...";
   if (latestJob?.status === "awaiting_confirmation") {
     return hasTextbook || latestVersion ? "Repair issues" : "Review Learning Map";

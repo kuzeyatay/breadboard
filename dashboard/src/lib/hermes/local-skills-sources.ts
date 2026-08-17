@@ -42,6 +42,13 @@ import {
   synchronizeLocalHallmarkSkillsCatalog,
 } from "./hallmark-skills-source.ts";
 import {
+  BULLSHIT_SKILLS_SOURCE,
+  BULLSHIT_SKILLS_LABEL,
+  getLocalBullshitSkill,
+  readLocalBullshitSkillFiles,
+  synchronizeLocalBullshitSkillsCatalog,
+} from "./bullshit-skills-source.ts";
+import {
   OFFICE_SKILLS_SOURCE,
   OFFICE_SKILLS_LABEL,
   getLocalOfficeSkill,
@@ -57,6 +64,7 @@ export {
   ENGINEERING_SKILLS_SOURCE,
   HALLMARK_SKILLS_SOURCE,
   OFFICE_SKILLS_SOURCE,
+  BULLSHIT_SKILLS_SOURCE,
 };
 
 /**
@@ -130,6 +138,13 @@ export const LOCAL_SKILLS_SOURCES: readonly LocalSkillsSource[] = [
     synchronize: synchronizeLocalOfficeSkillsCatalog,
     getSkill: getLocalOfficeSkill,
     readFiles: readLocalOfficeSkillFiles,
+  },
+  {
+    source: BULLSHIT_SKILLS_SOURCE,
+    label: BULLSHIT_SKILLS_LABEL,
+    synchronize: synchronizeLocalBullshitSkillsCatalog,
+    getSkill: getLocalBullshitSkill,
+    readFiles: readLocalBullshitSkillFiles,
   },
 ];
 

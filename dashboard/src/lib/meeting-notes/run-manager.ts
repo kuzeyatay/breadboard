@@ -34,6 +34,7 @@ import { recordingBytes, resolveMeetingSource, SourceError } from "./source.ts";
 import { summarizeRun, type MeetingTranscript } from "./report.ts";
 import { transcribeMeeting, TranscriptionUnavailable } from "./transcribe.ts";
 import { removeMeetingUpload } from "./uploads.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 // Re-exported so callers of the run manager need not know the split.
 export { summarizeRun };
@@ -117,6 +118,8 @@ export interface StartRunInput {
   model: string;
   reasoningEffort: string;
   baseUrl: string;
+  /** The chat this was launched from, so a request can refer back to it. */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
@@ -248,7 +251,11 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
       baseUrl: input.baseUrl,
       model: input.model,
       reasoningEffort: input.reasoningEffort,
-      customPrompt: request.prompt,
+      // Context only when the person actually directed the summary; with no
+      // direction there is nothing for an earlier message to qualify.
+      customPrompt: request.prompt
+        ? promptWithContext(request.prompt, input.conversationContext)
+        : request.prompt,
       signal: run.controller.signal,
       progress: {
         onChunkStart: (index, total) => emit(run, "notes.chunk", { index: index + 1, total }),

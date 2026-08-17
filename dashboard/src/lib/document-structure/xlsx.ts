@@ -124,39 +124,58 @@ function readCell(cell: XmlNode, sharedStrings: string[]): CellValue {
  * Never throws, for the same reason as the Word reader: the caller is a chat
  * message, and a workbook with one unreadable sheet is still worth reading.
  */
-export function readXlsx(buffer: Buffer): DocumentStructure {
-  const structure = emptyStructure();
+/** One sheet as a grid of display values, with the formulas behind them. */
+export interface XlsxSheetGrid {
+  name: string;
+  rows: string[][];
+  /** `B12` → the formula source, for the cells that carry one. */
+  formulas: { reference: string; formula: string }[];
+  /** True when the sheet has more rows than were read. */
+  truncated: boolean;
+  /** Cells currently showing `#REF!` and friends. */
+  errorCount: number;
+}
+
+/**
+ * The workbook as data rather than as prose.
+ *
+ * `readXlsx` renders this into markdown for a chat message; callers that want
+ * the cells themselves — a curated dataset shipped as a workbook, say — read
+ * the grid directly instead of parsing the markdown back apart. Never throws:
+ * an unopenable workbook comes back as warnings and no sheets.
+ */
+export function readXlsxGrid(buffer: Buffer): {
+  sheets: XlsxSheetGrid[];
+  warnings: string[];
+} {
+  const warnings: string[] = [];
   let zip: AdmZip;
   try {
     zip = new AdmZip(buffer);
   } catch {
-    structure.warnings.push("That workbook could not be opened.");
-    return structure;
+    return { sheets: [], warnings: ["That workbook could not be opened."] };
   }
 
   const sharedStrings = readSharedStrings(zip);
-  const sheets = readSheets(zip);
-  if (!sheets.length) {
-    structure.warnings.push("That workbook has no readable sheets.");
-    return structure;
+  const sheetRefs = readSheets(zip);
+  if (!sheetRefs.length) {
+    return { sheets: [], warnings: ["That workbook has no readable sheets."] };
   }
 
-  const blocks: string[] = [];
-  const formulaLines: string[] = [];
-  let formulaCount = 0;
-  let errorCount = 0;
-
-  for (const sheet of sheets) {
+  const sheets: XlsxSheetGrid[] = [];
+  for (const sheet of sheetRefs) {
     const root = readPart(zip, sheet.entryName);
     if (!root) {
-      structure.warnings.push(`Sheet "${sheet.name}" could not be read.`);
+      warnings.push(`Sheet "${sheet.name}" could not be read.`);
       continue;
     }
     const data = childNamed(root, "sheetData");
     if (!data) continue;
 
     const rows: string[][] = [];
+    const formulas: { reference: string; formula: string }[] = [];
     let truncated = false;
+    let errorCount = 0;
     for (const row of childrenNamed(data, "row")) {
       if (rows.length >= MAX_ROWS_PER_SHEET) {
         truncated = true;
@@ -169,27 +188,49 @@ export function readXlsx(buffer: Buffer): DocumentStructure {
         if (index >= MAX_COLUMNS) continue;
         const { display, formula } = readCell(cell, sharedStrings);
         while (cells.length < index) cells.push("");
-        // The cell shows its value; the formula behind it is listed separately
-        // so the grid stays readable as a grid. When there is no cached value —
-        // which is every workbook written by a library rather than by Excel —
-        // the formula is shown in the cell instead, so the row does not read as
+        // The cell shows its value; the formula behind it is kept separately
+        // so the grid stays a grid. When there is no cached value — which is
+        // every workbook written by a library rather than by Excel — the
+        // formula is shown in the cell instead, so the row does not read as
         // empty when it is in fact the calculated part of the model.
-        cells[index] = (display || (formula ? `=${formula}` : "")).replace(/\|/g, "\\|");
-        if (formula) {
-          formulaCount += 1;
-          if (formulaLines.length < MAX_FORMULAS_LISTED) {
-            formulaLines.push(`- \`${sheet.name}!${reference}\` = \`=${formula}\``);
-          }
-        }
+        cells[index] = display || (formula ? `=${formula}` : "");
+        if (formula) formulas.push({ reference, formula });
         if (display.startsWith("#")) errorCount += 1;
       }
       if (cells.some((value) => value !== "")) rows.push(cells);
+    }
+    sheets.push({ name: sheet.name, rows, formulas, truncated, errorCount });
+  }
+  return { sheets, warnings };
+}
+
+export function readXlsx(buffer: Buffer): DocumentStructure {
+  const structure = emptyStructure();
+  const grid = readXlsxGrid(buffer);
+  structure.warnings.push(...grid.warnings);
+  if (!grid.sheets.length) return structure;
+
+  const blocks: string[] = [];
+  const formulaLines: string[] = [];
+  let formulaCount = 0;
+  let errorCount = 0;
+
+  for (const sheet of grid.sheets) {
+    const { rows, truncated } = sheet;
+    errorCount += sheet.errorCount;
+    for (const { reference, formula } of sheet.formulas) {
+      formulaCount += 1;
+      if (formulaLines.length < MAX_FORMULAS_LISTED) {
+        formulaLines.push(`- \`${sheet.name}!${reference}\` = \`=${formula}\``);
+      }
     }
 
     if (!rows.length) continue;
     const columns = Math.min(MAX_COLUMNS, Math.max(...rows.map((row) => row.length)));
     const pad = (row: string[]) =>
-      `| ${Array.from({ length: columns }, (_, index) => row[index] ?? "").join(" | ")} |`;
+      `| ${Array.from({ length: columns }, (_, index) =>
+        (row[index] ?? "").replace(/\|/g, "\\|"),
+      ).join(" | ")} |`;
     const [header, ...body] = rows;
     blocks.push(
       [
@@ -230,7 +271,7 @@ export function readXlsx(buffer: Buffer): DocumentStructure {
   structure.markdown = blocks.join("\n\n").trim();
   structure.summary = {
     ...structure.summary,
-    sheetCount: sheets.length,
+    sheetCount: grid.sheets.length,
     tableCount: blocks.filter((block) => block.startsWith("## Sheet:")).length,
     cellFormulaCount: formulaCount,
   };

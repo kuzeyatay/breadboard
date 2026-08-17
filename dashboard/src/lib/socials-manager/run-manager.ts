@@ -193,7 +193,13 @@ async function mediaFor(
 
 async function execute(
   run: RunState,
-  input: { model: string; baseUrl: string; conversationPublicId: string | null },
+  input: {
+    model: string;
+    baseUrl: string;
+    conversationPublicId: string | null;
+    /** The chat this was launched from, so a brief can refer back to it. */
+    conversationContext?: string;
+  },
 ): Promise<void> {
   // The user's default networks and artwork preference, with anything named in
   // the message taking precedence over both.
@@ -251,6 +257,9 @@ async function execute(
       baseUrl: input.baseUrl,
       model: input.model,
       brief: request.brief,
+      ...(input.conversationContext
+        ? { conversationContext: input.conversationContext }
+        : {}),
       providers,
       scheduleAt: request.scheduleAt,
       signal: run.controller.signal,
@@ -424,6 +433,8 @@ export function startRun(input: {
   model: string;
   baseUrl: string;
   conversationPublicId?: string | null;
+  /** The chat this was launched from, so a brief can refer back to it. */
+  conversationContext?: string;
 }): { runId: string; status: SocialsManagerRunStatus } {
   const runId = `pzrun_${randomUUID().replaceAll("-", "")}`;
   const run: RunState = {
@@ -445,6 +456,9 @@ export function startRun(input: {
     model: input.model,
     baseUrl: input.baseUrl,
     conversationPublicId: input.conversationPublicId ?? null,
+    ...(input.conversationContext
+      ? { conversationContext: input.conversationContext }
+      : {}),
   }).catch((error: unknown) => {
     if (isAborted(run)) return;
     run.status = "failed";

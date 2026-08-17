@@ -5,6 +5,7 @@ import { parseDocumentSearchRequest } from "@/lib/get-doc/identity.ts";
 import { startRun } from "@/lib/get-doc/run-manager.ts";
 import { agentSettingsFor } from "@/lib/agent-settings/store.ts";
 import { getDocDefaults } from "@/lib/agent-settings/defaults.ts";
+import { conversationContextFromBody } from "@/lib/conversations/agent-context.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -52,6 +53,9 @@ export async function POST(request: Request) {
       model,
       reasoningEffort,
       baseUrl: baseURL,
+      // The chat this was launched from, so a request that refers back to
+      // it resolves instead of arriving as a bare fragment.
+      conversationContext: conversationContextFromBody(userId, body),
     });
     return NextResponse.json({ ok: true, run, request: searchRequest }, { status: 201 });
   } catch (error) {

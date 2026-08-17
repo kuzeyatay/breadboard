@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from chatmock.providers import claude_code, dispatch, openai_compatible
+from chatmock.providers import claude_code, dispatch, openai_compatible, pxpipe
 from chatmock.providers.catalog import provider_spec
 from chatmock.providers.registry import resolve_model
 from chatmock.providers.store import ResolvedCredentials
+from chatmock.providers.types import ProviderError
 
 
 def _credentials() -> ResolvedCredentials:
@@ -266,6 +268,60 @@ class ClaudeCodeBridgeTests(unittest.TestCase):
         resolved = resolve_model("cliproxy/claude-sonnet-5")
         self.assertEqual(resolved.upstream_model, "claude-sonnet-5")
         self.assertIs(dispatch._client_for_model(resolved.provider, resolved.upstream_model), claude_code)
+
+    def _run_with_fake_cli(self, model: str, base_url):
+        """Run one CLI call with the subprocess and the proxy both stubbed."""
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured["command"] = command
+            captured["env"] = kwargs["env"]
+            return SimpleNamespace(
+                returncode=0, stdout=json.dumps(_cli_body()), stderr=""
+            )
+
+        with (
+            patch.object(claude_code, "_claude_executable", return_value="claude"),
+            patch.object(subprocess, "run", side_effect=fake_run),
+            patch.object(pxpipe, "base_url", side_effect=base_url) as proxy,
+        ):
+            claude_code._run_cli({"messages": [{"role": "user", "content": "hi"}]}, model)
+        return captured, proxy
+
+    def test_the_efficient_route_asks_the_cli_for_fable_through_the_proxy(self) -> None:
+        # `-efficient` is Breadboard's name for the route, and the CLI would
+        # reject it as a model. What reaches Anthropic is plain Fable 5; the only
+        # difference is the loopback proxy that images the bulk on the way.
+        captured, proxy = self._run_with_fake_cli(
+            "claude-fable-5-efficient", lambda: "http://127.0.0.1:47821"
+        )
+        command = captured["command"]
+        self.assertEqual(command[command.index("--model") + 1], "claude-fable-5")
+        self.assertEqual(captured["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:47821")
+        proxy.assert_called_once()
+
+    def test_the_plain_model_never_touches_the_proxy(self) -> None:
+        # Imaging is lossy for long exact strings in old context, so the plain id
+        # has to stay a way to reach Fable with none of it — including when the
+        # proxy happens to be running for the other model.
+        captured, proxy = self._run_with_fake_cli("claude-fable-5", lambda: "unused")
+        command = captured["command"]
+        self.assertEqual(command[command.index("--model") + 1], "claude-fable-5")
+        self.assertEqual(
+            captured["env"].get("ANTHROPIC_BASE_URL"),
+            os.environ.get("ANTHROPIC_BASE_URL"),
+        )
+        proxy.assert_not_called()
+
+    def test_a_proxy_that_cannot_start_is_the_answer_rather_than_a_wrong_one(self) -> None:
+        # Falling back to the direct route would silently bill full price for a
+        # model chosen to avoid it, so the refusal is reported instead.
+        with self.assertRaises(ProviderError) as raised:
+            self._run_with_fake_cli(
+                "claude-fable-5-efficient",
+                lambda: (_ for _ in ()).throw(ProviderError("proxy down")),
+            )
+        self.assertIn("proxy down", str(raised.exception))
 
 
 if __name__ == "__main__":

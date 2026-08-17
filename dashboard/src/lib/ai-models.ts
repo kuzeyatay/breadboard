@@ -200,6 +200,11 @@ export function formatAssistantModelName(modelId: string): string {
   if (bare === 'gpt-5.6-terra') return 'GPT-5.6 Terra';
   if (bare === 'gpt-5.6-luna') return 'GPT-5.6 Luna';
   if (bare === GLOBAL_MODEL_SENTINEL) return 'Background model';
+  // A route rather than a version, so it reads as an aside instead of turning
+  // into a version number the way `formatClaudeModelName` would spell it.
+  if (/^claude-/i.test(bare) && bare.endsWith('-efficient')) {
+    return `${formatClaudeModelName(bare.slice(0, -'-efficient'.length))} (Efficient)`;
+  }
   if (/^claude-/i.test(bare)) return formatClaudeModelName(bare);
   return bare.replace(/^gpt-/i, 'GPT-');
 }

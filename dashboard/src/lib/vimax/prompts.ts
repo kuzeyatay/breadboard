@@ -145,6 +145,12 @@ export function storyUserPrompt(input: {
   idea: string;
   userRequirement: string;
   previousFilm?: string;
+  /**
+   * The chat the brief was written in. Its own tagged section rather than
+   * part of <IDEA>: an earlier message explains what the idea refers to, and
+   * a transcript folded into the idea would become the subject of the film.
+   */
+  conversation?: string;
 }): string {
   return [
     input.previousFilm
@@ -153,6 +159,7 @@ export function storyUserPrompt(input: {
           "The instruction below is a change to that existing film. Keep everything it does not ask you to change — the same characters, the same world, the same intent — and rewrite the story with the change applied.",
         ].join("\n\n")
       : "",
+    input.conversation ? tagged("CONVERSATION_SO_FAR", input.conversation) : "",
     tagged("IDEA", input.idea),
     tagged("USER_REQUIREMENT", input.userRequirement || "(none)"),
   ]

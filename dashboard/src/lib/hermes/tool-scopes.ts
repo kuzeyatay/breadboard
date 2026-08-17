@@ -134,6 +134,13 @@ export const PREMORTEM_TOOLS = ["premortem_run"] as const;
 // bounded video-analysis options.
 export const WATCH_TOOLS = ["watch_run"] as const;
 
+// The deterministic scripts of the cloned bullshit-detector pack: fetch a URL
+// into normalized text, count independent origins behind a claim, and run the
+// two gates over a finished report. The model picks a command from a fixed
+// allowlist and a subject; it never names a script, an interpreter, or a path
+// outside this conversation's workspace, and `fetch` accepts http(s) only.
+export const FACTCHECK_TOOLS = ["factcheck_run"] as const;
+
 // First-party single-image 3D reconstruction on the local Stable Fast 3D
 // runtime. The tool has no image argument that carries data: it names a picture
 // already attached to this conversation, and the server resolves the bytes from
@@ -357,6 +364,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...MEMORY_TOOLS,
       ...DOCUMENT_SKILL_TOOLS,
       ...PREMORTEM_TOOLS,
+      ...FACTCHECK_TOOLS,
       ...IMAGE_TO_3D_TOOLS,
       ...AUDIO_ANALYSIS_TOOLS,
       ...MANIM_TOOLS,
@@ -386,6 +394,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...MEMORY_TOOLS,
     ...DOCUMENT_SKILL_TOOLS,
     ...PREMORTEM_TOOLS,
+    ...FACTCHECK_TOOLS,
     ...WATCH_TOOLS,
     ...IMAGE_TO_3D_TOOLS,
     ...AUDIO_ANALYSIS_TOOLS,

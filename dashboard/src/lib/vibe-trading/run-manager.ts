@@ -18,6 +18,7 @@ import { vibeTradingRunLabel } from "./identity.ts";
 import { ensureService, serviceLog, type VibeTradingService } from "./service.ts";
 import { invalidateHealth } from "./runtime.ts";
 import type { VibeTradingSettings } from "./settings.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface VibeTradingEvent {
   sequenceNumber: number;
@@ -204,6 +205,8 @@ export interface StartRunInput {
   /** ChatMock's OpenAI-compatible base URL, already resolved for this request. */
   baseUrl: string;
   settings: VibeTradingSettings;
+  /** The chat this was launched from, so a request can refer back to it. */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartRunInput): { runId: string; status: RunStatus } {
@@ -284,7 +287,9 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
 
   const response = await call(service, `/sessions/${sessionId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content: run.task }),
+    body: JSON.stringify({
+      content: promptWithContext(run.task, input.conversationContext),
+    }),
     signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
   });
   if (!response.ok) {

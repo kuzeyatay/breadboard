@@ -37,6 +37,8 @@ import {
 } from '@/lib/chat-token-usage';
 import { chatTimeSeparatorLabels } from '@/lib/chat-time-separators';
 import { requestChatTitleFromFirstMessage } from '@/lib/chat-session-title';
+import { forgetChatDrafts } from '@/lib/conversations/drafts';
+import { useChatDraft } from '@/app/components/hermes/use-chat-draft';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -216,6 +218,15 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const [activeId, setActiveId] = useState<number | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  // Unsent text outlives a reload, filed under the chat it was typed in. These
+  // chats are already a per-scope thing in this browser, so their drafts are too.
+  const draftSurface = `knowledge_terminal:${scope}`;
+  useChatDraft({
+    surface: draftSurface,
+    sessionId: activeId === null ? null : String(activeId),
+    value: input,
+    onRestore: setInput,
+  });
 
   const {
     model,
@@ -340,6 +351,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
   function deleteSession(sessionId: number) {
     if (isStreaming) return;
     setConfirmDeleteId(null);
+    forgetChatDrafts(window.localStorage, draftSurface, [String(sessionId)]);
     setSessions((previous) => {
       const next = previous.filter((session) => session.id !== sessionId);
       persistSessions(scope, next);

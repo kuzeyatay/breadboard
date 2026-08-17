@@ -407,7 +407,7 @@ describe("learn route and council wiring", () => {
       "utf8",
     );
 
-    assert.match(workspaceSource, /Clear Learn data/);
+    assert.match(workspaceSource, /Clear data/);
     assert.match(workspaceSource, /confirmClearLearnData: true/);
     assert.match(confirmationDialogSource, /Uploaded source documents/);
     assert.match(

@@ -4,6 +4,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface OpenPlanterEvent {
   sequenceNumber: number;
@@ -123,6 +124,7 @@ function ingestArtifacts(run: RunState, payload: Record<string, unknown>): void 
   }
 }
 
+
 export function startRun(input: {
   userId: number;
   task: string;
@@ -130,6 +132,12 @@ export function startRun(input: {
   reasoningEffort: string;
   baseUrl: string;
   apiKey: string;
+  /**
+   * The chat this was launched from. Reaches the runner as part of the
+   * `--task` argument, so the route keeps it short: a command line has a
+   * hard length limit on Windows and this shares it with every other flag.
+   */
+  conversationContext?: string;
 }): { runId: string; status: RunStatus } {
   const availability = runtimeAvailability();
   const root = resolveOpenPlanterRoot();
@@ -161,7 +169,7 @@ export function startRun(input: {
         "--workspace",
         workspace,
         "--task",
-        input.task,
+        promptWithContext(input.task, input.conversationContext),
         "--model",
         input.model,
         "--base-url",

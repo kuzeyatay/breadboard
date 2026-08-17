@@ -17,6 +17,7 @@ import {
 } from "@/lib/chat-attachments.ts";
 
 interface SessionLike {
+  ensureConversation: (clientMessageId?: string) => Promise<string>;
   previewExternalAgentTurn: (input: {
     clientMessageId: string;
     userContent: string;
@@ -105,6 +106,9 @@ export function useOpenCodeAgent(
       });
       let runStarted = false;
       try {
+        // Named so the run can read the chat it was launched from; the turn
+        // itself is persisted below, as it always was.
+        const conversationId = await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/opencode/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -113,6 +117,8 @@ export function useOpenCodeAgent(
             model,
             reasoningEffort,
             gardenSlug,
+            conversationId,
+            clientMessageId,
             attachments: imageAttachments,
           }),
         });

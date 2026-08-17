@@ -89,6 +89,8 @@ export interface StartVimaxRunInput {
   model: string;
   reasoningEffort: string;
   baseUrl: string;
+  /** The chat this was launched from, so a brief can refer back to it. */
+  conversationContext?: string;
 }
 
 export function startRun(input: StartVimaxRunInput): { runId: string; status: RunStatus } {
@@ -190,6 +192,9 @@ async function drive(run: RunState, input: StartVimaxRunInput): Promise<void> {
       // than writing something unrelated into its next version.
       ...(previousProduction
         ? { previousFilm: summariseProductionForModel(previousProduction) }
+        : {}),
+      ...(input.conversationContext
+        ? { conversationContext: input.conversationContext }
         : {}),
       target: {
         baseUrl: input.baseUrl,

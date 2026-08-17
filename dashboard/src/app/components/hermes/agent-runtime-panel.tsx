@@ -66,6 +66,7 @@ import InlineInboxZeroRun from "./inline-inbox-zero-run";
 import InlineVimaxRun from "./inline-vimax-run";
 import InlineMoneyPrinterRun from "./inline-money-printer-run";
 import InlineLegalRun from "./inline-legal-run";
+import InlineWardrobeRun from "./inline-wardrobe-run";
 import InlineShortsRun from "./inline-shorts-run";
 import InlineFormsmithRun from "./inline-formsmith-run";
 import InlineVideoUseRun from "./inline-video-use-run";
@@ -262,6 +263,7 @@ interface Props {
   onSelectVimax?: () => void;
   onSelectMoneyPrinter?: () => void;
   onSelectLegal?: () => void;
+  onSelectWardrobe?: () => void;
   /** Active OpenCode agent for the repository linked to a Garden. */
   openCodeAgent?: { id: string; name: string } | null;
   onClearOpenCode?: () => void;
@@ -526,6 +528,7 @@ export default function AgentRuntimePanel({
   onSelectVimax,
   onSelectMoneyPrinter,
   onSelectLegal,
+  onSelectWardrobe,
   openCodeAgent,
   onClearOpenCode,
   onSelectOpenCode,
@@ -2078,6 +2081,27 @@ export default function AgentRuntimePanel({
                           }}
                         />
                       </div>
+                    ) : message.wardrobeRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlineWardrobeRun
+                          runId={message.wardrobeRun.runId}
+                          task={message.wardrobeRun.task}
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted || index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
                     ) : message.codexRun ? (
                       <div className="text-sm leading-7 text-gray-200">
                         <InlineOpenCodeRun
@@ -2469,6 +2493,7 @@ export default function AgentRuntimePanel({
           onSelectVimax={onSelectVimax}
           onSelectMoneyPrinter={onSelectMoneyPrinter}
           onSelectLegal={onSelectLegal}
+          onSelectWardrobe={onSelectWardrobe}
           openCodeAgent={openCodeAgent}
           onClearOpenCode={onClearOpenCode}
           onSelectOpenCode={onSelectOpenCode}

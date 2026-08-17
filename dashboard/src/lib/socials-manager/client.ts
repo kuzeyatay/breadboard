@@ -10,6 +10,7 @@ import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import { breadSystemPrompt } from "../assistant-identity.ts";
 import { nowStamp, parseStamp } from "../calendar/wallclock.ts";
 import { findSocialsManagerProvider, type SocialsManagerProvider } from "./providers.ts";
+import { promptWithContext } from "../conversations/agent-context.ts";
 
 export interface DraftedPost {
   providerId: string;
@@ -25,6 +26,8 @@ export interface DraftRequest {
   providers: readonly SocialsManagerProvider[];
   /** When the user pinned a time, the model is told to use exactly this. */
   scheduleAt: string | null;
+  /** The chat this was launched from, so a request can refer back to it. */
+  conversationContext?: string;
   signal?: AbortSignal;
   /** Raw `usage` from the drafting completion, so the run can count tokens. */
   onUsage?: (usage: unknown) => void;
@@ -183,7 +186,10 @@ export async function draftPosts(request: DraftRequest): Promise<DraftedPost[]> 
             role: "system",
             content: systemPrompt(request.providers, request.scheduleAt, nowStamp()),
           },
-          { role: "user", content: request.brief },
+          {
+            role: "user",
+            content: promptWithContext(request.brief, request.conversationContext),
+          },
         ],
         tools: [toolDefinition(request.providers)],
         tool_choice: {

@@ -34,7 +34,12 @@ export interface SlashCommandMenuHandle {
 
 interface Props {
   open: boolean;
-  value: string;
+  /**
+   * The token being edited, without its leading slash. The owning composer
+   * derives it from the caret (see slashQueryAt), so the menu filters on the
+   * capability under the cursor rather than on the whole sentence.
+   */
+  query: string;
   sessionId?: string | number | null;
   surface: HermesSurface;
   availableRuntimeAgentIds: string[];
@@ -63,7 +68,7 @@ const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
   function SlashCommandMenu(
     {
       open,
-      value,
+      query,
       sessionId,
       surface,
       availableRuntimeAgentIds,
@@ -83,7 +88,6 @@ const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
     const [loading, setLoading] = useState(data === null);
     const [error, setError] = useState<string | null>(null);
     const [activeIndex, setActiveIndex] = useState(0);
-    const query = /^\/[^\s]*$/.test(value) ? value.slice(1) : "";
     const runtimeAgentIdsKey = availableRuntimeAgentIds.join("\n");
     const visibleData = data ?? peekCachedCommandResponse<CommandResponse>(responseUrl);
     const visibleAgencyAgents = agencyAgents.length
@@ -103,6 +107,12 @@ const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
       [query, runtimeAgentIdsKey, surface, visibleAgencyAgents, visibleData],
     );
     const selectedIndex = Math.min(activeIndex, Math.max(0, items.length - 1));
+
+    // A new query is a new list; keeping the old row highlighted would arm
+    // Enter on whatever happened to sit at that index before.
+    useEffect(() => {
+      setActiveIndex(0);
+    }, [query]);
 
     useEffect(() => {
       if (!open) return;
@@ -160,17 +170,17 @@ const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(
       <section
         id="direct-slash-command-menu"
         className={`neu-popover absolute inset-x-0 z-50 flex max-h-[min(24rem,52vh)] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] shadow-2xl ${placement === "below" ? "top-full mt-2" : "bottom-full mb-2"}`}
-        aria-label="Slash commands"
+        aria-label="Available capabilities"
       >
         <div className="flex items-center justify-between border-b border-[var(--line)] px-3 py-2">
-          <span className="text-xs font-medium text-[var(--ink-muted)]">Slash commands</span>
-          <span className="text-[10px] tabular-nums text-[var(--ink-muted)]">
-            {loading && !items.length ? "Loading…" : `${items.length} ready`}
-          </span>
+          <span className="text-xs font-medium text-[var(--ink-muted)]">Available capabilities</span>
+          {loading && !items.length ? (
+            <span className="text-[10px] text-[var(--ink-muted)]">Loading…</span>
+          ) : null}
         </div>
         <div className="min-h-0 overflow-y-auto overscroll-contain p-1.5">
           {items.length ? (
-            <ul role="listbox" aria-label="Ready slash commands" className="space-y-0.5">
+            <ul role="listbox" aria-label="Available capabilities" className="space-y-0.5">
               {items.map((item, index) => (
                 <li
                   key={`${item.kind}:${item.id}`}
