@@ -151,7 +151,10 @@ test("the terminal header uses a runtime-neutral health dot without an engine ba
   );
   assert.match(terminal, /aria-label=\{`Agent runtime is/);
   assert.doesNotMatch(terminal, /function runtimeLabel/);
-  assert.match(terminal, /runtimeOnline \? "bg-\[#4F805E\]" : "bg-\[#B65B5B\]"/);
+  assert.match(
+    terminal,
+    /runtimeOnline && !knowledgeUnavailable\s*\?\s*"bg-\[#4F805E\]"\s*:\s*"bg-\[#B65B5B\]"/,
+  );
   assert.doesNotMatch(terminal, /session\.connection === "idle" \? "ready"/);
 });
 
@@ -311,7 +314,11 @@ test("a message cannot be sent into a chat that is still loading", () => {
     terminal,
     /const submit = useCallback\([\s\S]{0,400}if \(session\.loadingSession\) return;/,
   );
-  assert.match(terminal, /if \(runtimeUnavailable \|\| busy \|\| session\.loadingSession\) return;/);
+  // The terminal's empty-state openers used to be a second dispatch path and
+  // carried the same guard. They now only fill the composer, so submit is the
+  // one door into the runtime and the one place the guard has to hold.
+  assert.match(terminal, /onSelectSuggestion=\{fillComposerWithPrompt\}/);
+  assert.doesNotMatch(terminal, /const fillComposerWithPrompt = useCallback\([\s\S]{0,400}session\.send\(/);
   assert.match(
     gardenChat,
     /const submit = useCallback\(\(\) => \{[\s\S]{0,300}if \(session\.loadingSession\) return;/,

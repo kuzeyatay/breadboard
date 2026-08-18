@@ -231,7 +231,48 @@ test("a super-agent turn selects the whole inventory for itself", () => {
     /selectedConnections = \[[\s\S]{0,200}?superAgentInventory\.connections/,
   );
   assert.match(turnService, /allowAllConnectionTools: superAgent/);
-  assert.match(turnService, /renderSuperAgentDirective\(superAgentInventory\)/);
+  assert.match(
+    turnService,
+    /renderSuperAgentDirective\(superAgentInventory, researchPipeline\)/,
+  );
+  // How exhaustive the request is is decided before dispatch, from the request
+  // text, so the turn cannot argue itself into a cheaper obligation later.
+  assert.match(turnService, /classifyResearch\(\{ question: resolved\.userText \|\| input\.text \}\)/);
+  assert.match(turnService, /researchPipelineApplies\(researchPlan\)/);
+});
+
+test("the tracked research pipeline is offered only to a request that earns it", async () => {
+  const { classifyResearch, researchPipelineApplies } = await import(
+    "../src/lib/research/classify.ts"
+  );
+  const { researchPipelineRule } = await import("../src/lib/research/directive.ts");
+
+  // Super agent plus a trivial question stays exactly as fast as it was: the
+  // classifier declines, so the protocol section is never composed at all.
+  const trivial = classifyResearch({ question: "Who founded OpenAI?" });
+  assert.equal(researchPipelineApplies(trivial), false);
+
+  const plan = classifyResearch({
+    question:
+      "Find every student team the university ever created, which are active, their member counts, historical names, and what happened to the inactive ones.",
+  });
+  assert.ok(researchPipelineApplies(plan));
+  const section = researchPipelineRule(plan);
+  assert.match(section, /## Exhaustive research: use the tracked pipeline/);
+  assert.match(section, /`research_begin`/);
+  assert.match(section, /`research_record`/);
+  assert.match(section, /`research_status`/);
+  // The behavioural change, stated as the contract: the ledger stops the turn,
+  // not the model's sense of having enough to write.
+  assert.match(section, /you are not finished, however much material you have/);
+  assert.match(section, /notFoundAfterSearch/);
+  assert.match(section, /unresolved/);
+  // And the guardrail that keeps higher recall from becoming invention.
+  assert.match(section, /never what would make the coverage look better/);
+
+  // The directive composes it only when a plan is supplied, so every ordinary
+  // super-agent turn — and every non-super-agent turn — is unchanged.
+  assert.match(superAgentDirective, /if \(researchPlan\) sections\.push\(researchPipelineRule\(researchPlan\)\)/);
 });
 
 test("super agent staffs web research across every instrument it has", () => {
@@ -248,10 +289,19 @@ test("super agent staffs web research across every instrument it has", () => {
   assert.match(superAgentDirective, /Open the official page with `web_extract` first/);
   // Each research worker is offered for the part it is actually good at, and
   // only when it is launchable on this surface.
-  for (const id of ["deep-research", "agent-reach", "agent-browser", "get-doc"]) {
+  for (const id of ["deep-research", "agent-reach", "get-doc"]) {
     assert.match(superAgentDirective, new RegExp("`" + id + "` —"));
     assert.match(superAgentDirective, new RegExp('"' + id + '"'));
   }
+  // agent-browser is deliberately not one of them. It is the slowest and most
+  // failure-prone instrument, so it is kept out of the staffing list entirely
+  // and gated behind a cheaper attempt that actually came back short.
+  assert.match(superAgentDirective, /"agent-browser"/);
+  assert.match(superAgentDirective, /`agent-browser` is not on that list/);
+  assert.match(superAgentDirective, /never part of an opening plan/);
+  assert.match(superAgentDirective, /Treat it as the last resort it is/);
+  assert.match(superAgentDirective, /Wanting more coverage is not a reason/);
+  assert.doesNotMatch(superAgentDirective, /- `agent-browser` —/);
   assert.match(
     superAgentDirective,
     /whether a method works, its benefits or harms, and whether learning is retained/,

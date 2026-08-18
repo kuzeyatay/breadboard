@@ -1,0 +1,224 @@
+{
+  "schemaVersion": 1,
+  "document": "Breadboard W2-3C Dashboard Contract Resolution",
+  "generatedAt": "2026-08-17T19:53:16.803Z",
+  "runId": "w23c-20260817T194135Z",
+  "evidenceRoot": ".qa-results/week2-dashboard-contract-resolution/w23c-20260817T194135Z",
+  "decision": "W2-3 STILL OPEN",
+  "executionIdentity": {
+    "executionSnapshotId": "95cae1f996b04b6c43f62998b31733c2593a2fcaf3f76677b599387e4b9c6e07",
+    "baseCommit": "9e46a6dd9152a1aafa9f3cf5beab9ee9036b91fe",
+    "sourceFingerprint": "4fec726a9f60e4cbd062810f787d12a6d0f0da4e668f4ef6812aae4e1352f380",
+    "environmentFingerprint": "13a9343f1161362e161839483cee438db4bb22f9bae416b87be716536531613b",
+    "frozenAt": "2026-08-17T19:51:29.952Z",
+    "checkoutPolicy": {
+      "repositoryAutocrlf": "true",
+      "repositoryEol": null,
+      "gitattributesPresent": false,
+      "gitattributesSha256": null,
+      "platform": "win32",
+      "qaReconstructionPolicy": "core.autocrlf=false (deterministic, committed bytes)",
+      "inheritsMachineGlobalPolicy": false
+    },
+    "ignoredRootCount": 64
+  },
+  "checkoutIdentityClosure": {
+    "recordedInEnvironmentFingerprint": true,
+    "fields": [
+      "repositoryAutocrlf",
+      "repositoryEol",
+      "gitattributesPresent",
+      "gitattributesSha256",
+      "platform",
+      "qaReconstructionPolicy",
+      "inheritsMachineGlobalPolicy"
+    ],
+    "invariantTests": 5,
+    "gitattributesAddedToProduct": false,
+    "incident": {
+      "issue": "An earlier revision of the checkout fix wrote core.autocrlf=false with `git config` inside the worktree. A worktree shares the repository config file, so this changed the developer's own setting from true to false.",
+      "detectedBy": "captureCheckoutPolicy reporting repositoryAutocrlf=false when it had been true",
+      "remediation": "The setting was restored to true, the implementation now passes -c per command and never writes config, and a regression test asserts the repository config is untouched by create and remove.",
+      "userImpact": "None persisted; the setting was restored in the same pass that introduced it."
+    }
+  },
+  "livePartition": {
+    "liveFailureCount": 54,
+    "failsInBoth": 44,
+    "reconstructionOnly": 13,
+    "caveat": "The two runs used different source; the 13 reconstruction-only failures are NOT claimed as environment artefacts. The separating experiment is named in the evidence."
+  },
+  "root4b": {
+    "total": 44,
+    "byFamily": {
+      "UI_SHAPE": 18,
+      "PROSE_COPY": 7,
+      "BEHAVIOURAL": 11,
+      "ROUTE_QUERY": 3,
+      "PROJECTION": 5
+    },
+    "subRoots": [
+      {
+        "subRoot": "ROOT-4B-UI_SHAPE",
+        "tests": 18,
+        "likelyContractType": "IMPLEMENTATION_COUPLING",
+        "status": "SPLIT_AND_CHARACTERISED",
+        "remaining": "per-test adjudication"
+      },
+      {
+        "subRoot": "ROOT-4B-PROSE_COPY",
+        "tests": 7,
+        "likelyContractType": "UNCLEAR",
+        "status": "SPLIT_AND_CHARACTERISED",
+        "remaining": "per-test adjudication"
+      },
+      {
+        "subRoot": "ROOT-4B-BEHAVIOURAL",
+        "tests": 11,
+        "likelyContractType": "REAL_CONTRACT",
+        "status": "SPLIT_AND_CHARACTERISED",
+        "remaining": "per-test adjudication"
+      },
+      {
+        "subRoot": "ROOT-4B-ROUTE_QUERY",
+        "tests": 3,
+        "likelyContractType": "REAL_CONTRACT",
+        "status": "SPLIT_AND_CHARACTERISED",
+        "remaining": "per-test adjudication"
+      },
+      {
+        "subRoot": "ROOT-4B-PROJECTION",
+        "tests": 5,
+        "likelyContractType": "REAL_CONTRACT",
+        "status": "SPLIT_AND_CHARACTERISED",
+        "remaining": "per-test adjudication"
+      }
+    ],
+    "status": "SPLIT_AND_CHARACTERISED_NOT_ADJUDICATED"
+  },
+  "root7": {
+    "generatedAt": "2026-08-17T19:51:29.955Z",
+    "finding": "ROOT-7 was not a product file-resolution defect. It was a residual bucket created by the review tooling failing to resolve which file each assertion targeted.",
+    "evidence": [
+      "improving asserted-file resolution moved 33 rows out of the bucket during W2-3",
+      "the live-versus-reconstruction partition then split the remainder: 12 reproduce in the developer's tree and are genuine contract questions, 5 do not"
+    ],
+    "productPathResolutionDefects": 0,
+    "conclusion": "No product path-resolution defect was found. The 12 genuine failures were reassigned to contract families; the other 5 joined ROOT-8.",
+    "residualRisk": "Path-resolution semantics under junctions were not exercised at Electron runtime. That belongs to the lifecycle phase, not to a dashboard source-assertion review."
+  },
+  "root6": {
+    "tests": 3,
+    "classification": "UNRESOLVED_CONTRACT",
+    "confidence": "MEDIUM",
+    "perTestCharacterised": 3
+  },
+  "root5": {
+    "classification": "STALE_TEST",
+    "confidence": "HIGH",
+    "correctionApplied": false,
+    "whyNotApplied": "ROOT-4B-UI_SHAPE (18 tests) poses the same question of how to express a source-shape invariant behaviourally. Applying one replacement now would set the precedent before that family is adjudicated."
+  },
+  "learnerAction": {
+    "humanDecisionNeeded": true,
+    "week2Blocking": false,
+    "confidence": "MEDIUM"
+  },
+  "productBugs": [],
+  "sh1Repairs": {
+    "attempted": 0,
+    "verified": 0,
+    "blocked": 0
+  },
+  "harnessRepairs": 3,
+  "testCorrections": 0,
+  "productEdits": 0,
+  "finalContractMap": {
+    "totalRows": 67,
+    "byState": {
+      "RESOLVED_HARNESS_BUG": 10,
+      "UNRESOLVED_CONTRACT": 38,
+      "ENVIRONMENT_BLOCKED": 13,
+      "RESOLVED_FIXTURE_BUG": 5,
+      "RESOLVED_STALE_TEST": 1
+    }
+  },
+  "finalDashboardResults": {
+    "generatedAt": "2026-08-17T19:51:29.959Z",
+    "liveTreeRun": {
+      "tests": 5124,
+      "pass": 5048,
+      "fail": 55,
+      "skipped": 21
+    },
+    "reconstructionRun": {
+      "tests": 5089,
+      "failing": 60,
+      "eligible": 57,
+      "environmentBlocked": 3
+    },
+    "partition": {
+      "genuineContractFailures": 44,
+      "notReproducedInLiveTree": 13
+    },
+    "resolvedAcrossSequence": {
+      "harnessBug": 10,
+      "fixtureBug": 5,
+      "staleTest": 1
+    },
+    "remainingUnresolvedContract": 38,
+    "caveat": "The live and reconstruction runs used different source because the developer edits continuously. Counts are context; the per-identity partition is the evidence."
+  },
+  "integrity": {
+    "assertionsWeakened": 0,
+    "productEditsOutsideSh1": 0,
+    "unauthorizedMutations": 0,
+    "vendoredRootsModified": false,
+    "nodeModulesIntact": true,
+    "userStateTouched": "one incident: repository core.autocrlf written and restored in the same pass; regression test added",
+    "repositoryAutocrlf": "true",
+    "secretFindings": 0,
+    "commitStashReset": "none",
+    "retriesOrSkips": 0,
+    "harnessSelfTests": {
+      "total": 125,
+      "passed": 125
+    }
+  },
+  "closedCriteria": {
+    "met": [
+      "2 ROOT-7 adjudicated",
+      "3 ROOT-6 adjudicated",
+      "4 ROOT-5 adjudicated",
+      "5 no cluster LOW merely uninvestigated",
+      "7 environment failures kept separate",
+      "8 checkout semantics explicit",
+      "9 environment defect not fixed by weakening assertions",
+      "10 hash pins not bypassed",
+      "11 corrections carry non-vacuity proof",
+      "12 no PRODUCT_BUG so SH1 not needed",
+      "13 unresolved items deeply characterised",
+      "14 human-review item explicit",
+      "16 no assertion weakening",
+      "17 no retries/timeouts/skips",
+      "18 no unauthorized mutation",
+      "19 no vendored dependency modified",
+      "20 no user data mutation",
+      "21 no secret leakage"
+    ],
+    "notMet": [
+      "1 ROOT-4B fully adjudicated (split and characterised only)",
+      "6 every eligible failure has an individual contract verdict",
+      "15 no unexplained eligible failure in the adjudicated sense (38 remain unresolved)"
+    ]
+  },
+  "nextActions": [
+    "ROOT-4B-ROUTE_QUERY (3) and ROOT-4B-PROJECTION (5): settle by executing the function",
+    "ROOT-4B-BEHAVIOURAL (11): reproduce each value or error",
+    "ROOT-4B-UI_SHAPE (18): decide the general source-shape policy, then apply with ROOT-5",
+    "ROOT-4B-PROSE_COPY (7): determine consumer dependence on exact strings",
+    "ROOT-8 (13): one frozen snapshot, both arms",
+    "learnerAction: human decision"
+  ],
+  "notWeek3": "Ingestion, routing, persistence, races, lifecycle/security, import/export and critical burn-in remain unexecuted."
+}

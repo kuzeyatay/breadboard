@@ -17,6 +17,17 @@ import { materializeSnapshot } from "./source-snapshot.mjs";
 
 export const WORKTREE_ROOT_NAME = ".qa-worktrees";
 
+/**
+ * Checkout policy for every QA-owned git command that writes working-tree files.
+ *
+ * This repository sets `core.autocrlf=true`, so an ordinary checkout rewrites
+ * text files to CRLF while the developer's tree keeps whatever their editor
+ * wrote. That difference made ten source-contract assertions fail only in
+ * reconstructions. Passing the policy per command keeps reconstructions on the
+ * committed bytes without touching the developer's configuration.
+ */
+export const DETERMINISTIC_CHECKOUT = Object.freeze(["-c", "core.autocrlf=false"]);
+
 const FINDING_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 
 function git(args, cwd) {
@@ -65,7 +76,22 @@ export function createRepairWorktree({ repoRoot, findingId, revision = "HEAD" })
   const sourceRevision = resolveRevision(resolvedRepo, revision);
 
   fs.mkdirSync(worktreeRoot, { recursive: true });
-  gitOrThrow(["worktree", "add", "--detach", worktreePath, sourceRevision], resolvedRepo);
+  // `core.autocrlf=true` is set on this repository, so an ordinary checkout
+  // rewrites every text file to CRLF. The developer's tree holds whatever their
+  // editor wrote (LF here), so a reconstruction would differ from it byte for
+  // byte while still matching on `git diff`, which normalises. That gap made ten
+  // source-contract assertions fail in every QA reconstruction and pass for the
+  // developer — a harness artefact indistinguishable from a contract failure.
+  // Checking out with autocrlf disabled gives the committed bytes.
+  //
+  // The policy is passed per command with `-c`, never written with `git config`:
+  // a worktree shares the repository's config file, so writing there would
+  // silently change the developer's own checkout behaviour. QA must not mutate
+  // the user's git configuration to make its own reconstructions deterministic.
+  gitOrThrow(
+    [...DETERMINISTIC_CHECKOUT, "worktree", "add", "--detach", worktreePath, sourceRevision],
+    resolvedRepo,
+  );
 
   const checkedOut = resolveRevision(worktreePath, "HEAD");
   if (checkedOut !== sourceRevision) {
@@ -131,11 +157,25 @@ export function changedFiles(handle) {
  * Full candidate diff. Untracked files are included with `--no-index` so a new
  * regression test is reviewed by the assertion guard exactly like an edit.
  */
-export function captureDiff(handle) {
-  const tracked = gitOrThrow(["diff", "HEAD"], handle.worktreePath);
-  const untracked = gitOrThrow(["ls-files", "--others", "--exclude-standard"], handle.worktreePath)
+/**
+ * The diff of a repair worktree, optionally narrowed to specific paths.
+ *
+ * `paths` matters on a snapshot worktree. That worktree deliberately carries the
+ * developer's whole in-flight tree, so an unnarrowed diff describes their work
+ * rather than the repair — and anything that adjudicates the diff, such as the
+ * assertion-integrity guard, would be judging edits the repair never made. Pass
+ * the changed-file set the capability actually authorised to see only the repair.
+ */
+export function captureDiff(handle, paths = null) {
+  const scope = Array.isArray(paths) && paths.length > 0 ? ["--", ...paths] : [];
+  const tracked = gitOrThrow(["diff", "HEAD", ...scope], handle.worktreePath);
+  const untrackedAll = gitOrThrow(["ls-files", "--others", "--exclude-standard"], handle.worktreePath)
     .split(/\r?\n/)
     .filter((line) => line.trim() !== "");
+  const untracked =
+    scope.length === 0
+      ? untrackedAll
+      : untrackedAll.filter((file) => paths.includes(file.replace(/\\/g, "/")));
   let extra = "";
   for (const file of untracked) {
     const result = git(["diff", "--no-index", "--", "/dev/null", file], handle.worktreePath);
@@ -244,14 +284,25 @@ export function removeRepairWorktree({ repoRoot, worktreePath }) {
  * refusing to return a handle whose fingerprint does not match.
  */
 /**
- * `linkExternal` defaults to **off**. Linking the ~60 gitignored vendored roots
- * was tried as a way to give the worktree the user's full environment, and it
- * made the dashboard suite fail *more* (227 vs 120 at HEAD), not fewer — the
- * clones are not resolution-neutral. It is kept as an opt-in because the
- * mechanism is sound and the write guard around it is tested, but it is not
- * enabled by default while its effect on the suite is unexplained.
+ * `linkExternal` defaults to **on**, reversing an earlier decision.
+ *
+ * A previous pass measured linking as harmful (227 failures against 120 at
+ * HEAD) and disabled it. That measurement was confounded three ways: it compared
+ * against a developer tree being edited throughout, it changed snapshot scope in
+ * the same step, and it ran while worktree cleanup still recursed *through*
+ * junctions and deleted the real `node_modules` — so later runs executed against
+ * damaged dependencies.
+ *
+ * A controlled two-arm experiment — one frozen snapshot, identical source in
+ * both arms, the ignored roots as the only variable — shows the opposite:
+ * linking fixes 62 tests and changes 3, and the failures it fixes name their
+ * cause outright ("the watermarks-remover scripts are not installed", "the
+ * DeepTutor clone should be found next to the dashboard").
+ *
+ * Writes through these links are denied by `applyGatedMutation`'s realpath
+ * check, so a repair still cannot touch a developer clone.
  */
-export function createSnapshotWorktree({ repoRoot, findingId, snapshot, linkExternal = false }) {
+export function createSnapshotWorktree({ repoRoot, findingId, snapshot, linkExternal = true }) {
   const handle = createRepairWorktree({
     repoRoot,
     findingId,

@@ -29,6 +29,8 @@ import {
 import { ensureN8nSession, n8nJson } from "../workflows/n8n.ts";
 import { summarizeLocalWorkflow } from "../workflows/execution.ts";
 import type { LocalWorkflowSummary } from "../workflows/types.ts";
+import { researchPipelineRule } from "../research/directive.ts";
+import type { ResearchPlan } from "../research/types.ts";
 
 /** Skills listed by name in the prompt. The rest are still openable by slug. */
 const MAX_LISTED_SKILLS = 120;
@@ -243,6 +245,12 @@ const RESEARCH_AGENT_IDS = [
  * an option. It also states the sequencing plainly: launches are queued one at
  * a time and each returns to this agent as an internal turn, so briefs must not
  * depend on each other's output — coordination happens here, on the way back.
+ *
+ * `agent-browser` is the one exception to "staff more than one". Listing it
+ * beside the others got it launched on any request that sounded broad, which
+ * spends a real browser session — the slowest and most fragile thing here — on
+ * pages plain extraction would have read. It therefore sits outside the list,
+ * behind a cheaper attempt that actually came back short.
  */
 function researchRoutingRule(inventory: SuperAgentInventory): string {
   const available = new Set(
@@ -259,11 +267,6 @@ function researchRoutingRule(inventory: SuperAgentInventory): string {
   if (available.has("agent-reach")) {
     instruments.push(
       "- `agent-reach` — retrieval from named sources. Give it depth: specific sites, directories, or listings to open and pull structured detail out of, when you know where the answer lives and the work is reading it.",
-    );
-  }
-  if (available.has("agent-browser")) {
-    instruments.push(
-      "- `agent-browser` — a real browser. The only instrument for pages that need clicking, scrolling, or JavaScript to show their content, which is what `web_extract` reporting an empty page usually means.",
     );
   }
   if (available.has("get-doc")) {
@@ -289,6 +292,13 @@ function researchRoutingRule(inventory: SuperAgentInventory): string {
           "- You are the one who reconciles. When their results come back, merge them, resolve the disagreements, and say plainly which parts are complete and which are partial. A published total that does not match what you counted is a gap to report, not a number to smooth over.",
         ]
       : []),
+    ...(available.has("agent-browser")
+      ? [
+          "",
+          "`agent-browser` is not on that list, and is never part of an opening plan. It drives a real browser one page at a time: it is the slowest instrument here, the most likely to fail on its own before it reaches the site, and it costs the user far more than reading a page does. Treat it as the last resort it is.",
+          "Launch it only when something you already tried came back short and a browser is the specific thing that would fix it — `web_extract` returned an empty or JavaScript-only page, the content sits behind a button, a scroll, or a login, or another worker reported exactly that. Wanting more coverage is not a reason. A request merely sounding broad is not a reason. If the answer is incomplete and nothing needs clicking, say what is missing instead.",
+        ]
+      : []),
     "",
     "And say what actually happened. A tool that returned an error did no work: name the failure and what you did instead. Never present a figure taken from a search snippet as something you read on the page, and never fill a gap from memory — an unverified list of names is the one answer this turn must not produce.",
   ].join("\n");
@@ -306,6 +316,12 @@ function researchRoutingRule(inventory: SuperAgentInventory): string {
  */
 export function renderSuperAgentDirective(
   inventory: SuperAgentInventory,
+  /**
+   * This turn's research reading, when the deterministic classifier decided the
+   * request is exhaustive enough to earn the pipeline. Omitted — the common
+   * case — the directive is exactly what it was before.
+   */
+  researchPlan?: ResearchPlan | null,
 ): string {
   const sections: string[] = [
     [
@@ -421,6 +437,10 @@ export function renderSuperAgentDirective(
   // about the tools this turn runs itself, and a surface with no research
   // worker still has `web_search` and `web_extract` to misuse.
   sections.push(researchRoutingRule(inventory));
+  // The tracked pipeline sits after the staffing rule and only for a request
+  // that earned it. A trivial super-agent turn never sees this section, which
+  // is what keeps ordinary questions as fast as they were.
+  if (researchPlan) sections.push(researchPipelineRule(researchPlan));
 
   return sections.join("\n\n");
 }

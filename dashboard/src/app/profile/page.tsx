@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 
 import { authOptions } from "@/lib/auth-options";
 import db from "@/lib/db";
+import { browserProfileState } from "@/lib/agent-browser/service.ts";
 import { getNavbarShortcuts } from "@/lib/profile/navbar-shortcuts-store.ts";
 import { readProfileStats } from "@/lib/profile/stats.ts";
 import ProfileClient from "./profile-client";
@@ -32,5 +33,11 @@ export default async function ProfilePage() {
 
   const stats = readProfileStats(db, userId);
 
-  return <ProfileClient stats={stats} initialShortcuts={getNavbarShortcuts(userId)} />;
+  return (
+    <ProfileClient
+      stats={stats}
+      initialShortcuts={getNavbarShortcuts(userId)}
+      browserProfile={browserProfileState()}
+    />
+  );
 }

@@ -27,6 +27,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { flushSync } from "react-dom";
 import { elementScroll, useVirtualizer } from "@tanstack/react-virtual";
 
 import { CHAT_OVERSCAN } from "@/app/components/chat/chat-row-identity";
@@ -126,6 +127,173 @@ export default function VirtualizedMessageList<T>({
     },
   });
 
+  // A row is measured from its ref callback, which React runs inside the commit
+  // phase. On a list anchored to its end, a first measurement that differs from
+  // the estimate also writes `scrollTop`, and the virtualizer reports that write
+  // synchronously — a `flushSync` from inside a commit, which React refuses to
+  // perform and logs as "React cannot flush when React is already rendering".
+  // The measurement survives, the synchronous flush does not, and it is wanted
+  // exactly where it is lost: the row that appears when a message is sent, first
+  // measured while the reader is pinned to the end of the conversation.
+  //
+  // So rows are measured one microtask after the commit that mounted them. That
+  // still runs before the browser paints — a row is never drawn at its estimate
+  // — and batching the rows of one commit into a single `flushSync` collapses
+  // what would otherwise be one synchronous re-render per newly mounted row.
+  const pendingRowsRef = useRef<Set<HTMLElement> | null>(null);
+  const measureScheduledRef = useRef(false);
+  const unmountedRef = useRef(false);
+
+  // Handing a row to `measureElement` does two things, and a transcript only
+  // ever gets one of them. It registers the row with the virtualizer's own
+  // ResizeObserver — which is what follows an answer growing as it streams —
+  // but it *measures* only when the virtualizer believes nothing is scrolling,
+  // and a transcript following an answer writes `scrollTop` on every frame, so
+  // it believes it is scrolling for the whole turn. A smooth glide suppresses
+  // measurement again, for every row outside a band around the row being
+  // travelled to.
+  //
+  // A row first mounted inside either window is therefore left at its estimate,
+  // and the estimate is capped: a long answer stands 900px tall while really
+  // being several thousand, and the rest of the conversation is laid out on top
+  // of it. Nothing recovers it, either — a row reports its height again only
+  // when it resizes, and a finished answer never does.
+  //
+  // So a row the virtualizer holds no measurement for at all is measured here,
+  // directly. One it has already measured is left to the ResizeObserver, which
+  // is the half the library is right to suppress mid-glide: re-aiming a
+  // travelling scroll at every row it passes is what makes one stutter.
+  const measureFirstSize = useCallback(
+    (row: HTMLElement) => {
+      const index = Number(row.getAttribute("data-index"));
+      if (!Number.isInteger(index) || index < 0) return;
+      if (virtualizer.itemSizeCache.has(virtualizer.options.getItemKey(index))) {
+        return;
+      }
+      virtualizer.resizeItem(index, row.offsetHeight);
+    },
+    [virtualizer],
+  );
+
+  // The measurement the library drops on the floor, recovered.
+  //
+  // Its own ResizeObserver is the half that follows a row *after* it mounts —
+  // markdown that reflows once a table has its column widths, a font that
+  // arrives late, an answer still streaming. But it refuses the correction
+  // whenever a smooth scroll is in flight and the row sits outside a band
+  // around the one being travelled to (`shouldMeasureDuringScroll`), and the
+  // correction is not retried afterwards: a row reports its height again only
+  // when it resizes again, which a finished answer never does. Landing on a
+  // conversation is a smooth glide over exactly those rows, so the transcript
+  // came to rest holding heights for content that had since grown, and every
+  // row below one of them was laid out on top of it — messages drawn inside
+  // each other.
+  //
+  // So rows are reconciled against the DOM here instead, on our own observer,
+  // and the correction is deferred rather than dropped: while anything is
+  // scrolling the sweep re-arms itself, which is the part the library is right
+  // about — re-aiming a travelling scroll at every row it passes is what makes
+  // one stutter. Once the transcript is still, every mounted row whose real
+  // height disagrees with the recorded one is resized in a single pass.
+  const observedRowsRef = useRef<Set<HTMLElement> | null>(null);
+  const sweepFrameRef = useRef<number | null>(null);
+
+  const sweepMeasurements = useCallback(() => {
+    sweepFrameRef.current = null;
+    if (unmountedRef.current || typeof window === "undefined") return;
+    const rows = observedRowsRef.current;
+    if (!rows || rows.size === 0) return;
+
+    // Still moving: try again on the next frame rather than fighting the
+    // scroll. `isScrolling` falls 150ms after the last scroll event, so this
+    // settles on its own the moment the transcript does.
+    if (virtualizer.isScrolling) {
+      sweepFrameRef.current = window.requestAnimationFrame(sweepMeasurements);
+      return;
+    }
+
+    const corrections: Array<[number, number]> = [];
+    for (const row of rows) {
+      if (!row.isConnected) {
+        rows.delete(row);
+        continue;
+      }
+      const index = Number(row.getAttribute("data-index"));
+      if (!Number.isInteger(index) || index < 0 || index >= itemsRef.current.length) {
+        continue;
+      }
+      const recorded = virtualizer.itemSizeCache.get(
+        virtualizer.options.getItemKey(index),
+      );
+      const actual = row.offsetHeight;
+      // Sub-pixel disagreement is what rounding leaves behind, not drift.
+      if (recorded === undefined || Math.abs(recorded - actual) < 1) continue;
+      corrections.push([index, actual]);
+    }
+    if (corrections.length === 0) return;
+    flushSync(() => {
+      for (const [index, size] of corrections) virtualizer.resizeItem(index, size);
+    });
+  }, [virtualizer]);
+
+  const scheduleSweep = useCallback(() => {
+    if (typeof window === "undefined" || unmountedRef.current) return;
+    if (sweepFrameRef.current !== null) return;
+    sweepFrameRef.current = window.requestAnimationFrame(sweepMeasurements);
+  }, [sweepMeasurements]);
+
+  const rowObserverRef = useRef<ResizeObserver | null>(null);
+  const getRowObserver = useCallback(() => {
+    if (typeof window === "undefined" || !window.ResizeObserver) return null;
+    return (rowObserverRef.current ??= new window.ResizeObserver(() => {
+      scheduleSweep();
+    }));
+  }, [scheduleSweep]);
+
+  const measureRow = useCallback(
+    (node: HTMLElement | null) => {
+      // React detaching a row. Handing the null straight on is what sweeps the
+      // node out of the virtualizer's element cache, and it measures nothing.
+      if (node === null) {
+        const observed = observedRowsRef.current;
+        if (observed) {
+          for (const row of observed) {
+            if (row.isConnected) continue;
+            rowObserverRef.current?.unobserve(row);
+            observed.delete(row);
+          }
+        }
+        virtualizer.measureElement(null);
+        return;
+      }
+      const observer = getRowObserver();
+      if (observer && !observedRowsRef.current?.has(node)) {
+        (observedRowsRef.current ??= new Set<HTMLElement>()).add(node);
+        observer.observe(node);
+      }
+      const pending = (pendingRowsRef.current ??= new Set<HTMLElement>());
+      pending.add(node);
+      if (measureScheduledRef.current) return;
+      measureScheduledRef.current = true;
+      queueMicrotask(() => {
+        measureScheduledRef.current = false;
+        const rows = pendingRowsRef.current;
+        pendingRowsRef.current = null;
+        if (!rows || unmountedRef.current) return;
+        flushSync(() => {
+          for (const row of rows) {
+            // A row mounted and unmounted inside one commit was never observed,
+            // so there is nothing to measure and nothing to clean up.
+            if (!row.isConnected) continue;
+            virtualizer.measureElement(row);
+            measureFirstSize(row);
+          }
+        });
+      });
+    },
+    [getRowObserver, measureFirstSize, virtualizer],
+  );
+
   const scrollToEnd = useCallback(
     (behavior: ScrollBehavior) => {
       if (itemsRef.current.length === 0) return;
@@ -134,16 +302,46 @@ export default function VirtualizedMessageList<T>({
     [virtualizer],
   );
 
+  // Aimed at the top of the viewport, which is where a row someone chose to go
+  // to wants to sit: the message they picked heads the screen, and its answer
+  // reads downward from it. The virtualizer re-aims the glide as the rows it
+  // travels past are measured for the first time.
+  const scrollToIndex = useCallback(
+    (index: number, behavior: ScrollBehavior) => {
+      if (index < 0 || index >= itemsRef.current.length) return;
+      virtualizer.scrollToIndex(index, { align: "start", behavior });
+    },
+    [virtualizer],
+  );
+
+  // The scroll position that would bring row N to the top, which for every row
+  // the scroller can actually reach is just where that row begins. Past that
+  // point it saturates at the furthest the scroller travels, and callers are
+  // told to read the tie as "the newest" rather than trying to undo it.
+  const getRowStart = useCallback(
+    (index: number) => virtualizer.getOffsetForIndex(index, "start")?.[0] ?? null,
+    [virtualizer],
+  );
+
   useIsomorphicLayoutEffect(() => {
-    bridge.attach(scrollToEnd);
+    bridge.attach({ scrollToEnd, scrollToIndex, getRowStart });
     return () => bridge.attach(null);
-  }, [bridge, scrollToEnd]);
+  }, [bridge, getRowStart, scrollToEnd, scrollToIndex]);
 
   useEffect(
     () => () => {
-      if (releaseTimerRef.current !== null && typeof window !== "undefined") {
-        window.clearTimeout(releaseTimerRef.current);
+      unmountedRef.current = true;
+      if (typeof window !== "undefined") {
+        if (releaseTimerRef.current !== null) {
+          window.clearTimeout(releaseTimerRef.current);
+        }
+        if (sweepFrameRef.current !== null) {
+          window.cancelAnimationFrame(sweepFrameRef.current);
+        }
       }
+      rowObserverRef.current?.disconnect();
+      rowObserverRef.current = null;
+      observedRowsRef.current = null;
     },
     [],
   );
@@ -212,7 +410,7 @@ export default function VirtualizedMessageList<T>({
           <div
             key={virtualRow.key}
             data-index={virtualRow.index}
-            ref={virtualizer.measureElement}
+            ref={measureRow}
             style={{
               position: "absolute",
               top: 0,

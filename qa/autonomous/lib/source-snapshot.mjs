@@ -350,7 +350,12 @@ export function materializeSnapshot({ worktreePath, snapshot }) {
     const patchPath = path.join(resolved, ".qa-source-snapshot.patch");
     fs.writeFileSync(patchPath, snapshot.trackedDiff, "utf8");
     try {
-      const applied = git(["apply", "--binary", "--whitespace=nowarn", patchPath], resolved);
+      // Same policy as the checkout: applying the patch must not reintroduce
+      // CRLF that the checkout deliberately avoided.
+      const applied = git(
+        ["-c", "core.autocrlf=false", "apply", "--binary", "--whitespace=nowarn", patchPath],
+        resolved,
+      );
       if (applied.status !== 0) {
         throw new SourceSnapshotError(
           `could not reconstruct the source snapshot: ${applied.stderr.trim()}`,

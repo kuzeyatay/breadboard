@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "document": "Breadboard W2-3 Dashboard Contract Certification",
+  "generatedAt": "2026-08-17T19:00:56.677Z",
+  "runId": "w23-20260817T184904Z",
+  "evidenceRoot": ".qa-results/week2-dashboard-contract/w23-20260817T184904Z",
+  "decision": "W2-3 STILL OPEN",
+  "executionSnapshot": {
+    "executionSnapshotId": "3c7911af4cfedcbc8bfc15dd2c793fbb90247060ac7eebe0cffdc96e464ca48c",
+    "baseCommit": "9e46a6dd9152a1aafa9f3cf5beab9ee9036b91fe",
+    "sourceFingerprint": "8eb3ff733eba352782b86e51d31730f55ca3c54660a73ea7914bacefca5bf0de",
+    "environmentFingerprint": "13a9343f1161362e161839483cee438db4bb22f9bae416b87be716536531613b"
+  },
+  "initialBaseline": {
+    "totalTests": 5036,
+    "failingEntries": 65,
+    "eligible": 62,
+    "environmentBlocked": 3,
+    "independentEligible": 62,
+    "cascades": 0,
+    "durationMs": 190286
+  },
+  "failureTypes": {
+    "SOURCE_TEXT_REGEX": 45,
+    "VALUE_EQUALITY": 4,
+    "THROWN_ERROR": 4,
+    "OTHER_ASSERTION": 8,
+    "FILE_ROLLUP": 1
+  },
+  "classificationTotals": {
+    "UNRESOLVED_CONTRACT": 52,
+    "FIXTURE_BUG": 9,
+    "STALE_TEST": 1
+  },
+  "sourceContractKindTotals": {
+    "UNCLEAR": 43,
+    "REAL_CONTRACT": 11,
+    "n/a": 7,
+    "IMPLEMENTATION_COUPLING": 1
+  },
+  "confidenceTotals": {
+    "LOW": 50,
+    "HIGH": 10,
+    "MEDIUM": 2
+  },
+  "rootCauseClusters": [
+    {
+      "rootCauseId": "ROOT-4-SOURCE-SHAPE-DRIFT",
+      "affectedTests": 25,
+      "classification": "UNRESOLVED_CONTRACT",
+      "confidence": "LOW"
+    },
+    {
+      "rootCauseId": "ROOT-7-UNREVIEWED",
+      "affectedTests": 17,
+      "classification": "UNRESOLVED_CONTRACT",
+      "confidence": "LOW"
+    },
+    {
+      "rootCauseId": "ROOT-1-GENERATED-SKILL-ARTIFACT-MISSING",
+      "affectedTests": 9,
+      "classification": "FIXTURE_BUG",
+      "confidence": "HIGH"
+    },
+    {
+      "rootCauseId": "ROOT-6-WIRING-RELOCATED",
+      "affectedTests": 7,
+      "classification": "UNRESOLVED_CONTRACT",
+      "confidence": "LOW"
+    },
+    {
+      "rootCauseId": "ROOT-2-VISUAL-CONTRACT-LEARNERACTION",
+      "affectedTests": 2,
+      "classification": "UNRESOLVED_CONTRACT",
+      "confidence": "MEDIUM"
+    },
+    {
+      "rootCauseId": "ROOT-3-CAD-CLONE-EXECUTION",
+      "affectedTests": 1,
+      "classification": "UNRESOLVED_CONTRACT",
+      "confidence": "LOW"
+    },
+    {
+      "rootCauseId": "ROOT-5-FIGURECOUNT-VARIABLE-RENAME",
+      "affectedTests": 1,
+      "classification": "STALE_TEST",
+      "confidence": "HIGH"
+    }
+  ],
+  "productBugs": [],
+  "sh1Repairs": {
+    "attempted": 0,
+    "verified": 0,
+    "blocked": 0,
+    "note": "No eligible failure reached PRODUCT_BUG on the evidence standard."
+  },
+  "testCorrections": {
+    "applied": 0,
+    "deliberatelyNotDone": [
+      {
+        "action": "Run scripts/build-bullshit-detector-skill.mjs and the diagram-design generator",
+        "reason": "Produces product data and re-pins reviewed hashes; that is a developer/build decision, not an autonomous QA repair, and the hash pin exists precisely so regeneration is a reviewed act."
+      },
+      {
+        "action": "Replace the figureCount: vlmFigureCount assertion",
+        "reason": "Correct and evidenced, but left for the pass that adjudicates the whole source-shape-drift cluster so the replacement is consistent."
+      }
+    ]
+  },
+  "runtimeArbitration": {
+    "used": false,
+    "note": "No case required deterministic runtime arbitration."
+  },
+  "unresolvedContracts": 52,
+  "finalBaseline": {
+    "totalTests": 5036,
+    "failing": 65,
+    "eligible": 62,
+    "environmentBlocked": 3,
+    "unchanged": true
+  },
+  "unexplainedFailures": 0,
+  "unadjudicatedFailures": 50,
+  "integrity": {
+    "mainTreeModifiedBySh1": false,
+    "userFilesTouched": false,
+    "unauthorizedChanges": 0,
+    "assertionWeakening": 0,
+    "retriesAdded": 0,
+    "timeoutsInflated": 0,
+    "skipsAdded": 0,
+    "secretFindings": 0,
+    "vendoredRootsModified": false,
+    "nodeModulesIntact": true,
+    "committedOrStashed": false,
+    "harnessSelfTests": {
+      "total": 120,
+      "passed": 120
+    }
+  },
+  "closedCriteria": {
+    "met": [
+      "1 one frozen execution snapshot used",
+      "3 cascades linked to roots",
+      "4 environment-blocked separated",
+      "6 every source-contract assertion has a kind",
+      "7 no PRODUCT_BUG arose (vacuous)",
+      "8 no repair opened (vacuous)",
+      "9 no test corrected without evidence",
+      "10 nothing deleted",
+      "11 unresolved contracts explicit",
+      "12 no assertion weakening",
+      "13 no retries/timeouts/skips",
+      "14 no user state touched",
+      "15 no vendored dependency modified",
+      "16 no unauthorized mutation",
+      "17 no secrets"
+    ],
+    "notMet": [
+      "2 every eligible failure individually classified to the evidence standard (52 of 62 are placed, not adjudicated)",
+      "5 no unexplained eligible failure (explained as located, not judged)",
+      "18 remaining baseline explainable test-by-test in the adjudicated sense"
+    ]
+  },
+  "nextActions": [
+    "ROOT-4 (25): decide REAL_CONTRACT vs IMPLEMENTATION_COUPLING per test",
+    "ROOT-7 (17): improve asserted-file resolution then review",
+    "ROOT-6 (7): trace each relocation",
+    "ROOT-2 (2): settle when learnerAction became mandatory",
+    "ROOT-1 (9): developer decision on regenerating and re-pinning skill artifacts"
+  ],
+  "notWeek3": "Ingestion, routing, persistence, races, lifecycle/security, import/export and critical burn-in all remain unexecuted."
+}

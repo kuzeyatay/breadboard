@@ -172,6 +172,8 @@ export type NormalizedAgentEvent =
         evidence: unknown[];
         unsupportedClaims: string[];
         assumptions: string[];
+        /** Runtime agents (`/agents:*`) this turn delegated work to. */
+        externalAgents?: unknown[];
       };
     }
   | {

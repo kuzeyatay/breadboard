@@ -7,6 +7,7 @@ import {
   useRef,
   useEffect,
   useCallback,
+  useMemo,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
@@ -14,6 +15,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
+import { useComposerInset } from "@/app/components/chat/use-composer-inset";
 import { useChatDraft } from "@/app/components/hermes/use-chat-draft";
 import {
   chatDraftKey,
@@ -29,6 +31,7 @@ import {
   createConversationBranch,
   messageBranchId,
   previousUserMessageIndex,
+  retryTargetUserMessageIndex,
   type ConversationBranchGroup,
 } from "@/app/components/hermes/conversation-branches";
 import {
@@ -64,6 +67,9 @@ import type {
 import type { VerificationSummary } from "@/lib/hermes/evidence";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
+import ChatMessageRail, {
+  type ChatMessageRailItem,
+} from "@/app/components/chat-message-rail";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
@@ -209,6 +215,7 @@ import {
   type IngestTokenUsage,
 } from "@/lib/ingest-token-usage";
 import {
+  agentBrowserStartFailure,
   agentBrowserUserMessage,
   taskFromAgentBrowserCommand,
 } from "@/lib/agent-browser/identity";
@@ -1035,6 +1042,41 @@ const transcriptRowKey = (row: TranscriptRow) =>
 const transcriptRowHeight = (row: TranscriptRow) =>
   estimateChatRowHeight(row.message, { minimum: 88 });
 
+/**
+ * The rows the virtualizer is given, in the order it draws them.
+ *
+ * Lifted out of the transcript because the message rail outside the scroller
+ * has to speak the same indices: a tick names a *row*, and the hidden observer
+ * turns dropped here are exactly what makes a row index differ from a message
+ * index.
+ */
+function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
+  const rows: TranscriptRow[] = [];
+  messages.forEach((storedMessage, index) => {
+    // Only the hand-back is internal. The turn persists the flag on both of its
+    // messages, so dropping every flagged row also dropped the answer the
+    // person reads after a delegation — visible while it streamed, gone on the
+    // next reload.
+    if (
+      storedMessage.role === "user" &&
+      storedMessage.internalAgentContinuation === true
+    ) {
+      return;
+    }
+    rows.push({
+      index,
+      message:
+        storedMessage.delegatedAgentRun === true
+          ? {
+              ...storedMessage,
+              content: externalAgentCardContent(storedMessage),
+            }
+          : storedMessage,
+    });
+  });
+  return rows;
+}
+
 const ChatTranscript = memo(function ChatTranscript({
   clusterName,
   clusterSlug,
@@ -1068,22 +1110,9 @@ const ChatTranscript = memo(function ChatTranscript({
   const timeSeparators = chatTimeSeparatorLabels(messages);
 
   // The worker result belongs to the hidden observer, not to the Super Agent's
-  // visible assistant message — resolved here so a row's measured height and
+  // visible assistant message — resolved there so a row's measured height and
   // its drawn height come from the same text.
-  const transcriptRows: TranscriptRow[] = [];
-  messages.forEach((storedMessage, index) => {
-    if (storedMessage.internalAgentContinuation === true) return;
-    transcriptRows.push({
-      index,
-      message:
-        storedMessage.delegatedAgentRun === true
-          ? {
-              ...storedMessage,
-              content: externalAgentCardContent(storedMessage),
-            }
-          : storedMessage,
-    });
-  });
+  const transcriptRows = buildTranscriptRows(messages);
 
   useEffect(
     () => () => {
@@ -2833,6 +2862,7 @@ export default function WorkspaceClient({
     (activeChatId !== null && streamingChatIds.has(activeChatId)) ||
     hasRunningExternalAgentInActiveChat;
   const transcriptVirtual = useChatVirtualBridge();
+  const composerInset = useComposerInset();
   const {
     ref: transcriptScrollRef,
     awayFromBottom: transcriptAwayFromBottom,
@@ -2841,8 +2871,22 @@ export default function WorkspaceClient({
     isResponding: isStreaming,
     responseKey: chatAutoScrollResponseKey(messages),
     contentKey: chatAutoScrollContentKey(messages),
+    conversationKey: activeChatId,
     virtual: transcriptVirtual,
   });
+
+  // One tick per question asked. Ticks name rows, not messages, so they are read
+  // off the same list the virtualizer draws — the observer turns it drops would
+  // otherwise slide every tick after them onto the wrong message.
+  const railItems = useMemo<ChatMessageRailItem[]>(
+    () =>
+      buildTranscriptRows(messages).flatMap((row, rowIndex) =>
+        row.message.role === "user"
+          ? [{ rowIndex, label: row.message.content }]
+          : [],
+      ),
+    [messages],
+  );
 
   // A runtime agent a super-agent turn asked for, and the follow-up turn its
   // result comes back on. The structured delegation goes straight to the
@@ -2860,6 +2904,59 @@ export default function WorkspaceClient({
     string | null
   >(null);
 
+  /**
+   * The composer's agent chip is the person's own choice. A delegated launch
+   * has to resolve a runtime through the same `select*` pickers the chip is
+   * driven by, so starting one leaves that agent selected in the composer and
+   * routes the next thing typed into it. Snapshot the selection around the
+   * launch and put it back.
+   */
+  function readComposerAgentSelection() {
+    return {
+      agentBrowser: agentBrowserAgent,
+      deepResearch: deepResearchAgent,
+      openCode: openCodeAgent,
+      codex: codexAgent,
+      openPlanter: openPlanterAgent,
+      agentReach: agentReachAgent,
+      getDoc: getDocAgent,
+      meetingNotes: meetingNotesAgent,
+      deepTutor: deepTutorAgent,
+      careerOps: careerOpsAgent,
+      tradingAgents: tradingAgentsAgent,
+      vibeTrading: vibeTradingAgent,
+      stockAnalyst: stockAnalystAgent,
+      paperTrader: paperTraderAgent,
+      deerFlow: deerFlowAgent,
+      shorts: shortsAgent,
+      formsmith: formsmithAgent,
+      ruflo: rufloAgent,
+    };
+  }
+
+  function restoreComposerAgentSelection(
+    snapshot: ReturnType<typeof readComposerAgentSelection>,
+  ) {
+    setAgentBrowserAgent(snapshot.agentBrowser);
+    setDeepResearchAgent(snapshot.deepResearch);
+    setOpenCodeAgent(snapshot.openCode);
+    setCodexAgent(snapshot.codex);
+    setOpenPlanterAgent(snapshot.openPlanter);
+    setAgentReachAgent(snapshot.agentReach);
+    setGetDocAgent(snapshot.getDoc);
+    setMeetingNotesAgent(snapshot.meetingNotes);
+    setDeepTutorAgent(snapshot.deepTutor);
+    setCareerOpsAgent(snapshot.careerOps);
+    setTradingAgentsAgent(snapshot.tradingAgents);
+    setVibeTradingAgent(snapshot.vibeTrading);
+    setStockAnalystAgent(snapshot.stockAnalyst);
+    setPaperTraderAgent(snapshot.paperTrader);
+    setDeerFlowAgent(snapshot.deerFlow);
+    setShortsAgent(snapshot.shorts);
+    setFormsmithAgent(snapshot.formsmith);
+    setRufloAgent(snapshot.ruflo);
+  }
+
   async function launchDelegatedAgent(
     request: AgentLaunchRequestPayload,
   ): Promise<void> {
@@ -2869,6 +2966,7 @@ export default function WorkspaceClient({
       );
       return;
     }
+    const composerSelection = readComposerAgentSelection();
     delegatedAgentLaunchRef.current = request;
     setDelegatedAgentLaunching(true);
     try {
@@ -2971,6 +3069,7 @@ export default function WorkspaceClient({
           setExternalAgentStatus(`${request.agentName} cannot be launched from this chat.`);
       }
     } finally {
+      restoreComposerAgentSelection(composerSelection);
       if (delegatedAgentLaunchRef.current?.requestId === request.requestId) {
         delegatedAgentLaunchRef.current = null;
       }
@@ -4521,7 +4620,7 @@ export default function WorkspaceClient({
    */
   function handleRetryAssistant(messageIndex: number) {
     if (isStreaming || !activeChat) return;
-    const userIndex = previousUserMessageIndex(messages, messageIndex);
+    const userIndex = retryTargetUserMessageIndex(messages, messageIndex);
     const previousUser = messages[userIndex];
     if (!previousUser || previousUser.role !== "user") return;
     const retryAttachments = reusableChatAttachments(previousUser.attachments);
@@ -5494,11 +5593,7 @@ export default function WorkspaceClient({
       );
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.run?.runId) {
-        throw new Error(
-          typeof data?.error === "string"
-            ? data.error
-            : "The Agent Browser run could not start.",
-        );
+        throw new Error(agentBrowserStartFailure(data?.error));
       }
       setChatStreaming(prepared.session.id, true);
       await commitExternalAgentTurn(
@@ -12358,12 +12453,18 @@ export default function WorkspaceClient({
         {/* Chat area — warm paper surface so the green sidebars read as a frame */}
         {/* min-w-0: without it the column keeps its ~1056px min-content width and
             a widened map panel is pushed off-screen (clipped by the root overflow). */}
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-900">
+        <div
+          className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-900"
+          style={composerInset.style}
+        >
           {renderLearnPanel()}
           {/* Positioning context for the jump control, so it floats at the foot
               of the transcript rather than below the composer. */}
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-            <main ref={transcriptScrollRef} className="flex-1 overflow-y-auto px-4 py-6">
+            <main
+              ref={transcriptScrollRef}
+              className="bb-chat-scroll-fade bb-chat-scroll-tail flex-1 overflow-y-auto px-4 py-6"
+            >
             <ChatTranscript
               clusterName={clusterName}
               clusterSlug={clusterSlug}
@@ -12389,6 +12490,12 @@ export default function WorkspaceClient({
               transcriptVirtual={transcriptVirtual}
             />
             </main>
+            <ChatMessageRail
+              surface="garden-chat"
+              items={railItems}
+              scrollRef={transcriptScrollRef}
+              bridge={transcriptVirtual}
+            />
             <ChatJumpToBottom
               visible={transcriptAwayFromBottom}
               busy={
@@ -12399,7 +12506,7 @@ export default function WorkspaceClient({
           </div>
 
           {/* Input area */}
-          <div className="shrink-0 px-4 py-4">
+          <div ref={composerInset.ref} className="bb-composer-overlay px-4 py-4">
             {/* A runtime agent the assistant chose, waiting to be started. */}
             {agentLaunchQueue.pending ? (
               <div className="mx-auto mb-2 w-full max-w-5xl">
@@ -12460,6 +12567,7 @@ export default function WorkspaceClient({
             />
 
             <AssistantComposer
+              transcriptAtEnd={!transcriptAwayFromBottom}
               capabilitySurface="garden_chat"
               capabilityGardenSlug={clusterSlug}
               className="mx-auto w-full max-w-5xl"

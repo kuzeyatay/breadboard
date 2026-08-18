@@ -373,7 +373,13 @@ export function finalizeRepairCapability({ capability, worktree, now = Date.now(
     );
   }
 
-  const diff = captureDiff(worktree);
+  // Narrowed to the files this repair actually changed. On a snapshot worktree
+  // the unnarrowed diff is the developer's whole in-flight tree, and feeding
+  // that to the assertion-integrity guard makes it adjudicate their edits: a
+  // net assertion removal anywhere in their working copy would reject an
+  // otherwise clean repair. `actual` is already the manifest delta, so it is
+  // exactly the repair's own footprint.
+  const diff = captureDiff(worktree, actual);
   const scope = enforceChangedFiles({
     gate: record.gate,
     changedFiles: actual,

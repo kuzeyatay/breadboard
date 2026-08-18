@@ -196,36 +196,6 @@ function recordTurn(conversation, surface, runId, clientMessageId) {
   });
 }
 
-/**
- * The Garden writes its turns the way its own transcript is saved — the whole
- * legacy message list, replaced in place — rather than through the canonical
- * turn store the Terminal uses. A film launched there has to find its turn all
- * the same.
- */
-function saveLegacyGardenTurn(chatSessionId, runId) {
-  const metadata = JSON.stringify({
-    externalAgent: true,
-    externalAgentRun: {
-      kind: "vimax",
-      runId,
-      brief: "a lighthouse keeper who befriends a whale",
-    },
-    externalAgentOutcome: "running",
-  });
-  const insert = db.prepare(
-    `INSERT INTO chat_messages
-       (session_id, role, content, order_index, tool_calls, canonical_message_id)
-     VALUES (?, ?, ?, ?, ?, NULL)`,
-  );
-  insert.run(
-    chatSessionId,
-    "user",
-    "/agents:vimax a lighthouse keeper who befriends a whale",
-    0,
-    metadata,
-  );
-  insert.run(chatSessionId, "assistant", "", 1, metadata);
-}
 
 test("a Terminal film binds to the turn that asked for it", async () => {
   const userId = user();
@@ -251,7 +221,11 @@ test("a Garden film binds to the turn that asked for it", async () => {
   const runId = "vmxrun_garden";
 
   const context = launch(userId, conversation, runId);
-  saveLegacyGardenTurn(chatSessionId, runId);
+  // The Garden agent chat records external agent turns through the same
+  // canonical store the Terminal uses: it runs on useAgentSession("garden_chat"),
+  // which POSTs to the external-turns route, which calls this function. The
+  // surface is a parameter, not a separate write path.
+  recordTurn(conversation, "garden_chat", runId, "vimax-garden-1");
 
   const artifact = await publishProduction({ context, production: production("The Keeper") });
   assert.ok(artifact, "the film was not published");

@@ -72,6 +72,18 @@ export interface TaskPlan {
   requiredCapabilities: TaskCapability[];
   requiredResources: ResourceReference[];
   requiresCoding: boolean;
+  /**
+   * True when the request itself asked for something only a live source can
+   * settle, so the answer owes external evidence.
+   *
+   * Deliberately its own field rather than `requiredCapabilities.includes(
+   * "web_research")`. That list is *reach* — what this turn is permitted to
+   * touch — and `elevateForSuperAgent` widens it to the whole inventory no
+   * matter what was asked. Reading the obligation off reach made every
+   * super-agent turn, "hi" included, owe a web result, and the enforcement at
+   * the end of the stream then discarded the answer when none arrived.
+   */
+  requiresWebEvidence: boolean;
   requiresConfirmation: boolean;
   confirmationReason?: string;
   riskLevel: RiskLevel;
@@ -776,6 +788,9 @@ export function planTask(input: TaskPlanInput): TaskPlan {
     requiredCapabilities: [...capabilities],
     requiredResources: resources,
     requiresCoding: signals.coding && !isolated,
+    // The web *signal* only — not `capabilities.has("web_research")`, which the
+    // download step also sets while asking for a file rather than for facts.
+    requiresWebEvidence: signals.web,
     requiresConfirmation,
     confirmationReason: requiresConfirmation
       ? confirmationSteps.map((s) => s.description).join(" ")
@@ -814,6 +829,10 @@ export const SUPER_AGENT_CAPABILITIES: readonly TaskCapability[] = [
  * and risk level are untouched: this adds reach, not intent, so the broker still
  * decides what is actually granted and every confirmation the plan asked for
  * still stands.
+ *
+ * `requiresWebEvidence` is part of that "not intent" and rides through the spread
+ * unchanged. Holding a super-agent turn to a web result it never asked for is
+ * precisely the confusion this function's reach/intent split exists to avoid.
  */
 export function elevateForSuperAgent(plan: TaskPlan): TaskPlan {
   const capabilities = new Set<TaskCapability>(plan.requiredCapabilities);

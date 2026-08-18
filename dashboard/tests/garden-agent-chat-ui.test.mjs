@@ -34,7 +34,9 @@ test("garden chat offers the terminal's model and reasoning-effort picker", () =
 });
 
 test("garden chat has terminal-style history, new chat, and skill review", () => {
-  assert.match(chat, /api\/hermes\/sessions\?surface=garden_chat/);
+  // Garden chat reads its history through the shared session client, which is
+  // what keeps one surface from drifting away from the other.
+  assert.match(chat, /loadHermesSessionSummaries/);
   assert.match(chat, /item\.gardenId === gardenSlug/);
   assert.match(chat, /id: string/);
   assert.match(chat, /New chat/);

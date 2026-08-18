@@ -37,6 +37,10 @@ import {
 } from "@/app/components/chat/chat-row-identity";
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
+import { useComposerInset } from "@/app/components/chat/use-composer-inset";
+import ChatMessageRail, {
+  type ChatMessageRailItem,
+} from "@/app/components/chat-message-rail";
 import ActivityPanel from "./activity-panel";
 import InlineBrowserRun from "./inline-browser-run";
 import InlineAgentBrowserRun from "./inline-agent-browser-run";
@@ -114,6 +118,7 @@ import {
   createConversationBranch,
   messageBranchId,
   previousUserMessageIndex,
+  retryTargetUserMessageIndex,
   type ConversationBranchGroup,
 } from "./conversation-branches";
 import {
@@ -154,6 +159,12 @@ interface Props {
   activities: ActivityItem[];
   input: string;
   onInputChange: (value: string) => void;
+  /**
+   * Lent by the owner when it needs to focus the composer itself — putting the
+   * caret after an opener it just dropped in, for instance. Left out, the panel
+   * keeps its own.
+   */
+  composerTextareaRef?: React.RefObject<HTMLTextAreaElement | null>;
   onSubmit: () => void;
   /** Rendered directly above the composer — currently the agent-launch prompt. */
   beforeComposer?: ReactNode;
@@ -560,8 +571,14 @@ export default function AgentRuntimePanel({
   onSelectRuflo,
   onExternalAgentTerminal,
   onExternalAgentSourceReady,
+  composerTextareaRef: ownerComposerTextareaRef,
 }: Props) {
-  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // The panel focuses the composer for its own reasons (asking about a
+  // selection, opening an annotation). An owner that also puts text there —
+  // picking an opener from the empty state — needs the same handle, so it may
+  // lend one rather than the panel keeping its ref to itself.
+  const fallbackComposerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerTextareaRef = ownerComposerTextareaRef ?? fallbackComposerTextareaRef;
   const copiedUserTimerRef = useRef<number | null>(null);
   const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([]);
   const [applyingSteerId, setApplyingSteerId] = useState<string | null>(null);
@@ -714,7 +731,16 @@ export default function AgentRuntimePanel({
     const rows: TranscriptRow[] = [];
     messages.forEach((storedMessage, index) => {
       if (
-        storedMessage.internalAgentContinuation === true ||
+        // Only the hand-back itself is internal. The turn is persisted with the
+        // flag on *both* of its messages, so dropping every flagged row also
+        // dropped the assistant's answer — the one the person actually reads
+        // after a delegation. It survived while it streamed (the optimistic row
+        // carries no flag) and vanished on the next reload, leaving a question
+        // with nothing under it. The answer is a normal assistant message; the
+        // "Research synthesized" label is read off the preceding row's flag,
+        // not this one, so keeping it costs nothing.
+        (storedMessage.role === "user" &&
+          storedMessage.internalAgentContinuation === true) ||
         storedMessage.textSelection?.mode === "inline" ||
         inlinedCourseCorrections.hiddenMessageIndices.has(index) ||
         (storedMessage.delegatedAgentRun === true &&
@@ -738,6 +764,19 @@ export default function AgentRuntimePanel({
     });
     return rows;
   }, [messages, inlinedCourseCorrections]);
+  // One tick per question asked, for the rail down the right edge. Numbered off
+  // the rows rather than off `messages`, because everything dropped above —
+  // continuations, inline selections, folded corrections — is exactly what makes
+  // the two differ, and the rail has to speak the virtualizer's indices.
+  const railItems = useMemo<ChatMessageRailItem[]>(
+    () =>
+      transcriptRows.flatMap((row, rowIndex) =>
+        row.message.role === "user"
+          ? [{ rowIndex, label: row.message.content }]
+          : [],
+      ),
+    [transcriptRows],
+  );
   const inlineSelectionThreads = useMemo(() => {
     const byId = new Map<string, InlineSelectionThread>();
     for (const selection of savedInlineSelections) {
@@ -804,6 +843,7 @@ export default function AgentRuntimePanel({
   const transcriptResponding =
     (activeRun || streaming) && !respondingToInlineSelection;
   const transcriptVirtual = useChatVirtualBridge();
+  const composerInset = useComposerInset();
   const {
     ref: transcriptScrollRef,
     awayFromBottom: transcriptAwayFromBottom,
@@ -812,6 +852,10 @@ export default function AgentRuntimePanel({
     isResponding: transcriptResponding,
     responseKey: visibleResponseKey,
     contentKey: visibleScrollKey,
+    // An omitted session and an unsaved one are the same absence of a
+    // conversation; the hook reads `undefined` as "this surface does not open
+    // conversations at all", which this one very much does.
+    conversationKey: sessionId ?? null,
     virtual: transcriptVirtual,
   });
 
@@ -1073,7 +1117,7 @@ export default function AgentRuntimePanel({
 
   function retryAssistantAsBranch(assistantMessageIndex: number) {
     if (!onRetryMessage || activeRun || conversationLocked) return;
-    const userMessageIndex = previousUserMessageIndex(
+    const userMessageIndex = retryTargetUserMessageIndex(
       messages,
       assistantMessageIndex,
     );
@@ -1256,15 +1300,19 @@ export default function AgentRuntimePanel({
     // are nested components, so the mode is announced once here and the styling
     // is a descendant rule in globals.css.
     <div
-      className="flex min-h-0 flex-1 flex-col"
+      className="relative flex min-h-0 flex-1 flex-col"
+      style={composerInset.style}
       data-temporary-chat={temporaryChat ? "true" : undefined}
     >
       {/* Positioning context for the jump control, so it floats at the foot of
           the transcript rather than below the composer. The transcript keeps
           its own indentation; only this wrapper is new. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
-      <div ref={transcriptScrollRef} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-3xl px-4 py-5">
+      <div
+        ref={transcriptScrollRef}
+        className="bb-chat-scroll-fade min-h-0 flex-1 overflow-y-auto"
+      >
+        <div className="bb-chat-scroll-tail mx-auto w-full max-w-3xl px-4 py-5">
           {messages.length === 0 ? (
             // The suggestion cards invite a new chat, so showing them over a
             // transcript that is still arriving reads as "this chat is empty".
@@ -2404,6 +2452,12 @@ export default function AgentRuntimePanel({
           ) : null}
         </div>
       </div>
+        <ChatMessageRail
+          surface={surface === "quartz_ai" ? "quartz-ai" : "hermes-chat"}
+          items={railItems}
+          scrollRef={transcriptScrollRef}
+          bridge={transcriptVirtual}
+        />
         <ChatJumpToBottom
           visible={transcriptAwayFromBottom}
           busy={Boolean(transcriptResponding)}
@@ -2433,7 +2487,7 @@ export default function AgentRuntimePanel({
         />
       ) : null}
 
-      <div className="shrink-0 px-4 pb-3">
+      <div ref={composerInset.ref} className="bb-composer-overlay px-4 pb-3">
         {beforeComposer ? (
           <div
             className={`mx-auto w-full ${compact ? "max-w-3xl" : "max-w-5xl"}`}
@@ -2449,6 +2503,7 @@ export default function AgentRuntimePanel({
         ) : null}
         <AssistantComposer
           className={`mx-auto w-full ${compact ? "max-w-3xl" : "max-w-5xl"}`}
+          transcriptAtEnd={!transcriptAwayFromBottom}
           compact={compact}
           value={input}
           onChange={onInputChange}

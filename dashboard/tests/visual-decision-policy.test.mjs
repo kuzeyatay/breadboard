@@ -20,6 +20,7 @@ import {
 } from "../src/lib/visualization-opportunities.ts";
 import { visualTypeCompatibleWithUnit } from "../src/lib/learning-unit-contract.ts";
 import { buildDeterministicVisual, buildVisualBlock, validateVisualSpec } from "../src/lib/visual-spec.ts";
+import { pedagogyContractFromCompleteRepair } from "../src/lib/visualization-contract-validation.ts";
 
 function buildVisualizationPlan(input) {
   const requiredVisuals = input.learningUnits.filter((candidate) =>
@@ -109,7 +110,7 @@ function withPlan(candidate, decision, requirement) {
  * and expected insight the whole-garden visual model authors, each grounded in the
  * unit's own evidence. Tests that exercise dispatch must start from that shape.
  */
-function withModelAuthoredPlan(candidate, decision, { controlLabel, expectedInsight, interactionGoal }) {
+function withModelAuthoredPlan(candidate, decision, { controlLabel, expectedInsight, interactionGoal, learnerAction }) {
   const planned = withPlan(candidate, decision, "required");
   const evidence = [{
     anchor: candidate.sourceAnchors[0],
@@ -126,13 +127,14 @@ function withModelAuthoredPlan(candidate, decision, { controlLabel, expectedInsi
     sourceAnchors: candidate.sourceAnchors,
     duplicateSignature: `sig-${candidate.id.toLowerCase()}`,
   };
-  return {
+  const authored = {
     ...planned,
     interactiveVisual: visualIntent,
     interactiveVisualPlan: {
       ...planned.interactiveVisualPlan,
       visualIntent,
       interactionGoal,
+      learnerAction,
       controlContract: [{
         id: `fixture_${candidate.id.toLowerCase()}`,
         kind: "variable",
@@ -148,6 +150,25 @@ function withModelAuthoredPlan(candidate, decision, { controlLabel, expectedInsi
       expectedInsightEvidence: evidence,
     },
   };
+  // Routing requires the plan and the decision to carry the same interaction
+  // contract, so that no stage after the model can quietly re-author its
+  // intent. The pipeline satisfies that by carrying decision.interaction
+  // through from the model's necessity batch; a fixture has to do the same, and
+  // it uses the product's own projection rather than a hand-built copy.
+  authored.interactiveVisualPlan.decision = {
+    ...authored.interactiveVisualPlan.decision,
+    interaction: pedagogyContractFromCompleteRepair({
+      unitId: candidate.id,
+      interactionGoal,
+      learnerAction,
+      visualIntent,
+      controls: authored.interactiveVisualPlan.controlContract,
+      observable: authored.interactiveVisualPlan.observable,
+      expectedInsight: visualIntent.expectedInsight,
+      expectedInsightEvidence: evidence,
+    }),
+  };
+  return authored;
 }
 
 const ACTIVE = new Set(["required", "recommended", "optional"]);
@@ -416,6 +437,9 @@ describe("visual decision policy — dispatch, embedding, validation, repair", (
       controlLabel: "rate, latency, and delta encoding",
       expectedInsight: "trade off under a fixed spike budget",
       interactionGoal: "compare_cases",
+      // The model authors the interaction sequence too, not only the controls.
+      learnerAction:
+        "Move the encoding-rate control across its range and read the latency curve at each setting.",
     });
     const vplan = buildVisualizationPlan({
       gardenId: "g",
@@ -505,6 +529,9 @@ describe("visual decision policy — routing produces a concrete interactive int
       controlLabel: "rate, latency, and delta encoding",
       expectedInsight: "trade off under a fixed spike budget",
       interactionGoal: "compare_cases",
+      // The model authors the interaction sequence too, not only the controls.
+      learnerAction:
+        "Move the encoding-rate control across its range and read the latency curve at each setting.",
     });
     const vplan = buildVisualizationPlan({
       gardenId: "g",

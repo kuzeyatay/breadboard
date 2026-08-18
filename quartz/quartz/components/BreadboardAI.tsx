@@ -85,7 +85,20 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
           </button>
         </div>
 
-        <div class="breadboard-ai-messages" aria-live="polite"></div>
+        {/* Positioning context for the message rail, which floats against the
+            right edge of the transcript rather than scrolling with it. */}
+        <div class="breadboard-ai-transcript">
+          <div class="breadboard-ai-messages" aria-live="polite"></div>
+          <div class="breadboard-ai-rail" hidden>
+            <div class="breadboard-ai-rail-label" aria-hidden="true"></div>
+            <div
+              class="breadboard-ai-rail-track"
+              role="toolbar"
+              aria-orientation="vertical"
+              aria-label="Messages you sent"
+            ></div>
+          </div>
+        </div>
 
         <div class="breadboard-ai-error" role="alert" hidden></div>
 

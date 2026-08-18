@@ -320,6 +320,17 @@ export const WORKSPACE_WRITE_TOOLS: readonly string[] = [
   "workspace_patch",
 ];
 
+// The coverage-driven research pipeline. Super agent only, and for a reason
+// beyond cost: these tools hold a conversation-scoped research state whose whole
+// value is that the stopping decision is taken away from the model. Offering
+// them on an ordinary turn would put a multi-round protocol in front of a
+// question that wants one search and an answer. See lib/research/.
+export const RESEARCH_TOOLS = [
+  "research_begin",
+  "research_record",
+  "research_status",
+] as const;
+
 // Super agent only. `skill_open` returns the guidance of one reviewed skill the
 // user already has installed — the same text typing `/its-slug` would inject —
 // so the agent can pick its own instrument instead of waiting to be handed one.
@@ -332,6 +343,7 @@ export const SUPER_AGENT_TOOLS = [
   "skill_open",
   "workflow_run",
   "agent_launch",
+  ...RESEARCH_TOOLS,
 ] as const;
 
 // Documents distilled into book-to-skill skills. Read-only, and scoped by the

@@ -102,3 +102,37 @@ test("quartz styles cover the new controls", () => {
   assert.match(styles, /\.breadboard-ai-markdown/);
   assert.match(styles, /\.breadboard-ai-retry/);
 });
+
+test("quartz carries the same rail of sent messages as the dashboard", () => {
+  // The rail is a sibling of the scroller, not a child: it floats against the
+  // right edge of the transcript rather than scrolling away with it.
+  assert.match(component, /class="breadboard-ai-transcript"/);
+  const transcript = component.slice(component.indexOf("breadboard-ai-transcript"));
+  const railAt = transcript.indexOf("breadboard-ai-rail");
+  const messagesAt = transcript.indexOf("breadboard-ai-messages");
+  assert.ok(messagesAt > 0 && railAt > messagesAt, "the rail sits beside the scroller");
+  assert.match(component, /aria-label="Messages you sent"/);
+
+  // One tick per sent message, and the same wording the dashboard rail uses.
+  assert.match(inline, /querySelectorAll<HTMLElement>\("\.breadboard-ai-user"\)/);
+  assert.match(inline, /`Go to message \$\{index \+ 1\} of \$\{sent\.length\}: \$\{summary\}`/);
+  // A lone question under a long answer still gets its tick; only an empty
+  // transcript draws nothing. Kept in step with the dashboard rail's minimum.
+  assert.match(inline, /rail\.hidden = sent\.length < 1/);
+  // Clicking a tick takes the reader to that message.
+  assert.match(inline, /messages!\.scrollTo\(\{\s*\n\s*top: Math\.max\(start - 8, 0\),/);
+  assert.match(inline, /prefers-reduced-motion: reduce/);
+
+  // The rail has to be rebuilt everywhere the transcript changes shape, or it
+  // describes a conversation that is no longer on screen.
+  for (const site of [
+    /if \(role === "user"\) refreshRail\(\)/, // a message just sent
+    /railSuspended = false\s*\n\s*\}\s*\n\s*messages!\.scrollTop[\s\S]{0,40}refreshRail\(\)/, // a session restored
+    /messages!\.replaceChildren\(\)\s*\n\s*refreshRail\(\)/, // a new chat started
+  ]) {
+    assert.match(inline, site);
+  }
+
+  assert.match(styles, /\.breadboard-ai-rail-tick/);
+  assert.match(styles, /aria-current="true"/);
+});

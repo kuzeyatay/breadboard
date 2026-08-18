@@ -11,6 +11,8 @@ export interface BranchableMessage {
   branchGroupId?: string;
   role: string;
   content: string;
+  /** A delegated worker's result, handed back as a turn nobody typed. */
+  internalAgentContinuation?: boolean;
 }
 
 export interface ConversationBranchGroup<
@@ -55,6 +57,30 @@ export function previousUserMessageIndex(
 ): number {
   for (let index = assistantMessageIndex - 1; index >= 0; index -= 1) {
     if (messages[index]?.role === "user") return index;
+  }
+  return -1;
+}
+
+/**
+ * The question a retry should re-ask.
+ *
+ * After a delegation the transcript ends with a turn nobody typed: the worker's
+ * result, handed back as a user message so the agent can answer from it. That
+ * message is the nearest one above the answer, so a plain walk-back made Redo
+ * re-send internal machinery — "Agent Browser did not finish, here is its
+ * result" — as though the person had written it, branching the conversation at
+ * a boundary they cannot see. Walk past those turns to the real question, which
+ * is what re-running the answer actually means: ask it again.
+ */
+export function retryTargetUserMessageIndex(
+  messages: BranchableMessage[],
+  assistantMessageIndex: number,
+): number {
+  for (let index = assistantMessageIndex - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "user") continue;
+    if (message.internalAgentContinuation === true) continue;
+    return index;
   }
   return -1;
 }

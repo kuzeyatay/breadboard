@@ -91,12 +91,71 @@ test("terminal required mode cannot render the direct KnowledgeTerminal fallback
   assert.match(terminal, /No legacy request was sent/);
 });
 
+/**
+ * The behavioural half of the session-list contract.
+ *
+ * The route recovers the surface with parseSurface and then filters
+ * conversations by it, so a surface that does not survive the round trip is
+ * cross-surface leakage: garden chat would be handed the terminal transcripts.
+ * Which file the URL literal is written in cannot show that, so this executes
+ * the shared client and reads back what the server would actually parse.
+ */
+test("the session client sends a surface the sessions route can recover exactly", async () => {
+  const { loadHermesSessionSummaries } = await import(
+    "../src/lib/hermes/session-client.ts"
+  );
+  const { HERMES_SURFACES } = await import("../src/lib/hermes/config.ts");
+
+  const captured = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    captured.push({ url: String(url), init });
+    return { ok: true, json: async () => ({ sessions: [] }) };
+  };
+
+  try {
+    // Valid surfaces, and values that would break a hand-built query string.
+    for (const surface of [
+      ...HERMES_SURFACES,
+      "a&surface=dashboard_terminal",
+      "garden chat",
+      "100%",
+      "a?b",
+    ]) {
+      captured.length = 0;
+      // `force` defeats the client cache so every case builds a real request.
+      await loadHermesSessionSummaries(surface, { force: true });
+      const request = captured.at(-1);
+      assert.ok(request, `no request was issued for ${surface}`);
+
+      const url = new URL(request.url, "http://127.0.0.1");
+      assert.equal(url.pathname, "/api/hermes/sessions");
+      assert.equal(
+        url.searchParams.get("surface"),
+        surface,
+        `the surface did not round-trip: ${surface}`,
+      );
+      // A crafted value must stay one parameter rather than forging a second.
+      assert.equal([...url.searchParams.keys()].join(","), "surface");
+      assert.equal(request.init?.cache, "no-store");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("terminal session hook restores a Breadboard session after refresh and aborts server-side", () => {
   const hook = read(
     "dashboard/src/app/components/hermes/use-agent-session.ts",
   );
-  assert.match(hook, /\/api\/hermes\/sessions\?surface=/);
-  assert.match(hook, /setSessionId\(restored\.id\)/);
+  assert.match(hook, /loadHermesSessionSummaries/);
+  // Restoring loads the detail through the shared client and then makes that
+  // session active. The guard proves the loaded detail and the selected id are
+  // the same session, so which of the two the setter is handed is a naming
+  // choice rather than a contract.
+  assert.match(hook, /await loadHermesSessionDetail\(/);
+  assert.match(hook, /if \(restored\.id !== selected\.id\) return;/);
+  assert.match(hook, /setSessionId\(\w+\.id\)/);
   assert.match(hook, /\/abort/);
   assert.match(hook, /: connected[\s\S]*onConnected\(\)/);
   assert.match(hook, /await Promise\.race[\s\S]*const sendResponse/);
@@ -119,7 +178,10 @@ test("Terminal navbar uses a runtime-neutral health dot without an engine badge"
   );
   assert.doesNotMatch(terminal, /function runtimeLabel/);
   assert.match(terminal, /aria-label=\{`Agent runtime is/);
-  assert.match(terminal, /runtimeOnline \? "bg-\[#4F805E\]" : "bg-\[#B65B5B\]"/);
+  assert.match(
+    terminal,
+    /runtimeOnline && !knowledgeUnavailable\s*\?\s*"bg-\[#4F805E\]"\s*:\s*"bg-\[#B65B5B\]"/,
+  );
   assert.doesNotMatch(terminal, /Review skills/);
   assert.doesNotMatch(terminal, /session\.connection === "idle" \? "ready"/);
 });

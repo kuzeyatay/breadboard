@@ -221,5 +221,10 @@ test('the ingest route persists figures as page assets and counts them', () => {
   assert.match(route, /function vlmFigureSaver\(/);
   // Both the PDF and the single-image path pass a saver.
   assert.equal((route.match(/saveFigure: vlmFigureSaver\(/g) ?? []).length, 2);
-  assert.match(route, /figureCount: vlmFigureCount/);
+  // The count that reaches the persisted payload has to come from the VLM
+  // result rather than being recomputed or defaulted. The local variable it is
+  // carried in is not the contract, so this pins the derivation and the
+  // destination instead of the identifier.
+  assert.match(route, /figureCount = vlm\.figureCount/);
+  assert.match(route, /^\s*figureCount,$/m);
 });
