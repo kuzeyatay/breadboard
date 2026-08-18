@@ -13,6 +13,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
+import { useComposerInset } from '@/app/components/chat/use-composer-inset';
 import AssistantMessageActions from '@/app/components/assistant-message-actions';
 import { isDirectModeEnabled } from '@/app/components/use-direct-mode';
 import {
@@ -27,6 +28,9 @@ import {
   estimateChatRowHeight,
 } from '@/app/components/chat/chat-row-identity';
 import ChatJumpToBottom from '@/app/components/chat-jump-to-bottom';
+import ChatMessageRail, {
+  type ChatMessageRailItem,
+} from '@/app/components/chat-message-rail';
 import ChatTimeSeparator from '@/app/components/chat-time-separator';
 import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
 import ActivityPanel from '@/app/components/hermes/activity-panel';
@@ -697,6 +701,7 @@ export default function GardenAssistant({
   }, [activeClusterSlug]);
 
   const transcriptVirtual = useChatVirtualBridge();
+  const composerInset = useComposerInset();
   const {
     ref: transcriptScrollRef,
     awayFromBottom: transcriptAwayFromBottom,
@@ -706,8 +711,21 @@ export default function GardenAssistant({
     responseKey: chatAutoScrollResponseKey(messages),
     contentKey: chatAutoScrollContentKey(messages),
     enabled: chatOpen,
+    conversationKey: activeChatId,
     virtual: transcriptVirtual,
   });
+
+  // One tick per question asked. This panel hands the virtualizer `messages`
+  // untouched, so a message's place in the conversation is also its row.
+  const railItems = useMemo<ChatMessageRailItem[]>(
+    () =>
+      messages.flatMap((message, index) =>
+        message.role === 'user'
+          ? [{ rowIndex: index, label: message.content }]
+          : [],
+      ),
+    [messages],
+  );
 
   function updateSessionMessages(sessionId: number, nextMessages: ChatMessage[], title?: string) {
     setChatSessions((previous) => {
@@ -1413,6 +1431,7 @@ export default function GardenAssistant({
 
   const chatPanelStyle = {
     '--assistant-panel-width': `${panelWidth}px`,
+    ...composerInset.style,
   } as CSSProperties;
   const resizeHandleStyle = {
     right: panelWidth,
@@ -1517,7 +1536,10 @@ export default function GardenAssistant({
       {/* Positioning context for the jump control, so it floats at the foot of
           the transcript rather than below the composer. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
-      <div ref={transcriptScrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+      <div
+        ref={transcriptScrollRef}
+        className="bb-chat-scroll-fade bb-chat-scroll-tail min-h-0 flex-1 overflow-y-auto px-4 py-4"
+      >
         {messages.length === 0 ? (
           <div className="space-y-4">
             <div>
@@ -1563,6 +1585,12 @@ export default function GardenAssistant({
           />
         )}
       </div>
+        <ChatMessageRail
+          surface="garden-assistant"
+          items={railItems}
+          scrollRef={transcriptScrollRef}
+          bridge={transcriptVirtual}
+        />
         <ChatJumpToBottom
           visible={transcriptAwayFromBottom}
           busy={isStreaming}
@@ -1570,7 +1598,7 @@ export default function GardenAssistant({
         />
       </div>
 
-      <div className="p-3">
+      <div ref={composerInset.ref} className="bb-composer-overlay p-3">
         {permissionRequest && (
           <div className="mb-3 rounded-lg border border-amber-300/60 bg-amber-50/80 p-3 text-sm dark:border-amber-400/30 dark:bg-amber-950/30">
             <p className="font-medium text-amber-900 dark:text-amber-200">Access needed</p>
@@ -1619,6 +1647,7 @@ export default function GardenAssistant({
           className="hidden"
         />
         <AssistantComposer
+          transcriptAtEnd={!transcriptAwayFromBottom}
           capabilitySurface="garden_chat"
           capabilityGardenSlug={activeClusterSlug}
           compact

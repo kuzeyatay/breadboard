@@ -13,6 +13,9 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
+import { useComposerInset } from '@/app/components/chat/use-composer-inset';
+import ChatGreetingEmptyState from '@/app/components/hermes/chat-greeting-empty-state';
+import { useChatGreeting } from '@/app/components/hermes/use-chat-greeting';
 import AssistantMessageActions from '@/app/components/assistant-message-actions';
 import AssistantResponseMeta from '@/app/components/assistant-response-meta';
 import { isDirectModeEnabled } from '@/app/components/use-direct-mode';
@@ -28,6 +31,9 @@ import {
   estimateChatRowHeight,
 } from '@/app/components/chat/chat-row-identity';
 import ChatJumpToBottom from '@/app/components/chat-jump-to-bottom';
+import ChatMessageRail, {
+  type ChatMessageRailItem,
+} from '@/app/components/chat-message-rail';
 import ChatMarkdown from '@/app/components/chat-markdown';
 import ChatTimeSeparator from '@/app/components/chat-time-separator';
 import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
@@ -80,21 +86,6 @@ const MAX_SESSIONS = 40;
 const COLLAPSED_HEIGHT = 48;
 const MIN_HEIGHT = COLLAPSED_HEIGHT;
 const MIN_DEFAULT_OPEN_HEIGHT = 360;
-
-const SUGGESTED_PROMPTS: Record<TerminalScope, string[]> = {
-  mine: [
-    'What topics span more than one of my gardens?',
-    'Summarize everything I know about a concept across all gardens.',
-    'Which gardens should I review before an exam?',
-    'Find connections between ideas in different gardens.',
-  ],
-  public: [
-    'What topics show up across multiple public gardens?',
-    'Summarize what the public gardens cover about a concept.',
-    'Which public gardens are the best starting point for a subject?',
-    'Find connections between ideas in different public gardens.',
-  ],
-};
 
 // Bottom edge of the breadboard navbar, so a fully opened terminal stops right
 // below the main header instead of covering it.
@@ -285,6 +276,19 @@ export default function KnowledgeTerminal({ scope }: Props) {
   );
 
   const [input, setInput] = useState('');
+  // Same greeting engine the runtime terminal uses, so the legacy transport
+  // opens on the same words rather than on a heading of its own.
+  const chatGreeting = useChatGreeting({ scope, temporary: false });
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fillComposerWithPrompt = useCallback((prompt: string) => {
+    setInput(prompt);
+    window.setTimeout(() => {
+      const composer = composerTextareaRef.current;
+      if (!composer) return;
+      composer.focus();
+      composer.setSelectionRange(composer.value.length, composer.value.length);
+    }, 0);
+  }, []);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const timeSeparators = useMemo(
     () => chatTimeSeparatorLabels(messages),
@@ -351,6 +355,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
   }, [height]);
 
   const transcriptVirtual = useChatVirtualBridge();
+  const composerInset = useComposerInset();
   const {
     ref: transcriptScrollRef,
     awayFromBottom: transcriptAwayFromBottom,
@@ -360,8 +365,21 @@ export default function KnowledgeTerminal({ scope }: Props) {
     responseKey: chatAutoScrollResponseKey(messages),
     contentKey: chatAutoScrollContentKey(messages),
     enabled: isOpen,
+    conversationKey: activeId,
     virtual: transcriptVirtual,
   });
+
+  // One tick per question asked. The terminal hands the virtualizer `messages`
+  // untouched, so a message's place in the conversation is also its row.
+  const railItems = useMemo<ChatMessageRailItem[]>(
+    () =>
+      messages.flatMap((message, index) =>
+        message.role === 'user'
+          ? [{ rowIndex: index, label: message.content }]
+          : [],
+      ),
+    [messages],
+  );
 
   function updateSessionMessages(sessionId: number, nextMessages: ChatMessage[], title?: string) {
     setSessions((previous) => {
@@ -891,38 +909,21 @@ export default function KnowledgeTerminal({ scope }: Props) {
         ) : null}
 
         {/* Chat column */}
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="relative flex min-w-0 flex-1 flex-col" style={composerInset.style}>
           {/* Positioning context for the jump control, so it floats at the foot
               of the transcript rather than below the composer. */}
           <div className="relative flex min-h-0 flex-1 flex-col">
-          <div ref={transcriptScrollRef} className="min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto w-full max-w-3xl px-4 py-5">
+          <div
+            ref={transcriptScrollRef}
+            className="bb-chat-scroll-fade min-h-0 flex-1 overflow-y-auto"
+          >
+            <div className="bb-chat-scroll-tail mx-auto w-full max-w-3xl px-4 py-5">
               {messages.length === 0 ? (
-                <div className="flex flex-col items-center gap-5 py-8 text-center">
-                  <div>
-                    <p className="text-lg font-medium text-white">
-                      {isPublic ? 'Ask the public knowledge hub' : 'Ask your whole knowledge base'}
-                    </p>
-                    <p className="mt-1.5 text-sm text-gray-500">
-                      {isPublic
-                        ? 'Answers are grounded in the notes across every public garden on Breadboard.'
-                        : 'Answers are grounded in the notes across every garden you own.'}
-                    </p>
-                  </div>
-                  <div className="grid w-full max-w-xl gap-2 sm:grid-cols-2">
-                    {SUGGESTED_PROMPTS[scope].map((prompt) => (
-                      <button
-                        type="button"
-                        key={prompt}
-                        onClick={() => void sendMessage(prompt)}
-                        disabled={isStreaming}
-                        className="neu-button rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {prompt}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <ChatGreetingEmptyState
+                  greeting={chatGreeting.greeting}
+                  suggestions={chatGreeting.suggestions}
+                  onSelectSuggestion={fillComposerWithPrompt}
+                />
               ) : (
                 <VirtualizedMessageList
                   surface="knowledge-terminal"
@@ -940,6 +941,12 @@ export default function KnowledgeTerminal({ scope }: Props) {
               )}
             </div>
           </div>
+            <ChatMessageRail
+              surface="knowledge-terminal"
+              items={railItems}
+              scrollRef={transcriptScrollRef}
+              bridge={transcriptVirtual}
+            />
             <ChatJumpToBottom
               visible={transcriptAwayFromBottom}
               busy={isStreaming}
@@ -948,7 +955,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
           </div>
 
           {/* Composer */}
-          <div className="shrink-0 px-4 pb-3">
+          <div ref={composerInset.ref} className="bb-composer-overlay px-4 pb-3">
             <input
               ref={attachmentInputRef}
               type="file"
@@ -959,9 +966,11 @@ export default function KnowledgeTerminal({ scope }: Props) {
             />
             <AssistantComposer
               className="mx-auto w-full max-w-3xl"
+              transcriptAtEnd={!transcriptAwayFromBottom}
               compact
               value={input}
               onChange={setInput}
+              textareaRef={composerTextareaRef}
               onSubmit={() => void sendMessage()}
               onKeyDown={handleInputKeyDown}
               placeholder={isPublic ? 'Ask anything across all public gardens...' : 'Ask anything across your gardens...'}

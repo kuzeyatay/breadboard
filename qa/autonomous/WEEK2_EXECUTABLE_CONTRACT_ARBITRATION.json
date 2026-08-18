@@ -1,0 +1,254 @@
+{
+  "schemaVersion": 1,
+  "document": "Breadboard W2-3D Executable Contract Arbitration",
+  "generatedAt": "2026-08-17T20:13:34.878Z",
+  "runId": "w23d-20260817T200225Z",
+  "evidenceRoot": ".qa-results/week2-executable-contract-arbitration/w23d-20260817T200225Z",
+  "decision": "EXECUTABLE CONTRACTS CLOSED",
+  "notTheOverallW23Decision": "W2-3 remains open: 30 rows are still UNRESOLVED_CONTRACT.",
+  "executionSnapshot": {
+    "executionSnapshotId": "e57c28dcdfe6961b6709ae99125e5ef668aada17dc5035916450a54ff3715adf",
+    "baseCommit": "9e46a6dd9152a1aafa9f3cf5beab9ee9036b91fe",
+    "sourceFingerprint": "d3bbea1179c7246e3540a52238d7807c318004900df9db47847fc5ff5145ea91",
+    "environmentFingerprint": "13a9343f1161362e161839483cee438db4bb22f9bae416b87be716536531613b",
+    "frozenAt": "2026-08-17T20:02:55.220Z",
+    "checkoutLineEndingPolicy": "core.autocrlf=false (deterministic, committed bytes)",
+    "repositoryAutocrlf": "true",
+    "checkoutPolicy": {
+      "repositoryAutocrlf": "true",
+      "repositoryEol": null,
+      "gitattributesPresent": false,
+      "gitattributesSha256": null,
+      "platform": "win32",
+      "qaReconstructionPolicy": "core.autocrlf=false (deterministic, committed bytes)",
+      "inheritsMachineGlobalPolicy": false
+    }
+  },
+  "targets": {
+    "total": 8,
+    "byFamily": {
+      "ROUTE_QUERY": 3,
+      "PROJECTION": 5
+    }
+  },
+  "routeQuery": {
+    "boundary": {
+      "builder": "dashboard/src/lib/hermes/session-client.ts :: loadHermesSessionSummaries",
+      "consumer": "dashboard/src/app/api/hermes/sessions/route.ts :: parseSurface + surface filter",
+      "method": "The exported production function was called with a stubbed fetch; the URL it built was parsed with URL/URLSearchParams and fed to the consumer's acceptance rule."
+    },
+    "casesExecuted": 13,
+    "invariants": [
+      {
+        "name": "path is exactly /api/hermes/sessions",
+        "holds": true,
+        "detail": "a changed path would reach a different route entirely"
+      },
+      {
+        "name": "every value round-trips byte-exactly through the query string",
+        "holds": true,
+        "detail": "the server must recover the surface it was sent; anything else risks reading another surface's conversations"
+      },
+      {
+        "name": "query-reserved characters cannot inject a second parameter",
+        "holds": true,
+        "detail": "an unencoded & or = would let a value forge a second surface parameter"
+      },
+      {
+        "name": "valid surfaces are accepted by the consumer",
+        "holds": true,
+        "detail": "otherwise a legitimate surface could not load its own history"
+      },
+      {
+        "name": "invalid surfaces are rejected by the consumer, not silently defaulted",
+        "holds": true,
+        "detail": "a silent default would return another surface's conversations"
+      },
+      {
+        "name": "the request is issued no-store",
+        "holds": true,
+        "detail": "a cached session list could show a stale or foreign conversation set"
+      }
+    ],
+    "allInvariantsHold": true,
+    "classification": "STALE_TEST",
+    "sourceContractKind": "IMPLEMENTATION_COUPLING",
+    "confidence": "HIGH",
+    "conclusion": "The route/query contract is intact and stronger than when the assertions were written. The surface round-trips exactly, reserved characters cannot inject a parameter, invalid surfaces are refused rather than defaulted, and the request is no-store. The assertions pinned the file the literal lives in, not the behaviour.",
+    "relocation": {
+      "literalNowLivesIn": "dashboard/src/lib/hermes/session-client.ts",
+      "assertedFilesStillReachIt": true,
+      "evidence": "use-agent-session.ts and garden-agent-chat.tsx both import from @/lib/hermes/session-client; the centralised client additionally deduplicates concurrent requests and caches per surface."
+    }
+  },
+  "routeQueryCounterexamples": {
+    "mutations": 5,
+    "allDetected": true,
+    "controlPasses": true,
+    "nonVacuous": true
+  },
+  "projection": {
+    "boundary": {
+      "projection": "dashboard/src/lib/conversations/branch-history.ts :: projectConversationBranchMessages",
+      "consumer": "dashboard/src/lib/hermes/session-presentation.ts :: presentHermesSessionDetail",
+      "route": "dashboard/src/app/api/hermes/sessions/route.ts",
+      "method": "The real projection was executed over a fixture whose second turn was regenerated twice; the consumer chain was then confirmed by import and call evidence."
+    },
+    "rootCause": "Session presentation was extracted from api/hermes/sessions/route.ts into lib/hermes/session-presentation.ts. Four assertions across four suites still read the route file, where the logic no longer lives. The behaviour moved intact: session-presentation.ts contains the asserted projection call, the shared message presenter, the memory-evidence lookup and the response-duration metadata, all together.",
+    "projectedIds": [
+      1,
+      2,
+      9,
+      10
+    ],
+    "invariants": [
+      {
+        "name": "only the active branch survives",
+        "holds": true,
+        "detail": "projected ids [1,2,9,10]; the first turn plus the newest sibling of turn 2"
+      },
+      {
+        "name": "abandoned attempts are excluded",
+        "holds": true,
+        "detail": "a reader must not see a regenerated-away answer as if it were current"
+      },
+      {
+        "name": "the surviving turn is the newest sibling, not the first",
+        "holds": true,
+        "detail": "showing an older sibling would hide the answer the user actually has"
+      },
+      {
+        "name": "an unbranched conversation is returned unchanged",
+        "holds": true,
+        "detail": "projection must be a no-op when nothing was regenerated"
+      },
+      {
+        "name": "an empty transcript projects to empty",
+        "holds": true,
+        "detail": "no defaulting or synthesised rows"
+      },
+      {
+        "name": "the sessions route reaches the extracted presentation module",
+        "holds": true,
+        "detail": "otherwise the extraction would have orphaned the projection"
+      },
+      {
+        "name": "the extracted module applies exactly the asserted projection call",
+        "holds": true,
+        "detail": "the asserted pattern matches session-presentation.ts verbatim; only its location changed"
+      }
+    ],
+    "allInvariantsHold": true,
+    "fieldClassification": [
+      {
+        "field": "active-branch membership",
+        "kind": "REQUIRED_CONTRACT_FIELD",
+        "why": "determines what the reader sees"
+      },
+      {
+        "field": "message id and content",
+        "kind": "REQUIRED_CONTRACT_FIELD",
+        "why": "identity and body of each transcript row"
+      },
+      {
+        "field": "the module the call is written in",
+        "kind": "IMPLEMENTATION_DETAIL",
+        "why": "not observable to any consumer; the route reaches the same behaviour through an import"
+      }
+    ],
+    "classification": "STALE_TEST",
+    "sourceContractKind": "IMPLEMENTATION_COUPLING",
+    "confidence": "HIGH"
+  },
+  "projectionCounterexamples": {
+    "mutations": 5,
+    "allDetected": true,
+    "controlPasses": true,
+    "nonVacuous": true
+  },
+  "productBugs": [],
+  "sh1Repairs": {
+    "attempted": 0,
+    "verified": 0,
+    "blocked": 0,
+    "reason": "No PRODUCT_BUG arose."
+  },
+  "testCorrections": {
+    "applied": 0,
+    "specified": 8,
+    "whyHeld": "All eight, plus the held ROOT-5 case and the 18 UI_SHAPE rows, turn on the same unanswered policy question: when should a source-shape assertion be replaced by an executable one? Applying eight replacements now would set that policy by accident."
+  },
+  "predictionVsActual": {
+    "predicted": 8,
+    "correctionsApplied": 0,
+    "flipsObserved": 0,
+    "predictionMatched": true
+  },
+  "targetedStability": [
+    {
+      "family": "ROUTE_QUERY",
+      "runs": 3,
+      "passes": 3,
+      "failures": 0,
+      "signatures": [],
+      "deterministic": true
+    },
+    {
+      "family": "PROJECTION",
+      "runs": 3,
+      "passes": 3,
+      "failures": 0,
+      "signatures": [],
+      "deterministic": true
+    }
+  ],
+  "updatedContractMap": {
+    "RESOLVED_HARNESS_BUG": 10,
+    "UNRESOLVED_CONTRACT": 30,
+    "ENVIRONMENT_BLOCKED": 13,
+    "RESOLVED_STALE_TEST": 9,
+    "RESOLVED_FIXTURE_BUG": 5
+  },
+  "integrity": {
+    "assertionsWeakened": 0,
+    "directProductEdits": 0,
+    "unauthorizedMutation": 0,
+    "repositoryGitConfigChanged": false,
+    "globalGitConfigChanged": false,
+    "developerFilesChanged": false,
+    "vendoredRootsChanged": false,
+    "nodeModulesIntact": true,
+    "secretFindings": 0,
+    "commitStashReset": "none",
+    "gitattributesAdded": false,
+    "note": "Counterexample mutations were applied to local stand-in builders, never to product source."
+  },
+  "closedCriteria": {
+    "met": [
+      "1 all ROUTE_QUERY targets executed",
+      "2 all PROJECTION targets executed",
+      "3 actual production paths used",
+      "4 consumer semantics inspected",
+      "5 every target has evidence-backed classification",
+      "6 none LOW through skipped execution",
+      "7 counterexample proof for both families",
+      "8 flips predicted before corrections",
+      "9 actual flips match predictions",
+      "10 no PRODUCT_BUG so SH1 not used",
+      "11 no assertion weakening",
+      "12 no direct product mutation",
+      "13 git config unchanged",
+      "14 no developer dependency modified",
+      "15 no secret in evidence"
+    ],
+    "notMet": []
+  },
+  "nextCluster": [
+    "ROOT-4B-BEHAVIOURAL (11)",
+    "UI_SHAPE policy (18)",
+    "PROSE_COPY (7)",
+    "ROOT-6 residuals (3)",
+    "learnerAction human decision",
+    "ROOT-8 (13) separating experiment"
+  ]
+}

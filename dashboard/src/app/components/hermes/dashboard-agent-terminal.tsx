@@ -19,11 +19,15 @@ import { useAssistantIntelligence } from "@/app/components/use-assistant-intelli
 import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import AgentRuntimePanel from "./agent-runtime-panel";
+import ChatGreetingEmptyState from "./chat-greeting-empty-state";
+import { useChatGreeting } from "./use-chat-greeting";
 import { ArtifactDockHostProvider } from "./artifact-dock-host";
 import ArtifactPanel, {
   ARTIFACT_REVISE_EVENT,
 } from "./artifact-panel";
-import GBrainStatusBadge from "./gbrain-status-badge";
+// The Terminal reads GBrain status but never words it: the header dot carries
+// it. GBrainStatusBadge itself stays a Garden Chat component.
+import { useGBrainStatus } from "./gbrain-status-badge";
 import {
   chatSessionIsActive,
   deleteChatSession,
@@ -68,6 +72,7 @@ import {
 } from "@/lib/chat-attachments";
 import { distillAttachments } from "@/lib/document-skills/client";
 import {
+  agentBrowserStartFailure,
   agentBrowserUserMessage,
   taskFromAgentBrowserCommand,
 } from "@/lib/agent-browser/identity.ts";
@@ -267,41 +272,6 @@ const DOCK_OPEN_MS = 420;
 const DOCK_CLOSE_MS = 320;
 const DOCK_OPEN_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
 const DOCK_CLOSE_EASING = "cubic-bezier(0.55, 0, 0.68, 0.4)";
-
-const SUGGESTED_PROMPTS: Record<TerminalScope, string[]> = {
-  mine: [
-    "What topics span more than one of my gardens?",
-    "Summarize everything I know about a concept across all gardens.",
-    "Which gardens should I review before an exam?",
-    "Find connections between ideas in different gardens.",
-  ],
-  public: [
-    "What topics show up across multiple public gardens?",
-    "Summarize what the public gardens cover about a concept.",
-    "Which public gardens are the best starting point for a subject?",
-    "Find connections between ideas in different public gardens.",
-  ],
-};
-
-// The openers an ordinary chat offers are all about accumulation — what spans
-// your gardens, what to review, what connects to what — and they are the wrong
-// invitation in a chat that keeps nothing. These are the questions worth asking
-// precisely because no one is taking notes: the beginner's question, the test
-// you would rather not have on your record, the honest look at a gap.
-const TEMPORARY_SUGGESTED_PROMPTS: Record<TerminalScope, string[]> = {
-  mine: [
-    "Explain a concept from my gardens as if I had never seen it.",
-    "Quiz me on a topic in my notes, without keeping the score.",
-    "Where are the holes in what I have written about a topic?",
-    "Give me a blunt read on something I think I understand.",
-  ],
-  public: [
-    "Explain a concept from the public gardens as if I were new to it.",
-    "Quiz me on a public-garden topic, without keeping the score.",
-    "What do the public gardens leave out about a subject?",
-    "Where should I start on a subject I know nothing about?",
-  ],
-};
 
 // The navbar scrolls away with the page, so its viewport-relative bottom turns
 // negative once the page is scrolled down. Left unclamped that inflates the
@@ -544,6 +514,9 @@ function RuntimeTerminal({
   const [isResizing, setIsResizing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [input, setInput] = useState("");
+  // Handed down to the panel so picking an opener can put the caret where the
+  // text just landed.
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const {
     model,
     setModel,
@@ -754,6 +727,10 @@ function RuntimeTerminal({
   // turning it on or off always means starting a different chat rather than
   // changing the one on screen — the same bargain ChatGPT's toggle makes.
   const [temporaryChat, setTemporaryChat] = useState(false);
+  // What a blank chat says, and the four openers under it. Both are drawn from
+  // pools that step forward on the hour and narrow to what the reader has been
+  // doing, so this is the only thing the empty state needs from up here.
+  const chatGreeting = useChatGreeting({ scope, temporary: temporaryChat });
   // The chat to come back to when the reader leaves temporary mode, so the
   // toggle behaves like a detour rather than a reset.
   const chatBeforeTemporary = useRef<string | null>(null);
@@ -807,6 +784,13 @@ function RuntimeTerminal({
   } = ruflo;
   const finishExternalAgentTurn = session.finishExternalAgentTurn;
   const runtimeOnline = !runtimeUnavailable;
+  // Knowledge retrieval being down is a real failure, but the header has no room
+  // for a sentence about it: the status dot goes red and the tooltip explains.
+  const { key: knowledgeKey } = useGBrainStatus();
+  const knowledgeUnavailable = knowledgeKey === "unavailable";
+  const knowledgeNote = knowledgeUnavailable
+    ? ", knowledge retrieval unavailable"
+    : "";
   const busy =
     session.connection === "connecting" ||
     session.connection === "streaming" ||
@@ -1239,9 +1223,7 @@ function RuntimeTerminal({
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
-          throw new Error(
-            typeof data?.error === "string" ? data.error : "The Agent Browser run could not start.",
-          );
+          throw new Error(agentBrowserStartFailure(data?.error));
         }
         runStarted = true;
         await session.appendExternalAgentTurn({
@@ -5020,6 +5002,66 @@ function RuntimeTerminal({
   ]);
 
   /**
+   * The composer's agent chip is the person's own choice — it is set when they
+   * pick an agent and restored from their last `/agents:*` message. A delegated
+   * launch has to resolve a runtime through the same `select*` pickers, and
+   * those set that chip as a side effect. Left there, `/agents:agent-browser`
+   * sits in the composer after a launch nobody asked for, and the next thing
+   * typed is routed into that agent instead of the chat. So the selection is
+   * snapshotted around a delegated launch and put back once it is dispatched.
+   */
+  function readComposerAgentSelection() {
+    return {
+      browser: browserAgent,
+      agentBrowser: agentBrowserAgent,
+      openPlanter: openPlanterAgent,
+      agentReach: agentReachAgent,
+      getDoc: getDocAgent,
+      meetingNotes: meetingNotesAgent,
+      deepTutor: deepTutorAgent,
+      careerOps: careerOpsAgent,
+      tradingAgents: tradingAgentsAgent,
+      vibeTrading: vibeTradingAgent,
+      stockAnalyst: stockAnalystAgent,
+      paperTrader: paperTraderAgent,
+      deerFlow: deerFlowAgent,
+      shorts: shortsAgent,
+      formsmith: formsmithAgent,
+      deepResearch: deepResearch.agent,
+      codex: codex.agent,
+      openCode: openCode.agent,
+      ruflo: ruflo.agent,
+    };
+  }
+
+  function restoreComposerAgentSelection(
+    snapshot: ReturnType<typeof readComposerAgentSelection>,
+  ) {
+    setBrowserAgent(snapshot.browser);
+    setAgentBrowserAgent(snapshot.agentBrowser);
+    setOpenPlanterAgent(snapshot.openPlanter);
+    setAgentReachAgent(snapshot.agentReach);
+    setGetDocAgent(snapshot.getDoc);
+    setMeetingNotesAgent(snapshot.meetingNotes);
+    setDeepTutorAgent(snapshot.deepTutor);
+    setCareerOpsAgent(snapshot.careerOps);
+    setTradingAgentsAgent(snapshot.tradingAgents);
+    setVibeTradingAgent(snapshot.vibeTrading);
+    setStockAnalystAgent(snapshot.stockAnalyst);
+    setPaperTraderAgent(snapshot.paperTrader);
+    setDeerFlowAgent(snapshot.deerFlow);
+    setShortsAgent(snapshot.shorts);
+    setFormsmithAgent(snapshot.formsmith);
+    // These four own their selection inside their hook, which rehydrates from
+    // the transcript. Only the chip a delegation put there is taken back; one
+    // the person had chosen is left exactly as they left it.
+    if (!snapshot.deepResearch) clearDeepResearch();
+    if (!snapshot.codex) clearCodex();
+    if (!snapshot.openCode) clearOpenCode();
+    if (!snapshot.ruflo) clearRuflo();
+  }
+
+  /**
    * Start a model-selected runtime agent without replaying its slash command as
    * a user message. The session remaps the launcher's next preview onto the
    * assistant turn that called `agent_launch`, so every existing launcher and
@@ -5028,6 +5070,7 @@ function RuntimeTerminal({
   async function launchDelegatedAgent(
     request: AgentLaunchRequestPayload,
   ): Promise<void> {
+    const composerSelection = readComposerAgentSelection();
     const originClientMessageId = request.originClientMessageId?.trim();
     if (!originClientMessageId) {
       setAttachmentStatus(
@@ -5169,6 +5212,7 @@ function RuntimeTerminal({
           setAttachmentStatus(`${request.agentName} cannot be launched from this chat.`);
       }
     } finally {
+      restoreComposerAgentSelection(composerSelection);
       const neverReachedLauncher =
         session.cancelDelegatedExternalAgentTurn(originClientMessageId);
       if (neverReachedLauncher) {
@@ -5515,55 +5559,22 @@ function RuntimeTerminal({
     [addAttachmentFiles],
   );
 
-  const sendSuggestedPrompt = useCallback(
+  // An opener is a starting point, not a message. It lands in the composer with
+  // the caret at the end, so the obvious next move is to finish the sentence
+  // rather than to undo a turn that has already left. Every routing decision
+  // the openers used to make for themselves now happens on the ordinary submit
+  // path, which is the only place that has to be right about it.
+  const fillComposerWithPrompt = useCallback(
     (text: string) => {
-      if (runtimeUnavailable || busy || session.loadingSession) return;
-      if (
-        routeSocialsManagerCommand(text) ||
-        routeHardwareBlueprintCommand(text) ||
-        routeParametricCadCommand(text) ||
-        routeHyperframesCommand(text) ||
-        routeResource2SkillCommand(text) ||
-      routeOpenMontageCommand(text) ||
-        routeOpenworkCommand(text) ||
-        routeOpenscienceCommand(text) ||
-        routeInboxZeroCommand(text) ||
-        routeVimaxCommand(text) ||
-        routeMoneyPrinterCommand(text) ||
-        routeLegalCommand(text) ||
-        routeWardrobeCommand(text)
-      ) {
-        return;
-      }
-      if (routeDeepResearchCommand(text)) return;
-      if (deepResearch.agent) {
-        void deepResearch.launch(text);
-        return;
-      }
-      void session.send(text, { model, reasoningEffort });
+      setInput(text);
+      window.setTimeout(() => {
+        const composer = composerTextareaRef.current;
+        if (!composer) return;
+        composer.focus();
+        composer.setSelectionRange(composer.value.length, composer.value.length);
+      }, 0);
     },
-    [
-      busy,
-      deepResearch,
-      model,
-      reasoningEffort,
-      routeDeepResearchCommand,
-      routeSocialsManagerCommand,
-    routeHardwareBlueprintCommand,
-    routeParametricCadCommand,
-    routeHyperframesCommand,
-    routeResource2SkillCommand,
-    routeOpenMontageCommand,
-    routeOpenworkCommand,
-    routeOpenscienceCommand,
-    routeInboxZeroCommand,
-    routeVimaxCommand,
-    routeMoneyPrinterCommand,
-    routeLegalCommand,
-    routeWardrobeCommand,
-      runtimeUnavailable,
-      session,
-    ],
+    [],
   );
 
   const retryMessage = useCallback(
@@ -6233,10 +6244,12 @@ function RuntimeTerminal({
             >
               <span
                 role="status"
-                aria-label={`Agent runtime is ${runtimeOnline ? "available" : "unavailable"}`}
-                title={`Agent runtime ${runtimeOnline ? "available" : "unavailable"}`}
+                aria-label={`Agent runtime is ${runtimeOnline ? "available" : "unavailable"}${knowledgeNote}`}
+                title={`Agent runtime ${runtimeOnline ? "available" : "unavailable"}${knowledgeNote}`}
                 className={`h-2 w-2 shrink-0 rounded-full ${
-                  runtimeOnline ? "bg-[#4F805E]" : "bg-[#B65B5B]"
+                  runtimeOnline && !knowledgeUnavailable
+                    ? "bg-[#4F805E]"
+                    : "bg-[#B65B5B]"
                 }`}
               />
               <p
@@ -6291,7 +6304,6 @@ function RuntimeTerminal({
                   <span>{refreshingTerminal ? "Refreshing" : "Reconnect"}</span>
                 </button>
               ) : null}
-              <GBrainStatusBadge />
             </div>
             {/* Artifacts, Uploads and Scheduled all live in the left rail now,
                 and the rail's own divider opens it, so the header is down to
@@ -6461,6 +6473,7 @@ function RuntimeTerminal({
                 activities={session.activities}
                 input={input}
                 onInputChange={setInput}
+                composerTextareaRef={composerTextareaRef}
                 onSubmit={submit}
                 beforeComposer={
                   agentLaunchQueue.pending ? (
@@ -6670,41 +6683,17 @@ function RuntimeTerminal({
                 statusMessage={attachmentStatus}
                 loadingTranscript={session.loadingSession}
                 emptyState={
-                  // Only the heading and the openers move with the mode. The
-                  // grounding line is true either way and the banner above has
-                  // already said what is switched off, so saying it twice here
-                  // would be the empty state explaining itself.
-                  <div className="flex flex-col items-center gap-5 py-8 text-center">
-                    <div>
-                      <p className="text-lg font-medium text-white">
-                        {temporaryChat
-                          ? isPublic
-                            ? "Ask the public hub off the record"
-                            : "Ask off the record"
-                          : isPublic
-                            ? "Ask the public knowledge hub"
-                            : "Ask your whole knowledge base"}
-                      </p>
-                      <p className="mt-1.5 text-sm text-gray-500">
-                        {isPublic
-                          ? "Answers are grounded in the notes across every public garden on Breadboard."
-                          : "Answers are grounded in the notes across every garden you own."}
-                      </p>
-                    </div>
-                    <div className="grid w-full max-w-xl gap-2 sm:grid-cols-2">
-                      {(temporaryChat ? TEMPORARY_SUGGESTED_PROMPTS : SUGGESTED_PROMPTS)[scope].map((prompt) => (
-                        <button
-                          type="button"
-                          key={prompt}
-                          onClick={() => sendSuggestedPrompt(prompt)}
-                          disabled={busy || runtimeUnavailable}
-                          className="bb-terminal-suggestion neu-button rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {prompt}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  // The mode still changes what is said — an off-the-record
+                  // chat greets differently and opens with different questions
+                  // — but the greeting itself is chosen by the hour and by what
+                  // this person has actually been doing, not written into the
+                  // markup.
+                  <ChatGreetingEmptyState
+                    greeting={chatGreeting.greeting}
+                    suggestions={chatGreeting.suggestions}
+                    onSelectSuggestion={fillComposerWithPrompt}
+                    disabled={runtimeUnavailable}
+                  />
                 }
               />
           </div>

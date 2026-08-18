@@ -47,6 +47,9 @@ function setupPanel(root: HTMLElement) {
   const panel = root.querySelector<HTMLElement>(".breadboard-ai-panel")
   const closeBtn = root.querySelector<HTMLButtonElement>(".breadboard-ai-close")
   const messages = root.querySelector<HTMLElement>(".breadboard-ai-messages")
+  const rail = root.querySelector<HTMLElement>(".breadboard-ai-rail")
+  const railTrack = root.querySelector<HTMLElement>(".breadboard-ai-rail-track")
+  const railLabel = root.querySelector<HTMLElement>(".breadboard-ai-rail-label")
   const form = root.querySelector<HTMLFormElement>(".breadboard-ai-composer")
   const input = root.querySelector<HTMLTextAreaElement>(".breadboard-ai-input")
   const sendBtn = root.querySelector<HTMLButtonElement>(".breadboard-ai-send")
@@ -120,6 +123,9 @@ function setupPanel(root: HTMLElement) {
       intelligenceLoaded = true
       void loadIntelligence()
     }
+    // A transcript restored while the panel was hidden has no layout, so every
+    // message reported the same position. Now there is something to measure.
+    markActiveTick()
     input!.focus()
   }
   function closePanel() {
@@ -426,8 +432,164 @@ function setupPanel(root: HTMLElement) {
     }
     messages!.appendChild(el)
     messages!.scrollTop = messages!.scrollHeight
+    if (role === "user") refreshRail()
     return el
   }
+
+  // ── The rail of sent messages ─────────────────────────────────────────────
+  //
+  // A tick per message the reader sent, down the right edge of the transcript,
+  // in the order they sent them. It answers what the scrollbar cannot: not how
+  // far down the conversation they are, but which of the things they asked they
+  // are looking at, and how to get back to the second one. Only sent messages
+  // get a tick — answers are what the reader scrolls *through*, their own
+  // questions are the landmarks they remember a conversation by.
+  //
+  // An empty transcript has nothing to point at, so it draws no rail at all.
+
+  /** How far below the top of the transcript a message still counts as the one being read. */
+  const RAIL_ACTIVE_TOLERANCE = 20
+  // Roughly what the chip's three wrapped lines hold; kept in step with the
+  // dashboard rail's own limit.
+  const RAIL_LABEL_LIMIT = 160
+
+  /**
+   * The sent messages and the ticks that name them, in the same order. Held
+   * rather than re-queried because the active tick is recomputed on every
+   * scroll frame, and a rebuild is the only thing that can invalidate it.
+   */
+  let railPairs: Array<{ target: HTMLElement; tick: HTMLButtonElement }> = []
+  /**
+   * Raised while a whole transcript is being laid out. Restoring a session
+   * appends its messages one at a time, and each one would otherwise throw the
+   * rail away and build it again.
+   */
+  let railSuspended = false
+
+  function railSummary(text: string): string {
+    const collapsed = text.replace(/\s+/g, " ").trim()
+    if (!collapsed) return "Empty message"
+    return collapsed.length > RAIL_LABEL_LIMIT
+      ? `${collapsed.slice(0, RAIL_LABEL_LIMIT - 1)}…`
+      : collapsed
+  }
+
+  function showRailLabel(tick: HTMLElement, text: string) {
+    if (!railLabel || !rail) return
+    const tickBox = tick.getBoundingClientRect()
+    railLabel.textContent = text
+    railLabel.style.top = `${tickBox.top - rail.getBoundingClientRect().top + tickBox.height / 2}px`
+    railLabel.dataset.visible = "true"
+  }
+
+  function hideRailLabel() {
+    if (railLabel) railLabel.dataset.visible = "false"
+  }
+
+  function refreshRail() {
+    if (!rail || !railTrack || railSuspended) return
+    const sent = Array.from(messages!.querySelectorAll<HTMLElement>(".breadboard-ai-user"))
+    railPairs = []
+    railTrack.replaceChildren()
+    hideRailLabel()
+    // One tick is worth drawing: a single question under a very long answer is
+    // the commonest shape, and it is the only landmark there is. Only an empty
+    // transcript, with nothing to point at, draws no rail.
+    rail.hidden = sent.length < 1
+    if (rail.hidden) return
+
+    sent.forEach((target, index) => {
+      const summary = railSummary(target.textContent ?? "")
+      const tick = document.createElement("button")
+      tick.type = "button"
+      tick.className = "breadboard-ai-rail-tick"
+      tick.setAttribute("aria-label", `Go to message ${index + 1} of ${sent.length}: ${summary}`)
+      tick.addEventListener("click", () => {
+        const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+        const start =
+          target.getBoundingClientRect().top -
+          messages!.getBoundingClientRect().top +
+          messages!.scrollTop
+        messages!.scrollTo({
+          top: Math.max(start - 8, 0),
+          behavior: reduceMotion ? "auto" : "smooth",
+        })
+      })
+      tick.addEventListener("pointerenter", () => showRailLabel(tick, summary))
+      tick.addEventListener("focus", () => showRailLabel(tick, summary))
+      railTrack!.appendChild(tick)
+      railPairs.push({ target, tick })
+    })
+    markActiveTick()
+  }
+
+  function markActiveTick() {
+    if (!rail || rail.hidden || railPairs.length === 0) return
+
+    const top = messages!.scrollTop
+    // The question nearest to what the reader is looking at, not the last one
+    // they scrolled past: one answer here is routinely several screens tall, and
+    // "last passed" would leave the highlight frozen for the whole of it. The
+    // handover falls around the midpoint of a long answer, where the next
+    // question genuinely is the closer landmark.
+    //
+    // Measured against the top of the viewport, except at the end of the
+    // transcript: there the scroller runs out of travel, so the last question
+    // can never reach the top and could never win. The line slides down the
+    // viewport as the remaining scroll runs out, reaching the bottom exactly
+    // when the scroller does.
+    const remaining = Math.max(0, messages!.scrollHeight - messages!.clientHeight - top)
+    const runway = Math.max(messages!.clientHeight, 1)
+    const closing = 1 - Math.min(1, remaining / runway)
+    const line =
+      top + RAIL_ACTIVE_TOLERANCE + Math.max(runway - RAIL_ACTIVE_TOLERANCE, 0) * closing
+    // One read of the container for the whole sweep, rather than one per tick.
+    const containerTop = messages!.getBoundingClientRect().top
+
+    let active = 0
+    let best = Number.POSITIVE_INFINITY
+    for (let index = 0; index < railPairs.length; index += 1) {
+      const start = railPairs[index].target.getBoundingClientRect().top - containerTop + top
+      const distance = Math.abs(start - line)
+      // Messages are in document order, so once the distance starts growing
+      // again nothing later can beat it.
+      if (distance > best) break
+      best = distance
+      active = index
+    }
+    railPairs.forEach(({ tick }, index) => {
+      if (index === active) tick.setAttribute("aria-current", "true")
+      else tick.removeAttribute("aria-current")
+    })
+
+    // A long conversation's rail scrolls inside itself; the tick being read has
+    // to be brought along or the rail stops describing where the reader is.
+    const current = railPairs[active].tick
+    const track = railTrack!
+    if (
+      current.offsetTop < track.scrollTop ||
+      current.offsetTop + current.offsetHeight > track.scrollTop + track.clientHeight
+    ) {
+      track.scrollTop = current.offsetTop - track.clientHeight / 2 + current.offsetHeight / 2
+    }
+  }
+
+  let railFrame: number | null = null
+  messages.addEventListener(
+    "scroll",
+    () => {
+      if (railFrame !== null) return
+      railFrame = window.requestAnimationFrame(() => {
+        railFrame = null
+        markActiveTick()
+      })
+    },
+    { passive: true },
+  )
+  rail?.addEventListener("pointerleave", hideRailLabel)
+  railTrack?.addEventListener("focusout", (event) => {
+    if (!railTrack.contains(event.relatedTarget as Node | null)) hideRailLabel()
+  })
 
   function escapeHtml(value: string): string {
     return value
@@ -521,14 +683,21 @@ function setupPanel(root: HTMLElement) {
 
   function renderTranscript(entries: Array<{ role?: unknown; content?: unknown }>) {
     messages!.replaceChildren()
-    for (const entry of entries) {
-      const role = entry.role === "user" ? "user" : "assistant"
-      const content = typeof entry.content === "string" ? entry.content : ""
-      if (!content) continue
-      const el = addMessage(role, content)
-      if (role === "assistant") renderAssistantContent(el, content)
+    // One rail build for the whole transcript rather than one per message.
+    railSuspended = true
+    try {
+      for (const entry of entries) {
+        const role = entry.role === "user" ? "user" : "assistant"
+        const content = typeof entry.content === "string" ? entry.content : ""
+        if (!content) continue
+        const el = addMessage(role, content)
+        if (role === "assistant") renderAssistantContent(el, content)
+      }
+    } finally {
+      railSuspended = false
     }
     messages!.scrollTop = messages!.scrollHeight
+    refreshRail()
   }
 
   function sessionQuery(): string {
@@ -625,6 +794,7 @@ function setupPanel(root: HTMLElement) {
     state.clientToken = null
     saveState()
     messages!.replaceChildren()
+    refreshRail()
     clearError()
     if (activity) activity.hidden = true
     closeHistory()

@@ -102,15 +102,21 @@ a number.
 ### 4. End when the answer is done
 
 Do not append a next action, follow-up question, or suggested task to a complete
-answer. If another step is necessary, or a suggestion would materially help,
-name ONE concrete next action the reader can do in under two minutes. Make an
-optional suggestion clearly optional. Even "find the reference number on the
-letter" counts when it is actually relevant.
+answer. There is no required closing line and no "Next:" label to fill in. An
+answer that is finished simply stops on its last real sentence.
+
+When a step genuinely is required, it belongs at the top under rule 1, as the
+answer itself, not tacked onto the end. Mention something further down only when
+the reader actually cannot proceed without it, and then write it as an ordinary
+sentence. Never manufacture a task to close on.
 
 Bad: "Hope that helps. Let me know if you want to go deeper on any of this."
 
-Good: "Next: find the deposit reference on page 2 of the tenancy agreement and
-paste it here."
+Bad: "Next: find the deposit reference on page 2 of the tenancy agreement and
+paste it here." — invented to fill a closing line the answer did not need.
+
+Good: "The deposit had to be protected within 30 days of receipt. Yours was
+protected on day 46, so the protection was late."
 
 ### 5. Hold tangents until the end
 
@@ -211,7 +217,8 @@ Override the defaults when:
 ## Before sending
 
 Delete the first sentence if it announces what you are about to do. Delete the
-last sentence if it asks "anything else?" or recaps what just happened. Delete
+last sentence if it asks "anything else?", recaps what just happened, or hands
+the reader a task the answer never required. Delete
 any "by the way" sidebar, any hedging adverb that carries no information
 ("perhaps", "might", "could possibly"), and any figurative phrase ("circle
 back", "get the ball rolling", "on the same page"), replaced by the literal
@@ -219,5 +226,4 @@ thing meant. Keep a hedge that carries real uncertainty: deleting that one
 manufactures confidence.
 
 Then check: reading only the first line and the last line, does the reader know
-the answer and, when action is actually called for, what to do next? If yes,
-send.
+the answer? If yes, send. A finished answer needs nothing after it.

@@ -23,6 +23,9 @@ import { isChatmockProvider } from "../ui-tars/model-provider.ts";
 import { publicId } from "./store.ts";
 import { chatmockApiKeyValue } from "./provider.ts";
 import { chatmockGatewayBase, type AgentBrowserConfiguration, type ApprovalMode } from "./config.ts";
+import { activeProfileDir, resolveBrowserExecutable } from "./browser-profile.ts";
+
+export { resolveBrowserExecutable };
 
 export interface NormalizedEvent {
   sequenceNumber: number;
@@ -127,26 +130,6 @@ export function resolveAgentBrowserEntry(env: NodeJS.ProcessEnv = process.env): 
   return null;
 }
 
-export function resolveBrowserExecutable(env: NodeJS.ProcessEnv = process.env): string | null {
-  const explicit = env.AGENT_BROWSER_EXECUTABLE_PATH?.trim();
-  if (explicit && existsSync(explicit)) return explicit;
-  const candidates =
-    process.platform === "win32"
-      ? [
-          "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-          "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-          "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-          "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-        ]
-      : process.platform === "darwin"
-        ? [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-          ]
-        : ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/microsoft-edge"];
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
-}
-
 export interface RuntimeAvailability {
   available: boolean;
   entry: string | null;
@@ -162,7 +145,12 @@ export function runtimeAvailability(env: NodeJS.ProcessEnv = process.env): Runti
   return { available: true, entry, browser };
 }
 
-function childEnv(config: AgentBrowserConfiguration, browser: string): NodeJS.ProcessEnv {
+function childEnv(browser: string, timeoutMs: number): NodeJS.ProcessEnv {
+  // The shared profile, once someone has signed into it from the profile page.
+  // agent-browser hands it to Chromium as --user-data-dir, so the run opens
+  // already logged into whatever that window logged into. Absent, the run gets
+  // a blank browser, which is how this behaved before the profile existed.
+  const profile = activeProfileDir();
   return {
     ...process.env,
     // The dashboard may run under Electron (execPath = electron); this makes it
@@ -170,7 +158,8 @@ function childEnv(config: AgentBrowserConfiguration, browser: string): NodeJS.Pr
     ELECTRON_RUN_AS_NODE: "1",
     NO_COLOR: "1",
     AGENT_BROWSER_EXECUTABLE_PATH: browser,
-    AGENT_BROWSER_IDLE_TIMEOUT_MS: String(Math.max(30_000, config.timeoutMs)),
+    AGENT_BROWSER_IDLE_TIMEOUT_MS: String(Math.max(30_000, timeoutMs)),
+    ...(profile ? { AGENT_BROWSER_PROFILE: profile } : {}),
   };
 }
 
@@ -239,7 +228,7 @@ function execCommand(
   const args = [entry, ...(hasSession ? [] : ["--session", session]), ...words];
 
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, args, { env: childEnv(config, browser), windowsHide: true });
+    const child = spawn(process.execPath, args, { env: childEnv(browser, config.timeoutMs), windowsHide: true });
     let out = "";
     let err = "";
     child.stdout.setEncoding("utf8");
@@ -509,7 +498,7 @@ function startScreenshotPoller(
     // new frame — the served path is deterministic from runId + id.
     const tmp = path.join(run.screenshotDir, `capture-${current}.png`);
     const shot = spawn(process.execPath, [entry, "screenshot", tmp, "--session", run.session, "--json"], {
-      env: childEnv(config, browser),
+      env: childEnv(browser, config.timeoutMs),
       windowsHide: true,
     });
     shot.on("error", () => {
@@ -564,7 +553,7 @@ function closeSession(run: RunState): Promise<void> {
     const child = spawn(
       process.execPath,
       [availability.entry as string, "close", "--session", run.session],
-      { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AGENT_BROWSER_EXECUTABLE_PATH: availability.browser as string }, windowsHide: true },
+      { env: childEnv(availability.browser as string, 30_000), windowsHide: true },
     );
     child.on("error", () => resolve());
     child.on("exit", () => resolve());
@@ -596,6 +585,18 @@ export function getEventsSince(userId: number, runId: string, since: number): No
 export function isTerminal(userId: number, runId: string): boolean {
   const run = ownedRun(userId, runId);
   return !run || run.status === "completed" || run.status === "failed" || run.status === "aborted";
+}
+
+/**
+ * Is any run still holding a browser? Asked before the profile is opened for a
+ * sign-in or wiped, since both would be fighting a live run for the same
+ * --user-data-dir.
+ */
+export function hasActiveRun(): boolean {
+  for (const run of runs.values()) {
+    if (run.status === "queued" || run.status === "running" || run.status === "awaiting_approval") return true;
+  }
+  return false;
 }
 
 /**

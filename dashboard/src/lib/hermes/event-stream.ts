@@ -29,9 +29,16 @@ import {
   assessVerification,
   enforceRequiredWebEvidence,
   evidenceKindForTool,
+  evidenceTitleForTool,
   type EvidenceRecord,
+  type ResearchExhaustion,
   type VerificationSummary,
 } from "./evidence.ts";
+import {
+  exhaustedFieldLabels,
+  researchCoverageSummary,
+} from "../research/session.ts";
+import { getResearchState } from "../research/store.ts";
 import { finishActiveRuntimeRun } from "./run-store.ts";
 import { scheduleLoopxTickForConversation } from "../loopx/conversation-tick.ts";
 import { accountGoalModeTurn } from "../goal-mode.ts";
@@ -54,7 +61,10 @@ import {
   hasReadyArtifactForRun,
   listArtifactEventsAfter,
 } from "./artifact-store.ts";
-import { listAgentLaunchRequestsAfter } from "./agent-launch-store.ts";
+import {
+  externalAgentCallsForRun,
+  listAgentLaunchRequestsAfter,
+} from "./agent-launch-store.ts";
 import { listSuccessfulMemorySavesForRun } from "./memory-evidence.ts";
 import { listCompletedTerminalCommandsForRun } from "./terminal-evidence.ts";
 import {
@@ -248,6 +258,35 @@ function driveSessionEventPump(
     streamRun ??= getActiveRuntimeRun(session.row.id);
     if (!streamRun) return false;
     return parseRuntimeRunDispatch(streamRun).webGrounding?.required === true;
+  };
+  // What the tracked research session, if one ran this turn, actually proved
+  // about absence. Read at the end of the turn rather than carried on the run,
+  // because the session's gaps are only exhausted by work the turn does.
+  // What the tracked pipeline settled, for the evidence panel. Null for every
+  // turn that did not run one, which is almost all of them.
+  const researchCoverageForTurn = () =>
+    session.row.conversation_id === null
+      ? undefined
+      : (researchCoverageSummary(session.row.conversation_id) ?? undefined);
+  const researchExhaustionForTurn = (): ResearchExhaustion => {
+    const conversationId = session.row.conversation_id;
+    streamRun ??= getActiveRuntimeRun(session.row.id);
+    // The obligation was fixed before dispatch. A turn that was told to run the
+    // pipeline and then skipped it is exactly the old failure mode, so the gate
+    // stays armed with nothing exhausted rather than switching itself off.
+    const required =
+      streamRun !== null &&
+      parseRuntimeRunDispatch(streamRun).researchPipeline?.required === true;
+    if (conversationId === null) {
+      return { active: required, exhaustedFields: [], stopped: false };
+    }
+    const state = getResearchState(conversationId);
+    if (!state) return { active: required, exhaustedFields: [], stopped: false };
+    return {
+      active: true,
+      exhaustedFields: exhaustedFieldLabels(conversationId),
+      stopped: Boolean(state.stopped),
+    };
   };
   const missingRequiredArtifact = () => {
     streamRun ??= getActiveRuntimeRun(session.row.id);
@@ -501,7 +540,10 @@ function driveSessionEventPump(
         evidence.push({
           id: `evidence-${event.payload.toolCallId}`,
           kind: inferredKind,
-          title: event.payload.summary ?? event.payload.toolName,
+          title: evidenceTitleForTool(
+            event.payload.toolName,
+            event.payload.summary,
+          ),
           location: event.payload.location,
           success: event.payload.success,
           toolCallId: event.payload.toolCallId,
@@ -594,9 +636,15 @@ function driveSessionEventPump(
             webGroundingAppliesToCompletion(),
           );
         }
+        // Read from the launch store rather than from what the stream managed
+        // to emit: a delegation the agent asked for in its last breath belongs
+        // in this answer's provenance even if the client never saw the event.
         const verification = assessVerification(assistantText, evidence, {
           geographicGroundingRequired: geographicGroundingRequired(),
           webGroundingRequired: webGroundingAppliesToCompletion(),
+          externalAgents: externalAgentCallsForRun(streamRun?.id),
+          researchExhaustion: researchExhaustionForTurn(),
+          researchCoverage: researchCoverageForTurn(),
         });
         try {
           persistAssistantOnce(
@@ -989,6 +1037,9 @@ function driveSessionEventPump(
                 payload: assessVerification(assistantText, evidence, {
                   geographicGroundingRequired: geographicGroundingRequired(),
                   webGroundingRequired: webGroundingAppliesToCompletion(),
+                  externalAgents: externalAgentCallsForRun(streamRun?.id),
+                  researchExhaustion: researchExhaustionForTurn(),
+                  researchCoverage: researchCoverageForTurn(),
                 }),
               });
               finalize("idle");

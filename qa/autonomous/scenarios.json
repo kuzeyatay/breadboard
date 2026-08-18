@@ -1236,5 +1236,72 @@
       "continueInventory": false,
       "repairEligible": true
     }
+  },
+  {
+    "id": "super-agent-exhaustive-research-coverage",
+    "priority": "P1",
+    "task": "With Super agent on, ask one exhaustive multi-entity historical research question of the form \"find every X ever created, which are still active, their member counts, historical names, and what happened to the inactive ones\", and observe the tracked research pipeline end to end.",
+    "successCriteria": [
+      "the turn opens a research session before searching, and its recorded intent is exhaustive rather than a simple lookup",
+      "entity discovery runs more than one round and the per-round new-entity count is recorded until it saturates",
+      "a former or alternative name is folded into an existing entity as an alias rather than counted as a separate entity",
+      "every requested field of every discovered entity appears in the coverage ledger with an explicit status",
+      "a high-priority field that one search did not answer is retried with materially different search strategies before it is marked exhausted",
+      "two sources disagreeing about the same field leave both values in the research state, and a resolved disagreement is disclosed rather than silently collapsed",
+      "observations of values that change over time carry the date the source states, and two dated values are treated as a change rather than a contradiction",
+      "the turn does not synthesize while the ledger reports open high-priority gaps, and the recorded stopping reason is coverage sufficiency, saturation with exhausted strategies, or budget exhaustion",
+      "the final answer distinguishes fields searched to exhaustion from fields merely unresolved, and never describes an unexhausted field as not published",
+      "no entity, field value, or source URL appears in the answer that was not recorded as evidence"
+    ],
+    "metrics": [
+      "entity recall against a reviewer-supplied reference set",
+      "requested-field fill rate from the coverage ledger",
+      "lineage recall: renames, mergers, spin-offs and splits found",
+      "status consistency between the ledger and the written answer",
+      "temporal provenance: share of volatile values carrying a source date",
+      "evidence quality: share of stated values whose evidence kind is explicit or roster_count",
+      "conflict recall: disagreements preserved rather than collapsed",
+      "unsupported-claim rate from the turn's own verification summary",
+      "source authority: share of claims whose best source matches the claim type",
+      "coverage transparency: gaps reported to the user versus gaps open in the ledger",
+      "search count and research iterations against the session budget",
+      "recorded stopping reason"
+    ],
+    "notes": "Score the run with scoreResearchRun from dashboard/src/lib/research/benchmark.ts, passing the final research_status result, the reviewer's reference set, the answer text, and the turn's unsupportedClaims. It computes every metric listed above and returns a verdict. Recall and unsupported-claim rate are gated together on purpose: a run that raises entity recall while raising the unsupported-claim rate fails, because the pipeline exists to find more without inventing more. The reference entity set is supplied by the reviewer for the chosen subject and is never checked into this repository or into production code.",
+    "dependencies": {
+      "required": ["actual Electron launch entrypoint", "an authenticated dashboard", "Super agent enabled for the message", "working web search and web extract tools in the embedded Hermes runtime"],
+      "optional": ["a reviewer-supplied reference entity set for the chosen subject"]
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": true,
+      "repairEligible": true
+    }
+  },
+  {
+    "id": "super-agent-simple-question-stays-cheap",
+    "priority": "P1",
+    "task": "With Super agent on, ask a single-fact question such as \"who founded OpenAI?\" and confirm the exhaustive research pipeline does not engage.",
+    "successCriteria": [
+      "the turn's recorded research intent is a simple lookup",
+      "the exhaustive research section is absent from the turn's context",
+      "no research session is opened and no coverage ledger is built",
+      "the answer arrives in roughly the number of tool calls the same question needs with Super agent off"
+    ],
+    "dependencies": {
+      "required": ["actual Electron launch entrypoint", "an authenticated dashboard", "Super agent enabled for the message"],
+      "optional": []
+    },
+    "blockerPolicy": {
+      "onMissingRequired": "BLOCK",
+      "requiredClassification": "TEST_ENVIRONMENT",
+      "onMissingOptional": "CONTINUE",
+      "optionalClassification": "EXTERNAL_DEPENDENCY",
+      "continueInventory": false,
+      "repairEligible": true
+    }
   }
 ]

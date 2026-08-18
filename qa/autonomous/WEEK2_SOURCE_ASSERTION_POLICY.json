@@ -1,0 +1,410 @@
+{
+  "pass": "W23F",
+  "title": "W23E-001 trust contract decision and repository source-assertion policy",
+  "generatedAt": "2026-08-18T07:06:15.152Z",
+  "executionIdentity": {
+    "baseCommit": "9e46a6dd9152a1aafa9f3cf5beab9ee9036b91fe",
+    "sourceSnapshotFingerprint": "6ad042523a3adfa290007ca554247059b4b6a07a9272da998fbf806050681ca7",
+    "environmentFingerprint": "13a9343f1161362e161839483cee438db4bb22f9bae416b87be716536531613b",
+    "executionSnapshotId": "150a3e8c56e658a107915bc2d67e6466ffa6a01f4e42fd0b4575d566ca1e27e1",
+    "checkoutLineEndingPolicy": "core.autocrlf=false (deterministic, committed bytes)",
+    "repositoryAutocrlf": "true"
+  },
+  "partA": {
+    "finding": "W23E-001",
+    "severity": "P1",
+    "severityUnchanged": true,
+    "securityCharacterisation": "availability defect, fails closed, not a bypass",
+    "newEvidenceThisPass": {
+      "thirdPinnedSkillExamined": "agent-loop-engineering",
+      "threePinsThreeByteForms": {
+        "premortem": "CRLF",
+        "agent-loop-engineering": "LF",
+        "bullshit-detector": "generator raw mixed-ending output"
+      },
+      "noCheckoutPolicyMakesAllThreeVerify": true,
+      "checkoutPoliciesTested": [
+        "core.autocrlf=true",
+        "core.autocrlf=false",
+        "core.autocrlf=input"
+      ],
+      "scope": {
+        "verifiedRoot": ".agents/skills (approvedRoot) — the only hash-verified committed skill root",
+        "pinnedArtifacts": 3,
+        "notAffected": [
+          "hermes-skills/quarantine and the install flow: under the data root, bytes never round-trip through git",
+          "hermes-skills/prebuilt (listFirstPartySkills): committed but never hash-verified, enabled and healthy unconditionally",
+          "17 further directories under .agents/skills with no registry entry, which listApprovedSkillsAtRoot skips"
+        ]
+      }
+    },
+    "threatModel": {
+      "dimensions": 14,
+      "totals": {
+        "mustInvalidate": 11,
+        "mustNotInvalidate": 3,
+        "policyDecisionRequired": 0
+      },
+      "mustNotInvalidate": [
+        "line-ending-only changes",
+        "accidental checkout normalisation",
+        "platform checkout differences"
+      ]
+    },
+    "historicalContract": {
+      "conclusion": "B",
+      "conclusionText": "The pin promises that the exact reviewed textual guidance is what ships. Raw-byte hashing was a faithful implementation of that promise in the quarantine and install flow, where the bytes cannot move. It stopped being faithful when the same discipline was applied to a committed directory, because git rewrites line terminators there and nothing else in the system treats that rewrite as a change.",
+      "confidence": "HIGH",
+      "strongestSingleEvidence": "Three pins, three different byte forms, one registry. A contract cannot be about bytes if its own instances disagree about which bytes."
+    },
+    "candidateModels": [
+      {
+        "model": "A",
+        "name": "raw bytes (current)",
+        "falseAccepts": 0,
+        "checkoutReachableFalseRejects": 1,
+        "verdict": "REJECTED — it is the defect"
+      },
+      {
+        "model": "B",
+        "name": "canonical text, line terminators only (RECOMMENDED)",
+        "falseAccepts": 0,
+        "checkoutReachableFalseRejects": 0,
+        "verdict": "RECOMMENDED"
+      },
+      {
+        "model": "B-wide",
+        "name": "canonical text plus trailing newline and BOM tolerance",
+        "falseAccepts": 0,
+        "checkoutReachableFalseRejects": 0,
+        "verdict": "REJECTED — strictly weaker than B with no availability benefit. The discriminator is the pair of forms above, which B rejects and B-wide accepts."
+      },
+      {
+        "model": "C",
+        "name": "deterministic build artifact, raw hashing",
+        "falseAccepts": 0,
+        "checkoutReachableFalseRejects": 1,
+        "verdict": "NECESSARY BUT NOT SUFFICIENT — worth doing alongside B so the generator stops emitting mixed line endings, but it does not fix W23E-001 on its own."
+      },
+      {
+        "model": "D",
+        "name": "raw bytes plus repository byte-preservation via .gitattributes",
+        "falseAccepts": 0,
+        "checkoutReachableFalseRejects": 1,
+        "verdict": "REJECTED as the primary fix — it makes the pin stable going forward without making the existing pins correct, and it buys that with a repository-wide policy change."
+      }
+    ],
+    "adversarialMatrix": {
+      "mutations": 9,
+      "rejectedByEveryModel": true
+    },
+    "representationMatrix": {
+      "forms": 8
+    },
+    "recommendation": {
+      "verdict": "RECOMMEND",
+      "trustContract": "MODEL B — canonical text, line terminators only",
+      "statement": "The reviewed-artifact pin authenticates the exact reviewed text of the artifact, in UTF-8, independent of which line terminator the checkout wrote.",
+      "canonicalisation": {
+        "appliesTo": "Files in a hash-verified reviewed artifact set whose declared type is UTF-8 text (today: SKILL.md and any .md alongside it). Any other file is hashed raw, unchanged.",
+        "steps": [
+          "1. Read the file as bytes.",
+          "2. Decode as UTF-8 and re-encode. If the re-encoding is not byte-identical to the input, the file is not valid UTF-8: fail verification. Never let invalid bytes become U+FFFD and hash as if they were text.",
+          "3. Replace every CRLF with LF, then every remaining lone CR with LF.",
+          "4. Hash the UTF-8 encoding of the result with SHA-256."
+        ],
+        "affectsTheHash": [
+          "every character, including invisible ones such as U+200B and U+FEFF",
+          "every space and tab, including trailing whitespace and indentation",
+          "the presence or absence of a terminal newline",
+          "the number of blank lines",
+          "frontmatter, including name and allowed-tools",
+          "the order of lines",
+          "the byte encoding, which must be valid UTF-8"
+        ],
+        "ignoredByTheHash": [
+          "whether a line ends CRLF, LF or lone CR — and nothing else"
+        ],
+        "whyThisMatchesReview": "A reviewer approves the text of a skill. They do not, and cannot, review which byte a line ends with — no diff view shows it, and git rewrites it without asking. Every other dimension in the threat model is something a reviewer can see and would care about, so every other dimension still invalidates.",
+        "explicitlyNotDone": [
+          "no Unicode normalisation (NFC/NFD stay distinct)",
+          "no whitespace collapsing",
+          "no trailing-newline tolerance",
+          "no BOM stripping",
+          "no case folding",
+          "no markdown parsing or semantic comparison"
+        ]
+      },
+      "pairedChange": {
+        "change": "Make the bullshit-detector generator emit LF only, so the artifact it writes is self-consistent rather than a mixed-ending join.",
+        "why": "Model C on its own does not fix W23E-001, but the mixed-ending output is a latent defect that would keep producing artifacts whose raw hash no checkout can reproduce. It also makes the byte-exact rebuild assertion in factcheck-integration meaningful again on an LF checkout.",
+        "severity": "not required for the availability fix; recommended alongside it"
+      },
+      "securityRisk": {
+        "residual": "A skill file whose meaning genuinely depends on CR versus LF would no longer be distinguished. For markdown guidance read by a model this does not arise, and the rule is scoped to declared UTF-8 text so a future binary or byte-sensitive artifact is still hashed raw.",
+        "notWeakened": [
+          "the gate still fails closed",
+          "all three guidance boundaries still apply it",
+          "every content mutation in the adversarial matrix is still rejected",
+          "invalid UTF-8 still fails verification rather than being coerced"
+        ],
+        "severityOfResidual": "low"
+      },
+      "compatibilityImpact": {
+        "quarantineAndInstallFlow": "Unchanged in effect. Those trees live under the data root where bytes are stable, so canonical and raw identity coincide; applying the same rule there is harmless and keeps one definition of identity in the codebase.",
+        "prebuiltFirstPartySkills": "Unaffected — never hash-verified.",
+        "multiFileSkills": "Handled: the rule is per file, so a skill shipping a binary alongside its markdown keeps raw hashing for the binary.",
+        "storedPinFormat": "Unchanged shape. fileHashes stays a map of relative path to hex digest; only how the digest is computed changes."
+      }
+    },
+    "migration": {
+      "rule": {
+        "derive": "A canonical pin may be derived only when some line-terminator rendering of the current content reproduces the existing raw pin exactly, or when a deterministic generator whose raw output reproduces the existing pin produces the same canonical text.",
+        "refuse": "Otherwise the artifact requires human re-review; no pin is derived.",
+        "whyThisIsNotAReReview": "The derived pin is computed from bytes the OLD pin already attests to. It asserts strictly less than its predecessor — it stops distinguishing line terminators and distinguishes everything else exactly as before — so it cannot approve any content that was not already approved."
+      },
+      "totals": {
+        "artifacts": 3,
+        "provableByRendering": 2,
+        "provableByGenerator": 1,
+        "requiresHumanReReview": 0,
+        "allDerivationsSound": true,
+        "safetyChecksAllSafe": true
+      },
+      "perArtifact": [
+        {
+          "slug": "premortem",
+          "file": "SKILL.md",
+          "migration": "PROVABLE_BY_RENDERING",
+          "proof": "The CRLF rendering of the committed content reproduces the existing pin exactly, so the existing pin itself attests that this content is the reviewed content."
+        },
+        {
+          "slug": "agent-loop-engineering",
+          "file": "SKILL.md",
+          "migration": "PROVABLE_BY_RENDERING",
+          "proof": "The LF rendering of the committed content reproduces the existing pin exactly, so the existing pin itself attests that this content is the reviewed content."
+        },
+        {
+          "slug": "bullshit-detector",
+          "file": "SKILL.md",
+          "migration": "PROVABLE_BY_GENERATOR",
+          "proof": "No line-terminator rendering of the committed content reproduces the pin, but the deterministic generator output does, bit for bit — so the generator output is the reviewed artifact. Its canonical form equals the canonical form of the committed content, so the committed content is the same text that was reviewed."
+        }
+      ],
+      "blindRePinsRequired": 0,
+      "humanReReviewRequired": 0,
+      "modifiedContentWouldNotDeriveAPin": true
+    },
+    "authorizationStatus": "SAFE_FOR_SH1_WITH_DEFINED_TRUST_CONTRACT",
+    "implemented": false,
+    "w23e001Fixed": false,
+    "whyNotImplemented": "The standing human gate in qa/autonomous/loop-contract.yaml requires explicit approval for security_auth_capability_permission_or_sandbox_weakening, and README lists security-gate changes among the actions that stop for approval. Narrowing what an integrity hash distinguishes is such a change, however well justified. The gate policy does not treat a completed trust-contract selection as authorisation, so production mutation stops here.",
+    "approvalStringToProceed": "APPROVE LOOP ACTION: adopt canonical-text pin (Model B) + derive the three pins by proof / dashboard/src/lib/hermes/skills.ts + .agents/skills/registry.json + scripts/build-bullshit-detector-skill.mjs / revert the commit; the pins are derivable again from the same proof"
+  },
+  "partB": {
+    "policyDocument": "qa/autonomous/SOURCE_ASSERTION_POLICY.md",
+    "classes": [
+      "S1",
+      "S2",
+      "S3",
+      "B1",
+      "I1",
+      "P1"
+    ],
+    "decisionRules": 5,
+    "heldCases": {
+      "total": 33,
+      "byVerdict": {
+        "KEEP_BOTH": 4,
+        "REPLACE_DESIGNED_NOT_APPLIED": 20,
+        "KEEP_SOURCE_ASSERTION": 3,
+        "REPLACE_APPLIED": 4,
+        "UNDETERMINED": 1,
+        "REMOVE_AS_REDUNDANT": 1
+      },
+      "applied": 7
+    },
+    "uiShape": {
+      "total": 18,
+      "byVerdict": {
+        "KEEP_BOTH": 1,
+        "REPLACE_DESIGNED_NOT_APPLIED": 13,
+        "KEEP_SOURCE_ASSERTION": 2,
+        "UNDETERMINED": 1,
+        "REMOVE_AS_REDUNDANT": 1
+      },
+      "keptAsStructural": [
+        "tests/dashboard-agent-terminal-ui.test.mjs :: a fully open terminal stops the page behind it from scrolling",
+        "tests/hermes-live-routing.test.mjs :: the unified slash hub embeds Skills.sh discovery and the reviewed promotion flow"
+      ],
+      "note": "UI_SHAPE does not automatically mean implementation detail. Two of the eighteen are structural contracts the policy keeps, one is redundant with the type checker, one is left undetermined, and the rest stand for behaviour observable in the DOM or in a pure function."
+    },
+    "heldExecutable": {
+      "adopted": 3,
+      "retainedStructural": [
+        "tests/quartz-ai-parity.test.mjs :: session transcript presentation is shared, not duplicated"
+      ],
+      "reason": "No-duplication is an architectural boundary: a second implementation can be behaviourally identical on every sampled input and still be the defect, so decision rule 2 stops the walk before rule 3."
+    },
+    "root5": {
+      "verdict": "REPLACE_APPLIED",
+      "replacement": "pins the derivation and the destination instead of the local identifier",
+      "renameNowSurvives": true
+    },
+    "inventoryLimitation": {
+      "finding": "The held inventory records one failing pattern per test, not every failing source-shape assertion in that test.",
+      "discoveredBy": "Applying the ROUTE_QUERY correction to tests/hermes-live-routing.test.mjs :: terminal session hook restores a Breadboard session after refresh and aborts server-side. The test did not flip, because it carries at least three independent source-shape assertions.",
+      "chain": [
+        {
+          "assertion": "//api/hermes/sessions?surface=/",
+          "status": "corrected this pass",
+          "class": "B1 + S2"
+        },
+        {
+          "assertion": "/setSessionId(restored.id)/",
+          "status": "corrected this pass",
+          "class": "I1 - the restore guard proves the two ids are the same session, so which variable is passed is a naming choice",
+          "newlyDiscovered": true
+        },
+        {
+          "assertion": "/session.send(text, { model, reasoningEffort })/",
+          "status": "still failing",
+          "class": "I1 - the call was reformatted across lines in dashboard-agent-terminal.tsx, a file the developer is actively editing",
+          "newlyDiscovered": true
+        }
+      ],
+      "consequence": "The true number of held source-shape assertions is higher than 33. The 33 are tests, not assertions. Any estimate of remaining work should be revised upward, and a per-assertion inventory should be built before the next application pass.",
+      "correctionToThisPassPrediction": "The prediction that this test would flip to PASS was wrong, and wrong for a reason worth keeping: it was derived from the inventory rather than from the test."
+    },
+    "counterexampleProof": {
+      "total": 16,
+      "detected": 16,
+      "nonVacuous": true,
+      "policyKnownAnswerCases": 9
+    },
+    "flips": {
+      "predicted": 8,
+      "matched": 7,
+      "unexpectedFlips": 0,
+      "caveat": "No same-snapshot full-suite baseline was taken before the edits, so a no-flip claim outside the 22 baselined files rests on confinement (six test files changed, zero product files) rather than on measurement."
+    },
+    "dashboard": {
+      "generatedAt": "2026-08-18T07:06:15.048Z",
+      "command": "node --test --experimental-strip-types tests/*.test.mjs (npm run test:dashboard)",
+      "executionSnapshotId": "150a3e8c56e658a107915bc2d67e6466ffa6a01f4e42fd0b4575d566ca1e27e1",
+      "totals": {
+        "tests": 5151,
+        "pass": 5085,
+        "fail": 45
+      },
+      "comparedBy": "test identity; aggregate counts are context, never causal evidence",
+      "unexpectedFlips": 0,
+      "predictionsMatched": "7/8",
+      "notesOnCounts": "Not comparable to the 55/60 recorded in W2-3C: the developer tree has moved and tests have been added since. The per-identity comparison against this pass own pre-edit baseline is the evidence.",
+      "failingTestNames": [
+        "4b. a hollowing operation that silently did nothing is caught",
+        "7. a model exceeding the printer bed is reported as an error",
+        "Bullshit Detector is a ready installed skill on authenticated chat surfaces",
+        "Garden Chat's own pipeline selects the skill too",
+        "Garden UI places Artifacts directly below Videos and Quartz contains no artifact UI",
+        "Hermes terminal uses the original Breadboard terminal shell",
+        "Learn panel exposes a separately confirmed garden-scoped clear action",
+        "Learn panel renders live job usage without Council activity",
+        "Learn panel syllabus generation",
+        "OpenCode launches in the connected Garden repository without a shell",
+        "OpenPlanter renders graph, trail, output, and final-result widgets inline",
+        "Premortem intent starts explicitly and stays selected across approval turns",
+        "Premortem is a ready installed skill on authenticated chat surfaces",
+        "Ruflo plans with its own CLI and executes through Claude Code",
+        "a fully open terminal stops the page behind it from scrolling",
+        "a generated syllabus is designated immediately and shows up in Documents",
+        "an artifact opened in the Terminal fills a lane inside the dock, not the window",
+        "both chat surfaces launch the run and render it inline",
+        "completed response duration remains attached to restored assistant messages",
+        "dark mode uses charcoal paper and Breadboard's pastel utility bridge",
+        "every external agent uses the shared Breadboard neumorphic run-card system",
+        "learn pipeline uses ChatMock Council task types",
+        "learn route and council wiring",
+        "live and restored transcripts both consume authoritative memory evidence",
+        "local pinned Three.js orbital simulation passes the real 3D browser gate",
+        "normal Hermes chats keep thinking metadata and response action buttons",
+        "parametric CAD, end to end",
+        "preferences survive reloads locally, sync to the account, and reach Quartz",
+        "provider changes in settings announce the new catalog",
+        "selection context and anchors persist through the canonical turn API",
+        "session transcript presentation is shared, not duplicated",
+        "terminal planning receives the current conversation's recent user requests",
+        "terminal session hook restores a Breadboard session after refresh and aborts server-side",
+        "the artifact opens with the design named and measured",
+        "the brown terminal header toggles fully open and fully closed",
+        "the inline Socials Manager card restores every durable post after chat remounts",
+        "the inline card is styled with the shared neumorphic material",
+        "the map page is behind auth and reachable",
+        "the reviewed registry pins the shipped SKILL.md by hash",
+        "the run card shows only the agent name and can close a finished timeline",
+        "the sessions endpoint restores only the projected active branch",
+        "the shared composer keeps its controls stable during an active run",
+        "the shared composer sends on Enter without breaking commands or multiline input",
+        "the shipped SKILL.md is the clone's procedure plus a Breadboard preamble",
+        "the slash button opens capabilities while typed slash opens only ready commands",
+        "the unified slash hub embeds Skills.sh discovery and the reviewed promotion flow",
+        "workspace neumorphism is built from shared visual-only materials"
+      ],
+      "stillFailingByDesign": {
+        "skillIntegrityPin": "five tests awaiting the W23E-001 decision; they are correct and must stay red",
+        "designedNotApplied": "twenty held source-shape replacements are designed but not applied this pass"
+      }
+    },
+    "reviewHelper": {
+      "path": "qa/harness-selftest/w23f-source-assertion-review.mjs",
+      "reportingOnly": true,
+      "wiredIntoAnyGate": false,
+      "testFilesScanned": 430,
+      "byKind": {
+        "dead-class-negative-guard": 6,
+        "sliced-window": 34,
+        "dead-class": 5
+      },
+      "tuningNote": "A first version reported 247 dead-class candidates, almost all fixture identifiers. Restricting the check to lines containing an assert call, and labelling doesNotMatch guards separately, cut it to 5 real candidates. A helper nobody reads is worse than none, which is why it reports rather than gates."
+    }
+  },
+  "integrity": {
+    "assertionsWeakened": 0,
+    "productChangesOutsideApprovedRepair": 0,
+    "testFilesChanged": 6,
+    "repositoryGitConfigChanged": false,
+    "globalGitConfigChanged": false,
+    "gitattributesChanged": false,
+    "reviewedHashesChanged": false,
+    "reviewedArtifactsRegenerated": false,
+    "developerStateTouched": false,
+    "vendoredRootsModified": false,
+    "secretFindings": 0,
+    "commitStashReset": "none"
+  },
+  "successCriteria": {
+    "trustContractDefinedOrDeferred": "defined — Model B with exact canonicalisation semantics",
+    "noTrustBoundaryChangeSmuggledIn": true,
+    "candidatesTestedAgainstBothMutationKinds": true,
+    "policyExplicit": true,
+    "allHeldCasesClassifiedUnderOnePolicy": true,
+    "uiShapeAdjudicated": true,
+    "provenReplacementsAdoptedOrRetainedWithReason": true,
+    "correctionsHaveCounterexampleProof": true,
+    "noAssertionWeakenedToLowerFailures": true,
+    "noGitConfigModified": true,
+    "reviewedArtifactsNotSilentlyRegenerated": true,
+    "noUserStateMutated": true,
+    "evidenceSnapshotBoundAndIdentityBased": true
+  },
+  "evidenceDirectory": ".qa-results/week2-source-assertion-policy/w23f-20260818T063445Z",
+  "nextAction": [
+    "Decide W23E-001 using the approval string; nothing else in Week 2 blocks real users.",
+    "Build a per-assertion inventory of the held set, now that the per-test one is known to undercount.",
+    "Apply the 20 designed replacements in one reviewed change.",
+    "PROSE_COPY (7) — the P1 determination.",
+    "ROOT-6 residuals (3).",
+    "ROOT-8 (13) — one frozen snapshot, both arms.",
+    "Final dashboard rerun, then close W2-3."
+  ]
+}

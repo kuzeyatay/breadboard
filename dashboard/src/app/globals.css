@@ -1581,6 +1581,48 @@ b {
   }
 }
 
+/* The rail of sent messages down the right edge of a transcript. It rests
+   faint, because it overlays the far edge of the conversation and is not what
+   anyone came to read, and comes up to full strength the moment a pointer is
+   anywhere near it. */
+.bb-chat-rail {
+  opacity: 0.55;
+  transition: opacity 180ms var(--neu-easing);
+}
+
+.bb-chat-rail:hover,
+.bb-chat-rail:focus-within {
+  opacity: 1;
+}
+
+/* The rail scrolls inside itself once a conversation outgrows it. A scrollbar
+   on a 32px-wide strip of hairlines would be wider than the thing it scrolls. */
+.bb-chat-rail-track {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior: contain;
+}
+
+.bb-chat-rail-track::-webkit-scrollbar {
+  display: none;
+}
+
+/* Width carries which tick is the one being read, so it is the width that
+   animates; the tick grows out of the right edge it is anchored to. */
+.bb-chat-rail-tick {
+  transition:
+    width 180ms var(--neu-easing),
+    opacity 180ms var(--neu-easing),
+    background-color 180ms var(--neu-easing);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bb-chat-rail,
+  .bb-chat-rail-tick {
+    transition: none;
+  }
+}
+
 /* A ViMax animatic shot: the drawn first frame drifts from the composition the
    shot opens on to the one it ends on, in the direction the shot's own motion
    description implies. The endpoints are supplied per shot as custom
@@ -4264,3 +4306,56 @@ html[data-breadboard-desktop="true"] body > .bb-wm-shell {
     cursor: default;
   }
 }
+
+/* ── The composer floats over the foot of the transcript ──────────────────
+   A conversation runs underneath the bar the way a page runs under a toolbar,
+   rather than stopping short of it. Three rules hold that together, and all of
+   them read `--bb-composer-inset`, which the surface publishes from the
+   measured height of the floating bar (see use-composer-inset.ts).
+   ------------------------------------------------------------------------ */
+
+/* The bar itself: lifted out of the column and laid over its foot. */
+.bb-composer-overlay {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 20;
+}
+
+/* The tail the scrolled content ends on. As tall as the bar, so the newest
+   message can never come to rest behind it, plus the gap the reader sees
+   between that message and the bar once they are all the way down. The extra
+   travel is the point: the conversation keeps scrolling after the last line has
+   cleared the bar, and only at the end of it is the disclaimer uncovered. */
+.bb-chat-scroll-tail {
+  padding-bottom: calc(var(--bb-composer-inset, 0px) + var(--bb-chat-tail-gap, 2.25rem));
+}
+
+/* What a message does as it passes under the bar. A mask rather than a
+   background gradient: the four transcripts sit on three different surface
+   colours across two themes, and a mask does not have to know any of them. The
+   fade is finished before the disclaimer's line, so nothing reads through it. */
+.bb-chat-scroll-fade {
+  /* The ramp is exactly the gap the tail leaves open, and it ends where the bar
+     begins. Both edges matter: a message at rest stops at the top of the ramp,
+     so it is never drawn faded; and anything still travelling is gone by the
+     time it reaches the bar, so nothing reads through the disclaimer. */
+  --bb-chat-fade-from: calc(
+    100% - var(--bb-composer-inset, 0px) - var(--bb-chat-tail-gap, 2.25rem)
+  );
+  --bb-chat-fade-to: calc(100% - var(--bb-composer-inset, 0px));
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 var(--bb-chat-fade-from),
+    transparent var(--bb-chat-fade-to)
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 var(--bb-chat-fade-from),
+    transparent var(--bb-chat-fade-to)
+  );
+}
+
+/* Before the bar has been measured the inset is 0, which collapses both stops
+   onto 100% — an unfaded transcript, which is the right thing to draw until
+   there is something to fade under. */

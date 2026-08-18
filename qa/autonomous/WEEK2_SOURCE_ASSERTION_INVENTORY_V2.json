@@ -1,0 +1,108 @@
+{
+  "pass": "W2-3F PartB",
+  "decision": "ASSERTION INVENTORY CLOSED",
+  "generatedAt": "2026-08-18T08:01:28.277Z",
+  "unitOfReview": "assertion",
+  "whyTestLevelWasInsufficient": "assert throws on the first failure, so a run reveals one failing assertion per test however many are broken; correcting the one recorded assertion in hermes-live-routing left the test red because it carried three.",
+  "totals": {
+    "targetFiles": 26,
+    "assertions": 1723,
+    "failing": 50,
+    "passing": 883,
+    "unresolved": 790,
+    "testsWithFailingAssertions": 27,
+    "testsWithMoreThanOneFailingAssertion": 11
+  },
+  "byAssertionKind": {
+    "SOURCE_REGEX": 1058,
+    "SOURCE_ABSENCE": 158,
+    "RUNTIME_BEHAVIOR": 488,
+    "SOURCE_COUNT": 6,
+    "SOURCE_LITERAL": 13
+  },
+  "byPolicyClass": {
+    "B1-or-I1": 1071,
+    "S2": 158,
+    "RUNTIME": 488,
+    "B1": 6
+  },
+  "failingByPolicyClass": {
+    "B1-or-I1": 50
+  },
+  "multiFailureTests": [
+    {
+      "testId": "tests/active-run-composer.test.mjs :: the shared composer keeps its controls stable during an active run",
+      "failingAssertions": 2
+    },
+    {
+      "testId": "tests/app-theme.test.mjs :: dark mode uses charcoal paper and Breadboard's pastel utility bridge",
+      "failingAssertions": 2
+    },
+    {
+      "testId": "tests/assistant-message-ui.test.mjs :: completed response duration remains attached to restored assistant messages",
+      "failingAssertions": 2
+    },
+    {
+      "testId": "tests/dashboard-agent-terminal-ui.test.mjs :: the brown terminal header toggles fully open and fully closed",
+      "failingAssertions": 4
+    },
+    {
+      "testId": "tests/garden-workspace-external-agents.test.mjs :: the run card shows only the agent name and can close a finished timeline",
+      "failingAssertions": 2
+    },
+    {
+      "testId": "tests/hermes-live-routing.test.mjs :: garden API dispatches Hermes before the explicitly retained ChatMock backend",
+      "failingAssertions": 3
+    },
+    {
+      "testId": "tests/hermes-terminal-artifacts.test.mjs :: Garden UI places Artifacts directly below Videos and Quartz contains no artifact UI",
+      "failingAssertions": 2
+    },
+    {
+      "testId": "tests/learn-token-usage.test.mjs :: Learn persistence uses a job-scoped atomic usage table",
+      "failingAssertions": 10
+    },
+    {
+      "testId": "tests/socials-manager-integration.test.mjs :: the Socials Manager has Breadboard-native account settings in the Agents tab",
+      "failingAssertions": 3
+    },
+    {
+      "testId": "tests/socials-manager-integration.test.mjs :: a persistent checkbox per network decides where every post is written",
+      "failingAssertions": 2
+    },
+    {
+      "testId": "tests/socials-manager-integration.test.mjs :: the inline Socials Manager card restores every durable post after chat remounts",
+      "failingAssertions": 2
+    }
+  ],
+  "predictionModel": "A test may be predicted FAIL->PASS only when every failing assertion in it is resolved.",
+  "structuralRetained": [
+    "SOURCE_ABSENCE cleanup guards (S2)",
+    "the four-stage promotion flow (S1/S2)"
+  ],
+  "redundant": [
+    "a TypeScript signature asserted by regex; tsc enforces it at every call site"
+  ],
+  "applied": 0,
+  "appliedReason": "Designs are per assertion; each needs its own counterexample executed, and applying a subset of a multi-assertion test would repeat the very mistake this pass corrects.",
+  "reviewHelper": {
+    "reportingOnly": true,
+    "wiredIntoAnyGate": false,
+    "precision": {
+      "firstVersion": 247,
+      "restrictedToAssertLines": 11,
+      "withNegativeGuardsLabelled": {
+        "deadClass": 5,
+        "negativeGuards": 6
+      },
+      "slicedWindow": 34
+    }
+  },
+  "evidenceDirectory": ".qa-results/week2-source-assertion-inventory-v2/w23f-inv-20260818T0800Z",
+  "nextAction": [
+    "apply designed replacements per test group",
+    "PROSE_COPY determination",
+    "ROOT-6 residuals and ROOT-8",
+    "final dashboard rerun, then close W2-3"
+  ]
+}

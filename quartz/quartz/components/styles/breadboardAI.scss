@@ -185,6 +185,139 @@
     }
   }
 
+  .breadboard-ai-transcript {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  // One tick per message the reader sent, in the order they sent them. It rests
+  // faint because it overlays the far edge of the conversation, and comes up to
+  // full strength as soon as a pointer is near it.
+  .breadboard-ai-rail {
+    position: absolute;
+    right: 0.15rem;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    opacity: 0.55;
+    transition: opacity 180ms ease;
+
+    &:hover,
+    &:focus-within {
+      opacity: 1;
+    }
+
+    .breadboard-ai-rail-track {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      max-height: 55%;
+      max-height: min(55vh, 18rem);
+      overflow-y: auto;
+      // A scrollbar on a strip of hairlines would be wider than what it scrolls.
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+      overscroll-behavior: contain;
+      padding: 0.2rem 0.2rem 0.2rem 1rem;
+
+      &::-webkit-scrollbar {
+        display: none;
+      }
+    }
+
+    .breadboard-ai-rail-tick {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      width: 2rem;
+      height: 0.875rem;
+      padding: 0;
+      border: 0;
+      background: none;
+      cursor: pointer;
+
+      // Width carries which tick is the one being read, so it is the width that
+      // animates; the tick grows out of the right edge it is anchored to.
+      &::after {
+        content: "";
+        display: block;
+        width: 1rem;
+        height: 1px;
+        border-radius: 999px;
+        background: #9ca3af;
+        opacity: 0.5;
+        transition:
+          width 180ms ease,
+          opacity 180ms ease,
+          background-color 180ms ease;
+      }
+
+      &:hover::after,
+      &:focus-visible::after {
+        width: 1.5rem;
+        opacity: 0.9;
+      }
+
+      &[aria-current="true"]::after {
+        width: 1.5rem;
+        opacity: 1;
+        background: var(--bb-ai-accent);
+      }
+    }
+
+    // Drawn outside the track: the track clips its own overflow on both axes, so
+    // a label inside it would be cut off at the left rather than reaching out
+    // over the transcript.
+    .breadboard-ai-rail-label {
+      position: absolute;
+      right: 100%;
+      margin-right: 0.5rem;
+      transform: translateY(-50%);
+      width: max-content;
+      // A plain value, not a percentage: the chip's containing block is the
+      // rail itself, which is only as wide as one tick, so `100%` here would
+      // resolve against ~2rem and collapse the chip. The panel is ~420px and
+      // the rail eats ~2rem of it, so this stops just short of the left edge.
+      max-width: 17rem;
+      padding: 0.4rem 0.6rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--bb-ai-border);
+      background: #111827;
+      color: #e5e7eb;
+      font-size: 0.8rem;
+      line-height: 1.4;
+      // Three lines rather than one truncated one: a question is worth reading
+      // before you jump to it.
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 150ms ease;
+
+      &[data-visible="true"] {
+        opacity: 1;
+      }
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .breadboard-ai-rail,
+    .breadboard-ai-rail-label,
+    .breadboard-ai-rail-tick::after {
+      transition: none;
+    }
+  }
+
   .breadboard-ai-messages {
     flex: 1;
     min-height: 0;

@@ -5,6 +5,10 @@
 // and offers a reindex action for the garden owner. Renders nothing when GBrain
 // is disabled (no palette clutter). It NEVER shows secrets, URLs, absolute paths,
 // internal source ids, or stack traces — it consumes only /api/gbrain/status.
+//
+// The polling and state derivation live in `useGBrainStatus` so a surface with no
+// room for a worded badge can read the same state and say it some other way. The
+// Terminal does exactly that: its header dot turns red, and nothing is written.
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -30,9 +34,20 @@ const LABEL: Record<string, { text: string; tone: string; title: string }> = {
   unavailable: { text: "Knowledge: unavailable", tone: "#dc2626", title: "GBrain retrieval is unavailable right now." },
 };
 
-export default function GBrainStatusBadge({ gardenSlug, canReindex }: Props) {
+export interface GBrainStatusView {
+  /** Raw state from /api/gbrain/status; null until the first reply lands. */
+  state: State | null;
+  /**
+   * Display key: healthy / degraded / indexing / stale / unavailable, or null
+   * while unknown and when GBrain is disabled — a null key means "say nothing".
+   */
+  key: string | null;
+  refresh: () => Promise<void>;
+}
+
+/** Polls the safe status endpoint and derives the one key a surface should show. */
+export function useGBrainStatus(gardenSlug?: string): GBrainStatusView {
   const [status, setStatus] = useState<StatusResponse | null>(null);
-  const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -53,6 +68,24 @@ export default function GBrainStatusBadge({ gardenSlug, canReindex }: Props) {
     return () => clearInterval(t);
   }, [refresh]);
 
+  if (!status || status.state === "disabled") {
+    return { state: status?.state ?? null, key: null, refresh };
+  }
+
+  // Derive the display key: sync state can promote to indexing/stale.
+  const syncStatus = status.sync?.status;
+  let key: string = status.state ?? "unavailable";
+  if (status.state !== "unavailable") {
+    if (syncStatus === "syncing" || syncStatus === "pending") key = "indexing";
+    else if (syncStatus === "stale" || syncStatus === "failed") key = "stale";
+  }
+  return { state: status.state ?? "unavailable", key, refresh };
+}
+
+export default function GBrainStatusBadge({ gardenSlug, canReindex }: Props) {
+  const { state, key, refresh } = useGBrainStatus(gardenSlug);
+  const [busy, setBusy] = useState(false);
+
   const reindex = useCallback(async () => {
     if (!gardenSlug || busy) return;
     setBusy(true);
@@ -68,20 +101,13 @@ export default function GBrainStatusBadge({ gardenSlug, canReindex }: Props) {
     }
   }, [gardenSlug, busy, refresh]);
 
-  if (!status || status.state === "disabled") return null;
-
-  // Derive the display key: sync state can promote to indexing/stale.
-  const syncStatus = status.sync?.status;
-  let key: string = status.state ?? "unavailable";
-  if (status.state !== "unavailable") {
-    if (syncStatus === "syncing" || syncStatus === "pending") key = "indexing";
-    else if (syncStatus === "stale" || syncStatus === "failed") key = "stale";
-  }
+  // A null key is GBrain disabled or not yet answered: nothing to say.
+  if (!key) return null;
   // Healthy knowledge retrieval is the normal state, so it does not need to
   // occupy persistent header space. Keep displaying actionable/degraded states.
   if (key === "healthy") return null;
   const label = LABEL[key] ?? LABEL.unavailable;
-  const showReindex = canReindex && gardenSlug && (key === "stale" || key === "unavailable" || status.state === "degraded");
+  const showReindex = canReindex && gardenSlug && (key === "stale" || key === "unavailable" || state === "degraded");
 
   return (
     <span

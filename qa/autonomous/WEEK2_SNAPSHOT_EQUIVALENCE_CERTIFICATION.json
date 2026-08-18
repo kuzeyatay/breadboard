@@ -1,0 +1,365 @@
+{
+  "schemaVersion": 1,
+  "document": "Breadboard W2-2B Snapshot Equivalence Certification",
+  "generatedAt": "2026-08-17T18:34:20.152Z",
+  "runId": "w22b-20260817T181524Z",
+  "evidenceRoot": ".qa-results/week2-snapshot-equivalence/w22b-20260817T181524Z",
+  "decision": "W2-2 CLOSED",
+  "frozenExecutionSnapshot": {
+    "executionSnapshotId": "cf2bbf4f6d336843ec8202c123457f171fc24f1bfe0d05e9a576b83e28d622dd",
+    "baseCommit": "9e46a6dd9152a1aafa9f3cf5beab9ee9036b91fe",
+    "sourceFingerprint": "390776ae0c74b3576a72cc0a369cf47d63a47daca30e2c93799ecba9c9813ca6",
+    "environmentFingerprint": "13a9343f1161362e161839483cee438db4bb22f9bae416b87be716536531613b"
+  },
+  "environmentDependencyInventory": {
+    "method": "Static: each dashboard test file was followed through its local relative imports to depth 2, and each module was scanned for path-context references to root-level gitignored directories.",
+    "ignoredRootCount": 64,
+    "affectedTestFileCount": 186,
+    "dependencyRowCount": 305,
+    "topRoots": {
+      ".runtime": 88,
+      ".breadboard": 85,
+      "hermes-agent": 11,
+      "agent-reach": 9,
+      "meta-prompting": 7,
+      "scientific-agent-skills": 5,
+      "hallmark": 5,
+      "bullshit-detector": 5,
+      "tradingagents": 5,
+      "graft": 4,
+      "emilkowalski-skills": 4,
+      "reverse-skill": 4,
+      "oh-my-hermes": 4,
+      "agent-skills": 4,
+      "career-ops": 3,
+      "harvey-labs": 3,
+      "open-alpha-arena": 3,
+      "Vibe-Trading": 3,
+      "watermarks-remover": 3,
+      "postiz-app": 3,
+      "ruflo": 2,
+      "vimax": 2,
+      "codex": 2,
+      "DeepTutor": 2,
+      "deer-flow": 2,
+      "ShapeR": 2,
+      "opencode": 2,
+      "loopx": 2,
+      "mem0": 2,
+      "MoneyPrinterTurbo": 2,
+      "OpenMontage": 2,
+      "daily_stock_analysis": 2,
+      "subsai": 2,
+      "agent-loop-engineering-kit": 1,
+      "anydoc": 1,
+      "auto-claude-code-research-in-sleep": 1,
+      "audio-analyzer-rs": 1,
+      "comfyui": 1,
+      "diagram-design": 1,
+      "book-to-skill": 1,
+      "hyperframes": 1,
+      "iFixAi": 1,
+      "stable-fast-3d": 1,
+      "inbox-zero": 1,
+      "openscience": 1,
+      "openwork": 1,
+      "premortem": 1,
+      "prompt-engineering-guide": 1,
+      "Resource2Skill": 1,
+      "recall": 1,
+      "screenpipe": 1,
+      "unslop": 1,
+      "video-use": 1,
+      "watch": 1
+    },
+    "note": "Static hypothesis generator; the two-arm experiment is the authority."
+  },
+  "equivalenceExperiment": {
+    "method": "Two reconstructions of one frozen execution snapshot, identical in authored source (same sourceFingerprint) and differing only in whether the gitignored vendored roots are present. No comparison against the developer's live tree.",
+    "fingerprintsIdentical": true,
+    "armA": {
+      "label": "source only (what an SH1 repair worktree gets)",
+      "failing": 124,
+      "totals": {
+        "tests": 4939,
+        "pass": 4776,
+        "fail": 124,
+        "skipped": 39
+      },
+      "fingerprint": "390776ae0c74b3576a72cc0a369cf47d63a47daca30e2c93799ecba9c9813ca6"
+    },
+    "armB": {
+      "label": "source + ignored roots junctioned",
+      "failing": 65,
+      "totals": {
+        "tests": 5031,
+        "pass": 4941,
+        "fail": 66,
+        "skipped": 24
+      },
+      "fingerprint": "390776ae0c74b3576a72cc0a369cf47d63a47daca30e2c93799ecba9c9813ca6",
+      "linkedRootCount": 64
+    },
+    "comparison": {
+      "matchFail": 62,
+      "matchFailSameSignature": 60,
+      "matchFailDifferentSignature": 2,
+      "environmentDivergence": 62,
+      "linkingDamage": 3,
+      "environmentSensitiveTests": 65
+    },
+    "environmentDivergenceBySignature": {
+      "'test failed'": 5,
+      "Error: ENOENT: no such file or directory, open 'C:\\Users\\20252082\\breadboard\\.qa-worktrees": 26,
+      "AssertionError [ERR_ASSERTION]: expected the analyzer at C:\\Users\\20252082\\breadboard\\.qa-": 1,
+      "Error [AudioAnalyzerError]: The audio analyzer is not installed on this machine. Run `npm ": 1,
+      "AssertionError [ERR_ASSERTION]: the DeepTutor clone should be found next to the dashboard": 1,
+      "Error: ENOENT: no such file or directory, scandir 'C:\\Users\\20252082\\breadboard\\.qa-worktr": 2,
+      "AssertionError [ERR_ASSERTION]: the book-to-skill clone must be present": 1,
+      "AssertionError [ERR_ASSERTION]: the clone's Python detector should have run": 1,
+      "AssertionError [ERR_ASSERTION]: the clone's validator is what the build is checked against": 1,
+      "AssertionError [ERR_ASSERTION]: RUBRIC.md is missing from the clone": 1,
+      "AssertionError [ERR_ASSERTION]: the bullshit-detector clone is not on disk": 1,
+      "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:": 2,
+      "AssertionError [ERR_ASSERTION]: The validation function is expected to return \"true\". Rece": 1,
+      "AssertionError [ERR_ASSERTION]: the loopx clone or a Python interpreter is missing": 1,
+      "AssertionError [ERR_ASSERTION]: a missing asset means the scaffold silently fell back to e": 1,
+      "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:": 1,
+      "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /has not be": 1,
+      "AssertionError [ERR_ASSERTION]: the cloned Premortem runtime should be prepared": 1,
+      "AssertionError [ERR_ASSERTION]: expected a scrub, got scripts_unavailable": 1,
+      "Error: the reference implementation failed: Traceback (most recent call last):": 1,
+      "AssertionError [ERR_ASSERTION]: the reference implementation must exist": 1,
+      "AssertionError [ERR_ASSERTION]: subsai/src/subsai/cli.py is missing": 1,
+      "AssertionError [ERR_ASSERTION]: the unslop clone is missing from the repo": 1,
+      "AssertionError [ERR_ASSERTION]: the Vibe-Trading clone was not found next to the dashboard": 1,
+      "AssertionError [ERR_ASSERTION]: video-use/SKILL.md is missing": 1,
+      "AssertionError [ERR_ASSERTION]: the watermarks-remover scripts must exist under C:\\Users\\2": 1,
+      "Error [WatermarkError]: The watermarks-remover scripts are not installed at C:\\Users\\20252": 5
+    },
+    "linkingDamageBySignature": {
+      "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /href=\"\\/ma": 1,
+      "AssertionError [ERR_ASSERTION]: [{\"code\":\"hollowing_had_no_effect\",\"severity\":\"error\",\"mes": 1,
+      "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:": 1
+    }
+  },
+  "whyLinkedClonesDiverged": {
+    "previousConclusion": "Linking made it worse (227 vs 120) and was disabled.",
+    "correction": "That measurement was confounded: a moving developer tree, a simultaneous scope change, and an active worktree-cleanup bug that recursed through junctions and deleted the real node_modules.",
+    "controlledResult": {
+      "armAFailing": 124,
+      "armBFailing": 65,
+      "fixedByLinking": 62,
+      "brokenByLinking": 3
+    },
+    "action": "linkExternal now defaults to on; the realpath write guard prevents writes through the links."
+  },
+  "dependencyPolicy": {
+    "decisions": [
+      {
+        "dependency": "gitignored vendored roots (63 on this machine, e.g. watermarks-remover, audio-analyzer-rs, DeepTutor, OpenPlanter)",
+        "classification": "GITIGNORED_REPO_DEPENDENCY",
+        "policy": "REFERENCE_READ_ONLY",
+        "evidence": "Controlled two-arm experiment: linking them fixes 62 tests and changes 3. Failure messages are explicit (\"the watermarks-remover scripts are not installed\", \"the DeepTutor clone should be found next to the dashboard\").",
+        "mutationGuard": "applyGatedMutation resolves real paths before writing and denies anything whose parent resolves outside the worktree, so a repair cannot write through a junction into the developer clone. Covered by a dedicated test.",
+        "residual": "Tests whose behaviour still differs remain ENVIRONMENT_BLOCKED and cannot supply verification evidence."
+      },
+      {
+        "dependency": "node_modules trees",
+        "classification": "LOCAL_PACKAGE_DEPENDENCY",
+        "policy": "REFERENCE_READ_ONLY",
+        "evidence": "Already required for any worktree to execute; junctioned rather than reinstalled.",
+        "mutationGuard": "Same realpath guard; plus worktree removal now unlinks junctions before deletion so cleanup cannot recurse into the real tree.",
+        "residual": "None observed."
+      },
+      {
+        "dependency": "quartz/public, gbrain/pglite",
+        "classification": "GENERATED_DETERMINISTIC_INPUT",
+        "policy": "EXCLUDE_FROM_VERIFICATION",
+        "evidence": "Generated output and live database files; excluded from the source snapshot by pathspec.",
+        "residual": "None."
+      },
+      {
+        "dependency": "secrets, credentials, userData, gardens, browser profiles",
+        "classification": "MACHINE_ENVIRONMENT",
+        "policy": "BLOCK",
+        "evidence": "Never captured by design.",
+        "residual": "None."
+      }
+    ],
+    "counts": {
+      "CAPTURE": 0,
+      "REFERENCE_READ_ONLY": 2,
+      "RECONSTRUCT": 0,
+      "EXCLUDE_FROM_VERIFICATION": 1,
+      "BLOCK": 1
+    }
+  },
+  "verificationEligibilityMap": {
+    "totals": {
+      "testsObservedArmA": 4939,
+      "testsObservedArmB": 5031,
+      "environmentBlocked": 65,
+      "eligible": 4874,
+      "eligiblePercent": 98.68
+    },
+    "environmentBlockedFileCount": 36,
+    "rule": "An SH1 repair may reach VERIFIED_REPAIR only if its scenario, regression test, targeted suite and critical subset are all ELIGIBLE. A blocked test can never supply positive evidence."
+  },
+  "seededSh1Experiment": {
+    "positive": {
+      "finalStatus": "VERIFIED_REPAIR",
+      "passed": true,
+      "receipt": ".qa-results/week2-snapshot-equivalence/w22b-20260817T181524Z/repair-receipts/w22b-sh1-positive.receipt.json",
+      "steps": {
+        "execution-snapshot-frozen": {
+          "executionSnapshotId": "08d22227c8f9e5351a1a515d90faf5dace3e49f4801a036af4d3e6163088607f",
+          "baseCommit": "9e46a6dd9152a1aafa9f3cf5beab9ee9036b91fe",
+          "sourceFingerprint": "7cbc979c7c05d0cf631b10cd5e7303688d51d8f74944593a8a619978a2743ec8",
+          "environmentFingerprint": "13a9343f1161362e161839483cee438db4bb22f9bae416b87be716536531613b"
+        },
+        "reconstruction": {
+          "sourceFingerprintMatches": true,
+          "linkedRootCount": 64
+        },
+        "defect-seeded": {
+          "file": "desktop/src/main/health-checker.ts"
+        },
+        "reproduction": {
+          "scenario": "a service returning 500 is never reported ready",
+          "attempts": 2,
+          "reproduced": true,
+          "deterministic": true
+        },
+        "repair-gate": {
+          "allowedMutationScope": "production-source"
+        },
+        "verification-eligibility": {
+          "eligible": true,
+          "reason": null,
+          "blocked": [],
+          "missingExecutionDependencies": []
+        },
+        "capability-issued": {
+          "capabilityId": "ff857ae5-0c4f-41cf-bf5f-1cf99824fb04",
+          "sourceFingerprint": "7cbc979c7c05d0cf631b10cd5e7303688d51d8f74944593a8a619978a2743ec8"
+        },
+        "repair-applied": {
+          "throughCapabilityOnly": true
+        },
+        "regression-non-vacuous": {
+          "passesOnRepair": true,
+          "failsOnReintroducedDefect": true
+        },
+        "scenario-replay": {
+          "passed": true
+        },
+        "critical-subset": {
+          "suite": "desktop:test",
+          "passed": true
+        },
+        "capability-finalized": {
+          "finalized": true,
+          "baselineMode": "source-snapshot-manifest",
+          "authorisedWrites": [
+            "desktop/src/main/health-checker.ts",
+            "desktop/tests/qa-regression-readiness-w22b.test.ts"
+          ],
+          "unauthorisedChanges": [],
+          "assertionIntegrity": "REVIEW_REQUIRED"
+        }
+      }
+    },
+    "negative": {
+      "finalStatus": "BLOCKED",
+      "passed": true,
+      "blockedReason": "verification-suite-blocked"
+    },
+    "bothBehavedAsExpected": true,
+    "negativeNeverVerified": true
+  },
+  "movingWorkingTreeSafety": {
+    "validated": true,
+    "evidence": "qa/harness-selftest/execution-snapshot.test.mjs",
+    "properties": [
+      "a reconstruction of snapshot A after later edits still yields A",
+      "post-freeze developer files are absent from the reconstruction",
+      "a finding from A against a worktree carrying B is refused with stale-source-snapshot"
+    ]
+  },
+  "toctou": {
+    "validated": true,
+    "cases": [
+      {
+        "case": "source changed after finding",
+        "result": "stale-source-snapshot"
+      },
+      {
+        "case": "worktree reconstructed from wrong snapshot",
+        "result": "stale-source-snapshot"
+      },
+      {
+        "case": "vendored clone removed after freeze",
+        "result": "environment-not-equivalent"
+      },
+      {
+        "case": "required test environment-blocked",
+        "result": "verification-suite-blocked"
+      }
+    ]
+  },
+  "userTreeIntegrity": {
+    "worktrees": 1,
+    "qaWorktrees": 0,
+    "nodeModules": {
+      "root": 6,
+      "dashboard": 649,
+      "desktop": 210
+    },
+    "ignoredRootsPresent": 61,
+    "committedOrStashed": false,
+    "note": "Whole-tree git status drifted during runs because the developer was editing; per-path fingerprints for the seeded file and regression path were unchanged."
+  },
+  "harnessSelfTests": {
+    "total": 120,
+    "passed": 120,
+    "failed": 0
+  },
+  "secretScan": {
+    "findings": 0
+  },
+  "remainingBlockers": [
+    {
+      "id": "E-1",
+      "summary": "65 tests ENVIRONMENT_BLOCKED and ineligible as verification evidence"
+    },
+    {
+      "id": "E-2",
+      "summary": "3 linking-damage cases not individually root-caused"
+    },
+    {
+      "id": "E-3",
+      "summary": "2 tests fail in both arms with different signatures, unexplained"
+    },
+    {
+      "id": "E-4",
+      "summary": "Vendored clones without their own .git have presence-only identity"
+    },
+    {
+      "id": "E-5",
+      "summary": "Prior Week 2 phases still unexecuted"
+    }
+  ],
+  "nextExecutionOrder": [
+    "dashboard contract review",
+    "deterministic ingestion",
+    "source/Quartz routing",
+    "persistence matrix",
+    "race abuse",
+    "Electron lifecycle/security completion",
+    "import/export",
+    "critical burn-in",
+    "Week 2 recertification"
+  ],
+  "notWeek3": "The deterministic core beneath Hermes remains largely unexercised."
+}

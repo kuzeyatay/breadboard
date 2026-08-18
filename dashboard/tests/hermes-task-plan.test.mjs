@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  elevateForSuperAgent,
   planTask,
   requiresCodingOutcome,
   requestWithoutSelectors,
@@ -429,6 +430,34 @@ test("plans expose their goal, outcome, steps and rationale", () => {
   assert.ok(p.rationale.includes("filesystem"));
   assert.equal(p.planSource, "breadboard_task_planner_v1");
   assert.ok(p.steps.every((s, i) => s.index === i + 1));
+});
+
+/* ------------------------------------------------------------------ */
+/* Reach is not obligation: super agent widens what a turn may touch,   */
+/* never what its answer owes.                                          */
+/* ------------------------------------------------------------------ */
+
+test("super agent grants web reach without making the turn owe web evidence", () => {
+  const greeting = elevateForSuperAgent(plan("hi"));
+  assert.ok(greeting.requiredCapabilities.includes("web_research"));
+  assert.equal(greeting.requiresWebEvidence, false);
+
+  // The same elevation over a request that genuinely asked for live facts
+  // still carries the obligation, so the guard is narrowed and not removed.
+  const live = elevateForSuperAgent(plan("What is the latest news on the merger?"));
+  assert.equal(live.requiresWebEvidence, true);
+});
+
+test("only a live-information request owes web evidence", () => {
+  assert.equal(plan("hi").requiresWebEvidence, false);
+  assert.equal(plan("Thanks, that worked.").requiresWebEvidence, false);
+  assert.equal(plan("What is the current weather in Ankara?").requiresWebEvidence, true);
+
+  // A download asks for a file, not for facts. Its step legitimately holds
+  // web_research reach, which must not be read back as an evidence debt.
+  const download = plan("Download the quarterly report to my Downloads folder.");
+  assert.ok(download.requiredCapabilities.includes("web_research"));
+  assert.equal(download.requiresWebEvidence, false);
 });
 
 test("resources are extracted for paths, urls and target formats", () => {

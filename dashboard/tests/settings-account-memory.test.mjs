@@ -517,14 +517,11 @@ test("adding an account happens in the account list, not somewhere else", () => 
   assert.match(accountPanel, /startSubscriptionLogin\(provider\.id, provider\.label, null\)/);
 });
 
-test("the memory panel reads the overview and offers edit, keep, forget, and delete", () => {
+test("the memory panel shows the summary and per-chat memory, and nothing else", () => {
   assert.match(memoryPanel, /\/api\/agent-memory\?includeForgotten=1/);
   assert.match(memoryPanel, />\s*Edit\s*</);
-  assert.match(memoryPanel, /JSON\.stringify\(\{ content \}\)/);
-  assert.match(memoryPanel, /maxLength=\{1000\}/);
-  assert.match(memoryPanel, /\/api\/agent-memory\/durable\/\$\{memory\.id\}`, \{ method: "PATCH" \}/);
-  assert.match(memoryPanel, /\/api\/agent-memory\/durable\/\$\{memory\.id\}`, \{ method: "DELETE" \}/);
-  assert.match(memoryPanel, /permanent=1/);
+  assert.match(memoryPanel, /JSON\.stringify\(\{ summary \}\)/);
+  assert.match(memoryPanel, /maxLength=\{6000\}/);
   assert.match(memoryPanel, /\/api\/agent-memory\/conversations\/\$\{conversation\.conversationId\}/);
   assert.match(memoryPanel, /neu-surface-subtle/);
   assert.match(memoryPanel, />\s*Memory\s*</);
@@ -538,6 +535,17 @@ test("the memory panel reads the overview and offers edit, keep, forget, and del
   assert.doesNotMatch(memoryPanel, />\s*Build from eligible chats\s*</);
   assert.doesNotMatch(memoryPanel, />\s*Use summary in chats\s*</);
   assert.doesNotMatch(profileRoute, /updateMemoryProfileSettings/);
+  // The summary already states every fact, so the panel no longer repeats the
+  // durable rows underneath it: no filter tabs, no per-fact cards, no forget.
+  assert.doesNotMatch(memoryPanel, /Building from eligible chats/);
+  assert.doesNotMatch(memoryPanel, /Private deliberations/);
+  assert.doesNotMatch(memoryPanel, /Forgetting removes an entry/);
+  assert.doesNotMatch(memoryPanel, />\s*All active\s*</);
+  assert.doesNotMatch(memoryPanel, />\s*Keep this\s*</);
+  assert.doesNotMatch(memoryPanel, />\s*Forget/);
+  assert.doesNotMatch(memoryPanel, /permanent=1/);
+  assert.doesNotMatch(memoryPanel, /agent-memory\/durable/);
+  assert.doesNotMatch(memoryPanel, /counts\.confirmed/);
 });
 
 test("every completed message path schedules and announces memory activity", () => {

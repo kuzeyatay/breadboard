@@ -27,6 +27,7 @@ import {
   assessVerification,
   enforceRequiredWebEvidence,
   evidenceKindForTool,
+  evidenceTitleForTool,
   type EvidenceRecord,
 } from "./evidence.ts";
 import { composeHermesSystemPrompt } from "./system-prompts.ts";
@@ -54,7 +55,10 @@ import { composeMemoryContext } from "../conversations/memory.ts";
 import { loadConversationMemoryBundleHybrid } from "../mem0/retrieval.ts";
 import { gardenInstructions } from "../garden-settings.ts";
 import { associateArtifactToolCall, listArtifactEventsAfter } from "./artifact-store.ts";
-import { listAgentLaunchRequestsAfter } from "./agent-launch-store.ts";
+import {
+  externalAgentCallsForRun,
+  listAgentLaunchRequestsAfter,
+} from "./agent-launch-store.ts";
 import { acquireDetachedEventPump } from "./detached-event-pump.ts";
 import {
   findAgencyAgent,
@@ -828,7 +832,10 @@ function legacyGardenEventStream(
               )
                 ? "test"
                 : evidenceKindForTool(event.payload.toolName),
-              title: event.payload.summary ?? event.payload.toolName,
+              title: evidenceTitleForTool(
+                event.payload.toolName,
+                event.payload.summary,
+              ),
               location: event.payload.location,
               success: event.payload.success,
               toolCallId: event.payload.toolCallId,
@@ -867,8 +874,7 @@ function legacyGardenEventStream(
             if (!assistantText.trim() && narrationSegments.length) {
               assistantText = narrationSegments[narrationSegments.length - 1];
             }
-            const webGroundingRequired =
-              prepared.plan.requiredCapabilities.includes("web_research");
+            const webGroundingRequired = prepared.plan.requiresWebEvidence;
             const groundedAssistantText = enforceRequiredWebEvidence(
               assistantText,
               evidence,
@@ -895,6 +901,7 @@ function legacyGardenEventStream(
             }
             const verification = assessVerification(assistantText, evidence, {
               webGroundingRequired,
+              externalAgents: externalAgentCallsForRun(runId),
             });
             emitArtifactEvents();
             // Last chance before the stream closes: an unemitted launch would be

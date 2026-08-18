@@ -120,6 +120,10 @@ import {
   type SuperAgentInventory,
 } from "../hermes/super-agent.ts";
 import {
+  classifyResearch,
+  researchPipelineApplies,
+} from "../research/classify.ts";
+import {
   chatTextSelectionQuestionPrompt,
   type ChatTextSelectionReference,
 } from "../chat-text-selection.ts";
@@ -670,6 +674,17 @@ export async function startConversationTurn(
         surface: input.surface,
       })
     : null;
+  // How exhaustive this request is, decided here rather than by the model, and
+  // decided before dispatch so the answer is judged against an obligation it
+  // could not talk itself out of — the same discipline the map and web
+  // grounding gates already use. Cheap: a pure function over the request text,
+  // no model call and no network. See lib/research/classify.ts.
+  const researchPlan =
+    superAgent && !input.internalAgentContinuation
+      ? classifyResearch({ question: resolved.userText || input.text })
+      : null;
+  const researchPipeline =
+    researchPlan && researchPipelineApplies(researchPlan) ? researchPlan : null;
   if (superAgentInventory) {
     decision.selectedConditionalSkills = [
       ...new Set([
@@ -767,6 +782,14 @@ export async function startConversationTurn(
         ? {
             superAgentSkillCount: superAgentInventory.skillSlugs.length,
             superAgentWorkflowCount: superAgentInventory.workflows.length,
+          }
+        : {}),
+      ...(researchPlan
+        ? {
+            researchIntent: researchPlan.intent,
+            researchPipeline: Boolean(researchPipeline),
+            researchCompletenessRequired: researchPlan.completenessRequired,
+            researchSearchBudget: researchPlan.budget.maxSearches,
           }
         : {}),
       allowedTools: decision.allowedTools,
@@ -939,7 +962,9 @@ export async function startConversationTurn(
     adhdMode: input.adhdMode === true,
     goalMode: goalModeState,
     additional: [
-      superAgentInventory ? renderSuperAgentDirective(superAgentInventory) : "",
+      superAgentInventory
+        ? renderSuperAgentDirective(superAgentInventory, researchPipeline)
+        : "",
       composeMemoryContext(
         memory,
         input.branchHistory
@@ -1098,12 +1123,23 @@ export async function startConversationTurn(
             },
           }
         : {}),
-      ...(!input.internalAgentContinuation &&
-      prepared.plan.requiredCapabilities.includes("web_research")
+      ...(!input.internalAgentContinuation && prepared.plan.requiresWebEvidence
         ? {
             webGrounding: {
               required: true,
               reason: "The deterministic task plan requires current external evidence.",
+            },
+          }
+        : {}),
+      // Travels on the run for the same reason web and map grounding do: the
+      // obligation is fixed before dispatch, so the finished answer is judged
+      // against a standard it could not lower by declining to use the pipeline.
+      ...(researchPipeline
+        ? {
+            researchPipeline: {
+              required: true,
+              intent: researchPipeline.intent,
+              completenessRequired: researchPipeline.completenessRequired,
             },
           }
         : {}),

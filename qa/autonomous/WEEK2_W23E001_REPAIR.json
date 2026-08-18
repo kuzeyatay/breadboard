@@ -1,0 +1,275 @@
+{
+  "pass": "W2-3F PartA",
+  "findingId": "W23E-001",
+  "decision": "VERIFIED_REPAIR",
+  "generatedAt": "2026-08-18T08:01:28.275Z",
+  "repairLocation": "isolated snapshot worktree; NOT landed in the main tree (landing is a commit, which this pass is not authorized to make)",
+  "executionIdentity": {
+    "baseCommit": "9e46a6dd9152a1aafa9f3cf5beab9ee9036b91fe",
+    "sourceSnapshotFingerprint": "f5e8e1dfdf25c7fe3aa71fdbb8d386f254c867769c9a8cb896e1d4d99ea7e82a",
+    "environmentFingerprint": "13a9343f1161362e161839483cee438db4bb22f9bae416b87be716536531613b",
+    "executionSnapshotId": "dba9182883afe3d9f2e4edf3285faf02724322aa55b352222439a427aea8f965",
+    "checkoutLineEndingPolicy": "core.autocrlf=false (deterministic, committed bytes)",
+    "repositoryAutocrlf": "true"
+  },
+  "humanAuthorization": {
+    "granted": true,
+    "contract": "canonical text, line terminators only (text-v1)",
+    "excluded": [
+      "weakening the skill gate",
+      "bypassing review",
+      "accepting arbitrary regenerated artifacts",
+      "repository-wide line-ending policy changes",
+      "unrelated security changes",
+      "broad skill registry redesign"
+    ]
+  },
+  "trustContract": {
+    "canonicalisation": "strict UTF-8 decode (invalid fails closed); CRLF->LF; lone CR->LF; sha256",
+    "pinScheme": {
+      "textV1": "text-v1:<hex> asserts canonical text",
+      "bareHex": "unchanged raw-byte meaning"
+    },
+    "scopedTo": "declared UTF-8 text extensions only; other artifacts stay byte-exact"
+  },
+  "migration": {
+    "rule": "A canonical pin is derived only where the EXISTING reviewed pin is satisfied by an already-established rendering of the same current reviewed content, or by a deterministic generator whose raw output reproduces it. Otherwise the artifact stops at HUMAN_REVIEW_REQUIRED. No pin is recomputed from disk content and called reviewed.",
+    "totals": {
+      "artifacts": 3,
+      "migratedByProof": 3,
+      "humanReviewRequired": 0,
+      "blindRePins": 0
+    },
+    "perArtifact": [
+      {
+        "skill": "premortem",
+        "proofMethod": "line-ending-rendering",
+        "historicalRendering": "CRLF",
+        "verdict": "MIGRATED_BY_PROOF"
+      },
+      {
+        "skill": "agent-loop-engineering",
+        "proofMethod": "line-ending-rendering",
+        "historicalRendering": "LF",
+        "verdict": "MIGRATED_BY_PROOF"
+      },
+      {
+        "skill": "bullshit-detector",
+        "proofMethod": "deterministic-generator-output",
+        "historicalRendering": "generator raw output (mixed line endings)",
+        "verdict": "MIGRATED_BY_PROOF"
+      }
+    ]
+  },
+  "before": {
+    "bullshit-detector": {
+      "listed": true,
+      "availability": "ready",
+      "enabled": false,
+      "healthy": false,
+      "dispatchAllowed": false,
+      "requiredTools": [
+        "factcheck_run",
+        "artifact_create",
+        "artifact_render"
+      ],
+      "shownAsInstalledInCatalog": true
+    },
+    "premortem": {
+      "listed": true,
+      "availability": "ready",
+      "enabled": false,
+      "healthy": false,
+      "dispatchAllowed": false,
+      "requiredTools": [
+        "premortem_run",
+        "artifact_create",
+        "artifact_render"
+      ],
+      "shownAsInstalledInCatalog": true
+    },
+    "agent-loop-engineering": {
+      "listed": true,
+      "availability": "ready",
+      "enabled": true,
+      "healthy": true,
+      "dispatchAllowed": true,
+      "requiredTools": [
+        "agent_loop_run",
+        "artifact_create",
+        "artifact_render"
+      ],
+      "shownAsInstalledInCatalog": true
+    },
+    "invocations": [
+      {
+        "slug": "premortem",
+        "accepted": false,
+        "refusal": "That capability is unavailable in the current surface or task mode."
+      },
+      {
+        "slug": "bullshit-detector",
+        "accepted": false,
+        "refusal": "That capability is unavailable in the current surface or task mode."
+      }
+    ]
+  },
+  "after": {
+    "bullshit-detector": {
+      "listed": true,
+      "availability": "ready",
+      "enabled": true,
+      "healthy": true,
+      "dispatchAllowed": true,
+      "requiredTools": [
+        "factcheck_run",
+        "artifact_create",
+        "artifact_render"
+      ],
+      "shownAsInstalledInCatalog": true
+    },
+    "premortem": {
+      "listed": true,
+      "availability": "ready",
+      "enabled": true,
+      "healthy": true,
+      "dispatchAllowed": true,
+      "requiredTools": [
+        "premortem_run",
+        "artifact_create",
+        "artifact_render"
+      ],
+      "shownAsInstalledInCatalog": true
+    },
+    "agent-loop-engineering": {
+      "listed": true,
+      "availability": "ready",
+      "enabled": true,
+      "healthy": true,
+      "dispatchAllowed": true,
+      "requiredTools": [
+        "agent_loop_run",
+        "artifact_create",
+        "artifact_render"
+      ],
+      "shownAsInstalledInCatalog": true
+    },
+    "invocations": [
+      {
+        "slug": "premortem",
+        "accepted": true,
+        "invocations": [
+          "premortem"
+        ],
+        "guidanceAttached": true
+      },
+      {
+        "slug": "bullshit-detector",
+        "accepted": true,
+        "invocations": [
+          "bullshit-detector"
+        ],
+        "guidanceAttached": true
+      }
+    ]
+  },
+  "checkoutMatrix": {
+    "policies": [
+      "core.autocrlf=true",
+      "core.autocrlf=false",
+      "core.autocrlf=input"
+    ],
+    "allVerify": true,
+    "repoConfigUnchanged": true,
+    "globalConfigUnchanged": true
+  },
+  "adversarial": {
+    "allRepresentationsValid": true,
+    "allContentMutationsRejected": true
+  },
+  "invalidUtf8": {
+    "allFailClosed": true,
+    "everyCaseWouldHaveBeenLossilyDecoded": true
+  },
+  "lineEndingShapes": {
+    "canonicalIdentities": 1,
+    "rawIdentities": 6
+  },
+  "securityNegatives": {
+    "dispatchGateStillClosed": true,
+    "allExpectationsMet": true,
+    "measuredNotAsserted": [
+      {
+        "case": "missing-pin",
+        "why": "measured, not asserted: a registry entry with no pinned hashes",
+        "listed": true,
+        "enabled": true,
+        "healthy": true,
+        "dispatchAllowed": true,
+        "expectedHealthy": null,
+        "matchesExpectation": null
+      }
+    ]
+  },
+  "regressionNonVacuity": {
+    "allDistinguished": true,
+    "wrongVerifiers": [
+      "old raw-byte verifier",
+      "canonicalisation with CRLF folding removed",
+      "canonicalisation that also collapses arbitrary whitespace",
+      "lossy decode that accepts invalid UTF-8"
+    ]
+  },
+  "quartzScopeUnchanged": true,
+  "receipt": {
+    "path": ".qa-results/week2-w23e001-repair/w23f-repair-20260818T072400Z/W23E-001.receipt.json",
+    "finalStatus": "VERIFIED_REPAIR",
+    "capability": {
+      "capabilityId": "be228038-243c-495f-a057-69d7aaac2c04",
+      "findingId": "W23E-001",
+      "finalized": true,
+      "allowedPaths": [
+        "dashboard/src/lib/hermes/skills.ts",
+        ".agents/skills/registry.json"
+      ],
+      "regressionTestPaths": [
+        "dashboard/tests/reviewed-skill-pin-canonicalisation.test.mjs"
+      ],
+      "unauthorisedChanges": [],
+      "worktree": "C:\\Users\\20252082\\breadboard\\.qa-worktrees\\w23e-001",
+      "rollback": "The candidate exists only in C:\\Users\\20252082\\breadboard\\.qa-worktrees\\w23e-001 (detached at 9e46a6dd9152a1aafa9f3cf5beab9ee9036b91fe). Roll back by discarding the worktree: git worktree remove --force C:\\Users\\20252082\\breadboard\\.qa-worktrees\\w23e-001 && git worktree prune. The main working tree was never modified, so no revert is required there."
+    },
+    "isolation": {
+      "verified": true,
+      "mainTreeUntouched": true,
+      "repositoryGitConfigUnchanged": true,
+      "globalGitConfigUnchanged": true
+    }
+  },
+  "residualFindings": [
+    {
+      "id": "W23F-002",
+      "title": "A reviewed registry entry with no pinned hashes is treated as verified",
+      "measured": "healthy=true for a registry entry carrying no fileHashes",
+      "classification": "SECURITY_GATE_QUESTION",
+      "inScopeForThisRepair": false,
+      "why": "Changing it would strengthen the gate, which the authorisation explicitly does not cover. Recorded for its own human decision rather than changed silently."
+    },
+    {
+      "id": "W23F-H1",
+      "title": "finalizeRepairCapability fed the whole dirty snapshot to the assertion-integrity guard",
+      "classification": "HARNESS_BUG",
+      "fixed": true,
+      "detail": "On a snapshot worktree the unnarrowed diff is the developer's in-flight tree, so the guard adjudicated their edits and rejected this repair on an assertions-removed finding in a file the repair never touched. captureDiff now accepts pathspecs and finalize passes the manifest delta."
+    }
+  ],
+  "unresolvedRisks": [
+    "W23F-002: a reviewed registry entry with no pinned hashes is still treated as verified. Strengthening that is outside this authorisation and needs its own human decision.",
+    "The bullshit-detector generator still emits mixed line endings. Harmless under the canonical contract, but it will keep producing artifacts whose raw hash no checkout can reproduce."
+  ],
+  "nextAction": [
+    "land the verified candidate",
+    "decide W23F-002",
+    "optionally make the bullshit-detector generator emit LF"
+  ]
+}

@@ -19,6 +19,8 @@
 
 import { randomUUID } from "node:crypto";
 
+import type { ExternalAgentCall } from "./evidence.ts";
+
 /** Requests kept per run. A turn that asks for more than this is looping. */
 const MAX_REQUESTS_PER_RUN = 8;
 /** Runs kept in memory at once, oldest evicted first. */
@@ -130,6 +132,27 @@ export function listAgentLaunchRequestsAfter(input: {
   return (store.byRun.get(input.runId) ?? []).filter(
     (request) => request.id > input.afterId,
   );
+}
+
+/**
+ * Every launch this run asked for, shaped for the answer's evidence ledger.
+ *
+ * Read from the store rather than from what a stream managed to emit, so a
+ * delegation still appears in the ledger when the browser was gone by the time
+ * the event would have been delivered.
+ */
+export function externalAgentCallsForRun(
+  runId: string | undefined,
+): ExternalAgentCall[] {
+  if (!runId) return [];
+  return listAgentLaunchRequestsAfter({ runId, afterId: 0 }).map((request) => ({
+    agentId: request.agentId,
+    agentName: request.agentName,
+    command: request.command,
+    reason: request.reason,
+    requiresApproval: request.requiresApproval,
+    requestedAt: request.createdAt,
+  }));
 }
 
 /** How many launches this run has already asked for. */

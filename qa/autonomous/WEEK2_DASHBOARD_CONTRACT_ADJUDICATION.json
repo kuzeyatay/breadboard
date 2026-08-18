@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "document": "Breadboard W2-3B Dashboard Contract Adjudication",
+  "generatedAt": "2026-08-17T19:29:29.396Z",
+  "runId": "w23b-20260817T191245Z",
+  "evidenceRoot": ".qa-results/week2-dashboard-contract-adjudication/w23b-20260817T191245Z",
+  "decision": "W2-3 STILL OPEN",
+  "executionSnapshot": {
+    "executionSnapshotId": "484d15e33bd7412ccfb61fc96913e471c9a634d816bed9cf47f6858a25c09ee7",
+    "baseCommit": "9e46a6dd9152a1aafa9f3cf5beab9ee9036b91fe",
+    "sourceFingerprint": "dbb7f66a0767184fd40528bf42d14cfe3cef59715ae712eb2a78403e7dba16bb",
+    "environmentFingerprint": "13a9343f1161362e161839483cee438db4bb22f9bae416b87be716536531613b",
+    "frozenAt": "2026-08-17T19:13:17.162Z",
+    "ignoredRootCount": 64
+  },
+  "previousState": {
+    "eligibleFailures": 62,
+    "unresolvedLowConfidence": 52,
+    "clusters": 7,
+    "productBugs": 0,
+    "corrections": 0
+  },
+  "clusterAdjudications": [
+    {
+      "rootCauseId": "ROOT-4A-CRLF-CHECKOUT-NORMALISATION",
+      "tests": 10,
+      "contractType": "IMPLEMENTATION_COUPLING",
+      "classification": "HARNESS_BUG",
+      "confidence": "HIGH",
+      "humanReviewRequired": false,
+      "recommendedAction": "Fixed: reconstruction worktrees now check out with core.autocrlf=false so they carry committed bytes."
+    },
+    {
+      "rootCauseId": "ROOT-1-GENERATED-SKILL-ARTIFACT-MISSING",
+      "tests": 9,
+      "contractType": "REAL_CONTRACT",
+      "classification": "FIXTURE_BUG",
+      "confidence": "HIGH",
+      "humanReviewRequired": true,
+      "recommendedAction": "Developer decision: regenerate and re-review the artifacts. QA must not re-pin hashes to turn tests green."
+    },
+    {
+      "rootCauseId": "ROOT-5-FIGURECOUNT-VARIABLE-RENAME",
+      "tests": 1,
+      "contractType": "IMPLEMENTATION_COUPLING",
+      "classification": "STALE_TEST",
+      "confidence": "HIGH",
+      "humanReviewRequired": false,
+      "recommendedAction": "Replace the literal assertion with one pinning the surviving invariant. NOT applied: its family (ROOT-4B) is unadjudicated and Phase 6 forbids partial easy wins."
+    },
+    {
+      "rootCauseId": "ROOT-4B-SOURCE-SHAPE-DRIFT-REMAINDER",
+      "tests": 24,
+      "contractType": "MIXED",
+      "classification": "UNRESOLVED_CONTRACT",
+      "confidence": "LOW",
+      "humanReviewRequired": false,
+      "recommendedAction": "Split by family and adjudicate route/query construction and data projection first, then JSX/CSS structure."
+    },
+    {
+      "rootCauseId": "ROOT-2-VISUAL-CONTRACT-LEARNERACTION",
+      "tests": 2,
+      "contractType": "REAL_CONTRACT",
+      "classification": "UNRESOLVED_CONTRACT",
+      "confidence": "MEDIUM",
+      "humanReviewRequired": true,
+      "recommendedAction": "Establish when learnerAction became mandatory."
+    },
+    {
+      "rootCauseId": "ROOT-6-WIRING-RELOCATED",
+      "tests": 3,
+      "contractType": "UNCLEAR",
+      "classification": "UNRESOLVED_CONTRACT",
+      "confidence": "LOW",
+      "humanReviewRequired": false,
+      "recommendedAction": "Trace each relocation and decide whether the test should follow it or an invariant broke."
+    },
+    {
+      "rootCauseId": "ROOT-7-UNREVIEWED",
+      "tests": 17,
+      "contractType": "UNCLEAR",
+      "classification": "UNRESOLVED_CONTRACT",
+      "confidence": "LOW",
+      "humanReviewRequired": false,
+      "recommendedAction": "Improve asserted-file resolution, then adjudicate."
+    },
+    {
+      "rootCauseId": "ROOT-3-CAD-CLONE-EXECUTION",
+      "tests": 1,
+      "contractType": "UNCLEAR",
+      "classification": "UNRESOLVED_CONTRACT",
+      "confidence": "LOW",
+      "humanReviewRequired": false,
+      "recommendedAction": "Carry as W2-2B blocker E-2."
+    }
+  ],
+  "headlineFinding": {
+    "cluster": "ROOT-4A-CRLF-CHECKOUT-NORMALISATION",
+    "classification": "HARNESS_BUG",
+    "tests": 10,
+    "summary": "core.autocrlf=true rewrites worktree checkouts to CRLF while the developer tree holds LF, so assertions pinning a bare newline failed only in QA reconstructions.",
+    "evidence": [
+      "developer tree 0 CRLF / 229 LF vs worktree 223 CRLF / 0 LF",
+      "within one test a newline-tolerant pattern passed while a bare-newline pattern failed on the same file",
+      "no .gitattributes exists"
+    ],
+    "fix": "reconstruction worktrees check out with core.autocrlf=false",
+    "nonVacuityProof": "10 tests predicted from static analysis before the change; all 10 flipped FAIL to PASS, verified by test identity; reverting reproduces them",
+    "assertionsWeakened": 0
+  },
+  "runtimeArbitration": [
+    {
+      "cluster": "ROOT-4A-CRLF-CHECKOUT-NORMALISATION",
+      "question": "Does the asserted text still exist, or did the contract change?",
+      "method": "Byte-level line-ending comparison between the developer tree and a worktree checkout, then a controlled re-checkout with core.autocrlf=false, then a full dashboard re-run.",
+      "result": "Text unchanged. The worktree wrote CRLF; the bare-newline pattern could not match. With autocrlf disabled the file has 0 CRLF and all 10 predicted tests pass.",
+      "settled": true,
+      "deterministic": true
+    }
+  ],
+  "productBugs": [],
+  "sh1Repairs": {
+    "attempted": 0,
+    "verified": 0,
+    "blocked": 0
+  },
+  "corrections": {
+    "harnessRepairs": 1,
+    "testCorrections": 0,
+    "productRepairs": 0,
+    "deliberatelyNotDone": [
+      {
+        "item": "ROOT-5 vlm-ocr-figures assertion replacement",
+        "reason": "Phase 6 forbids partial easy wins; its family ROOT-4B is unadjudicated."
+      },
+      {
+        "item": "Regenerating reviewed skill artifacts",
+        "reason": "Phase 12 and the special rule: the hash pin exists so regeneration is a reviewed developer act."
+      }
+    ]
+  },
+  "finalBaseline": {
+    "before": {
+      "eligible": 62,
+      "environmentBlocked": 3,
+      "totalObserved": 5036
+    },
+    "after": {
+      "eligible": 57,
+      "environmentBlocked": 3,
+      "totalObserved": 5089,
+      "failingEntries": 60
+    },
+    "perTestChange": {
+      "crlfSensitiveFixed": 10,
+      "verifiedIndividually": true,
+      "method": "Each of the 10 predicted tests was checked by identity against the post-fix failing set rather than inferred from the aggregate count."
+    },
+    "caveat": "The aggregate moved from 62 to 57 eligible while the developer also edited between snapshots, so the aggregate alone is not attributable. The per-test check is the evidence."
+  },
+  "classificationTotals": {
+    "UNRESOLVED_CONTRACT": 47,
+    "FIXTURE_BUG": 9,
+    "STALE_TEST": 1
+  },
+  "confidenceTotals": {
+    "LOW": 45,
+    "HIGH": 10,
+    "MEDIUM": 2
+  },
+  "integrity": {
+    "assertionWeakening": 0,
+    "unauthorizedMutation": 0,
+    "userStateTouched": false,
+    "vendoredRootsTouched": false,
+    "nodeModulesIntact": true,
+    "secretFindings": 0,
+    "committedOrStashed": false,
+    "retriesOrSkipsAdded": 0,
+    "harnessSelfTests": {
+      "total": 120,
+      "passed": 120
+    }
+  },
+  "closedCriteria": {
+    "met": [
+      "6 reviewed-artifact integrity not bypassed",
+      "7 no implementation-coupled test preserved for red-count reasons",
+      "8 correction carries non-vacuity proof",
+      "9 no PRODUCT_BUG arose (vacuous)",
+      "10 no assertion weakening",
+      "11 no retries/skips/timeouts",
+      "12 no developer working state modified",
+      "13 no vendored root mutated",
+      "14 no secrets"
+    ],
+    "notMet": [
+      "1 every cluster actually adjudicated (ROOT-4B and ROOT-7 were not)",
+      "2 no cluster LOW solely because uninvestigated (41 of 57 are exactly that)",
+      "3 every eligible failure has a concrete classification at evidence standard",
+      "15 remaining failures explainable cluster-by-cluster"
+    ]
+  },
+  "nextActions": [
+    "ROOT-4B (24): split by family; route/query and data projection first",
+    "ROOT-7 (17): improve asserted-file resolution then adjudicate",
+    "ROOT-6 (3): trace relocations",
+    "ROOT-2 (2): human decision on learnerAction",
+    "apply the held ROOT-5 correction with its family"
+  ],
+  "notWeek3": "Ingestion, routing, persistence, races, lifecycle/security, import/export and critical burn-in remain unexecuted."
+}

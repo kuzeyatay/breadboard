@@ -75,6 +75,16 @@ export interface RuntimeRunDispatch {
     required: boolean;
     reason: string;
   };
+  /**
+   * The research classifier read this request as exhaustive enough to owe the
+   * tracked pipeline. Recorded here so the turn's honesty gate stays armed even
+   * if the turn never opened a session. See lib/research/classify.ts.
+   */
+  researchPipeline?: {
+    required: boolean;
+    intent: string;
+    completenessRequired: boolean;
+  };
 }
 
 export interface ActiveRuntimeRunSummary {

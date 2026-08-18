@@ -37,10 +37,19 @@ test("the badge consumes ONLY the safe status/sync endpoints (no secrets/paths/i
   assert.ok(!/adapterUrl|GBRAIN_ADAPTER_SECRET|sourceId|C:\\\\|127\.0\.0\.1/.test(badge));
 });
 
-test("the badge is mounted in Garden Chat and the Terminal", () => {
+test("the badge is mounted in Garden Chat", () => {
   assert.match(chat, /GBrainStatusBadge/);
   assert.match(chat, /gardenSlug=\{gardenSlug\}/);
-  assert.match(terminal, /GBrainStatusBadge/);
+});
+
+test("the Terminal reads the same status but words none of it", () => {
+  // The header has no room for a sentence, so the state rides the status dot:
+  // red when knowledge retrieval is unavailable, and nothing written beside it.
+  assert.match(terminal, /useGBrainStatus\(\)/);
+  assert.match(terminal, /knowledgeUnavailable = knowledgeKey === "unavailable"/);
+  assert.match(terminal, /runtimeOnline && !knowledgeUnavailable/);
+  assert.doesNotMatch(terminal, /<GBrainStatusBadge/);
+  assert.doesNotMatch(terminal, /Knowledge: /);
 });
 
 test("the badge distinguishes unavailable from a grounded answer (honest failure)", () => {

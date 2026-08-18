@@ -277,16 +277,15 @@ test("agent-result continuations stay in context without impersonating the user"
     garden,
     /handleSubmit\(continuation, undefined, undefined, true\)/,
   );
-  // Both transcripts are virtualized, so a continuation is dropped while the
-  // row list is built rather than returned as a null row from a map.
-  assert.match(
-    runtimePanel,
-    /storedMessage\.internalAgentContinuation === true/,
-  );
-  assert.match(
-    garden,
-    /if \(storedMessage\.internalAgentContinuation === true\) return;/,
-  );
+  // Both transcripts are virtualized, so the hand-back is dropped while the
+  // row list is built rather than returned as a null row from a map. What is
+  // dropped is the user-role hand-back only — see the reload test below.
+  for (const sourceText of [runtimePanel, garden]) {
+    assert.match(
+      sourceText,
+      /storedMessage\.role === "user" &&\s*\n?\s*storedMessage\.internalAgentContinuation === true/,
+    );
+  }
   assert.match(
     sessionHook,
     /internalAgentContinuation:\s*options\?\.internalAgentContinuation === true/,
@@ -324,9 +323,17 @@ test("delegation and trusted hand-backs do not trip factual-answer gates", () =>
     conversationTurns,
     /const geographicGrounding =[\s\S]*input\.internalAgentContinuation[\s\S]*trusted model-to-model continuation/,
   );
+  // The obligation is read from the plan's own web signal, never from the
+  // capability list: super agent adds `web_research` reach to every turn, so
+  // reading it back made a greeting owe a web result and had its answer
+  // replaced by a refusal. See task-plan.ts `requiresWebEvidence`.
   assert.match(
     conversationTurns,
-    /!input\.internalAgentContinuation &&[\s\S]*requiredCapabilities\.includes\("web_research"\)/,
+    /!input\.internalAgentContinuation && prepared\.plan\.requiresWebEvidence/,
+  );
+  assert.doesNotMatch(
+    conversationTurns,
+    /requiredCapabilities\.includes\("web_research"\)/,
   );
 });
 
@@ -384,6 +391,73 @@ test("every model-launchable agent uses structured same-message delegation", asy
   assert.match(garden, /continuedDelegatedRunsRef/);
   assert.match(terminal, /externalAgentCardContent\(message\)/);
   assert.match(garden, /externalAgentCardContent\(message\)/);
+});
+
+test("the answer a delegation hands back survives a reload", () => {
+  // The continuation turn is persisted with `internalAgentContinuation` on both
+  // of its messages, and the optimistic assistant row carries no flag — so a
+  // transcript that dropped every flagged row showed the answer while it
+  // streamed and lost it on the next reload, leaving the question with nothing
+  // under it. Only the hand-back itself is internal.
+  for (const [surface, sourceText] of [
+    ["panel", runtimePanel],
+    ["garden", garden],
+  ]) {
+    assert.match(
+      sourceText,
+      /storedMessage\.role === "user" &&\s*\n?\s*storedMessage\.internalAgentContinuation === true/,
+      surface,
+    );
+  }
+  assert.doesNotMatch(
+    runtimePanel,
+    /^\s*storedMessage\.internalAgentContinuation === true \|\|$/m,
+  );
+  // The "Research synthesized" label reads the preceding row's flag, so the
+  // answer needs none of its own.
+  assert.match(
+    runtimePanel,
+    /messages\[index - 1\]\?\.internalAgentContinuation === true/,
+  );
+  // Redo re-asks the question rather than resending the worker's hand-back.
+  assert.match(runtimePanel, /retryTargetUserMessageIndex\(\s*\n?\s*messages,/);
+  assert.match(garden, /retryTargetUserMessageIndex\(messages, messageIndex\)/);
+});
+
+test("a delegated launch leaves the composer's agent selection alone", () => {
+  // A delegation resolves its runtime through the same `select*` pickers the
+  // composer chip is driven by, so launching one used to leave that agent
+  // selected — `/agents:agent-browser` sitting in a composer nobody pointed at
+  // it, with the person's next message routed into that agent. Both surfaces
+  // snapshot the selection before the launch and restore it afterwards.
+  for (const [surface, sourceText] of [
+    ["terminal", terminal],
+    ["garden", garden],
+  ]) {
+    assert.match(sourceText, /function readComposerAgentSelection\(\)/, surface);
+    assert.match(
+      sourceText,
+      /function restoreComposerAgentSelection\(/,
+      surface,
+    );
+    assert.match(
+      sourceText,
+      /const composerSelection = readComposerAgentSelection\(\);/,
+      surface,
+    );
+    // In the `finally`, so a launcher that throws cannot strand the chip.
+    assert.match(
+      sourceText,
+      /\} finally \{\s*restoreComposerAgentSelection\(composerSelection\);/,
+      surface,
+    );
+    assert.match(sourceText, /agentBrowser: agentBrowserAgent,/, surface);
+    assert.match(
+      sourceText,
+      /setAgentBrowserAgent\(snapshot\.agentBrowser\);/,
+      surface,
+    );
+  }
 });
 
 test("the tool is super-agent only and revalidated on the route", () => {

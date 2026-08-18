@@ -15,6 +15,8 @@ import { signOut } from "next-auth/react";
 import BackLink from "@/app/components/back-link";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import OrganizationPanel from "./organization-panel";
+import BrowserProfilePanel from "./browser-profile-panel";
+import type { BrowserProfileState } from "@/lib/agent-browser/service.ts";
 import {
   MONTH_ABBREVIATIONS,
   WEEKDAY_ABBREVIATIONS,
@@ -1180,6 +1182,126 @@ function ReviewDeliveryPanel() {
   );
 }
 
+/**
+ * What to call you.
+ *
+ * The account has only ever had a username, and a username is a handle: the
+ * blank chat was greeting people as "kuzeyata" because that is all it had. The
+ * name set here is what the greeting uses, and it travels into every turn's
+ * memory context, so the assistant addresses a person rather than a login.
+ */
+function NamePanel({ initial }: { initial: { firstName: string; lastName: string; username: string } }) {
+  const router = useRouter();
+  const [firstName, setFirstName] = useState(initial.firstName);
+  const [lastName, setLastName] = useState(initial.lastName);
+  const [saved, setSaved] = useState({ firstName: initial.firstName, lastName: initial.lastName });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+
+  const dirty = firstName !== saved.firstName || lastName !== saved.lastName;
+  // What the greeting will actually say once this is saved, worked out here
+  // rather than described in prose: the fallback to the username is the part
+  // people need to see, and a sentence about it is not the same as seeing it.
+  const greetingName = firstName.trim() || initial.username;
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    setConfirmed(false);
+    try {
+      const response = await fetch("/api/profile/identity", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ firstName, lastName }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        identity?: { firstName: string; lastName: string };
+        error?: string;
+      };
+      if (!response.ok || !data.identity) throw new Error(data.error || "Could not save your name");
+      setFirstName(data.identity.firstName);
+      setLastName(data.identity.lastName);
+      setSaved({ firstName: data.identity.firstName, lastName: data.identity.lastName });
+      setConfirmed(true);
+      // The heading at the top of this page is server-rendered from the same
+      // row, so it only catches up on a refetch.
+      router.refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not save your name");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card
+      title="Your name"
+      hint={`Breadboard will call you ${greetingName}${
+        firstName.trim() ? "" : " — your username, until you give it something better"
+      }.`}
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (dirty && !busy) void save();
+        }}
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500">First name</span>
+            <input
+              type="text"
+              value={firstName}
+              maxLength={60}
+              autoComplete="given-name"
+              placeholder="Kuzey"
+              onChange={(event) => {
+                setFirstName(event.target.value);
+                setConfirmed(false);
+              }}
+              className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500">Surname</span>
+            <input
+              type="text"
+              value={lastName}
+              maxLength={60}
+              autoComplete="family-name"
+              placeholder="Optional"
+              onChange={(event) => {
+                setLastName(event.target.value);
+                setConfirmed(false);
+              }}
+              className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
+            />
+          </label>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <p className="min-w-0 text-xs text-gray-600">
+            Used in the greeting on a blank chat, and given to the assistant so it knows who it is
+            talking to. Leave both empty to go back to your username.
+          </p>
+          <button
+            type="submit"
+            disabled={!dirty || busy}
+            className="neu-button shrink-0 rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy ? "Saving…" : "Save"}
+          </button>
+        </div>
+        {error && <p className="text-xs text-red-400">{error}</p>}
+        {!error && confirmed && !dirty && (
+          <p className="text-xs text-gray-500">Saved.</p>
+        )}
+      </form>
+    </Card>
+  );
+}
+
 function ShortcutPanel({ initial }: { initial: NavbarShortcuts }) {
   const router = useRouter();
   const [shortcuts, setShortcuts] = useState(initial);
@@ -1821,12 +1943,18 @@ function AboutBreadboard() {
 export default function ProfileClient({
   stats,
   initialShortcuts,
+  browserProfile,
 }: {
   stats: ProfileStats;
   initialShortcuts: NavbarShortcuts;
+  browserProfile: BrowserProfileState;
 }) {
   const { account, totals, streaks, habit, surfaces, gardens, artifactKinds, agents } = stats;
   const [tab, setTab] = useState<"profile" | "organization">("profile");
+  // The heading is the name when there is one, because that is the thing this
+  // page is about. The username does not disappear — it moves down a line, to
+  // sit with the email as the other piece of account plumbing.
+  const fullName = [account.firstName, account.lastName].filter(Boolean).join(" ");
 
   const surfaceMax = surfaces.reduce((best, entry) => Math.max(best, entry.count), 0);
   const gardenMax = gardens.reduce((best, entry) => Math.max(best, entry.prompts), 0);
@@ -1872,8 +2000,12 @@ export default function ProfileClient({
         {/* ------------------------------------------------------ identity */}
         <section className="neu-surface-raised flex flex-wrap items-center gap-5 rounded-2xl border border-gray-800 p-5">
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-xl font-semibold text-white">{account.username}</h2>
-            <p className="truncate text-sm text-gray-400">{account.email}</p>
+            <h2 className="truncate text-xl font-semibold text-white">
+              {fullName || account.username}
+            </h2>
+            <p className="truncate text-sm text-gray-400">
+              {fullName ? `${account.username} · ${account.email}` : account.email}
+            </p>
             <p className="mt-1 text-xs text-gray-600">
               Here since {formatLongDate(dateOnly(account.joinedAt))} ·{" "}
               {account.daysSinceJoined === 0
@@ -1908,6 +2040,17 @@ export default function ProfileClient({
             </button>
           </div>
         </section>
+
+        {/* ---------------------------------------------------------- name */}
+        <div className="mt-4">
+          <NamePanel
+            initial={{
+              firstName: account.firstName,
+              lastName: account.lastName,
+              username: account.username,
+            }}
+          />
+        </div>
 
         {/* --------------------------------------------------------- totals */}
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -2082,6 +2225,10 @@ export default function ProfileClient({
 
           <Packed>
             <LocationPanel />
+          </Packed>
+
+          <Packed>
+            <BrowserProfilePanel initial={browserProfile} />
           </Packed>
 
           <Packed>

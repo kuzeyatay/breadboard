@@ -1,0 +1,219 @@
+{
+  "pass": "W2-3E",
+  "title": "Behavioural Contract Arbitration",
+  "generatedAt": "2026-08-17T21:02:51.208Z",
+  "decision": "BEHAVIOURAL CONTRACTS CLOSED",
+  "decisionScope": "The eleven ROOT-4B-BEHAVIOURAL contracts are arbitrated at HIGH confidence. This is not the overall W2-3 decision, and it does not mean the P1 defect found here is fixed.",
+  "executionIdentity": {
+    "baseCommit": "9e46a6dd9152a1aafa9f3cf5beab9ee9036b91fe",
+    "sourceSnapshotFingerprint": "f6d2959ec53b9d6e0e8f366dcb14c82a952665b1f9845d76162b464e60eab0a7",
+    "environmentFingerprint": "13a9343f1161362e161839483cee438db4bb22f9bae416b87be716536531613b",
+    "executionSnapshotId": "a79f3827041e188e759df63b8036d918a1d2ff082c9bb6b88497def6a305ec6b",
+    "checkoutLineEndingPolicy": "core.autocrlf=false (deterministic, committed bytes)",
+    "repositoryAutocrlf": "true",
+    "linkedExternalRoots": 64
+  },
+  "sourceDrift": {
+    "developerFilesMovedAfterFreeze": 13,
+    "disjointFromEvidenceSet": true,
+    "corroboration": "baseline and final test runs, taken either side of the movement, produced identical per-test outcomes"
+  },
+  "targets": {
+    "total": 11,
+    "byClassification": {
+      "STALE_TEST": 2,
+      "PRODUCT_BUG": 5,
+      "TEST_EXPECTATION_BUG": 1,
+      "FIXTURE_BUG": 3
+    },
+    "byConfidence": {
+      "HIGH": 11
+    }
+  },
+  "subRoots": [
+    {
+      "subRoot": "SKILL_INTEGRITY_PIN",
+      "tests": 5,
+      "classification": "PRODUCT_BUG",
+      "severity": "P1",
+      "confidence": "HIGH"
+    },
+    {
+      "subRoot": "ARTIFACT_TURN_BINDING",
+      "tests": 1,
+      "classification": "FIXTURE_BUG",
+      "confidence": "HIGH"
+    },
+    {
+      "subRoot": "VISUAL_CONTRACT_VALIDATION",
+      "tests": 2,
+      "classification": "FIXTURE_BUG",
+      "confidence": "HIGH"
+    },
+    {
+      "subRoot": "CATALOG_CHANGE_ANNOUNCEMENT",
+      "tests": 1,
+      "classification": "STALE_TEST",
+      "confidence": "HIGH"
+    },
+    {
+      "subRoot": "WORKSPACE_MATERIAL_ISOLATION",
+      "tests": 1,
+      "classification": "TEST_EXPECTATION_BUG",
+      "confidence": "HIGH"
+    },
+    {
+      "subRoot": "AGENT_RUN_CARD_MATERIAL",
+      "tests": 1,
+      "classification": "STALE_TEST",
+      "confidence": "HIGH"
+    }
+  ],
+  "productBugs": [
+    {
+      "id": "W23E-001",
+      "title": "Reviewed skill integrity pins are computed over bytes git does not preserve, so two shipped skills are disabled for every user",
+      "severity": "P1",
+      "confidence": "HIGH",
+      "affectedTests": 5,
+      "repairStatus": "DESIGNED_NOT_APPLIED_AWAITING_AUTHORISATION",
+      "independentlyReproduced": true,
+      "reproductionSummary": "At least one reviewed skill cannot verify on a fresh checkout, so the shipped product disables it for the user who cloned it.",
+      "recommendedRepair": "Option A, paired with a generator that writes LF, is the smallest change that makes the pin mean 'this content was reviewed' rather than 'these bytes were written on that machine'. It needs an explicit human decision because it is a trust control."
+    }
+  ],
+  "sh1Repairs": {
+    "opened": 0,
+    "why": "Every viable repair crosses a fence set for this work. Normalising line endings before hashing changes how an integrity control reaches its verdict, and 'do not change security boundaries' is a standing Week-1 constraint. Adding .gitattributes to stop git rewriting these files is a repository-wide checkout-policy change the W2-3C instructions explicitly discouraged. Regenerating the pins is forbidden by the W2-3B instruction that the pin exists to stop unreviewed generated guidance shipping — and it would not hold, because the next checkout on a different policy breaks it again. Applying any of these autonomously would be a QA pass quietly rewriting a trust control."
+  },
+  "testCorrections": {
+    "designed": 6,
+    "applied": 0,
+    "byCategory": {
+      "A": 3,
+      "B": 3
+    },
+    "why": "None applied. The three category-B corrections would each replace a source-shape assertion with an executable one, which is the unresolved repository-wide policy question this pass was told not to settle by accident. The three category-A corrections are eligible, and are held only because the user's own ordering places 'apply approved test corrections' after the policy pass — applying half the set now would split one reviewable change into two."
+  },
+  "counterexampleProof": {
+    "total": 21,
+    "detected": 21,
+    "nonVacuous": true
+  },
+  "flips": {
+    "predicted": 0,
+    "actual": 0,
+    "matchesPrediction": true,
+    "testsCompared": 60,
+    "failingBefore": 13,
+    "failingAfter": 13
+  },
+  "stability": {
+    "attemptsPerFamily": 3,
+    "allStable": true,
+    "flaky": [],
+    "retryMechanism": "none — each attempt is an independent process and a differing outcome is reported, not re-run"
+  },
+  "contractMap": {
+    "before": {
+      "RESOLVED_HARNESS_BUG": 10,
+      "UNRESOLVED_CONTRACT": 30,
+      "ENVIRONMENT_BLOCKED": 13,
+      "RESOLVED_STALE_TEST": 9,
+      "RESOLVED_FIXTURE_BUG": 5
+    },
+    "after": {
+      "RESOLVED_HARNESS_BUG": 10,
+      "UNRESOLVED_CONTRACT": 19,
+      "ENVIRONMENT_BLOCKED": 13,
+      "RESOLVED_STALE_TEST": 11,
+      "RESOLVED_FIXTURE_BUG": 8,
+      "RESOLVED_PRODUCT_BUG": 5,
+      "RESOLVED_TEST_BUG": 1
+    },
+    "movement": {
+      "UNRESOLVED_CONTRACT": -11,
+      "RESOLVED_PRODUCT_BUG": 5,
+      "RESOLVED_FIXTURE_BUG": 3,
+      "RESOLVED_STALE_TEST": 2,
+      "RESOLVED_TEST_BUG": 1
+    }
+  },
+  "heldForSourceShapePolicy": {
+    "executableContractReplacements": 8,
+    "root5Case": 1,
+    "uiShapeRows": 18,
+    "behaviouralCategoryBCorrections": 3,
+    "behaviouralCategoryACorrections": 3,
+    "note": "The three category-B behavioural corrections join the held source-shape policy set, because each would replace a source-shape assertion with an executable one and that is the policy question this pass must not settle by accident. The two category-A corrections are eligible to apply and are held only because the user's own ordering schedules corrections after the policy pass."
+  },
+  "resolvedHeldItems": [
+    "the learnerAction human-decision item from W2-3C is settled by experiment: Contract A confirmed, Contract B refuted, humanDecisionNeeded now false"
+  ],
+  "harnessFindings": [
+    {
+      "id": "W23E-H1",
+      "finding": "qa/harness-selftest/run-selftest.mjs wires 4 of the 7 harness unit test files, omitting repair-capability, source-snapshot and execution-snapshot.",
+      "impact": "The consolidated runner reports 68 unit tests; the full glob runs 125. A future pass could report passing self-tests while the capability-binding and execution-identity libraries go unchecked.",
+      "fixed": false,
+      "whyNotFixed": "Changing the instrument mid-pass would make this pass's own before and after numbers incomparable. First harness action for the next pass."
+    }
+  ],
+  "integrity": {
+    "assertionsWeakened": 0,
+    "directProductEdits": 0,
+    "testFilesEdited": 0,
+    "repositoryArtefactsEdited": 0,
+    "unauthorizedMutations": 0,
+    "repositoryGitConfigChanged": false,
+    "globalGitConfigChanged": false,
+    "gitattributesAdded": false,
+    "developerTreeModifiedByQa": false,
+    "vendoredRootsModified": false,
+    "nodeModulesIntact": true,
+    "nodeModulesCount": 649,
+    "userStateTouched": false,
+    "secretFindings": 0,
+    "commitStashReset": "none",
+    "retriesSkipsTimeoutInflation": "none",
+    "harnessSelfTests": {
+      "unit": "125/125",
+      "playwright": "47/47"
+    },
+    "worktreesLeftBehind": 0,
+    "changesConfinedTo": [
+      "qa/",
+      ".qa-results/"
+    ]
+  },
+  "closureCriteria": {
+    "everyTargetExecuted": true,
+    "realProductionPathExercised": true,
+    "contractsWrittenBeforeExecution": true,
+    "authoritativeObservablesUsed": true,
+    "negativeCasesExecuted": true,
+    "everyTargetClassified": true,
+    "noLowConfidenceFromSkippedExecution": true,
+    "productBugsIndependentlyReproduced": true,
+    "anyRepairUsedSh1": "no repair applied, so SH1 correctly not entered",
+    "counterexampleProofPresent": true,
+    "stabilityMeasuredWithoutRetries": true,
+    "noAssertionWeakening": true,
+    "noDirectProductRepair": true,
+    "gitConfigUnchanged": true,
+    "noVendoredRootMutated": true,
+    "noUserStateTouched": true,
+    "noSecretInEvidence": true
+  },
+  "caveat": "Static diagnosis preceded the written contracts. Mitigation: every FORBIDDEN clause is taken from the test's own stated intent or a consumer requirement, never from observed behaviour.",
+  "evidenceDirectory": ".qa-results/week2-behavioural-contract-arbitration/w23e-20260817T202455Z",
+  "nextAction": [
+    "authorise or reject the W23E-001 repair",
+    "source-shape test policy, then apply across UI_SHAPE (18), W2-3D replacements (8), ROOT-5 (1) and the 3 category-B corrections",
+    "PROSE_COPY (7)",
+    "ROOT-6 residual contracts (3)",
+    "apply approved test corrections including the 3 category-A ones",
+    "ROOT-8 (13) with one frozen snapshot and both arms",
+    "final dashboard rerun, then close W2-3"
+  ]
+}

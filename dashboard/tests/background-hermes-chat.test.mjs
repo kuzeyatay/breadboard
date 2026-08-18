@@ -62,10 +62,11 @@ test("Terminal and both Garden chat surfaces allow chat changes during a run", (
 
 test("opening an active conversation reloads it and reattaches its run", () => {
   assert.match(sessionHook, /const openSession = useCallback/);
-  assert.match(
-    sessionHook,
-    /\/api\/hermes\/sessions\?surface=\$\{encodeURIComponent\(surface\)\}/,
-  );
+  // The session list is fetched through the shared client rather than by each
+  // surface building its own URL. What matters here is that the hook reaches
+  // that client -- an assertion dead code cannot satisfy -- while the surface
+  // round-trip itself is exercised in hermes-live-routing.
+  assert.match(sessionHook, /loadHermesSessionSummaries/);
   assert.match(sessionHook, /setRunToResume\(\{/);
   assert.match(sessionHook, /viewEpochRef\.current !== viewEpoch/);
   assert.match(sessionHook, /abortRef\.current\?\.abort\(\)/);

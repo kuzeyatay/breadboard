@@ -5,10 +5,16 @@
 import * as store from "./store.ts";
 import { validateAgentConfiguration } from "./config.ts";
 import {
+  hasActiveRun,
   startRun as managerStartRun,
   runtimeAvailability,
   type StartRunResult,
 } from "./run-manager.ts";
+import {
+  browserProfileSummary,
+  signInWindowOpen,
+  type BrowserProfileSummary,
+} from "./browser-profile.ts";
 
 export class AgentBrowserServiceError extends Error {
   status: number;
@@ -21,6 +27,30 @@ export class AgentBrowserServiceError extends Error {
 }
 
 export type RuntimeState = "available" | "unavailable" | "misconfigured" | "disabled";
+
+export interface BrowserProfileState extends BrowserProfileSummary {
+  /** agent-browser and a browser are both installed, so a sign-in has a point. */
+  runtimeAvailable: boolean;
+  runtimeReason: string | null;
+  /** A run is holding the browser, so the profile is not free to be opened. */
+  runInProgress: boolean;
+}
+
+/**
+ * Everything the profile page's sign-in card needs, in one read. The profile
+ * itself, whether there is a runtime to sign in for, and whether a run is
+ * already using it — three modules, one answer, so the page and the API can
+ * never disagree about it.
+ */
+export function browserProfileState(): BrowserProfileState {
+  const availability = runtimeAvailability();
+  return {
+    ...browserProfileSummary(),
+    runtimeAvailable: availability.available,
+    runtimeReason: availability.reason ?? null,
+    runInProgress: hasActiveRun(),
+  };
+}
 
 const buckets = new Map<string, { count: number; resetAt: number }>();
 function rateLimit(key: string, max: number, windowMs: number): void {
@@ -84,6 +114,11 @@ export function startRun(userId: number, agentId: string, task: string): StartRu
 
   const availability = runtimeAvailability();
   if (!availability.available) throw new AgentBrowserServiceError(503, "runtime_unavailable");
+  // Chromium allows one process per profile directory. Starting a run while the
+  // sign-in window holds that profile would launch a browser that immediately
+  // hands its arguments to the window and exits, and the run would die on a
+  // connection error with nothing to say. Refuse it plainly instead.
+  if (signInWindowOpen()) throw new AgentBrowserServiceError(409, "sign_in_window_open");
 
   try {
     return managerStartRun({ userId, agentId, task: trimmed, config: parsed.value });

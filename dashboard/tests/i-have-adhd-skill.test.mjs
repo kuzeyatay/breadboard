@@ -100,7 +100,11 @@ test("Direct mode does not manufacture a next action for a complete answer", () 
     manifest,
     /Do not append a next action, follow-up question, or suggested task to a complete\s*\nanswer/,
   );
-  assert.match(manifest, /If another step is necessary, or a suggestion would materially help/);
+  // No mandated closing line: the old rule required a "Next: ..." action on
+  // every turn, which invented busywork for answers that were already done.
+  assert.match(manifest, /There is no required closing line and no "Next:" label/);
+  assert.match(manifest, /Never manufacture a task to close on/);
+  assert.doesNotMatch(manifest, /name ONE concrete next action/);
   assert.match(composer, /Direct answers; next actions only when useful/);
 });
 
@@ -184,7 +188,7 @@ test("both turn pipelines and both legacy chat routes carry the switch", () => {
   // agent pipeline would silently stop working when the user switched it off.
   const direct = source("src/lib/conversations/direct-turn-service.ts");
   assert.match(direct, /directMode \? directModeSection\(\) : ""/);
-  assert.match(direct, /directSystemPrompt\(input\.adhdMode === true\)/);
+  assert.match(direct, /directSystemPrompt\(\s*input\.adhdMode === true,?/);
 
   const agent = source("src/lib/conversations/turn-service.ts");
   assert.match(agent, /adhdMode: input\.adhdMode === true/);

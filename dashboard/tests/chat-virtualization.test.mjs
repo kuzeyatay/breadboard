@@ -364,6 +364,32 @@ test("opening another conversation does not inherit the first one's measurements
   );
 });
 
+test("a conversation opened onto estimates still settles on its last message", () => {
+  // What a landing is for. On the frame a conversation is opened every row is
+  // an estimate, so one jump aims at a height that is about to be wrong: as the
+  // rows around the fold report their real heights the foot of the conversation
+  // moves. Re-aiming over the following frames is what actually puts the reader
+  // on the last message rather than somewhere near it.
+  const harness = transcriptHarness({ count: 400 });
+  harness.virtualizer.scrollToEnd({ behavior: "auto" });
+
+  const landedOnEstimates = harness.state.offset;
+  // The rows that mount at the foot turn out to be markdown three times their
+  // estimate — the newest message most of all.
+  for (const [index, height] of [[397, 360], [398, 300], [399, 720]]) {
+    harness.virtualizer.resizeItem(index, height);
+    // Each frame of the landing aims again at wherever the end is now.
+    harness.virtualizer.scrollToEnd({ behavior: "auto" });
+  }
+
+  assert.ok(
+    harness.state.offset > landedOnEstimates,
+    "the end of the conversation should have moved as its rows were measured",
+  );
+  assert.equal(harness.virtualizer.getDistanceFromEnd(), 0);
+  assert.equal(harness.virtualizer.getVirtualItems().at(-1).index, 399);
+});
+
 test("a reset costs a mounted row its real height until it resizes again", () => {
   // Why the reset must be spent only on a conversation the reader has left.
   // Clearing the cache is all `measure()` does: a row that is already in the
@@ -457,8 +483,27 @@ test("the list reports what it mounted, and only in development", () => {
   // Row spacing is the virtualizer's, so no row carries a phantom tail.
   assert.match(list, /\bgap,/);
   assert.match(list, /anchorTo: "end"/);
-  assert.match(list, /ref=\{virtualizer\.measureElement\}/);
+  assert.match(list, /ref=\{measureRow\}/);
   assert.match(list, /data-index=\{virtualRow\.index\}/);
+});
+
+test("a row is measured after the commit that mounted it, never inside it", () => {
+  // React runs a ref callback inside the commit, and a measurement that moves
+  // the scroller is reported with a synchronous flush — which React refuses to
+  // perform there and logs. What that costs is asserted for real in
+  // chat-virtualization-dom.test.mjs; this is the shape that keeps it fixed.
+  const list = source("../src/app/components/chat/virtualized-message-list.tsx");
+
+  const measure = list.slice(
+    list.indexOf("const measureRow"),
+    list.indexOf("const scrollToEnd"),
+  );
+  assert.match(measure, /queueMicrotask\(/);
+  // A detached row still goes straight through, since that only sweeps caches.
+  assert.match(measure, /if \(node === null\)/);
+  // One flush for the whole commit's rows, not one per row.
+  assert.match(measure, /flushSync\(\(\) => \{[\s\S]*for \(const row of rows\)/);
+  assert.match(measure, /row\.isConnected/);
 });
 
 test("a conversation getting its id is not a conversation being switched", () => {
