@@ -26,6 +26,11 @@ import {
 } from "../src/lib/hermes/bullshit-skills-source.ts";
 import { LOCAL_SKILLS_SOURCES } from "../src/lib/hermes/local-skills-sources.ts";
 import { buildSkill } from "../../scripts/build-bullshit-detector-skill.mjs";
+import { canonicalizeReviewedText, reviewedTextPin } from "../src/lib/hermes/skills.ts";
+
+/** The reviewed-text canonical form: line terminators folded, nothing else. */
+const canonicalText = (value) =>
+  canonicalizeReviewedText(Buffer.from(value, "utf8")).toString("utf8");
 
 const repositoryRoot = new URL("../../", import.meta.url);
 const cloneRoot = new URL("bullshit-detector/", repositoryRoot);
@@ -104,12 +109,14 @@ test("the shipped SKILL.md is the clone's procedure plus a Breadboard preamble",
     new URL("skills/analysis/bullshit-detector/SKILL.md", cloneRoot),
     "utf8",
   );
-  // Rebuilding from the clone must reproduce the shipped file byte for byte.
-  // That is the whole drift control: refresh the clone and this fails until
-  // `node scripts/build-bullshit-detector-skill.mjs` is re-run and re-reviewed.
+  // Rebuilding from the clone must reproduce the shipped guidance. The
+  // comparison is canonical rather than byte-exact because the reviewed root is
+  // committed: git rewrites line terminators at checkout, so a byte comparison
+  // here measures the checkout, not the drift (W23E-001). Every other
+  // difference -- a word, a space, a blank line -- still fails this.
   assert.equal(
-    shipped,
-    buildSkill(clone),
+    canonicalText(shipped),
+    canonicalText(buildSkill(clone)),
     "run `node scripts/build-bullshit-detector-skill.mjs` — the clone and the shipped skill have drifted",
   );
   // The preamble is what makes the upstream procedure runnable here, so its
@@ -125,12 +132,13 @@ test("the reviewed registry pins the shipped SKILL.md by hash", () => {
   );
   const entry = registry.skills["bullshit-detector"];
   assert.ok(entry, "bullshit-detector is not in the reviewed registry");
-  const hash = crypto
-    .createHash("sha256")
-    .update(fs.readFileSync(skillPath))
-    .digest("hex");
-  assert.equal(entry.localHash, hash);
-  assert.equal(entry.fileHashes["SKILL.md"], hash);
+  // The pin declares its scheme. `text-v1` authenticates the reviewed text, so
+  // the same reviewed commit verifies whichever line terminators the checkout
+  // wrote; a bare hex pin would still mean raw bytes.
+  const pin = reviewedTextPin(fs.readFileSync(skillPath));
+  assert.match(pin, /^text-v1:[0-9a-f]{64}$/);
+  assert.equal(entry.localHash, pin);
+  assert.equal(entry.fileHashes["SKILL.md"], pin);
   assert.equal(entry.reviewState, "approved");
   assert.equal(entry.classification.classification, "eligible_general");
 });

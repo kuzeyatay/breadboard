@@ -429,16 +429,9 @@ function listApprovedSkillsAtRoot(
       let integrityVerified = pinnedHashes.length === 0;
       if (pinnedHashes.length) {
         try {
-          const directory = path.join(root, entry.name);
-          const currentHashes = Object.fromEntries(
-            listFilesRecursive(directory).map((file) => [
-              path.relative(directory, file),
-              crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"),
-            ]),
-          );
-          integrityVerified = sameHashes(
+          integrityVerified = reviewedTreeMatchesPins(
+            path.join(root, entry.name),
             Object.fromEntries(pinnedHashes),
-            currentHashes,
           );
         } catch {
           integrityVerified = false;
@@ -1260,6 +1253,92 @@ export function hashSkillDirectory(root: string): string {
       fs.readFileSync(file),
     ] as [string, Buffer]);
   return deterministicSkillContentHash(entries);
+}
+
+/**
+ * Reviewed text artifacts are authenticated by their reviewed CONTENT, not by
+ * the byte form a checkout happened to write.
+ *
+ * The reviewed root is a committed directory, so git rewrites its line endings
+ * on checkout under core.autocrlf. Hashing raw bytes therefore made a pin mean
+ * "these bytes were written on that machine" rather than "this text was
+ * reviewed", and the three shipped pins ended up in three different byte forms
+ * with no checkout satisfying all of them (W23E-001).
+ *
+ * The canonicalisation is deliberately the smallest rule that covers every
+ * conversion git can perform, and nothing else. Whitespace, indentation, a
+ * trailing newline, a BOM, Unicode normalisation, frontmatter, punctuation and
+ * casing all remain identity-bearing, because a checkout never changes them and
+ * a reviewer can see every one of them.
+ */
+const REVIEWED_TEXT_EXTENSIONS = new Set([".md", ".txt", ".json", ".yaml", ".yml"]);
+
+/** Pins carry their scheme so future code can tell which contract they assert. */
+const TEXT_PIN_PREFIX = "text-v1:";
+
+function isReviewedTextPath(relativePath: string): boolean {
+  return REVIEWED_TEXT_EXTENSIONS.has(path.extname(relativePath).toLowerCase());
+}
+
+/**
+ * Strict UTF-8 decode, then CRLF and lone CR folded to LF. Returns null when the
+ * bytes are not valid UTF-8: a lossy decode would turn an invalid sequence into
+ * U+FFFD and could then verify, so this fails closed instead.
+ */
+export function canonicalizeReviewedText(bytes: Buffer): Buffer | null {
+  const text = bytes.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(bytes)) return null;
+  return Buffer.from(text.replace(/\r\n/g, "\n").replace(/\r/g, "\n"), "utf8");
+}
+
+/** The canonical identity of a reviewed text artifact, in its pinned form. */
+export function reviewedTextPin(bytes: Buffer): string | null {
+  const canonical = canonicalizeReviewedText(bytes);
+  return canonical === null ? null : `${TEXT_PIN_PREFIX}${sha256(canonical)}`;
+}
+
+/**
+ * Verify one reviewed file against its pin, in whichever scheme the pin declares.
+ * A bare hex pin keeps its original raw-byte meaning exactly, so no historical
+ * pin is silently reinterpreted.
+ */
+function reviewedFileMatchesPin(
+  absolutePath: string,
+  relativePath: string,
+  pin: string,
+): boolean {
+  let bytes: Buffer;
+  try {
+    bytes = fs.readFileSync(absolutePath);
+  } catch {
+    return false;
+  }
+  if (pin.startsWith(TEXT_PIN_PREFIX)) {
+    // A text pin may only ever authenticate a declared text artifact.
+    if (!isReviewedTextPath(relativePath)) return false;
+    return reviewedTextPin(bytes) === pin;
+  }
+  return sha256(bytes) === pin;
+}
+
+/**
+ * The reviewed tree matches its pins when the pinned file set is exactly the set
+ * on disk and every file matches under its own scheme. An added or removed file
+ * is a mismatch, as it always was.
+ */
+function reviewedTreeMatchesPins(
+  directory: string,
+  pinned: Record<string, string>,
+): boolean {
+  const present = listFilesRecursive(directory)
+    .map((file) => path.relative(directory, file).replace(/\\/g, "/"))
+    .sort();
+  const expected = Object.keys(pinned).sort();
+  if (present.length !== expected.length) return false;
+  if (present.some((name, index) => name !== expected[index])) return false;
+  return present.every((name) =>
+    reviewedFileMatchesPin(path.join(directory, name), name, pinned[name]),
+  );
 }
 
 function sha256(value: Buffer): string {
