@@ -8,12 +8,12 @@
       "package": "breadboard/premortem",
       "source": "Breadboard",
       "exactVersion": "1.0.0",
-      "localHash": "4866385d9613da75c6f10513b63c8e076d994c4776b5e455dd861868301a6149",
+      "localHash": "text-v1:cf4fad33ff53165e7cef3635638e824f4ee9f0ded78e352bf065984a5601fe60",
       "files": [
         "SKILL.md"
       ],
       "fileHashes": {
-        "SKILL.md": "4866385d9613da75c6f10513b63c8e076d994c4776b5e455dd861868301a6149"
+        "SKILL.md": "text-v1:cf4fad33ff53165e7cef3635638e824f4ee9f0ded78e352bf065984a5601fe60"
       },
       "hasSkillMd": true,
       "frontmatterName": "premortem",
@@ -70,7 +70,7 @@
         "SKILL.md"
       ],
       "fileHashes": {
-        "SKILL.md": "b1d8bcdd3f745f0fb0986af65518e8b4cc70c71e4a5d85239580a0c75e7dc0c6"
+        "SKILL.md": "text-v1:b1d8bcdd3f745f0fb0986af65518e8b4cc70c71e4a5d85239580a0c75e7dc0c6"
       },
       "hasSkillMd": true,
       "frontmatterName": "agent-loop-engineering",
@@ -124,12 +124,12 @@
       "package": "breadboard/bullshit-detector",
       "source": "Breadboard",
       "exactVersion": "0.14.0",
-      "localHash": "bae5e051dc44ffb0ccfa0e6972eb968ebdfb6aaff137dfc47efe9eed44e1aeab",
+      "localHash": "text-v1:5f5cb96d27f7bb58e68218769572d8f774f0a03b36e819fb78b17ae2c3de9779",
       "files": [
         "SKILL.md"
       ],
       "fileHashes": {
-        "SKILL.md": "bae5e051dc44ffb0ccfa0e6972eb968ebdfb6aaff137dfc47efe9eed44e1aeab"
+        "SKILL.md": "text-v1:5f5cb96d27f7bb58e68218769572d8f774f0a03b36e819fb78b17ae2c3de9779"
       },
       "hasSkillMd": true,
       "frontmatterName": "bullshit-detector",
