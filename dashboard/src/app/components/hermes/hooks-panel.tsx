@@ -13,6 +13,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+interface Props {
+  /**
+   * Set inside a garden: the panel lists only that garden's hooks, and a hook
+   * created here belongs to it — the chat its events start opens in that
+   * garden, with that garden's notes and tools.
+   */
+  gardenSlug?: string | null;
+}
+
 interface PresentedHook {
   id: string;
   name: string;
@@ -167,7 +176,7 @@ function CopyUrlButton({ url }: { url: string }) {
   );
 }
 
-export default function HooksPanel() {
+export default function HooksPanel({ gardenSlug = null }: Props = {}) {
   const [hooks, setHooks] = useState<PresentedHook[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -193,7 +202,10 @@ export default function HooksPanel() {
     requestActive.current = true;
     if (manual) setRefreshing(true);
     try {
-      const response = await fetch("/api/hooks", { cache: "no-store" });
+      const response = await fetch(
+        gardenSlug ? `/api/hooks?gardenSlug=${encodeURIComponent(gardenSlug)}` : "/api/hooks",
+        { cache: "no-store" },
+      );
       const payload = (await response.json().catch(() => ({}))) as {
         hooks?: PresentedHook[];
         error?: string;
@@ -208,7 +220,7 @@ export default function HooksPanel() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [gardenSlug]);
 
   useEffect(() => {
     void load();
@@ -281,6 +293,7 @@ export default function HooksPanel() {
           chatInstructions: mode === "chat" ? chatInstructions.trim() : null,
           workflowId: mode === "workflow" ? workflowId : null,
           providerConfig: fieldValues,
+          gardenSlug,
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as {
@@ -342,7 +355,9 @@ export default function HooksPanel() {
           <div className="min-w-0 flex-1">
             <h2 className="text-lg font-semibold text-[var(--ink-heading)]">Hooks</h2>
             <p className="mt-1 text-xs text-[var(--ink-muted)]">
-              Create automations that react when something happens.
+              {gardenSlug
+                ? "Automations that react when something happens, and answer inside this garden."
+                : "Create automations that react when something happens."}
             </p>
           </div>
           {!creating && hooks.length > 0 ? (

@@ -26,7 +26,7 @@ export interface PersistentDesktopConfig {
    * the Help menu so the first local account can be created.
    */
   initialInviteCode: string;
-  /** GBrain garden-knowledge retrieval mode. Additive; default disabled. */
+  /** GBrain garden-knowledge retrieval mode. Additive; default preferred. */
   gbrainMode: "disabled" | "preferred" | "required";
   /** Per-install secret for the loopback GBrain adapter (never logged). */
   gbrainAdapterSecret: string;
@@ -38,6 +38,16 @@ export interface PersistentDesktopConfig {
   cadMode: "disabled" | "optional";
   /** Per-install secret for the loopback CAD service (never logged). */
   cadServiceSecret: string;
+  /**
+   * ColPali page-retrieval service mode. Additive; default optional.
+   *
+   * `optional` still does nothing on a machine that never ran
+   * `npm run setup:colpali` — there is no interpreter to launch, and document
+   * attachments keep being inlined whole.
+   */
+  colpaliMode: "disabled" | "optional";
+  /** Per-install secret for the loopback ColPali service (never logged). */
+  colpaliServiceSecret: string;
   /**
    * Subscription-OAuth proxy (CLIProxyAPI) mode. Additive; default optional.
    *
@@ -79,6 +89,7 @@ export interface LaunchPorts {
   uiTars?: number;
   /** CAD service loopback port. Only allocated when the CAD service is enabled. */
   cad?: number;
+  colpali?: number;
   /** Subscription proxy loopback port. Only allocated when it is enabled. */
   cliproxy?: number;
   /** Voicebox local speech service. Optional so older test/runtime configs remain valid. */
@@ -110,12 +121,14 @@ export function defaultPersistentConfig(): PersistentDesktopConfig {
     hermesSessionToken: randomSecret(),
     hermesToolSecret: randomSecret(),
     hermesCapabilitySecret: randomSecret(),
-    gbrainMode: "disabled",
+    gbrainMode: "preferred",
     gbrainAdapterSecret: randomSecret(24),
     uiTarsMode: "optional",
     uiTarsAdapterSecret: randomSecret(24),
     cadMode: "optional",
     cadServiceSecret: randomSecret(24),
+    colpaliMode: "optional",
+    colpaliServiceSecret: randomSecret(24),
     cliproxyMode: "optional",
     initialInviteCode: `BREAD${crypto.randomBytes(5).toString("hex").toUpperCase()}`,
     scriberrEnabled: true,
@@ -170,11 +183,13 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
         : typeof legacyCapabilitySecret === "string" && legacyCapabilitySecret.length >= 32
           ? legacyCapabilitySecret
           : randomSecret(),
-    // GBrain fields backfilled for configs written before they existed.
+    // GBrain fields backfilled for configs written before they existed. An
+    // install that explicitly turned GBrain off keeps it off; anything else
+    // (missing, or written before the field existed) adopts the new default.
     gbrainMode:
-      record["gbrainMode"] === "preferred" || record["gbrainMode"] === "required"
-        ? (record["gbrainMode"] as "preferred" | "required")
-        : "disabled",
+      record["gbrainMode"] === "disabled" || record["gbrainMode"] === "required"
+        ? (record["gbrainMode"] as "disabled" | "required")
+        : "preferred",
     gbrainAdapterSecret:
       typeof record["gbrainAdapterSecret"] === "string" && record["gbrainAdapterSecret"].length > 0
         ? (record["gbrainAdapterSecret"] as string)
@@ -193,6 +208,13 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
     cadServiceSecret:
       typeof record["cadServiceSecret"] === "string" && record["cadServiceSecret"].length > 0
         ? (record["cadServiceSecret"] as string)
+        : randomSecret(24),
+    // ColPali fields backfilled for configs written before the service existed.
+    colpaliMode: record["colpaliMode"] === "disabled" ? "disabled" : "optional",
+    colpaliServiceSecret:
+      typeof record["colpaliServiceSecret"] === "string" &&
+      record["colpaliServiceSecret"].length > 0
+        ? (record["colpaliServiceSecret"] as string)
         : randomSecret(24),
     // Backfilled for configs written before the subscription proxy was
     // supervised. Existing installs gain it as `optional`, which is what makes
@@ -269,6 +291,7 @@ export function redactedConfigSummary(config: DesktopRuntimeConfig): Record<stri
     gbrainMode: config.persistent.gbrainMode,
     uiTarsMode: config.persistent.uiTarsMode,
     cadMode: config.persistent.cadMode,
+    colpaliMode: config.persistent.colpaliMode,
     cliproxyMode: config.persistent.cliproxyMode,
     scriberrEnabled: config.persistent.scriberrEnabled,
     migratedFrom: config.persistent.migratedFrom,

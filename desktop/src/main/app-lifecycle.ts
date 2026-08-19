@@ -235,6 +235,9 @@ export class AppLifecycle {
         // Parametric CAD service. Allocated only when enabled; the definition
         // is registered only when its Python environment actually exists.
         ...(persistent.cadMode !== "disabled" ? { cad: await allocatePort(7731, taken) } : {}),
+        ...(persistent.colpaliMode !== "disabled"
+          ? { colpali: await allocatePort(7733, taken) }
+          : {}),
         // Subscription proxy port, allocated before the binary is known to
         // exist: provisioning happens later, and re-allocating afterwards would
         // mean the port could differ from the one already handed to ChatMock.

@@ -846,6 +846,7 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           onSteer={steer}
           onSendQueued={sendQueued}
           onEditMessage={editMessage}
+          onDeleteMessage={session.deleteMessage}
           onSelectBranch={selectBranch}
           onAbort={() => void session.abort()}
           onPermissionDecision={(decision) => void session.respondToPermission(decision)}

@@ -70,6 +70,47 @@ const COLUMN_PATCHES: readonly ColumnPatch[] = [
   },
   { table: "calendar_collections", column: "last_synced_at", definition: "TEXT" },
   { table: "calendar_collections", column: "sync_error", definition: "TEXT" },
+
+  // --- two-way CalDAV -------------------------------------------------------
+  // A subscribed calendar mirrors an ICS document over GET (`source_url`); a
+  // CalDAV calendar is bound to a *collection* it can also write back to, and
+  // that is a different thing, so it gets its own column rather than
+  // overloading the one that means "read-only mirror".
+  { table: "calendar_collections", column: "caldav_url", definition: "TEXT" },
+  // The account name, kept for the UI. The password lives sealed in
+  // calendar_caldav_credentials and never on this row.
+  { table: "calendar_collections", column: "caldav_username", definition: "TEXT" },
+  // The collection tag as of the last successful sync. Unchanged ctag means
+  // nothing in the collection moved, and the whole listing step can be skipped.
+  { table: "calendar_collections", column: "caldav_ctag", definition: "TEXT" },
+  // Consecutive failed syncs, which the background poller turns into a backoff.
+  // Reset to zero the moment one succeeds. Without it, a calendar whose password
+  // was revoked is retried every few minutes forever.
+  {
+    table: "calendar_collections",
+    column: "caldav_failures",
+    definition: "INTEGER NOT NULL DEFAULT 0",
+  },
+  // Held while a sync is in flight, as an ISO instant. Two processes can share
+  // this database — the desktop app and a dev server — and two syncs of one
+  // calendar at once would have the second one's writes refused as conflicts,
+  // which resolves by discarding a local edit. The lease makes that impossible.
+  { table: "calendar_collections", column: "caldav_lease_until", definition: "TEXT" },
+
+  // Where this event lives on the server, and which version we hold. The etag
+  // is what makes a write safe: it is sent back as If-Match, so a PUT that
+  // would overwrite someone else's newer edit is refused by the server instead.
+  { table: "calendar_events", column: "remote_href", definition: "TEXT" },
+  { table: "calendar_events", column: "remote_etag", definition: "TEXT" },
+  // Set by trigger on every local write, cleared once the change has been sent.
+  // A flag rather than a timestamp comparison because `updated_at` has
+  // one-second resolution, and an edit made in the same second as a push must
+  // not be mistaken for the push's own write.
+  {
+    table: "calendar_events",
+    column: "remote_dirty",
+    definition: "INTEGER NOT NULL DEFAULT 0",
+  },
 ];
 
 function addMissingColumns(db: Db): void {
@@ -162,5 +203,67 @@ export function ensureCalendarSchema(db: Db): void {
 
     CREATE INDEX IF NOT EXISTS idx_calendar_event_attendees_event
       ON calendar_event_attendees(event_id);
+
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_remote
+      ON calendar_events(calendar_id, remote_href);
+
+    -- A deleted event leaves nothing behind to sync from, so the address of
+    -- the thing to delete on the server is recorded before the row goes. The
+    -- alternative is remembering to write one of these at all five places that
+    -- can delete an event — including the cascade when a recurring master takes
+    -- its overrides with it — which is exactly the kind of bookkeeping that
+    -- gets forgotten in the sixth place.
+    -- The password for a bound collection, sealed by src/lib/calendar/
+    -- caldav-credentials.ts. Its own table, keyed by the calendar it unlocks,
+    -- so that dropping the calendar drops the secret with it and no ordinary
+    -- read of calendar_collections can ever return ciphertext by accident.
+    CREATE TABLE IF NOT EXISTS calendar_caldav_credentials (
+      calendar_id     INTEGER PRIMARY KEY
+                        REFERENCES calendar_collections(id) ON DELETE CASCADE,
+      user_id         INTEGER NOT NULL,
+      encrypted_value TEXT    NOT NULL,
+      updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS calendar_remote_tombstones (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id     INTEGER NOT NULL,
+      calendar_id INTEGER NOT NULL,
+      href        TEXT    NOT NULL,
+      etag        TEXT,
+      created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_tombstones_href
+      ON calendar_remote_tombstones(user_id, href);
+
+    CREATE TRIGGER IF NOT EXISTS trg_calendar_events_tombstone
+    AFTER DELETE ON calendar_events
+    WHEN OLD.remote_href IS NOT NULL
+    BEGIN
+      INSERT OR IGNORE INTO calendar_remote_tombstones (user_id, calendar_id, href, etag)
+      VALUES (OLD.user_id, OLD.calendar_id, OLD.remote_href, OLD.remote_etag);
+    END;
+
+    -- Any local write marks the event as owing the server a copy. An event
+    -- arriving *from* the server is inserted with its href already set, which
+    -- is how the pull half avoids marking everything it just downloaded as
+    -- something to upload again.
+    CREATE TRIGGER IF NOT EXISTS trg_calendar_events_dirty_insert
+    AFTER INSERT ON calendar_events
+    WHEN NEW.remote_href IS NULL AND NEW.remote_dirty = 0
+    BEGIN
+      UPDATE calendar_events SET remote_dirty = 1 WHERE id = NEW.id;
+    END;
+
+    -- Guarded so it cannot chase its own tail: it fires only when the flag was
+    -- clean and stayed clean, which is never true of the update it makes itself
+    -- or of the one that clears the flag after a successful push.
+    CREATE TRIGGER IF NOT EXISTS trg_calendar_events_dirty_update
+    AFTER UPDATE ON calendar_events
+    WHEN NEW.remote_dirty = 0 AND OLD.remote_dirty = 0
+    BEGIN
+      UPDATE calendar_events SET remote_dirty = 1 WHERE id = NEW.id;
+    END;
   `);
 }

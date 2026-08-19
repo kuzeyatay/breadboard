@@ -27,6 +27,10 @@ import {
   isRecurrenceFrequency,
   NO_RECURRENCE,
   type Attendee,
+  type CaldavBinding,
+  type PendingPush,
+  type RemoteTombstone,
+  type SyncableCalendar,
   type AttendeeRole,
   type AttendeeStatus,
   type CalendarCollection,
@@ -92,6 +96,9 @@ interface CalendarCollectionRow {
   read_only: number;
   last_synced_at: string | null;
   sync_error: string | null;
+  caldav_url: string | null;
+  caldav_username: string | null;
+  caldav_ctag: string | null;
   created_at: string;
 }
 
@@ -115,6 +122,9 @@ interface CalendarEventRow {
   uid: string | null;
   organizer_email: string | null;
   organizer_name: string | null;
+  remote_href: string | null;
+  remote_etag: string | null;
+  remote_dirty: number;
   created_at: string;
   updated_at: string;
 }
@@ -138,6 +148,8 @@ function presentCollection(row: CalendarCollectionRow): CalendarCollection {
     readOnly: row.read_only !== 0,
     lastSyncedAt: row.last_synced_at,
     syncError: row.sync_error,
+    caldavUrl: row.caldav_url,
+    caldavUsername: row.caldav_username,
     createdAt: row.created_at,
   };
 }
@@ -467,6 +479,12 @@ export class CalendarStore {
     this.db
       .prepare(`DELETE FROM calendar_collections WHERE id = ? AND user_id = ?`)
       .run(calendarId, userId);
+    // Afterwards, because the cascade deletes the events on the way out and any
+    // that were synced leave a tombstone behind. Removing a calendar means
+    // "stop having this here", not "empty the collection on the server".
+    this.db
+      .prepare(`DELETE FROM calendar_remote_tombstones WHERE user_id = ? AND calendar_id = ?`)
+      .run(userId, calendarId);
   }
 
   // ------------------------------------------------------------------- events
@@ -1441,5 +1459,400 @@ export class CalendarStore {
     }
 
     return { created, updated, removed };
+  }
+
+  // ------------------------------------------------------------------ CalDAV
+  //
+  // Everything below serves ./caldav-sync.ts, which owns the actual protocol
+  // conversation. The division is deliberate: this class knows what changed
+  // locally and what the server last told us, and nothing about HTTP; the sync
+  // module knows the protocol and nothing about SQL.
+
+  /**
+   * Bind a calendar to a remote collection.
+   *
+   * Every event already in the calendar is marked as owing the server a copy,
+   * which is what makes binding an existing calendar upload its contents rather
+   * than quietly leaving them behind on the first sync.
+   */
+  bindCaldav(
+    userId: number,
+    calendarId: number,
+    binding: { url: string; username?: string | null; ctag?: string | null },
+  ): CalendarCollection {
+    const calendar = this.getCalendar(userId, calendarId);
+    if (calendar.readOnly) {
+      throw new CalendarError(
+        409,
+        `"${calendar.name}" is a subscribed copy, so it cannot also sync both ways.`,
+      );
+    }
+
+    const url = requireText(binding.url, "Calendar address", 2000);
+
+    const bind = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE calendar_collections
+              SET caldav_url = ?, caldav_username = ?, caldav_ctag = ?,
+                  updated_at = datetime('now')
+            WHERE id = ? AND user_id = ?`,
+        )
+        .run(url, binding.username ?? null, binding.ctag ?? null, calendarId, userId);
+      this.db
+        .prepare(
+          `UPDATE calendar_events SET remote_dirty = 1
+            WHERE user_id = ? AND calendar_id = ? AND remote_href IS NULL`,
+        )
+        .run(userId, calendarId);
+    });
+    bind();
+
+    return this.getCalendar(userId, calendarId);
+  }
+
+  /**
+   * Stop syncing, keeping the events. The local copy becomes an ordinary
+   * calendar: no href, no etag, nothing pending, and no tombstones — after
+   * unbinding, a local delete is a local delete and must not reach the server.
+   */
+  unbindCaldav(userId: number, calendarId: number): CalendarCollection {
+    this.getCalendar(userId, calendarId);
+
+    const unbind = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE calendar_collections
+              SET caldav_url = NULL, caldav_username = NULL, caldav_ctag = NULL,
+                  last_synced_at = NULL, sync_error = NULL, updated_at = datetime('now')
+            WHERE id = ? AND user_id = ?`,
+        )
+        .run(calendarId, userId);
+      this.db
+        .prepare(
+          `UPDATE calendar_events
+              SET remote_href = NULL, remote_etag = NULL, remote_dirty = 0
+            WHERE user_id = ? AND calendar_id = ?`,
+        )
+        .run(userId, calendarId);
+      this.db
+        .prepare(`DELETE FROM calendar_remote_tombstones WHERE user_id = ? AND calendar_id = ?`)
+        .run(userId, calendarId);
+    });
+    unbind();
+
+    return this.getCalendar(userId, calendarId);
+  }
+
+  getCaldavBinding(userId: number, calendarId: number): CaldavBinding | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, caldav_url, caldav_username, caldav_ctag
+           FROM calendar_collections WHERE id = ? AND user_id = ?`,
+      )
+      .get(calendarId, userId) as
+      | { id: number; caldav_url: string | null; caldav_username: string | null; caldav_ctag: string | null }
+      | undefined;
+    if (!row?.caldav_url) return null;
+    return {
+      calendarId: row.id,
+      url: row.caldav_url,
+      username: row.caldav_username,
+      ctag: row.caldav_ctag,
+    };
+  }
+
+  /** Every calendar this account syncs both ways. */
+  listCaldavBindings(userId: number): CaldavBinding[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, caldav_url, caldav_username, caldav_ctag
+           FROM calendar_collections
+          WHERE user_id = ? AND caldav_url IS NOT NULL
+          ORDER BY sort_order, id`,
+      )
+      .all(userId) as {
+      id: number;
+      caldav_url: string;
+      caldav_username: string | null;
+      caldav_ctag: string | null;
+    }[];
+    return rows.map((row) => ({
+      calendarId: row.id,
+      url: row.caldav_url,
+      username: row.caldav_username,
+      ctag: row.caldav_ctag,
+    }));
+  }
+
+  /**
+   * Every bound calendar on the machine, across accounts.
+   *
+   * The only method here that is not scoped to one user, because the caller is
+   * the in-process poller (./caldav-scheduler.ts), which serves everybody and
+   * belongs to no one. Every write it then makes goes back through the ordinary
+   * per-user methods with the `userId` this row carries, so the exception ends
+   * at the read.
+   */
+  listSyncableCalendars(): SyncableCalendar[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, user_id, name, caldav_url, caldav_username,
+                last_synced_at, caldav_failures, caldav_lease_until
+           FROM calendar_collections
+          WHERE caldav_url IS NOT NULL
+          ORDER BY id`,
+      )
+      .all() as {
+      id: number;
+      user_id: number;
+      name: string;
+      caldav_url: string;
+      caldav_username: string | null;
+      last_synced_at: string | null;
+      caldav_failures: number;
+      caldav_lease_until: string | null;
+    }[];
+
+    return rows.map((row) => ({
+      userId: row.user_id,
+      calendarId: row.id,
+      name: row.name,
+      url: row.caldav_url,
+      username: row.caldav_username,
+      lastSyncedAt: row.last_synced_at,
+      failures: row.caldav_failures,
+      leaseUntil: row.caldav_lease_until,
+    }));
+  }
+
+  /**
+   * Whether this calendar owes its server anything — an edit to upload or a
+   * deletion to pass on. Local changes are the half of sync the user can see
+   * not happening, so the poller uses this to come round sooner than it would
+   * for a calendar that is only waiting to hear about someone else's changes.
+   */
+  hasPendingRemoteWork(userId: number, calendarId: number): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT
+           EXISTS (SELECT 1 FROM calendar_events
+                    WHERE user_id = ? AND calendar_id = ? AND remote_dirty = 1) AS dirty,
+           EXISTS (SELECT 1 FROM calendar_remote_tombstones
+                    WHERE user_id = ? AND calendar_id = ?) AS deleted`,
+      )
+      .get(userId, calendarId, userId, calendarId) as { dirty: number; deleted: number };
+    return row.dirty === 1 || row.deleted === 1;
+  }
+
+  /**
+   * Take the sync lease on a calendar, or report that someone else holds it.
+   *
+   * A compare-and-swap in one statement, so two processes sharing this database
+   * cannot both believe they won. `changes` is the whole answer: SQLite either
+   * matched the row under the condition or it did not.
+   */
+  claimCaldavSync(calendarId: number, leaseUntil: string, now: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE calendar_collections
+            SET caldav_lease_until = ?
+          WHERE id = ? AND caldav_url IS NOT NULL
+            AND (caldav_lease_until IS NULL OR caldav_lease_until < ?)`,
+      )
+      .run(leaseUntil, calendarId, now);
+    return result.changes === 1;
+  }
+
+  /** Hand the lease back, whatever the sync's outcome was. */
+  releaseCaldavSync(calendarId: number): void {
+    this.db
+      .prepare(`UPDATE calendar_collections SET caldav_lease_until = NULL WHERE id = ?`)
+      .run(calendarId);
+  }
+
+  /** Record the outcome of a two-way sync, including the collection tag. */
+  markCaldavSynced(
+    userId: number,
+    calendarId: number,
+    result: { syncedAt: string; ctag?: string | null; error?: string | null },
+  ): CalendarCollection {
+    this.getCalendar(userId, calendarId);
+    // The failure count is kept here rather than by the caller because this is
+    // the one place that learns how a sync ended, and the background poller
+    // needs the count to know how long to wait before trying that server again.
+    this.db
+      .prepare(
+        `UPDATE calendar_collections
+            SET last_synced_at = ?, sync_error = ?,
+                caldav_ctag = COALESCE(?, caldav_ctag),
+                caldav_failures = CASE WHEN ? IS NULL THEN 0 ELSE caldav_failures + 1 END,
+                updated_at = datetime('now')
+          WHERE id = ? AND user_id = ?`,
+      )
+      .run(
+        result.syncedAt,
+        result.error ?? null,
+        result.ctag ?? null,
+        result.error ?? null,
+        calendarId,
+        userId,
+      );
+    return this.getCalendar(userId, calendarId);
+  }
+
+  /** What we hold from the server, by object address. */
+  remoteHrefs(userId: number, calendarId: number): Map<string, { eventId: number; etag: string | null }> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, remote_href, remote_etag
+           FROM calendar_events
+          WHERE user_id = ? AND calendar_id = ? AND remote_href IS NOT NULL`,
+      )
+      .all(userId, calendarId) as { id: number; remote_href: string; remote_etag: string | null }[];
+
+    const index = new Map<string, { eventId: number; etag: string | null }>();
+    for (const row of rows) index.set(row.remote_href, { eventId: row.id, etag: row.remote_etag });
+    return index;
+  }
+
+  /**
+   * Local changes waiting to go out, one entry per remote object.
+   *
+   * A series and its per-instance edits share a UID and therefore a single
+   * resource on the server, so an edited override reports its *master* as
+   * pending — pushing the override alone would write a resource with no series
+   * in it, and the next pull would read that back as the series being gone.
+   */
+  pendingPushes(userId: number, calendarId: number): PendingPush[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM calendar_events e
+          WHERE e.user_id = ? AND e.calendar_id = ? AND e.parent_event_id IS NULL
+            AND (e.remote_dirty = 1
+              OR EXISTS (SELECT 1 FROM calendar_events c
+                          WHERE c.parent_event_id = e.id AND c.remote_dirty = 1))
+          ORDER BY e.id`,
+      )
+      .all(userId, calendarId) as CalendarEventRow[];
+
+    return rows.map((row) => {
+      const overrides = this.overridesOf(userId, row.id);
+      const attendees = this.attendeesFor([row.id, ...overrides.map((o) => o.id)]);
+      return {
+        event: presentEvent(row, attendees.get(row.id) ?? []),
+        overrides: overrides.map((o) => presentEvent(o, attendees.get(o.id) ?? [])),
+        href: row.remote_href,
+        etag: row.remote_etag,
+      };
+    });
+  }
+
+  /**
+   * Attach the server's address and version to an event and mark it settled.
+   *
+   * Must be the last write in whichever exchange it completes: the dirty
+   * trigger fires on any ordinary update, so clearing the flag first and then
+   * writing the row again would leave the event looking unsynced forever.
+   * Overrides are cleared alongside their master because they travelled inside
+   * the same resource; they carry no href of their own, so that deleting one
+   * never asks the server to remove the series it belongs to.
+   */
+  markRemoteSynced(
+    userId: number,
+    eventId: number,
+    remote: { href: string; etag: string | null },
+  ): void {
+    const settle = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE calendar_events
+              SET remote_href = ?, remote_etag = ?, remote_dirty = 0
+            WHERE id = ? AND user_id = ?`,
+        )
+        .run(remote.href, remote.etag, eventId, userId);
+      this.db
+        .prepare(
+          `UPDATE calendar_events SET remote_dirty = 0
+            WHERE parent_event_id = ? AND user_id = ?`,
+        )
+        .run(eventId, userId);
+    });
+    settle();
+  }
+
+  /** Deletions that still owe the server a DELETE. */
+  pendingTombstones(userId: number, calendarId: number): RemoteTombstone[] {
+    return this.db
+      .prepare(
+        `SELECT id, href, etag FROM calendar_remote_tombstones
+          WHERE user_id = ? AND calendar_id = ? ORDER BY id`,
+      )
+      .all(userId, calendarId) as RemoteTombstone[];
+  }
+
+  clearTombstone(userId: number, tombstoneId: number): void {
+    this.db
+      .prepare(`DELETE FROM calendar_remote_tombstones WHERE id = ? AND user_id = ?`)
+      .run(tombstoneId, userId);
+  }
+
+  /**
+   * Delete the local copies of objects that are gone from the server.
+   *
+   * The tombstones this raises are dropped again immediately: they exist to
+   * tell the server about *our* deletions, and asking it to delete what it has
+   * already deleted is at best a wasted round trip.
+   */
+  deleteEventsByRemoteHref(
+    userId: number,
+    calendarId: number,
+    hrefs: readonly string[],
+  ): number {
+    if (!hrefs.length) return 0;
+
+    const remove = this.db.transaction(() => {
+      const placeholders = hrefs.map(() => "?").join(",");
+      const result = this.db
+        .prepare(
+          `DELETE FROM calendar_events
+            WHERE user_id = ? AND calendar_id = ? AND remote_href IN (${placeholders})`,
+        )
+        .run(userId, calendarId, ...hrefs);
+      this.db
+        .prepare(
+          `DELETE FROM calendar_remote_tombstones
+            WHERE user_id = ? AND href IN (${placeholders})`,
+        )
+        .run(userId, ...hrefs);
+      return result.changes;
+    });
+
+    return remove();
+  }
+
+  /**
+   * The series row carrying this UID, which is what a downloaded resource maps
+   * onto: a CalDAV object is one UID, and its overrides hang off that master.
+   */
+  findMasterByUid(userId: number, calendarId: number, uid: string): number | null {
+    const row = this.db
+      .prepare(
+        `SELECT id FROM calendar_events
+          WHERE user_id = ? AND calendar_id = ? AND uid = ? AND parent_event_id IS NULL`,
+      )
+      .get(userId, calendarId, uid) as { id: number } | undefined;
+    return row?.id ?? null;
+  }
+
+  /** A master and its overrides, which together are one resource on a server. */
+  eventWithOverrides(userId: number, eventId: number): CalendarEvent[] {
+    const master = this.masterRow(userId, eventId);
+    const overrides = this.overridesOf(userId, master.id);
+    const attendees = this.attendeesFor([master.id, ...overrides.map((row) => row.id)]);
+    return [
+      presentEvent(master, attendees.get(master.id) ?? []),
+      ...overrides.map((row) => presentEvent(row, attendees.get(row.id) ?? [])),
+    ];
   }
 }

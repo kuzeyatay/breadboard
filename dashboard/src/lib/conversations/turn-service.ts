@@ -35,6 +35,7 @@ import {
 } from "../hermes/runtime-store.ts";
 import { scheduleCapabilityExpiry } from "../hermes/capability-lifecycle.ts";
 import { composeHermesSystemPrompt } from "../hermes/system-prompts.ts";
+import { suppliedEvidenceText } from "../hermes/evidence-calibration.ts";
 import { ApiError } from "../hermes/route-helpers.ts";
 import type { HermesSurface } from "../hermes/config.ts";
 import {
@@ -1106,6 +1107,9 @@ export async function startConversationTurn(
     surface: input.surface,
     decision,
     userText: resolved.userText || input.text,
+    // Only the attachments that still travel verbatim: a distilled document
+    // reaches the model as an index, which has no values to check.
+    suppliedEvidence: suppliedEvidenceText(documents.inlineAttachments),
     conversationPublicId: input.conversation.public_id,
     adhdMode: input.adhdMode === true,
     goalMode: goalModeState,

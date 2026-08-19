@@ -44,18 +44,33 @@ test("Quartz AI never receives GBrain tools", () => {
   }
 });
 
-test("GBrain tools are absent when GBrain is disabled (default)", () => {
+test("GBrain tools are absent only when GBrain is explicitly disabled", () => {
   const prev = process.env.GBRAIN_MODE;
-  delete process.env.GBRAIN_MODE;
+  process.env.GBRAIN_MODE = "disabled";
   try {
     const garden = allowedToolsForSurface("garden_chat");
     for (const g of GBRAIN_TOOLS) assert.ok(!garden.includes(g), `${g} must be absent when disabled`);
   } finally {
     if (prev !== undefined) process.env.GBRAIN_MODE = prev;
+    else delete process.env.GBRAIN_MODE;
   }
 });
 
-test("Garden Chat and Terminal receive GBrain tools only when enabled", () => {
+test("an unset GBRAIN_MODE defaults to enabled (preferred)", () => {
+  const prev = process.env.GBRAIN_MODE;
+  delete process.env.GBRAIN_MODE;
+  try {
+    const garden = allowedToolsForSurface("garden_chat");
+    for (const g of GBRAIN_TOOLS) assert.ok(garden.includes(g), `${g} must be present by default`);
+    // Quartz is still excluded by surface, not by the mode.
+    const quartz = allowedToolsForSurface("quartz_ai");
+    for (const g of GBRAIN_TOOLS) assert.ok(!quartz.includes(g));
+  } finally {
+    if (prev !== undefined) process.env.GBRAIN_MODE = prev;
+  }
+});
+
+test("Garden Chat and Terminal receive GBrain tools when enabled", () => {
   const prev = process.env.GBRAIN_MODE;
   process.env.GBRAIN_MODE = "preferred";
   try {

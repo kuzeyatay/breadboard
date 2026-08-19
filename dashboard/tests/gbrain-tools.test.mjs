@@ -59,9 +59,9 @@ test("a token whose allowlist lacks the GBrain tool cannot call it (skill token 
   assert.match(res.error, /not permitted/i);
 });
 
-test("gbrain_status reports disabled when GBRAIN_MODE is unset", async () => {
+test("gbrain_status reports disabled only when GBRAIN_MODE says so", async () => {
   const prev = process.env.GBRAIN_MODE;
-  delete process.env.GBRAIN_MODE;
+  process.env.GBRAIN_MODE = "disabled";
   try {
     const token = tokenFor(userA, clusterA);
     const res = await executeGBrainTool({ rawToken: token, tool: "gbrain_status", args: {} });
@@ -69,12 +69,26 @@ test("gbrain_status reports disabled when GBRAIN_MODE is unset", async () => {
     assert.equal(res.data.state, "disabled");
   } finally {
     if (prev !== undefined) process.env.GBRAIN_MODE = prev;
+    else delete process.env.GBRAIN_MODE;
+  }
+});
+
+test("an unset GBRAIN_MODE is not disabled (enabled by default)", async () => {
+  const prev = process.env.GBRAIN_MODE;
+  delete process.env.GBRAIN_MODE;
+  try {
+    const token = tokenFor(userA, clusterA);
+    const res = await executeGBrainTool({ rawToken: token, tool: "gbrain_status", args: {} });
+    assert.equal(res.ok, true);
+    assert.notEqual(res.data.state, "disabled");
+  } finally {
+    if (prev !== undefined) process.env.GBRAIN_MODE = prev;
   }
 });
 
 test("search is refused when GBrain is disabled (no silent fallback)", async () => {
   const prev = process.env.GBRAIN_MODE;
-  delete process.env.GBRAIN_MODE;
+  process.env.GBRAIN_MODE = "disabled";
   try {
     const token = tokenFor(userA, clusterA);
     const res = await executeGBrainTool({ rawToken: token, tool: "gbrain_search", args: { gardenId: slugA, query: "x" } });
@@ -82,6 +96,7 @@ test("search is refused when GBrain is disabled (no silent fallback)", async () 
     assert.match(res.error, /disabled/i);
   } finally {
     if (prev !== undefined) process.env.GBRAIN_MODE = prev;
+    else delete process.env.GBRAIN_MODE;
   }
 });
 

@@ -24,9 +24,15 @@ const ModelViewer = dynamic(() => import("@/app/components/cad/model-viewer"), {
 });
 
 interface Props {
-  /** Opens the chat an upload was sent in; omitted for surfaces that cannot. */
-  onOpenChat?: (conversationId: string) => void;
+  /**
+   * Opens the chat an upload was sent in; omitted for surfaces that cannot.
+   * The id is whatever the host surface opens a chat by — the conversation's
+   * public id in the Terminal, the legacy chat-session id in a garden.
+   */
+  onOpenChat?: (chatId: string) => void;
   activeSurface?: string;
+  /** Set inside a garden: only that garden's uploads are listed. */
+  gardenSlug?: string | null;
 }
 
 function formatUploadDate(value: string): string {
@@ -191,14 +197,17 @@ function UploadViewer({ upload, onClose }: { upload: StoredUpload; onClose: () =
 
 function RowMenu({
   upload,
+  chatId,
   onClose,
   onPreview,
   onOpenChat,
 }: {
   upload: StoredUpload;
+  /** The id the host surface opens this upload's chat by. */
+  chatId: string;
   onClose: () => void;
   onPreview: (upload: StoredUpload) => void;
-  onOpenChat?: (conversationId: string) => void;
+  onOpenChat?: (chatId: string) => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -262,7 +271,7 @@ function RowMenu({
           role="menuitem"
           onClick={() => {
             onClose();
-            onOpenChat(upload.conversationId);
+            onOpenChat(chatId);
           }}
           className="block w-full px-3 py-2 text-left text-[13px] text-[var(--ink)] transition hover:bg-[var(--paper-surface)]"
         >
@@ -284,7 +293,11 @@ function RowMenu({
   );
 }
 
-export default function UploadsPanel({ onOpenChat, activeSurface = "dashboard_terminal" }: Props) {
+export default function UploadsPanel({
+  onOpenChat,
+  activeSurface = "dashboard_terminal",
+  gardenSlug = null,
+}: Props) {
   const [uploads, setUploads] = useState<StoredUpload[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -295,7 +308,12 @@ export default function UploadsPanel({ onOpenChat, activeSurface = "dashboard_te
 
   const load = useCallback(async () => {
     try {
-      const response = await fetch("/api/hermes/uploads", { cache: "no-store" });
+      const response = await fetch(
+        gardenSlug
+          ? `/api/hermes/uploads?gardenSlug=${encodeURIComponent(gardenSlug)}`
+          : "/api/hermes/uploads",
+        { cache: "no-store" },
+      );
       const payload = (await response.json().catch(() => ({}))) as {
         uploads?: StoredUpload[];
         error?: string;
@@ -308,7 +326,7 @@ export default function UploadsPanel({ onOpenChat, activeSurface = "dashboard_te
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [gardenSlug]);
 
   useEffect(() => {
     // Loading is asynchronous; state changes only after the response settles.
@@ -463,10 +481,24 @@ export default function UploadsPanel({ onOpenChat, activeSurface = "dashboard_te
                 {menuId === upload.id ? (
                   <RowMenu
                     upload={upload}
+                    // A garden opens its chats by the legacy chat-session id;
+                    // the Terminal opens them by the conversation's public id.
+                    chatId={
+                      gardenSlug && upload.chatSessionId !== null
+                        ? String(upload.chatSessionId)
+                        : upload.conversationId
+                    }
                     onClose={() => setMenuId(null)}
                     onPreview={setSelectedUpload}
                     onOpenChat={
-                      onOpenChat && upload.surface === activeSurface ? onOpenChat : undefined
+                      onOpenChat &&
+                      upload.surface === activeSurface &&
+                      // A garden addresses chats by the legacy id, so an upload
+                      // from a chat that has no legacy row cannot be reached
+                      // from there and the entry is left off rather than dead.
+                      (!gardenSlug || upload.chatSessionId !== null)
+                        ? onOpenChat
+                        : undefined
                     }
                   />
                 ) : null}

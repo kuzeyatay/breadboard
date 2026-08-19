@@ -1,10 +1,9 @@
 // Renders the blank chat's empty state for real (esbuild -> CJS ->
 // react-dom/server) rather than reasoning about what the markup would be.
 //
-// The thing worth pinning down is the greeting itself: it has to address the
-// reader by name, in a colour of its own, on whichever line the hourly rotation
-// happened to land on — and the four openers have to be four buttons, not four
-// links that fire a message.
+// The thing worth pinning down is the greeting itself: when it addresses the
+// reader by name, that name is in a colour of its own — and the four openers
+// have to be four buttons, not four links that fire a message.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -90,7 +89,17 @@ function screenAt(hour, overrides = {}) {
 }
 
 test("the greeting renders as two lines with the name set apart", () => {
-  const screen = screenAt(14);
+  // Find an hour that still uses the vocative, so this pins the markup rather
+  // than whichever splash the rotation happened to land on.
+  let screen = null;
+  for (let hour = 0; hour < 24; hour += 1) {
+    const candidate = screenAt(hour);
+    if (candidate.greeting.name) {
+      screen = candidate;
+      break;
+    }
+  }
+  assert.ok(screen, "a whole day of greetings never used the name");
   assert.ok(screen.html.includes(screen.greeting.lead));
   assert.ok(screen.html.includes(screen.greeting.question));
   // The name is there, and it is drawn in its own muted colour rather than
@@ -99,14 +108,28 @@ test("the greeting renders as two lines with the name set apart", () => {
   assert.doesNotMatch(screen.html, />, Grey<\/p>/);
 });
 
-test("every hour of the day still says the reader's name", () => {
-  for (let hour = 0; hour < 24; hour += 1) {
-    const screen = screenAt(hour);
-    assert.ok(
-      screen.html.includes(`<span class="text-gray-500">, Grey</span>`),
-      `${screen.greeting.leadId} at ${hour}:00 rendered without the name`,
-    );
-  }
+test("a splash line does not grow a dangling comma", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ChatGreetingEmptyState, {
+      greeting: {
+        lead: "Hello, world",
+        name: null,
+        question: "What's on your mind?",
+        leadId: "hello-world",
+        questionId: "on-your-mind",
+      },
+      suggestions: [
+        "Explain something I am trying to learn, from scratch.",
+        "Help me think through a decision.",
+        "Settle an argument I am having with myself.",
+        "What should I focus on today?",
+      ],
+      onSelectSuggestion: () => {},
+    }),
+  );
+  assert.ok(html.includes("Hello, world"));
+  assert.doesNotMatch(html, /, <\/span>|,\s*<\/p>/);
+  assert.ok(!html.includes("text-gray-500"));
 });
 
 test("an account with no name renders the greeting alone, not a dangling comma", () => {

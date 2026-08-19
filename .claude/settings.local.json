@@ -44,7 +44,8 @@
       "Read(//c/Users/20252082/OneDrive - TU Eindhoven/**)",
       "Bash(rm -rf C:/Users/20252082/AppData/Local/Temp/claude/c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard/0f848430-8de2-4b67-87b0-7ada69b60410/scratchpad/regen-test-2)",
       "Bash(cp -r C:/Users/20252082/AppData/Local/Temp/claude/c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard/0f848430-8de2-4b67-87b0-7ada69b60410/scratchpad/broken-test-2 C:/Users/20252082/AppData/Local/Temp/claude/c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard/0f848430-8de2-4b67-87b0-7ada69b60410/scratchpad/regen-test-2)",
-      "Bash(node --experimental-strip-types scripts/finalize-breadboard-garden.ts C:/Users/20252082/AppData/Local/Temp/claude/c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard/0f848430-8de2-4b67-87b0-7ada69b60410/scratchpad/regen-test-2 test-2)"
+      "Bash(node --experimental-strip-types scripts/finalize-breadboard-garden.ts C:/Users/20252082/AppData/Local/Temp/claude/c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard/0f848430-8de2-4b67-87b0-7ada69b60410/scratchpad/regen-test-2 test-2)",
+      "Bash(python -c \"import numpy, pydantic; print\\('numpy', numpy.__version__, 'pydantic', pydantic.__version__\\)\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\20252082\\.claude\\skills"

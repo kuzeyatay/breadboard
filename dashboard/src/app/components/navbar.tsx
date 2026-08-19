@@ -96,6 +96,30 @@ export default function NavBar({
             Plan
           </a>
         )}
+        {shortcuts.buzz && (
+          <a
+            href="/buzz"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
+            title="Open Buzz — rooms you share with your agents — in a new tab"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M4 5.5h16M4 10.5h16" />
+              <path d="M10 3.5 8.5 20.5M15.5 3.5 14 20.5" />
+            </svg>
+            Buzz
+          </a>
+        )}
         {/* The profile chip is the way to the profile page, which is where
             inviting and signing out now live — both are account business, and
             neither was worth a permanent seat in the navbar. */}

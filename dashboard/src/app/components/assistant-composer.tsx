@@ -12,6 +12,7 @@ import {
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -98,6 +99,7 @@ import { MONEY_PRINTER_COMMAND } from '@/lib/money-printer/identity.ts';
 import { LEGAL_COMMAND } from '@/lib/legal/identity.ts';
 import { WARDROBE_COMMAND } from '@/lib/wardrobe/identity.ts';
 import { describeDocumentSummary, type DocumentAttachmentSummary } from '@/lib/document-attachments.ts';
+import { useDocumentIndexStatus } from '@/app/components/use-document-index-status';
 import type { ModelAttachmentSummary } from '@/lib/model-attachments.ts';
 import { OPENCODE_COMMAND } from '@/lib/opencode/identity.ts';
 import { CODEX_COMMAND } from '@/lib/codex/identity.ts';
@@ -527,6 +529,17 @@ export default function AssistantComposer({
   onSelectRuflo,
   voiceMessages,
 }: Props) {
+  // Which attached documents have been read into searchable pages yet. Polls
+  // only while one is still being read, and only when documents are attached.
+  const documentIndexStatus = useDocumentIndexStatus(
+    useMemo(
+      () =>
+        attachments.flatMap((attachment) =>
+          attachment.type === 'document' && attachment.blobId ? [attachment.blobId] : [],
+        ),
+      [attachments],
+    ),
+  );
   const [showIntelligence, setShowIntelligence] = useState(false);
   const [intelligencePanel, setIntelligencePanel] = useState<'usage' | 'settings' | null>(null);
   const [settingsMounted, setSettingsMounted] = useState(false);
@@ -1194,13 +1207,21 @@ export default function AssistantComposer({
                       rel="noreferrer"
                       className="truncate underline decoration-dotted underline-offset-2"
                       title={
-                        describeDocumentSummary(
-                          // Only a document's own summary describes a document;
-                          // a mesh's shares the field but not the shape.
-                          attachment.summary && 'figureCount' in attachment.summary
-                            ? attachment.summary
-                            : null,
-                        ) || `Open ${attachment.name}`
+                        [
+                          describeDocumentSummary(
+                            // Only a document's own summary describes a document;
+                            // a mesh's shares the field but not the shape.
+                            attachment.summary && 'figureCount' in attachment.summary
+                              ? attachment.summary
+                              : null,
+                          ) || `Open ${attachment.name}`,
+                          // Whether a question about this file will be answered
+                          // from retrieved pages or from the whole document.
+                          // Both are honest; they are not the same answer.
+                          documentIndexStatus[attachment.blobId]?.label,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')
                       }
                     >
                       {attachment.name}

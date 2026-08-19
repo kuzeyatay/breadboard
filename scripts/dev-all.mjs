@@ -27,11 +27,12 @@ const hermesCapabilitySecret =
   process.env.HERMES_CAPABILITY_SECRET?.trim() ||
   crypto.randomBytes(32).toString("hex");
 
-// GBrain (garden knowledge retrieval). Additive and off by default: `disabled`
-// starts nothing; `preferred` runs but never blocks the stack; `required` fails
-// startup if the adapter is not reachable. A per-launch adapter secret is shared
-// with the dashboard through the environment so the browser never sees it.
-const gbrainMode = process.env.GBRAIN_MODE?.trim().toLowerCase();
+// GBrain (garden knowledge retrieval). On by default: `preferred` runs but never
+// blocks the stack; `required` fails startup if the adapter is not reachable;
+// `disabled` must be asked for explicitly and starts nothing. A per-launch
+// adapter secret is shared with the dashboard through the environment so the
+// browser never sees it.
+const gbrainMode = process.env.GBRAIN_MODE?.trim().toLowerCase() || "preferred";
 const gbrainEnabled = gbrainMode === "preferred" || gbrainMode === "required";
 const gbrainPort = /^\d+$/.test(process.env.GBRAIN_ADAPTER_PORT ?? "") ? process.env.GBRAIN_ADAPTER_PORT : "7717";
 const gbrainSecret = process.env.GBRAIN_ADAPTER_SECRET || crypto.randomBytes(24).toString("hex");
@@ -69,6 +70,30 @@ const cadEnabled = cadMode !== "disabled" && existsSync(cadPythonBinary);
 if (cadMode !== "disabled" && !cadEnabled) {
   process.stdout.write(
     "[stack] CAD service not provisioned (run `npm run setup:cad`); the Parametric CAD agent will report it as unavailable.\n",
+  );
+}
+
+// ColPali (visual page retrieval over attached documents). Optional and never
+// blocking: without it an attached document is inlined whole, which is what
+// Breadboard did before the service existed. Its Python environment carries
+// PyTorch and is provisioned separately by `npm run setup:colpali`, so a
+// checkout that has not run that step simply does not start it.
+const colpaliMode = process.env.COLPALI_MODE?.trim().toLowerCase() || "auto";
+const colpaliPort = /^\d+$/.test(process.env.BREADBOARD_COLPALI_PORT ?? "")
+  ? process.env.BREADBOARD_COLPALI_PORT
+  : "7733";
+const colpaliServiceUrl = process.env.COLPALI_SERVICE_URL || `http://127.0.0.1:${colpaliPort}`;
+const colpaliPythonBinary = path.join(
+  repoRoot,
+  ".runtime",
+  "colpali-venv",
+  process.platform === "win32" ? "Scripts" : "bin",
+  process.platform === "win32" ? "python.exe" : "python",
+);
+const colpaliEnabled = colpaliMode !== "disabled" && existsSync(colpaliPythonBinary);
+if (colpaliMode !== "disabled" && !colpaliEnabled) {
+  process.stdout.write(
+    "[stack] ColPali not provisioned (run `npm run setup:colpali`); attached documents will be inlined whole.\n",
   );
 }
 
@@ -147,7 +172,7 @@ const runtimeEnv = {
   // GBrain: mode + the shared per-launch secret + adapter URL flow to both the
   // adapter process and the dashboard so they agree without the browser ever
   // seeing the secret.
-  GBRAIN_MODE: gbrainMode || "disabled",
+  GBRAIN_MODE: gbrainMode,
   GBRAIN_ADAPTER_PORT: gbrainPort,
   GBRAIN_ADAPTER_SECRET: gbrainSecret,
   GBRAIN_ADAPTER_URL: gbrainAdapterUrl,
@@ -165,6 +190,14 @@ const runtimeEnv = {
   // service just as this one does.
   BREADBOARD_CAD_PORT: cadPort,
   CAD_SERVICE_URL: cadServiceUrl,
+  // ColPali page retrieval. Reported as `disabled` when the environment was
+  // never provisioned, so the dashboard stops calling a service that cannot
+  // answer instead of waiting for a connection refusal once per question.
+  // No secret here either: dashboard/src/lib/colpali/config.ts resolves the
+  // same file-backed one the service launcher reads.
+  COLPALI_MODE: colpaliEnabled ? "auto" : "disabled",
+  BREADBOARD_COLPALI_PORT: colpaliPort,
+  COLPALI_SERVICE_URL: colpaliServiceUrl,
   // Subscription proxy. ChatMock reads CLIPROXY_* as the `cliproxy` provider's
   // endpoint and bearer, so subscription models are reachable as cliproxy/<model>.
   CLIPROXY_MODE: cliproxyMode,
@@ -259,6 +292,17 @@ async function main() {
   // never use. The dashboard's /api/cad/health reports the real state.
   if (cadEnabled) {
     startService("cad", process.execPath, [path.join(repoRoot, "scripts", "start-cad.mjs")]);
+  }
+
+  // ColPali starts alongside the other sidecars and is never waited on. It
+  // binds its port immediately but imports nothing heavy until the first
+  // request, so a readiness gate here would be a gate on `import torch` —
+  // seconds of startup for a capability the first turn may not use. The
+  // dashboard's /api/colpali/health reports the real state.
+  if (colpaliEnabled) {
+    startService("colpali", process.execPath, [
+      path.join(repoRoot, "scripts", "start-colpali.mjs"),
+    ]);
   }
 
   // GBrain adapter starts before Hermes so knowledge tools are ready when a

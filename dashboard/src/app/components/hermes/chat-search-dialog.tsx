@@ -19,6 +19,8 @@ export interface ChatSearchResult {
 
 interface Props {
   surface: string;
+  /** Set inside a garden: only that garden's chats are searched. */
+  gardenSlug?: string | null;
   /** Shown before anything is typed, so the dialog is never blank. */
   recents: TerminalSidebarChat[];
   onClose: () => void;
@@ -31,7 +33,13 @@ const DEBOUNCE_MS = 180;
  * Mounted only while open — the host renders it conditionally — so every
  * opening starts from an empty box instead of the last search.
  */
-export default function ChatSearchDialog({ surface, recents, onClose, onSelect }: Props) {
+export default function ChatSearchDialog({
+  surface,
+  gardenSlug = null,
+  recents,
+  onClose,
+  onSelect,
+}: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ChatSearchResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -46,7 +54,9 @@ export default function ChatSearchDialog({ surface, recents, onClose, onSelect }
     const timer = window.setTimeout(() => {
       setSearching(true);
       void fetch(
-        `/api/hermes/sessions/search?surface=${encodeURIComponent(surface)}&q=${encodeURIComponent(trimmed)}`,
+        `/api/hermes/sessions/search?surface=${encodeURIComponent(surface)}&q=${encodeURIComponent(trimmed)}${
+          gardenSlug ? `&gardenSlug=${encodeURIComponent(gardenSlug)}` : ""
+        }`,
         { cache: "no-store" },
       )
         .then(async (response) => {
@@ -76,7 +86,7 @@ export default function ChatSearchDialog({ surface, recents, onClose, onSelect }
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [query, surface]);
+  }, [query, surface, gardenSlug]);
 
   const searchingNow = searching && query.trim().length > 0;
   const rows: Array<{ id: string; title: string; updatedAt: string; snippet: string }> =

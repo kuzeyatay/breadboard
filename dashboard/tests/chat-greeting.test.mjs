@@ -130,10 +130,27 @@ test("over a day it uses the clock, the calendar and the name", () => {
 
 });
 
-test("the name is on every greeting there is, never only some of them", () => {
-  // Whichever line the rotation lands on, and whatever the day has made true,
-  // it is addressed to them by name. A greeting that sometimes drops the name
-  // reads as a different product from one screen to the next.
+test("the name is the usual shape, not a rule every line has to obey", () => {
+  // The vocative is still what makes most hours theirs. Splash lines skip it
+  // on purpose — "Hello, world, Grey" is not a greeting — and an account with
+  // nothing to call them never gets a dangling comma.
+  const week = sweep(24 * 7);
+  const named = week.filter((entry) => entry.greeting.name === "Grey");
+  const nameless = week.filter((entry) => entry.greeting.name === null);
+  assert.ok(
+    named.length / week.length > 0.55,
+    `only ${named.length} of ${week.length} greetings used the name`,
+  );
+  assert.ok(nameless.length > 0, "the rotation never reached a splash line");
+
+  for (const entry of named) {
+    // A vocative lead has to read as a sentence once the name is appended.
+    assert.doesNotMatch(entry.greeting.lead, /[.,!?]$/, entry.greeting.leadId);
+  }
+  for (const entry of nameless) {
+    assert.doesNotMatch(entry.greeting.lead, /Grey/);
+  }
+
   const everyMood = [
     {},
     { signals: { minutesSinceLastPrompt: null, promptsToday: 0, daysSinceJoined: 0 } },
@@ -145,17 +162,13 @@ test("the name is on every greeting there is, never only some of them", () => {
   ];
   for (const mood of everyMood) {
     for (const entry of sweep(24 * 7, mood)) {
-      assert.equal(
-        entry.greeting.name,
-        "Grey",
-        `${entry.greeting.leadId} dropped the name`,
-      );
-      // And it reads as a sentence once the name is appended to it.
-      assert.doesNotMatch(entry.greeting.lead, /[.,!?]$/);
+      if (entry.greeting.name) {
+        assert.equal(entry.greeting.name, "Grey", `${entry.greeting.leadId} used the wrong name`);
+        assert.doesNotMatch(entry.greeting.lead, /[.,!?]$/, entry.greeting.leadId);
+      }
     }
   }
 
-  // Only an account with no name to use goes without one.
   for (const entry of sweep(48, { signals: { name: null } })) {
     assert.equal(entry.greeting.name, null);
   }
@@ -296,12 +309,31 @@ test("it is funny sometimes, which is the only way it stays funny", () => {
   // they should land often enough to notice and rarely enough to enjoy.
   const week = sweep(24 * 7);
   const light = new Set([
-    "nocturnal", "sleep-rumour", "midnight-oil", "birds-impressed", "beat-the-sunrise",
-    "coffee-first", "day-unspoiled", "post-lunch", "afternoon-slump", "golden-hour",
-    "evening-shift", "one-more-thing", "screen-glow", "nobody-works-weekends",
-    "brace-yourself", "nearly-free", "keyboard-lie-down", "save-some", "emigrated",
-    "gardens-quiet", "that-was-quick", "back-already", "no-pressure", "clean-slate",
+    "nocturnal", "sleep-rumour", "midnight-oil", "living-dangerously", "better-judgement",
+    "birds-impressed", "beat-the-sunrise", "before-the-world", "while-quiet",
+    "coffee-first", "day-unspoiled", "fresh-eyes", "right-on-time",
+    "post-lunch", "afternoon-slump", "shall-we", "halfway-there",
+    "golden-hour", "evening-shift", "prime-time", "second-wind",
+    "one-more-thing", "screen-glow", "home-stretch", "making-it-count",
+    "nobody-works-weekends", "no-alarm",
+    "brace-yourself", "here-goes", "nearly-free", "friday-feeling",
+    "keyboard-lie-down", "save-some", "in-the-thick", "emigrated",
+    "gardens-quiet", "missed-you", "that-was-quick", "back-already", "look-who",
+    "no-pressure", "clean-slate", "after-you",
     "quite-the-collection", "at-your-service", "here-we-go", "cause-trouble",
+    "the-usual", "fancy-seeing-you",
+    "hardcore-mode", "does-not-replace-sleep", "out-of-office-hours",
+    "generating-terrain", "limited-edition-hour",
+    "hello-world", "also-try-outside", "not-on-the-exam",
+    "always-dns", "works-on-my-machine", "could-have-been-a-note",
+    "low-battery", "rubber-duck", "you-are-here",
+    "currently-buffering", "one-more-compile", "watched-compile",
+    "peaceful-difficulty", "also-try-writing",
+    "inventory-full", "please-hold", "notes-miss-you", "chunk-loaded",
+    "spawn-point-set", "insert-greeting", "advancement-made", "now-with-extra-gardens",
+    "now-entering-garden", "have-you-watered", "this-never-happened", "nobody-saw-you",
+    "may-contain-insight", "as-seen-on-localhost", "certified-present",
+    "mildly-unsupervised", "feature-complete-ish",
   ]);
   const share = week.filter((entry) => light.has(entry.greeting.leadId)).length / week.length;
   assert.ok(share > 0.05, `the lighter lines never came up (${share})`);
@@ -312,7 +344,7 @@ test("it is funny sometimes, which is the only way it stays funny", () => {
     ["good-morning", "morning", "weekday-morning", "good-afternoon", "afternoon",
      "weekday-afternoon", "good-evening", "evening", "weekday-evening", "still-up",
      "still-at-it", "working-late", "up-early", "early-start", "winding-down",
-     "late-one", "almost-tomorrow"].includes(entry.greeting.leadId),
+     "late-one", "almost-tomorrow", "weekday-night", "quiet-hours", "slow-morning"].includes(entry.greeting.leadId),
   ).length;
   assert.ok(plain > week.length * 0.25, `only ${plain} of ${week.length} were plain time-of-day lines`);
 });
@@ -356,32 +388,67 @@ test("a joke about the small hours is not told at nine in the morning", () => {
     nocturnal: (h) => h < 5,
     "sleep-rumour": (h) => h < 5,
     "midnight-oil": (h) => h < 5,
+    "living-dangerously": (h) => h < 5,
+    "better-judgement": (h) => h < 5,
+    "hardcore-mode": (h) => h < 5,
+    "does-not-replace-sleep": (h) => h < 5,
+    "out-of-office-hours": (h) => h < 5,
     "birds-impressed": (h) => h >= 5 && h < 8,
     "beat-the-sunrise": (h) => h >= 5 && h < 8,
+    "before-the-world": (h) => h >= 5 && h < 8,
+    "while-quiet": (h) => h >= 5 && h < 8,
+    "generating-terrain": (h) => h >= 5 && h < 8,
+    "limited-edition-hour": (h) => h >= 5 && h < 8,
     "coffee-first": (h) => h >= 8 && h < 12,
     "day-unspoiled": (h) => h >= 8 && h < 12,
+    "fresh-eyes": (h) => h >= 8 && h < 12,
+    "right-on-time": (h) => h >= 8 && h < 12,
+    "hello-world": (h) => h >= 8 && h < 12,
+    "also-try-outside": (h) => h >= 8 && h < 12,
+    "not-on-the-exam": (h) => h >= 8 && h < 12,
     "post-lunch": (h) => h >= 12 && h < 17,
     "afternoon-slump": (h) => h >= 12 && h < 17,
+    "shall-we": (h) => h >= 12 && h < 17,
+    "halfway-there": (h) => h >= 12 && h < 17,
+    "always-dns": (h) => h >= 12 && h < 17,
+    "works-on-my-machine": (h) => h >= 12 && h < 17,
+    "could-have-been-a-note": (h) => h >= 12 && h < 17,
     "golden-hour": (h) => h >= 17 && h < 21,
     "evening-shift": (h) => h >= 17 && h < 21,
+    "prime-time": (h) => h >= 17 && h < 21,
+    "second-wind": (h) => h >= 17 && h < 21,
+    "low-battery": (h) => h >= 17 && h < 21,
+    "rubber-duck": (h) => h >= 17 && h < 21,
+    "you-are-here": (h) => h >= 17 && h < 21,
     "one-more-thing": (h) => h >= 21,
     "screen-glow": (h) => h >= 21,
+    "home-stretch": (h) => h >= 21,
+    "making-it-count": (h) => h >= 21,
+    "currently-buffering": (h) => h >= 21,
+    "one-more-compile": (h) => h >= 21,
+    "watched-compile": (h) => h >= 21,
   };
   for (const entry of sweep(24 * 14)) {
     const window = windows[entry.greeting.leadId];
     if (window) assert.ok(window(entry.now.getHours()), `${entry.greeting.leadId} at ${entry.now.getHours()}:00`);
-    if (entry.greeting.leadId === "nobody-works-weekends") {
+    if (entry.greeting.leadId === "nobody-works-weekends" || entry.greeting.leadId === "no-alarm" || entry.greeting.leadId === "peaceful-difficulty" || entry.greeting.leadId === "also-try-writing") {
       assert.ok(entry.now.getDay() === 0 || entry.now.getDay() === 6);
     }
-    if (entry.greeting.leadId === "brace-yourself") assert.equal(entry.now.getDay(), 1);
+    if (entry.greeting.leadId === "brace-yourself" || entry.greeting.leadId === "here-goes") assert.equal(entry.now.getDay(), 1);
     if (entry.greeting.leadId === "nearly-free") assert.equal(entry.now.getDay(), 5);
-    if (entry.greeting.questionId === "keeping-you-up") assert.ok(entry.now.getHours() < 5);
+    if (entry.greeting.leadId === "friday-feeling") assert.equal(entry.now.getDay(), 5);
+    if (entry.greeting.questionId === "keeping-you-up" || entry.greeting.questionId === "worth-the-hour") {
+      assert.ok(entry.now.getHours() < 5);
+    }
   }
 
   // Nothing teases someone about coming back after a gap they have not had.
   for (const entry of sweep(24 * 7, { signals: { minutesSinceLastPrompt: 5 } })) {
     assert.notEqual(entry.greeting.leadId, "emigrated");
     assert.notEqual(entry.greeting.leadId, "no-pressure");
+    assert.notEqual(entry.greeting.leadId, "missed-you");
+    assert.notEqual(entry.greeting.leadId, "notes-miss-you");
+    assert.notEqual(entry.greeting.leadId, "spawn-point-set");
   }
   // Someone who has never written a message is not welcomed back.
   for (const entry of sweep(24 * 7, {
@@ -389,6 +456,52 @@ test("a joke about the small hours is not told at nine in the morning", () => {
   })) {
     assert.notEqual(entry.greeting.leadId, "here-we-go");
     assert.notEqual(entry.greeting.leadId, "that-was-quick");
+    assert.notEqual(entry.greeting.leadId, "look-who");
+    assert.notEqual(entry.greeting.leadId, "chunk-loaded");
+    assert.notEqual(entry.greeting.leadId, "back-already");
+  }
+});
+
+test("a calendar easter egg only lands on the day it is about", () => {
+  const hoursOn = (year, month, day) => {
+    const results = [];
+    for (let hour = 0; hour < 24; hour += 1) {
+      results.push({
+        now: new Date(year, month, day, hour, 0, 0, 0),
+        greeting: greeting(new Date(year, month, day, hour, 0, 0, 0)),
+      });
+    }
+    return results;
+  };
+
+  const april = hoursOn(2026, 3, 1);
+  const aprilIds = new Set(april.map((entry) => entry.greeting.leadId));
+  assert.ok(
+    aprilIds.has("trust-nothing") || aprilIds.has("everything-is-fine"),
+    "April the first never told its own joke",
+  );
+  for (const entry of [...hoursOn(2026, 2, 31), ...hoursOn(2026, 3, 2)]) {
+    assert.notEqual(entry.greeting.leadId, "trust-nothing");
+    assert.notEqual(entry.greeting.leadId, "everything-is-fine");
+  }
+
+  const friday13 = hoursOn(2026, 1, 13);
+  assert.equal(friday13[0].now.getDay(), 5);
+  assert.ok(
+    friday13.some((entry) => entry.greeting.leadId === "watch-your-step"),
+    "Friday the 13th never warned anyone",
+  );
+  for (const entry of hoursOn(2026, 1, 12)) {
+    assert.notEqual(entry.greeting.leadId, "watch-your-step");
+  }
+
+  const halloween = hoursOn(2026, 9, 31);
+  assert.ok(
+    halloween.some((entry) => entry.greeting.leadId === "restless-gardens"),
+    "Halloween never mentioned the gardens",
+  );
+  for (const entry of hoursOn(2026, 9, 30)) {
+    assert.notEqual(entry.greeting.leadId, "restless-gardens");
   }
 });
 

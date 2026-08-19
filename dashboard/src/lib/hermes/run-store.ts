@@ -111,6 +111,8 @@ export interface ActiveRuntimeRunSummary {
   surface: string;
   gardenId: string | null;
   pageSlug: string | null;
+  /** Set for a Garden chat, which is addressed by this rather than by public id. */
+  chatSessionId: number | null;
   startedAt: string;
 }
 
@@ -188,7 +190,8 @@ export function listActiveRuntimeRunsForUser(
            c.title AS conversation_title,
            s.surface,
            s.garden_id,
-           s.page_slug
+           s.page_slug,
+           s.chat_session_id
       FROM hermes_runs r
       JOIN hermes_runtime_sessions s ON s.id = r.runtime_session_id
       JOIN conversations c ON c.id = s.conversation_id
@@ -206,6 +209,7 @@ export function listActiveRuntimeRunsForUser(
     surface: string;
     garden_id: string | null;
     page_slug: string | null;
+    chat_session_id: number | null;
   }>;
   const now = Date.now();
   return rows
@@ -218,6 +222,7 @@ export function listActiveRuntimeRunsForUser(
       surface: row.surface,
       gardenId: row.garden_id,
       pageSlug: row.page_slug,
+      chatSessionId: row.chat_session_id,
       startedAt: row.started_at,
     }));
 }

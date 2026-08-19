@@ -780,7 +780,7 @@ function normalizeComparable(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-function inferMemoryKind(value: string): DurableMemoryKind {
+export function inferMemoryKind(value: string): DurableMemoryKind {
   if (/\b(?:prefer|preference|like|avoid)\b/i.test(value)) return "preference";
   if (/\b(?:workflow|always|usually|process)\b/i.test(value)) return "working_pattern";
   if (/\b(?:decide|decision|must use|architecture)\b/i.test(value)) return "decision";

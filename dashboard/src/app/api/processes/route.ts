@@ -30,6 +30,7 @@ export async function GET() {
         surface: run.surface as HermesSurface,
         gardenId: run.gardenId,
         pageSlug: run.pageSlug,
+        chatSessionId: run.chatSessionId,
         startedAt: run.startedAt,
       }));
 
@@ -49,6 +50,7 @@ export async function GET() {
         enabled: job.enabled,
         cadence: job.cronDescription,
         target: scheduleTargetLabel(job),
+        gardenSlug: job.gardenSlug,
         nextRunAt: job.nextRunAt,
         lastRunAt: job.lastRunAt,
         lastStatus: job.lastStatus,

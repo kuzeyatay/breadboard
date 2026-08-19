@@ -15,9 +15,9 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --background: #20211f;
-  --chrome: #20211f;
-  --ink: #e6ebe5;
+  --background: #0b0c0a;
+  --chrome: #171916;
+  --ink: #ccd2c9;
   --muted: #9da8a1;
   --leaf: #91b7a1;
   --leaf-soft: rgba(145, 183, 161, 0.18);

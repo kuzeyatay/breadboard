@@ -105,6 +105,13 @@ interface Props {
   sourceUrl?: string;
   readOnly?: boolean;
   /**
+   * The small label above the title. Defaults to what the garden and the
+   * artifact viewer already said; a caller that is neither — a chat
+   * attachment, say — names itself so the header does not claim to be
+   * something else.
+   */
+  kicker?: string;
+  /**
    * Whether this account asked for the Fast-read seat in its profile. Off is
    * the default, so a page that has not read the setting shows no button.
    */
@@ -273,6 +280,7 @@ export default function PdfViewerClient({
   browserTitle,
   sourceUrl,
   readOnly = false,
+  kicker,
   fastRead = false,
 }: Props) {
   const router = useRouter();
@@ -1179,7 +1187,7 @@ export default function PdfViewerClient({
           </button>
           <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-wider text-gray-600">
-              {readOnly ? "PDF artifact" : "PDF source"}
+              {kicker ?? (readOnly ? "PDF artifact" : "PDF source")}
             </p>
             {!readOnly && editingTitle ? (
               <form

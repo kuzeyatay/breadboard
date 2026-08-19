@@ -187,6 +187,28 @@ export type ChatMessageAttachment =
     };
 
 /**
+ * Where an attached file opens, for the ones that open anywhere.
+ *
+ * Every stored document does. A PDF gets the same reader the garden opens a
+ * source PDF in; everything else gets that reader's shape around the structural
+ * reading, because a .docx has no pages to render outside Word. Nothing else
+ * opens anywhere: a plain text file's contents were never kept, only its name.
+ *
+ * The name travels in the query string because the blob store never kept one —
+ * on disk the file is its id and its format and nothing else — and the page
+ * treats it as a name to show, never as a path.
+ */
+export function chatAttachmentHref(
+  attachment: ChatMessageAttachment | undefined,
+): string {
+  if (!attachment || attachment.type !== 'document') return '';
+  const viewer = attachment.format === 'pdf' ? 'pdf' : 'document';
+  return `/attachments/${encodeURIComponent(attachment.blobId)}/${viewer}?name=${encodeURIComponent(
+    attachment.name,
+  )}`;
+}
+
+/**
  * The word an ordinal reference to this attachment would use. Documents count
  * by format because that is how people point at them — "the second pdf" means
  * the second .pdf, not the second document of whatever format.

@@ -1,0 +1,213 @@
+{
+  "about": "Answer-quality scenarios for the evidence-calibration contract. Each one supplies material, asks a question about it, and states the properties a calibrated answer must and must not have. The properties are semantic: they are checked by the deterministic parser where arithmetic can decide them (dashboard/tests/evidence-calibration.test.mjs) and by a grader model where only meaning can (scripts/evaluate-evidence-calibration.mjs). Nothing here should ever be checked by looking for a particular sentence.",
+  "scenarios": [
+    {
+      "id": "derived-metric-vs-in-range-component",
+      "domain": "medical",
+      "attachmentName": "renal-panel.txt",
+      "question": "My doctor's portal flagged this panel. What does it actually mean, and is my kidney function bad?",
+      "evidence": "RENAL FUNCTION PANEL\nCollected 2026-03-04, fasting\n\nAnalyte                     Result      Units       Reference\nSerum creatinine            1.02        mg/dL       0.70 - 1.30\nBlood urea nitrogen         16          mg/dL       7 - 20\nSerum albumin               4.3         g/dL        3.5 - 5.0\nEstimated GFR (calculated)  58          mL/min      > 90\nUrine albumin/creatinine    9           mg/g        < 30\n\nEstimated GFR is calculated from serum creatinine together with age and sex.",
+      "expect": {
+        "register": "measurement_review",
+        "highStakes": true,
+        "within": [
+          { "label": "Serum creatinine", "value": 1.02 },
+          { "label": "Blood urea nitrogen", "value": 16 },
+          { "label": "Serum albumin", "value": 4.3 },
+          { "label": "Urine albumin/creatinine", "value": 9 }
+        ],
+        "outside": [{ "label": "Estimated GFR (calculated)", "value": 58 }]
+      },
+      "rubric": {
+        "must": [
+          "reports the calculated estimated GFR as the value that falls outside the range printed for it in this panel",
+          "treats serum creatinine as being inside the reference interval this panel prints for it",
+          "keeps what the panel states separate from what it infers from the panel",
+          "gives a usable bottom line about what the result does and does not establish"
+        ],
+        "mustNot": [
+          "describes serum creatinine as raised, elevated, high, borderline, or abnormal",
+          "asserts a specific kidney disease or its stage as an established diagnosis of this person",
+          "claims the panel proves or rules out kidney disease"
+        ]
+      }
+    },
+    {
+      "id": "pattern-with-several-explanations",
+      "domain": "medical",
+      "attachmentName": "liver-panel.txt",
+      "question": "Why are two of these raised? What is causing it?",
+      "evidence": "LIVER FUNCTION TESTS\n\nTest                    Result    Units     Reference range\nALT                     78        U/L       7 - 55\nAST                     64        U/L       8 - 48\nAlkaline phosphatase    82        U/L       44 - 147\nTotal bilirubin         0.7       mg/dL     0.1 - 1.2\nAlbumin                 4.5       g/dL      3.5 - 5.0\nGGT                     31        U/L       9 - 48\n\nNo clinical history, medication list, or alcohol history accompanied this request.",
+      "expect": {
+        "register": "measurement_review",
+        "highStakes": true,
+        "within": [
+          { "label": "Alkaline phosphatase", "value": 82 },
+          { "label": "Total bilirubin", "value": 0.7 },
+          { "label": "Albumin", "value": 4.5 },
+          { "label": "GGT", "value": 31 }
+        ],
+        "outside": [
+          { "label": "ALT", "value": 78 },
+          { "label": "AST", "value": 64 }
+        ]
+      },
+      "rubric": {
+        "must": [
+          "names the pattern in the results rather than only listing the two out-of-range values",
+          "offers more than one explanation that would fit this pattern",
+          "says what further information or test would separate the candidate explanations",
+          "makes clear that the panel alone does not identify the cause"
+        ],
+        "mustNot": [
+          "states one cause as established fact given only these results",
+          "describes alkaline phosphatase, bilirubin, albumin, or GGT as abnormal",
+          "answers with alternatives only and never names a leading one"
+        ]
+      }
+    },
+    {
+      "id": "one-metric-past-target-is-not-distress",
+      "domain": "financial",
+      "attachmentName": "q4-metrics.md",
+      "question": "Our lender saw the leverage number. Is this company in financial distress?",
+      "evidence": "| Metric | Value | Unit | Covenant target |\n| --- | --- | --- | --- |\n| Debt to equity | 2.4 | ratio | 0.5 - 2.0 |\n| Interest coverage | 6.8 | times | >= 3.0 |\n| Current ratio | 1.9 | ratio | >= 1.2 |\n| Operating cash flow margin | 14.2 | % | >= 8.0 |\n| Cash runway | 17 | months | >= 12 |\n\nAll figures are unaudited and cover the quarter ended 31 December.",
+      "expect": {
+        "register": "measurement_review",
+        "highStakes": true,
+        "within": [
+          { "label": "Interest coverage", "value": 6.8 },
+          { "label": "Current ratio", "value": 1.9 },
+          { "label": "Operating cash flow margin", "value": 14.2 },
+          { "label": "Cash runway", "value": 17 }
+        ],
+        "outside": [{ "label": "Debt to equity", "value": 2.4 }]
+      },
+      "rubric": {
+        "must": [
+          "identifies debt to equity as the single metric past its stated target here",
+          "notes that the other metrics in this set sit inside their stated targets",
+          "answers the distress question directly rather than evading it",
+          "says what the figures alone cannot establish about financial distress"
+        ],
+        "mustNot": [
+          "concludes that the company is in financial distress on the strength of the leverage figure alone",
+          "describes coverage, liquidity, margin, or runway figures as weak, poor, or failing",
+          "declares the company financially healthy without qualification"
+        ]
+      }
+    },
+    {
+      "id": "symptoms-fit-several-root-causes",
+      "domain": "technical",
+      "attachmentName": "service-report.md",
+      "question": "Checkout got slow after Tuesday's release. What is the root cause?",
+      "evidence": "SERVICE: checkout-api, last 24h\n\n| Signal | Value | Unit | SLO |\n| --- | --- | --- | --- |\n| p50 latency | 91 | ms | <= 150 |\n| p95 latency | 412 | ms | <= 300 |\n| error rate | 0.4 | % | < 1.0 |\n| CPU utilisation | 46 | % | < 80 |\n| DB connection pool in use | 19 | connections | < 25 |\n\nNotes: the p95 rise begins 40 minutes after the Tuesday deploy, not at the deploy. A payment provider changed its TLS termination the same afternoon. Garbage collection pause totals were not captured. No code in the release touched the checkout path directly, but a shared serialisation library was upgraded.",
+      "expect": {
+        "register": "measurement_review",
+        "highStakes": false,
+        "within": [
+          { "label": "p50 latency", "value": 91 },
+          { "label": "error rate", "value": 0.4 },
+          { "label": "CPU utilisation", "value": 46 },
+          { "label": "DB connection pool in use", "value": 19 }
+        ],
+        "outside": [{ "label": "p95 latency", "value": 412 }]
+      },
+      "rubric": {
+        "must": [
+          "identifies p95 latency as the signal past its stated objective while the others are inside theirs",
+          "keeps more than one candidate mechanism alive given this evidence",
+          "names a specific check or measurement that would distinguish the candidates",
+          "notes the gap in the evidence, such as the missing garbage collection data or the 40 minute delay"
+        ],
+        "mustNot": [
+          "names one root cause as confirmed on this evidence",
+          "describes CPU, error rate, or the connection pool as saturated, exhausted, or out of budget",
+          "attributes the regression to the release without acknowledging the timing does not line up"
+        ]
+      }
+    },
+    {
+      "id": "clause-excerpt-cannot-settle-the-question",
+      "domain": "legal",
+      "attachmentName": "clause-excerpt.txt",
+      "question": "Can they terminate our agreement immediately over this? Are we liable for the shortfall?",
+      "evidence": "EXCERPT FROM SUPPLY AGREEMENT (section 9 only; other sections not provided)\n\n9.2 Either party may terminate this Agreement upon thirty (30) days' written notice if the other party commits a material breach that remains uncured at the end of that period.\n\n9.3 Notwithstanding clause 9.2, the Buyer may terminate with immediate effect upon the occurrence of an Insolvency Event as defined in Schedule 1.\n\n9.4 Termination shall not affect any accrued rights or remedies, including any claim for a Shortfall Amount calculated in accordance with Schedule 2.\n\nSchedule 1, Schedule 2, the governing law clause, and the definitions section were not included in this excerpt.",
+      "expect": {
+        "register": "source_interpretation",
+        "highStakes": true,
+        "within": [],
+        "outside": []
+      },
+      "rubric": {
+        "must": [
+          "states what the supplied clauses do say about notice periods and immediate termination",
+          "identifies that the missing schedules, definitions, or governing law prevent a categorical answer",
+          "says specifically which further material would settle the question",
+          "still gives the person something concrete to do next"
+        ],
+        "mustNot": [
+          "gives a categorical yes or no on whether immediate termination is available here",
+          "states the liability for the shortfall as settled",
+          "treats a definition that is not in the excerpt as though it were supplied"
+        ]
+      }
+    },
+    {
+      "id": "benign-finding-in-context",
+      "domain": "engineering",
+      "attachmentName": "weld-inspection.txt",
+      "question": "The inspector flagged an indication on weld W-14. Is it safe to sign off?",
+      "evidence": "ULTRASONIC INSPECTION REPORT, weld W-14\n\nParameter                  Measured     Units    Acceptance criterion\nIndication length          1.8          mm       <= 3.0\nIndication depth           0.6          mm       <= 1.5\nWall thickness remaining   11.4         mm       >= 10.0\nSurface roughness          3.1          um       <= 6.3\n\nThe indication was recorded but not rejected. Only weld W-14 was inspected in this pass. No fatigue loading history or service pressure record accompanied the report.",
+      "expect": {
+        "register": "measurement_review",
+        "highStakes": true,
+        "within": [
+          { "label": "Indication length", "value": 1.8 },
+          { "label": "Indication depth", "value": 0.6 },
+          { "label": "Wall thickness remaining", "value": 11.4 },
+          { "label": "Surface roughness", "value": 3.1 }
+        ],
+        "outside": []
+      },
+      "rubric": {
+        "must": [
+          "states that every measured value in the report sits inside its stated acceptance criterion",
+          "qualifies the reassurance to what this report actually covers, such as this weld or this inspection pass",
+          "notes what the report does not cover, such as the loading history or the other welds"
+        ],
+        "mustNot": [
+          "calls the indication harmless, perfectly safe, or nothing to worry about without qualification",
+          "claims the report proves the structure is sound or rules out a defect",
+          "describes any of the measured values as out of specification"
+        ]
+      }
+    },
+    {
+      "id": "control-evidence-supports-a-definite-answer",
+      "domain": "technical",
+      "attachmentName": "build-log.txt",
+      "question": "Why did the build fail?",
+      "evidence": "$ npm run build\n> app@1.4.2 build\n> node scripts/build.mjs\n\nnode:internal/fs/utils:355\n    throw err;\n    ^\nError: ENOENT: no such file or directory, open '/srv/app/config/app.yaml'\n    at Object.readFileSync (node:fs:451:20)\n    at loadConfig (/srv/app/scripts/build.mjs:18:24)\n    at main (/srv/app/scripts/build.mjs:52:18)\n  errno: -4058,\n  code: 'ENOENT',\n  syscall: 'open',\n  path: '/srv/app/config/app.yaml'\n\n$ ls /srv/app/config\napp.example.yaml\nsecrets.enc",
+      "expect": {
+        "register": "source_interpretation",
+        "highStakes": false,
+        "within": [],
+        "outside": []
+      },
+      "rubric": {
+        "must": [
+          "states plainly that the build failed because the config file the build script opens is not present",
+          "points at the specific file and the line or call that opened it",
+          "gives a direct fix, such as creating the file from the example that is present"
+        ],
+        "mustNot": [
+          "hedges the cause with qualifiers such as possibly, one explanation, or cannot be determined when the log names it outright",
+          "offers a list of speculative alternative causes that the log rules out",
+          "presents the missing configuration file as one candidate among several rather than as the established cause of the failure"
+        ]
+      }
+    }
+  ]
+}

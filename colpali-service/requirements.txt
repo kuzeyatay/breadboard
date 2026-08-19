@@ -1,0 +1,13 @@
+# Breadboard ColPali service — pinned runtime dependencies.
+#
+# Python 3.13 is the target. colpali-engine allows <3.15, but torch publishes no
+# 3.14 wheels for Windows, and 3.14 is this repository's default interpreter —
+# so scripts/setup-colpali.mjs provisions .runtime/colpali-venv on 3.13 through
+# uv rather than using whatever `python` happens to be.
+#
+# torch is NOT pinned to a CUDA build here. The setup script installs it first
+# from the cu124 index; leaving it unqualified in this file means a CPU-only
+# machine still gets a working (slower) service instead of a failed install.
+colpali-engine>=0.3.12,<0.4
+pillow>=10.0
+pydantic==2.13.4

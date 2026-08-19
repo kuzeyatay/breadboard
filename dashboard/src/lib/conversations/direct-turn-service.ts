@@ -55,6 +55,10 @@ import { cogniviaSection } from "../cognivia/index.ts";
 import { directModeSection } from "../hermes/direct-mode.ts";
 import { responseStylePrompt } from "../hermes/system-prompts.ts";
 import {
+  evidenceCalibrationSection,
+  suppliedEvidenceText,
+} from "../hermes/evidence-calibration.ts";
+import {
   completeAssistantMessage,
   failAssistantMessage,
   listRecentConversationMessages,
@@ -117,6 +121,7 @@ function directSystemPrompt(
   directMode: boolean,
   currentLocationContext = "",
   userText = "",
+  suppliedEvidence = "",
 ): string {
   return [
     responseStylePrompt(),
@@ -124,6 +129,11 @@ function directSystemPrompt(
     // A mental-health turn is answered as a CBT copilot wherever it is
     // answered, including here, where there is no runtime behind the model.
     cogniviaSection({ userText }) ?? "",
+    // Claim strength has to track the evidence here too. There are no tools on
+    // this turn, so the section composes with no allowed tools and tells the
+    // model to say an unverifiable criterion is unverified rather than to
+    // browse for it.
+    evidenceCalibrationSection({ userText, suppliedEvidence }) ?? "",
     [
       "# direct_provider_turn",
       "Agent mode is switched off for this message, so you are answering as the model alone.",
@@ -403,6 +413,7 @@ export async function startDirectProviderTurn(
               location: input.currentLocation,
             }),
         input.text,
+        suppliedEvidenceText(attachments),
       ),
       input: [
         ...historyInput(input.conversation, input.clientMessageId),

@@ -31,6 +31,7 @@ const loginRoute = source("../src/app/api/chatmock/account/login/route.ts");
 const memoryRoute = source("../src/app/api/agent-memory/route.ts");
 const durableRoute = source("../src/app/api/agent-memory/durable/[memoryId]/route.ts");
 const profileRoute = source("../src/app/api/agent-memory/profile/route.ts");
+const instructRoute = source("../src/app/api/agent-memory/instruct/route.ts");
 const conversationRoute = source(
   "../src/app/api/agent-memory/conversations/[conversationId]/route.ts",
 );
@@ -574,6 +575,7 @@ test("every settings route authenticates before touching credentials or memory",
     ["memory overview", memoryRoute],
     ["durable memory", durableRoute],
     ["memory profile", profileRoute],
+    ["memory instruction", instructRoute],
     ["conversation memory", conversationRoute],
   ]) {
     assert.match(route, /requireUserId\(\)/, `${name} route must require a user`);

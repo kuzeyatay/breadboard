@@ -14,6 +14,18 @@ const STORAGE_KEY = "breadboard:terminal:unread-chats";
 /** A cap, so an abandoned browser cannot grow the entry without bound. */
 const MAX_TRACKED = 200;
 
+/**
+ * Each rail keeps its own entry.
+ *
+ * Both stores hold a whole set and prune anything not in the list they were
+ * given, so two rails sharing one key would erase each other's dots on every
+ * refresh. The Terminal keeps the original unscoped key so nobody loses the
+ * dots they already had; a garden's rail is filed under its slug.
+ */
+function storageKey(scope?: string | null): string {
+  return scope ? `${STORAGE_KEY}:${scope}` : STORAGE_KEY;
+}
+
 export interface UnreadChatSnapshot {
   id: string;
   /** Whether the chat had a run in flight when the rail last looked. */
@@ -74,9 +86,12 @@ export function chatActivityById(
   return new Map(chats.map((chat) => [chat.id, chat.active]));
 }
 
-export function readUnreadChats(storage: Pick<Storage, "getItem">): Set<string> {
+export function readUnreadChats(
+  storage: Pick<Storage, "getItem">,
+  scope?: string | null,
+): Set<string> {
   try {
-    const parsed: unknown = JSON.parse(storage.getItem(STORAGE_KEY) ?? "[]");
+    const parsed: unknown = JSON.parse(storage.getItem(storageKey(scope)) ?? "[]");
     if (!Array.isArray(parsed)) return new Set();
     return new Set(
       parsed
@@ -91,9 +106,10 @@ export function readUnreadChats(storage: Pick<Storage, "getItem">): Set<string> 
 export function writeUnreadChats(
   storage: Pick<Storage, "setItem">,
   ids: ReadonlySet<string>,
+  scope?: string | null,
 ): void {
   try {
-    storage.setItem(STORAGE_KEY, JSON.stringify([...ids].slice(0, MAX_TRACKED)));
+    storage.setItem(storageKey(scope), JSON.stringify([...ids].slice(0, MAX_TRACKED)));
   } catch {
     // A full or blocked store costs the dot across reloads, nothing more.
   }

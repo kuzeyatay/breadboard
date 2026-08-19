@@ -690,9 +690,13 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
 
 /* Electron's native caption strip is the same warm paper as flower navbars.
    The generic toolbar gradient used to override that surface in Garden Chat,
-   leaving a visible color seam directly below the window controls. */
+   leaving a visible color seam directly below the window controls. The generic
+   toolbar's top inset highlight had the same problem: against paper on both
+   sides it read as a stray near-white hairline between the window controls and
+   the navbar rather than as a lit edge. Keep only the divider below. */
 .bb-neu-toolbar.breadboard-flower-navbar {
   background: var(--paper-surface);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--line-strong) 34%, transparent);
 }
 
 .bb-neu-sidebar-left,
@@ -712,6 +716,24 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
 
 .bb-neu-sidebar-right {
   box-shadow: var(--neu-sidebar-right-shadow);
+}
+
+/* Every edge in a garden travels the same way when it is clicked: the chat
+   list, the learning map, and the panel between them. Its own class rather
+   than a utility because the width is set inline — a dragged width is a
+   number, not a class — and because a boundary that moves is the one piece of
+   motion here worth turning off when motion is unwelcome.
+
+   Left off for the length of a drag, where the width already follows the
+   pointer and animating toward a moving target is what makes a drag lag. */
+.bb-rail-travel {
+  transition: width 200ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bb-rail-travel {
+    transition: none;
+  }
 }
 
 .bb-neu-conversation-row {
@@ -914,6 +936,25 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
   --bb-run-recess:
     inset 1px 1px 3px color-mix(in srgb, var(--ink) 7%, transparent),
     inset -1px -1px 0 color-mix(in srgb, var(--paper-raised) 75%, transparent);
+}
+
+/* The same two gestures on a dark ground. Both are spelled above from
+   --paper-raised (the lit edge) and --ink (the drop), which swap roles between
+   the themes: inherited into dark, a run card gets a charcoal top edge and a
+   pale halo below — lit from underneath. Restated here so the light stays
+   overhead. Run cards are the most-seen material in a chat, so this is where
+   the inversion showed most. */
+:root[data-theme="dark"] {
+  --bb-run-raise:
+    inset 0 1px 0 rgb(255 255 255 / 7%),
+    0 1px 1px rgb(0 0 0 / 42%),
+    0 13px 21px -13px rgb(0 0 0 / 72%);
+  --bb-run-raise-sm:
+    inset 0 1px 0 rgb(255 255 255 / 6%),
+    0 1px 2px rgb(0 0 0 / 48%);
+  --bb-run-recess:
+    inset 1px 1px 3px rgb(0 0 0 / 52%),
+    inset -1px -1px 0 rgb(255 255 255 / 5%);
 }
 
 .bb-agent-run-card {
@@ -2218,15 +2259,15 @@ b {
    KaTeX without any of them needing dark rules of their own. */
 .fastread-overlay[data-theme='dark'] {
   /* Base palette. */
-  --paper-bg: #18181a;
-  --paper-surface: #20211f;
-  --paper-raised: #292b27;
-  --paper-strong: #32352f;
-  --ink: #e6ebe5;
-  --ink-heading: #f4f1e8;
-  --ink-muted: #a5aea5;
-  --line: #353d37;
-  --line-strong: #4c5a50;
+  --paper-bg: #0b0c0a;
+  --paper-surface: #171916;
+  --paper-raised: #212420;
+  --paper-strong: #2d312b;
+  --ink: #ccd2c9;
+  --ink-heading: #e2e7de;
+  --ink-muted: #8d968b;
+  --line: #2e3530;
+  --line-strong: #454f48;
   --botanical: #91b7a1;
   --botanical-hover: #a6c8b4;
   --botanical-2: #9fb5c4;
@@ -2246,9 +2287,9 @@ b {
   --neu-surface-raised: var(--paper-raised);
   --neu-surface-pressed: color-mix(in srgb, var(--paper-surface) 78%, var(--paper-bg));
   --neu-highlight: color-mix(in srgb, #ffffff 6%, transparent);
-  --neu-shadow: color-mix(in srgb, #000000 46%, transparent);
-  --neu-shadow-soft: color-mix(in srgb, #000000 32%, transparent);
-  --neu-shadow-strong: color-mix(in srgb, #000000 58%, transparent);
+  --neu-shadow: color-mix(in srgb, #000000 62%, transparent);
+  --neu-shadow-soft: color-mix(in srgb, #000000 44%, transparent);
+  --neu-shadow-strong: color-mix(in srgb, #000000 78%, transparent);
   --neu-border: var(--line-strong);
   --neu-focus: var(--botanical);
   --neu-raised-shadow:
@@ -2294,8 +2335,8 @@ b {
   --bb-scrollbar-highlight: color-mix(in srgb, #ffffff 5%, transparent);
 
   /* The inverted Tailwind ramp the markdown renderer borrows for borders. */
-  --color-gray-800: #353d37;
-  --color-gray-700: #4c5a50;
+  --color-gray-800: #2e3530;
+  --color-gray-700: #454f48;
 
   /* The base rule's gradient and `color` are plain properties, so they already
      resolve against the tokens above — no need to restate them here. */
@@ -2772,18 +2813,35 @@ b {
    --------------------------------------------------------------------------- */
 
 :root[data-theme="dark"] {
-  /* Charcoal paper: the canvas matches the supplied near-black reference,
-     while the accents remain the same muted botanical family as light mode. */
-  --paper-bg: #18181a;
-  --paper-surface: #20211f;
-  --paper-raised: #292b27;
-  --paper-strong: #32352f;
-  --terminal-bar: #22231f;
-  --ink: #e6ebe5;
-  --ink-heading: #f4f1e8;
-  --ink-muted: #a5aea5;
-  --line: #353d37;
-  --line-strong: #4c5a50;
+  /* Charcoal paper, laid out as four clearly separated planes rather than four
+     neighbouring greys. The first pass sat the whole ramp between #18 and #32,
+     which is under half a stop end to end — too little for a raised card to be
+     visibly raised, so the theme read as the light one with its values flipped
+     rather than as a room with a light in it. The ground now drops to
+     near-black and the old canvas colour becomes the *raised* plane, which is
+     the contrast the reference screenshot has: black underneath, pale charcoal
+     lifted off it. Accents stay the muted botanical family from light mode. */
+  --paper-bg: #0b0c0a; /* ground: app canvas, chat transcript */
+  --paper-surface: #171916; /* panels, trays, bars */
+  --paper-raised: #212420; /* cards, composer, buttons */
+  --paper-strong: #2d312b; /* the step above a card */
+  /* The closed dock is its own material in light mode — a warm brown strip on a
+     pale green page — and it has to stay one here. Neutral charcoal at the
+     bottom of the ramp would read as a seam in the page rather than as a bar
+     you can pull up, so it lifts above the surface and keeps the warm cast. */
+  --terminal-bar: #221f19;
+  /* Ink comes down off the warm cream it was. #f4f1e8 is a paper colour, and
+     at 96% lightness on a near-black ground it glares and casts the whole UI
+     yellow — the "night mode filter" look. These are the same green-greys as
+     light mode's ink, read from the other end. */
+  --ink: #ccd2c9;
+  --ink-heading: #e2e7de;
+  --ink-muted: #8d968b;
+  /* Lines can be quieter here than they were on the pale canvas: on black, the
+     value step between planes already separates them, and a bright hairline on
+     top of that step reads as an outline drawn around the panel. */
+  --line: #2e3530;
+  --line-strong: #454f48;
   --botanical: #91b7a1;
   --botanical-hover: #a6c8b4;
   --botanical-2: #9fb5c4;
@@ -2802,11 +2860,37 @@ b {
   --chat-link-hover: #a8c9ff;
 
   --neu-highlight: rgb(255 255 255 / 6%);
-  --neu-shadow: rgb(0 0 0 / 48%);
-  --neu-shadow-soft: rgb(0 0 0 / 34%);
-  --neu-shadow-strong: rgb(0 0 0 / 62%);
+  --neu-shadow: rgb(0 0 0 / 62%);
+  --neu-shadow-soft: rgb(0 0 0 / 44%);
+  --neu-shadow-strong: rgb(0 0 0 / 78%);
   --neu-border: var(--line-strong);
   --neu-focus: var(--botanical);
+  /* The pressed plane goes *below* the ground rather than a hair below the
+     surface, so an inset control sitting on a card still reads as pushed in. */
+  --neu-surface-pressed: #0e100d;
+  /* These composed shadows have to be restated here, not inherited. Their
+     :root definitions spell the lit top-left edge as a mix of --paper-raised —
+     a near-white on paper, a charcoal here — so inheriting them puts a dark
+     line where the light should be, and a raised card ends up outlined rather
+     than lifted. That one substitution is most of why dark mode read as an
+     inversion. Restated, the light comes from above-left in white and the drop
+     falls to black, which is the figure light mode draws. */
+  --neu-raised-shadow:
+    6px 7px 15px var(--neu-shadow),
+    -5px -5px 12px var(--neu-highlight),
+    inset 1px 1px 0 rgb(255 255 255 / 7%);
+  --neu-soft-shadow:
+    3px 4px 9px var(--neu-shadow-soft),
+    -3px -3px 8px var(--neu-highlight);
+  --neu-strong-shadow:
+    10px 12px 28px var(--neu-shadow-strong),
+    -7px -7px 18px var(--neu-highlight);
+  --neu-hover-shadow:
+    5px 6px 13px var(--neu-shadow),
+    -4px -4px 10px rgb(255 255 255 / 8%);
+  --neu-divider-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 5%),
+    inset 0 -1px 0 rgb(0 0 0 / 48%);
   --neu-inset-shadow:
     inset 2px 2px 5px rgb(0 0 0 / 44%),
     inset -2px -2px 5px rgb(255 255 255 / 4%);
@@ -2838,19 +2922,19 @@ b {
 
   /* Tailwind's inline theme emits these aliases directly into utility rules.
      Their fallbacks above are the unchanged light palette. */
-  --bb-color-white: #f4f1e8;
-  --bb-color-black: #121310;
-  --bb-color-gray-50: #f4f1e8;
-  --bb-color-gray-100: #e6ebe5;
-  --bb-color-gray-200: #d6ddd5;
-  --bb-color-gray-300: #c0c9c0;
-  --bb-color-gray-400: #a5aea5;
-  --bb-color-gray-500: #89948c;
-  --bb-color-gray-600: #68746c;
-  --bb-color-gray-700: #4c5a50;
-  --bb-color-gray-800: #353d37;
-  --bb-color-gray-900: #20211f;
-  --bb-color-gray-950: #18181a;
+  --bb-color-white: #e2e7de;
+  --bb-color-black: #050605;
+  --bb-color-gray-50: #edf0e9;
+  --bb-color-gray-100: #dce2d9;
+  --bb-color-gray-200: #ccd2c9;
+  --bb-color-gray-300: #b3bbb0;
+  --bb-color-gray-400: #8d968b;
+  --bb-color-gray-500: #778075;
+  --bb-color-gray-600: #5c655b;
+  --bb-color-gray-700: #454f48;
+  --bb-color-gray-800: #2e3530;
+  --bb-color-gray-900: #171916;
+  --bb-color-gray-950: #0b0c0a;
   --bb-color-cyan-100: #dfeae6;
   --bb-color-cyan-400: #91b7a1;
   --bb-color-cyan-600: #648b7f;
@@ -2890,19 +2974,19 @@ b {
   --bb-color-red-900: #523033;
   --bb-color-red-950: #352326;
 
-  --color-white: #f4f1e8;
-  --color-black: #121310;
-  --color-gray-50: #f4f1e8;
-  --color-gray-100: #e6ebe5;
-  --color-gray-200: #d6ddd5;
-  --color-gray-300: #c0c9c0;
-  --color-gray-400: #a5aea5;
-  --color-gray-500: #89948c;
-  --color-gray-600: #68746c;
-  --color-gray-700: #4c5a50;
-  --color-gray-800: #353d37;
-  --color-gray-900: #20211f;
-  --color-gray-950: #18181a;
+  --color-white: #e2e7de;
+  --color-black: #050605;
+  --color-gray-50: #edf0e9;
+  --color-gray-100: #dce2d9;
+  --color-gray-200: #ccd2c9;
+  --color-gray-300: #b3bbb0;
+  --color-gray-400: #8d968b;
+  --color-gray-500: #778075;
+  --color-gray-600: #5c655b;
+  --color-gray-700: #454f48;
+  --color-gray-800: #2e3530;
+  --color-gray-900: #171916;
+  --color-gray-950: #0b0c0a;
 
   --color-cyan-100: #dfeae6;
   --color-cyan-300: #b8d2ca;
@@ -2979,6 +3063,7 @@ html[data-theme="dark"] .desktop-title-bar {
    Borders still separate the toolbar from its content below. */
 html[data-theme="dark"] .bb-neu-toolbar {
   background: var(--paper-surface);
+  box-shadow: var(--neu-divider-shadow);
 }
 
 html[data-theme="dark"] .breadboard-logo {
@@ -3007,25 +3092,137 @@ html[data-theme="dark"] .bb-modal-panel {
     inset 0 -1px 0 rgb(0 0 0 / 28%) !important;
 }
 
+/* ---------------------------------------------------------------------------
+   Dark mode: the planes, said per-surface.
+
+   Light mode can leave everything on one value and let the shadows separate it,
+   because on paper a 6% shadow is plainly visible. On a dark ground it is not —
+   a shadow cast onto near-black has nowhere to go. So the separation has to be
+   carried by the value step instead, and the step has to be spent where it
+   reads: the transcript is the ground, everything around it is lifted off it.
+   Below are the surfaces whose light-mode rules bake a --paper-raised mix into
+   a place that has to be light, which is exactly the substitution that made the
+   theme look inverted.
+   --------------------------------------------------------------------------- */
+
+/* The conversation sits on the floor of the ramp — the near-black of the
+   reference — so the tray, the sidebar, the composer pill and every bubble read
+   as objects on it rather than as panels on more panel. All four chat surfaces
+   share this class, so the terminal, both garden chats and the runtime panel
+   get the same floor. */
+html[data-theme="dark"] .bb-chat-scroller {
+  background-color: var(--paper-bg);
+}
+
+/* The rails flanking that floor lift instead of blending into it. Light mode
+   grades them toward --paper-bg, which is now the transcript's own colour and
+   would leave no edge at all between a chat list and the chat. */
+html[data-theme="dark"] .bb-neu-sidebar-left,
+html[data-theme="dark"] .bb-neu-sidebar-right {
+  background:
+    linear-gradient(
+      155deg,
+      color-mix(in srgb, var(--paper-raised) 62%, var(--paper-surface)),
+      var(--paper-surface)
+    );
+}
+
+/* The composer is the one thing that has to float clear of the black, so it
+   takes the raised plane and the fullest version of the lit-edge figure. */
+html[data-theme="dark"] .neu-composer,
+html[data-theme="dark"] .neumorphic-chat-bar {
+  background: var(--paper-raised);
+  box-shadow:
+    8px 10px 22px rgb(0 0 0 / 66%),
+    -6px -6px 16px rgb(255 255 255 / 5%),
+    inset 1px 1px 0 rgb(255 255 255 / 8%);
+}
+
+html[data-theme="dark"] .neu-composer:focus-within {
+  box-shadow:
+    8px 10px 22px rgb(0 0 0 / 70%),
+    -6px -6px 16px rgb(255 255 255 / 6%),
+    inset 1px 1px 0 rgb(255 255 255 / 9%),
+    0 0 0 1px color-mix(in srgb, var(--neu-focus) 20%, transparent);
+}
+
+/* A user bubble's light-mode drop is a mix of --ink, which is a near-black
+   there and a near-white here: inherited, the bubble cast a pale halo instead
+   of a shadow. */
+html[data-theme="dark"] .neu-chat-message-user {
+  border-color: color-mix(in srgb, var(--line-strong) 76%, transparent);
+  box-shadow:
+    4px 5px 12px rgb(0 0 0 / 55%),
+    -3px -3px 8px rgb(255 255 255 / 4%),
+    inset 1px 1px 0 rgb(255 255 255 / 6%);
+}
+
+html[data-theme="dark"] .bb-neu-learn-tray {
+  box-shadow:
+    0 8px 20px rgb(0 0 0 / 52%),
+    inset 0 1px 0 rgb(255 255 255 / 6%);
+}
+
+/* The disclosure panels in both rails. Open and closed are told apart by an
+   inset whose second half is a --paper-raised line: light on paper, charcoal
+   here, so an open accordion read as a flat rectangle. */
+html[data-theme="dark"] .bb-neu-accordion:hover {
+  box-shadow:
+    0 3px 8px rgb(0 0 0 / 44%),
+    var(--neu-divider-shadow);
+}
+
+html[data-theme="dark"] .bb-neu-accordion-open,
+html[data-theme="dark"] .bb-neu-accordion-open:hover {
+  box-shadow:
+    inset 2px 2px 5px rgb(0 0 0 / 52%),
+    inset -2px -2px 5px rgb(255 255 255 / 5%);
+}
+
+html[data-theme="dark"] .bb-neu-accordion-panel {
+  box-shadow:
+    inset 0 5px 12px rgb(0 0 0 / 46%),
+    inset 0 -1px 0 rgb(255 255 255 / 4%);
+}
+
+/* The filled buttons cast their drop from a mix of their own fill — dark ink,
+   botanical, danger — which is a shadow colour on paper and a light one here,
+   so each one glowed instead of sitting on the page. Same figure, black. */
+html[data-theme="dark"] .neu-button-primary,
+html[data-theme="dark"] .neu-button-accent,
+html[data-theme="dark"] .neu-button-destructive {
+  box-shadow:
+    3px 4px 9px rgb(0 0 0 / 58%),
+    -2px -2px 6px rgb(255 255 255 / 5%),
+    inset 1px 1px 0 rgb(255 255 255 / 18%);
+}
+
+/* Same halo, same cause: the navbar's divider is a mix of --line-strong on the
+   assumption that a hairline lighter than the bar reads as a shadow under it.
+   Here the bar is the light thing, so the divider goes to black. */
+html[data-theme="dark"] .bb-neu-toolbar.breadboard-flower-navbar {
+  box-shadow: inset 0 -1px 0 rgb(0 0 0 / 46%);
+}
+
 html[data-theme="dark"] .markdown-editor-modal {
-  --light: #20211f;
-  --lightgray: #353d37;
-  --gray: #a5aea5;
-  --dark: #f4f1e8;
+  --light: #171916;
+  --lightgray: #2e3530;
+  --gray: #8d968b;
+  --dark: #e2e7de;
   --secondary: #91b7a1;
   --tertiary: #9fb5c4;
 }
 
 html[data-theme="dark"] .fastread-overlay {
-  --paper-bg: #18181a;
-  --paper-surface: #20211f;
-  --paper-raised: #292b27;
-  --paper-strong: #32352f;
-  --ink: #e6ebe5;
-  --ink-heading: #f4f1e8;
-  --ink-muted: #a5aea5;
-  --line: #353d37;
-  --line-strong: #4c5a50;
+  --paper-bg: #0b0c0a;
+  --paper-surface: #171916;
+  --paper-raised: #212420;
+  --paper-strong: #2d312b;
+  --ink: #ccd2c9;
+  --ink-heading: #e2e7de;
+  --ink-muted: #8d968b;
+  --line: #2e3530;
+  --line-strong: #454f48;
   --botanical: #91b7a1;
   --botanical-hover: #a6c8b4;
   --botanical-2: #9fb5c4;
@@ -3043,14 +3240,14 @@ html[data-theme="dark"] .fastread-overlay {
   --neu-inset-shadow:
     inset 2px 2px 5px rgb(0 0 0 / 44%),
     inset -2px -2px 5px rgb(255 255 255 / 4%);
-  --color-gray-800: #353d37;
-  --color-gray-700: #4c5a50;
+  --color-gray-800: #2e3530;
+  --color-gray-700: #454f48;
   color-scheme: dark;
 }
 
 html[data-theme="dark"] .fastread-overlay .fastread-continue,
 html[data-theme="dark"] .fastread-overlay .fastread-buttons .fastread-play {
-  color: #18181a;
+  color: #0b0c0a;
 }
 
 /* ---------------------------------------------------------------------------
@@ -4458,4 +4655,64 @@ html[data-breadboard-desktop="true"] body > .bb-wm-shell {
    scroll. One knob for the whole resting gap. */
 .bb-chat-scroll-tail {
   padding-bottom: calc(var(--bb-composer-inset, 0px) + var(--bb-chat-tail-gap, 1rem));
+}
+
+/* ── Buzz room palette ──────────────────────────────────────────────────────
+ * Utility names for the vendored Buzz theme (src/app/buzz/buzz-theme.css), so
+ * components ported from block/buzz keep the class names they were written
+ * with — `bg-primary`, `text-muted-foreground`, `border-sidebar-border`.
+ *
+ * The underlying custom properties are declared only inside `.buzz-root`, so
+ * these utilities are meaningful on the Buzz page and inert everywhere else.
+ * Breadboard's own surfaces do not use any of these names — `background` and
+ * `foreground` were the only two Buzz shares with this file, and the vendored
+ * sheet renames those to `--buzz-background` / `--buzz-foreground` rather than
+ * letting the two palettes fight over one token.
+ */
+@theme inline {
+  --color-buzz-background: hsl(var(--buzz-background));
+  --color-buzz-foreground: hsl(var(--buzz-foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+  --color-sidebar-active: hsl(var(--sidebar-active));
+  --color-sidebar-active-foreground: hsl(var(--sidebar-active-foreground));
+}
+
+/* Buzz's Tailwind extensions, ported from its tailwind.config.js. The type
+   ramp is driven by `--buzz-type-rem` so the page honours Cmd +/- the way the
+   desktop app does; the two shadows are edge treatments Tailwind's stock
+   y-offset shadows cannot express. */
+@theme inline {
+  --text-2xs: calc(var(--buzz-type-rem, 1rem) * 0.6875);
+  --text-3xs: calc(var(--buzz-type-rem, 1rem) * 0.5);
+  --text-badge: calc(var(--buzz-type-rem, 1rem) * 0.625);
+  --text-message: var(--conversation-message-font-size, 0.9375rem);
+  --text-message-timestamp: var(--conversation-timestamp-font-size, 0.6875rem);
+
+  --shadow-content-edge: -1px -1px 0 0 hsl(var(--sidebar-border) / 0.45);
+  --shadow-panel-left:
+    -1px 0 0 0 hsl(var(--border) / 0.8), -16px 0 32px -12px rgb(0 0 0 / 0.18);
 }

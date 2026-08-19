@@ -16,6 +16,7 @@ import { startConversationTurn } from "@/lib/conversations/turn-service.ts";
 import { HERMES_SURFACES, type HermesSurface } from "@/lib/hermes/config.ts";
 import { parseChatAttachments } from "@/lib/chat-attachments-request.ts";
 import { resolveDocumentAttachments } from "@/lib/document-attachments-server.ts";
+import { retrieveDocumentAttachments } from "@/lib/colpali/retrieval.ts";
 import {
   parseConversationBranchHistory,
   resolveConversationBranchHistory,
@@ -70,10 +71,14 @@ export async function POST(
       model: body.model,
       reasoningEffort: body.reasoningEffort,
       // A regenerated turn sends a document's pointer without its words,
-      // because the transcript never held them; this reads them back.
-      attachments: resolveDocumentAttachments(
+      // because the transcript never held them; this reads them back. Then
+      // ColPali narrows a long document to the pages this question is about —
+      // and hands back the attachment untouched when it cannot, so a document
+      // that was never indexed still arrives whole.
+      attachments: await retrieveDocumentAttachments(
         userId,
-        parseChatAttachments(body.attachments),
+        resolveDocumentAttachments(userId, parseChatAttachments(body.attachments)),
+        text,
       ),
       // Super agent is a per-message flag, never a stored session property: the
       // switch the user had on when they pressed send governs that turn only.

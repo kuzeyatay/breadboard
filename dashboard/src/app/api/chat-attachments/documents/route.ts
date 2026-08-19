@@ -14,6 +14,7 @@ import {
   writeDocumentBlob,
   writeDocumentFigures,
 } from "@/lib/conversations/document-blob-store.ts";
+import { enqueueDocumentIndex } from "@/lib/colpali/indexer.ts";
 import {
   documentContextText,
   readDocument,
@@ -140,6 +141,16 @@ export async function POST(request: Request) {
       ];
       text = documentContextText({ filename, summary: null, markdown: "", warnings });
     }
+
+    // Rendering and embedding a hundred pages is tens of seconds of GPU work,
+    // so it happens after this response rather than inside it. Until it lands,
+    // the retrieval path reads the status sidecar and inlines the whole
+    // document exactly as it did before ColPali existed.
+    enqueueDocumentIndex({
+      blobId: stored.blobId,
+      blobPath: stored.path,
+      format: stored.format,
+    });
 
     return NextResponse.json({
       blobId: stored.blobId,
