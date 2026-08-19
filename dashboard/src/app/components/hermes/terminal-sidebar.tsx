@@ -12,9 +12,29 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ActiveChatIcon, ChatHistoryLoading, UnreadChatDot } from "./history-client";
 import { ArtifactArchiveIcon } from "./artifact-panel";
+import RailDivider from "./rail-divider";
+import type { RailResize } from "./use-rail-resize";
 import { CHAT_HIGHLIGHTS, chatHighlight } from "@/lib/conversations/highlights";
 
 export type TerminalPanel = "artifacts" | "uploads" | "scheduled" | "hooks" | "processes";
+
+/**
+ * The rail's own widths, so every surface that mounts it agrees on them —
+ * spread into `useRailResize` and pass the result back as `resize`.
+ *
+ * `min` is where a chat title stops being readable and `threshold` is the gap
+ * below it that no release may land in: between the icon rail and a readable
+ * list there is nothing to be left at, which is what a drag-to-any-width
+ * sidebar got wrong the first time this one had a drag.
+ */
+export const CHAT_RAIL_RESIZE = {
+  side: "left",
+  defaultWidth: 260,
+  min: 220,
+  max: 420,
+  railWidth: 52,
+  threshold: 150,
+} as const;
 
 /** Reading order of the rail's panel buttons, whichever subset is shown. */
 export const TERMINAL_PANELS: readonly TerminalPanel[] = [
@@ -64,10 +84,33 @@ interface Props {
   onDeleteChats: (chats: TerminalSidebarChat[]) => void;
   /** Mark one chat with a palette color, or clear it with null. */
   onHighlightChat: (chat: TerminalSidebarChat, highlight: string | null) => void;
+  /**
+   * A control belonging to this surface's Recents, rendered in the section
+   * header beside its menu. Garden Chat puts its "View public chats" switch
+   * here — it filters the list the header names, so it belongs on that header
+   * rather than somewhere else on the rail.
+   */
+  recentsAction?: React.ReactNode;
+  /**
+   * What the rail is painted with.
+   *
+   * `paper` is the Terminal's: flat `--paper-surface`, so the rail reads as the
+   * same sheet as the transcript and the panels inside one dock. `tinted` keeps
+   * the shared rail class's own green-tinted gradient, which is what a garden's
+   * sidebar has always been — there the rail frames the page rather than
+   * sharing a surface with it.
+   */
+  surface?: "paper" | "tinted";
   /** Narrow icon-only rail: the actions stay, the chat list steps out. */
   collapsed: boolean;
   /** Fired by the rail's own edge — the divider is the toggle. */
   onToggleCollapsed: () => void;
+  /**
+   * Given, the rail's edge drags to any width as well as clicking between two,
+   * and the width comes from here instead of the two built-in ones. See
+   * `useRailResize`; `collapsed` is expected to be its `collapsed`.
+   */
+  resize?: RailResize;
 }
 
 const SECTION_STATE_KEY = "breadboard:terminal-sidebar:sections";
@@ -133,32 +176,6 @@ function ProcessesIcon({ className = "h-[18px] w-[18px]" }: { className?: string
     </svg>
   );
 }
-
-/** The rail's actions under New chat, in reading order. */
-const NAV_ORDER: readonly (TerminalPanel | "search")[] = [
-  "artifacts",
-  "uploads",
-  "search",
-  "scheduled",
-  "hooks",
-  "processes",
-];
-
-const PANEL_LABELS: Record<TerminalPanel, string> = {
-  artifacts: "Artifacts",
-  uploads: "Uploads",
-  scheduled: "Scheduled",
-  hooks: "Hooks",
-  processes: "Processes",
-};
-
-const PANEL_ICONS: Record<TerminalPanel, React.ReactNode> = {
-  artifacts: <ArtifactArchiveIcon className="h-[18px] w-[18px]" />,
-  uploads: <UploadsIcon />,
-  scheduled: <ScheduledIcon />,
-  hooks: <HooksIcon />,
-  processes: <ProcessesIcon />,
-};
 
 function PinIcon({ className = "h-3.5 w-3.5", filled = false }: { className?: string; filled?: boolean }) {
   return (
@@ -345,33 +362,6 @@ function NavButton({
       className={className}
     >
       {content}
-    </button>
-  );
-}
-
-// The rail's own edge is the control that opens and closes it: a hairline that
-// thickens into a handle under the cursor. It replaces the toolbar's hamburger,
-// so the thing you click sits on the boundary it moves, and it echoes the
-// terminal's top resize handle turned on its side.
-function RailDivider({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
-  const label = collapsed ? "Show the chat list" : "Collapse the chat list";
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-expanded={!collapsed}
-      aria-label="Toggle the sidebar"
-      title={label}
-      className="group relative z-[2] flex w-2 shrink-0 cursor-pointer items-center justify-center border-0 bg-transparent p-0"
-    >
-      <span
-        aria-hidden
-        className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[var(--line)] transition-colors group-hover:bg-[#8faf9a] group-focus-visible:bg-[#8faf9a]"
-      />
-      <span
-        aria-hidden
-        className="pointer-events-none relative h-14 w-1.5 rounded-full border border-transparent bg-transparent transition-colors group-hover:border-[rgba(169,193,177,0.7)] group-hover:bg-[#A9C1B1] group-focus-visible:border-[rgba(169,193,177,0.7)] group-focus-visible:bg-[#A9C1B1]"
-      />
     </button>
   );
 }
@@ -950,8 +940,11 @@ export default function TerminalSidebar({
   onDeleteChat,
   onDeleteChats,
   onHighlightChat,
+  recentsAction,
+  surface = "paper",
   collapsed,
   onToggleCollapsed,
+  resize,
 }: Props) {
   // The rail only mounts once the dock is open, so reading the stored state
   // during the first render cannot desynchronize from server HTML.
@@ -1048,13 +1041,6 @@ export default function TerminalSidebar({
   const paint = (chat: TerminalSidebarChat) =>
     onHighlightChat(chat, chat.highlight === pen ? null : pen);
 
-  // Rendered from the shared order rather than from the order the caller
-  // happened to pass, so the rail reads the same on every surface — Search
-  // keeps its seat among the panels even where one of them is left out.
-  const navEntries = NAV_ORDER.filter(
-    (entry) => entry === "search" || panels.includes(entry),
-  );
-
   // Collapsed the actions stack as a centered column of icons; open they are a
   // list of rows.
   const navClassName = collapsed
@@ -1086,14 +1072,21 @@ export default function TerminalSidebar({
     // toolbar as a separate button.
     <div className="flex shrink-0">
       {/* The shared rail class paints a green-tinted gradient off --paper-bg, and
-          it is unlayered CSS, so a background utility cannot beat it. The rail is
-          meant to read as the same paper as the chat and the panels beside it, so
-          the surface is set here and only the class's edge shadow is kept. */}
+          it is unlayered CSS, so a background utility cannot beat it. In the
+          Terminal the rail is meant to read as the same paper as the chat and
+          the panels beside it, so the surface is overridden here and only the
+          class's edge shadow is kept; a garden keeps the green. */}
       <aside
-        style={{ background: "var(--paper-surface)" }}
-        className={`bb-neu-sidebar-left flex shrink-0 flex-col overflow-hidden text-[var(--ink)] transition-[width] duration-200 ease-out ${
-          collapsed ? "w-[52px]" : "w-[260px]"
-        }`}
+        style={{
+          ...(surface === "paper" ? { background: "var(--paper-surface)" } : null),
+          // A dragged width is the pointer's to set, so the transition steps
+          // aside for the length of the gesture — animating toward a position
+          // that moves every frame is what makes a drag feel like syrup.
+          ...(resize ? { width: resize.width } : null),
+        }}
+        className={`bb-neu-sidebar-left flex shrink-0 flex-col overflow-hidden text-[var(--ink)] ${
+          resize?.dragging ? "" : "bb-rail-travel"
+        } ${resize ? "" : collapsed ? "w-[52px]" : "w-[260px]"}`}
       >
         <nav aria-label="Terminal actions" className={navClassName}>
           <NavButton
@@ -1102,26 +1095,57 @@ export default function TerminalSidebar({
             compact={collapsed}
             onClick={onNewChat}
           />
-          {navEntries.map((entry) =>
-            entry === "search" ? (
-              <NavButton
-                key="search"
-                label="Search"
-                icon={<SearchIcon />}
-                compact={collapsed}
-                onClick={onOpenSearch}
-              />
-            ) : (
-              <NavButton
-                key={entry}
-                label={PANEL_LABELS[entry]}
-                icon={PANEL_ICONS[entry]}
-                active={openPanel === entry}
-                compact={collapsed}
-                onClick={() => onTogglePanel(entry)}
-              />
-            ),
-          )}
+          {panels.includes("artifacts") ? (
+            <NavButton
+              label="Artifacts"
+              icon={<ArtifactArchiveIcon className="h-[18px] w-[18px]" />}
+              active={openPanel === "artifacts"}
+              compact={collapsed}
+              onClick={() => onTogglePanel("artifacts")}
+            />
+          ) : null}
+          {panels.includes("uploads") ? (
+            <NavButton
+              label="Uploads"
+              icon={<UploadsIcon />}
+              active={openPanel === "uploads"}
+              compact={collapsed}
+              onClick={() => onTogglePanel("uploads")}
+            />
+          ) : null}
+          <NavButton
+            label="Search"
+            icon={<SearchIcon />}
+            compact={collapsed}
+            onClick={onOpenSearch}
+          />
+          {panels.includes("scheduled") ? (
+            <NavButton
+              label="Scheduled"
+              icon={<ScheduledIcon />}
+              active={openPanel === "scheduled"}
+              compact={collapsed}
+              onClick={() => onTogglePanel("scheduled")}
+            />
+          ) : null}
+          {panels.includes("hooks") ? (
+            <NavButton
+              label="Hooks"
+              icon={<HooksIcon />}
+              active={openPanel === "hooks"}
+              compact={collapsed}
+              onClick={() => onTogglePanel("hooks")}
+            />
+          ) : null}
+          {panels.includes("processes") ? (
+            <NavButton
+              label="Processes"
+              icon={<ProcessesIcon />}
+              active={openPanel === "processes"}
+              compact={collapsed}
+              onClick={() => onTogglePanel("processes")}
+            />
+          ) : null}
         </nav>
 
         <div
@@ -1154,14 +1178,17 @@ export default function TerminalSidebar({
               count={recents.length}
               onToggle={() => toggleSection("recents")}
               action={
-                recents.length > 0 && mode === "idle" ? (
-                  <SectionMenuButton
-                    label="Recents"
-                    open={recentsMenu !== null}
-                    onOpen={setRecentsMenu}
-                    onClose={() => setRecentsMenu(null)}
-                  />
-                ) : null
+                <>
+                  {mode === "idle" ? recentsAction : null}
+                  {recents.length > 0 && mode === "idle" ? (
+                    <SectionMenuButton
+                      label="Recents"
+                      open={recentsMenu !== null}
+                      onOpen={setRecentsMenu}
+                      onClose={() => setRecentsMenu(null)}
+                    />
+                  ) : null}
+                </>
               }
             />
             {recentsMenu ? (
@@ -1211,7 +1238,14 @@ export default function TerminalSidebar({
           </section>
         </div>
       </aside>
-      <RailDivider collapsed={collapsed} onToggle={onToggleCollapsed} />
+      <RailDivider
+        collapsed={collapsed}
+        onToggle={onToggleCollapsed}
+        name="Toggle the sidebar"
+        moves="the chat list"
+        onPointerDown={resize?.onPointerDown}
+        dragging={resize?.dragging}
+      />
     </div>
   );
 }

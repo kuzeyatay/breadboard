@@ -19,6 +19,7 @@ export interface NavbarShortcuts {
   worldMonitor: boolean;
   plan: boolean;
   fastRead: boolean;
+  buzz: boolean;
 }
 
 export interface NavbarShortcutDefinition {
@@ -60,6 +61,13 @@ export const NAVBAR_SHORTCUTS: readonly NavbarShortcutDefinition[] = [
     description: "Your project board and calendar, opened together in one workspace.",
   },
   {
+    key: "buzz",
+    label: "Buzz",
+    href: "/buzz",
+    description:
+      "Chat rooms where you and your agent personas talk in one shared transcript, with threads.",
+  },
+  {
     key: "fastRead",
     label: "Fast-read",
     description:
@@ -76,6 +84,7 @@ export const DEFAULT_NAVBAR_SHORTCUTS: NavbarShortcuts = {
   worldMonitor: false,
   plan: true,
   fastRead: false,
+  buzz: false,
 };
 
 export function isNavbarShortcutKey(value: unknown): value is keyof NavbarShortcuts {
@@ -110,6 +119,7 @@ export function ensureNavbarShortcutSchema(database: Database.Database): void {
       world_monitor INTEGER NOT NULL DEFAULT 0,
       plan           INTEGER NOT NULL DEFAULT 1,
       fast_read     INTEGER NOT NULL DEFAULT 0,
+      buzz          INTEGER NOT NULL DEFAULT 0,
       updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
     );
   `);
@@ -131,6 +141,11 @@ export function ensureNavbarShortcutSchema(database: Database.Database): void {
       "ALTER TABLE navbar_shortcut_settings ADD COLUMN fast_read INTEGER NOT NULL DEFAULT 0",
     );
   }
+  if (!has("buzz")) {
+    database.exec(
+      "ALTER TABLE navbar_shortcut_settings ADD COLUMN buzz INTEGER NOT NULL DEFAULT 0",
+    );
+  }
   // A `map_page` column survives on databases written before the map shortcut
   // was withdrawn. It is left alone: it defaults to 0, so writes that no longer
   // name it still satisfy its NOT NULL.
@@ -142,10 +157,16 @@ export function readNavbarShortcuts(
 ): NavbarShortcuts {
   const row = database
     .prepare(
-      "SELECT work_timer, world_monitor, plan, fast_read FROM navbar_shortcut_settings WHERE user_id = ?",
+      "SELECT work_timer, world_monitor, plan, fast_read, buzz FROM navbar_shortcut_settings WHERE user_id = ?",
     )
     .get(userId) as
-    | { work_timer: number; world_monitor: number; plan: number; fast_read: number }
+    | {
+        work_timer: number;
+        world_monitor: number;
+        plan: number;
+        fast_read: number;
+        buzz: number;
+      }
     | undefined;
 
   // No row means the account has never been asked, so the defaults apply.
@@ -155,6 +176,7 @@ export function readNavbarShortcuts(
     worldMonitor: row.world_monitor === 1,
     plan: row.plan === 1,
     fastRead: row.fast_read === 1,
+    buzz: row.buzz === 1,
   };
 }
 
@@ -166,13 +188,14 @@ export function writeNavbarShortcuts(
   const next = applyNavbarShortcutPatch(readNavbarShortcuts(database, userId), patch);
   database
     .prepare(
-      `INSERT INTO navbar_shortcut_settings (user_id, work_timer, world_monitor, plan, fast_read, updated_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO navbar_shortcut_settings (user_id, work_timer, world_monitor, plan, fast_read, buzz, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(user_id) DO UPDATE SET
          work_timer = excluded.work_timer,
          world_monitor = excluded.world_monitor,
          plan = excluded.plan,
          fast_read = excluded.fast_read,
+         buzz = excluded.buzz,
          updated_at = excluded.updated_at`,
     )
     .run(
@@ -181,6 +204,7 @@ export function writeNavbarShortcuts(
       next.worldMonitor ? 1 : 0,
       next.plan ? 1 : 0,
       next.fastRead ? 1 : 0,
+      next.buzz ? 1 : 0,
     );
   return next;
 }

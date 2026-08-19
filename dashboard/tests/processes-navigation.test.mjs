@@ -93,5 +93,25 @@ test("Processes auto-refreshes and exposes all four activity groups", () => {
   assert.match(panel, /Nothing is running/);
   assert.match(panel, /onOpenPanel\("scheduled"\)/);
   assert.match(panel, /onOpenPanel\("hooks"\)/);
-  assert.match(panel, /run\.surface !== "dashboard_terminal"/);
+  // A live chat is only openable from the surface that can address it: the
+  // Terminal opens its own chats by conversation id, and a garden-scoped panel
+  // opens that garden's chats by their legacy chat-session id. Anything else is
+  // listed without an Open control rather than offered and then dead.
+  assert.match(panel, /run\.surface === "dashboard_terminal" \? run\.conversationId : null/);
+  assert.match(
+    panel,
+    /if \(gardenSlug\) \{[\s\S]{0,160}run\.chatSessionId === null \? null : String\(run\.chatSessionId\)/,
+  );
+  assert.match(panel, /disabled=\{openableChatId\(run\) === null\}/);
+});
+
+test("a garden-scoped Processes panel shows only that garden's work", () => {
+  // Agent processes belong to Breadboard as a whole rather than to a garden, so
+  // a garden-scoped panel drops them instead of claiming them as its own.
+  assert.match(
+    panel,
+    /run\.surface === "garden_chat" && run\.gardenId === gardenSlug/,
+  );
+  assert.match(panel, /const activeProcesses = gardenSlug \? \[\] : snapshot\.activeProcesses/);
+  assert.match(panel, /snapshot\.schedules\.filter\(\(schedule\) => schedule\.gardenSlug === gardenSlug\)/);
 });

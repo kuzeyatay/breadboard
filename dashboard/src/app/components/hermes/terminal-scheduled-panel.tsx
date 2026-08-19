@@ -56,6 +56,11 @@ import {
 
 interface Props {
   surface: ScheduledChatSurface;
+  /**
+   * The garden this panel belongs to. It is both what a new schedule targets
+   * and what the list is narrowed to: inside a garden the panel shows that
+   * garden's schedules, while the Terminal's shows every schedule there is.
+   */
   gardenSlug?: string | null;
 }
 
@@ -297,7 +302,12 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
     }
   }
 
-  const visible = showActiveOnly ? schedules.filter((job) => job.enabled) : schedules;
+  const scoped = gardenSlug
+    ? schedules.filter(
+        (job) => job.surface === "garden_chat" && job.gardenSlug === gardenSlug,
+      )
+    : schedules;
+  const visible = showActiveOnly ? scoped.filter((job) => job.enabled) : scoped;
 
   return (
     // The same paper surface the artifacts archive uses: these panels share one
@@ -591,11 +601,11 @@ export default function TerminalScheduledPanel({ surface, gardenSlug = null }: P
           <h3 className="text-xs font-semibold text-[var(--ink-muted)]">
             {showActiveOnly ? "Active schedules" : "All schedules"}
           </h3>
-          {loading && schedules.length === 0 ? (
+          {loading && scoped.length === 0 ? (
             <p className="mt-4 text-center text-xs text-[var(--ink-muted)]">Loading schedules…</p>
           ) : visible.length === 0 ? (
             <p className="mt-4 text-center text-xs text-[var(--ink-muted)]">
-              {schedules.length === 0 ? "Nothing is scheduled yet." : "Nothing is active right now."}
+              {scoped.length === 0 ? "Nothing is scheduled yet." : "Nothing is active right now."}
             </p>
           ) : (
             <ul className="mt-2 space-y-2">

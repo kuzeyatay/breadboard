@@ -4,6 +4,7 @@ import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import { getCalendarStore } from "@/lib/calendar/instance.ts";
 import { readEventPatch } from "@/lib/calendar/payload.ts";
 import { CalendarError } from "@/lib/calendar/store.ts";
+import { rememberEventPeople } from "@/lib/contacts/calendar-capture.ts";
 import type { CalendarEventInput } from "@/lib/calendar/types.ts";
 
 export const dynamic = "force-dynamic";
@@ -53,6 +54,7 @@ export async function POST(request: Request) {
       userId,
       readEventPatch(body) as CalendarEventInput,
     );
+    rememberEventPeople(userId, event);
 
     return NextResponse.json({ event }, { status: 201 });
   } catch (error) {

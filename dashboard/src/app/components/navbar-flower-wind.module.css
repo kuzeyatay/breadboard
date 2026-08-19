@@ -6,10 +6,6 @@
   display: none;
 }
 
-:global(html[data-theme="dark"]) .plantAnimation {
-  display: none;
-}
-
 :global(html[data-theme="dark"]) .skyAnimation {
   display: contents;
 }
@@ -145,6 +141,29 @@
   width: 24px;
   height: 30px;
   image-rendering: pixelated;
+}
+
+/* Dark theme runs both layers: the night sky stays, and the same plants come
+   back shaded down so they read as a moonlit silhouette in front of the stars
+   rather than glowing against the dark navbar. */
+:global(html[data-theme="dark"]) .wind {
+  --grass-dark: #1f3a30;
+  --grass-mid: #2f5744;
+  --grass-light: #43795c;
+  --stem: #27473a;
+  z-index: 1;
+  opacity: 0.72;
+}
+
+:global(html[data-theme="dark"]) .grassBed {
+  opacity: 0.52;
+}
+
+/* Flower head colours are per-plant inline custom properties, so they cannot be
+   overridden from here; a filter dims them instead, which keeps the four hues
+   apart while pulling them down to night brightness. */
+:global(html[data-theme="dark"]) .plantSprite {
+  filter: brightness(0.74) saturate(0.8);
 }
 
 .grassDark {

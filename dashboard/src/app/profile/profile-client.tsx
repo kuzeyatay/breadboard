@@ -16,7 +16,11 @@ import BackLink from "@/app/components/back-link";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import OrganizationPanel from "./organization-panel";
 import BrowserProfilePanel from "./browser-profile-panel";
+import ContactsPanel from "./contacts-panel";
+import CalendarSyncPanel from "./calendar-sync-panel";
 import type { BrowserProfileState } from "@/lib/agent-browser/service.ts";
+import type { Contact } from "@/lib/contacts/types.ts";
+import type { CalendarCollection } from "@/lib/calendar/types.ts";
 import {
   MONTH_ABBREVIATIONS,
   WEEKDAY_ABBREVIATIONS,
@@ -1944,10 +1948,18 @@ export default function ProfileClient({
   stats,
   initialShortcuts,
   browserProfile,
+  contacts,
+  contactTotal,
+  syncedCalendars,
+  calendarVaultConfigured,
 }: {
   stats: ProfileStats;
   initialShortcuts: NavbarShortcuts;
   browserProfile: BrowserProfileState;
+  contacts: Contact[];
+  contactTotal: number;
+  syncedCalendars: CalendarCollection[];
+  calendarVaultConfigured: boolean;
 }) {
   const { account, totals, streaks, habit, surfaces, gardens, artifactKinds, agents } = stats;
   const [tab, setTab] = useState<"profile" | "organization">("profile");
@@ -2205,6 +2217,17 @@ export default function ProfileClient({
                   : `It also keeps ${formatCount(totals.memories)} thing${totals.memories === 1 ? "" : "s"} about you in durable memory.`}
               </p>
             </Card>
+          </Packed>
+
+          <Packed>
+            <ContactsPanel initial={contacts} initialTotal={contactTotal} />
+          </Packed>
+
+          <Packed>
+            <CalendarSyncPanel
+              initial={syncedCalendars}
+              vaultConfigured={calendarVaultConfigured}
+            />
           </Packed>
 
           <Packed>

@@ -1004,7 +1004,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
               onChange={setInput}
               textareaRef={composerTextareaRef}
               onSubmit={() => void sendMessage()}
-              placeholder={isPublic ? 'Ask anything across all public gardens...' : 'Ask anything across your gardens...'}
+              placeholder={isPublic ? 'Ask anything across all public gardens...' : 'Ask anything.'}
               isSending={isStreaming}
               runState={isStreaming ? 'running' : 'idle'}
               onQueueSteer={queueFollowUp}

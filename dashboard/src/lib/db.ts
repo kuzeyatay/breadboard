@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import { ensureVideoTranscriptionSchema } from "./scriberr/job-store.ts";
+import { ensureBuzzSchema } from "./buzz/schema.ts";
 import { databaseDir } from "./runtime-paths.ts";
 import { ensureConversationSchema } from "./conversations/schema.ts";
 import { ensureDocumentSkillSchema } from "./document-skills/schema.ts";
@@ -17,6 +18,7 @@ import { ensureNangoSchema } from "./nango/schema.ts";
 import { ensureScheduledChatSchema } from "./schedules/schema.ts";
 import { ensureWorkflowSchema } from "./workflows/schema.ts";
 import { ensureCalendarSchema } from "./calendar/schema.ts";
+import { ensureContactSchema } from "./contacts/schema.ts";
 import { ensurePlanSchema } from "./plan/schema.ts";
 import { ensureMapSchema } from "./map/schema.ts";
 import { ensureSocialsManagerSchema } from "./socials-manager/schema.ts";
@@ -784,6 +786,11 @@ ensureWorkflowSchema(db);
 // as timezone-free wall-clock stamps; see src/lib/calendar/wallclock.ts.
 ensureCalendarSchema(db);
 
+// The address book. Applied after the calendar because the calendar is what
+// fills it: everyone invited to an event you create is filed here, which is how
+// the book has anything in it before you have typed a single card.
+ensureContactSchema(db);
+
 // Additive Socials Manager tables (registered channels + drafted posts). Must be
 // applied after the calendar: socials_manager_posts.calendar_event_id references
 // calendar_events, which is how a scheduled post occupies a real calendar slot.
@@ -898,6 +905,13 @@ ensureOrganizationSchema(db);
 // Additive table for asynchronous video transcription jobs; the schema lives
 // with its store in src/lib/scriberr/job-store.ts and is safe to re-apply.
 ensureVideoTranscriptionSchema(db);
+
+// --- Buzz rooms ------------------------------------------------------------
+// The multi-party chat surface: rooms, their members (the account plus agent
+// personas), the shared transcript and its threads. Runs after the canonical
+// conversation schema because it adds `conversations.buzz_room_id`, the column
+// that keeps a member's private thinking out of the chat sidebar.
+ensureBuzzSchema(db);
 
 const initialInviteCode = process.env.SECOND_BRAIN_INITIAL_INVITE_CODE?.replace(
   /[^a-z0-9]/gi,

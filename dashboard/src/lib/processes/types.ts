@@ -11,6 +11,8 @@ export interface ActiveChatProcess {
   surface: HermesSurface;
   gardenId: string | null;
   pageSlug: string | null;
+  /** Set for a Garden chat, which its own surface opens by this id. */
+  chatSessionId: number | null;
   startedAt: string;
 }
 
@@ -30,6 +32,8 @@ export interface ProcessSchedule {
   enabled: boolean;
   cadence: string;
   target: string;
+  /** The garden this schedule opens its chat in, or null for the dashboard. */
+  gardenSlug: string | null;
   nextRunAt: string | null;
   lastRunAt: string | null;
   lastStatus: "ok" | "failed" | null;

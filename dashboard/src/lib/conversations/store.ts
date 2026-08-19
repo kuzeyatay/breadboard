@@ -257,9 +257,14 @@ export function listConversationsForUser(
   // query behind history and restore-after-reload, so leaving them out is what
   // makes "it will not appear in your history" true even for the tab that
   // created it.
+  //
+  // A conversation carrying a Buzz room id is an agent member's private
+  // thinking for one room, not a chat this account started. It is excluded for
+  // the same reason and in the same place: this is the only query that decides
+  // what "my chats" contains.
   return database.prepare(`
     SELECT * FROM conversations
-    WHERE user_id = ? AND temporary = 0
+    WHERE user_id = ? AND temporary = 0 AND buzz_room_id IS NULL
     ORDER BY (pinned_at IS NOT NULL) DESC, updated_at DESC, id DESC
     LIMIT 100
   `).all(userId) as ConversationRow[];

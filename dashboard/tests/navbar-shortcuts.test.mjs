@@ -29,6 +29,7 @@ test("the work timer and Plan sit by default; the world monitor and Fast-read ar
     worldMonitor: false,
     plan: true,
     fastRead: false,
+    buzz: false,
   });
   const db = createDatabase();
   assert.deepEqual(readNavbarShortcuts(db, 1), DEFAULT_NAVBAR_SHORTCUTS);
@@ -50,13 +51,20 @@ test("the catalog names exactly the keys the settings carry", () => {
 });
 
 test("a patch only moves the keys it names, and only with booleans", () => {
-  const current = { workTimer: true, worldMonitor: false, plan: true, fastRead: false };
+  const current = {
+    workTimer: true,
+    worldMonitor: false,
+    plan: true,
+    fastRead: false,
+    buzz: false,
+  };
 
   assert.deepEqual(applyNavbarShortcutPatch(current, { worldMonitor: true }), {
     workTimer: true,
     worldMonitor: true,
     plan: true,
     fastRead: false,
+    buzz: false,
   });
   assert.deepEqual(
     applyNavbarShortcutPatch(current, { map: true }),
@@ -81,12 +89,14 @@ test("a toggle survives being written and read back, per user", () => {
     worldMonitor: true,
     plan: true,
     fastRead: false,
+    buzz: false,
   });
   assert.deepEqual(readNavbarShortcuts(db, 1), {
     workTimer: true,
     worldMonitor: true,
     plan: true,
     fastRead: false,
+    buzz: false,
   });
   assert.deepEqual(
     readNavbarShortcuts(db, 2),
@@ -101,6 +111,7 @@ test("a toggle survives being written and read back, per user", () => {
     worldMonitor: true,
     plan: true,
     fastRead: false,
+    buzz: false,
   });
 
   writeNavbarShortcuts(db, 1, { worldMonitor: false });
@@ -109,6 +120,7 @@ test("a toggle survives being written and read back, per user", () => {
     worldMonitor: false,
     plan: true,
     fastRead: false,
+    buzz: false,
   });
 
   writeNavbarShortcuts(db, 1, { plan: false });
@@ -117,6 +129,7 @@ test("a toggle survives being written and read back, per user", () => {
     worldMonitor: false,
     plan: false,
     fastRead: false,
+    buzz: false,
   });
 
   writeNavbarShortcuts(db, 1, { fastRead: true });
@@ -125,6 +138,7 @@ test("a toggle survives being written and read back, per user", () => {
     worldMonitor: false,
     plan: false,
     fastRead: true,
+    buzz: false,
   });
 });
 
@@ -137,6 +151,7 @@ test("applying the schema twice is safe", () => {
     worldMonitor: false,
     plan: true,
     fastRead: false,
+    buzz: false,
   });
 });
 
@@ -165,6 +180,7 @@ test("a database from before the map shortcut was withdrawn still writes", () =>
     worldMonitor: true,
     plan: true,
     fastRead: false,
+    buzz: false,
   });
 });
 
@@ -191,6 +207,7 @@ test("existing shortcut rows gain later entries without losing their choices", (
     worldMonitor: true,
     plan: true,
     fastRead: false,
+    buzz: false,
   });
 
   // And the row still writes, now that the statement names a column the
@@ -200,5 +217,6 @@ test("existing shortcut rows gain later entries without losing their choices", (
     worldMonitor: true,
     plan: true,
     fastRead: true,
+    buzz: false,
   });
 });

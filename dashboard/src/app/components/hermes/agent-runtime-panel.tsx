@@ -189,7 +189,10 @@ interface Props {
    * Remove one exchange — this message and the answer it produced — for good.
    * Absent on a transcript with nothing durable behind it to remove.
    */
-  onDeleteMessage?: (message: AgentMessage, messageIndex: number) => void;
+  onDeleteMessage?: (
+    message: AgentMessage,
+    messageIndex: number,
+  ) => void | Promise<unknown>;
   onAbort: () => void;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   onRetryMessage?: (userMessageIndex: number, branchGroupId: string) => void;
@@ -1055,7 +1058,7 @@ export default function AgentRuntimePanel({
     if (!onDeleteMessage || activeRun || conversationLocked) return;
     if (
       !window.confirm(
-        "Delete this message and the answer it produced? This cannot be undone.",
+        "Delete this message and the answer it produced? Any file that answer created goes with it. This cannot be undone.",
       )
     ) {
       return;
@@ -1067,8 +1070,21 @@ export default function AgentRuntimePanel({
       delete next[groupId];
       return next;
     });
-    setInlineArtifactRetireVersion((current) => current + 1);
-    onDeleteMessage(message, messageIndex);
+    // The turn's artifacts are deleted server-side. Re-read once the request
+    // settles, so a card the delete removed cannot linger in the cached list
+    // and reappear at the end of the chat as an unassigned file.
+    void Promise.resolve(onDeleteMessage(message, messageIndex)).then(() => {
+      if (!sessionId) return;
+      window.dispatchEvent(
+        new CustomEvent(ARTIFACT_BROWSER_EVENT, {
+          detail: {
+            type: "artifact.deleted",
+            conversationId: sessionId,
+            gardenId: gardenSlug ?? null,
+          },
+        }),
+      );
+    });
   }
 
   function retryAssistantAsBranch(assistantMessageIndex: number) {
@@ -1497,6 +1513,20 @@ export default function AgentRuntimePanel({
                               >
                                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z" />
+                                </svg>
+                              </button>
+                            ) : null}
+                            {onDeleteMessage ? (
+                              <button
+                                type="button"
+                                onClick={() => deleteMessageTurn(message, index)}
+                                disabled={activeRun || conversationLocked}
+                                className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--danger)] disabled:cursor-not-allowed disabled:opacity-35"
+                                title="Delete message"
+                                aria-label="Delete this message and its answer"
+                              >
+                                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16M10 7V5.5A1.5 1.5 0 0 1 11.5 4h1A1.5 1.5 0 0 1 14 5.5V7m-7 0 .8 11.2A2 2 0 0 0 9.8 20h4.4a2 2 0 0 0 2-1.8L17 7" />
                                 </svg>
                               </button>
                             ) : null}

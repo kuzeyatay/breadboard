@@ -70,8 +70,9 @@ export interface ChatGreeting {
   /** First line, without the name: "Good afternoon". */
   lead: string;
   /**
-   * Rendered muted after the lead, on every greeting there is. Null only when
-   * the account has no name to use — never because a particular line skipped it.
+   * Rendered muted after the lead. Null when the account has no name, and
+   * also when this hour's line is a splash that would not survive a vocative —
+   * "Hello, world, Grey" is not a greeting, it is a bug.
    */
   name: string | null;
   /** Second line: "What's on your mind?". */
@@ -116,6 +117,10 @@ interface GreetingContext {
   weekday: number;
   weekdayName: string;
   weekend: boolean;
+  /** 0 is January, matching `Date.getMonth()`. */
+  month: number;
+  /** 1–31, matching `Date.getDate()`. */
+  date: number;
   /** They have never written a message. */
   brandNew: boolean;
   /** The account itself is only days old. */
@@ -195,6 +200,8 @@ function buildContext(input: ChatGreetingInput): GreetingContext {
     weekday,
     weekdayName: WEEKDAY_NAMES[weekday],
     weekend: weekday === 0 || weekday === 6,
+    month: now.getMonth(),
+    date: now.getDate(),
     brandNew: minutes === null,
     newHere: signals.daysSinceJoined <= 2,
     resuming: minutes !== null && minutes <= 45,
@@ -291,10 +298,10 @@ function rotateMany<T>(
 // ------------------------------------------------------------------- the pool
 
 /**
- * A first line. Every one of these has to read naturally with ", <name>" after
- * it, because the name is not optional: it is what makes the greeting theirs
- * rather than the product's. Anything that would not take a name — "The small
- * hours" — is worded until it does or it does not go in the pool.
+ * A first line. Most of these have to read naturally with ", <name>" after
+ * them — that vocative is still what makes a greeting theirs rather than the
+ * product's. Splash lines set `address: false` and skip the name, because a
+ * Minecraft-style punchline does not survive having one stuck on the end of it.
  */
 interface PoolCandidate {
   when: (context: GreetingContext) => boolean;
@@ -313,6 +320,11 @@ interface PoolCandidate {
    * simply wider some hours than others.
    */
   playful?: boolean;
+  /**
+   * False for splash lines that would not survive ", <name>". Default true:
+   * the personal vocative is still the usual shape of a greeting.
+   */
+  address?: boolean;
 }
 
 interface LeadCandidate extends PoolCandidate {
@@ -380,18 +392,67 @@ const LEADS: LeadCandidate[] = [
   { id: "still-up", when: (c) => c.partOfDay === "late-night", text: () => "Still up" },
   { id: "working-late", when: (c) => c.partOfDay === "late-night", text: () => "Working late" },
   { id: "still-at-it", when: (c) => c.partOfDay === "late-night", text: () => "Still at it" },
+  {
+    id: "weekday-night",
+    when: (c) => c.partOfDay === "night" && !c.weekend,
+    text: (c) => `${c.weekdayName} night`,
+  },
+  {
+    id: "quiet-hours",
+    when: (c) => c.partOfDay === "night" || c.partOfDay === "late-night",
+    text: () => "Quiet hours",
+  },
 
   // The shape of the week.
   { id: "happy-weekend", when: (c) => c.weekend, text: (c) => `Happy ${c.weekdayName}` },
+  {
+    id: "slow-morning",
+    when: (c) => c.weekend && (c.partOfDay === "morning" || c.partOfDay === "early-morning"),
+    text: () => "Slow morning",
+  },
+  {
+    id: "midweek",
+    when: (c) => c.weekday === 3 && (c.partOfDay === "morning" || c.partOfDay === "afternoon"),
+    text: () => "Midweek",
+  },
   {
     id: "new-week",
     when: (c) => c.weekday === 1 && (c.partOfDay === "morning" || c.partOfDay === "early-morning"),
     text: () => "New week",
   },
   {
+    id: "happy-friday",
+    when: (c) => c.weekday === 5 && (c.partOfDay === "morning" || c.partOfDay === "early-morning"),
+    text: () => "Happy Friday",
+  },
+  {
     id: "almost-weekend",
     when: (c) => c.weekday === 5 && (c.partOfDay === "afternoon" || c.partOfDay === "evening"),
     text: () => "Almost the weekend",
+  },
+
+  // Days that only come around once a year. Not gated on a playful hour: an
+  // easter egg that fires one year in five is not an easter egg, it is a miss.
+  { id: "new-year", when: (c) => c.month === 0 && c.date === 1, text: () => "New year" },
+  { id: "pi-day", when: (c) => c.month === 2 && c.date === 14, text: () => "Pi o'clock", address: false },
+  { id: "trust-nothing", when: (c) => c.month === 3 && c.date === 1, text: () => "Trust nothing today" },
+  {
+    id: "everything-is-fine",
+    when: (c) => c.month === 3 && c.date === 1,
+    text: () => "Everything is fine",
+    address: false,
+  },
+  { id: "watch-your-step", when: (c) => c.weekday === 5 && c.date === 13, text: () => "Watch your step" },
+  {
+    id: "restless-gardens",
+    when: (c) => c.month === 9 && c.date === 31,
+    text: () => "The gardens are restless",
+    address: false,
+  },
+  {
+    id: "between-the-days",
+    when: (c) => c.month === 11 && c.date >= 24 && c.date <= 26,
+    text: () => "Between the days",
   },
 
   // What they have actually been doing.
@@ -408,24 +469,37 @@ const LEADS: LeadCandidate[] = [
   { id: "hello-again", generic: true, when: (c) => !c.brandNew, text: () => "Hello again" },
   { id: "ready-when-you-are", generic: true, when: always, text: () => "Ready when you are" },
 
-  // The lighter half. Same vocative rule as everything above — each of these
-  // still has to survive having ", <name>" stuck on the end of it — and each
-  // still has to be true of the hour it appears in. A joke about the small
-  // hours told at nine in the morning is not a joke, it is a bug.
+  // The lighter half. Vocative lines still have to survive ", <name>"; splash
+  // lines set address: false and stand on their own, Minecraft-title-screen
+  // style. Each still has to be true of the hour it appears in. A joke about
+  // the small hours told at nine in the morning is not a joke, it is a bug.
   { id: "nocturnal", playful: true, when: (c) => c.partOfDay === "late-night", text: () => "Look who's nocturnal" },
   { id: "sleep-rumour", playful: true, when: (c) => c.partOfDay === "late-night", text: () => "Sleep is a rumour" },
   { id: "midnight-oil", playful: true, when: (c) => c.partOfDay === "late-night", text: () => "Burning the midnight oil" },
+  { id: "living-dangerously", playful: true, when: (c) => c.partOfDay === "late-night", text: () => "Living dangerously" },
+  { id: "better-judgement", playful: true, when: (c) => c.partOfDay === "late-night", text: () => "Against better judgement" },
   { id: "birds-impressed", playful: true, when: (c) => c.partOfDay === "early-morning", text: () => "The birds are impressed" },
   { id: "beat-the-sunrise", playful: true, when: (c) => c.partOfDay === "early-morning", text: () => "Beating the sunrise to it" },
+  { id: "before-the-world", playful: true, when: (c) => c.partOfDay === "early-morning", text: () => "Before the world wakes" },
+  { id: "while-quiet", playful: true, when: (c) => c.partOfDay === "early-morning", text: () => "While it's quiet" },
   { id: "coffee-first", playful: true, when: (c) => c.partOfDay === "morning", text: () => "Coffee first" },
   { id: "day-unspoiled", playful: true, when: (c) => c.partOfDay === "morning", text: () => "The day is still unspoiled" },
+  { id: "fresh-eyes", playful: true, when: (c) => c.partOfDay === "morning", text: () => "Fresh eyes" },
+  { id: "right-on-time", playful: true, when: (c) => c.partOfDay === "morning", text: () => "Right on time" },
   { id: "post-lunch", playful: true, when: (c) => c.partOfDay === "afternoon", text: () => "The post-lunch stretch" },
   { id: "afternoon-slump", playful: true, when: (c) => c.partOfDay === "afternoon", text: () => "Beating the afternoon slump" },
+  { id: "shall-we", playful: true, when: (c) => c.partOfDay === "afternoon", text: () => "Shall we" },
+  { id: "halfway-there", playful: true, when: (c) => c.partOfDay === "afternoon", text: () => "Halfway there" },
   { id: "golden-hour", playful: true, when: (c) => c.partOfDay === "evening", text: () => "Golden hour" },
   { id: "evening-shift", playful: true, when: (c) => c.partOfDay === "evening", text: () => "The evening shift" },
+  { id: "prime-time", playful: true, when: (c) => c.partOfDay === "evening", text: () => "Prime time" },
+  { id: "second-wind", playful: true, when: (c) => c.partOfDay === "evening", text: () => "Second wind" },
   { id: "one-more-thing", playful: true, when: (c) => c.partOfDay === "night", text: () => "Just one more thing" },
   { id: "screen-glow", playful: true, when: (c) => c.partOfDay === "night", text: () => "Screen glow o'clock" },
+  { id: "home-stretch", playful: true, when: (c) => c.partOfDay === "night", text: () => "The home stretch" },
+  { id: "making-it-count", playful: true, when: (c) => c.partOfDay === "night", text: () => "Making it count" },
   { id: "nobody-works-weekends", playful: true, when: (c) => c.weekend, text: () => "Nobody works weekends" },
+  { id: "no-alarm", playful: true, when: (c) => c.weekend, text: () => "No alarm today" },
   {
     id: "brace-yourself",
     playful: true,
@@ -433,13 +507,26 @@ const LEADS: LeadCandidate[] = [
     text: () => "Brace yourself",
   },
   {
+    id: "here-goes",
+    playful: true,
+    when: (c) => c.weekday === 1 && (c.partOfDay === "morning" || c.partOfDay === "early-morning"),
+    text: () => "Here goes",
+  },
+  {
     id: "nearly-free",
     playful: true,
     when: (c) => c.weekday === 5 && (c.partOfDay === "afternoon" || c.partOfDay === "evening"),
     text: () => "Nearly free",
   },
+  {
+    id: "friday-feeling",
+    playful: true,
+    when: (c) => c.weekday === 5 && (c.partOfDay === "morning" || c.partOfDay === "afternoon"),
+    text: () => "Friday feeling",
+  },
   { id: "keyboard-lie-down", playful: true, when: (c) => c.busyDay, text: () => "The keyboard needs a lie down" },
   { id: "save-some", playful: true, when: (c) => c.busyDay, text: () => "Save some questions for tomorrow" },
+  { id: "in-the-thick", playful: true, when: (c) => c.busyDay, text: () => "In the thick of it" },
   { id: "emigrated", playful: true, when: (c) => c.returning, text: () => "We thought you had emigrated" },
   {
     id: "gardens-quiet",
@@ -447,14 +534,59 @@ const LEADS: LeadCandidate[] = [
     when: (c) => c.returning && c.hasGardens,
     text: () => "Your gardens have been very quiet",
   },
+  { id: "missed-you", playful: true, when: (c) => c.returning, text: () => "Missed you" },
   { id: "that-was-quick", playful: true, when: (c) => c.resuming, text: () => "That was quick" },
   { id: "back-already", playful: true, when: (c) => c.resuming, text: () => "Back already" },
+  { id: "look-who", playful: true, when: (c) => c.resuming, text: () => "Look who showed up" },
   { id: "no-pressure", playful: true, when: (c) => c.brandNew, text: () => "No pressure" },
   { id: "clean-slate", playful: true, when: (c) => c.brandNew, text: () => "A completely clean slate" },
+  { id: "after-you", playful: true, when: (c) => c.brandNew, text: () => "After you" },
   { id: "quite-the-collection", playful: true, when: (c) => c.manyGardens, text: () => "Quite the collection" },
   { id: "at-your-service", playful: true, when: always, text: () => "At your service" },
   { id: "here-we-go", playful: true, when: (c) => !c.brandNew, text: () => "Here we go again" },
   { id: "cause-trouble", playful: true, when: always, text: () => "Let's cause some trouble" },
+  { id: "the-usual", playful: true, when: always, text: () => "The usual" },
+  { id: "fancy-seeing-you", playful: true, when: always, text: () => "Fancy seeing you" },
+
+  // Splash lines. They skip the name on purpose: these are title-screen
+  // punchlines, not vocatives, and they are windowed so a pool of always-on
+  // jokes cannot drown the hour they appear in.
+  { id: "hardcore-mode", playful: true, address: false, when: (c) => c.partOfDay === "late-night", text: () => "Hardcore mode" },
+  { id: "does-not-replace-sleep", playful: true, address: false, when: (c) => c.partOfDay === "late-night", text: () => "Does not replace sleep" },
+  { id: "out-of-office-hours", playful: true, address: false, when: (c) => c.partOfDay === "late-night", text: () => "Out of office hours" },
+  { id: "generating-terrain", playful: true, address: false, when: (c) => c.partOfDay === "early-morning", text: () => "Generating terrain" },
+  { id: "limited-edition-hour", playful: true, address: false, when: (c) => c.partOfDay === "early-morning", text: () => "Limited edition hour" },
+  { id: "hello-world", playful: true, address: false, when: (c) => c.partOfDay === "morning", text: () => "Hello, world" },
+  { id: "also-try-outside", playful: true, address: false, when: (c) => c.partOfDay === "morning", text: () => "Also try going outside" },
+  { id: "not-on-the-exam", playful: true, address: false, when: (c) => c.partOfDay === "morning", text: () => "None of this is on the exam" },
+  { id: "always-dns", playful: true, address: false, when: (c) => c.partOfDay === "afternoon", text: () => "It's always DNS" },
+  { id: "works-on-my-machine", playful: true, address: false, when: (c) => c.partOfDay === "afternoon", text: () => "Works on my machine" },
+  { id: "could-have-been-a-note", playful: true, address: false, when: (c) => c.partOfDay === "afternoon", text: () => "This meeting could have been a note" },
+  { id: "low-battery", playful: true, address: false, when: (c) => c.partOfDay === "evening", text: () => "Low battery, high hopes" },
+  { id: "rubber-duck", playful: true, address: false, when: (c) => c.partOfDay === "evening", text: () => "The rubber duck is listening" },
+  { id: "you-are-here", playful: true, address: false, when: (c) => c.partOfDay === "evening", text: () => "You are here" },
+  { id: "currently-buffering", playful: true, address: false, when: (c) => c.partOfDay === "night", text: () => "Currently buffering" },
+  { id: "one-more-compile", playful: true, address: false, when: (c) => c.partOfDay === "night", text: () => "One more compile" },
+  { id: "watched-compile", playful: true, address: false, when: (c) => c.partOfDay === "night", text: () => "A watched compile never finishes" },
+  { id: "peaceful-difficulty", playful: true, address: false, when: (c) => c.weekend, text: () => "Peaceful difficulty" },
+  { id: "also-try-writing", playful: true, address: false, when: (c) => c.weekend, text: () => "Also try writing it down" },
+  { id: "inventory-full", playful: true, address: false, when: (c) => c.busyDay, text: () => "Inventory full" },
+  { id: "please-hold", playful: true, address: false, when: (c) => c.busyDay, text: () => "Please hold" },
+  { id: "notes-miss-you", playful: true, address: false, when: (c) => c.returning, text: () => "Your notes miss you" },
+  { id: "chunk-loaded", playful: true, address: false, when: (c) => c.resuming, text: () => "Chunk loaded" },
+  { id: "spawn-point-set", playful: true, address: false, when: (c) => c.brandNew, text: () => "Spawn point set" },
+  { id: "insert-greeting", playful: true, address: false, when: (c) => c.brandNew, text: () => "Insert greeting here" },
+  { id: "advancement-made", playful: true, address: false, when: (c) => c.manyGardens, text: () => "Advancement made" },
+  { id: "now-with-extra-gardens", playful: true, address: false, when: (c) => c.manyGardens, text: () => "Now with extra gardens" },
+  { id: "now-entering-garden", playful: true, address: false, when: (c) => c.garden !== null, text: () => "Now entering the garden" },
+  { id: "have-you-watered", playful: true, address: false, when: (c) => c.garden !== null, text: () => "Have you watered anything" },
+  { id: "this-never-happened", playful: true, address: false, when: (c) => c.temporary, text: () => "This never happened" },
+  { id: "nobody-saw-you", playful: true, address: false, when: (c) => c.temporary, text: () => "Nobody saw you come in" },
+  { id: "may-contain-insight", playful: true, address: false, when: always, text: () => "May contain traces of insight" },
+  { id: "as-seen-on-localhost", playful: true, address: false, when: always, text: () => "As seen on localhost" },
+  { id: "certified-present", playful: true, address: false, when: always, text: () => "Certified present" },
+  { id: "mildly-unsupervised", playful: true, address: false, when: always, text: () => "Mildly unsupervised" },
+  { id: "feature-complete-ish", playful: true, address: false, when: always, text: () => "Feature complete-ish" },
 ];
 
 interface QuestionCandidate extends PoolCandidate {
@@ -544,6 +676,75 @@ const QUESTIONS: QuestionCandidate[] = [
     playful: true,
     when: (c) => c.scope === "public",
     text: () => "What are we digging out of the public gardens?",
+  },
+  { id: "overthink", playful: true, when: always, text: () => "What are we about to overthink?" },
+  { id: "actual-question", playful: true, when: always, text: () => "What's the actual question?" },
+  { id: "small-dent", playful: true, when: always, text: () => "Shall we make a small dent?" },
+  {
+    id: "morning-wanted",
+    playful: true,
+    when: (c) => c.partOfDay === "morning" || c.partOfDay === "early-morning",
+    text: () => "What did the morning want?",
+  },
+  {
+    id: "which-tab",
+    playful: true,
+    when: (c) => c.partOfDay === "afternoon",
+    text: () => "Which tab are we closing today?",
+  },
+  {
+    id: "what-finishing",
+    playful: true,
+    when: (c) => c.partOfDay === "evening" || c.partOfDay === "night",
+    text: () => "What are we finishing?",
+  },
+  {
+    id: "worth-the-hour",
+    playful: true,
+    when: (c) => c.partOfDay === "late-night",
+    text: () => "What's worth the hour?",
+  },
+  {
+    id: "weekend-brain",
+    playful: true,
+    when: (c) => c.weekend,
+    text: () => "Weekend brain or weekday brain?",
+  },
+  {
+    id: "smallest-useful",
+    playful: true,
+    when: (c) => c.busyDay,
+    text: () => "What's the smallest useful thing?",
+  },
+  {
+    id: "new-or-old",
+    playful: true,
+    when: (c) => !c.brandNew,
+    text: () => "Is this a new thing or an old thing?",
+  },
+  {
+    id: "back-on-the-shelf",
+    playful: true,
+    when: (c) => c.returning && !c.temporary,
+    text: () => "What should we put back on the shelf?",
+  },
+  {
+    id: "habit-or-reason",
+    playful: true,
+    when: (c) => c.resuming,
+    text: () => "What brought you back so soon?",
+  },
+  {
+    id: "whats-growing",
+    playful: true,
+    when: (c) => c.garden !== null,
+    text: () => "What's growing in here?",
+  },
+  {
+    id: "stays-between-us",
+    playful: true,
+    when: (c) => c.temporary,
+    text: () => "What stays between us?",
   },
 ];
 
@@ -1032,7 +1233,7 @@ export function resolveChatGreeting(input: ChatGreetingInput): ChatGreeting {
 
   return {
     lead: lead.text(context),
-    name: input.signals.name,
+    name: lead.address === false ? null : input.signals.name,
     question: question.text(context),
     leadId: lead.id,
     questionId: question.id,

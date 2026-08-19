@@ -15,10 +15,19 @@ export interface GBrainConfig {
   embeddingModel: string;
 }
 
+/**
+ * The mode an unset `GBRAIN_MODE` resolves to. `preferred` is the default: the
+ * knowledge tools are offered, and an unreachable adapter degrades visibly
+ * instead of failing a turn. `disabled` must be asked for explicitly.
+ */
+export const DEFAULT_GBRAIN_MODE: GBrainMode = "preferred";
+
 export function resolveGBrainConfig(env: NodeJS.ProcessEnv = process.env): GBrainConfig {
-  const rawMode = (env.GBRAIN_MODE?.trim() || "disabled").toLowerCase();
+  const rawMode = (env.GBRAIN_MODE?.trim() || DEFAULT_GBRAIN_MODE).toLowerCase();
   const mode: GBrainMode =
-    rawMode === "preferred" || rawMode === "required" ? (rawMode as GBrainMode) : "disabled";
+    rawMode === "preferred" || rawMode === "required" || rawMode === "disabled"
+      ? (rawMode as GBrainMode)
+      : DEFAULT_GBRAIN_MODE;
   return {
     mode,
     adapterUrl: env.GBRAIN_ADAPTER_URL?.trim() || "http://127.0.0.1:7717",

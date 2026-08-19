@@ -490,10 +490,16 @@ test("no secret values leak into non-secret env keys or args", () => {
   }
 });
 
-test("GBrain is absent by default and supervised as a loopback sidecar when enabled", () => {
-  // Off by default: no gbrain service, and the dashboard is explicitly told
-  // not to probe one even if a dev environment happens to enable GBrain.
-  const off = fixture("packaged");
+test("GBrain is present by default, absent only when explicitly disabled", () => {
+  // On by default: the sidecar is registered and the dashboard is told to use it.
+  const byDefault = fixture("packaged");
+  assert.ok(byDefault.definitions.some((d) => d.id === "gbrain"));
+  const dashDefault = byDefault.definitions.find((d) => d.id === "dashboard");
+  assert.ok(dashDefault);
+  assert.equal(dashDefault.env["GBRAIN_MODE"], "preferred");
+
+  // Explicitly off: no gbrain service, and the dashboard is told not to probe one.
+  const off = fixture("packaged", { gbrainMode: "disabled" });
   assert.ok(!off.definitions.some((d) => d.id === "gbrain"));
   const dashOff = off.definitions.find((d) => d.id === "dashboard");
   assert.ok(dashOff);
@@ -514,6 +520,15 @@ test("GBrain is absent by default and supervised as a loopback sidecar when enab
   assert.ok((gbrain.env["GBRAIN_DATA_DIR"] ?? "").startsWith(on.paths.dataRoot));
   // Mutable data must not live inside packaged resources.
   assert.ok(!(gbrain.env["GBRAIN_DATA_DIR"] ?? "").includes("bb-res"));
+  // Embeddings match the dev stack: real vectors from the supervised ChatMock,
+  // with every field the vendored gateway needs (any missing one degrades it to
+  // lexical). The base URL must follow ChatMock's dynamically allocated port.
+  assert.equal(gbrain.env["GBRAIN_BACKEND"], "gbrain");
+  assert.equal(gbrain.env["GBRAIN_EMBEDDING_PROVIDER"], "openai-compatible");
+  assert.equal(gbrain.env["GBRAIN_EMBEDDING_BASE_URL"], `http://127.0.0.1:${on.config.ports.chatmock}/v1`);
+  assert.equal(gbrain.env["GBRAIN_EMBEDDING_MODEL"], "local/bge-small-en-v1.5");
+  assert.equal(gbrain.env["GBRAIN_EMBEDDING_DIMENSIONS"], "384");
+  assert.ok((gbrain.env["GBRAIN_EMBEDDING_API_KEY"] ?? "").length > 0);
 
   // The dashboard learns the adapter URL + shared secret, but the secret never
   // appears in a non-secret place unexpectedly (it is the per-install secret).

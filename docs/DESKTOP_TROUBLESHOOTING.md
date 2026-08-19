@@ -100,9 +100,10 @@ directories' `user-data` subdirectories if space is needed.
 
 ## GBrain (knowledge retrieval)
 
-GBrain is off by default. To enable it in the desktop build, set
-`gbrainMode` to `preferred` (or `required`) in
-`<userData>/Data/config/desktop-config.json` and restart. The supervised
+GBrain is on by default (`preferred`). To turn it off for an install, set
+`gbrainMode` to `disabled` in
+`<userData>/Data/config/desktop-config.json` and restart; an install that
+already recorded `disabled` keeps it. The supervised
 `gbrain` adapter runs on a loopback port with a per-install secret and stores
 its PGLite/index data under `<userData>/Data/gbrain` (never in packaged
 resources). It never blocks app startup; when unavailable the dashboard reports a

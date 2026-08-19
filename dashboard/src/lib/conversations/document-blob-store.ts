@@ -22,6 +22,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { dashboardDataDir } from "../runtime-paths.ts";
+import { forgetColpaliIndex } from "../colpali/cleanup.ts";
 import {
   isDocumentAttachmentFormat,
   isDocumentBlobId,
@@ -289,16 +290,26 @@ export function removeDocumentBlob(input: {
 }): boolean {
   const blob = findDocumentBlob(input);
   if (!blob) return false;
+  const base = blob.path.slice(0, blob.path.length - path.extname(blob.path).length);
   try {
     fs.rmSync(blob.path, { force: true });
     fs.rmSync(
       documentFiguresDirectory({ userId: input.userId, blobId: input.blobId, root: input.root }),
       { recursive: true, force: true },
     );
-    return true;
+    // ColPali's sidecars: the cached page pictures and the index status. Both
+    // are derived from bytes that no longer exist, and a page cache outliving
+    // its document is the one way this directory grows without bound.
+    fs.rmSync(`${base}.pages`, { recursive: true, force: true });
+    fs.rmSync(`${base}.colpali.json`, { force: true });
   } catch {
     return false;
   }
+  // The vectors themselves live in the service, not here. Fire-and-forget: a
+  // service that is down must not fail a delete, and its index is unreachable
+  // once the blob is gone in any case.
+  void forgetColpaliIndex(input.blobId);
+  return true;
 }
 
 export interface DocumentBlobFile {

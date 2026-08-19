@@ -167,5 +167,61 @@ export interface CalendarCollection {
   readOnly: boolean;
   lastSyncedAt: string | null;
   syncError: string | null;
+  /**
+   * Set when this calendar is bound to a CalDAV collection it can also write
+   * back to. `sourceUrl` means "a copy of someone else's ICS"; this means "the
+   * same calendar, on a server, in both directions".
+   */
+  caldavUrl: string | null;
+  /** The account the binding authenticates as. Shown; never the password. */
+  caldavUsername: string | null;
   createdAt: string;
+}
+
+/** What the sync layer needs to talk to a bound collection. */
+export interface CaldavBinding {
+  calendarId: number;
+  url: string;
+  username: string | null;
+  /** Collection tag as of the last successful sync, or null if never synced. */
+  ctag: string | null;
+}
+
+/**
+ * A bound calendar as the background poller sees it: which account it belongs
+ * to, when it last spoke to its server, and how that went.
+ */
+export interface SyncableCalendar {
+  userId: number;
+  calendarId: number;
+  name: string;
+  url: string;
+  username: string | null;
+  lastSyncedAt: string | null;
+  /** Consecutive failures. Drives the backoff; zero once a sync succeeds. */
+  failures: number;
+  /** ISO instant a sync currently in flight holds this calendar until. */
+  leaseUntil: string | null;
+}
+
+/** One local event that owes the server a copy. */
+export interface PendingPush {
+  /** The master event. Overrides are pushed as part of it, never on their own. */
+  event: CalendarEvent;
+  /**
+   * Per-instance edits of `event`. RFC 5545 puts a series and its overrides in
+   * one resource under one UID, so they are written together or not at all.
+   */
+  overrides: CalendarEvent[];
+  /** Where it already lives on the server, or null when it has never been sent. */
+  href: string | null;
+  /** The version this push is based on; sent as If-Match. */
+  etag: string | null;
+}
+
+/** An event deleted locally whose remote copy has not been removed yet. */
+export interface RemoteTombstone {
+  id: number;
+  href: string;
+  etag: string | null;
 }

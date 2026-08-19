@@ -11,6 +11,10 @@ const sessionRoute = fs.readFileSync(
   path.join(import.meta.dirname, "../src/app/api/chat-sessions/[sessionId]/route.ts"),
   "utf8",
 );
+const sidebar = fs.readFileSync(
+  path.join(import.meta.dirname, "../src/app/components/hermes/terminal-sidebar.tsx"),
+  "utf8",
+);
 
 test("Garden Chat starts a local draft and persists it on first send", () => {
   const start = workspace.slice(
@@ -34,14 +38,25 @@ test("Garden Chat starts a local draft and persists it on first send", () => {
 });
 
 test("Garden Chat rename matches Terminal's optimistic inline contract", () => {
-  const startRename = workspace.slice(
-    workspace.indexOf("function startRenameChat"),
-    workspace.indexOf("function cancelRenameChat"),
+  // The rename input is the shared rail's now, so the half of the contract
+  // about the input itself is held there: it commits on blur, it stops at the
+  // 200 characters the server stores, and it freezes the list's order while it
+  // is open — a row that moves under a focused input blurs it, and blur commits
+  // whatever was typed so far.
+  assert.match(sidebar, /onBlur=\{commitRename\}/);
+  assert.match(sidebar, /maxLength=\{200\}/);
+  assert.match(sidebar, /const visibleChats = frozen \? frozen\.chats : chats/);
+
+  // Renaming is never blocked by a chat that is still answering.
+  const rename = workspace.slice(
+    workspace.indexOf("function renameChatFromRail"),
+    workspace.indexOf("async function renameChatSession"),
   );
-  assert.doesNotMatch(startRename, /streamingChatIds/);
-  assert.match(workspace, /onBlur=\{\(\) => commitChatRename\(session\.id\)\}/);
-  assert.match(workspace, /maxLength=\{200\}/);
-  assert.match(workspace, /editingChatIdRef\.current !== null/);
+  assert.doesNotMatch(rename, /streamingChatIds/);
+
+  // The other half is unchanged and still the workspace's: optimistic, guarded
+  // by the epoch so a slow refresh cannot restore the old title, and adopting
+  // whatever title the route answers with.
   assert.match(workspace, /chatHistoryEpoch\.current \+= 1/g);
   assert.match(workspace, /item\.id === session\.id && item\.title === title/);
   assert.match(workspace, /const canonical = data\?\.session\?\.title/);

@@ -94,29 +94,36 @@ The content root is never supplied by the model.
 
 ## Environment variables
 
+The "Default" column is what you get when the variable is unset and Breadboard is
+started the normal way (`npm run dev`, `npm run dev:gbrain`, or the desktop app).
+The embedding defaults are supplied by those launchers, not by the adapter binary.
+
 | Var | Default | Meaning |
 |---|---|---|
-| `GBRAIN_MODE` | `disabled` | `disabled` (no adapter, no tools) / `preferred` (runs; degrades visibly) / `required` (dashboard reports failure honestly when unavailable). |
+| `GBRAIN_MODE` | `preferred` | `disabled` (no adapter, no tools; must be asked for explicitly) / `preferred` (runs; degrades visibly) / `required` (dashboard reports failure honestly when unavailable). |
 | `GBRAIN_ADAPTER_URL` | `http://127.0.0.1:7717` | Loopback adapter base URL. |
 | `GBRAIN_ADAPTER_PORT` | `7717` | Adapter port (dev launcher / desktop). |
 | `GBRAIN_ADAPTER_SECRET` | *(generated)* | Per-launch/per-install bearer secret. The dev launcher generates one and shares it with the dashboard; the browser never sees it. |
 | `GBRAIN_DATA_DIR` | `~/.breadboard/gbrain` | Mutable PGLite/index data, **outside** the checkout. Desktop overrides to the userData dir. |
 | `GBRAIN_BACKEND` | `gbrain` | `gbrain` (real vendored engine) or `fake` (test-only, refused in packaged production). |
-| `GBRAIN_EMBEDDING_PROVIDER` | `none` | `none` → honest `lexical_degraded`. `openai-compatible` → real embeddings via any OpenAI-compatible endpoint. `deterministic-test` → reproducible offline embedder (rejected unless `GBRAIN_TEST_MODE=1`). |
-| `GBRAIN_EMBEDDING_BASE_URL` | *(empty)* | OpenAI-compatible embeddings endpoint (routed through GBrain's native `openai:` provider). |
-| `GBRAIN_EMBEDDING_API_KEY` | *(empty)* | Embeddings API key. Missing → truthful `lexical_degraded`. Never reaches the browser or audit metadata. |
-| `GBRAIN_EMBEDDING_MODEL` | *(empty)* | Embedding model id (without provider prefix). |
-| `GBRAIN_EMBEDDING_DIMENSIONS` | *(empty)* | Embedding dimension. Must match the model; mismatches fail clearly at ingest via GBrain's own dim check. |
+| `GBRAIN_EMBEDDING_PROVIDER` | `openai-compatible` | `none` → honest `lexical_degraded`. `openai-compatible` → real embeddings via any OpenAI-compatible endpoint. `deterministic-test` → reproducible offline embedder (rejected unless `GBRAIN_TEST_MODE=1`). |
+| `GBRAIN_EMBEDDING_BASE_URL` | `<ChatMock>/v1` | OpenAI-compatible embeddings endpoint (routed through GBrain's native `openai:` provider). |
+| `GBRAIN_EMBEDDING_API_KEY` | `local` | Embeddings API key. Missing → truthful `lexical_degraded`. Never reaches the browser or audit metadata. |
+| `GBRAIN_EMBEDDING_MODEL` | `local/bge-small-en-v1.5` | Embedding model id (without provider prefix). |
+| `GBRAIN_EMBEDDING_DIMENSIONS` | `384` | Embedding dimension. Must match the model; mismatches fail clearly at ingest via GBrain's own dim check. |
 | `GBRAIN_QUERY_TIMEOUT_MS` | `15000` | Bounded query timeout (client + adapter). |
 
 ## Development startup
 
 ```bash
-# Off by default. Enable and run the whole stack:
-GBRAIN_MODE=preferred npm run dev
+# On by default (`preferred`) - the whole stack starts the adapter:
+npm run dev
 
 # Or run just the adapter:
-GBRAIN_MODE=preferred npm run dev:gbrain
+npm run dev:gbrain
+
+# Turn it off for a run:
+GBRAIN_MODE=disabled npm run dev
 ```
 
 `scripts/dev-all.mjs` starts the adapter **after ChatMock, before Hermes**,

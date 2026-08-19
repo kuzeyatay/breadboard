@@ -30,6 +30,7 @@ import {
   type EvidenceRecord,
 } from "./evidence.ts";
 import { composeHermesSystemPrompt } from "./system-prompts.ts";
+import { suppliedEvidenceText } from "./evidence-calibration.ts";
 import { adjudicateWebGrounding } from "./web-grounding-decider.ts";
 import { scheduleLoopxTickForConversation } from "../loopx/conversation-tick.ts";
 import {
@@ -70,6 +71,7 @@ import {
 import { prepareDocumentContext } from "../document-skills/turn.ts";
 import { parseChatAttachments } from "../chat-attachments-request.ts";
 import { resolveDocumentAttachments } from "../document-attachments-server.ts";
+import { retrieveDocumentAttachments } from "../colpali/retrieval.ts";
 import { visualizerCommandText } from "./interactive-visualizer-intent.ts";
 import { premortemCommandText } from "./premortem-intent.ts";
 import { factcheckCommandText } from "./factcheck-intent.ts";
@@ -158,9 +160,13 @@ export async function openGardenAgentChat(
   // Attachments reach this surface in the request body but used to stop here:
   // the payload was parsed for messages only, so a file picked in the Garden
   // composer never reached the runtime at all.
-  const attachments = resolveDocumentAttachments(
+  // ColPali narrows a long document to the pages this question is about, and
+  // hands the attachment back untouched when it cannot — an unindexed document
+  // still arrives whole.
+  const attachments = await retrieveDocumentAttachments(
     userId,
-    parseChatAttachments(payload.attachments),
+    resolveDocumentAttachments(userId, parseChatAttachments(payload.attachments)),
+    text,
   );
   const selectedSlugs = parseSelectedDocumentSlugs(payload.selectedDocumentSlugs);
   let conversation = ensureConversationForLegacyChatSession(
@@ -462,6 +468,9 @@ export async function openGardenAgentChat(
     surface: "garden_chat",
     decision,
     userText: resolved.userText || text,
+    // Only the attachments that still travel verbatim: a distilled document
+    // reaches the model as an index, which has no values to check.
+    suppliedEvidence: suppliedEvidenceText(documents.inlineAttachments),
     conversationPublicId: conversation.public_id,
     adhdMode: payload.adhdMode === true,
     additional: [

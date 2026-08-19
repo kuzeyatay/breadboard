@@ -19,8 +19,8 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --background: #18181a;
-  --ink: #e6ebe5;
+  --background: #0b0c0a;
+  --ink: #ccd2c9;
   --ink-muted: #9da8a1;
   --leaf-light: #53645b;
   --leaf-mid: #34433b;
@@ -29,7 +29,7 @@
   --glow: rgba(145, 183, 161, 0.58);
   --glow-soft: rgba(145, 183, 161, 0.15);
   --danger: #c98282;
-  --app-background: #18181a;
+  --app-background: #0b0c0a;
 }
 
 * {

@@ -2,8 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import Link from "next/link";
 import ModelAttachmentViewer from "@/app/components/model-attachment-viewer";
-import type { ChatMessageAttachment } from "@/lib/chat-attachments";
+import {
+  chatAttachmentHref,
+  type ChatMessageAttachment,
+} from "@/lib/chat-attachments";
 import {
   formatVideoSize,
   isPlayableVideoFormat,
@@ -16,6 +20,10 @@ interface Props {
   /** Filename-only fallback for messages saved before image previews existed. */
   attachmentNames?: readonly string[];
 }
+
+/** One attached-file chip, whether it links anywhere or not. */
+const FILE_CHIP_CLASS =
+  "neu-inset flex max-w-64 items-center gap-1 rounded-md border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-0.5 text-xs text-[var(--ink-muted)]";
 
 function PaperclipIcon() {
   return (
@@ -238,15 +246,32 @@ export default function ChatMessageAttachments({
 
         {fileEntries.length ? (
           <div className="flex flex-wrap justify-end gap-1">
-            {fileEntries.map((attachment, index) => (
-              <span
-                key={`${attachment.name}-${index}`}
-                className="neu-inset flex max-w-64 items-center gap-1 rounded-md border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-0.5 text-xs text-[var(--ink-muted)]"
-              >
-                <PaperclipIcon />
-                <span className="truncate">{attachment.name}</span>
-              </span>
-            ))}
+            {fileEntries.map((attachment, index) => {
+              const key = `${attachment.name}-${index}`;
+              // A stored document has a reader of its own, so its chip is a
+              // way into it rather than a label. Everything else stays a label:
+              // there is nowhere for it to go.
+              const viewerHref = chatAttachmentHref(attachment);
+              if (!viewerHref) {
+                return (
+                  <span key={key} className={FILE_CHIP_CLASS}>
+                    <PaperclipIcon />
+                    <span className="truncate">{attachment.name}</span>
+                  </span>
+                );
+              }
+              return (
+                <Link
+                  key={key}
+                  href={viewerHref}
+                  className={`${FILE_CHIP_CLASS} transition-colors hover:border-[var(--botanical)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--botanical)]`}
+                  title={`Open ${attachment.name}`}
+                >
+                  <PaperclipIcon />
+                  <span className="truncate">{attachment.name}</span>
+                </Link>
+              );
+            })}
           </div>
         ) : null}
       </div>

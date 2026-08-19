@@ -1584,6 +1584,29 @@ async function publishReadyArtifactToGarden(
 }
 
 /**
+ * The artifacts one turn produced.
+ *
+ * Deleting a transcript row would otherwise only clear the pointer back to it
+ * (`ON DELETE SET NULL`), and an artifact with no owning message renders in the
+ * unassigned pile at the end of the chat — so the file a deleted answer created
+ * would not disappear, it would move.
+ */
+export function listArtifactIdsForMessages(
+  messageIds: readonly number[],
+  database: Database.Database = db,
+): string[] {
+  if (messageIds.length === 0) return [];
+  const placeholders = messageIds.map(() => "?").join(",");
+  const rows = database
+    .prepare(
+      `SELECT id FROM hermes_artifacts
+       WHERE originating_message_id IN (${placeholders})`,
+    )
+    .all(...messageIds) as Array<{ id: string }>;
+  return rows.map((row) => row.id);
+}
+
+/**
  * Deletes an artifact the user owns: unpublishes any garden note/asset it
  * created (best effort), removes its stored files, and drops all DB rows.
  * Returns the presented artifact as it was before deletion.

@@ -48,7 +48,13 @@ import {
   loadHermesSessionSummaries,
   type HermesSessionSnapshot,
 } from "@/lib/hermes/session-client";
-import TerminalSidebar, { type TerminalPanel, type TerminalSidebarChat } from "./terminal-sidebar";
+import TerminalSidebar, {
+  CHAT_RAIL_RESIZE,
+  type TerminalPanel,
+  type TerminalSidebarChat,
+} from "./terminal-sidebar";
+import SidePanelDock from "./side-panel-dock";
+import { useRailResize } from "./use-rail-resize";
 import ChatSearchDialog from "./chat-search-dialog";
 import UploadsPanel from "./uploads-panel";
 import TerminalScheduledPanel from "./terminal-scheduled-panel";
@@ -536,7 +542,14 @@ function RuntimeTerminal({
     }
   }, [initialPanel]);
   const [isResizing, setIsResizing] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // The rail's edge drags to any width and clicks between the icon rail and
+  // whatever width it was last opened to — the same edge the learning map and
+  // the side panel have, so a garden has one boundary vocabulary rather than
+  // three.
+  const rail = useRailResize({
+    ...CHAT_RAIL_RESIZE,
+    storageKey: "breadboard:terminal:sidebar-width",
+  });
   const [input, setInput] = useState("");
   // Handed down to the panel so picking an opener can put the caret where the
   // text just landed.
@@ -6370,8 +6383,9 @@ function RuntimeTerminal({
               actions and its divider; there is no toolbar button to bring it
               back, so it must never leave the layout entirely. */}
           <TerminalSidebar
-            collapsed={!sidebarOpen}
-            onToggleCollapsed={() => setSidebarOpen((value) => !value)}
+            collapsed={rail.collapsed}
+            onToggleCollapsed={rail.toggle}
+            resize={rail}
             chats={sidebarChats}
             loading={historyLoading}
             error={historyError}
@@ -6479,9 +6493,7 @@ function RuntimeTerminal({
                   />
                 </svg>
                 <span>
-                  <strong className="font-semibold">Temporary chat.</strong> It stays out
-                  of your history and out of memory: nothing you have saved is used here,
-                  and nothing said here is kept or learned from.
+                  <strong className="font-semibold">Temporary chat enabled</strong>
                 </span>
               </div>
             ) : null}
@@ -6518,6 +6530,7 @@ function RuntimeTerminal({
                 onSteer={steer}
                 onSendQueued={sendQueued}
                 onEditMessage={editMessage}
+                onDeleteMessage={session.deleteMessage}
                 onSelectBranch={selectBranch}
                 disabled={runtimeUnavailable}
                 onAbort={() => void session.abort()}
@@ -6527,7 +6540,7 @@ function RuntimeTerminal({
                 onExternalAgentSourceReady={() => {
                   void session.refreshSession();
                 }}
-                placeholder={isPublic ? "Ask anything across all public gardens…" : "Ask anything across your gardens…"}
+                placeholder={isPublic ? "Ask anything across all public gardens…" : "Ask anything."}
                 model={model}
                 models={models}
                 onModelChange={setModel}
@@ -6726,8 +6739,8 @@ function RuntimeTerminal({
               />
           </div>
           {sidePanel ? (
-            <aside
-              aria-label={
+            <SidePanelDock
+              label={
                 sidePanel === "artifacts"
                   ? "Artifacts"
                   : sidePanel === "uploads"
@@ -6738,7 +6751,8 @@ function RuntimeTerminal({
                         ? "Hooks"
                         : "Processes"
               }
-              className="bb-neu-sidebar-right w-[min(42vw,520px)] shrink-0 border-l border-[var(--line)]"
+              defaultWidth={520}
+              storageKey="breadboard:terminal:panel-width"
             >
               {sidePanel === "artifacts" ? (
                 <ArtifactPanel
@@ -6759,7 +6773,7 @@ function RuntimeTerminal({
                   onOpenPanel={(panel) => setSidePanel(panel)}
                 />
               )}
-            </aside>
+            </SidePanelDock>
           ) : null}
           {/* Empty until an artifact is opened, and then an even half of what
               is left beside the transcript — the chat keeps the other half. */}

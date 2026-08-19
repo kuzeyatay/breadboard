@@ -20,7 +20,7 @@ loadRootEnv(repoRoot);
 // GBRAIN_MODE=disabled even when .env.local enables GBrain for the full stack.
 loadDashboardEnv(repoRoot);
 
-const mode = (process.env.GBRAIN_MODE?.trim().toLowerCase() || "disabled");
+const mode = (process.env.GBRAIN_MODE?.trim().toLowerCase() || "preferred");
 if (mode === "disabled") {
   process.stdout.write("[gbrain] GBRAIN_MODE=disabled; adapter not started.\n");
   process.exit(0);
@@ -43,13 +43,18 @@ const env = {
   // Backend: `gbrain` (production, vendored engine) is the default; `fake` is
   // test-only and refused in packaged production.
   GBRAIN_BACKEND: process.env.GBRAIN_BACKEND || "gbrain",
-  // Embedding provider + credentials (openai-compatible). Missing credentials =>
-  // truthful lexical_degraded. Keys never reach the browser.
-  GBRAIN_EMBEDDING_PROVIDER: process.env.GBRAIN_EMBEDDING_PROVIDER || "none",
-  GBRAIN_EMBEDDING_BASE_URL: process.env.GBRAIN_EMBEDDING_BASE_URL || "",
-  GBRAIN_EMBEDDING_API_KEY: process.env.GBRAIN_EMBEDDING_API_KEY || "",
-  GBRAIN_EMBEDDING_MODEL: process.env.GBRAIN_EMBEDDING_MODEL || "",
-  GBRAIN_EMBEDDING_DIMENSIONS: process.env.GBRAIN_EMBEDDING_DIMENSIONS || "",
+  // Embedding provider + credentials (openai-compatible). Defaults point at
+  // ChatMock's local ONNX `/v1/embeddings`, so real vectors need no paid API.
+  // All five must be set or the adapter truthfully degrades to lexical; the key
+  // is ignored by ChatMock. Keys never reach the browser.
+  GBRAIN_EMBEDDING_PROVIDER: process.env.GBRAIN_EMBEDDING_PROVIDER || "openai-compatible",
+  GBRAIN_EMBEDDING_BASE_URL:
+    process.env.GBRAIN_EMBEDDING_BASE_URL ||
+    process.env.CHATMOCK_BASE_URL ||
+    "http://127.0.0.1:8765/v1",
+  GBRAIN_EMBEDDING_API_KEY: process.env.GBRAIN_EMBEDDING_API_KEY || "local",
+  GBRAIN_EMBEDDING_MODEL: process.env.GBRAIN_EMBEDDING_MODEL || "local/bge-small-en-v1.5",
+  GBRAIN_EMBEDDING_DIMENSIONS: process.env.GBRAIN_EMBEDDING_DIMENSIONS || "384",
   GBRAIN_QUERY_TIMEOUT_MS: process.env.GBRAIN_QUERY_TIMEOUT_MS || "15000",
 };
 

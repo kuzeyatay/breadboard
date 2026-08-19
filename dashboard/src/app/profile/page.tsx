@@ -7,6 +7,9 @@ import db from "@/lib/db";
 import { browserProfileState } from "@/lib/agent-browser/service.ts";
 import { getNavbarShortcuts } from "@/lib/profile/navbar-shortcuts-store.ts";
 import { readProfileStats } from "@/lib/profile/stats.ts";
+import { getContactStore } from "@/lib/contacts/instance.ts";
+import { getCalendarStore } from "@/lib/calendar/instance.ts";
+import { caldavVaultConfigured } from "@/lib/calendar/caldav-credentials.ts";
 import ProfileClient from "./profile-client";
 
 export const dynamic = "force-dynamic";
@@ -33,11 +36,23 @@ export default async function ProfilePage() {
 
   const stats = readProfileStats(db, userId);
 
+  // The address book and the synced calendars are two more small local reads,
+  // so they join the same pass rather than each costing the panel a round trip
+  // and a loading flash.
+  const contacts = getContactStore();
+  const calendars = getCalendarStore()
+    .listCalendars(userId)
+    .filter((calendar) => calendar.caldavUrl);
+
   return (
     <ProfileClient
       stats={stats}
       initialShortcuts={getNavbarShortcuts(userId)}
       browserProfile={browserProfileState()}
+      contacts={contacts.listContacts(userId, { limit: 200 })}
+      contactTotal={contacts.countContacts(userId)}
+      syncedCalendars={calendars}
+      calendarVaultConfigured={caldavVaultConfigured()}
     />
   );
 }

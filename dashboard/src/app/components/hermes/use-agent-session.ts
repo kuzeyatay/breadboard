@@ -810,7 +810,10 @@ export interface UseAgentSessionResult {
    * Remove one exchange — a message and the answer it produced. Resolves false
    * when the delete was refused; the reason is left in `error`.
    */
-  deleteMessage: (clientMessageId: string) => Promise<boolean>;
+  deleteMessage: (
+    message: AgentMessage,
+    messageIndex: number,
+  ) => Promise<boolean>;
   respondToPermission: (
     decision: "once" | "always" | "reject",
   ) => Promise<void>;
@@ -3168,21 +3171,21 @@ export function useAgentSession(
   /**
    * Remove one exchange — a message and the answer it produced — for good.
    *
-   * A user row and the answer that follows it share one client message id, so
-   * a single filter takes both out of the transcript on screen. The route does
-   * the durable half: it removes the rows, stops anything that turn still had
-   * running, and re-seeds the agent runtime from what is left, so the chat
-   * cannot go on referring to a message the reader has deleted.
+   * A message and its answer share one client message id, so a single filter
+   * takes both out of the transcript on screen. The route does the durable
+   * half: it removes the rows, stops anything that turn still had running, and
+   * re-seeds the agent runtime from what is left, so the chat cannot go on
+   * answering from a message the reader has deleted.
    *
-   * A chat that was never persisted has no rows to remove; dropping them from
-   * the transcript is then the entire operation.
+   * A turn that never reached the server has no id and no rows. It is removed
+   * by position instead — the message, and the answer beneath it — and that is
+   * the whole operation.
    */
   const deleteMessage = useCallback(
-    async (clientMessageId: string): Promise<boolean> => {
-      const target = clientMessageId.trim();
-      if (!target) return false;
+    async (message: AgentMessage, messageIndex: number): Promise<boolean> => {
+      const target = message.clientMessageId?.trim();
       const activeSessionId = sessionRef.current;
-      if (activeSessionId) {
+      if (target && activeSessionId) {
         try {
           const response = await fetch(
             `/api/hermes/sessions/${encodeURIComponent(activeSessionId)}/messages/${encodeURIComponent(target)}`,
@@ -3200,9 +3203,18 @@ export function useAgentSession(
           return false;
         }
       }
-      setMessages((current) =>
-        current.filter((message) => message.clientMessageId !== target),
-      );
+      setMessages((current) => {
+        if (target) {
+          return current.filter(
+            (candidate) => candidate.clientMessageId !== target,
+          );
+        }
+        const answerIndex =
+          current[messageIndex + 1]?.role === "assistant" ? messageIndex + 1 : -1;
+        return current.filter(
+          (_, index) => index !== messageIndex && index !== answerIndex,
+        );
+      });
       // The runtime now speaks from the trimmed transcript, so a history
       // override left over from an earlier branch would only contradict it.
       pendingHistoryOverrideRef.current = null;

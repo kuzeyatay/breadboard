@@ -9,6 +9,7 @@ import { resumeAbandonedRuntimeRuns } from "./lib/hermes/run-recovery.ts";
 import { ABANDONED_RUN_AFTER_MS } from "./lib/hermes/run-liveness.ts";
 import { startScheduledChatScheduler } from "./lib/schedules/scheduler.ts";
 import { startReviewScheduler } from "./lib/review/scheduler.ts";
+import { startCaldavScheduler } from "./lib/calendar/caldav-scheduler.ts";
 import { autostartComfyUi } from "./lib/comfyui/autostart.ts";
 import { autostartTelegramGateway } from "./lib/telegram/service.ts";
 import { autostartWhatsAppGateway } from "./lib/whatsapp/service.ts";
@@ -90,6 +91,12 @@ startScheduledChatScheduler();
 // that only happens when you remember to open the app is the thing this feature
 // exists to replace.
 startReviewScheduler();
+
+// Calendars bound to a CalDAV server reconcile from here too. A calendar that
+// only updated while you were looking at the profile page would be wrong on
+// your phone for as long as you were not — which is the whole thing two-way
+// sync is meant to prevent.
+startCaldavScheduler();
 
 // Same reasoning for WhatsApp: a linked phone should reach Breadboard whenever
 // the app is running, not only while a chat page happens to be open.

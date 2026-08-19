@@ -15,8 +15,19 @@ import {
 import { HERMES_SESSIONS_CHANGED_EVENT } from "@/lib/hermes/session-client";
 
 interface Props {
-  onOpenChat: (conversationId: string) => void;
+  /**
+   * Opens a live chat. The id is whatever the host surface opens a chat by —
+   * the conversation's public id in the Terminal, the legacy chat-session id in
+   * a garden.
+   */
+  onOpenChat: (chatId: string) => void;
   onOpenPanel: (panel: Extract<TerminalPanel, "scheduled" | "hooks">) => void;
+  /**
+   * Set inside a garden: only that garden's live chats and schedules are shown.
+   * Agent processes are not garden-owned — they belong to Breadboard as a whole
+   * — so a garden-scoped panel leaves them out rather than claiming them.
+   */
+  gardenSlug?: string | null;
 }
 
 const EMPTY_SNAPSHOT: ProcessesSnapshot = {
@@ -58,7 +69,11 @@ function LiveDot() {
   );
 }
 
-export default function ProcessesPanel({ onOpenChat, onOpenPanel }: Props) {
+export default function ProcessesPanel({
+  onOpenChat,
+  onOpenPanel,
+  gardenSlug = null,
+}: Props) {
   const [snapshot, setSnapshot] = useState<ProcessesSnapshot>(EMPTY_SNAPSHOT);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -111,7 +126,27 @@ export default function ProcessesPanel({ onOpenChat, onOpenPanel }: Props) {
     };
   }, [load]);
 
-  const activeCount = snapshot.activeChats.length + snapshot.activeProcesses.length;
+  // One garden's view of the same snapshot. Filtering here rather than at the
+  // route keeps the poll shared: the Terminal and a garden ask the same
+  // question and each reads its own answer out of it.
+  const activeChats = gardenSlug
+    ? snapshot.activeChats.filter(
+        (run) => run.surface === "garden_chat" && run.gardenId === gardenSlug,
+      )
+    : snapshot.activeChats;
+  const activeProcesses = gardenSlug ? [] : snapshot.activeProcesses;
+  const schedules = gardenSlug
+    ? snapshot.schedules.filter((schedule) => schedule.gardenSlug === gardenSlug)
+    : snapshot.schedules;
+  const activeCount = activeChats.length + activeProcesses.length;
+
+  /** Whether this surface can open the chat behind a live run, and by which id. */
+  const openableChatId = (run: (typeof activeChats)[number]): string | null => {
+    if (gardenSlug) {
+      return run.chatSessionId === null ? null : String(run.chatSessionId);
+    }
+    return run.surface === "dashboard_terminal" ? run.conversationId : null;
+  };
 
   return (
     <section
@@ -123,7 +158,9 @@ export default function ProcessesPanel({ onOpenChat, onOpenPanel }: Props) {
           <div className="min-w-0 flex-1">
             <h2 className="text-lg font-semibold text-[var(--ink-heading)]">Processes</h2>
             <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
-              Live chats, running work, schedules, and hooks in one place.
+              {gardenSlug
+                ? "This garden's live chats, schedules, and hooks in one place."
+                : "Live chats, running work, schedules, and hooks in one place."}
             </p>
           </div>
           <button
@@ -160,12 +197,15 @@ export default function ProcessesPanel({ onOpenChat, onOpenPanel }: Props) {
             </div>
           ) : activeCount ? (
             <ul className="divide-y divide-[var(--line)] rounded-xl border border-[var(--line)] bg-[var(--paper-raised)]">
-              {snapshot.activeChats.map((run) => (
+              {activeChats.map((run) => (
                 <li key={`chat:${run.id}`}>
                   <button
                     type="button"
-                    disabled={run.surface !== "dashboard_terminal"}
-                    onClick={() => onOpenChat(run.conversationId)}
+                    disabled={openableChatId(run) === null}
+                    onClick={() => {
+                      const chatId = openableChatId(run);
+                      if (chatId !== null) onOpenChat(chatId);
+                    }}
                     className="flex w-full items-start gap-3 px-3 py-3 text-left transition enabled:hover:bg-[var(--paper-strong)] disabled:cursor-default"
                   >
                     <LiveDot />
@@ -174,11 +214,11 @@ export default function ProcessesPanel({ onOpenChat, onOpenPanel }: Props) {
                       <span className="mt-0.5 block line-clamp-2 text-xs leading-5 text-[var(--ink-muted)]">{run.instruction}</span>
                       <span className="mt-1 block text-[10px] text-[var(--ink-muted)]">{surfaceLabel(run)} · {startedLabel(run.startedAt)}</span>
                     </span>
-                    {run.surface === "dashboard_terminal" ? <span className="mt-0.5 text-xs text-[var(--botanical)]">Open</span> : null}
+                    {openableChatId(run) !== null ? <span className="mt-0.5 text-xs text-[var(--botanical)]">Open</span> : null}
                   </button>
                 </li>
               ))}
-              {snapshot.activeProcesses.map((process) => (
+              {activeProcesses.map((process) => (
                 <li key={process.id} className="flex items-start gap-3 px-3 py-3">
                   <LiveDot />
                   <span className="min-w-0 flex-1">
@@ -202,9 +242,9 @@ export default function ProcessesPanel({ onOpenChat, onOpenPanel }: Props) {
             <h3 id="processes-scheduled-heading" className="text-sm font-medium text-[var(--ink-heading)]">Scheduled</h3>
             <button type="button" onClick={() => onOpenPanel("scheduled")} className="ml-auto text-xs font-medium text-[var(--botanical)]">Manage</button>
           </div>
-          {snapshot.schedules.length ? (
+          {schedules.length ? (
             <ul className="divide-y divide-[var(--line)] rounded-xl border border-[var(--line)] bg-[var(--paper-raised)]">
-              {snapshot.schedules.map((schedule) => (
+              {schedules.map((schedule) => (
                 <li key={schedule.id} className="px-3 py-3">
                   <div className="flex items-start gap-3">
                     <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${schedule.enabled ? "bg-[var(--botanical)]" : "bg-[var(--ink-faint)]"}`} />

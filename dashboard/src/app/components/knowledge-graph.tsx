@@ -7,10 +7,11 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
 import Link from 'next/link';
+import RailDivider from './hermes/rail-divider';
+import { useRailResize } from './hermes/use-rail-resize';
 
 interface GraphNode {
   slug: string;
@@ -112,6 +113,7 @@ const MAP_PANEL_MIN = 300;
 const MAP_PANEL_MAX = 600;
 const MAP_PANEL_THRESHOLD = 180; // below this the panel collapses to a rail
 const MAP_PANEL_RAIL = 48;
+const MAP_PANEL_WIDTH_KEY = 'breadboard:garden-workspace:map-width';
 
 function KnowledgeGraph({
   clusterSlug,
@@ -121,15 +123,22 @@ function KnowledgeGraph({
   savedLinkCount,
 }: Props) {
   const [data, setData] = useState<GraphResponse | null>(null);
-  // Panel width is the single source of truth so it can be dragged open/closed
-  // by its inner edge (no toggle button); below the threshold it shows a rail.
-  const [panelWidth, setPanelWidth] = useState(MAP_PANEL_DEFAULT);
-  const [resizing, setResizing] = useState(false);
-  // The panel may never take more than ~45% of the window, otherwise a width
-  // dragged on a wide window keeps squeezing the chat column after the window
-  // shrinks (the desktop shell resizes freely).
-  const [maxPanelWidth, setMaxPanelWidth] = useState(MAP_PANEL_MAX);
-  const sidebarOpen = panelWidth >= MAP_PANEL_THRESHOLD;
+  // Panel width is the single source of truth: the inner edge drags it to any
+  // width and clicks it between the rail and the width it was last opened to.
+  // Drag was all it had for a long time, which meant putting the map away took
+  // a deliberate haul across most of the panel; the click came from the chat
+  // rail on the other side of the page, along with the edge itself.
+  const map = useRailResize({
+    side: 'right',
+    defaultWidth: MAP_PANEL_DEFAULT,
+    min: MAP_PANEL_MIN,
+    max: MAP_PANEL_MAX,
+    railWidth: MAP_PANEL_RAIL,
+    threshold: MAP_PANEL_THRESHOLD,
+    storageKey: MAP_PANEL_WIDTH_KEY,
+  });
+  const panelWidth = map.width;
+  const sidebarOpen = !map.collapsed;
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
   const [previewState, setPreviewState] = useState<PreviewState>({
     url: '',
@@ -138,63 +147,18 @@ function KnowledgeGraph({
   const graph = data ?? emptyResponse;
   const loading = data === null;
 
-  useEffect(() => {
-    const applyViewportLimit = () => {
-      const limit = Math.max(
-        MAP_PANEL_MIN,
-        Math.min(MAP_PANEL_MAX, Math.round(window.innerWidth * 0.45)),
-      );
-      setMaxPanelWidth(limit);
-      setPanelWidth((width) => (width >= MAP_PANEL_THRESHOLD ? Math.min(width, limit) : width));
-    };
-    applyViewportLimit();
-    window.addEventListener('resize', applyViewportLimit);
-    return () => window.removeEventListener('resize', applyViewportLimit);
-  }, []);
-
-  // Window listeners (not pointer capture) so the drag survives the panel
-  // swapping between its open and rail render at the collapse threshold.
-  function handlePanelResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = sidebarOpen ? panelWidth : MAP_PANEL_RAIL;
-    setResizing(true);
-    document.body.style.cursor = 'var(--bb-cursor-col-resize, col-resize)';
-    document.body.style.userSelect = 'none';
-
-    const handleMove = (e: PointerEvent) => {
-      // The panel sits on the right, so dragging left widens it.
-      const next = startWidth + (startX - e.clientX);
-      setPanelWidth(Math.min(maxPanelWidth, Math.max(MAP_PANEL_RAIL, Math.round(next))));
-    };
-    const handleEnd = () => {
-      window.removeEventListener('pointermove', handleMove);
-      window.removeEventListener('pointerup', handleEnd);
-      window.removeEventListener('pointercancel', handleEnd);
-      setResizing(false);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      setPanelWidth((width) =>
-        width < MAP_PANEL_THRESHOLD
-          ? MAP_PANEL_RAIL
-          : Math.min(maxPanelWidth, Math.max(MAP_PANEL_MIN, width)),
-      );
-    };
-    window.addEventListener('pointermove', handleMove);
-    window.addEventListener('pointerup', handleEnd);
-    window.addEventListener('pointercancel', handleEnd);
-  }
-
+  // The edge sits on the panel's own left border rather than beside it in the
+  // row, because the panel is the last thing in the layout and a sibling would
+  // widen it by its own two pixels at every width.
   const resizeHandle = (
-    <div
-      onPointerDown={handlePanelResizeStart}
-      title="Drag to resize or collapse"
-      className="group absolute inset-y-0 left-0 z-20 flex w-2 -translate-x-1/2 cursor-col-resize items-center justify-center"
-    >
-      <span
-        className={`h-10 w-0.5 rounded-full transition-colors ${
-          resizing ? 'bg-gray-400' : 'bg-gray-700 group-hover:bg-gray-500'
-        }`}
+    <div className="absolute inset-y-0 left-0 z-20 flex -translate-x-1/2 items-stretch">
+      <RailDivider
+        collapsed={map.collapsed}
+        onToggle={map.toggle}
+        name="Toggle the learning map"
+        moves="the learning map"
+        onPointerDown={map.onPointerDown}
+        dragging={map.dragging}
       />
     </div>
   );
@@ -252,7 +216,9 @@ function KnowledgeGraph({
       {sidebarOpen ? (
       <aside
         style={{ width: panelWidth } as CSSProperties}
-        className="bb-neu-sidebar-right neu-surface-subtle relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col bg-gray-950"
+        className={`bb-neu-sidebar-right neu-surface-subtle relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col bg-gray-950 ${
+          map.dragging ? '' : 'bb-rail-travel'
+        }`}
       >
         {resizeHandle}
         {/* Header */}
@@ -340,7 +306,9 @@ function KnowledgeGraph({
       ) : (
         <aside
           style={{ width: panelWidth } as CSSProperties}
-          className="bb-neu-sidebar-right neu-surface-subtle relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col items-center bg-gray-950 py-3"
+          className={`bb-neu-sidebar-right neu-surface-subtle relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col items-center bg-gray-950 py-3 ${
+            map.dragging ? '' : 'bb-rail-travel'
+          }`}
         >
           {resizeHandle}
           <svg

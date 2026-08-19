@@ -7,8 +7,8 @@ export const BREADBOARD_TITLE_BAR = {
 } as const;
 
 export const BREADBOARD_DARK_TITLE_BAR = {
-  color: "#20211f",
-  symbolColor: "#e6ebe5",
+  color: "#171916",
+  symbolColor: "#ccd2c9",
   height: 32,
 } as const;
 
@@ -39,7 +39,7 @@ export function titleBarForSurface(surface: BreadboardWindowSurface) {
 
 export function backgroundColorForSurface(surface: BreadboardWindowSurface): string {
   if (surface === "voice") return "#c1543c";
-  return surface === "dark" ? "#18181a" : "#e6f0e6";
+  return surface === "dark" ? "#0b0c0a" : "#e6f0e6";
 }
 
 export function titleBarForTheme(theme: BreadboardWindowTheme) {

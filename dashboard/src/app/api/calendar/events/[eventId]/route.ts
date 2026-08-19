@@ -4,6 +4,7 @@ import { apiErrorResponse, readJsonBody } from "@/lib/hermes/route-helpers.ts";
 import { getCalendarStore } from "@/lib/calendar/instance.ts";
 import { readEventPatch } from "@/lib/calendar/payload.ts";
 import { CalendarError } from "@/lib/calendar/store.ts";
+import { rememberEventPeople } from "@/lib/contacts/calendar-capture.ts";
 import { isSeriesScope, type SeriesScope } from "@/lib/calendar/types.ts";
 
 export const dynamic = "force-dynamic";
@@ -53,6 +54,7 @@ export async function PATCH(
       recurrenceId: typeof body.recurrenceId === "string" ? body.recurrenceId : null,
       patch: readEventPatch(body),
     });
+    rememberEventPeople(userId, event);
 
     return NextResponse.json({ event });
   } catch (error) {

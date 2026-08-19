@@ -3,6 +3,7 @@ import path from "node:path";
 import type { HermesSurface } from "./config.ts";
 import type { CapabilityDecision } from "./capability-policy.ts";
 import { directModeSection } from "./direct-mode.ts";
+import { evidenceCalibrationSection } from "./evidence-calibration.ts";
 import { metaPromptSection, metaPromptingEnabled } from "./meta-prompting.ts";
 import { cogniviaSection } from "../cognivia/index.ts";
 import { loopStateSection } from "../loopx/governance.ts";
@@ -58,6 +59,13 @@ export function composeHermesSystemPrompt(input: {
   adhdMode?: boolean;
   /** Goal-compatible state selected for this one conversation turn. */
   goalMode?: GoalModeState | null;
+  /**
+   * Material supplied with this turn rather than written by the user: extracted
+   * attachment text, a selected source document. It is scanned for values that
+   * arrive with the bound they are read against, so the calibration section can
+   * do that comparison in arithmetic instead of leaving it to the model.
+   */
+  suppliedEvidence?: string;
 }): string {
   const decision = input.decision;
   const sections = [
@@ -119,6 +127,16 @@ export function composeHermesSystemPrompt(input: {
     decision,
   });
   if (metaPrompt) sections.push(metaPrompt);
+  // How strongly the turn is allowed to state what it concludes. It ships only
+  // when there is evidence to interpret or a consequential judgement to make,
+  // and it carries this turn's measured values already checked against the
+  // bounds their own source printed. See lib/hermes/evidence-calibration.ts.
+  const calibration = evidenceCalibrationSection({
+    userText: input.userText,
+    suppliedEvidence: input.suppliedEvidence,
+    decision,
+  });
+  if (calibration) sections.push(calibration);
   // A turn about the user's mental health is answered as a CBT copilot rather
   // than as a general assistant, on every surface. It sits after the turn's
   // structure because it governs the answer more tightly than the structure

@@ -53,18 +53,30 @@ test("Terminal and Garden retain their existing mechanics while using the shared
   const composer = source("../src/app/components/assistant-composer.tsx");
 
   const terminalSidebar = source("../src/app/components/hermes/terminal-sidebar.tsx");
+  const panelDock = source("../src/app/components/hermes/side-panel-dock.tsx");
 
   assert.match(terminal, /bb-neu-tray[\s\S]*fixed inset-x-0 bottom-0/);
   // The rail is its own component now, and a little wider than the old one.
-  // Collapsed it keeps a narrow column of icons rather than leaving the layout.
+  // Collapsed it keeps a narrow column of icons rather than leaving the layout
+  // — the two widths below are the fallback for a surface that mounts the rail
+  // without an edge to drag; with one, the width is a number in state.
   assert.match(terminalSidebar, /bb-neu-sidebar-left flex shrink-0/);
   assert.match(terminalSidebar, /collapsed \? "w-\[52px\]" : "w-\[260px\]"/);
   assert.match(terminalSidebar, /bb-neu-conversation-row-selected/);
-  assert.match(terminal, /bb-neu-sidebar-right[\s\S]*w-\[min\(42vw,520px\)\]/);
+  // The panel beside the transcript is its own component, and its width is a
+  // dragged number rather than a class, so the material is asserted where it
+  // now lives and the width where the Terminal chooses it.
+  assert.match(panelDock, /bb-neu-sidebar-right/);
+  assert.match(terminal, /<SidePanelDock[\s\S]*defaultWidth=\{520\}/);
 
   assert.match(garden, /bb-neu-toolbar breadboard-flower-navbar/);
-  assert.match(garden, /style=\{\{ width: leftSidebarWidth \}\}/);
-  assert.match(garden, /bb-neu-sidebar-left/);
+  // The garden's own `leftSidebarWidth` went when the chat rail became the
+  // shared component; the width came back as a dragged one on the rail's edge,
+  // so what the garden owns now is the resize state it hands down.
+  assert.match(garden, /useRailResize\(\{\s*\.\.\.CHAT_RAIL_RESIZE/);
+  assert.match(garden, /resize=\{rail\}/);
+  // The left-rail material itself is asserted on the rail component above: the
+  // garden no longer paints one of its own.
   assert.match(garden, /bb-neu-learn-tray/);
   assert.match(garden, /bb-neu-accordion-open/);
   assert.match(garden, /transition-transform duration-200/);

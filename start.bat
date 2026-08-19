@@ -5,6 +5,9 @@ start "Quartz" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "
 rem Parametric CAD. Optional: if the Python environment has not been provisioned
 rem (npm run setup:cad), the launcher exits and the CAD agent reports it.
 if exist "%~dp0.runtime\cad-venv\Scripts\python.exe" start "Parametric CAD" cmd /k "cd /d ""%~dp0"" && node scripts/start-cad.mjs"
+rem ColPali page retrieval over attached documents. Optional in the same way:
+rem without the environment (npm run setup:colpali) documents are inlined whole.
+if exist "%~dp0.runtime\colpali-venv\Scripts\python.exe" start "ColPali" cmd /k "cd /d ""%~dp0"" && node scripts/start-colpali.mjs"
 
 echo Waiting for ChatMock on http://127.0.0.1:8765/health ...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$deadline = (Get-Date).AddSeconds(90); do { try { $response = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 2; if ($response.StatusCode -eq 200) { exit 0 } } catch {}; Start-Sleep -Milliseconds 500 } while ((Get-Date) -lt $deadline); exit 1"

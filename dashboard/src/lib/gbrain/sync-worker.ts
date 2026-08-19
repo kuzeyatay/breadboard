@@ -15,6 +15,7 @@
 
 import crypto from "node:crypto";
 import db from "../db.ts";
+import { resolveGBrainConfig } from "./config.ts";
 import { syncGarden } from "./sync.ts";
 import { setSyncState } from "./mapping.ts";
 
@@ -177,7 +178,6 @@ export function getSyncWorker(): GBrainSyncWorker {
 
 /** Start the worker once, only when GBrain is enabled. Safe to call repeatedly. */
 export function ensureSyncWorkerStarted(): void {
-  const mode = (process.env.GBRAIN_MODE?.trim().toLowerCase() || "disabled");
-  if (mode === "disabled") return;
+  if (resolveGBrainConfig().mode === "disabled") return;
   getSyncWorker().start();
 }

@@ -33,8 +33,12 @@ const {
   isDocumentBlobId,
   normalizeDocumentSummary,
 } = await import("../src/lib/document-attachments.ts");
-const { chatMessageAttachments, reusableChatAttachments, normalizeChatMessageAttachments } =
-  await import("../src/lib/chat-attachments.ts");
+const {
+  chatAttachmentHref,
+  chatMessageAttachments,
+  reusableChatAttachments,
+  normalizeChatMessageAttachments,
+} = await import("../src/lib/chat-attachments.ts");
 
 // ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -531,6 +535,98 @@ test("every server entry point re-reads a document the request did not carry", (
       source,
       /resolveDocumentAttachments\(/,
       `${relative} must resolve a reused document's text from its blob`,
+    );
+    // The same three entry points, for the same reason: an entry point that
+    // resolves but never retrieves quietly sends whole documents while the
+    // other two send pages, and nothing else in the system would notice.
+    assert.match(
+      source,
+      /await retrieveDocumentAttachments\(/,
+      `${relative} must narrow an indexed document to the pages the question is about`,
+    );
+  }
+});
+
+// ── Opening one ──────────────────────────────────────────────────────
+
+test("a stored document opens; a file that was never stored cannot", () => {
+  const pdf = {
+    type: "document",
+    name: "blood results.pdf",
+    blobId: "doc_0123456789abcdef0123456789abcdef",
+    format: "pdf",
+  };
+  // The name is shown, so it travels; the blob id is what is looked up.
+  assert.equal(
+    chatAttachmentHref(pdf),
+    "/attachments/doc_0123456789abcdef0123456789abcdef/pdf?name=blood%20results.pdf",
+  );
+  // A Word file has no renderer, but it does have a reading, and that reading
+  // is what its own viewer shows. Which viewer is the only difference.
+  assert.equal(
+    chatAttachmentHref({ ...pdf, name: "contract.docx", format: "docx" }),
+    "/attachments/doc_0123456789abcdef0123456789abcdef/document?name=contract.docx",
+  );
+
+  // Everything else kept a name and no bytes, and a chip that links nowhere is
+  // worse than a chip that is plainly a label.
+  assert.equal(chatAttachmentHref({ type: "file", name: "notes.txt" }), "");
+  assert.equal(
+    chatAttachmentHref({ type: "image", name: "shot.png", dataUrl: "data:image/png;base64,AA" }),
+    "",
+  );
+  assert.equal(chatAttachmentHref(undefined), "");
+});
+
+test("both viewer pages read only the caller's own blob", () => {
+  // Ownership is the lookup: findDocumentBlob only looks under the caller's own
+  // directory, so somebody else's id is simply not there — the same answer as
+  // one that never existed.
+  for (const relative of [
+    "src/app/attachments/[blobId]/pdf/page.tsx",
+    "src/app/attachments/[blobId]/document/page.tsx",
+  ]) {
+    const page = fs.readFileSync(path.join(dashboard, relative), "utf8");
+    assert.match(
+      page,
+      /findDocumentBlob\(\{ userId, blobId \}\)/,
+      `${relative} must scope the blob to the caller`,
+    );
+  }
+
+  // An attachment is the file the person sent; there is nowhere to write an
+  // edited copy back to, so the PDF reader opens read-only and the document
+  // reader offers the original as a download and nothing more.
+  const pdfPage = fs.readFileSync(
+    path.join(dashboard, "src/app/attachments/[blobId]/pdf/page.tsx"),
+    "utf8",
+  );
+  assert.match(pdfPage, /blob\.format !== "pdf"/);
+  assert.match(pdfPage, /readOnly/);
+
+  // A PDF that lands on the document page is a stale link, not a document to
+  // flatten into markdown.
+  const documentPage = fs.readFileSync(
+    path.join(dashboard, "src/app/attachments/[blobId]/document/page.tsx"),
+    "utf8",
+  );
+  assert.match(documentPage, /blob\.format === "pdf"/);
+  assert.match(documentPage, /redirect\(/);
+});
+
+test("every surface that names an attachment links it through the same helper", () => {
+  // Two transcripts draw chips and one lists names. A surface that builds
+  // its own URL is a surface that drifts when this one moves.
+  const surfaces = [
+    "src/app/components/chat-message-attachments.tsx",
+    "src/app/garden/garden-assistant.tsx",
+  ];
+  for (const relative of surfaces) {
+    const surface = fs.readFileSync(path.join(dashboard, relative), "utf8");
+    assert.match(
+      surface,
+      /chatAttachmentHref\(/,
+      `${relative} must open an attached document through chatAttachmentHref`,
     );
   }
 });

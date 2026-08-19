@@ -8,11 +8,25 @@ import {
   useEffect,
   useCallback,
   useMemo,
-  type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
+import TerminalSidebar, {
+  CHAT_RAIL_RESIZE,
+  type TerminalPanel,
+  type TerminalSidebarChat,
+} from "@/app/components/hermes/terminal-sidebar";
+import SidePanelDock from "@/app/components/hermes/side-panel-dock";
+import { useRailResize } from "@/app/components/hermes/use-rail-resize";
+import {
+  chatActivityById,
+  nextUnreadChats,
+  readUnreadChats,
+  sameChatIds,
+  writeUnreadChats,
+} from "@/lib/conversations/unread";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
 import { useQueuedFollowUps } from "@/app/components/hermes/queued-follow-ups";
@@ -440,6 +454,47 @@ interface Message {
   externalAgentState?: Record<string, unknown>;
 }
 
+const ChatSearchDialog = dynamic(
+  () => import("@/app/components/hermes/chat-search-dialog"),
+  { ssr: false },
+);
+const UploadsPanel = dynamic(
+  () => import("@/app/components/hermes/uploads-panel"),
+  { ssr: false },
+);
+const TerminalScheduledPanel = dynamic(
+  () => import("@/app/components/hermes/terminal-scheduled-panel"),
+  { ssr: false },
+);
+const HooksPanel = dynamic(() => import("@/app/components/hermes/hooks-panel"), {
+  ssr: false,
+});
+const ProcessesPanel = dynamic(
+  () => import("@/app/components/hermes/processes-panel"),
+  { ssr: false },
+);
+
+/** Everything the Terminal's rail offers except its artifact archive. */
+const GARDEN_PANELS: readonly TerminalPanel[] = [
+  "uploads",
+  "scheduled",
+  "hooks",
+  "processes",
+];
+
+const PANEL_TITLES: Record<TerminalPanel, string> = {
+  artifacts: "Artifacts",
+  uploads: "Uploads",
+  scheduled: "Scheduled chats",
+  hooks: "Hooks",
+  processes: "Processes",
+};
+
+const RAIL_WIDTH_KEY = "breadboard:garden-workspace:sidebar-width";
+/** Read once, so a rail that was shut before it had a width comes back shut. */
+const RAIL_COLLAPSED_KEY = "breadboard:garden-workspace:sidebar-collapsed";
+const NO_MESSAGES: Message[] = [];
+
 interface ChatSession {
   id: number;
   user_id?: number;
@@ -449,6 +504,28 @@ interface ChatSession {
   messages: Message[];
   ownerUsername?: string;
   isOwn?: boolean;
+  /**
+   * The rail's marks. They live on the canonical conversation behind this chat,
+   * which is the row the Terminal's rail marks too — a chat pinned here is
+   * pinned there.
+   */
+  pinned?: boolean;
+  highlight?: string | null;
+  /** A turn or an agent run is in flight in this chat right now. */
+  active?: boolean;
+}
+
+/** One row of the rail's own feed: the chat without its transcript. */
+interface ChatSessionSummary {
+  id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  isOwn?: boolean;
+  ownerUsername?: string;
+  pinned: boolean;
+  highlight: string | null;
+  active: boolean;
 }
 
 interface ExternalAgentSelection {
@@ -1026,6 +1103,8 @@ interface ChatTranscriptProps {
   pendingPermission: PermissionPrompt | null;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   onEditMessage: (messageIndex: number, text: string) => void;
+  /** Remove one exchange: this message and the answer it produced. */
+  onDeleteMessage: (messageIndex: number) => void;
   onRetryAssistant: (messageIndex: number) => void;
   branchGroups: Record<string, ConversationBranchGroup<Message>>;
   onSwitchBranch: (groupId: string, direction: -1 | 1) => void;
@@ -1104,6 +1183,7 @@ const ChatTranscript = memo(function ChatTranscript({
   pendingPermission,
   onPermissionDecision,
   onEditMessage,
+  onDeleteMessage,
   onRetryAssistant,
   branchGroups,
   onSwitchBranch,
@@ -1187,6 +1267,18 @@ const ChatTranscript = memo(function ChatTranscript({
     setEditingMessageId(null);
     setMessageEditText("");
     onEditMessage(messageIndex, text);
+  }
+
+  function deleteMessageTurn(messageIndex: number) {
+    if (isStreaming) return;
+    if (
+      !window.confirm(
+        "Delete this message and the answer it produced? This cannot be undone.",
+      )
+    ) {
+      return;
+    }
+    onDeleteMessage(messageIndex);
   }
 
   return (
@@ -1468,6 +1560,29 @@ const ChatTranscript = memo(function ChatTranscript({
                             strokeLinecap="round"
                             strokeLinejoin="round"
                             d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
+                          />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteMessageTurn(i)}
+                        disabled={isStreaming}
+                        className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--danger)] disabled:cursor-not-allowed disabled:opacity-35"
+                        title="Delete message"
+                        aria-label="Delete this message and its answer"
+                      >
+                        <svg
+                          className="h-4 w-4"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={1.7}
+                          aria-hidden
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M4 7h16M10 7V5.5A1.5 1.5 0 0 1 11.5 4h1A1.5 1.5 0 0 1 14 5.5V7m-7 0 .8 11.2A2 2 0 0 0 9.8 20h4.4a2 2 0 0 0 2-1.8L17 7"
                           />
                         </svg>
                       </button>
@@ -2226,73 +2341,30 @@ export default function WorkspaceClient({
   const [deletingLinkId, setDeletingLinkId] = useState<string | null>(null);
   const [sourceDocSearch, setSourceDocSearch] = useState("");
 
-  // Left chat sidebar: width is the single source of truth so it can be
-  // dragged open/closed by its edge (no toggle button). Below the threshold it
-  // renders as a thin rail; releasing snaps to a clean rail or open width.
-  const LEFT_SIDEBAR_DEFAULT = 256;
-  const LEFT_SIDEBAR_MIN = 200;
-  const LEFT_SIDEBAR_MAX = 440;
-  const LEFT_SIDEBAR_THRESHOLD = 170;
-  const LEFT_SIDEBAR_RAIL = 48;
-  const [leftSidebarWidth, setLeftSidebarWidth] =
-    useState(LEFT_SIDEBAR_DEFAULT);
-  const [leftSidebarResizing, setLeftSidebarResizing] = useState(false);
-  const leftSidebarOpen = leftSidebarWidth >= LEFT_SIDEBAR_THRESHOLD;
-
-  // Window listeners (not pointer capture) so the drag survives the sidebar
-  // swapping between its open and rail render at the collapse threshold.
-  function handleLeftSidebarResizeStart(
-    event: ReactPointerEvent<HTMLDivElement>,
-  ) {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = leftSidebarOpen ? leftSidebarWidth : LEFT_SIDEBAR_RAIL;
-    setLeftSidebarResizing(true);
-    document.body.style.cursor = "var(--bb-cursor-col-resize, col-resize)";
-    document.body.style.userSelect = "none";
-
-    const handleMove = (e: PointerEvent) => {
-      const next = startWidth + (e.clientX - startX);
-      setLeftSidebarWidth(
-        Math.min(
-          LEFT_SIDEBAR_MAX,
-          Math.max(LEFT_SIDEBAR_RAIL, Math.round(next)),
-        ),
-      );
-    };
-    const handleEnd = () => {
-      window.removeEventListener("pointermove", handleMove);
-      window.removeEventListener("pointerup", handleEnd);
-      window.removeEventListener("pointercancel", handleEnd);
-      setLeftSidebarResizing(false);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      setLeftSidebarWidth((width) =>
-        width < LEFT_SIDEBAR_THRESHOLD
-          ? LEFT_SIDEBAR_RAIL
-          : Math.min(LEFT_SIDEBAR_MAX, Math.max(LEFT_SIDEBAR_MIN, width)),
-      );
-    };
-    window.addEventListener("pointermove", handleMove);
-    window.addEventListener("pointerup", handleEnd);
-    window.addEventListener("pointercancel", handleEnd);
-  }
-
-  const leftSidebarResizeHandle = (
-    <div
-      onPointerDown={handleLeftSidebarResizeStart}
-      title="Drag to resize or collapse"
-      className="group absolute inset-y-0 right-0 z-20 flex w-2 translate-x-1/2 cursor-col-resize items-center justify-center"
-    >
-      <span
-        className={`h-10 w-0.5 rounded-full transition-colors ${
-          leftSidebarResizing
-            ? "bg-gray-400"
-            : "bg-gray-700 group-hover:bg-gray-500"
-        }`}
-      />
-    </div>
+  // Left chat sidebar: width is the single source of truth, dragged by the
+  // rail's own edge and clicked by the same edge between the icon rail and
+  // whatever width it was last opened to.
+  //
+  // Drag-to-any-width was taken off this sidebar once, because it could be left
+  // at a width where the chat list was unreadable but still rendered. That is
+  // the reason for the floor and the threshold rather than for having no drag
+  // at all: nothing between the icon rail and a readable list is a width the
+  // sidebar can be released at, so the failure has no room left to happen in.
+  const rail = useRailResize({
+    ...CHAT_RAIL_RESIZE,
+    storageKey: RAIL_WIDTH_KEY,
+    legacyCollapsedKey: RAIL_COLLAPSED_KEY,
+  });
+  const railCollapsed = rail.collapsed;
+  // Which panel is open beside the transcript, and whether search is up.
+  const [sidePanel, setSidePanel] = useState<TerminalPanel | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [railError, setRailError] = useState<string | null>(null);
+  const [unreadChats, setUnreadChats] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
   );
+  const chatActivity = useRef<ReadonlyMap<string, boolean>>(new Map());
+  const unreadRestored = useRef(false);
   const [savingFlagSlug, setSavingFlagSlug] = useState<string | null>(null);
   const [selectedDocumentSlugs, setSelectedDocumentSlugs] = useState<string[]>(
     [],
@@ -2345,12 +2417,8 @@ export default function WorkspaceClient({
   const [inlineArtifactRetireVersion, setInlineArtifactRetireVersion] = useState(0);
   const [loadingChats, setLoadingChats] = useState(true);
   const [viewPublicChats, setViewPublicChats] = useState(false);
-  const [confirmDeleteChatId, setConfirmDeleteChatId] = useState<number | null>(
-    null,
-  );
-  const [editingChatId, setEditingChatId] = useState<number | null>(null);
-  const editingChatIdRef = useRef<number | null>(null);
-  const [editingChatTitle, setEditingChatTitle] = useState("");
+  // Renaming and delete confirmation live inside the rail: it owns the input
+  // and freezes its own order while one is open, and it asks before deleting.
   const [isForking, setIsForking] = useState(false);
   const [input, setInput] = useState("");
   // Unsent text outlives a reload, filed under the chat it was typed in and the
@@ -2825,14 +2893,18 @@ export default function WorkspaceClient({
       if (!res.ok) throw new Error("Failed to load chats");
       const data = await res.json();
       const sessions = (data.sessions ?? []) as ChatSession[];
-      if (
-        chatHistoryEpoch.current !== epoch ||
-        editingChatIdRef.current !== null
-      ) {
-        return;
-      }
-      setConfirmDeleteChatId(null);
-      setChatSessions(sessions);
+      if (chatHistoryEpoch.current !== epoch) return;
+      setChatSessions((previous) => {
+        // The rail's marks come from its own feed and are not in this answer,
+        // so whatever it already established stays put.
+        const cached = new Map(previous.map((item) => [item.id, item]));
+        return sessions.map((session) => ({
+          ...session,
+          pinned: cached.get(session.id)?.pinned ?? false,
+          highlight: cached.get(session.id)?.highlight ?? null,
+          active: cached.get(session.id)?.active ?? false,
+        }));
+      });
       setActiveChatId((current) => {
         if (pendingNewChatRef.current) return null;
         if (current && sessions.some((s) => s.id === current)) return current;
@@ -2844,6 +2916,146 @@ export default function WorkspaceClient({
       setLoadingChats(false);
     }
   }, [addToast, canViewPublicChats, clusterSlug, viewPublicChats]);
+
+  /**
+   * The rail's own feed: rows only, polled.
+   *
+   * A different request from the full read above on purpose — that one carries
+   * every message of every chat, which is affordable when a garden opens and
+   * not at all every ten seconds. This one answers with the title, the time,
+   * and the three marks the rail draws: pinned, highlighted, working.
+   */
+  const refreshRail = useCallback(async () => {
+    const epoch = chatHistoryEpoch.current;
+    try {
+      const params = new URLSearchParams({ clusterSlug, summary: "1" });
+      if (canViewPublicChats && viewPublicChats)
+        params.set("includePublicChats", "1");
+      const res = await fetch(`/api/chat-sessions?${params.toString()}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error("Chats could not be loaded.");
+      const data = (await res.json()) as { sessions?: ChatSessionSummary[] };
+      if (chatHistoryEpoch.current !== epoch) return;
+      const rows = Array.isArray(data.sessions) ? data.sessions : [];
+      setChatSessions((previous) => {
+        const cached = new Map(previous.map((item) => [item.id, item]));
+        return rows.map((row) => ({
+          // A chat whose transcript has not been read yet keeps one shared
+          // empty array, so its identity is stable between polls.
+          ...(cached.get(row.id) ?? { messages: NO_MESSAGES }),
+          id: row.id,
+          title: row.title,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+          isOwn: row.isOwn,
+          ownerUsername: row.ownerUsername,
+          pinned: row.pinned,
+          highlight: row.highlight,
+          active: row.active,
+        }));
+      });
+      setRailError(null);
+    } catch {
+      setRailError("Chats could not be loaded.");
+    }
+  }, [canViewPublicChats, clusterSlug, viewPublicChats]);
+
+  useEffect(() => {
+    // Once on arrival, so the marks are on the rows at first paint rather than
+    // ten seconds into looking at them.
+    void refreshRail();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshRail();
+    }, 10_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void refreshRail();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [refreshRail]);
+
+  // The rail's rows. Ids are strings because that is what the shared rail and
+  // its search, upload and process controls all speak; this surface's chats are
+  // numbered, so the number is carried as its own decimal string throughout.
+  const sidebarChats: TerminalSidebarChat[] = chatSessions.map((session) => ({
+    id: String(session.id),
+    title: session.title,
+    updatedAt: session.updated_at,
+    // The poll is ten seconds behind a turn this tab is running, so a chat
+    // streaming here speaks for itself.
+    active: session.active === true || streamingChatIds.has(session.id),
+    pinned: session.pinned === true,
+    highlight: session.highlight ?? null,
+    unread: unreadChats.has(String(session.id)),
+  }));
+
+  // A chat counts as read while its transcript is the one on screen.
+  const viewingChatId = activeChatId === null ? null : String(activeChatId);
+
+  useEffect(() => {
+    setUnreadChats(readUnreadChats(window.localStorage, clusterSlug));
+    unreadRestored.current = false;
+    chatActivity.current = new Map();
+  }, [clusterSlug]);
+
+  // The rows are rebuilt on every render, so the pass below is keyed on what it
+  // actually reads: which chats there are and which of them are working.
+  const railActivityKey = sidebarChats
+    .map((chat) => `${chat.id}:${chat.active ? 1 : 0}`)
+    .join(",");
+
+  // One pass per refresh of the rail: raise the dot on every chat that stopped
+  // running out of sight, and take it off the one being read.
+  useEffect(() => {
+    const previousActive = chatActivity.current;
+    chatActivity.current = chatActivityById(sidebarChats);
+    setUnreadChats((current) => {
+      const next = nextUnreadChats({
+        unread: current,
+        previousActive,
+        chats: sidebarChats,
+        viewingChatId,
+      });
+      return sameChatIds(current, next) ? current : next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [railActivityKey, viewingChatId]);
+
+  useEffect(() => {
+    if (!unreadRestored.current) {
+      // The first commit carries the empty starting value rather than anything
+      // that happened, and the restore above has not landed yet: writing it
+      // would erase the dots this browser was still holding.
+      unreadRestored.current = true;
+      return;
+    }
+    writeUnreadChats(window.localStorage, unreadChats, clusterSlug);
+  }, [unreadChats, clusterSlug]);
+
+  // Deleting a chat takes its dot with it. The pass above cannot be relied on
+  // for this: it deliberately leaves the set alone when the list arrives empty,
+  // which is exactly what deleting the last chat produces.
+  const forgetUnreadChats = useCallback((ids: Iterable<string>) => {
+    setUnreadChats((current) => {
+      const next = new Set(current);
+      for (const id of ids) next.delete(id);
+      return sameChatIds(current, next) ? current : next;
+    });
+  }, []);
+
+  /** Open a chat by the id every rail control hands back. */
+  const openChatById = useCallback((chatId: string) => {
+    const id = Number(chatId);
+    if (!Number.isInteger(id)) return;
+    pendingNewChatRef.current = false;
+    setSidePanel(null);
+    setActiveChatId(id);
+    setDraftMessages(null);
+  }, []);
 
   // The server names a chat from its first prompt, the same way it names a
   // Terminal one. The Terminal sees that name arrive through its history poll;
@@ -2862,12 +3074,7 @@ export default function WorkspaceClient({
       const sessions = (data.sessions ?? []) as ChatSession[];
       // A rename or delete that landed while this was in flight owns the title
       // now, exactly as it does for the full reload above.
-      if (
-        chatHistoryEpoch.current !== epoch ||
-        editingChatIdRef.current !== null
-      ) {
-        return;
-      }
+      if (chatHistoryEpoch.current !== epoch) return;
       const titles = new Map(sessions.map((session) => [session.id, session.title]));
       setChatSessions((previous) =>
         previous.map((session) => {
@@ -4187,8 +4394,7 @@ export default function WorkspaceClient({
     chatHistoryEpoch.current += 1;
     setActiveChatId(null);
     setDraftMessages(null);
-    setConfirmDeleteChatId(null);
-    cancelRenameChat();
+    setSidePanel(null);
     setInput("");
     // A new chat starts with an empty box rather than the last unstarted draft.
     clearChatDraft(window.localStorage, chatDraftKey(draftSurface, null));
@@ -4234,13 +4440,14 @@ export default function WorkspaceClient({
 
   // A streaming chat can be deleted: the route cancels the turn and any agent
   // run it started before it removes the rows.
-  async function handleDeleteChat(sessionId?: number) {
+  async function handleDeleteChat(sessionId?: number): Promise<boolean> {
     const targetId = sessionId ?? activeChatId;
-    if (!targetId) return;
+    if (!targetId) return false;
     const targetSession = chatSessions.find((s) => s.id === targetId);
-    if (!targetSession || (targetSession.isOwn === false && !isOwner)) return;
-    setConfirmDeleteChatId(null);
+    if (!targetSession || (targetSession.isOwn === false && !isOwner)) return false;
+    chatHistoryEpoch.current += 1;
     forgetChatDrafts(window.localStorage, draftSurface, [String(targetId)]);
+    forgetUnreadChats([String(targetId)]);
     const remaining = chatSessions.filter((s) => s.id !== targetId);
     setChatSessions(remaining);
     if (activeChatId === targetId) setActiveChatId(remaining[0]?.id ?? null);
@@ -4249,35 +4456,119 @@ export default function WorkspaceClient({
         method: "DELETE",
       });
       if (!res.ok) throw new Error("Failed to delete chat");
+      return true;
     } catch {
       addToast("Failed to delete chat");
       fetchChatSessions();
+      return false;
+    }
+  }
+
+  async function deleteChatFromRail(chat: TerminalSidebarChat) {
+    if (
+      !window.confirm(
+        `Delete "${chat.title}"? Anything it is still running is stopped, and its messages are removed for good.`,
+      )
+    ) {
+      return;
+    }
+    setRailError(null);
+    if (!(await handleDeleteChat(Number(chat.id)))) {
+      setRailError("This chat could not be deleted.");
+    }
+  }
+
+  async function deleteChatsFromRail(chats: TerminalSidebarChat[]) {
+    if (chats.length === 0) return;
+    const subject =
+      chats.length === 1 ? `"${chats[0].title}"` : `${chats.length} chats`;
+    if (
+      !window.confirm(
+        `Delete ${subject}? Anything they are still running is stopped, and their messages are removed for good.`,
+      )
+    ) {
+      return;
+    }
+    setRailError(null);
+    let failed = 0;
+    // One at a time: each delete stops that chat's live work before removing
+    // its rows, so a partial result is possible and has to be reported.
+    for (const chat of chats) {
+      if (!(await handleDeleteChat(Number(chat.id)))) failed += 1;
+    }
+    if (failed > 0) {
+      setRailError(
+        failed === 1 && chats.length === 1
+          ? "This chat could not be deleted."
+          : `${failed} of ${chats.length} chats could not be deleted.`,
+      );
+    }
+  }
+
+  /**
+   * Pin or highlight one chat, applied to the row before the round trip.
+   *
+   * Marking six chats is six clicks; waiting for the server between them would
+   * make the pen feel stuck. The epoch guard keeps the next reconcile from
+   * answering with a snapshot taken before the change.
+   */
+  async function patchChatMark(
+    chat: TerminalSidebarChat,
+    body: { pinned?: boolean; highlight?: string | null },
+    failure: string,
+  ) {
+    const id = Number(chat.id);
+    setRailError(null);
+    chatHistoryEpoch.current += 1;
+    let original: ChatSession | undefined;
+    setChatSessions((current) =>
+      current.map((session) => {
+        if (session.id !== id) return session;
+        original = session;
+        return { ...session, ...body };
+      }),
+    );
+    try {
+      const res = await fetch(`/api/chat-sessions/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(failure);
+    } catch {
+      setRailError(failure);
+      if (!original) return;
+      const before = original;
+      // Roll back only the fields this call wrote, and only where the row still
+      // holds what it wrote — a later edit is the newer truth and keeps it.
+      setChatSessions((current) =>
+        current.map((session) =>
+          session.id === id
+            ? {
+                ...session,
+                ...(body.pinned !== undefined && session.pinned === body.pinned
+                  ? { pinned: before.pinned }
+                  : {}),
+                ...(body.highlight !== undefined &&
+                session.highlight === body.highlight
+                  ? { highlight: before.highlight }
+                  : {}),
+              }
+            : session,
+        ),
+      );
     }
   }
 
   // ── Garden note generation ──────────────────────────────────────────────────
 
-  function startRenameChat(session: ChatSession) {
-    if (session.isOwn === false) return;
-    setConfirmDeleteChatId(null);
-    editingChatIdRef.current = session.id;
-    setEditingChatId(session.id);
-    setEditingChatTitle(session.title);
-  }
-
-  function cancelRenameChat() {
-    editingChatIdRef.current = null;
-    setEditingChatId(null);
-    setEditingChatTitle("");
-  }
-
-  function commitChatRename(sessionId: number) {
-    const title = editingChatTitle.trim().replace(/\s+/g, " ");
-    const session = chatSessions.find((item) => item.id === sessionId);
+  /** The rail hands back the typed title; a public chat is never renamed here. */
+  function renameChatFromRail(chat: TerminalSidebarChat, title: string) {
+    const session = chatSessions.find((item) => item.id === Number(chat.id));
     if (!session || session.isOwn === false) return;
-    cancelRenameChat();
-    if (!title || title === session.title) return;
-    void renameChatSession(session, title);
+    const cleaned = title.trim().replace(/\s+/g, " ");
+    if (!cleaned || cleaned === session.title) return;
+    void renameChatSession(session, cleaned);
   }
 
   async function renameChatSession(session: ChatSession, title: string) {
@@ -4802,6 +5093,39 @@ export default function WorkspaceClient({
     }));
     const nextMessages = cloneMessages(variants[targetIndex]);
     setInlineArtifactRetireVersion((current) => current + 1);
+    updateChatMessages(activeChat.id, nextMessages);
+    void persistChatSession(activeChat.id, nextMessages);
+  }
+
+  /**
+   * Remove one exchange: the message and the answer beneath it, up to the next
+   * thing the person said.
+   *
+   * A garden chat is persisted as a whole transcript rather than row by row, so
+   * the delete is the same write as a branch switch — replace the message list.
+   * The branch group goes with it: its variants are snapshots of a transcript
+   * that no longer exists, and keeping them would offer a switcher that puts
+   * the deleted exchange back.
+   */
+  function handleDeleteUserMessage(messageIndex: number) {
+    if (isStreaming || !activeChat) return;
+    const target = messages[messageIndex];
+    if (!target || target.role !== "user") return;
+    let end = messageIndex + 1;
+    while (end < messages.length && messages[end]?.role === "assistant") {
+      end += 1;
+    }
+    const nextMessages = [
+      ...messages.slice(0, messageIndex),
+      ...messages.slice(end),
+    ];
+    const groupId = messageBranchId(target, messageIndex);
+    setBranchGroups((current) => {
+      if (!(groupId in current)) return current;
+      const next = { ...current };
+      delete next[groupId];
+      return next;
+    });
     updateChatMessages(activeChat.id, nextMessages);
     void persistChatSession(activeChat.id, nextMessages);
   }
@@ -12021,228 +12345,62 @@ export default function WorkspaceClient({
       {/* Body */}
       <div className="flex flex-1 min-h-0">
         {/* Left sidebar: chat sessions */}
-        {leftSidebarOpen ? (
-          <aside
-            style={{ width: leftSidebarWidth }}
-            className="bb-neu-sidebar-left neu-surface-subtle relative shrink-0 border-r border-gray-800 flex flex-col bg-gray-950"
-          >
-            {leftSidebarResizeHandle}
-            {/* New chat */}
-            <div className="px-3 pt-3 pb-2 shrink-0 flex items-center gap-2">
+        {/* The Terminal's rail, garden-scoped: this garden's chats, its
+            uploads, its schedules, its hooks and its live work. The Terminal
+            keeps the same rail pointed at everything. */}
+        <TerminalSidebar
+          surface="tinted"
+          collapsed={railCollapsed}
+          onToggleCollapsed={rail.toggle}
+          resize={rail}
+          chats={sidebarChats}
+          loading={loadingChats}
+          error={railError}
+          activeChatId={activeChatId === null ? null : String(activeChatId)}
+          openPanel={sidePanel}
+          panels={GARDEN_PANELS}
+          onNewChat={handleNewChat}
+          onTogglePanel={(panel) =>
+            setSidePanel((current) => (current === panel ? null : panel))
+          }
+          onOpenSearch={() => setSearchOpen(true)}
+          onOpenChat={(chat) => openChatById(chat.id)}
+          onRenameChat={renameChatFromRail}
+          onTogglePin={(chat) =>
+            void patchChatMark(
+              chat,
+              { pinned: !chat.pinned },
+              chat.pinned
+                ? "This chat could not be unpinned."
+                : "This chat could not be pinned.",
+            )
+          }
+          onDeleteChat={(chat) => void deleteChatFromRail(chat)}
+          onDeleteChats={(selected) => void deleteChatsFromRail(selected)}
+          onHighlightChat={(chat, highlight) =>
+            void patchChatMark(
+              chat,
+              { highlight },
+              "This chat could not be highlighted.",
+            )
+          }
+          recentsAction={
+            canViewPublicChats ? (
               <button
-                onClick={handleNewChat}
-                disabled={loadingChats}
-                className="neu-button flex-1 min-w-0 flex items-center gap-2 px-3 py-2.5 text-sm text-gray-300 rounded-lg border border-gray-800 hover:bg-gray-900 hover:text-white hover:border-gray-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                type="button"
+                onClick={() => setViewPublicChats((value) => !value)}
+                aria-pressed={viewPublicChats}
+                className={`mr-1 shrink-0 rounded-md px-1.5 py-0.5 text-[10px] transition ${
+                  viewPublicChats
+                    ? "text-[var(--botanical)]"
+                    : "text-[var(--ink-muted)] hover:text-[var(--ink)]"
+                }`}
               >
-                <svg
-                  className="w-4 h-4 shrink-0"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M12 4.5v15m7.5-7.5h-15"
-                  />
-                </svg>
-                New chat
+                Public {viewPublicChats ? "on" : "off"}
               </button>
-            </div>
-
-            {/* Chat sessions list */}
-            <div className="flex-1 overflow-y-auto px-2 py-1 min-h-0">
-              {loadingChats ? (
-                <div className="flex justify-center py-8">
-                  <Spinner className="w-4 h-4 text-gray-700" />
-                </div>
-              ) : (
-                <>
-                  <div className="mb-1.5 mt-1 flex items-center justify-between gap-2 px-2">
-                    <p className="text-[10px] uppercase tracking-wider text-gray-600">
-                      Recents
-                    </p>
-                    {canViewPublicChats && (
-                      <button
-                        type="button"
-                        onClick={() => setViewPublicChats((value) => !value)}
-                        className={[
-                          "text-[10px] transition-colors",
-                          viewPublicChats
-                            ? "text-[#7b97aa] hover:text-white"
-                            : "text-gray-600 hover:text-gray-300",
-                        ].join(" ")}
-                        aria-pressed={viewPublicChats}
-                      >
-                        View public chats {viewPublicChats ? "on" : "off"}
-                      </button>
-                    )}
-                  </div>
-                  {chatSessions.length === 0 ? (
-                    <p className="text-xs text-gray-600 text-center py-8">
-                      {viewPublicChats ? "No public chats yet" : "No chats yet"}
-                    </p>
-                  ) : (
-                    <ul className="space-y-0.5">
-                      {chatSessions.map((session) => {
-                        const canDeleteSession =
-                          session.isOwn !== false || isOwner;
-                        const canRenameSession = session.isOwn !== false;
-                        const isEditingChat = editingChatId === session.id;
-                        return (
-                          <li key={session.id} className="relative group">
-                            {isEditingChat ? (
-                              <div
-                                className={[
-                                  "neu-inset flex items-center gap-1 rounded-lg px-2 py-1.5",
-                                  session.id === activeChatId
-                                    ? "bg-gray-800"
-                                    : "bg-gray-900",
-                                ].join(" ")}
-                              >
-                                <input
-                                  value={editingChatTitle}
-                                  onChange={(e) =>
-                                    setEditingChatTitle(e.target.value)
-                                  }
-                                  onBlur={() => commitChatRename(session.id)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") {
-                                      e.preventDefault();
-                                      commitChatRename(session.id);
-                                    } else if (e.key === "Escape") {
-                                      e.preventDefault();
-                                      cancelRenameChat();
-                                    }
-                                  }}
-                                  autoFocus
-                                  maxLength={200}
-                                  aria-label={`Rename ${session.title}`}
-                                  className="neu-control min-w-0 flex-1 rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-white outline-none focus:border-gray-500 disabled:opacity-50"
-                                />
-                              </div>
-                            ) : (
-                              <button
-                                onClick={() => {
-                                  pendingNewChatRef.current = false;
-                                  setActiveChatId(session.id);
-                                  setDraftMessages(null);
-                                }}
-                                onDoubleClick={() => startRenameChat(session)}
-                                className={[
-                                  "bb-neu-conversation-row w-full text-left px-3 py-2 pr-14 text-sm rounded-lg transition-colors flex items-center gap-2",
-                                  session.id === activeChatId
-                                    ? "bb-neu-conversation-row-selected bg-gray-800 text-white"
-                                    : "text-gray-400 hover:bg-gray-900 hover:text-white",
-                                ].join(" ")}
-                              >
-                                <div className="flex-1 min-w-0">
-                                  <span className="block truncate">
-                                    {session.title}
-                                  </span>
-                                  {(viewPublicChats || isOwner) &&
-                                    session.ownerUsername && (
-                                      <span className="block truncate text-[10px] text-gray-600 mt-0.5">
-                                        {session.ownerUsername}
-                                      </span>
-                                    )}
-                                </div>
-                              </button>
-                            )}
-                            {canDeleteSession &&
-                            confirmDeleteChatId === session.id ? (
-                              <div className="neu-popover absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-900 px-2 py-1 shadow-lg">
-                                <span className="text-[10px] text-gray-400">
-                                  Delete?
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDeleteChat(session.id);
-                                  }}
-                                  className="text-[10px] font-medium text-red-500 transition-colors hover:text-red-400 disabled:opacity-40"
-                                >
-                                  Yes
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setConfirmDeleteChatId(null);
-                                  }}
-                                  className="text-[10px] text-gray-500 transition-colors hover:text-white"
-                                >
-                                  No
-                                </button>
-                              </div>
-                            ) : !isEditingChat &&
-                              (canRenameSession || canDeleteSession) ? (
-                              <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                                {canRenameSession && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      startRenameChat(session);
-                                    }}
-                                    className="shrink-0 p-0.5 text-gray-600 transition-colors hover:text-white"
-                                    aria-label="Rename chat"
-                                    title="Rename chat"
-                                  >
-                                    <svg
-                                      className="w-3.5 h-3.5"
-                                      fill="none"
-                                      viewBox="0 0 24 24"
-                                      stroke="currentColor"
-                                      strokeWidth={1.8}
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
-                                      />
-                                    </svg>
-                                  </button>
-                                )}
-                                {canDeleteSession && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setConfirmDeleteChatId(session.id);
-                                    }}
-                                    disabled={streamingChatIds.has(session.id)}
-                                    className="shrink-0 p-0.5 text-gray-600 transition-colors hover:text-red-400 disabled:hidden"
-                                    aria-label="Delete chat"
-                                    title="Delete chat"
-                                  >
-                                    <svg
-                                      className="w-3.5 h-3.5"
-                                      fill="none"
-                                      viewBox="0 0 24 24"
-                                      stroke="currentColor"
-                                      strokeWidth={2}
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        d="M6 18 18 6M6 6l12 12"
-                                      />
-                                    </svg>
-                                  </button>
-                                )}
-                              </div>
-                            ) : null}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </>
-              )}
-            </div>
+            ) : null
+          }
+        />
 
             {/* Sources — collapsible at bottom */}
             <div className="hidden">
@@ -12511,36 +12669,6 @@ export default function WorkspaceClient({
                 </div>
               )}
             </div>
-          </aside>
-        ) : (
-          <aside
-            style={{ width: leftSidebarWidth }}
-            className="bb-neu-sidebar-left relative shrink-0 border-r border-gray-800 flex flex-col items-center bg-gray-950 py-3"
-          >
-            {leftSidebarResizeHandle}
-            <button
-              onClick={handleNewChat}
-              disabled={loadingChats}
-              title="New chat"
-              className="neu-button-icon flex h-9 w-9 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-900 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              aria-label="New chat"
-            >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 4.5v15m7.5-7.5h-15"
-                />
-              </svg>
-            </button>
-          </aside>
-        )}
 
         {/* Chat area — warm paper surface so the green sidebars read as a frame */}
         {/* min-w-0: without it the column keeps its ~1056px min-content width and
@@ -12576,6 +12704,7 @@ export default function WorkspaceClient({
                 void agentActivity.respondToPermission(decision)
               }
               onEditMessage={handleEditUserMessage}
+              onDeleteMessage={handleDeleteUserMessage}
               onRetryAssistant={handleRetryAssistant}
               branchGroups={branchGroups}
               onSwitchBranch={switchBranch}
@@ -12835,6 +12964,32 @@ export default function WorkspaceClient({
           </div>
         </div>
 
+        {sidePanel ? (
+          <SidePanelDock
+            label={PANEL_TITLES[sidePanel]}
+            defaultWidth={460}
+            storageKey="breadboard:garden-workspace:panel-width"
+          >
+            {sidePanel === "uploads" ? (
+              <UploadsPanel
+                activeSurface="garden_chat"
+                gardenSlug={clusterSlug}
+                onOpenChat={openChatById}
+              />
+            ) : sidePanel === "scheduled" ? (
+              <TerminalScheduledPanel surface="garden_chat" gardenSlug={clusterSlug} />
+            ) : sidePanel === "hooks" ? (
+              <HooksPanel gardenSlug={clusterSlug} />
+            ) : (
+              <ProcessesPanel
+                gardenSlug={clusterSlug}
+                onOpenChat={openChatById}
+                onOpenPanel={(panel) => setSidePanel(panel)}
+              />
+            )}
+          </SidePanelDock>
+        ) : null}
+
         <KnowledgeGraph
           clusterSlug={clusterSlug}
           refreshKey={graphRefreshKey}
@@ -12843,6 +12998,16 @@ export default function WorkspaceClient({
           savedLinkCount={savedLinks.length}
         />
       </div>
+
+      {searchOpen ? (
+        <ChatSearchDialog
+          surface="garden_chat"
+          gardenSlug={clusterSlug}
+          recents={sidebarChats}
+          onClose={() => setSearchOpen(false)}
+          onSelect={openChatById}
+        />
+      ) : null}
 
       {/* ── New markdown note modal ─────────────────────────────────────────── */}
       {showNewNote && (

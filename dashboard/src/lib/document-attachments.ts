@@ -75,6 +75,49 @@ export const DOCUMENT_ATTACHMENT_FORMATS: Record<
   },
 };
 
+/**
+ * The name to show for a stored attachment, from the name its message kept.
+ *
+ * The blob store never kept a filename — on disk a document is its id and its
+ * format and nothing else — so the viewer pages are handed the name in a query
+ * string. Only the parts of it that are really a name survive: anything that
+ * could read as a path, a control character, or an unbounded string is dropped,
+ * because this value also becomes the name of a download.
+ */
+export function attachmentDisplayName(
+  value: unknown,
+  format: DocumentAttachmentFormat,
+  fallback: string,
+): string {
+  const cleaned =
+    typeof value === "string"
+      ? value
+          .replace(/[\u0000-\u001F\u007F]/g, " ")
+          .replace(/[\\/]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 120)
+      : "";
+  if (!cleaned) return fallback;
+  return cleaned.toLowerCase().endsWith(`.${format}`) ? cleaned : `${cleaned}.${format}`;
+}
+
+/**
+ * The extracted markdown with its figures pointing somewhere a browser can go.
+ *
+ * The extractor references a figure by the name it wrote beside the blob —
+ * `figure-2.png` — which is exactly right for an agent holding the sidecar
+ * directory and useless to a page. Only names of that shape are rewritten, so
+ * an image reference the document itself carried is left alone rather than
+ * pointed at a file that was never extracted.
+ */
+export function withResolvedFigureUrls(markdown: string, sourceUrl: string): string {
+  return markdown.replace(
+    /\]\((figure-\d{1,4}\.[a-z0-9]{1,5})\)/gi,
+    (_match, figure: string) => `](${sourceUrl}?figure=${encodeURIComponent(figure)})`,
+  );
+}
+
 export const DOCUMENT_ATTACHMENT_EXTENSIONS = Object.keys(
   DOCUMENT_ATTACHMENT_FORMATS,
 ) as DocumentAttachmentFormat[];

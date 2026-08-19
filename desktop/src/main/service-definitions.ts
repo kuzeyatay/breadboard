@@ -171,6 +171,39 @@ export function cadServiceUrl(config: DesktopRuntimeConfig): string {
  * intentional — parametric CAD is an optional leaf capability, and its absence
  * must leave the rest of Breadboard untouched.
  */
+/** Server-only ColPali service endpoint. Never published to the renderer. */
+export function colpaliServiceUrl(config: DesktopRuntimeConfig): string {
+  return `http://127.0.0.1:${config.ports.colpali ?? 7733}`;
+}
+
+/**
+ * Resolve the ColPali service's interpreter.
+ *
+ * Its own environment for the same reason CAD has one, but a different
+ * constraint: PyTorch publishes no wheels for this repository's default Python,
+ * so `npm run setup:colpali` pins 3.13. Returning null is the ordinary case —
+ * the environment is a 3.5 GB opt-in, and without it document attachments are
+ * inlined whole exactly as they were before ColPali existed.
+ */
+export function resolveColpaliPython(paths: ResolvedPaths): string | null {
+  const executable = process.platform === "win32" ? "python.exe" : "python";
+  const scripts = process.platform === "win32" ? "Scripts" : "bin";
+  const override = process.env["COLPALI_PYTHON"]?.trim();
+  const candidates = [
+    override,
+    path.join(paths.runtimesDir, "colpali-python", scripts, executable),
+    path.join(paths.runtimesDir, "colpali-python", executable),
+    path.join(paths.appRoot, ".runtime", "colpali-venv", scripts, executable),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const python = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!python) return null;
+  return fs.existsSync(
+    path.join(paths.appRoot, "colpali-service", "breadboard_colpali", "__main__.py"),
+  )
+    ? python
+    : null;
+}
+
 export function resolveCadPython(paths: ResolvedPaths): string | null {
   const executable = process.platform === "win32" ? "python.exe" : "python";
   const scripts = process.platform === "win32" ? "Scripts" : "bin";
@@ -364,9 +397,10 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const scriberrDataDir = path.join(paths.runtimeDir, "scriberr");
   const voiceboxDataDir = path.join(paths.runtimeDir, "voicebox");
 
-  // GBrain (garden knowledge retrieval). Additive and off by default. When
-  // enabled it runs as a supervised loopback Bun sidecar with a per-install
-  // secret, storing its mutable PGLite/index data under the desktop data dir.
+  // GBrain (garden knowledge retrieval). On by default (`preferred`), and still
+  // additive: it runs as a supervised loopback Bun sidecar with a per-install
+  // secret, storing its mutable PGLite/index data under the desktop data dir,
+  // and never blocks startup. `disabled` in desktop-config.json turns it off.
   const gbrainEnabled = persistent.gbrainMode !== "disabled";
   const gbrainPort = config.ports.gbrain ?? 7717;
   const gbrainUrl = `http://127.0.0.1:${gbrainPort}`;
@@ -425,6 +459,12 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const cadEnabled = persistent.cadMode !== "disabled" && cadPython !== null;
   const cadUrl = cadServiceUrl(config);
   const cadWorkspace = path.join(paths.runtimeDir, "cad-workspaces");
+  const colpaliPython = resolveColpaliPython(paths);
+  const colpaliEnabled = persistent.colpaliMode !== "disabled" && colpaliPython !== null;
+  const colpaliUrl = colpaliServiceUrl(config);
+  // The vectors are Breadboard's state, not the user's documents, so they live
+  // under the desktop data dir rather than beside the checkout.
+  const colpaliHome = path.join(paths.runtimeDir, "colpali");
 
   const chatmock: DesktopServiceDefinition = {
     id: "chatmock",
@@ -868,6 +908,17 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       // the per-install one, which both the dashboard and the service read from
       // here rather than from the shared file.
       CAD_MODE: persistent.cadMode,
+      // `disabled` when there is no interpreter, so the dashboard stops calling
+      // a service that cannot answer instead of timing out once per question.
+      COLPALI_MODE: colpaliEnabled ? "auto" : "disabled",
+      ...(colpaliEnabled
+        ? {
+            COLPALI_SERVICE_URL: colpaliUrl,
+            COLPALI_SERVICE_SECRET: persistent.colpaliServiceSecret,
+            BREADBOARD_COLPALI_PORT: String(config.ports.colpali ?? 7733),
+            BREADBOARD_COLPALI_HOME: colpaliHome,
+          }
+        : {}),
       ...(cadEnabled
         ? {
             CAD_SERVICE_URL: cadUrl,
@@ -903,7 +954,18 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       GBRAIN_ADAPTER_SECRET: persistent.gbrainAdapterSecret,
       // Mutable index data lives under the desktop data dir, never in resources.
       GBRAIN_DATA_DIR: gbrainDataDir,
-      GBRAIN_EMBEDDING_PROVIDER: process.env["GBRAIN_EMBEDDING_PROVIDER"] ?? "none",
+      // Production vendored engine; `fake` is test-only and refused here anyway.
+      GBRAIN_BACKEND: process.env["GBRAIN_BACKEND"] ?? "gbrain",
+      // Real vectors with no paid API, matching the dev stack: ChatMock's
+      // `/v1/embeddings` serves a local ONNX model and is OpenAI-compatible,
+      // which is the only shape the vendored engine's gateway accepts. PROVIDER,
+      // BASE_URL, MODEL, API_KEY and DIMENSIONS must ALL be set or the adapter
+      // truthfully degrades to lexical. ChatMock ignores the key.
+      GBRAIN_EMBEDDING_PROVIDER: process.env["GBRAIN_EMBEDDING_PROVIDER"] ?? "openai-compatible",
+      GBRAIN_EMBEDDING_BASE_URL: process.env["GBRAIN_EMBEDDING_BASE_URL"] ?? urls.chatmockV1,
+      GBRAIN_EMBEDDING_API_KEY: process.env["GBRAIN_EMBEDDING_API_KEY"] ?? "local",
+      GBRAIN_EMBEDDING_MODEL: process.env["GBRAIN_EMBEDDING_MODEL"] ?? "local/bge-small-en-v1.5",
+      GBRAIN_EMBEDDING_DIMENSIONS: process.env["GBRAIN_EMBEDDING_DIMENSIONS"] ?? "384",
       GBRAIN_QUERY_TIMEOUT_MS: "15000",
     },
     healthCheck: {
@@ -997,6 +1059,43 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       }
     : null;
 
+  const colpali: DesktopServiceDefinition | null = colpaliEnabled
+    ? {
+        id: "colpali",
+        displayName: "Document page retrieval (ColPali)",
+        // Never blocks startup: without it, attached documents are inlined
+        // whole, which is what Breadboard did before this service existed.
+        required: false,
+        startInBackground: true,
+        command: colpaliPython!,
+        args: [
+          "-m",
+          "breadboard_colpali",
+          "serve",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          String(config.ports.colpali ?? 7733),
+        ],
+        cwd: path.join(paths.appRoot, "colpali-service"),
+        env: {
+          ...shared,
+          PYTHONUNBUFFERED: "1",
+          PYTHONDONTWRITEBYTECODE: "1",
+          // Secret injected via env (never argv) so it cannot leak in process listings.
+          BREADBOARD_COLPALI_SECRET: persistent.colpaliServiceSecret,
+          BREADBOARD_COLPALI_PORT: String(config.ports.colpali ?? 7733),
+          BREADBOARD_COLPALI_HOME: colpaliHome,
+        },
+        // No readiness wait, and a short startup timeout: the process binds its
+        // port immediately and imports nothing heavy until the first request.
+        // Waiting on health would mean waiting on `import torch`.
+        startupTimeoutMs: 5_000,
+        gracefulShutdownMs: 8_000,
+        restartPolicy: "on-failure",
+      }
+    : null;
+
   const cliproxy: DesktopServiceDefinition = {
     id: "cliproxy",
     displayName: "Subscriptions (model proxy)",
@@ -1039,6 +1138,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   if (gbrainEnabled) definitions.push(gbrain);
   if (uiTarsEnabled) definitions.push(uiTars);
   if (cad) definitions.push(cad);
+  if (colpali) definitions.push(colpali);
   if (voicebox) definitions.push(voicebox);
   definitions.push(quartz, dashboard);
 

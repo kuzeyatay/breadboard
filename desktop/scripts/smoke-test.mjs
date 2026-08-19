@@ -73,11 +73,12 @@ const GBRAIN_FIXTURE_SOURCE = "gbrain-smoke-fixture";
 const GBRAIN_FIXTURE_QUERY = "voltage current resistance";
 
 // Runs the GBrain lifecycle checks against the running adapter. Gated on GBrain
-// being enabled (a gbrain URL was published). When disabled (the default) it
-// records a single explicit skip so the report is honest.
+// being enabled (a gbrain URL was published), which is the default. When an
+// install has turned it off it records a single explicit skip so the report is
+// honest.
 async function gbrainInitialChecks(urls) {
   if (!urls.gbrain) {
-    record("GBrain lifecycle (disabled by default; enable via desktop-config gbrainMode)", true, "skipped: GBrain not enabled");
+    record("GBrain lifecycle (disabled for this install via desktop-config gbrainMode)", true, "skipped: GBrain not enabled");
     return false;
   }
   const secret = gbrainSecret();

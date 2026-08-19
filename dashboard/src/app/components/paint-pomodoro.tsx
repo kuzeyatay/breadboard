@@ -547,14 +547,14 @@ const THEME_CSS = `
 .pp-attr { margin: 0; font-size: 0.625rem; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-subtle); text-align: right; }
 
 html[data-theme="dark"] .pp-overlay {
-  --canvas: #18181a; --surface: #292b27; --surface-muted: #20211f;
-  --ink: #f4f1e8; --ink-sec: #d6ddd5; --ink-muted: #a5aea5; --ink-subtle: #89948c;
+  --canvas: #0b0c0a; --surface: #212420; --surface-muted: #171916;
+  --ink: #e2e7de; --ink-sec: #ccd2c9; --ink-muted: #8d968b; --ink-subtle: #778075;
   --accent: #91b7a1; --accent-strong: #a6c8b4; --accent-hover: #c4d8c8; --accent-fill: #253832; --warm: #c5a963;
-  --border: #4c5a50; --border-subtle: #353d37;
+  --border: #454f48; --border-subtle: #2e3530;
 }
-html[data-theme="dark"] .pp-hud { background: rgb(32 33 31 / 97%); box-shadow: 0 10px 34px rgb(0 0 0 / 48%); }
+html[data-theme="dark"] .pp-hud { background: rgb(23 25 22 / 97%); box-shadow: 0 10px 34px rgb(0 0 0 / 62%); }
 html[data-theme="dark"] .pp-hud-toggle:hover { background: rgb(255 255 255 / 5%); }
-html[data-theme="dark"] .pp-btn-primary { color: #18181a; }
-html[data-theme="dark"] .pp-clue { background: rgb(41 43 39 / 88%); }
-html[data-theme="dark"] .pp-clue.is-open { border-color: #9fb5c4; background: rgb(50 53 47 / 96%); }
+html[data-theme="dark"] .pp-btn-primary { color: #0b0c0a; }
+html[data-theme="dark"] .pp-clue { background: rgb(33 36 32 / 88%); }
+html[data-theme="dark"] .pp-clue.is-open { border-color: #9fb5c4; background: rgb(45 49 43 / 96%); }
 `;
