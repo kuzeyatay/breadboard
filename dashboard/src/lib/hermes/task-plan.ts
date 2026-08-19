@@ -28,6 +28,12 @@
 // and client-supplied hints are never inputs to authority; ambiguity always
 // resolves toward the least-privileged capability set.
 
+// The one predicate shared with turn selection: what counts as a video link
+// must be the same question here (does this URL oblige web evidence?) and in
+// watch-intent (does this URL select Watch?), or a link could select the Watch
+// pipeline while still being judged as an unopened web source.
+import { hasVideoUrl } from "./watch-intent.ts";
+
 export type TaskCapability =
   | "conversation"
   | "garden_read"
@@ -214,21 +220,64 @@ function foldRecommendationText(value: string): string {
     .trim();
 }
 
+/**
+ * How far apart an intent word and an object word may sit and still describe
+ * the same request.
+ *
+ * The pair carries meaning only when it is one phrase — "best cafes nearby",
+ * "which laptop should I buy". Testing the two regexes independently over the
+ * whole message asks a much weaker question, and the answer is yes for almost
+ * any long text: a pasted blood-test report was classified as a request for
+ * venue recommendations because "at the very top of the normal range" supplied
+ * the intent and "diet, physical activity and sleep habits" supplied the
+ * object, 6.5 KB apart, neither written by the user. The window is generous
+ * enough for a clause with a qualifier in it and far too small to bridge two
+ * unrelated paragraphs.
+ */
+const RECOMMENDATION_PAIR_WINDOW = 80;
+
+function matchPositions(text: string, pattern: RegExp): number[] {
+  const scan = new RegExp(pattern.source, `${pattern.flags.replace(/[gy]/g, "")}g`);
+  const positions: number[] = [];
+  for (const match of text.matchAll(scan)) {
+    if (match.index === undefined) continue;
+    positions.push(match.index + match[0].length / 2);
+    if (positions.length > 400) break;
+  }
+  return positions;
+}
+
+/** True when some intent word and some object word sit inside one window. */
+function hasAdjacentRecommendationPair(text: string): boolean {
+  const intents = matchPositions(text, LIVE_RECOMMENDATION_INTENT);
+  if (!intents.length) return false;
+  const objects = matchPositions(text, LIVE_RECOMMENDATION_OBJECT);
+  if (!objects.length) return false;
+  return intents.some((intent) =>
+    objects.some(
+      (object) => Math.abs(intent - object) <= RECOMMENDATION_PAIR_WINDOW,
+    ),
+  );
+}
+
 function requestsLiveRecommendation(value: string): boolean {
   const text = foldRecommendationText(value);
   return (
-    LIVE_RECOMMENDATION_STRONG.test(text) ||
-    (LIVE_RECOMMENDATION_INTENT.test(text) &&
-      LIVE_RECOMMENDATION_OBJECT.test(text))
+    LIVE_RECOMMENDATION_STRONG.test(text) || hasAdjacentRecommendationPair(text)
   );
 }
 
 function isRecommendationContinuation(value: string): boolean {
   const text = foldRecommendationText(value);
-  return (
-    REFERENTIAL_RECOMMENDATION_FOLLOW_UP.test(text) ||
-    (RECOMMENDATION_FOLLOW_UP.test(text) &&
-      LIVE_RECOMMENDATION_OBJECT.test(text))
+  if (REFERENTIAL_RECOMMENDATION_FOLLOW_UP.test(text)) return true;
+  if (!RECOMMENDATION_FOLLOW_UP.test(text)) return false;
+  // Held to the same proximity rule as the pair above, and for the same
+  // reason: "but" at the top of a long paste and "products" buried in its
+  // middle are not one follow-up request.
+  const follow = matchPositions(text, RECOMMENDATION_FOLLOW_UP);
+  const objects = matchPositions(text, LIVE_RECOMMENDATION_OBJECT);
+  return follow.some((at) =>
+    objects.some((object) => Math.abs(at - object) <= RECOMMENDATION_PAIR_WINDOW),
   );
 }
 
@@ -560,7 +609,14 @@ function readSignals(text: string, resources: ResourceReference[]): Signals {
       LIVE_WEATHER_QUERY.test(text) ||
       (RELATIVE_DATE_QUERY.test(text) &&
         SCHEDULED_REAL_WORLD_EVENT.test(text)) ||
-      resources.some((r) => r.kind === "url"),
+      // A pasted link is a live source the answer must open — except a video
+      // link. "What happens in this video <url>" is settled by the Watch
+      // pipeline downloading that very video, not by a browser, so counting it
+      // here armed the web-grounding gate on turns that could never satisfy it
+      // and replaced correct video answers with the grounding refusal. The
+      // same predicate Watch selection uses decides this, so the two can
+      // never disagree about what a video link is.
+      resources.some((r) => r.kind === "url" && !hasVideoUrl(r.value)),
     download: DOWNLOAD_VERB.test(text),
     garden,
     gardenWrite: garden && GARDEN_WRITE_VERB.test(text),

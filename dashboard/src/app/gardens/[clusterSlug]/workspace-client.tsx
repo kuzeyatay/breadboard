@@ -15,7 +15,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
+import { useQueuedFollowUps } from "@/app/components/hermes/queued-follow-ups";
 import { useComposerInset } from "@/app/components/chat/use-composer-inset";
+import { useSmoothStreamText } from "@/app/components/chat/use-smooth-stream-text";
+import ChatDisclaimer from "@/app/components/chat/chat-disclaimer";
+import ChatGreetingEmptyState from "@/app/components/hermes/chat-greeting-empty-state";
+import type { ChatGreeting } from "@/lib/hermes/chat-greeting";
+import { useChatGreeting } from "@/app/components/hermes/use-chat-greeting";
 import { useChatDraft } from "@/app/components/hermes/use-chat-draft";
 import {
   chatDraftKey,
@@ -48,6 +54,7 @@ import {
 } from "@/app/components/chat/chat-row-identity";
 import ChatTimeSeparator from "@/app/components/chat-time-separator";
 import ChatMessageAttachments from "@/app/components/chat-message-attachments";
+import ChatVideoLinkEmbeds from "@/app/components/chat-video-link-embed";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import ActivityPanel from "@/app/components/hermes/activity-panel";
 import {
@@ -1005,6 +1012,11 @@ function hasRunningExternalAgent(message: Message): boolean {
 interface ChatTranscriptProps {
   clusterName: string;
   clusterSlug: string;
+  /** What a blank chat greets with — resolved by the workspace, garden-aware. */
+  greeting: ChatGreeting | null;
+  greetingSuggestions: string[];
+  /** An opener was picked: it fills the composer the workspace owns. */
+  onSelectSuggestion: (prompt: string) => void;
   chatSessionId: number | null;
   isStreaming: boolean;
   loadingChats: boolean;
@@ -1080,6 +1092,9 @@ function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
 const ChatTranscript = memo(function ChatTranscript({
   clusterName,
   clusterSlug,
+  greeting,
+  greetingSuggestions,
+  onSelectSuggestion,
   chatSessionId,
   isStreaming,
   loadingChats,
@@ -1106,6 +1121,13 @@ const ChatTranscript = memo(function ChatTranscript({
     (lastIndex, message, index) =>
       message.role === "assistant" ? index : lastIndex,
     -1,
+  );
+  // The newest answer's text is revealed at a readable pace rather than drawn
+  // straight from the buffer, so a reply that arrives in bursts (or whole)
+  // still reads as a stream. Older messages render their content directly.
+  const revealedAssistantContent = useSmoothStreamText(
+    lastAssistantIndex >= 0 ? messages[lastAssistantIndex].content : "",
+    isStreaming,
   );
   const timeSeparators = chatTimeSeparatorLabels(messages);
 
@@ -1173,35 +1195,36 @@ const ChatTranscript = memo(function ChatTranscript({
       gardenSlug={clusterSlug}
       retireVersion={inlineArtifactRetireVersion}
     >
-    <div className="max-w-5xl mx-auto flex flex-col gap-6">
+    {/* w-full is load-bearing, not decoration: auto inline margins cancel a
+        flex item's stretch, so this column is sized to its content — and every
+        transcript row is absolutely positioned by the virtualizer, which
+        contributes no content width at all. Without it the column collapses to
+        zero and each message is drawn at its min-content width, one word per
+        line, down the middle of the pane. */}
+    <div className="w-full max-w-5xl mx-auto flex flex-col gap-6">
       {loadingChats ? (
         <div className="flex items-center justify-center py-28 text-gray-700">
           <Spinner className="w-5 h-5" />
         </div>
       ) : (
         messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-28 text-center text-gray-600">
-            <svg
-              className="w-9 h-9 mb-3 opacity-40"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={1.2}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z"
-              />
-            </svg>
-            <p className="text-sm text-gray-500">
-              Chat about <span className="text-gray-400">{clusterName}</span>
-            </p>
-            <p className="text-xs mt-1.5 text-gray-700 max-w-xs">
-              After the conversation, hit{" "}
-              <span className="text-gray-500">Save page</span> to keep the
-              answer in your lessons
-            </p>
+          // The same greeting empty state the terminals draw, with this
+          // garden's name in its questions and openers. The Save page hint —
+          // the one thing the old heading said that mattered — survives as
+          // the footnote.
+          <div className="py-16">
+            <ChatGreetingEmptyState
+              greeting={greeting}
+              suggestions={greetingSuggestions}
+              onSelectSuggestion={onSelectSuggestion}
+              footnote={
+                <>
+                  After the conversation, hit{" "}
+                  <span className="text-gray-500">Save page</span> to keep the
+                  answer in your lessons
+                </>
+              }
+            />
           </div>
         )
       )}
@@ -1269,6 +1292,10 @@ const ChatTranscript = memo(function ChatTranscript({
               <ChatMessageAttachments
                 attachments={msg.attachments}
                 attachmentNames={msg.attachmentNames}
+              />
+              <ChatVideoLinkEmbeds
+                text={msg.content}
+                attachments={msg.attachments}
               />
               {msg.content ? (
                 editingMessageId === messageInteractionId ? (
@@ -1516,6 +1543,7 @@ const ChatTranscript = memo(function ChatTranscript({
                   persistedOutcome={msg.externalAgentOutcome}
                   persistedActivity={msg.externalAgentActivity}
                   persistedEdits={msg.externalAgentEdits}
+                  persistedUsage={msg.usage}
                   onRetry={
                     i === lastAssistantIndex && !isStreaming
                       ? () => onRetryAssistant(i)
@@ -1534,6 +1562,7 @@ const ChatTranscript = memo(function ChatTranscript({
                   persistedOutcome={msg.externalAgentOutcome}
                   persistedActivity={msg.externalAgentActivity}
                   persistedEdits={msg.externalAgentEdits}
+                  persistedUsage={msg.usage}
                   onRetry={
                     i === lastAssistantIndex && !isStreaming
                       ? () => onRetryAssistant(i)
@@ -1978,7 +2007,13 @@ const ChatTranscript = memo(function ChatTranscript({
                 </div>
               ) : msg.content ? (
                 <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
-                  <ChatMarkdown content={msg.content} />
+                  <ChatMarkdown
+                    content={
+                      i === lastAssistantIndex
+                        ? revealedAssistantContent
+                        : msg.content
+                    }
+                  />
                 </div>
               ) : null}
               {chatSessionId ? (
@@ -2451,10 +2486,55 @@ export default function WorkspaceClient({
     setStreamingChatIds(next);
   }, []);
   const agentActivity = useLegacyAgentActivity();
+  // The Thinking an external agent launch raises the moment its turn goes up.
+  // It is owned by the launch rather than by any one runtime request, so it is
+  // held here and put down wherever the launch's real rows land.
+  const externalTurnSignalRef = useRef<AbortSignal | null>(null);
+  const finishAgentActivity = agentActivity.finish;
+  const settleExternalTurnActivity = useCallback(
+    (failed = false) => {
+      const signal = externalTurnSignalRef.current;
+      if (!signal) return;
+      externalTurnSignalRef.current = null;
+      finishAgentActivity(failed, signal);
+    },
+    [finishAgentActivity],
+  );
+  // Every launcher clears `launchingExternalAgent` in its `finally`, so this is
+  // the one place that catches a launch which ended without committing rows —
+  // a bail-out before the run, or an error reported as status text instead of a
+  // turn. Without it Thinking would shimmer on a row nothing is going to fill.
+  useEffect(() => {
+    if (launchingExternalAgent !== null) return;
+    settleExternalTurnActivity();
+  }, [launchingExternalAgent, settleExternalTurnActivity]);
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // The same greeting engine the terminals use, told which garden it is
+  // standing in, so a blank garden chat opens on words about this garden
+  // rather than a fixed heading.
+  const greetingGarden = useMemo(
+    () => ({ name: clusterName, slug: clusterSlug }),
+    [clusterName, clusterSlug],
+  );
+  const chatGreeting = useChatGreeting({
+    scope: "mine",
+    temporary: false,
+    garden: greetingGarden,
+  });
+  // An opener is a starting point, not a message: it fills the composer and
+  // puts the caret at the end, the same contract the terminals settled on.
+  const fillComposerWithPrompt = useCallback((prompt: string) => {
+    setInput(prompt);
+    window.setTimeout(() => {
+      const composer = textareaRef.current;
+      if (!composer) return;
+      composer.focus();
+      composer.setSelectionRange(composer.value.length, composer.value.length);
+    }, 0);
+  }, []);
   const activeSteerContextRef = useRef<{
     sessionId: number;
     messages: Message[];
@@ -3109,6 +3189,35 @@ export default function WorkspaceClient({
     continuedDelegatedRunsRef.current.clear();
     setPendingLaunchContinuation(null);
   }, [activeChatId]);
+
+  // Messages typed while this chat is working — a streaming turn or an
+  // external agent run — queue above the composer instead of being dropped. A
+  // steerable chat turn can take one as a mid-run correction; anything still
+  // queued when the run settles is sent as an ordinary follow-up.
+  const externalRunHoldsQueue =
+    hasRunningExternalAgentInActiveChat ||
+    agentLaunchQueue.queued ||
+    delegatedAgentLaunching ||
+    launchingExternalAgent !== null;
+  // A Hermes chat turn this tab is streaming — the one thing a queued message
+  // can steer, and the one thing the composer's stop square can abort. An
+  // external agent run is neither: its card owns its own stop, so while only
+  // an agent is working the composer keeps its send button and queues.
+  const steerableTurnActive =
+    agentActivity.connection === "connecting" ||
+    agentActivity.connection === "streaming" ||
+    agentActivity.connection === "waiting";
+  const { queueFollowUp, headerContent: queuedFollowUpsHeader } =
+    useQueuedFollowUps({
+      conversationKey: activeChatId === null ? null : String(activeChatId),
+      runInFlight: isStreaming || externalRunHoldsQueue,
+      steerableRunActive: steerableTurnActive,
+      externalRunActive: externalRunHoldsQueue,
+      onSteer: steerActiveResponse,
+      onSendQueued: async (text) => {
+        await handleSubmit(text);
+      },
+    });
 
   // Bind the launch to the run it started. The queue never has two in flight, so
   // the first run id that was not already in the transcript is this one's — and
@@ -4710,50 +4819,50 @@ export default function WorkspaceClient({
     );
   }
 
-  function handleSteerActiveResponse(text: string) {
+  // Applies one queued message to the active chat turn as a course
+  // correction. Resolves false when no steerable turn is active — an external
+  // agent run, or a turn that finished first — so the message stays queued
+  // and sends as an ordinary follow-up when the queue drains.
+  async function steerActiveResponse(text: string): Promise<boolean> {
     const correction = text.trim();
     const context = activeSteerContextRef.current;
-    if (!correction || !context) return;
+    if (!correction || !context) return false;
 
-    void agentActivity
-      .steer(correction)
-      .then((accepted) => {
-        if (!accepted || activeSteerContextRef.current !== context) {
-          setInput((current) => current || correction);
-          addToast("The response finished before it could be steered. Your message was restored.");
-          return;
-        }
+    let accepted = false;
+    try {
+      accepted = await agentActivity.steer(correction);
+    } catch (error) {
+      addToast(
+        error instanceof Error
+          ? error.message
+          : "Could not steer the active response.",
+      );
+      return false;
+    }
+    if (!accepted || activeSteerContextRef.current !== context) return false;
 
-        const correctionMessage: Message = {
-          role: "user",
-          content: correction,
-          createdAt: new Date().toISOString(),
-        };
-        context.messages.push(correctionMessage);
-        updateChatMessages(context.sessionId, (current) => {
-          let pendingAssistantIndex = current.length - 1;
-          while (
-            pendingAssistantIndex >= 0 &&
-            current[pendingAssistantIndex]?.role !== "assistant"
-          ) {
-            pendingAssistantIndex -= 1;
-          }
-          if (pendingAssistantIndex < 0) return [...current, correctionMessage];
-          return [
-            ...current.slice(0, pendingAssistantIndex),
-            correctionMessage,
-            ...current.slice(pendingAssistantIndex),
-          ];
-        });
-      })
-      .catch((error) => {
-        setInput((current) => current || correction);
-        addToast(
-          error instanceof Error
-            ? error.message
-            : "Could not steer the active response.",
-        );
-      });
+    const correctionMessage: Message = {
+      role: "user",
+      content: correction,
+      createdAt: new Date().toISOString(),
+    };
+    context.messages.push(correctionMessage);
+    updateChatMessages(context.sessionId, (current) => {
+      let pendingAssistantIndex = current.length - 1;
+      while (
+        pendingAssistantIndex >= 0 &&
+        current[pendingAssistantIndex]?.role !== "assistant"
+      ) {
+        pendingAssistantIndex -= 1;
+      }
+      if (pendingAssistantIndex < 0) return [...current, correctionMessage];
+      return [
+        ...current.slice(0, pendingAssistantIndex),
+        correctionMessage,
+        ...current.slice(pendingAssistantIndex),
+      ];
+    });
+    return true;
   }
 
   async function selectAgentBrowser(): Promise<ExternalAgentSelection | null> {
@@ -5412,28 +5521,43 @@ export default function WorkspaceClient({
       }
       return { session: writableActiveChat, title: undefined };
     }
-    // A launch on a blank chat is the one case with no session to write to
-    // yet. Show what was typed now; the launcher replaces this with the real
-    // row the moment the session exists. Delegated launches never reach here,
-    // so the `/agents:*` bubble they exist to avoid is still never drawn.
-    if (!writableActiveChat) {
-      setDraftMessages([
-        {
-          role: "user",
-          content: userContent,
-          createdAt: new Date().toISOString(),
-          ...userMessageFields,
-        },
-      ]);
-    }
+    // A launch is the slowest send in the app: naming the chat, a health probe
+    // and creating the run all happen before a single row is committed. Put the
+    // whole turn up first — the question *and* the empty answer whose Activity
+    // panel draws Thinking — so a send never reads as one that went nowhere.
+    // Delegated launches never reach here, so the `/agents:*` bubble they exist
+    // to avoid is still never drawn.
+    const pendingTurn = (): Message[] => {
+      const createdAt = new Date().toISOString();
+      return [
+        { role: "user", content: userContent, createdAt, ...userMessageFields },
+        { role: "assistant", content: "", createdAt, sources: [], thinking: "" },
+      ];
+    };
+    // Thinking belongs to the turn rather than to the run that answers it, so
+    // it is raised with the turn and not when the request goes out — the launch
+    // itself is what is being waited on, and creating the chat is already part
+    // of it. Raised before the rows so both land in one render, or the empty
+    // answer draws a finished "Thought" for as long as the chat takes to exist.
+    externalTurnSignalRef.current = agentActivity.start();
+    // A blank chat has no session to write to yet, so the stand-in carries the
+    // turn until one exists.
+    if (!writableActiveChat) setDraftMessages(pendingTurn());
     const session = writableActiveChat ?? (await createChatSession());
     if (!session) {
       setDraftMessages(null);
+      settleExternalTurnActivity();
       // No turn will be written, so a retry waiting to replace one must not be
       // left pending for whatever launches next.
       retryBranchRef.current = null;
       return null;
     }
+    updateChatMessages(session.id, [
+      ...transcriptForRetriedTurn(session),
+      ...pendingTurn(),
+    ]);
+    // The real transcript now holds this turn; the stand-in has done its job.
+    setDraftMessages(null);
     return {
       session,
       // Only the turn that opens a chat names it; a launch into a chat that
@@ -5454,6 +5578,9 @@ export default function WorkspaceClient({
     userMessageFields: Pick<Message, "attachmentNames" | "attachments"> = {},
   ) {
     const createdAt = new Date().toISOString();
+    // The rows below replace the pending turn, so the Thinking it raised is
+    // spent — whether this commit carries a run card or a failure to start.
+    settleExternalTurnActivity();
     if (delegatedAgentLaunchRef.current) {
       let assistantIndex = -1;
       for (let index = session.messages.length - 1; index >= 0; index -= 1) {
@@ -7865,18 +7992,6 @@ export default function WorkspaceClient({
       setLaunchingExternalAgent(null);
       return;
     }
-    if (!delegatedRequest) {
-      updateChatMessages(prepared.session.id, [
-        ...transcriptForRetriedTurn(prepared.session),
-        {
-          id: `codex-pending-${clientMessageId}`,
-          role: "user",
-          content: userContent,
-          createdAt: new Date().toISOString(),
-          ...userMessageFields,
-        },
-      ]);
-    }
     try {
       const response = await fetch("/api/codex/runs", {
         method: "POST",
@@ -7921,6 +8036,7 @@ export default function WorkspaceClient({
           );
         } else {
           const createdAt = new Date().toISOString();
+          settleExternalTurnActivity();
           updateChatMessages(prepared.session.id, [
             ...transcriptForRetriedTurn(prepared.session),
             { role: "user", content: userContent, createdAt, ...userMessageFields },
@@ -7986,18 +8102,6 @@ export default function WorkspaceClient({
       externalAgentLaunchRef.current = null;
       setLaunchingExternalAgent(null);
       return;
-    }
-    if (!delegatedAgentLaunchRef.current) {
-      updateChatMessages(prepared.session.id, [
-        ...transcriptForRetriedTurn(prepared.session),
-        {
-          id: `opencode-pending-${crypto.randomUUID()}`,
-          role: "user",
-          content: userContent,
-          createdAt: new Date().toISOString(),
-          ...userMessageFields,
-        },
-      ]);
     }
     try {
       const response = await fetch("/api/opencode/runs", {
@@ -8096,18 +8200,6 @@ export default function WorkspaceClient({
       externalAgentLaunchRef.current = null;
       setLaunchingExternalAgent(null);
       return;
-    }
-    if (!delegatedAgentLaunchRef.current) {
-      updateChatMessages(prepared.session.id, [
-        ...transcriptForRetriedTurn(prepared.session),
-        {
-          id: `ruflo-pending-${crypto.randomUUID()}`,
-          role: "user",
-          content: userContent,
-          createdAt: new Date().toISOString(),
-          ...userMessageFields,
-        },
-      ]);
     }
     try {
       const response = await fetch("/api/ruflo/runs", {
@@ -12463,11 +12555,14 @@ export default function WorkspaceClient({
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
             <main
               ref={transcriptScrollRef}
-              className="bb-chat-scroll-fade bb-chat-scroll-tail flex-1 overflow-y-auto px-4 py-6"
+              className="bb-chat-scroller bb-chat-scroll-tail flex flex-1 flex-col overflow-y-auto px-4 py-6"
             >
             <ChatTranscript
               clusterName={clusterName}
               clusterSlug={clusterSlug}
+              greeting={chatGreeting.greeting}
+              greetingSuggestions={chatGreeting.suggestions}
+              onSelectSuggestion={fillComposerWithPrompt}
               chatSessionId={activeChatId}
               isStreaming={
                 isStreaming || agentLaunchQueue.queued || delegatedAgentLaunching
@@ -12489,6 +12584,7 @@ export default function WorkspaceClient({
               transcriptScrollRef={transcriptScrollRef}
               transcriptVirtual={transcriptVirtual}
             />
+            {messages.length > 0 ? <ChatDisclaimer /> : null}
             </main>
             <ChatMessageRail
               surface="garden-chat"
@@ -12567,7 +12663,6 @@ export default function WorkspaceClient({
             />
 
             <AssistantComposer
-              transcriptAtEnd={!transcriptAwayFromBottom}
               capabilitySurface="garden_chat"
               capabilityGardenSlug={clusterSlug}
               className="mx-auto w-full max-w-5xl"
@@ -12580,12 +12675,8 @@ export default function WorkspaceClient({
               placeholder="Ask about your documents…"
               disabled={loadingChats}
               isSending={isStreaming || launchingExternalAgent !== null}
-              externalRunActive={
-                hasRunningExternalAgentInActiveChat ||
-                agentLaunchQueue.queued ||
-                delegatedAgentLaunching ||
-                launchingExternalAgent !== null
-              }
+              externalRunActive={externalRunHoldsQueue}
+              headerContent={queuedFollowUpsHeader}
               canSubmit={Boolean(input.trim() || chatAttachments.length > 0)}
               model={model}
               models={models}
@@ -12610,8 +12701,8 @@ export default function WorkspaceClient({
                       ? "connecting"
                       : "running"
               }
-              onQueueSteer={handleSteerActiveResponse}
-              onStop={agentActivity.abort}
+              onQueueSteer={queueFollowUp}
+              onStop={steerableTurnActive ? agentActivity.abort : undefined}
               permissionPending={Boolean(agentActivity.pendingPermission)}
               // Distilling a book blocks the composer for minutes, so what it
               // is doing takes the status line while it runs.

@@ -64,7 +64,7 @@ test("every external agent uses the shared Breadboard neumorphic run-card system
   for (const primitive of [
     "bb-agent-run-card",
     "bb-agent-run-header",
-    "bb-agent-run-icon",
+    "bb-agent-run-led",
     "bb-agent-run-pill",
     "bb-agent-run-inset",
     "bb-agent-run-panel",

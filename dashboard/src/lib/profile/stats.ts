@@ -21,6 +21,7 @@ import {
   startOfWeek,
   todayDate,
 } from "../calendar/wallclock.ts";
+import { readUserIdentity } from "./identity-store.ts";
 import { priceUsd } from "./model-pricing.ts";
 
 /** How many weeks the activity grid covers by default. */
@@ -28,6 +29,11 @@ export const DEFAULT_ACTIVITY_WEEKS = 26;
 
 export interface ProfileAccount {
   username: string;
+  /** Both halves of the name they set on this page. Either may be empty. */
+  firstName: string;
+  lastName: string;
+  /** What the assistant calls them: their first name, else the username. */
+  displayName: string | null;
   email: string;
   joinedAt: string;
   /** Whole days between joining and today — the age of the account. */
@@ -326,6 +332,7 @@ export function readProfileStats(
   const user = database
     .prepare("SELECT username, email, created_at FROM users WHERE id = ?")
     .get(userId) as { username: string | null; email: string; created_at: string } | undefined;
+  const identity = readUserIdentity(userId, database);
   if (!user) throw new Error(`No such user: ${userId}`);
 
   const joinedDate = normalizeDate(user.created_at);
@@ -403,6 +410,9 @@ export function readProfileStats(
   return {
     account: {
       username: user.username?.trim() || user.email,
+      firstName: identity.firstName,
+      lastName: identity.lastName,
+      displayName: identity.displayName,
       email: user.email,
       joinedAt: user.created_at,
       daysSinceJoined: Math.max(0, daysBetween(joinedDate, today)),

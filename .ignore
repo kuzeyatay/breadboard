@@ -3,3 +3,9 @@
 !graft/
 graft/.cache/
 graft/.graph/
+
+# graft's cards are gitignored but should stay greppable: ripgrep reads
+# .ignore before .gitignore, so this re-admits the tree to search only.
+!dashboard/.runtime/graft/breadboard-75cf7a099e62b7d2/
+dashboard/.runtime/graft/breadboard-75cf7a099e62b7d2/.cache/
+dashboard/.runtime/graft/breadboard-75cf7a099e62b7d2/.graph/

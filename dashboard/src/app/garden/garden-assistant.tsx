@@ -14,6 +14,7 @@ import {
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
 import { useComposerInset } from '@/app/components/chat/use-composer-inset';
+import ChatDisclaimer from '@/app/components/chat/chat-disclaimer';
 import AssistantMessageActions from '@/app/components/assistant-message-actions';
 import { isDirectModeEnabled } from '@/app/components/use-direct-mode';
 import {
@@ -36,9 +37,11 @@ import { useAssistantIntelligence } from '@/app/components/use-assistant-intelli
 import ActivityPanel from '@/app/components/hermes/activity-panel';
 import { UserMessageText } from '@/app/components/hermes/command-text';
 import { useLegacyAgentActivity } from '@/app/components/hermes/use-legacy-agent-activity';
+import { useQueuedFollowUps } from '@/app/components/hermes/queued-follow-ups';
 import { useChatDraft } from '@/app/components/hermes/use-chat-draft';
 import { forgetChatDrafts } from '@/lib/conversations/drafts';
 import ChatMarkdown from '@/app/components/chat-markdown';
+import { useSmoothStreamText } from '@/app/components/chat/use-smooth-stream-text';
 import { useAssistantModels } from '@/app/components/use-assistant-models';
 import {
   CHAT_ATTACHMENT_ACCEPT,
@@ -500,9 +503,39 @@ export default function GardenAssistant({
   const localTurnRef = useRef(false);
   const [showHistory, setShowHistory] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  // The newest answer's text is revealed at a readable pace rather than drawn
+  // straight from the buffer, so a reply that arrives in bursts (or whole)
+  // still reads as a stream. Older messages render their content directly.
+  const newestMessage = messages[messages.length - 1];
+  const revealedAssistantContent = useSmoothStreamText(
+    newestMessage?.role === 'assistant' ? newestMessage.content : '',
+    isStreaming,
+  );
   const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
   const [approvingPermission, setApprovingPermission] = useState(false);
   const agentActivity = useLegacyAgentActivity();
+  // The turn a mid-run correction may join. Corrections are kept beside the
+  // turn's own message list so the streaming loop re-renders them in place
+  // instead of clobbering them with its next delta.
+  const activeSteerContextRef = useRef<{ messages: ChatMessage[] } | null>(
+    null,
+  );
+  // Messages typed while a turn is streaming queue above the composer instead
+  // of being dropped; each can steer the active response, and whatever is
+  // still queued when the turn settles is sent as an ordinary follow-up.
+  const { queueFollowUp, headerContent: queuedFollowUpsHeader } =
+    useQueuedFollowUps({
+      conversationKey: activeChatId === null ? null : String(activeChatId),
+      runInFlight: isStreaming,
+      steerableRunActive:
+        agentActivity.connection === 'connecting' ||
+        agentActivity.connection === 'streaming' ||
+        agentActivity.connection === 'waiting',
+      onSteer: steerActiveResponse,
+      onSendQueued: async (text) => {
+        await sendMessage(text);
+      },
+    });
   const [isResizing, setIsResizing] = useState(false);
   const [stats, setStats] = useState<GraphStats>(EMPTY_STATS);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
@@ -827,6 +860,47 @@ export default function GardenAssistant({
     });
   }
 
+  // Applies one queued message to the streaming turn as a course correction.
+  // Resolves false when the turn ended first (or could not take it); the
+  // message stays queued and sends as an ordinary follow-up when the queue
+  // drains.
+  async function steerActiveResponse(text: string): Promise<boolean> {
+    const correction = text.trim();
+    const context = activeSteerContextRef.current;
+    if (!correction || !context) return false;
+
+    let accepted = false;
+    try {
+      accepted = await agentActivity.steer(correction);
+    } catch {
+      return false;
+    }
+    if (!accepted || activeSteerContextRef.current !== context) return false;
+
+    const correctionMessage: ChatMessage = {
+      role: 'user',
+      content: correction,
+      createdAt: new Date().toISOString(),
+    };
+    context.messages.push(correctionMessage);
+    setMessages((current) => {
+      let pendingAssistantIndex = current.length - 1;
+      while (
+        pendingAssistantIndex >= 0 &&
+        current[pendingAssistantIndex]?.role !== 'assistant'
+      ) {
+        pendingAssistantIndex -= 1;
+      }
+      if (pendingAssistantIndex < 0) return [...current, correctionMessage];
+      return [
+        ...current.slice(0, pendingAssistantIndex),
+        correctionMessage,
+        ...current.slice(pendingAssistantIndex),
+      ];
+    });
+    return true;
+  }
+
   async function sendMessage(
     textOverride?: string,
     historyOverride?: ChatMessage[],
@@ -852,6 +926,11 @@ export default function GardenAssistant({
       attachments: chatMessageAttachments(pendingAttachments),
     };
     const nextMessages = [...history, userMessage];
+    // Corrections steered into this turn land here, between the turn's user
+    // message and its pending assistant answer, so every transcript assembly
+    // below keeps them.
+    const steerContext = { messages: [] as ChatMessage[] };
+    activeSteerContextRef.current = steerContext;
     let assistantMessage: ChatMessage = {
       role: 'assistant',
       content: '',
@@ -890,6 +969,9 @@ export default function GardenAssistant({
         activityStarted = false;
         setIsStreaming(false);
         localTurnRef.current = false;
+        if (activeSteerContextRef.current === steerContext) {
+          activeSteerContextRef.current = null;
+        }
         return;
       }
     }
@@ -955,7 +1037,11 @@ export default function GardenAssistant({
           ...(usage ? { usage } : {}),
           responseDurationMs: Math.round(performance.now() - responseStartedAt),
         };
-        const finalMessages = [...nextMessages, assistantMessage];
+        const finalMessages = [
+        ...nextMessages,
+        ...steerContext.messages,
+        assistantMessage,
+      ];
         setMessages(finalMessages);
         await persistChatSession(session.id, finalMessages, sessionTitle);
         window.dispatchEvent(
@@ -1006,7 +1092,11 @@ export default function GardenAssistant({
       let buffer = '';
 
       const updateAssistant = () => {
-        setMessages([...nextMessages, { ...assistantMessage }]);
+        setMessages([
+          ...nextMessages,
+          ...steerContext.messages,
+          { ...assistantMessage },
+        ]);
       };
 
       while (true) {
@@ -1133,7 +1223,11 @@ export default function GardenAssistant({
         ...assistantMessage,
         responseDurationMs: Math.round(performance.now() - responseStartedAt),
       };
-      const finalMessages = [...nextMessages, assistantMessage];
+      const finalMessages = [
+        ...nextMessages,
+        ...steerContext.messages,
+        assistantMessage,
+      ];
       setMessages(finalMessages);
       await persistChatSession(session.id, finalMessages, sessionTitle);
     } catch (error) {
@@ -1142,10 +1236,13 @@ export default function GardenAssistant({
       const message = aborted ? 'The request was stopped.' : error instanceof Error ? error.message : 'Assistant could not answer right now';
       const finalMessages: ChatMessage[] = [
         ...nextMessages,
+        ...steerContext.messages,
         {
           role: 'assistant',
           createdAt: turnCreatedAt,
-          content: `I could not reach the assistant for this garden yet. ${message}`,
+          content: aborted
+            ? 'The request was stopped.'
+            : `I could not reach the assistant for this garden yet. ${message}`,
           sources: [],
           responseDurationMs: Math.round(performance.now() - responseStartedAt),
         },
@@ -1154,6 +1251,9 @@ export default function GardenAssistant({
       await persistChatSession(session.id, finalMessages, sessionTitle);
     } finally {
       if (activityStarted) agentActivity.finish(agentFailed);
+      if (activeSteerContextRef.current === steerContext) {
+        activeSteerContextRef.current = null;
+      }
       setIsStreaming(false);
       // The transcript this turn wrote has been persisted, so the session row
       // is authoritative again and may sync into the view.
@@ -1261,9 +1361,13 @@ export default function GardenAssistant({
   const renderTranscriptRow = useCallback(
     (message: ChatMessage, index: number) => {
       const isNewest = index === messages.length - 1;
+      const paced =
+        isNewest &&
+        message.role === 'assistant' &&
+        revealedAssistantContent !== message.content;
       return (
         <TranscriptRow
-          message={message}
+          message={paced ? { ...message, content: revealedAssistantContent } : message}
           separatorLabel={timeSeparators[index] ?? null}
           activities={isNewest ? agentActivity.activities : NO_ACTIVITIES}
           connection={isNewest ? agentActivity.connection : 'idle'}
@@ -1285,6 +1389,7 @@ export default function GardenAssistant({
       agentActivity.pendingPermission,
       handlePermissionDecision,
       isStreaming,
+      revealedAssistantContent,
     ],
   );
 
@@ -1538,7 +1643,7 @@ export default function GardenAssistant({
       <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={transcriptScrollRef}
-        className="bb-chat-scroll-fade bb-chat-scroll-tail min-h-0 flex-1 overflow-y-auto px-4 py-4"
+        className="bb-chat-scroller bb-chat-scroll-tail flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4"
       >
         {messages.length === 0 ? (
           <div className="space-y-4">
@@ -1584,6 +1689,7 @@ export default function GardenAssistant({
             renderItem={renderTranscriptRow}
           />
         )}
+        {messages.length > 0 ? <ChatDisclaimer /> : null}
       </div>
         <ChatMessageRail
           surface="garden-assistant"
@@ -1647,7 +1753,6 @@ export default function GardenAssistant({
           className="hidden"
         />
         <AssistantComposer
-          transcriptAtEnd={!transcriptAwayFromBottom}
           capabilitySurface="garden_chat"
           capabilityGardenSlug={activeClusterSlug}
           compact
@@ -1657,6 +1762,19 @@ export default function GardenAssistant({
           placeholder={hasActiveCluster ? 'Ask about a topic, page, source, or link...' : 'Open a garden first...'}
           disabled={!hasActiveCluster}
           isSending={isStreaming}
+          runState={
+            !isStreaming
+              ? 'idle'
+              : agentActivity.connection === 'waiting'
+                ? 'waiting_for_permission'
+                : agentActivity.connection === 'connecting'
+                  ? 'connecting'
+                  : 'running'
+          }
+          onQueueSteer={queueFollowUp}
+          headerContent={queuedFollowUpsHeader}
+          onStop={agentActivity.abort}
+          permissionPending={Boolean(agentActivity.pendingPermission)}
           canSubmit={Boolean(input.trim() || chatAttachments.length > 0)}
           model={model}
           models={models}

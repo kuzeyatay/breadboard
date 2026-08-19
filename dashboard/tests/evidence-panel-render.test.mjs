@@ -1,11 +1,14 @@
 // Renders the evidence panel for real (esbuild -> CJS -> react-dom/server)
 // rather than reasoning about what it would produce.
 //
-// Two things are worth pinning down. A tool that failed before the runtime
+// Three things are worth pinning down. A tool that failed before the runtime
 // wrote a summary must not show its registry name ("web_search") where a
-// sentence belongs. And a turn that handed work to a runtime agent has to say
-// so, while a summary written before that was recorded stays silent rather
-// than claiming no agent was called.
+// sentence belongs. A turn that handed work to a runtime agent has to say so.
+// And the panel has to stay small enough to read: sources listed once for the
+// whole turn rather than under every call that touched them, no status word on
+// a call that simply worked, one scroll region, and a height the caller
+// measured — the panel used to take 70% of the viewport from wherever it was
+// anchored and run its own close button off the top of the screen.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -54,9 +57,13 @@ const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const { EvidencePanel } = require(bundle);
 
-function render(verification) {
+function render(verification, props = {}) {
   return renderToStaticMarkup(
-    React.createElement(EvidencePanel, { verification, onClose: () => {} }),
+    React.createElement(EvidencePanel, {
+      verification,
+      onClose: () => {},
+      ...props,
+    }),
   );
 }
 
@@ -159,11 +166,366 @@ test("a run that ran out of budget says so rather than implying completeness", (
   assert.doesNotMatch(render(summary()), /Research coverage/);
 });
 
-test("an assessed turn with no delegation says so; an older one stays silent", () => {
-  assert.match(
-    render(summary({ externalAgents: [] })),
-    /No external agent was called\./,
-  );
-  // Written before external agents were recorded: the panel cannot know.
+test("a turn with no delegation renders no delegation section at all", () => {
+  // The line denying it appeared on every non-delegating turn in the app; the
+  // absence of the section carries the same fact for a fraction of the space.
+  assert.doesNotMatch(render(summary({ externalAgents: [] })), /external agent/i);
   assert.doesNotMatch(render(summary()), /external agent/i);
+});
+
+test("consulted websites are listed once for the turn, one line each", () => {
+  const markup = render(
+    summary({
+      evidence: [
+        evidence({
+          success: true,
+          title: "Searched for student teams",
+          location: "TU/e Eindhoven student teams",
+          websites: [
+            {
+              url: "https://www.tue.nl/en/education/tue-student-experience/student-teams",
+              title: "Student Teams | Eindhoven University of Technology",
+              domain: "tue.nl",
+              snippet: "Overview of official student teams at TU/e.",
+            },
+            {
+              url: "https://en.wikipedia.org/wiki/Eindhoven_University_of_Technology",
+              title: "Eindhoven University of Technology - Wikipedia",
+              domain: "wikipedia.org",
+            },
+          ],
+        }),
+      ],
+    }),
+  );
+  assert.match(markup, /2 sources/);
+  assert.match(markup, /Student Teams | Eindhoven University of Technology/);
+  assert.match(markup, /https:\/\/www\.tue\.nl\/en\/education\/tue-student-experience\/student-teams/);
+  assert.match(markup, /tue\.nl/);
+  assert.match(markup, /wikipedia\.org/);
+  // The snippet is dropped on purpose: two wrapped lines of blurb per source
+  // is what made five sources taller than the panel.
+  assert.doesNotMatch(markup, /Overview of official student teams at TU\/e\./);
+  // No globe, no per-link arrow — a source is a title and a host.
+  assert.doesNotMatch(markup, /<svg[^>]*>\s*<path[^>]*d="M12 21a9/);
+});
+
+test("web search evidence without explicit websites array extracts websites from details", () => {
+  const markup = render(
+    summary({
+      evidence: [
+        evidence({
+          success: true,
+          title: "Searching the web",
+          details: {
+            toolName: "web_search",
+            sources: [
+              {
+                url: "https://solarteam.nl",
+                title: "Solar Team Eindhoven",
+              },
+            ],
+          },
+        }),
+      ],
+    }),
+  );
+  assert.match(markup, /1 source/);
+  assert.match(markup, /Solar Team Eindhoven/);
+  assert.match(markup, /https:\/\/solarteam\.nl/);
+  assert.match(markup, /solarteam\.nl/);
+});
+
+test("a source reached by two calls is listed once, not once per call", () => {
+  const page = {
+    url: "https://marvel.com/d23-2026-x-men-cast",
+    title: "D23 2026: Marvel Studios Unveils X-Men Cast",
+    domain: "marvel.com",
+  };
+  const markup = render(
+    summary({
+      evidence: [
+        evidence({
+          id: "call-search",
+          kind: "web_search",
+          success: true,
+          title: "Did 5 searches in 6.5s",
+          websites: [page],
+        }),
+        // The extraction that followed reports the same page, with a trailing
+        // slash. Listing it under both calls is what showed one host three
+        // times over and hid how few distinct sources the answer really had.
+        evidence({
+          id: "call-extract",
+          kind: "web_source",
+          success: true,
+          title: "Extracted 2 pages in 1.5s",
+          websites: [{ ...page, url: `${page.url}/` }],
+        }),
+      ],
+    }),
+  );
+  assert.match(markup, /1 source/);
+  assert.doesNotMatch(markup, /2 sources/);
+  assert.equal(markup.match(/marvel\.com<\/span>/g)?.length, 1);
+});
+
+test("a successful call carries no status word; a failed one still does", () => {
+  // A column of "succeeded" down the whole ledger told the reader nothing they
+  // could act on, so silence now means it worked.
+  const fine = render(
+    summary({ evidence: [evidence({ success: true, title: "Did 5 searches in 6.5s" })] }),
+  );
+  assert.doesNotMatch(fine, /succeeded/);
+  assert.match(
+    render(summary({ evidence: [evidence({ success: false })] })),
+    /failed/,
+  );
+});
+
+test("the panel bounds its own height and scrolls instead of growing off-screen", () => {
+  const markup = render(
+    summary({
+      evidence: Array.from({ length: 40 }, (_, index) =>
+        evidence({
+          id: `evidence-${index}`,
+          success: true,
+          title: `Did 5 searches in ${index}.0s`,
+        }),
+      ),
+    }),
+  );
+  assert.match(markup, /max-h-\[70vh\]/);
+  assert.match(markup, /overflow-y-auto/);
+  assert.match(markup, /40 tool calls/);
+  // Exactly one scroll region. A source list nested in its own scroller
+  // trapped the wheel over half the panel's height.
+  assert.equal(markup.match(/overflow-y-auto/g).length, 1);
+});
+
+test("a measured height from the caller wins over the viewport default", () => {
+  // The bug this pins down: anchored to an action row near the bottom of the
+  // window, a 70vh panel grew off the top of the screen, close button and all.
+  // The caller measures the room the trigger actually has and passes it in.
+  const markup = render(
+    summary({ evidence: [evidence({ success: true, title: "Did 5 searches" })] }),
+    { maxHeight: 240 },
+  );
+  assert.match(markup, /max-height:240px/);
+});
+
+test("a turn that read nothing says so once, in the header", () => {
+  const markup = render(
+    summary({
+      evidence: [
+        evidence({ success: true, title: "Did 5 searches in 8.7s" }),
+      ],
+    }),
+  );
+  assert.match(markup, /no sources/);
+  // Repeating it under the call as well said the same thing twice.
+  assert.doesNotMatch(markup, /No source links were recorded/);
+});
+
+test("web search and tool evidence items render as plain text without badge containers", () => {
+  const markup = render(
+    summary({
+      evidence: [
+        evidence({
+          id: "evidence-1",
+          success: false,
+          title: "Searching the web",
+        }),
+        evidence({
+          id: "evidence-2",
+          success: true,
+          title: "Did 5 searches in 6.5s",
+        }),
+      ],
+    }),
+  );
+  assert.match(markup, /Searching the web/);
+  assert.match(markup, /Did 5 searches in 6.5s/);
+  assert.doesNotMatch(markup, /rounded-lg border border-\[var\(--line\)\] bg-\[var\(--paper-surface\)\]/);
+});
+
+test("a search query is shown as plain text, with no badge and no code face", () => {
+  const markup = render(
+    summary({
+      evidence: [
+        evidence({
+          success: true,
+          title: "Did 5 searches in 8.7s",
+          location: '"Eindhoven University of Technology" ("Harvard" OR "MIT")',
+        }),
+      ],
+    }),
+  );
+  assert.match(markup, /Eindhoven University of Technology/);
+  assert.doesNotMatch(markup, /<code/);
+  assert.doesNotMatch(markup, /font-mono/);
+  // No pill, chip or badge anywhere in the row.
+  assert.doesNotMatch(markup, /bg-\[var\(--paper-strong\)\] px-1/);
+});
+
+// A capability is not a tool call. The panel's whole reason for carrying this
+// section is the turn nobody typed a command for: super agent reads a pasted
+// video link, selects Watch on the user's behalf, and until now the only trace
+// of it in the transcript was a row that said "Running command".
+
+test("an automatically selected skill is named, with the reason it fired", () => {
+  const markup = render(
+    summary({
+      capabilities: {
+        superAgent: true,
+        inventory: { skills: 118, connections: 12, workflows: 4 },
+        used: [
+          {
+            kind: "skill",
+            id: "watch",
+            label: "Watch",
+            selection: "automatic",
+            reason: "The message linked a video.",
+            calls: 1,
+            failures: 0,
+            command: "/watch",
+          },
+        ],
+      },
+    }),
+  );
+  assert.match(markup, /Capabilities used/);
+  assert.match(markup, /Watch/);
+  assert.match(markup, /selected automatically/);
+  assert.match(markup, /The message linked a video\./);
+  assert.match(markup, /\/watch/);
+  assert.match(markup, /1 call/);
+  // What was on the table has to stay visibly separate from what came off it.
+  assert.match(markup, /118 skills, 12 connections and 4 automations were available/);
+});
+
+test("connections and automations are reported beside skills", () => {
+  const markup = render(
+    summary({
+      capabilities: {
+        superAgent: false,
+        used: [
+          {
+            kind: "connection",
+            id: "gmail",
+            label: "Gmail",
+            selection: "agent",
+            calls: 2,
+            failures: 1,
+            command: "/gmail",
+            actions: ["GMAIL_SEND_EMAIL"],
+          },
+          {
+            kind: "workflow",
+            id: "wf-7",
+            label: "Daily digest",
+            selection: "agent",
+            calls: 1,
+            failures: 0,
+          },
+        ],
+      },
+    }),
+  );
+  assert.match(markup, /Connections/);
+  assert.match(markup, /Gmail/);
+  assert.match(markup, /GMAIL_SEND_EMAIL/);
+  assert.match(markup, /2 calls · 1 failed/);
+  assert.match(markup, /Automations/);
+  assert.match(markup, /Daily digest/);
+});
+
+test("a turn that used no capability renders no capability section", () => {
+  // A heading followed by a denial is two lines spent saying nothing happened.
+  const empty = render(summary({ capabilities: { superAgent: false, used: [] } }));
+  assert.doesNotMatch(empty, /Capabilities used/);
+  assert.doesNotMatch(empty, /No skill, connection or automation was used/);
+  // Same for a summary persisted before capabilities were recorded at all.
+  assert.doesNotMatch(render(summary()), /Capabilities used/);
+});
+
+test("renders web search results with search query and extracted websites from details.result", () => {
+  const markup = render(
+    summary({
+      evidence: [
+        evidence({
+          id: "call-search-1",
+          kind: "web_search",
+          success: true,
+          title: "Did 5 searches in 6.5s",
+          location: "TU/e student teams",
+          details: {
+            toolName: "web_search",
+            query: "TU/e student teams",
+            result: {
+              success: true,
+              data: {
+                web: [
+                  {
+                    title: "Student Teams | TU/e",
+                    url: "https://www.tue.nl/en/education/student-teams",
+                    description: "Overview of official student teams.",
+                  },
+                  {
+                    title: "Solar Team Eindhoven",
+                    url: "https://solarteam.nl",
+                    description: "Solar car student team.",
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      ],
+    }),
+  );
+  assert.match(markup, /Did 5 searches in 6.5s/);
+  assert.match(markup, /TU\/e student teams/);
+  assert.match(markup, /2 sources/);
+  assert.match(markup, /Student Teams \| TU\/e/);
+  assert.match(markup, /https:\/\/www\.tue\.nl\/en\/education\/student-teams/);
+  assert.match(markup, /tue.nl/);
+  assert.match(markup, /Solar Team Eindhoven/);
+  assert.match(markup, /solarteam.nl/);
+  assert.doesNotMatch(markup, /No source links were recorded/);
+});
+
+test("renders extracted web pages with clickable link and title from details.result", () => {
+  const markup = render(
+    summary({
+      evidence: [
+        evidence({
+          id: "call-extract-1",
+          kind: "web_source",
+          success: true,
+          title: "Extracted 1 page in 0.5s",
+          location: "https://www.tue.nl/en/education/student-teams",
+          details: {
+            toolName: "web_extract",
+            args: { urls: ["https://www.tue.nl/en/education/student-teams"] },
+            result: {
+              results: [
+                {
+                  title: "Student Teams | TU/e",
+                  url: "https://www.tue.nl/en/education/student-teams",
+                  content: "Content...",
+                },
+              ],
+            },
+          },
+        }),
+      ],
+    }),
+  );
+  assert.match(markup, /Extracted 1 page in 0.5s/);
+  assert.match(markup, /1 source/);
+  assert.match(markup, /Student Teams \| TU\/e/);
+  assert.match(markup, /https:\/\/www\.tue\.nl\/en\/education\/student-teams/);
+  assert.match(markup, /tue.nl/);
+  assert.doesNotMatch(markup, /No source links were recorded/);
 });

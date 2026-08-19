@@ -31,6 +31,7 @@ import {
   MESSAGING_TOOLS,
   MANIM_TOOLS,
   MAP_TOOLS,
+  IMAGE_SEARCH_TOOLS,
   OFFICE_TOOLS,
   WATERMARK_TOOLS,
   OMH_TOOLS,
@@ -227,6 +228,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...MESSAGING_TOOLS,
       ...RECALL_TOOLS,
       ...WORLDMONITOR_TOOLS,
+      ...IMAGE_SEARCH_TOOLS,
       ...MAP_TOOLS,
       ...CALENDAR_TOOLS,
       ...PLAN_TOOLS,
@@ -743,6 +745,13 @@ function buildToolMap(
   for (const tool of [...WORLDMONITOR_TOOLS, ...CALENDAR_TOOLS]) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  // "Show me pictures of an F-11" is a plain knowledge turn as well, and the
+  // answer the user wants is the images themselves, not a description of them.
+  // A read over Google's public image index with no user state behind it, so it
+  // follows the monitor's rule.
+  for (const tool of IMAGE_SEARCH_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   // "How far is the station" is a plain knowledge turn as well, and it is the
   // one where being wrong is least visible: a model that answers it from memory
   // sounds exactly like one that looked it up. So the map tools follow the same
@@ -819,6 +828,9 @@ function buildToolMap(
     // schedule, and the monitor is a signed-in feature of the dashboard.
     for (const tool of WORLDMONITOR_TOOLS) map[tool] = false;
     for (const tool of CALENDAR_TOOLS) map[tool] = false;
+    // Image search spends a signed-in deployment's Google API quota, and this
+    // surface is the anonymous public one.
+    for (const tool of IMAGE_SEARCH_TOOLS) map[tool] = false;
     // Geographic state is one signed-in person's map session, and this surface
     // is the anonymous public one.
     for (const tool of MAP_TOOLS) map[tool] = false;

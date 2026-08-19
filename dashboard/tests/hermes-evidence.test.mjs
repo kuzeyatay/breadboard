@@ -4,11 +4,18 @@ import {
   activityLabelForTool,
   assertsExternalFact,
   assessVerification,
-  enforceRequiredWebEvidence,
+  reportWebGrounding,
   evidenceKindForTool,
   evidenceTitleForTool,
   WEB_GROUNDING_FAILED_MESSAGE,
   WEB_GROUNDING_UNAVAILABLE_MESSAGE,
+  WEB_GROUNDING_LOOKUP_FAILED_NOTICE,
+  WEB_GROUNDING_UNVERIFIED_NOTICE,
+  isHttpUrl,
+  extractDomain,
+  normalizeWebsite,
+  extractWebsitesFromPayload,
+  extractWebsitesFromEvidence,
 } from "../src/lib/hermes/evidence.ts";
 
 const evidence = (kind) => ({
@@ -36,28 +43,23 @@ test("tool evidence remains source-distinguishable", () => {
   assert.equal(evidenceKindForTool("capability_search"), "tool_metadata");
 });
 
-test("a planned web turn fails closed without actual web evidence", () => {
-  const filtered = enforceRequiredWebEvidence(
-    "Western Turkey may see a partial eclipse.",
-    [evidence("command")],
-    true,
-  );
-  assert.equal(filtered, WEB_GROUNDING_UNAVAILABLE_MESSAGE);
-  const filteredVerification = assessVerification(
-    filtered,
-    [evidence("command")],
-    { webGroundingRequired: true },
-  );
-  assert.equal(filteredVerification.state, "unverified");
-  assert.deepEqual(filteredVerification.unsupportedClaims, []);
+test("a planned web turn is reported unsourced, never overwritten", () => {
+  // The rule this file now enforces: the answer always survives. An unmet web
+  // obligation is reported, because deleting a finished answer on the strength
+  // of a pre-dispatch guess cost users whole turns whenever the guess was wrong.
+  const answer = "Western Turkey may see a partial eclipse.";
+  const report = reportWebGrounding(answer, [evidence("command")], true);
+  assert.equal(report.required, true);
+  assert.equal(report.satisfied, false);
+  assert.equal(report.shortfall, "never_attempted");
+  assert.equal(report.notice, WEB_GROUNDING_UNVERIFIED_NOTICE);
 
-  const unsupported = assessVerification(
-    "Western Turkey may see a partial eclipse.",
-    [evidence("command")],
-    { webGroundingRequired: true },
-  );
+  const unsupported = assessVerification(answer, [evidence("command")], {
+    webGroundingRequired: true,
+  });
   assert.equal(unsupported.state, "contradicted");
   assert.match(unsupported.unsupportedClaims[0], /needed current web evidence/i);
+  assert.equal(unsupported.webGrounding?.shortfall, "never_attempted");
 
   const grounded = assessVerification(
     "The eclipse path does not cross Turkey.",
@@ -65,24 +67,36 @@ test("a planned web turn fails closed without actual web evidence", () => {
     { webGroundingRequired: true },
   );
   assert.equal(grounded.state, "verified");
+  assert.equal(grounded.webGrounding?.satisfied, true);
   assert.equal(
-    enforceRequiredWebEvidence(
+    reportWebGrounding(
       "The eclipse path does not cross Turkey.",
       [evidence("web_search")],
       true,
-    ),
-    "The eclipse path does not cross Turkey.",
+    ).satisfied,
+    true,
   );
+
+  // An answer persisted by the old substituting gate still reads as unverified,
+  // and is never re-flagged as a fresh unsourced claim.
+  const legacy = assessVerification(
+    WEB_GROUNDING_UNAVAILABLE_MESSAGE,
+    [evidence("command")],
+    { webGroundingRequired: true },
+  );
+  assert.equal(legacy.state, "unverified");
+  assert.deepEqual(legacy.unsupportedClaims, []);
+  assert.equal(legacy.webGrounding?.shortfall, undefined);
 });
 
-test("the web gate withholds claims, never answers that make none", () => {
+test("the web gate flags claims, never answers that make none", () => {
   // The turn that motivated this: "hi" planned as a web turn, answered
   // normally, and the whole reply replaced by a refusal at the last step.
   const greeting = "Hey! What would you like to work on?";
   assert.equal(assertsExternalFact(greeting), false);
   assert.equal(
-    enforceRequiredWebEvidence(greeting, [evidence("command")], true),
-    greeting,
+    reportWebGrounding(greeting, [evidence("command")], true).shortfall,
+    undefined,
   );
 
   for (const harmless of [
@@ -93,9 +107,9 @@ test("the web gate withholds claims, never answers that make none", () => {
     "Let me know if you want me to keep going.",
   ]) {
     assert.equal(
-      enforceRequiredWebEvidence(harmless, [evidence("command")], true),
-      harmless,
-      `withheld an answer that asserts nothing: ${harmless}`,
+      reportWebGrounding(harmless, [evidence("command")], true).notice,
+      undefined,
+      `flagged an answer that asserts nothing: ${harmless}`,
     );
   }
 
@@ -110,26 +124,28 @@ test("the web gate withholds claims, never answers that make none", () => {
   assert.deepEqual(summary.unsupportedClaims, []);
 });
 
-test("a failed lookup is reported as failed, not as a refusal to answer", () => {
+test("a failed lookup is reported as failed, not as never having looked", () => {
   const claim = "The merger closed last quarter.";
-  assert.equal(
-    enforceRequiredWebEvidence(claim, [failed("web_search")], true),
-    WEB_GROUNDING_FAILED_MESSAGE,
-  );
+  const attempted = reportWebGrounding(claim, [failed("web_search")], true);
+  assert.equal(attempted.shortfall, "lookup_failed");
+  assert.equal(attempted.notice, WEB_GROUNDING_LOOKUP_FAILED_NOTICE);
+  assert.match(attempted.notice, /send the message again/i);
+
   // Never looking is a different fact about the turn than looking and failing.
   assert.equal(
-    enforceRequiredWebEvidence(claim, [evidence("command")], true),
-    WEB_GROUNDING_UNAVAILABLE_MESSAGE,
+    reportWebGrounding(claim, [evidence("command")], true).shortfall,
+    "never_attempted",
   );
-  // Both notices are terminal: re-running the gate cannot rewrite one as the
-  // other, which is what let the two states blur together in persisted rows.
+
+  // Answers the old substituting gate persisted keep reading as unverified,
+  // and are never themselves flagged as unsourced claims.
   for (const notice of [
     WEB_GROUNDING_FAILED_MESSAGE,
     WEB_GROUNDING_UNAVAILABLE_MESSAGE,
   ]) {
     assert.equal(
-      enforceRequiredWebEvidence(notice, [failed("web_search")], true),
-      notice,
+      reportWebGrounding(notice, [failed("web_search")], true).shortfall,
+      undefined,
     );
     assert.equal(
       assessVerification(notice, [failed("web_search")], {
@@ -138,6 +154,47 @@ test("a failed lookup is reported as failed, not as a refusal to answer", () => 
       "unverified",
     );
   }
+});
+
+test("opening the pasted source itself satisfies the web gate", () => {
+  // The regression: a Watch turn downloaded the linked video, answered from
+  // it, and the gate replaced the answer because no browser-shaped tool ran.
+  const watched = {
+    ...evidence("command"),
+    details: { toolName: "watch_run" },
+  };
+  const claim = "At 2:14 the speaker says vision is the color green.";
+  assert.equal(reportWebGrounding(claim, [watched], true).satisfied, true);
+  assert.equal(
+    assessVerification(claim, [watched], { webGroundingRequired: true })
+      .unsupportedClaims.length,
+    0,
+  );
+
+  // Factcheck fetches the page it is checking — the same standing.
+  const factchecked = {
+    ...evidence("command"),
+    details: { toolName: "factcheck_run" },
+  };
+  assert.equal(
+    reportWebGrounding("The article's central claim is false.", [factchecked], true)
+      .satisfied,
+    true,
+  );
+
+  // A watch that was attempted and failed is a failed lookup, not a turn
+  // that never looked.
+  const failedWatch = { ...watched, success: false };
+  assert.equal(
+    reportWebGrounding(claim, [failedWatch], true).shortfall,
+    "lookup_failed",
+  );
+
+  // Any other command evidence still leaves the obligation unmet.
+  assert.equal(
+    reportWebGrounding(claim, [evidence("command")], true).shortfall,
+    "never_attempted",
+  );
 });
 
 test("capability discovery does not verify external factual claims", () => {
@@ -225,4 +282,145 @@ test("academic source claims require Garden, web, or user-provided evidence", ()
     [evidence("garden")],
   );
   assert.equal(grounded.state, "verified");
+});
+
+test("website normalization and domain extraction", () => {
+  assert.equal(isHttpUrl("https://www.tue.nl/student-teams"), true);
+  assert.equal(isHttpUrl("http://example.com"), true);
+  assert.equal(isHttpUrl("not-a-url"), false);
+  assert.equal(isHttpUrl("ftp://files.example.com"), false);
+
+  assert.equal(extractDomain("https://www.tue.nl/path"), "tue.nl");
+  assert.equal(extractDomain("https://en.wikipedia.org/wiki/TU_Eindhoven"), "en.wikipedia.org");
+
+  const site = normalizeWebsite({
+    url: "https://www.tue.nl/en/education/student-teams",
+    title: "TU/e Student Teams",
+    snippet: "Official team list.",
+  });
+  assert.deepEqual(site, {
+    url: "https://www.tue.nl/en/education/student-teams",
+    title: "TU/e Student Teams",
+    domain: "tue.nl",
+    snippet: "Official team list.",
+  });
+
+  const fromString = normalizeWebsite("https://github.com/breadboard");
+  assert.deepEqual(fromString, {
+    url: "https://github.com/breadboard",
+    domain: "github.com",
+  });
+});
+
+test("extractWebsitesFromPayload parses markdown, JSON, and structured tool results", () => {
+  const md = "Found results:\n1. [TU/e Teams](https://www.tue.nl/teams)\n2. [Solar Team](https://solarteam.nl)";
+  const mdWebsites = extractWebsitesFromPayload(md);
+  assert.equal(mdWebsites.length, 2);
+  assert.equal(mdWebsites[0].url, "https://www.tue.nl/teams");
+  assert.equal(mdWebsites[0].title, "TU/e Teams");
+  assert.equal(mdWebsites[0].domain, "tue.nl");
+  assert.equal(mdWebsites[1].url, "https://solarteam.nl");
+
+  const structured = {
+    action: {
+      sources: [
+        { url: "https://www.nature.com/articles/123", title: "Nature Paper" },
+      ],
+    },
+  };
+  const structuredWebsites = extractWebsitesFromPayload(structured);
+  assert.equal(structuredWebsites.length, 1);
+  assert.equal(structuredWebsites[0].domain, "nature.com");
+  assert.equal(structuredWebsites[0].title, "Nature Paper");
+
+  const jsonString = JSON.stringify({
+    results: [
+      { url: "https://news.ycombinator.com", title: "Hacker News" },
+    ],
+  });
+  const jsonWebsites = extractWebsitesFromPayload(jsonString);
+  assert.equal(jsonWebsites.length, 1);
+  assert.equal(jsonWebsites[0].url, "https://news.ycombinator.com");
+});
+
+test("extractWebsitesFromEvidence aggregates and deduplicates websites", () => {
+  const record = {
+    id: "e-web",
+    kind: "web_search",
+    title: "Searching the web",
+    success: true,
+    location: "TU/e Eindhoven student teams",
+    timestamp: new Date().toISOString(),
+    websites: [
+      { url: "https://www.tue.nl/teams", title: "TU/e Teams", domain: "tue.nl" },
+    ],
+    details: {
+      toolName: "web_search",
+      sources: [
+        { url: "https://www.tue.nl/teams/", title: "TU/e Teams" },
+        { url: "https://solarteam.nl", title: "Solar Team" },
+      ],
+    },
+  };
+  const sites = extractWebsitesFromEvidence(record);
+  assert.equal(sites.length, 2);
+  assert.equal(sites[0].url, "https://www.tue.nl/teams");
+  assert.equal(sites[1].url, "https://solarteam.nl");
+});
+
+test("the shape Hermes's web_search actually returns yields its result pages", () => {
+  // {"success": true, "data": {"web": [...]}} — the wrapper that previously
+  // walked to a dead end, so every search row named no page at all.
+  const websites = extractWebsitesFromPayload({
+    tool_id: "call-1",
+    name: "web_search",
+    args: { query: "TU/e student teams", limit: 5 },
+    summary: "Did 5 searches in 6.4s",
+    result: {
+      success: true,
+      data: {
+        web: [
+          {
+            title: "Student Teams | TU/e",
+            url: "https://www.tue.nl/en/education/student-teams",
+            description: "Overview of official student teams.",
+            position: 1,
+          },
+          {
+            title: "Solar Team Eindhoven",
+            url: "https://solarteam.nl",
+            description: "Solar Team Eindhoven builds solar cars.",
+            position: 2,
+          },
+        ],
+      },
+    },
+  });
+  assert.equal(websites.length, 2);
+  assert.equal(websites[0].url, "https://www.tue.nl/en/education/student-teams");
+  assert.equal(websites[0].title, "Student Teams | TU/e");
+  assert.equal(websites[0].domain, "tue.nl");
+  assert.equal(websites[0].snippet, "Overview of official student teams.");
+  assert.equal(websites[1].domain, "solarteam.nl");
+});
+
+test("an extracted page contributes itself, not every link in its body", () => {
+  const websites = extractWebsitesFromPayload({
+    tool_id: "call-2",
+    name: "web_extract",
+    summary: "Extracted 1 page in 0.3s",
+    result: {
+      results: [
+        {
+          url: "https://www.tue.nl/en/education/student-teams",
+          title: "Student Teams",
+          content:
+            "See also https://example.com/ads and https://tracker.example.net/pixel for more.",
+          error: null,
+        },
+      ],
+    },
+  });
+  assert.equal(websites.length, 1);
+  assert.equal(websites[0].url, "https://www.tue.nl/en/education/student-teams");
 });

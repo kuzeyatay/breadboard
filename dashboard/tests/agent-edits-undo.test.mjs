@@ -180,13 +180,24 @@ test("every coding agent brackets its run and offers the same undo card", () => 
     /edits: finalizeRunSnapshot\(run\.runId, repository\.path\)/,
   );
 
-  // Both coding cards close the bracket and render the shared card.
+  // Both coding cards close the bracket and render the shared card. The render
+  // falls back to the bracket stored with the turn, so a card whose own
+  // finalize call failed (or that mounted before history arrived) still shows
+  // the edits.
   for (const card of ["inline-opencode-run", "inline-ruflo-run"]) {
     const widget = source(`../src/app/components/hermes/${card}.tsx`);
     assert.match(widget, /action: "finalize", gardenSlug, runId/);
-    assert.match(widget, /terminal && edits && gardenSlug \?/);
+    assert.match(widget, /edits \?\? persistedEdits/);
     assert.match(widget, /<AgentEditsCard/);
   }
+
+  // The Codex run manager closes the bracket the moment the run ends — like
+  // OpenCode and Ruflo — so edits the user makes afterwards never leak into
+  // the run's own diff.
+  assert.match(
+    source("../src/lib/codex/run-manager.ts"),
+    /finalizeRunSnapshot\(run\.runId, run\.repositoryPath\)/,
+  );
 
   // The card is repository-agnostic: it only ever names a Garden.
   const editsCard = source("../src/app/components/hermes/agent-edits-card.tsx");
@@ -206,9 +217,9 @@ test("every coding agent closes its bracket when the run ends, tab or no tab", (
   const source = (relativePath) =>
     fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
-  // OpenCode and Ruflo finalize from the run manager itself, on every terminal
-  // event including an abort — the browser is not required to be watching.
-  for (const agent of ["opencode", "ruflo"]) {
+  // All three finalize from the run manager itself, on every terminal event
+  // including an abort — the browser is not required to be watching.
+  for (const agent of ["opencode", "ruflo", "codex"]) {
     const manager = source(`../src/lib/${agent}/run-manager.ts`);
     assert.match(
       manager,
@@ -220,7 +231,8 @@ test("every coding agent closes its bracket when the run ends, tab or no tab", (
     );
     assert.match(manager, /emit\(run, "run\.aborted"/);
   }
-  // Codex closes its bracket from the terminal handler that stores the turn.
+  // Codex closes it a second time from the terminal handler that stores the
+  // turn. Finalizing is idempotent, so the earlier close is the one that counts.
   assert.match(
     source("../src/app/api/codex/runs/route.ts"),
     /setRunTerminalHandler\([\s\S]*?finalizeRunSnapshot\(run\.runId, repository\.path\)/,

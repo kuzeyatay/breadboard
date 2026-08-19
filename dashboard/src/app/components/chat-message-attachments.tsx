@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import ModelAttachmentViewer from "@/app/components/model-attachment-viewer";
 import type { ChatMessageAttachment } from "@/lib/chat-attachments";
 import {
@@ -250,7 +251,7 @@ export default function ChatMessageAttachments({
         ) : null}
       </div>
 
-      {openImageIndex !== null && images[openImageIndex] ? (
+      {openImageIndex !== null && images[openImageIndex] && typeof document !== "undefined" ? createPortal(
         <div
           className="fixed inset-0 z-[200] flex items-center justify-center bg-black p-4 sm:p-8"
           role="dialog"
@@ -297,7 +298,8 @@ export default function ChatMessageAttachments({
               </button>
             </>
           ) : null}
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </>
   );

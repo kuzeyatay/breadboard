@@ -209,6 +209,79 @@ test("terminal preflight permissions create a scoped folder grant and resume the
   assert.match(turnService, /clarification: "filesystem_target_required"/);
 });
 
+test("a YOLO turn auto-grants its preflight permissions server-side, so navigating away cannot strand it", () => {
+  const turnService = read("dashboard/src/lib/conversations/turn-service.ts");
+  // The auto-grant must run before the blocked branch fails the message...
+  assert.ok(
+    turnService.indexOf("if (prepared.blocked && input.yoloMode === true)") <
+      turnService.indexOf("if (prepared.blocked)"),
+    "the YOLO auto-grant must be attempted before the turn is failed as awaiting_permission",
+  );
+  // ...mirror the client's "once" decision (one-time scope, named operations),
+  assert.match(turnService, /scope: "one_time"/);
+  // ...re-broker with the grants in place rather than mutating the decision,
+  assert.match(turnService, /const regranted = prepareTurn\(/);
+  // ...and leave no standing authority behind: created rows are revoked and
+  // overwritten rows restored once the decision has captured the roots.
+  assert.match(turnService, /revokeFilesystemGrant\(input\.conversation\.user_id, grantId\)/);
+  assert.match(turnService, /widenedGrants/);
+  assert.match(turnService, /conversation\.permission_auto_granted/);
+});
+
+test("a stranded awaiting-permission turn is rebuilt into a live approval card on restore", () => {
+  const presentation = read("dashboard/src/lib/hermes/session-presentation.ts");
+  // The transcript API surfaces the persisted request only for the paused shape.
+  assert.match(
+    presentation,
+    /presented\.status === "failed" &&[\s\S]*error === "awaiting_permission" &&[\s\S]*pendingPermissions/,
+  );
+  const hook = read(
+    "dashboard/src/app/components/hermes/use-agent-session.ts",
+  );
+  // One mapping serves the live blocked response and the restored transcript.
+  assert.match(hook, /function permissionPromptFromPending\(/);
+  assert.match(hook, /const prompt = permissionPromptFromPending\(pending\);/);
+  // Both restore paths rebuild the card when no active run took precedence.
+  const rehydrateCalls = hook.match(/rehydrateAwaitingPermission\(restoredMessages\)/g) ?? [];
+  assert.equal(rehydrateCalls.length, 2, "cold mount and openSession must both rehydrate");
+  // The retry replaces the restored rows through the client message id they
+  // kept, so the resumed turn does not duplicate the transcript pair.
+  assert.match(
+    hook,
+    /message\.clientMessageId !== resumedBlockedTurn\.userMessageId/,
+  );
+});
+
+test("YOLO answers a preflight pause without ever mounting the approval card", () => {
+  const hook = read(
+    "dashboard/src/app/components/hermes/use-agent-session.ts",
+  );
+  // The decision runs against a prompt handed in, so reaching it no longer
+  // requires publishing that prompt to the state the card renders from.
+  assert.match(
+    hook,
+    /const resolvePreflightPermission = useCallback\(\s*async \(prompt: PermissionPrompt, decision:/,
+  );
+  // Both pause sites — the live blocked dispatch and the restored transcript —
+  // hand the prompt to YOLO rather than to the card.
+  const handedToYolo = hook.match(/setAutoApprovedPreflight\(prompt\)/g) ?? [];
+  assert.equal(
+    handedToYolo.length,
+    2,
+    "live dispatch and rehydration must both bypass the card",
+  );
+  // A card that mounts for one frame and is then torn down by the auto-decision
+  // reads as a flicker, so the YOLO branch must not reach setPendingPermission.
+  assert.match(
+    hook,
+    /if \(isYoloModeEnabled\(\)\) \{\s*setAutoApprovedPreflight\(prompt\);/,
+  );
+  // A failed auto-grant restores a real card. Without the decided-ids guard the
+  // auto-approval answers that card again and retries the same doomed request.
+  assert.match(hook, /yoloDecidedPermissionsRef\.current\.has\(/);
+  assert.match(hook, /yoloDecidedPermissionsRef\.current\.add\(/);
+});
+
 test("terminal planning receives the current conversation's recent user requests", () => {
   const turnService = read("dashboard/src/lib/conversations/turn-service.ts");
   assert.match(

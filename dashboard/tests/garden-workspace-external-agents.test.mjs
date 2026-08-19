@@ -104,19 +104,29 @@ test("restored history never hands a run descriptor to a user message", () => {
   );
 });
 
-test("the run card shows only the agent name and can close a finished timeline", () => {
+test("the run card shows only the agent name and closes itself when the run lands", () => {
   const card = source("../src/app/components/hermes/inline-opencode-run.tsx");
   // Just the agent name in the header — no repository, no echoed prompt.
   assert.doesNotMatch(card, /\{agentName\} · \{repository\}/);
   assert.doesNotMatch(card, /repository: string;/);
   assert.match(card, /<p[^>]*>\{agentName\}<\/p>/);
-  // The timeline survives a reload and only becomes closeable once terminal.
+  // A live run shows its most recent steps; a finished one collapses to the
+  // status line on its own, with no expander for the reader to operate.
   assert.match(card, /persistedActivity\?: ExternalAgentActivityEntry\[\];/);
-  assert.match(card, /timeline\.length && terminal \?/);
-  assert.match(card, /timeline\.length && \(!terminal \|\| activityOpen\) \?/);
-  assert.match(card, /setActivityOpen\(\(open\) => !open\)/);
+  assert.match(
+    card,
+    /const visibleTimeline = terminal \? \[\] : timeline\.slice\(-VISIBLE_ACTIVITY\)/,
+  );
+  assert.match(card, /\{visibleTimeline\.length \?/);
+  assert.doesNotMatch(card, /activityOpen/);
+  assert.doesNotMatch(card, /"Hide" : "Show"/);
+  // The duration and tokens are reported with the outcome and read back from
+  // the saved turn, so a refreshed card keeps the meta row it earned.
+  assert.match(card, /persistedUsage\?: ChatTokenUsage;/);
+  assert.match(card, /usageWithDuration\(usageRef\.current, measured\)/);
   for (const consumer of [workspace, source("../src/app/components/hermes/agent-runtime-panel.tsx")]) {
     assert.match(consumer, /persistedActivity=\{(msg|message)\.externalAgentActivity\}/);
+    assert.match(consumer, /persistedUsage=\{(msg|message)\.usage\}/);
     assert.doesNotMatch(consumer, /repository=\{(msg|message)\.codexRun\.repository\}/);
   }
 });

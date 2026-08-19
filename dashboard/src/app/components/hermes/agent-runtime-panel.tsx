@@ -18,6 +18,7 @@ import {
 import ChatMarkdown from "@/app/components/chat-markdown";
 import ChatTimeSeparator from "@/app/components/chat-time-separator";
 import ChatMessageAttachments from "@/app/components/chat-message-attachments";
+import ChatVideoLinkEmbeds from "@/app/components/chat-video-link-embed";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import AssistantComposer, {
   type ComposerAttachment,
@@ -38,6 +39,8 @@ import {
 import BreadboardLoader from "@/app/components/breadboard-loader";
 import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
 import { useComposerInset } from "@/app/components/chat/use-composer-inset";
+import { useSmoothStreamText } from "@/app/components/chat/use-smooth-stream-text";
+import ChatDisclaimer from "@/app/components/chat/chat-disclaimer";
 import ChatMessageRail, {
   type ChatMessageRailItem,
 } from "@/app/components/chat-message-rail";
@@ -86,6 +89,7 @@ import InlineOpenCodeRun from "./inline-opencode-run";
 import InlineRufloRun from "./inline-ruflo-run";
 import { UserMessageText } from "./command-text";
 import SavePromptDialog from "./save-prompt-dialog";
+import { useQueuedFollowUps } from "./queued-follow-ups";
 import {
   DEFAULT_ASSISTANT_REASONING_EFFORT,
   type AssistantReasoningEffort,
@@ -181,6 +185,11 @@ interface Props {
     branchGroupId: string,
   ) => void;
   onSelectBranch?: (messages: AgentMessage[]) => void;
+  /**
+   * Remove one exchange — this message and the answer it produced — for good.
+   * Absent on a transcript with nothing durable behind it to remove.
+   */
+  onDeleteMessage?: (message: AgentMessage, messageIndex: number) => void;
   onAbort: () => void;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   onRetryMessage?: (userMessageIndex: number, branchGroupId: string) => void;
@@ -301,11 +310,6 @@ interface Props {
   onExternalAgentSourceReady?: () => void;
 }
 
-interface QueuedFollowUp {
-  id: string;
-  text: string;
-}
-
 function SteeredAssistantResponse({
   content,
   corrections,
@@ -333,22 +337,6 @@ function SteeredAssistantResponse({
       )}
     </div>
   );
-}
-
-function reorderQueuedFollowUps(
-  items: QueuedFollowUp[],
-  sourceId: string,
-  targetId: string,
-): QueuedFollowUp[] {
-  if (sourceId === targetId) return items;
-  const sourceIndex = items.findIndex((item) => item.id === sourceId);
-  const targetIndex = items.findIndex((item) => item.id === targetId);
-  if (sourceIndex < 0 || targetIndex < 0) return items;
-
-  const next = [...items];
-  const [moved] = next.splice(sourceIndex, 1);
-  next.splice(targetIndex, 0, moved);
-  return next;
 }
 
 const BRANCH_STORAGE_PREFIX = "breadboard:conversation-branches:";
@@ -470,6 +458,7 @@ export default function AgentRuntimePanel({
   onSendQueued,
   onEditMessage,
   onSelectBranch,
+  onDeleteMessage,
   onAbort,
   onPermissionDecision,
   onRetryMessage,
@@ -580,13 +569,6 @@ export default function AgentRuntimePanel({
   const fallbackComposerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composerTextareaRef = ownerComposerTextareaRef ?? fallbackComposerTextareaRef;
   const copiedUserTimerRef = useRef<number | null>(null);
-  const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([]);
-  const [applyingSteerId, setApplyingSteerId] = useState<string | null>(null);
-  const [sendingQueuedId, setSendingQueuedId] = useState<string | null>(null);
-  const [editingQueuedId, setEditingQueuedId] = useState<string | null>(null);
-  const [queuedEditText, setQueuedEditText] = useState("");
-  const [draggedQueuedId, setDraggedQueuedId] = useState<string | null>(null);
-  const [dragOverQueuedId, setDragOverQueuedId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [messageEditText, setMessageEditText] = useState("");
   const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
@@ -631,6 +613,19 @@ export default function AgentRuntimePanel({
   const externalRunActive =
     externalRunLaunching || messages.some(externalAgentRunInFlight);
   const runInFlight = activeRun || externalRunActive;
+  // Messages typed while the conversation is working queue here; each can be
+  // applied to the active chat turn as a course correction, and whatever is
+  // still queued when the run settles is sent as ordinary follow-ups.
+  const { queueFollowUp, headerContent: queuedFollowUpsHeader } =
+    useQueuedFollowUps({
+      conversationKey: sessionId ?? null,
+      runInFlight,
+      steerableRunActive: activeRun,
+      stopping: runState === "stopping",
+      externalRunActive,
+      onSteer,
+      onSendQueued,
+    });
   // Until the transcript has landed there is no history to answer against, and
   // the arriving one would overwrite whatever the turn had already put on
   // screen. Everything that writes to the conversation waits for it: the
@@ -666,6 +661,13 @@ export default function AgentRuntimePanel({
         ? index
         : lastIndex,
     -1,
+  );
+  // The newest answer's text is revealed at a readable pace rather than drawn
+  // straight from the buffer, so a reply that arrives in bursts (or whole)
+  // still reads as a stream. Older messages render their content directly.
+  const revealedAssistantContent = useSmoothStreamText(
+    lastAssistantIndex >= 0 ? messages[lastAssistantIndex].content : "",
+    streaming,
   );
   // A turn failure reads as part of the answer it broke, so when the
   // transcript ends with a plain assistant message the error text renders
@@ -840,8 +842,13 @@ export default function AgentRuntimePanel({
   );
   const respondingToInlineSelection =
     activeRun && messages.at(-1)?.textSelection?.mode === "inline";
+  // An external agent's card is the only thing still working after a reload —
+  // `runState` is idle and no stream is open — so without it the transcript
+  // would look settled while a coding or research run is mid-flight, stop
+  // following the output, and drop the busy affordances the composer keeps.
   const transcriptResponding =
-    (activeRun || streaming) && !respondingToInlineSelection;
+    (activeRun || streaming || externalRunActive) &&
+    !respondingToInlineSelection;
   const transcriptVirtual = useChatVirtualBridge();
   const composerInset = useComposerInset();
   const {
@@ -877,27 +884,6 @@ export default function AgentRuntimePanel({
       }),
     );
   }, [externalRunActive, gardenSlug, sessionId]);
-
-  useEffect(() => {
-    if (
-      queuedFollowUps.length === 0 ||
-      runInFlight ||
-      applyingSteerId ||
-      sendingQueuedId
-    ) {
-      return;
-    }
-    const next = queuedFollowUps[0];
-    setQueuedFollowUps((current) => current.filter((item) => item.id !== next.id));
-    setSendingQueuedId(next.id);
-    void onSendQueued(next.text).finally(() => setSendingQueuedId(null));
-  }, [
-    runInFlight,
-    applyingSteerId,
-    onSendQueued,
-    queuedFollowUps,
-    sendingQueuedId,
-  ]);
 
   useEffect(
     () => () => {
@@ -1014,63 +1000,6 @@ export default function AgentRuntimePanel({
     });
   }, [messages]);
 
-  function queueFollowUp(text: string) {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    setQueuedFollowUps((current) => [
-      ...current,
-      { id: crypto.randomUUID(), text: trimmed },
-    ]);
-  }
-
-  async function applyQueuedSteer(item: QueuedFollowUp) {
-    if (!activeRun || applyingSteerId) return;
-    setApplyingSteerId(item.id);
-    try {
-      if (await onSteer(item.text)) {
-        setQueuedFollowUps((current) =>
-          current.filter((candidate) => candidate.id !== item.id),
-        );
-      }
-    } finally {
-      setApplyingSteerId(null);
-    }
-  }
-
-  function beginQueuedEdit(item: QueuedFollowUp) {
-    setEditingQueuedId(item.id);
-    setQueuedEditText(item.text);
-  }
-
-  function saveQueuedEdit(itemId: string) {
-    const text = queuedEditText.trim();
-    if (!text) return;
-    setQueuedFollowUps((current) =>
-      current.map((item) => (item.id === itemId ? { ...item, text } : item)),
-    );
-    setEditingQueuedId(null);
-    setQueuedEditText("");
-  }
-
-  function moveQueuedFollowUp(itemId: string, offset: -1 | 1) {
-    setQueuedFollowUps((current) => {
-      const currentIndex = current.findIndex((item) => item.id === itemId);
-      const target = current[currentIndex + offset];
-      if (currentIndex < 0 || !target) return current;
-      return reorderQueuedFollowUps(current, itemId, target.id);
-    });
-  }
-
-  function finishQueuedDrop(targetId: string) {
-    if (draggedQueuedId) {
-      setQueuedFollowUps((current) =>
-        reorderQueuedFollowUps(current, draggedQueuedId, targetId),
-      );
-    }
-    setDraggedQueuedId(null);
-    setDragOverQueuedId(null);
-  }
-
   async function copyUserMessage(message: AgentMessage, messageId: string) {
     if (!navigator.clipboard?.writeText) return;
     try {
@@ -1113,6 +1042,33 @@ export default function AgentRuntimePanel({
     setEditingMessageId(null);
     setMessageEditText("");
     onEditMessage(messageIndex, text, branch.groupId);
+  }
+
+  /**
+   * Delete one exchange: the message and the answer it produced.
+   *
+   * The branch group goes with it. Its variants are snapshots of a transcript
+   * that no longer exists, so leaving the group behind would keep offering a
+   * "1/2" switcher that restores the deleted turn.
+   */
+  function deleteMessageTurn(message: AgentMessage, messageIndex: number) {
+    if (!onDeleteMessage || activeRun || conversationLocked) return;
+    if (
+      !window.confirm(
+        "Delete this message and the answer it produced? This cannot be undone.",
+      )
+    ) {
+      return;
+    }
+    const groupId = messageBranchId(message, messageIndex);
+    setBranchGroups((current) => {
+      if (!(groupId in current)) return current;
+      const next = { ...current };
+      delete next[groupId];
+      return next;
+    });
+    setInlineArtifactRetireVersion((current) => current + 1);
+    onDeleteMessage(message, messageIndex);
   }
 
   function retryAssistantAsBranch(assistantMessageIndex: number) {
@@ -1191,20 +1147,26 @@ export default function AgentRuntimePanel({
     onSelectBranch(cloneMessages(variants[targetIndex]));
   }
 
-  function receiveTextSelection(selection: ChatTextSelectionCandidate) {
-    if (!onAskSelection || activeRun || conversationLocked) return;
-    const overlapping = (
-      annotationsByMessage.get(selection.sourceMessageId) ?? []
-    ).find((annotation) => chatTextSelectionsOverlap(annotation, selection));
-    if (overlapping) {
-      setSelectionMenu(null);
-      setOpenInlineAnswer({ id: overlapping.id, anchor: selection.anchor });
-      window.getSelection()?.removeAllRanges();
-      return;
-    }
-    setOpenInlineAnswer(null);
-    setSelectionMenu(selection);
-  }
+  // Stable identities: these two are props of every memoized assistant
+  // markdown row, and a fresh function on each panel render would re-render —
+  // and re-parse — every mounted message on every streaming tick.
+  const receiveTextSelection = useCallback(
+    (selection: ChatTextSelectionCandidate) => {
+      if (!onAskSelection || activeRun || conversationLocked) return;
+      const overlapping = (
+        annotationsByMessage.get(selection.sourceMessageId) ?? []
+      ).find((annotation) => chatTextSelectionsOverlap(annotation, selection));
+      if (overlapping) {
+        setSelectionMenu(null);
+        setOpenInlineAnswer({ id: overlapping.id, anchor: selection.anchor });
+        window.getSelection()?.removeAllRanges();
+        return;
+      }
+      setOpenInlineAnswer(null);
+      setSelectionMenu(selection);
+    },
+    [activeRun, annotationsByMessage, conversationLocked, onAskSelection],
+  );
 
   function beginSelectionQuestion(mode: "chat" | "inline") {
     if (!selectionMenu) return;
@@ -1259,20 +1221,23 @@ export default function AgentRuntimePanel({
     void onAskSelection(question, selection);
   }
 
-  function openAnnotation(annotationId: string, anchor: FloatingAnchorRect) {
-    const thread = inlineSelectionThreads.get(annotationId);
-    if (!thread) return;
-    if (!thread.question) {
-      setComposerSelection(thread.selection);
-      window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
-      return;
-    }
-    setOpenInlineAnswer((current) =>
-      current?.id === annotationId
-        ? null
-        : { id: annotationId, anchor },
-    );
-  }
+  const openAnnotation = useCallback(
+    (annotationId: string, anchor: FloatingAnchorRect) => {
+      const thread = inlineSelectionThreads.get(annotationId);
+      if (!thread) return;
+      if (!thread.question) {
+        setComposerSelection(thread.selection);
+        window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+        return;
+      }
+      setOpenInlineAnswer((current) =>
+        current?.id === annotationId
+          ? null
+          : { id: annotationId, anchor },
+      );
+    },
+    [composerTextareaRef, inlineSelectionThreads],
+  );
 
   function deleteInlineSelection(annotationId: string) {
     setOpenInlineAnswer(null);
@@ -1310,9 +1275,9 @@ export default function AgentRuntimePanel({
       <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={transcriptScrollRef}
-        className="bb-chat-scroll-fade min-h-0 flex-1 overflow-y-auto"
+        className="bb-chat-scroller min-h-0 flex-1 overflow-y-auto"
       >
-        <div className="bb-chat-scroll-tail mx-auto w-full max-w-3xl px-4 py-5">
+        <div className="bb-chat-scroll-tail mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 py-5">
           {messages.length === 0 ? (
             // The suggestion cards invite a new chat, so showing them over a
             // transcript that is still arriving reads as "this chat is empty".
@@ -1320,6 +1285,13 @@ export default function AgentRuntimePanel({
               <div className="flex items-center justify-center py-12">
                 <BreadboardLoader label="Loading this chat" />
               </div>
+            ) : failureText ? (
+              // A turn that died before it wrote anything — a preflight that
+              // could not be granted, say — leaves an empty transcript with a
+              // reason attached. Greeting someone under the reason their last
+              // attempt failed reads as two screens stacked by accident, so the
+              // failure notice below stands on its own.
+              null
             ) : (
               emptyState ?? (
                 <p className="py-8 text-center text-sm text-gray-500">
@@ -1376,6 +1348,12 @@ export default function AgentRuntimePanel({
                       <ChatMessageAttachments
                         attachments={message.attachments}
                         attachmentNames={message.attachmentNames}
+                      />
+                    ) : null}
+                    {message.role === "user" ? (
+                      <ChatVideoLinkEmbeds
+                        text={message.content}
+                        attachments={message.attachments}
                       />
                     ) : null}
                     {/* A delegated turn whose continuation has landed never
@@ -2207,6 +2185,7 @@ export default function AgentRuntimePanel({
                           persistedOutcome={message.externalAgentOutcome}
                           persistedActivity={message.externalAgentActivity}
                           persistedEdits={message.externalAgentEdits}
+                          persistedUsage={message.usage}
                           onRetry={
                             onRetryMessage &&
                             !activeRun &&
@@ -2231,6 +2210,7 @@ export default function AgentRuntimePanel({
                           persistedOutcome={message.externalAgentOutcome}
                           persistedActivity={message.externalAgentActivity}
                           persistedEdits={message.externalAgentEdits}
+                          persistedUsage={message.usage}
                           onRetry={
                             onRetryMessage &&
                             !activeRun &&
@@ -2314,14 +2294,22 @@ export default function AgentRuntimePanel({
                         inlinedCourseCorrections.byAssistantIndex.has(index) ? (
                           inlinedCourseCorrections.byAssistantIndex.has(index) ? (
                             <SteeredAssistantResponse
-                              content={message.content}
+                              content={
+                                index === lastAssistantIndex
+                                  ? revealedAssistantContent
+                                  : message.content
+                              }
                               corrections={
                                 inlinedCourseCorrections.byAssistantIndex.get(index) ?? []
                               }
                             />
                           ) : (
                             <SelectableAssistantMarkdown
-                              content={message.content}
+                              content={
+                                index === lastAssistantIndex
+                                  ? revealedAssistantContent
+                                  : message.content
+                              }
                               sourceMessageId={messageSelectionSourceId(
                                 message,
                                 index,
@@ -2419,7 +2407,14 @@ export default function AgentRuntimePanel({
               <AssistantResponseMeta
                 active={false}
                 failed
-                label="Interrupted"
+                // Nothing was interrupted when the transcript is empty: no
+                // answer ever started, so there was no line to cut short.
+                label={messages.length === 0 ? "Couldn’t run that turn" : "Interrupted"}
+                // This notice is the fallback for a failure with no message to
+                // measure, so it never carries a usage record — left on, the
+                // row would always end in "tokens unavailable", which states
+                // an absence nobody asked about.
+                showTokenUsage={false}
                 action={
                   onRetryMessage && lastAssistantIndex >= 0 && !activeRun ? (
                     <button
@@ -2450,6 +2445,7 @@ export default function AgentRuntimePanel({
               <ChatMarkdown content={failureText} />
             </div>
           ) : null}
+          {messages.length > 0 ? <ChatDisclaimer /> : null}
         </div>
       </div>
         <ChatMessageRail
@@ -2503,7 +2499,6 @@ export default function AgentRuntimePanel({
         ) : null}
         <AssistantComposer
           className={`mx-auto w-full ${compact ? "max-w-3xl" : "max-w-5xl"}`}
-          transcriptAtEnd={!transcriptAwayFromBottom}
           compact={compact}
           value={input}
           onChange={onInputChange}
@@ -2607,170 +2602,7 @@ export default function AgentRuntimePanel({
           onClearRuflo={onClearRuflo}
           onSelectRuflo={onSelectRuflo}
           voiceMessages={messages}
-          headerContent={
-            queuedFollowUps.length > 0 ? (
-              <div className="space-y-0.5 py-0.5">
-                {queuedFollowUps.map((item, index) => (
-                  <div
-                    key={item.id}
-                    onDragOver={(event) => {
-                      if (!draggedQueuedId || draggedQueuedId === item.id) return;
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = "move";
-                      setDragOverQueuedId(item.id);
-                    }}
-                    onDragLeave={() =>
-                      setDragOverQueuedId((current) =>
-                        current === item.id ? null : current,
-                      )
-                    }
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      finishQueuedDrop(item.id);
-                    }}
-                    className={`flex min-h-9 items-center gap-2 rounded-xl px-2 text-sm text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] ${
-                      dragOverQueuedId === item.id
-                        ? "bg-[var(--paper-strong)] ring-1 ring-inset ring-[var(--line-strong)]"
-                        : ""
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      draggable={editingQueuedId !== item.id}
-                      onDragStart={(event) => {
-                        setDraggedQueuedId(item.id);
-                        event.dataTransfer.effectAllowed = "move";
-                        event.dataTransfer.setData("text/plain", item.id);
-                      }}
-                      onDragEnd={() => {
-                        setDraggedQueuedId(null);
-                        setDragOverQueuedId(null);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "ArrowUp" && index > 0) {
-                          event.preventDefault();
-                          moveQueuedFollowUp(item.id, -1);
-                        } else if (
-                          event.key === "ArrowDown" &&
-                          index < queuedFollowUps.length - 1
-                        ) {
-                          event.preventDefault();
-                          moveQueuedFollowUp(item.id, 1);
-                        }
-                      }}
-                      className="grid h-7 w-7 shrink-0 cursor-grab place-items-center rounded-lg opacity-70 transition hover:bg-[var(--paper-surface)] hover:opacity-100 active:cursor-grabbing"
-                      aria-label={`Reorder queued message ${index + 1} of ${queuedFollowUps.length}: ${item.text}. Drag, or use the Up and Down arrow keys.`}
-                      title="Drag to change steering order"
-                    >
-                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h8.5a2 2 0 0 1 2 2v.75m0 0-2.25-2.25m2.25 2.25L15 12.5" />
-                      </svg>
-                    </button>
-                    {editingQueuedId === item.id ? (
-                      <form
-                        className="flex min-w-0 flex-1 items-center gap-1.5"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          saveQueuedEdit(item.id);
-                        }}
-                      >
-                        <input
-                          value={queuedEditText}
-                          onChange={(event) => setQueuedEditText(event.target.value)}
-                          className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-1 text-sm text-[var(--ink)] outline-none focus:border-[var(--line-strong)]"
-                          aria-label="Edit queued message"
-                          autoFocus
-                        />
-                        <button type="submit" className="rounded-lg px-2 py-1 text-xs text-[var(--botanical)] hover:bg-[var(--paper-surface)]">
-                          Save
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditingQueuedId(null)}
-                          className="rounded-lg px-2 py-1 text-xs hover:bg-[var(--paper-surface)]"
-                        >
-                          Cancel
-                        </button>
-                      </form>
-                    ) : (
-                      <>
-                        <span className="min-w-0 flex-1 truncate" title={item.text}>
-                          {item.text}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => void applyQueuedSteer(item)}
-                          disabled={
-                            Boolean(applyingSteerId) ||
-                            !activeRun ||
-                            runState === "stopping"
-                          }
-                          className="flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-sm transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40"
-                          aria-label={`Steer the active response with: ${item.text}`}
-                          title={
-                            activeRun
-                              ? "Steer the active response"
-                              : externalRunActive
-                                // Only a chat turn can take a mid-run
-                                // correction; an agent run is steered by its
-                                // own card, so this message waits its turn.
-                                ? "This agent run cannot be steered — the message sends when it finishes"
-                                : "Nothing is running to steer"
-                          }
-                        >
-                          <svg
-                            className="h-4 w-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.7}
-                            aria-hidden
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M19.5 8.25H9.75a4.5 4.5 0 0 0-4.5 4.5v.75m0 0 3-3m-3 3 3 3"
-                            />
-                          </svg>
-                          <span>
-                            {applyingSteerId === item.id ? "Steering..." : "Steer"}
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setQueuedFollowUps((current) =>
-                              current.filter((candidate) => candidate.id !== item.id),
-                            )
-                          }
-                          disabled={applyingSteerId === item.id}
-                          className="rounded-lg p-1.5 transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:opacity-40"
-                          aria-label={`Delete queued message: ${item.text}`}
-                          title="Delete queued message"
-                        >
-                          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 7.5h15m-9-3h3m-7.5 3 .75 12h10.5l.75-12M9.75 10.5v6m4.5-6v6" />
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => beginQueuedEdit(item)}
-                          disabled={applyingSteerId === item.id}
-                          className="rounded-lg p-1.5 transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:opacity-40"
-                          aria-label={`Edit queued message: ${item.text}`}
-                          title="Edit queued message"
-                        >
-                          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z" />
-                          </svg>
-                        </button>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : undefined
-          }
+          headerContent={queuedFollowUpsHeader}
           capabilitySessionId={sessionId}
           capabilitySurface={surface}
           capabilityGardenSlug={gardenSlug}

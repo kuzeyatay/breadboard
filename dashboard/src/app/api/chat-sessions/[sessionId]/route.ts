@@ -26,9 +26,14 @@ import {
 } from "@/lib/conversations/external-agent-runs";
 import { cancelRunningExternalAgentRuns } from "@/lib/conversations/external-agent-cancel";
 import {
+  deleteConversation,
   ensureConversationForLegacyChatSession,
+  getConversationById,
   renameConversation,
+  setConversationHighlight,
+  setConversationPinned,
 } from "@/lib/conversations/store";
+import { isChatHighlight } from "@/lib/conversations/highlights";
 import { cancelRuntimeSessionWork } from "@/lib/hermes/session-cancel";
 import { listRuntimeSessionsForChatSession } from "@/lib/hermes/runtime-store";
 
@@ -324,8 +329,31 @@ export async function PATCH(
   if (body.messages !== undefined && !messages) {
     return NextResponse.json({ error: "Invalid messages" }, { status: 400 });
   }
+  if (body.pinned !== undefined && typeof body.pinned !== "boolean") {
+    return NextResponse.json(
+      { error: "Pinned must be true or false." },
+      { status: 400 },
+    );
+  }
+  // null clears the mark. Anything else has to name a color in the shared
+  // palette, so the rail can never be handed a slug it cannot paint.
+  if (
+    body.highlight !== undefined &&
+    body.highlight !== null &&
+    !isChatHighlight(body.highlight)
+  ) {
+    return NextResponse.json(
+      { error: "A highlight must be one of the palette colors, or null." },
+      { status: 400 },
+    );
+  }
 
-  const conversation = title
+  // Pinning and highlighting are marks on the canonical conversation, the same
+  // row the Terminal rail marks — one chat cannot be pinned in one view and
+  // loose in the other.
+  const needsConversation =
+    Boolean(title) || body.pinned !== undefined || body.highlight !== undefined;
+  let conversation = needsConversation
     ? ensureConversationForLegacyChatSession(sessionAccess.id, userId)
     : null;
   const update = db.transaction(() => {
@@ -393,10 +421,38 @@ export async function PATCH(
   });
 
   update();
+
+  // Outside the transaction above, which owns the transcript rewrite: a mark is
+  // not activity and must not be able to fail a message save, or be undone by
+  // one.
+  if (conversation && body.pinned !== undefined) {
+    conversation = setConversationPinned(conversation, body.pinned);
+  }
+  if (conversation && body.highlight !== undefined) {
+    conversation = setConversationHighlight(conversation, body.highlight);
+  }
+
   const saved = db
     .prepare("SELECT id, title, updated_at FROM chat_sessions WHERE id = ?")
-    .get(sessionAccess.id);
-  return NextResponse.json({ success: true, session: saved });
+    .get(sessionAccess.id) as
+    | { id: number; title: string; updated_at: string }
+    | undefined;
+  return NextResponse.json({
+    success: true,
+    session: saved
+      ? {
+          ...saved,
+          ...(conversation
+            ? {
+                pinned: conversation.pinned_at !== null,
+                highlight: isChatHighlight(conversation.highlight)
+                  ? conversation.highlight
+                  : null,
+              }
+            : {}),
+        }
+      : saved,
+  });
 }
 
 /**
@@ -441,6 +497,18 @@ export async function DELETE(
     await cancelRuntimeSessionWork(userId, runtimeSession);
   }
 
-  db.prepare("DELETE FROM chat_sessions WHERE id = ?").run(sessionAccess.id);
+  // The legacy row and the canonical conversation are two halves of one chat.
+  // Removing only the legacy half left the conversation behind, and a stranded
+  // conversation still shows up wherever Breadboard reads the canonical store —
+  // chat search, Uploads, Processes — as a chat nothing can open.
+  const conversation = linked?.conversation_id
+    ? getConversationById(linked.conversation_id)
+    : null;
+  db.transaction(() => {
+    db.prepare("DELETE FROM chat_sessions WHERE id = ?").run(sessionAccess.id);
+    if (conversation && conversation.user_id === userId) {
+      deleteConversation(conversation);
+    }
+  })();
   return NextResponse.json({ success: true });
 }

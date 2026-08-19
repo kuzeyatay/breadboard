@@ -33,6 +33,8 @@ const composer = source("../src/app/components/assistant-composer.tsx");
 const dictation = source("../src/app/components/speech-dictation-button.tsx");
 const actions = source("../src/app/components/assistant-message-actions.tsx");
 const synthesize = source("../src/app/api/speech/synthesize/route.ts");
+const dictationDownload = source("../src/app/api/speech/synthesize/mp3/route.ts");
+const synthesis = source("../src/lib/speech/synthesis.ts");
 const sampleUpload = source("../src/app/api/speech/profiles/[profileId]/samples/route.ts");
 const transcribe = source("../src/app/api/speech/transcribe/route.ts");
 const status = source("../src/app/api/speech/status/route.ts");
@@ -265,14 +267,39 @@ test("all shared AI response actions can read and stop responses", () => {
   assert.match(actions, /Cancel speech generation/);
 });
 
+test("the response menu saves the spoken reading as a keepable .mp3", () => {
+  assert.match(actions, /Download dictation/);
+  assert.match(actions, /"\/api\/speech\/synthesize\/mp3"/);
+  assert.match(actions, /breadboard-dictation-\$\{new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\}\.mp3/);
+  // The reading is the same text the speaker button plays, not the raw
+  // Markdown: fences and link syntax are not words anybody wants read out.
+  assert.match(actions, /responseTextForSpeech\(content\)/);
+  // Synthesis of a long answer takes as long as saying it, so the wait is
+  // visible in the menu and a second press cancels it.
+  assert.match(actions, /Preparing dictation…/);
+  assert.match(actions, /dictationState === "preparing"[\s\S]*?dictationAbortRef\.current\?\.abort\(\)/);
+
+  // The download route holds the whole reading before encoding it, while the
+  // playback route next door still hands its body straight back.
+  assert.match(dictationDownload, /speechAsMp3/);
+  assert.match(dictationDownload, /await spoken\.arrayBuffer\(\)/);
+  assert.match(dictationDownload, /attachment; filename=/);
+  assert.match(synthesize, /new Response\(response\.body/);
+  assert.match(synthesis, /SPEECH_DOWNLOAD_MIME = "audio\/mpeg"/);
+  assert.match(synthesis, /"-c:a", "libmp3lame"/);
+  assert.match(synthesis, /No ffmpeg was found/);
+  // One temporary directory per download, removed whether ffmpeg worked or not.
+  assert.match(synthesis, /finally \{\s*await fsp\.rm\(directory/);
+});
+
 test("Voicebox stays behind authenticated bounded loopback routes", () => {
-  for (const route of [synthesize, transcribe, status]) {
+  for (const route of [synthesize, dictationDownload, transcribe, status]) {
     assert.match(route, /requireUserId\(\)/);
   }
   assert.match(voiceboxClient, /LOOPBACK_HOSTS/);
   assert.match(voiceboxClient, /parsed\.protocol !== "http:"/);
   assert.match(voiceboxClient, /Voicebox must use a private loopback HTTP address/);
-  assert.match(synthesize, /50_000/);
+  assert.match(synthesis, /MAX_SPEECH_CHARACTERS = 50_000/);
   assert.match(transcribe, /MAX_AUDIO_BYTES/);
   assert.match(speechStore, /speech_user_settings/);
   assert.match(speechStore, /user_id\s+INTEGER PRIMARY KEY/);
@@ -425,7 +452,7 @@ test("an incomplete cloned voice can be repaired but cannot pretend to play", ()
   assert.match(speechSettings, /Finish clone/);
   assert.match(speechSettings, /createdProfileId/);
   assert.match(speechSettings, /method: "DELETE"/);
-  assert.match(synthesize, /\/profiles\/\$\{encodeURIComponent\(settings\.profileId\)\}\/samples/);
+  assert.match(synthesis, /\/profiles\/\$\{encodeURIComponent\(settings\.profileId\)\}\/samples/);
   assert.match(sampleUpload, /Voicebox could not decode that recording/);
 });
 
@@ -475,7 +502,7 @@ test("a voice can be cloned from a recording made on the spot", () => {
   assert.match(speechSettings, /decodedRecordingAsWav\(sample, 48_000\)/);
   assert.match(speechSettings, /form\.set\("file", preparedSample\)/);
   assert.match(speechSettings, /Breadboard could not prepare that recording/);
-  assert.match(synthesize, /has no voice recording yet/);
+  assert.match(synthesis, /has no voice recording yet/);
   // A muted input records perfect silence, which otherwise looks like success.
   assert.match(recorder, /peakRef\.current < SILENT_PEAK|peak < SILENT_PEAK/);
   assert.match(recorder, /almost silent/);

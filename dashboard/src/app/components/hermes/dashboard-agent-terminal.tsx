@@ -258,6 +258,12 @@ interface RuntimeHistorySession {
 
 const HEIGHT_KEY = "breadboard:knowledge-terminal-height";
 const COLLAPSED_HEIGHT = 48;
+// The shortest the dock can stand open. The composer is anchored to the bottom
+// of the body (`.bb-composer-overlay`), so a body with no room for it does not
+// clip it — it draws the pill back up over the header bar, with the transcript
+// squeezed to nothing behind. There is no height between this and the collapsed
+// bar that renders, so the dock never rests in that band.
+const MIN_OPEN_HEIGHT = 260;
 const MIN_HEIGHT = COLLAPSED_HEIGHT;
 const HEALTH_RETRY_DELAY_MS = 3_000;
 
@@ -295,6 +301,21 @@ function clampHeight(height: number): number {
   return Math.min(maxHeight(), Math.max(MIN_HEIGHT, Math.round(height)));
 }
 
+// The open height on this viewport, which on a very short one is all the room
+// there is rather than the constant.
+function minOpenHeight(): number {
+  return Math.min(MIN_OPEN_HEIGHT, maxHeight());
+}
+
+// The two heights a drag may leave the dock at: shut, or tall enough to lay
+// out. In between the edge snaps to whichever it is nearer, so the band where
+// the composer rides over the header is passed through rather than rested in.
+function settleHeight(height: number): number {
+  const open = minOpenHeight();
+  if (height >= open) return clampHeight(height);
+  return height >= (COLLAPSED_HEIGHT + open) / 2 ? open : COLLAPSED_HEIGHT;
+}
+
 // Where the navbar's underside lands once the page is back at the top. Opening
 // the dock sends the page there, so this — not wherever the bar happens to be
 // right now — is the room the dock has to leave above itself. Reached through
@@ -315,7 +336,10 @@ function navOffsetAtTop(): number {
 function openHeight(preferred: number | null): number {
   if (typeof window === "undefined") return 720;
   const max = Math.max(MIN_HEIGHT, Math.round(window.innerHeight - navOffsetAtTop()));
-  return preferred === null ? max : Math.min(preferred, max);
+  // Floored as well as capped: a height remembered from a drag that ended just
+  // short of shut would otherwise reopen the dock into the band it cannot
+  // render, and go on doing so on every visit.
+  return preferred === null ? max : Math.min(Math.max(preferred, MIN_OPEN_HEIGHT), max);
 }
 
 function prefersReducedMotion(): boolean {
@@ -868,13 +892,13 @@ function RuntimeTerminal({
   }, [session.sessionId]);
 
   useEffect(() => {
-    const onResize = () => setHeight((current) => clampHeight(current));
+    const onResize = () => setHeight((current) => settleHeight(clampHeight(current)));
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
   useEffect(() => {
-    if (height <= COLLAPSED_HEIGHT + 8) return;
+    if (height < minOpenHeight()) return;
     const preferredHeight = clampHeight(height);
     preferredOpenHeightRef.current = preferredHeight;
     window.localStorage.setItem(HEIGHT_KEY, String(preferredHeight));
@@ -6088,7 +6112,7 @@ function RuntimeTerminal({
     // running has to let go of it. Below the threshold this is the jitter of a
     // click being held, and cancelling there would snap a dock mid-travel.
     if (glide && Math.abs(start.startY - event.clientY) >= 4) cancelGlide();
-    setHeight(clampHeight(start.startHeight + (start.startY - event.clientY)));
+    setHeight(settleHeight(clampHeight(start.startHeight + (start.startY - event.clientY))));
   }
 
   function handleResizeEnd(event: ReactPointerEvent<HTMLElement>) {
@@ -6242,31 +6266,35 @@ function RuntimeTerminal({
               style={{ animationDelay: "40ms" }}
               className={`${headerItemAnim} flex min-w-0 items-center gap-2`}
             >
-              <span
-                role="status"
-                aria-label={`Agent runtime is ${runtimeOnline ? "available" : "unavailable"}${knowledgeNote}`}
-                title={`Agent runtime ${runtimeOnline ? "available" : "unavailable"}${knowledgeNote}`}
-                className={`h-2 w-2 shrink-0 rounded-full ${
-                  runtimeOnline && !knowledgeUnavailable
-                    ? "bg-[#4F805E]"
-                    : "bg-[#B65B5B]"
-                }`}
-              />
+              {/* One dot, one job: red when the runtime or knowledge retrieval
+                  has a problem, live green otherwise — the same green the
+                  unread dot carries, further right and in Recents. It used
+                  to run alongside a second dot for unread state — same slot,
+                  same green, read as one light doubled. */}
+              {!runtimeOnline || knowledgeUnavailable ? (
+                <span
+                  role="status"
+                  aria-label={`Agent runtime is ${runtimeOnline ? "available" : "unavailable"}${knowledgeNote}`}
+                  title={`Agent runtime ${runtimeOnline ? "available" : "unavailable"}${knowledgeNote}`}
+                  className="h-2 w-2 shrink-0 rounded-full bg-[#B65B5B]"
+                />
+              ) : (
+                <UnreadChatDot
+                  label={unreadCount > 0 ? unreadLabel : "Agent runtime is available"}
+                />
+              )}
               <p
                 className="truncate text-sm font-semibold text-[#172A22]"
               >
                 Terminal
               </p>
-              {/* The rail's dots, rolled up: the list can be collapsed, or
-                  scrolled past the row that finished. Carries its count so it
-                  never reads as a second runtime light. */}
-              {unreadCount > 0 ? (
+              {unreadCount > 1 ? (
                 <span
-                  className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[#3d5147]"
+                  aria-hidden
                   title={unreadLabel}
+                  className="shrink-0 text-[11px] font-medium text-[#3d5147]"
                 >
-                  <UnreadChatDot label={unreadLabel} />
-                  {unreadCount > 1 ? <span aria-hidden>{unreadCount}</span> : null}
+                  {unreadCount}
                 </span>
               ) : null}
               {!runtimeOnline ? (
@@ -6318,7 +6346,7 @@ function RuntimeTerminal({
             aria-hidden
             className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#3d5147]"
           >
-            <span className="h-2 w-2 shrink-0 rounded-full bg-[#A9C1B1] shadow-[0_0_0_1px_rgba(169,193,177,0.45)]" />
+            <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--signal-live)] shadow-[0_0_0_1px_var(--signal-live-ring)]" />
             {unreadCount > 1 ? unreadCount : null}
           </span>
         ) : null}

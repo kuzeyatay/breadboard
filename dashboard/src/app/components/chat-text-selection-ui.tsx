@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  memo,
+  useCallback,
   useEffect,
   useRef,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -8,7 +10,10 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import AssistantResponseMeta from "./assistant-response-meta";
-import ChatMarkdown, { type ChatTextAnnotation } from "./chat-markdown";
+import ChatMarkdown, {
+  chatTextAnnotationsEqual,
+  type ChatTextAnnotation,
+} from "./chat-markdown";
 import {
   chatTextSelectionDraft,
   type ChatTextSelectionReference,
@@ -97,52 +102,69 @@ function selectionCandidate(
   return { sourceMessageId, ...draft, anchor: floatingRect(rect) };
 }
 
-export function SelectableAssistantMarkdown({
-  content,
-  sourceMessageId,
-  annotations,
-  onSelection,
-  onOpenAnnotation,
-}: {
-  content: string;
-  sourceMessageId: string;
-  annotations: readonly ChatTextAnnotation[];
-  onSelection: (selection: ChatTextSelectionCandidate) => void;
-  onOpenAnnotation: (annotationId: string, anchor: FloatingAnchorRect) => void;
-}) {
-  const rootRef = useRef<HTMLDivElement>(null);
+// Memoized against everything but a real change: the virtual list re-invokes
+// `renderItem` for every mounted row on every scroll frame, and an assistant
+// row that re-renders here re-parses its whole markdown body. The annotation
+// click handler is stabilized for the same reason — an inline arrow would
+// defeat ChatMarkdown's own memo from the inside.
+export const SelectableAssistantMarkdown = memo(
+  function SelectableAssistantMarkdown({
+    content,
+    sourceMessageId,
+    annotations,
+    onSelection,
+    onOpenAnnotation,
+  }: {
+    content: string;
+    sourceMessageId: string;
+    annotations: readonly ChatTextAnnotation[];
+    onSelection: (selection: ChatTextSelectionCandidate) => void;
+    onOpenAnnotation: (annotationId: string, anchor: FloatingAnchorRect) => void;
+  }) {
+    const rootRef = useRef<HTMLDivElement>(null);
 
-  function readSelection() {
-    window.requestAnimationFrame(() => {
-      const root = rootRef.current;
-      if (!root) return;
-      const candidate = selectionCandidate(root, sourceMessageId);
-      if (candidate) onSelection(candidate);
-    });
-  }
+    function readSelection() {
+      window.requestAnimationFrame(() => {
+        const root = rootRef.current;
+        if (!root) return;
+        const candidate = selectionCandidate(root, sourceMessageId);
+        if (candidate) onSelection(candidate);
+      });
+    }
 
-  function handleKeyboardSelection(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (event.shiftKey || event.key.startsWith("Arrow")) readSelection();
-  }
+    function handleKeyboardSelection(event: ReactKeyboardEvent<HTMLDivElement>) {
+      if (event.shiftKey || event.key.startsWith("Arrow")) readSelection();
+    }
 
-  return (
-    <div
-      ref={rootRef}
-      onPointerUp={readSelection}
-      onKeyUp={handleKeyboardSelection}
-      data-chat-selectable-message={sourceMessageId}
-    >
-      <ChatMarkdown
-        content={content}
-        compact
-        textAnnotations={annotations}
-        onTextAnnotationClick={(annotationId, anchor) =>
-          onOpenAnnotation(annotationId, floatingRect(anchor))
-        }
-      />
-    </div>
-  );
-}
+    const openAnnotation = useCallback(
+      (annotationId: string, anchor: DOMRect) =>
+        onOpenAnnotation(annotationId, floatingRect(anchor)),
+      [onOpenAnnotation],
+    );
+
+    return (
+      <div
+        ref={rootRef}
+        onPointerUp={readSelection}
+        onKeyUp={handleKeyboardSelection}
+        data-chat-selectable-message={sourceMessageId}
+      >
+        <ChatMarkdown
+          content={content}
+          compact
+          textAnnotations={annotations}
+          onTextAnnotationClick={openAnnotation}
+        />
+      </div>
+    );
+  },
+  (prev, next) =>
+    prev.content === next.content &&
+    prev.sourceMessageId === next.sourceMessageId &&
+    prev.onSelection === next.onSelection &&
+    prev.onOpenAnnotation === next.onOpenAnnotation &&
+    chatTextAnnotationsEqual(prev.annotations, next.annotations),
+);
 
 export function ChatSelectionMenu({
   selection,

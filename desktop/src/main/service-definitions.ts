@@ -155,45 +155,6 @@ export function voiceboxServiceUrl(config: DesktopRuntimeConfig): string {
   return `http://127.0.0.1:${config.ports.voicebox ?? 17493}`;
 }
 
-export interface N8nRuntime {
-  command: string;
-  args: string[];
-  cwd: string;
-  sourceDir?: string;
-  runtimeEntry?: string;
-}
-
-/** Resolve n8n's self-managed launcher against source in dev or its deployed package when installed. */
-export function resolveN8nRuntime(
-  paths: ResolvedPaths,
-  binaries: RuntimeBinaries,
-): N8nRuntime | null {
-  const launcher = path.join(paths.appRoot, "scripts", "start-n8n.mjs");
-  if (!fs.existsSync(launcher)) return null;
-  if (paths.mode === "dev") {
-    const source = path.join(paths.appRoot, "n8n");
-    if (!fs.existsSync(path.join(source, "package.json"))) return null;
-    return {
-      command: binaries.node,
-      args: [launcher],
-      cwd: paths.appRoot,
-      sourceDir: source,
-    };
-  }
-  const runtimeEntry = path.join(paths.appRoot, "n8n-runtime", "bin", "n8n");
-  if (!fs.existsSync(runtimeEntry)) return null;
-  return {
-    command: binaries.node,
-    args: [launcher],
-    cwd: paths.appRoot,
-    runtimeEntry,
-  };
-}
-
-/** Server-only local n8n endpoint. It is deliberately absent from serviceUrls(). */
-export function n8nServiceUrl(config: DesktopRuntimeConfig): string {
-  return `http://127.0.0.1:${config.ports.n8n ?? 5678}`;
-}
 
 /** Server-only CAD service endpoint. Never published to the renderer. */
 export function cadServiceUrl(config: DesktopRuntimeConfig): string {
@@ -392,8 +353,6 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const hermesUrl = hermesServiceUrl(config);
   const voiceboxUrl = voiceboxServiceUrl(config);
   const voiceboxRuntime = resolveVoiceboxRuntime(paths, binaries);
-  const n8nUrl = n8nServiceUrl(config);
-  const n8nRuntime = resolveN8nRuntime(paths, binaries);
   const persistent = config.persistent;
   const shared = baseEnv(paths);
   const bundledBinary = (name: string): string =>
@@ -404,9 +363,6 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const scriberrBinary = bundledBinary("scriberr");
   const scriberrDataDir = path.join(paths.runtimeDir, "scriberr");
   const voiceboxDataDir = path.join(paths.runtimeDir, "voicebox");
-  const n8nDataDir = path.join(paths.runtimeDir, "n8n");
-  const n8nStatusPath = path.join(n8nDataDir, "startup-status.json");
-  const n8nCredentialsPath = path.join(n8nDataDir, "breadboard-auth.json");
 
   // GBrain (garden knowledge retrieval). Additive and off by default. When
   // enabled it runs as a supervised loopback Bun sidecar with a per-install
@@ -660,37 +616,6 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       }
     : null;
 
-  const n8n: DesktopServiceDefinition | null = n8nRuntime
-    ? {
-        id: "n8n",
-        displayName: "Workflow automation (n8n)",
-        required: false,
-        startInBackground: true,
-        command: n8nRuntime.command,
-        args: n8nRuntime.args,
-        cwd: n8nRuntime.cwd,
-        env: {
-          ...shared,
-          N8N_AUTOINSTALL: "true",
-          N8N_PORT: String(config.ports.n8n ?? 5678),
-          N8N_BASE_URL: n8nUrl,
-          N8N_DASHBOARD_URL: urls.dashboard,
-          ...(n8nRuntime.sourceDir ? { N8N_SOURCE_DIR: n8nRuntime.sourceDir } : {}),
-          ...(n8nRuntime.runtimeEntry ? { N8N_RUNTIME_ENTRY: n8nRuntime.runtimeEntry } : {}),
-          N8N_DATA_DIR: n8nDataDir,
-          N8N_STATUS_PATH: n8nStatusPath,
-          N8N_CREDENTIALS_PATH: n8nCredentialsPath,
-          BREADBOARD_DESKTOP_PID: String(process.pid),
-        },
-        // First use installs and builds a sizeable upstream monorepo. Treat the
-        // launcher as healthy after its liveness grace period while the
-        // Workflows page reports exact setup progress from the status file.
-        startupTimeoutMs: 5_000,
-        gracefulShutdownMs: 15_000,
-        restartPolicy: "on-failure",
-      }
-    : null;
-
   const quartzDirectory = path.relative(paths.quartzWorkspace, paths.quartzContent)
     .split(path.sep)
     .join("/") || ".";
@@ -827,10 +752,6 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       // --- Local speech (Voicebox; server-only loopback proxy) ---
       VOICEBOX_BASE_URL: voiceboxUrl,
       VOICEBOX_STATUS_PATH: path.join(voiceboxDataDir, "startup-status.json"),
-      // --- Workflow automation (private local n8n) ---
-      N8N_BASE_URL: n8nUrl,
-      N8N_STATUS_PATH: n8nStatusPath,
-      N8N_CREDENTIALS_PATH: n8nCredentialsPath,
       // --- Recall (local screen + audio history) ---
       // The dashboard owns this engine's lifecycle rather than the supervisor,
       // because capture is a per-user opt-in it alone can read; see
@@ -1119,7 +1040,6 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   if (uiTarsEnabled) definitions.push(uiTars);
   if (cad) definitions.push(cad);
   if (voicebox) definitions.push(voicebox);
-  if (n8n) definitions.push(n8n);
   definitions.push(quartz, dashboard);
 
   // Scriberr: bundled native loopback sidecar. It has no readiness wait here

@@ -108,8 +108,16 @@ test("live and restored transcripts both consume authoritative memory evidence",
 
   assert.match(eventStream, /reconcileSuccessfulMemorySaves/);
   assert.match(eventStream, /toolCallId: `memory-audit-\$\{save\.auditEventId\}`/);
+  // Same extraction: the restored transcript consumes memory evidence inside
+  // session-presentation.ts now. The live path is exercised above against the
+  // real store; this keeps the restored path wired to the same lookup.
+  const sessionPresentation = fs.readFileSync(
+    new URL("../src/lib/hermes/session-presentation.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(sessionsRoute, /from "@\/lib\/hermes\/session-presentation\.ts"/);
   assert.match(
-    sessionsRoute,
+    sessionPresentation,
     /memoryUpdatedClientMessageIdsForSession\(runtime\.id\)/,
   );
   assert.match(agentSession, /normalized\.memoryUpdated = true/);

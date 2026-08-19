@@ -1,0 +1,97 @@
+{
+  "pass": "W2-3G PartB",
+  "generatedAt": "2026-08-18T08:41:04.074Z",
+  "findingId": "W23F-002",
+  "decision": "PRODUCT_BUG",
+  "severity": "P2",
+  "title": "A registry record in the reviewed install root with no pinned hashes is served as healthy, and stays healthy after its guidance is edited",
+  "scope": "ONE provenance class only: an entry in .agents/skills with a registry record but no fileHashes.",
+  "intendedContract": "MODEL D — a reviewed pin is mandatory for artifacts in the reviewed install root, because that is the only class whose trust story IS the pin.",
+  "whyNotGlobal": [
+    "hermes-skills/prebuilt — every first-party skill would go unhealthy",
+    "document skills — user-owned content has no pin by design",
+    "MCP connections — gated by approval, not by review hash"
+  ],
+  "evidence": [
+    {
+      "observation": "listFirstPartySkills sets enabled and healthy to literal true and never reads a pin, for committed prebuilt skills.",
+      "implication": "Model A is refuted: a global pin requirement would disable every first-party prebuilt skill."
+    },
+    {
+      "observation": "listApprovedSkillsAtRoot returns [] for a directory with no registry record, with a comment saying private workflows must not masquerade as installations.",
+      "implication": "Absence of a REGISTRY RECORD already means unavailable. The open question is narrower: a record that exists but carries no hashes."
+    },
+    {
+      "observation": "The install and promotion flow always computes fileHashes; docs state Breadboard re-hashes the reviewed tree before promotion and rejects changed content.",
+      "implication": "Every artifact that arrives in the reviewed root through the supported path is pinned. An unpinned record there is not a supported state."
+    },
+    {
+      "observation": "integrityVerified is initialised to `pinnedHashes.length === 0`, i.e. true when there is nothing to check.",
+      "implication": "The fail-open is a default, not a decision. No comment, doc or test states an intent for the unpinned case."
+    },
+    {
+      "observation": "Measured: an entry in the reviewed root with reviewState approved and no fileHashes is healthy, dispatchable, and STAYS healthy after its guidance is edited.",
+      "implication": "For the reviewed class specifically, the absent pin removes the control entirely rather than deferring it."
+    }
+  ],
+  "noPinPaths": [
+    {
+      "path": "reviewed install root with a registry record but no fileHashes",
+      "reachable": true,
+      "healthy": true,
+      "enabled": true,
+      "dispatchAllowed": true,
+      "contentEditStillHealthy": true,
+      "intentional": "UNDETERMINED — no code comment, doc or test states this case",
+      "securityRelevant": true,
+      "why": "This is the W23F-002 case. An entry in the REVIEWED root, marked reviewState approved, is served as healthy with no integrity evidence, and editing its guidance does not change that."
+    },
+    {
+      "path": "hermes-skills/prebuilt (listFirstPartySkills)",
+      "reachable": true,
+      "healthy": true,
+      "enabled": true,
+      "intentional": "YES — enabled and healthy are literals in listFirstPartySkills; there is no pin field at all",
+      "securityRelevant": false,
+      "why": "First-party product code shipped in the repository. Its trust story is the same as the rest of the product: it is reviewed by being committed. Applying a pin requirement here would disable every prebuilt skill.",
+      "count": 21
+    },
+    {
+      "path": ".agents/skills/<dir> with no registry record",
+      "reachable": false,
+      "healthy": null,
+      "intentional": "YES — listApprovedSkillsAtRoot returns [] when registry.skills[name] is absent",
+      "securityRelevant": false,
+      "why": "Explicitly commented in the product: repository private agent workflows must never masquerade as installations.",
+      "count": 18
+    },
+    {
+      "path": "document skills (listDocumentSkills) and MCP connections",
+      "reachable": true,
+      "healthy": true,
+      "intentional": "YES — user-owned content, gated by ownership rather than review",
+      "securityRelevant": false,
+      "why": "A document the user distilled is theirs. registryItemsForUser marks these enabled/healthy from their own status, never from a reviewed pin."
+    }
+  ],
+  "exploitability": "None today: all three shipped entries are pinned, and creating an unpinned entry requires write access to committed source, which already implies the ability to edit the verifier. The real exposure is to the REVIEW process, not to an external attacker: a hand-written or future-generated registry entry without hashes would ship unreviewed guidance while looking approved.",
+  "severityRationale": "Not P0 — no live security exposure and no shipped artifact is in the state. Not P1 — no user journey is broken. P2: a genuine fail-open default in a trust boundary, latent.",
+  "repairDesign": {
+    "change": "In listApprovedSkillsAtRoot, treat an absent or empty fileHashes on a REVIEWED-ROOT entry as unverified rather than verified. Leave listFirstPartySkills, document skills and MCP connections untouched.",
+    "mustNotBreak": [
+      "prebuilt first-party skills (never pinned by design)",
+      "document skills (user-owned)",
+      "MCP connections (approval-gated)"
+    ],
+    "regressionTests": [
+      "an unpinned reviewed-root entry is unhealthy and undispatchable",
+      "a pinned one is unaffected",
+      "every prebuilt skill stays healthy",
+      "a document skill stays healthy"
+    ],
+    "nonVacuity": "Remove the new check and the first test must fail; apply it globally and the prebuilt test must fail."
+  },
+  "implemented": false,
+  "whyNotImplemented": "loop-contract.yaml requires explicit human approval for security_auth_capability_permission_or_sandbox_weakening, and the W23E-001 authorization explicitly excluded strengthening this rule. SH1 eligibility alone is insufficient for a trust gate.",
+  "approvalStringToProceed": "APPROVE LOOP ACTION: require a reviewed pin for reviewed-install-root entries (W23F-002) / dashboard/src/lib/hermes/skills.ts / revert the commit"
+}

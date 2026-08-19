@@ -1,67 +1,21 @@
-import { requireUserId, routeErrorResponse, RouteError } from "@/lib/server-auth";
-import { getSpeechSettings } from "@/lib/speech/settings";
-import { voiceboxFetch, voiceboxJson, voiceboxResponseError } from "@/lib/speech/voicebox-client";
+import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
+import { synthesizeSpeech } from "@/lib/speech/synthesis";
 
-type VoiceProfile = {
-  id: string;
-  name: string;
-  voice_type: "cloned" | "preset" | "designed";
-  default_engine?: string | null;
-  preset_engine?: string | null;
-};
-
+/**
+ * POST: read a response aloud, streaming the audio as Voicebox produces it.
+ *
+ * The body is handed straight back so playback can start on the first chunk;
+ * the download route next door asks for the same audio and waits for all of it.
+ */
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
-    const settings = getSpeechSettings(userId);
-    if (!settings.enabled) throw new RouteError(409, "Speech is turned off in Intelligence → Settings → Speech.");
-    if (!settings.profileId) throw new RouteError(409, "Choose a speech voice in Intelligence → Settings → Speech first.");
     const body = (await request.json()) as { text?: unknown };
-    const text = typeof body.text === "string" ? body.text.trim() : "";
-    if (!text) throw new RouteError(400, "There is no response text to speak.");
-    if (text.length > 50_000) throw new RouteError(413, "Responses longer than 50,000 characters cannot be spoken at once.");
-
-    const profile = await voiceboxJson<VoiceProfile>(
-      `/profiles/${encodeURIComponent(settings.profileId)}`,
-    );
-    if (profile.voice_type === "cloned") {
-      const samples = await voiceboxJson<unknown[]>(
-        `/profiles/${encodeURIComponent(settings.profileId)}/samples`,
-      );
-      if (samples.length === 0) {
-        throw new RouteError(
-          409,
-          `${profile.name} has no voice recording yet. Open Intelligence → Settings → Speech and finish cloning it first.`,
-        );
-      }
-    }
-    const engine =
-      settings.engine === "auto"
-        ? profile.default_engine || profile.preset_engine || "qwen"
-        : settings.engine;
-    const response = await voiceboxFetch(
-      "/generate/stream",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: request.signal,
-        body: JSON.stringify({
-          profile_id: settings.profileId,
-          text,
-          language: settings.language,
-          engine,
-          model_size: settings.modelSize,
-        }),
-      },
-      10 * 60_000,
-    );
-    if (!response.ok) {
-      const errorBody = await response.json().catch(() => null);
-      throw new RouteError(
-        response.status,
-        voiceboxResponseError(errorBody, "Voicebox could not synthesize this response."),
-      );
-    }
+    const response = await synthesizeSpeech({
+      userId,
+      text: body.text,
+      signal: request.signal,
+    });
     return new Response(response.body, {
       status: 200,
       headers: {

@@ -82,7 +82,19 @@ export default function AssistantResponseMeta({
   // a snapshot leaves the count unavailable rather than charging the whole
   // conversation to the message that happens to carry it.
   const sessionSnapshot = usage?.scope === "session";
-  const responseTokens = sessionSnapshot ? undefined : reportedTokens;
+  // A usage record can exist purely to carry the response's duration — an
+  // external agent that never reported tokens still has to say how long it
+  // took. All-zero counters are the absence of a token report, not a response
+  // that somehow cost nothing, and reading them as "0 tokens" states a number
+  // nobody measured.
+  const noTokenReport =
+    usage !== undefined &&
+    !usage.inputTokens &&
+    !usage.outputTokens &&
+    !usage.totalTokens &&
+    totalTokens === undefined;
+  const responseTokens =
+    sessionSnapshot || noTokenReport ? undefined : reportedTokens;
   const tokenLabel = showTokenUsage
     ? typeof responseTokens === "number" &&
       Number.isFinite(responseTokens) &&
@@ -94,7 +106,7 @@ export default function AssistantResponseMeta({
         ? "↓ counting tokens..."
         : "↓ tokens unavailable"
     : null;
-  const usageBreakdown = usage && !sessionSnapshot
+  const usageBreakdown = usage && !sessionSnapshot && !noTokenReport
     ? [
         `${formatExactTokenCount(usage.inputTokens)} input processed`,
         `${formatExactTokenCount(usage.outputTokens)} generated`,

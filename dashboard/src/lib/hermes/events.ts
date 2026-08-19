@@ -1,3 +1,9 @@
+import {
+  evidenceKindForTool,
+  extractWebsitesFromPayload,
+  type EvidenceWebsite,
+} from "./evidence.ts";
+
 // Normalized agent-event contract shared between the Breadboard backend and all
 // three interactive UIs, plus the translation from Hermes's raw event
 // stream into that contract.
@@ -88,6 +94,8 @@ export type NormalizedAgentEvent =
         toolName: string;
         summary?: string;
         location?: string;
+        details?: Record<string, unknown>;
+        websites?: EvidenceWebsite[];
       };
     }
   | {
@@ -100,6 +108,8 @@ export type NormalizedAgentEvent =
         success: boolean;
         summary?: string;
         location?: string;
+        details?: Record<string, unknown>;
+        websites?: EvidenceWebsite[];
       };
     }
   | {
@@ -174,6 +184,8 @@ export type NormalizedAgentEvent =
         assumptions: string[];
         /** Runtime agents (`/agents:*`) this turn delegated work to. */
         externalAgents?: unknown[];
+        /** Skills, connections, automations and products this turn used. */
+        capabilities?: unknown;
       };
     }
   | {
@@ -351,6 +363,7 @@ export function normalizeHermesEvent(
         };
       }
       if (status === "completed" || status === "error") {
+        const websites = toolWebsites(toolName, state);
         return {
           type: "tool.completed",
           sessionId,
@@ -361,6 +374,9 @@ export function normalizeHermesEvent(
             success: status === "completed",
             summary: asString(state?.title),
             location: safeToolLocation(toolName, state),
+            ...(websites.length > 0
+              ? { websites, details: { toolName, websites } }
+              : {}),
           },
         };
       }
@@ -494,6 +510,8 @@ function safeToolLocation(
         ? input.path
         : name === "webfetch" || name === "fetch"
           ? input.url
+          : name === "websearch" || name === "web_search" || name === "search"
+            ? input.query
           : name.startsWith("garden_")
             ? (input.slug ?? input.pageSlug ?? input.gardenId)
             : undefined;
@@ -501,6 +519,36 @@ function safeToolLocation(
   return value && value.length <= 2_000 && !/[\r\n]/.test(value)
     ? value
     : undefined;
+}
+
+/**
+ * The pages a web-shaped tool call actually returned.
+ *
+ * Restricted to tools whose evidence kind is already web: a URL that happens to
+ * appear in a shell transcript or a file read is not a source this answer
+ * consulted, and listing it under "websites consulted" would be a claim the
+ * turn cannot support.
+ */
+function toolWebsites(
+  toolName: string,
+  state: Record<string, unknown> | undefined,
+): EvidenceWebsite[] {
+  const kind = evidenceKindForTool(toolName);
+  if (kind !== "web_search" && kind !== "web_source" && kind !== "browser") {
+    return [];
+  }
+  const sites: EvidenceWebsite[] = [];
+  const seen = new Set<string>();
+  for (const source of [state?.metadata, state?.output, state?.input]) {
+    if (source === undefined || source === null) continue;
+    for (const site of extractWebsitesFromPayload(source)) {
+      const key = site.url.trim().toLowerCase().replace(/\/$/, "");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      sites.push(site);
+    }
+  }
+  return sites.slice(0, 50);
 }
 
 function extractAffectedPaths(

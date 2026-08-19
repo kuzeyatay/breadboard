@@ -1,14 +1,14 @@
 // `workflow_run` — a super-agent turn running one of the user's own automations.
 //
-// The Workflows page and the composer's automation picker already run a local n8n
+// The Workflows page and the composer's automation picker already run a saved
 // workflow through `/api/workflows/local/<id>/run`. That path is user-driven: a
 // person picks the automation. This one is the agent-driven equivalent for a
 // super-agent turn, and it reuses the same execution code so a workflow behaves
 // identically whichever side started it.
 //
-// What it can reach is exactly the loopback n8n instance Breadboard supervises,
-// authenticated with Breadboard's own service account. The agent supplies only a
-// workflow id and the text going into the trigger.
+// What it can reach is exactly the caller's own saved workflows, run on the
+// in-process engine. The agent supplies only a workflow id and the text going
+// into the trigger.
 
 import { NextResponse } from "next/server";
 import {
@@ -29,8 +29,7 @@ import {
   runtimeExternalSessionId,
 } from "@/lib/hermes/runtime-store.ts";
 import { getActiveRuntimeRun } from "@/lib/hermes/run-store.ts";
-import { ensureN8nSession, n8nJson } from "@/lib/workflows/n8n.ts";
-import { runLocalWorkflow } from "@/lib/workflows/execution.ts";
+import { runWorkflowById } from "@/lib/workflows/native-execution.ts";
 import { RouteError } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -111,12 +110,12 @@ export async function POST(request: Request) {
       gardenId: session.garden_id,
       payload: { runId: run.id, workflowId },
     });
-    const n8n = await ensureN8nSession();
-    const workflow = await n8nJson(
-      `/rest/workflows/${encodeURIComponent(workflowId)}`,
-      { method: "GET", session: n8n },
-    );
-    const result = await runLocalWorkflow(workflow, input, n8n);
+    const result = await runWorkflowById({
+      workflowId,
+      input,
+      triggerKind: "chat",
+      userId: session.user_id,
+    });
     recordAuditEvent({
       eventType: "workflow.run_completed",
       runtimeSessionId: session.id,

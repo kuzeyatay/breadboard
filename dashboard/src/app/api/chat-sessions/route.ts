@@ -15,7 +15,11 @@ import {
   delegatedAgentPresentation,
   externalAgentMessageFields,
 } from "@/lib/conversations/external-agent-runs";
-import { ensureConversationForLegacyChatSession } from "@/lib/conversations/store";
+import {
+  ensureConversationForLegacyChatSession,
+  summarizeConversationMessages,
+} from "@/lib/conversations/store";
+import { isChatHighlight } from "@/lib/conversations/highlights";
 
 export const dynamic = "force-dynamic";
 
@@ -291,6 +295,88 @@ function readSessions(
   }));
 }
 
+/**
+ * The rail's rows: one lightweight record per chat, without any transcript.
+ *
+ * The Garden rail is the Terminal's rail, so it needs the same three marks the
+ * Terminal reads off a conversation — pinned, highlight, and "this chat is
+ * still working". Those live on the canonical `conversations` row rather than
+ * on the legacy `chat_sessions` row the Garden addresses its chats by, so this
+ * joins the two and answers in the legacy id the Garden can actually open.
+ */
+function readSessionSummaries(
+  clusterId: number,
+  currentUserId: number,
+  filterUserId: number | null,
+) {
+  const rows = db
+    .prepare(
+      `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at,
+              u.username AS owner_username,
+              c.id AS conversation_row_id, c.public_id AS conversation_public_id,
+              c.pinned_at AS pinned_at, c.highlight AS highlight
+       FROM chat_sessions cs
+       JOIN users u ON u.id = cs.user_id
+       LEFT JOIN conversations c ON c.id = cs.conversation_id
+       WHERE cs.cluster_id = ?${filterUserId !== null ? " AND cs.user_id = ?" : ""}
+       ORDER BY (c.pinned_at IS NOT NULL) DESC, cs.updated_at DESC, cs.id DESC`,
+    )
+    .all(
+      ...(filterUserId !== null ? [clusterId, filterUserId] : [clusterId]),
+    ) as Array<
+    ChatSessionRow & {
+      conversation_row_id: number | null;
+      conversation_public_id: string | null;
+      pinned_at: string | null;
+      highlight: string | null;
+    }
+  >;
+
+  if (rows.length === 0) return [];
+
+  // "Still working" in one query rather than one per row: a rail that polls
+  // cannot afford a runtime lookup per chat. A turn in flight is an active run
+  // on a runtime session bound to the chat; an agent run in flight is a
+  // still-running external-agent turn in the canonical transcript.
+  const ids = rows.map((row) => row.id);
+  const placeholders = ids.map(() => "?").join(",");
+  const running = new Set(
+    (
+      db
+        .prepare(
+          `SELECT DISTINCT rs.chat_session_id AS chat_session_id
+           FROM hermes_runs r
+           JOIN hermes_runtime_sessions rs ON rs.id = r.runtime_session_id
+           WHERE r.status = 'active' AND rs.chat_session_id IN (${placeholders})`,
+        )
+        .all(...ids) as Array<{ chat_session_id: number }>
+    ).map((row) => row.chat_session_id),
+  );
+  const externalActivity = summarizeConversationMessages(
+    rows
+      .map((row) => row.conversation_row_id)
+      .filter((id): id is number => id !== null),
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    isOwn: row.user_id === currentUserId,
+    ownerUsername: row.owner_username ?? undefined,
+    conversationId: row.conversation_public_id,
+    pinned: row.pinned_at !== null,
+    // An unknown slug (an older palette, a hand-edited row) presents as no
+    // highlight rather than as a color the rail cannot paint.
+    highlight: isChatHighlight(row.highlight) ? row.highlight : null,
+    active:
+      running.has(row.id) ||
+      (row.conversation_row_id !== null &&
+        externalActivity.get(row.conversation_row_id)?.externalAgentActive === true),
+  }));
+}
+
 export async function GET(request: Request) {
   const userId = await getUserId();
   if (!userId)
@@ -318,6 +404,19 @@ export async function GET(request: Request) {
 
   if (!isOwner && !access.chatAccessible) {
     return NextResponse.json({ error: "Garden not found" }, { status: 404 });
+  }
+
+  // `summary=1` is the sidebar's request: rows only, no transcripts. The full
+  // read below loads every message of every chat, which is affordable once when
+  // a garden opens and not at all on a rail that polls every few seconds.
+  if (searchParams.get("summary") === "1") {
+    return NextResponse.json({
+      sessions: readSessionSummaries(
+        access.id,
+        userId,
+        includePublicChats ? null : userId,
+      ),
+    });
   }
 
   const sessions = readSessions(

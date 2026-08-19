@@ -53,7 +53,14 @@ test("session transcript presentation is shared, not duplicated", () => {
   assert.match(runtimeStore, /export function presentRuntimeMessage/);
   assert.match(runtimeStore, /export function runtimeSessionTitle/);
   assert.match(conversationStore, /export function presentConversationMessage/);
-  assert.match(hermesSessionsRoute, /presentConversationMessage/);
+  // ONE presenter serves both surfaces. A second implementation drifting away
+  // from the first is the failure mode, and no behavioural test can rule that
+  // out because it would have to know the copy exists — so this stays
+  // structural. The Hermes route reaches the presenter through the module the
+  // presentation was extracted into; the Quartz route still calls it directly.
+  const sessionPresentation = read("../src/lib/hermes/session-presentation.ts");
+  assert.match(sessionPresentation, /presentConversationMessage/);
+  assert.match(hermesSessionsRoute, /session-presentation\.ts/);
   assert.match(sessionsRoute, /presentConversationMessage/);
   assert.doesNotMatch(hermesSessionsRoute, /function parseMessages/);
 });

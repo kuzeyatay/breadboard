@@ -1,0 +1,113 @@
+{
+  "pass": "W2-3H PartB",
+  "decision": "VERIFIED_REPAIR",
+  "committed": false,
+  "generatedAt": "2026-08-18T17:55:05.168Z",
+  "finding_id": "W23F-002",
+  "classification": "PRODUCT_BUG",
+  "severity": "P2",
+  "final_status": "VERIFIED_REPAIR",
+  "whyNotCommitted": "The authorization permits candidate creation only; committing W23F-002 needs its own approval.",
+  "capability": {
+    "capabilityId": "ce6217a1-c558-4c32-b822-c01a8dc5a450",
+    "findingId": "W23F-002",
+    "allowedPaths": [
+      "dashboard/src/lib/hermes/skills.ts"
+    ],
+    "regressionTestPaths": [
+      "dashboard/tests/reviewed-root-pin-required.test.mjs"
+    ],
+    "finalized": true,
+    "unauthorisedChanges": [],
+    "declaredButUnwritten": []
+  },
+  "repairFootprint": {
+    "repairFiles": [
+      "dashboard/src/lib/hermes/skills.ts",
+      "dashboard/tests/reviewed-root-pin-required.test.mjs"
+    ],
+    "snapshotContext": {
+      "baselineMode": "source-snapshot-manifest",
+      "note": "Pre-existing snapshot changes are context, not repair mutations."
+    }
+  },
+  "diffStat": ".gitignore                                         |   3 +\n .ignore                                            |   6 +\n dashboard/src/app/api/hermes/tools/mcp/route.ts    |   6 +\n dashboard/src/app/api/hermes/tools/skill/route.ts  |   6 +-\n .../app/components/assistant-message-actions.tsx   |  92 ++-\n .../src/app/components/assistant-response-meta.tsx |  16 +-\n .../src/app/components/chat-jump-to-bottom.tsx     |   9 +-\n dashboard/src/app/components/chat-markdown.tsx     |  30 +-\n .../src/app/components/chat-text-selection-ui.tsx  | 110 ++--\n .../components/chat/virtualized-message-list.tsx   |  65 ++-\n .../app/components/hermes/agent-runtime-panel.tsx  | 108 ++--\n .../hermes/chat-greeting-empty-state.tsx           | 128 ++++-\n .../src/app/components/hermes/evidence-panel.tsx   | 620 +++++++++++++++------\n .../app/components/hermes/inline-opencode-run.tsx  | 270 +++++----\n .../src/app/components/hermes/inline-ruflo-run.tsx |  10 +-\n .../src/app/components/hermes/use-chat-greeting.ts |  17 +-\n .../src/app/components/knowledge-terminal.tsx      |  24 +-\n dashboard/src/app/garden/garden-assistant.tsx      |  21 +-\n .../app/gardens/[clusterSlug]/workspace-client.tsx | 217 +++++---\n dashboard/src/app/globals.css                      | 167 ++++--\n dashboard/src/lib/agent-runtime/adapters/hermes.ts |   1 +\n dashboard/src/lib/agent-runtime/hermes-events.ts   | 179 +++++-\n dashboard/src/lib/codex/run-manager.ts             |  58 +-\n dashboard/src/lib/conversations/memory.ts          |  20 +\n dashboard/src/lib/conversations/turn-service.ts    |  66 ++-\n dashboard/src/lib/db.ts                            |   6 +\n dashboard/src/lib/hermes/chat-greeting.ts          | 131 ++++-\n dashboard/src/lib/hermes/event-stream.ts           |  29 +-\n dashboard/src/lib/hermes/events.ts                 |  48 ++\n dashboard/src/lib/hermes/evidence.ts               | 403 +++++++++++++-\n dashboard/src/lib/hermes/garden-chat-adapter.ts    |  65 ++-\n dashboard/src/lib/hermes/run-store.ts              |  10 +\n dashboard/src/lib/hermes/skills.ts                 |  27 +-\n dashboard/src/lib/hermes/super-agent.ts            | 128 ++++-\n dashboard/src/lib/hermes/task-plan.ts              |  15 +-\n dashboard/src/lib/profile/stats.ts                 |  10 +\n dashboard/tests/agent-edits-undo.test.mjs          |  15 +-\n dashboard/tests/chat-greeting-render.test.mjs      |  42 +-\n dashboard/tests/chat-greeting.test.mjs             | 126 +++++\n dashboard/tests/codex-agent-integration.test.mjs   |  50 ++\n dashboard/tests/evidence-panel-render.test.mjs     | 384 ++++++++++++-\n .../tests/external-agent-response-ui.test.mjs      |   2 +-\n .../garden-workspace-external-agents.test.mjs      |  20 +-\n dashboard/tests/hermes-core-events.test.mjs        |  65 +++\n dashboard/tests/hermes-events.test.mjs             | 187 +++++++\n dashboard/tests/hermes-evidence.test.mjs           | 186 +++++++\n dashboard/tests/hermes-task-plan.test.mjs          |  31 ++\n dashboard/tests/profile-stats.test.mjs             |   3 +-\n desktop/src/main/window-manager.ts                 | 111 +++-\n desktop/src/startup/recovery.css                   |   7 +-\n desktop/tests/startup-screen.test.ts               |   7 +-\n qa/autonomous/lib/receipt.mjs                      |  20 +\n qa/autonomous/lib/repair-capability.mjs            |  19 +\n qa/harness-selftest/run-selftest.mjs               |  28 +-\n 54 files changed, 3817 insertions(+), 607 deletions(-)",
+  "assertion_integrity_result": {
+    "guardVersion": 1,
+    "verdict": "REVIEW_REQUIRED",
+    "inspectedFiles": [
+      "dashboard/src/lib/hermes/skills.ts",
+      "dashboard/tests/reviewed-root-pin-required.test.mjs"
+    ],
+    "findings": [
+      {
+        "path": "dashboard/tests/reviewed-root-pin-required.test.mjs",
+        "rule": "undeclared-oracle-change",
+        "severity": "flag",
+        "detail": "QA oracle changed during a repair that was not declared a harness fix; human review required"
+      }
+    ],
+    "rejections": []
+  },
+  "worktree": "C:\\Users\\20252082\\breadboard\\.qa-worktrees\\w23f-002",
+  "rollback": "The candidate exists only in C:\\Users\\20252082\\breadboard\\.qa-worktrees\\w23f-002 (detached at 3163069551fbb574db5ea79e49bae323fbbe13f2). Roll back by discarding the worktree: git worktree remove --force C:\\Users\\20252082\\breadboard\\.qa-worktrees\\w23f-002 && git worktree prune. The main working tree was never modified, so no revert is required there.",
+  "regression": "dashboard/tests/reviewed-root-pin-required.test.mjs — 9/9",
+  "mainTreeUntouched": true,
+  "provenanceMatrix": [
+    {
+      "class": "reviewed install root (approvedRoot, conditionalRoot)",
+      "pinRequired": true,
+      "trustMechanism": "the reviewed pin",
+      "changed": true
+    },
+    {
+      "class": "first-party prebuilt (listFirstPartySkills)",
+      "pinRequired": false,
+      "trustMechanism": "committed product code",
+      "changed": false
+    },
+    {
+      "class": "user documents (listDocumentSkills)",
+      "pinRequired": false,
+      "trustMechanism": "ownership",
+      "changed": false
+    },
+    {
+      "class": "MCP connections",
+      "pinRequired": false,
+      "trustMechanism": "explicit approval",
+      "changed": false
+    },
+    {
+      "class": "unregistered directory under the reviewed root",
+      "pinRequired": "n/a",
+      "trustMechanism": "not a skill at all",
+      "changed": false
+    }
+  ],
+  "negatives": {
+    "generatedAt": "2026-08-18T17:55:05.167Z",
+    "allFailClosed": true,
+    "cases": [
+      "no fileHashes key",
+      "empty fileHashes object",
+      "file unlisted in fileHashes",
+      "wrong pin",
+      "changed content",
+      "unknown pin scheme",
+      "partially pinned set (extra unpinned file)",
+      "edited guidance while unpinned"
+    ]
+  },
+  "positives": {
+    "generatedAt": "2026-08-18T17:55:05.168Z",
+    "allUnaffected": true,
+    "controls": [
+      "every first-party prebuilt skill stays healthy and enabled",
+      "a valid text-v1 pin still verifies",
+      "a CRLF rendering of the same reviewed text still verifies (W23E-001 intact)",
+      "a valid legacy raw pin still verifies",
+      "the three real shipped reviewed skills stay healthy"
+    ]
+  }
+}

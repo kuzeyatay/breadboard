@@ -130,7 +130,7 @@ interface Props {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
-  /** Invokes a saved n8n automation with the current composer text as input. */
+  /** Invokes a saved automation with the current composer text as input. */
   onRunWorkflow?: (workflow: LocalWorkflowSummary, input: string) => void | Promise<void>;
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void;

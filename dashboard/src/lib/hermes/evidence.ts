@@ -1,4 +1,12 @@
 import type { ResearchCoverageSummary } from "../research/session.ts";
+import type { CapabilitySummary } from "./capability-usage.ts";
+
+export type {
+  CapabilityKind,
+  CapabilitySelection,
+  CapabilitySummary,
+  CapabilityUse,
+} from "./capability-usage.ts";
 
 export type VerificationState =
   | "verified"
@@ -27,6 +35,13 @@ export type EvidenceKind =
   | "tool_metadata"
   | "user_provided";
 
+export interface EvidenceWebsite {
+  url: string;
+  title?: string;
+  domain?: string;
+  snippet?: string;
+}
+
 export interface EvidenceRecord {
   id: string;
   kind: EvidenceKind;
@@ -36,6 +51,8 @@ export interface EvidenceRecord {
   toolCallId?: string;
   timestamp: string;
   details: Record<string, unknown>;
+  /** Websites / URLs visited or returned by this tool call, if any. */
+  websites?: EvidenceWebsite[];
 }
 
 /**
@@ -73,50 +90,90 @@ export interface VerificationSummary {
    * else, including on summaries persisted before it existed.
    */
   researchCoverage?: ResearchCoverageSummary;
+  /**
+   * Which of the user's own capabilities — skills, connected accounts,
+   * automations, Breadboard's own products — this turn actually reached for.
+   * The evidence rows name tool calls; this names the things those calls belong
+   * to, which is the only place a `/watch` nobody typed becomes visible.
+   *
+   * Optional because a summary persisted before capabilities were recorded
+   * cannot honestly claim that none were used.
+   */
+  capabilities?: CapabilitySummary;
+  /**
+   * What this turn owed the web-grounding obligation, and whether it paid it.
+   * Present only when the obligation was set, so a summary persisted before the
+   * gate stopped substituting answers cannot claim a state nobody recorded.
+   */
+  webGrounding?: WebGroundingReport;
 }
 
 export function evidenceKindForTool(toolName: string): EvidenceKind {
-  const name = toolName.toLowerCase();
+  const raw = toolName.toLowerCase().trim();
+  const name = raw.replace(/[-_]/g, "");
   // Registry discovery proves only that Breadboard inspected its capability
   // catalogue. It is not evidence for claims about the outside world. Treating
   // a successful `tool_search` as a generic command made an answer with no web
   // sources look verified merely because the model looked for a web tool.
   if (
-    name === "tool_search" ||
-    name === "tool_describe" ||
-    name === "capability_search"
+    name === "toolsearch" ||
+    name === "tooldescribe" ||
+    name === "capabilitysearch"
   ) {
     return "tool_metadata";
   }
-  if (name === "read") return "file_read";
-  if (name === "glob" || name === "grep") return "file_search";
-  if (name === "edit" || name === "write" || name === "patch" || name === "apply_patch") return "file_write";
+  if (name === "read" || name === "fileread" || name === "documentskillread") return "file_read";
+  if (name === "glob" || name === "grep" || name === "filesearch" || name === "searchfiles") return "file_search";
+  if (name === "edit" || name === "write" || name === "patch" || name === "applypatch" || name === "writefile") return "file_write";
   if (name === "task") return "subagent";
-  if (name === "websearch" || name === "web_search" || name === "search") {
+  if (name.startsWith("map")) return "map";
+  if (name.startsWith("garden")) return "garden";
+  if (name.startsWith("gbrain") || name.includes("gbrain") || name.startsWith("memory") || name === "savememory") return "memory";
+  if (name.includes("mcp")) return "mcp";
+  if (name.includes("skill") && !name.includes("read")) return "skill";
+  if (
+    name === "websearch" ||
+    name === "websearchtool" ||
+    name === "search" ||
+    name === "bravesearch" ||
+    name === "ddgsearch" ||
+    name === "ddgssearch" ||
+    name === "duckduckgosearch" ||
+    name === "googlesearch" ||
+    name === "tavilysearch" ||
+    name === "exasearch" ||
+    name === "searxngsearch" ||
+    name === "parallelsearch" ||
+    name === "searchweb" ||
+    name === "webquery" ||
+    name === "internetsearch" ||
+    (name.includes("web") && name.includes("search"))
+  ) {
     return "web_search";
   }
   if (
     name === "webfetch" ||
-    name === "web_extract" ||
-    name === "web_extract_structured" ||
-    name === "fetch"
+    name === "webextract" ||
+    name === "webextracttool" ||
+    name === "webextractstructured" ||
+    name === "fetch" ||
+    name === "directfetch" ||
+    name === "fetchwebpage" ||
+    name === "readurl" ||
+    name === "fetchurl" ||
+    name === "readwebpage" ||
+    name === "websource" ||
+    name === "webpageread" ||
+    (name.includes("web") && (name.includes("extract") || name.includes("fetch")))
   ) {
     return "web_source";
   }
-  // Opening a chapter of a distilled document is evidence about a document the
-  // user supplied, not about a skill the agent chose to load — it has to count
-  // as a source read, or an answer grounded in the document reads as ungrounded.
-  if (name === "document_skill_read") return "file_read";
-  // Map tools are their own evidence class. Folding them into "command" would
-  // let a shell invocation stand in for a verified geographic fact, which is
-  // precisely the substitution the map grounding rules exist to prevent.
-  if (name.startsWith("map_")) return "map";
-  if (name === "skill" || name.includes("skill")) return "skill";
-  if (name.startsWith("garden_")) return "garden";
-  if (name === "save_memory" || name.startsWith("memory_")) return "memory";
-  if (name.startsWith("gbrain_") || /(?:^|_)gbrain(?:_|$)/.test(name)) return "memory";
-  if (name.includes("mcp")) return "mcp";
-  if (name === "bash" || name === "shell") return "command";
+  if (name.startsWith("browser") || name === "browsernavigate" || name === "browserclick" || name === "browseropen") {
+    return "browser";
+  }
+  if (name === "bash" || name === "shell" || name === "terminal" || name === "terminalexecutecommand" || name === "exec" || name === "command") {
+    return "command";
+  }
   return "command";
 }
 
@@ -184,6 +241,13 @@ export interface VerificationOptions {
   researchExhaustion?: ResearchExhaustion;
   /** Reported straight through to the summary; never affects the verdict. */
   researchCoverage?: ResearchCoverageSummary;
+  /**
+   * Reported straight through as well, and for the same reason delegation is:
+   * which capability produced a result is provenance, not proof. A skill that
+   * ran already put its own row in the evidence list, and counting it twice
+   * would let one tool call talk its way from partially verified to verified.
+   */
+  capabilities?: CapabilitySummary;
 }
 
 /**
@@ -245,7 +309,23 @@ export const WEB_GROUNDING_UNAVAILABLE_MESSAGE =
 export const WEB_GROUNDING_FAILED_MESSAGE =
   "My web lookup for this failed, so I don't have a live source to stand behind an answer. Send the message again to retry the search.";
 
-/** True for any text this module substituted in place of a model answer. */
+/**
+ * Panel wording for the same two states.
+ *
+ * Separate constants rather than a reword of the two above, which must stay
+ * byte-stable: `isWebGroundingNotice` recognises answers the old substituting
+ * gate already persisted by exact string, and editing them would make every
+ * historical refusal look like a fresh unsourced claim. These are what the
+ * evidence panel says now that the answer itself survives — they describe the
+ * turn's evidence, where the old ones spoke in place of the answer.
+ */
+export const WEB_GROUNDING_UNVERIFIED_NOTICE =
+  "This answer was not checked against a live web source.";
+
+export const WEB_GROUNDING_LOOKUP_FAILED_NOTICE =
+  "The web lookup for this answer failed, so nothing here is backed by a live source. Send the message again to retry the search.";
+
+/** True for any text the old substituting gate wrote in place of a model answer. */
 export function isWebGroundingNotice(text: string): boolean {
   return (
     text === WEB_GROUNDING_UNAVAILABLE_MESSAGE ||
@@ -253,17 +333,39 @@ export function isWebGroundingNotice(text: string): boolean {
   );
 }
 
+/**
+ * Skill tools that open the very source the user pasted. A `watch_run` on a
+ * video URL downloads that video; a `factcheck_run` fetches the page it is
+ * checking. Each is a live retrieval of the linked source — stronger evidence
+ * about it than a search snippet — so the web-grounding gate must accept them,
+ * or a turn that answered from the actual video is discarded for not having
+ * called a browser-shaped tool about it. (`watch_run` also runs on local
+ * attachments; in that case no link set the obligation, so this widened match
+ * never decides anything.)
+ */
+const LIVE_SOURCE_TOOLS = new Set(["watch_run", "factcheck_run"]);
+
+function opensLiveSource(item: EvidenceRecord): boolean {
+  const toolName = item.details?.["toolName"];
+  return typeof toolName === "string" && LIVE_SOURCE_TOOLS.has(toolName);
+}
+
 function hasSuccessfulWebEvidence(evidence: EvidenceRecord[]): boolean {
   return evidence.some(
     (item) =>
       item.success &&
-      (item.kind === "web_search" || item.kind === "web_source"),
+      (item.kind === "web_search" ||
+        item.kind === "web_source" ||
+        opensLiveSource(item)),
   );
 }
 
 function attemptedWebEvidence(evidence: EvidenceRecord[]): boolean {
   return evidence.some(
-    (item) => item.kind === "web_search" || item.kind === "web_source",
+    (item) =>
+      item.kind === "web_search" ||
+      item.kind === "web_source" ||
+      opensLiveSource(item),
   );
 }
 
@@ -331,25 +433,73 @@ export function assertsExternalFact(text: string): boolean {
 }
 
 /**
- * Replace a model-authored factual answer when its required web lookup failed.
+ * What a turn owed the web-grounding obligation and did not deliver.
  *
- * Withholding is reserved for an answer that actually states something: see
- * `assertsExternalFact`. Everything else is returned untouched and left to the
- * verification summary, which records the missing evidence without throwing the
- * turn away.
+ * `never_attempted` and `lookup_failed` are different facts about the turn and
+ * the user's next move differs — retrying is worth something in the second case
+ * and pointless in the first — so the panel is told which one it is.
  */
-export function enforceRequiredWebEvidence(
+export type WebGroundingShortfall = "never_attempted" | "lookup_failed";
+
+export interface WebGroundingReport {
+  required: boolean;
+  satisfied: boolean;
+  shortfall?: WebGroundingShortfall;
+  /** Human wording for the evidence panel. Never substituted into the answer. */
+  notice?: string;
+}
+
+/**
+ * Report — never repair — a required web lookup that did not happen.
+ *
+ * This function used to return replacement text, and the three stream call
+ * sites used to assign that text over the model's answer. That was the wrong
+ * remedy for a real problem. The obligation is set before dispatch by a
+ * classifier that cannot read a sentence (see task-plan.ts and the decider in
+ * web-grounding-decider.ts), so every classifier mistake destroyed a finished
+ * answer: a blood-test report the user pasted for review was read as a request
+ * for venue recommendations, and a correct 30k-token analysis was replaced with
+ * "I couldn't verify this with a live web source". The user lost the turn; no
+ * false claim had been prevented, because the answer made none about the world.
+ *
+ * Deletion was never proportionate to the risk. An unsourced claim that reaches
+ * the user carrying a visible "not verified" marker is a smaller harm than a
+ * sound answer the user never gets to see — and the marker already exists, in
+ * `unsupportedClaims` below, which the evidence panel already renders. So the
+ * answer now always survives, and this reports what the panel should say about
+ * it.
+ *
+ * Reporting is still reserved for an answer that actually states something: see
+ * `assertsExternalFact`. An answer that asserts nothing about the world cannot
+ * have outrun evidence about it.
+ */
+export function reportWebGrounding(
   text: string,
   evidence: EvidenceRecord[],
   required: boolean,
-): string {
-  if (!required || !text.trim() || hasSuccessfulWebEvidence(evidence)) {
-    return text;
+): WebGroundingReport {
+  if (!required) return { required: false, satisfied: true };
+  if (hasSuccessfulWebEvidence(evidence)) {
+    return { required: true, satisfied: true };
   }
-  if (isWebGroundingNotice(text) || !assertsExternalFact(text)) return text;
+  // A notice persisted by the old substituting gate, or an answer that claims
+  // nothing, has nothing to flag.
+  if (!text.trim() || isWebGroundingNotice(text) || !assertsExternalFact(text)) {
+    return { required: true, satisfied: false };
+  }
   return attemptedWebEvidence(evidence)
-    ? WEB_GROUNDING_FAILED_MESSAGE
-    : WEB_GROUNDING_UNAVAILABLE_MESSAGE;
+    ? {
+        required: true,
+        satisfied: false,
+        shortfall: "lookup_failed",
+        notice: WEB_GROUNDING_LOOKUP_FAILED_NOTICE,
+      }
+    : {
+        required: true,
+        satisfied: false,
+        shortfall: "never_attempted",
+        notice: WEB_GROUNDING_UNVERIFIED_NOTICE,
+      };
 }
 
 export function assessVerification(
@@ -441,15 +591,22 @@ export function assessVerification(
   else if (supporting.length === 0) state = "unverified";
   else if (evidence.some((item) => !item.success)) state = "partially_verified";
   else state = "verified";
+  const webGrounding = reportWebGrounding(
+    text,
+    evidence,
+    options.webGroundingRequired === true,
+  );
   return {
     state,
     evidence,
     unsupportedClaims,
     assumptions: [],
     externalAgents: options.externalAgents ?? [],
+    ...(webGrounding.required ? { webGrounding } : {}),
     ...(options.researchCoverage
       ? { researchCoverage: options.researchCoverage }
       : {}),
+    ...(options.capabilities ? { capabilities: options.capabilities } : {}),
   };
 }
 
@@ -490,4 +647,272 @@ function geographicClaimRules(): { pattern: RegExp; claim: string }[] {
       claim: "Nearest-place claim has no successful POI result.",
     },
   ];
+}
+
+/** Returns true when a candidate string is an absolute http or https URL. */
+export function isHttpUrl(candidate: unknown): boolean {
+  if (typeof candidate !== "string") return false;
+  const trimmed = candidate.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** Extracts the clean domain from a URL (e.g. "www.example.com" -> "example.com"). */
+export function extractDomain(urlStr: string): string {
+  try {
+    const url = new URL(urlStr.startsWith("http") ? urlStr : `https://${urlStr}`);
+    return url.hostname.replace(/^www\./i, "");
+  } catch {
+    return "";
+  }
+}
+
+/** Normalizes a website object or URL string into a well-formed EvidenceWebsite. */
+export function normalizeWebsite(input: unknown): EvidenceWebsite | null {
+  if (!input) return null;
+  if (typeof input === "string") {
+    const trimmed = input.trim();
+    if (!isHttpUrl(trimmed)) return null;
+    return {
+      url: trimmed,
+      domain: extractDomain(trimmed) || undefined,
+    };
+  }
+  if (typeof input === "object" && input !== null) {
+    const rec = input as Record<string, unknown>;
+    const rawUrl =
+      typeof rec.url === "string"
+        ? rec.url
+        : typeof rec.link === "string"
+          ? rec.link
+          : typeof rec.href === "string"
+            ? rec.href
+            : typeof rec.uri === "string"
+              ? rec.uri
+              : typeof rec.page_url === "string"
+                ? rec.page_url
+                : undefined;
+    if (!rawUrl || !isHttpUrl(rawUrl)) return null;
+    const url = rawUrl.trim();
+    const rawTitle =
+      typeof rec.title === "string"
+        ? rec.title
+        : typeof rec.name === "string"
+          ? rec.name
+          : undefined;
+    const title = rawTitle?.trim() || undefined;
+    const rawSnippet =
+      typeof rec.snippet === "string"
+        ? rec.snippet
+        : typeof rec.body === "string"
+          ? rec.body
+          : typeof rec.description === "string"
+            ? rec.description
+            : undefined;
+    const snippet = rawSnippet?.trim() || undefined;
+    const domain =
+      typeof rec.domain === "string" && rec.domain.trim()
+        ? rec.domain.trim()
+        : extractDomain(url) || undefined;
+    return {
+      url,
+      ...(title ? { title } : {}),
+      ...(domain ? { domain } : {}),
+      ...(snippet ? { snippet } : {}),
+    };
+  }
+  return null;
+}
+
+/**
+ * Array fields that hold one search result per entry.
+ *
+ * `web` is the one that mattered in practice: Hermes's search tool answers
+ * `{"success": true, "data": {"web": […]}}`, and with that key missing the walk
+ * below reached the wrapper, found no list it recognised, and returned nothing.
+ * Every row in the evidence panel could then say "did 5 searches" while naming
+ * no page at all. The rest cover the other providers' spellings.
+ */
+const RESULT_LIST_KEYS = [
+  "websites",
+  "sources",
+  "results",
+  "web",
+  "organic",
+  "pages",
+  "documents",
+  "hits",
+  "entries",
+  "items",
+  "citations",
+  "links",
+  "urls",
+  "data_web",
+  "search_results",
+];
+
+/** Object fields that wrap a result set rather than being one. */
+const RESULT_WRAPPER_KEYS = [
+  "output",
+  "result",
+  "content",
+  "summary",
+  "context",
+  "response",
+  "data",
+  "action",
+  "args",
+  "payload",
+  "details",
+  "value",
+  "raw",
+  "body",
+  "json",
+  "searchResults",
+];
+
+/** Extracts website links from structured tool output, markdown, or JSON payloads. */
+export function extractWebsitesFromPayload(payload: unknown): EvidenceWebsite[] {
+  if (!payload) return [];
+  const results: EvidenceWebsite[] = [];
+  const seen = new Set<string>();
+
+  const add = (site: EvidenceWebsite | null) => {
+    if (!site || !site.url) return;
+    const key = site.url.trim().toLowerCase().replace(/\/$/, "");
+    if (seen.has(key)) {
+      const existing = results.find((r) => r.url.trim().toLowerCase().replace(/\/$/, "") === key);
+      if (existing) {
+        if (!existing.title && site.title) existing.title = site.title;
+        if (!existing.snippet && site.snippet) existing.snippet = site.snippet;
+        if (!existing.domain && site.domain) existing.domain = site.domain;
+      }
+      return;
+    }
+    seen.add(key);
+    results.push(site);
+  };
+
+  if (typeof payload === "string") {
+    try {
+      const parsed = JSON.parse(payload);
+      if (parsed && typeof parsed === "object") {
+        for (const site of extractWebsitesFromPayload(parsed)) add(site);
+        return results;
+      }
+    } catch {
+      // plain text or markdown
+    }
+    let match: RegExpExecArray | null;
+    const mdRe = /\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/g;
+    while ((match = mdRe.exec(payload)) !== null) {
+      add(normalizeWebsite({ url: match[2], title: match[1] }));
+    }
+    const urlRe = /https?:\/\/[^\s<>"')\]]+/g;
+    while ((match = urlRe.exec(payload)) !== null) {
+      add(normalizeWebsite(match[0]));
+    }
+    return results;
+  }
+
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      for (const site of extractWebsitesFromPayload(item)) add(site);
+    }
+    return results;
+  }
+
+  if (typeof payload === "object" && payload !== null) {
+    const obj = payload as Record<string, unknown>;
+    const direct = normalizeWebsite(obj);
+    if (direct) {
+      // A object that already *is* a result — `{url, title, content}` from an
+      // extract call — is a leaf. Recursing into its body text would harvest
+      // every link the page happens to contain and list them as pages this
+      // answer consulted, which is a claim the turn cannot support.
+      add(direct);
+      return results;
+    }
+    for (const key of RESULT_LIST_KEYS) {
+      if (Array.isArray(obj[key])) {
+        for (const item of obj[key] as unknown[]) {
+          for (const site of extractWebsitesFromPayload(item)) add(site);
+        }
+      }
+    }
+    if (obj.action && typeof obj.action === "object") {
+      const actionObj = obj.action as Record<string, unknown>;
+      if (Array.isArray(actionObj.sources)) {
+        for (const item of actionObj.sources) {
+          for (const site of extractWebsitesFromPayload(item)) add(site);
+        }
+      }
+    }
+    for (const field of RESULT_WRAPPER_KEYS) {
+      if (typeof obj[field] === "string") {
+        for (const site of extractWebsitesFromPayload(obj[field])) add(site);
+      } else if (typeof obj[field] === "object" && obj[field] !== null) {
+        for (const site of extractWebsitesFromPayload(obj[field])) add(site);
+      }
+    }
+  }
+
+  return results;
+}
+
+/** Extracts the list of consulted websites from an EvidenceRecord. */
+export function extractWebsitesFromEvidence(item: EvidenceRecord): EvidenceWebsite[] {
+  const list: EvidenceWebsite[] = [];
+  const seen = new Set<string>();
+
+  const add = (site: EvidenceWebsite | null) => {
+    if (!site || !site.url) return;
+    const key = site.url.trim().toLowerCase().replace(/\/$/, "");
+    if (seen.has(key)) {
+      const existing = list.find((r) => r.url.trim().toLowerCase().replace(/\/$/, "") === key);
+      if (existing) {
+        if (!existing.title && site.title) existing.title = site.title;
+        if (!existing.snippet && site.snippet) existing.snippet = site.snippet;
+        if (!existing.domain && site.domain) existing.domain = site.domain;
+      }
+      return;
+    }
+    seen.add(key);
+    list.push(site);
+  };
+
+  if (Array.isArray(item.websites)) {
+    for (const site of item.websites) add(normalizeWebsite(site));
+  }
+  if (Array.isArray(item.details?.websites)) {
+    for (const site of item.details.websites as unknown[]) add(normalizeWebsite(site));
+  }
+  if (Array.isArray(item.details?.sources)) {
+    for (const site of item.details.sources as unknown[]) add(normalizeWebsite(site));
+  }
+  if (Array.isArray(item.details?.urls)) {
+    for (const u of item.details.urls as unknown[]) add(normalizeWebsite(u));
+  }
+  if (typeof item.details?.url === "string") {
+    add(normalizeWebsite(item.details.url));
+  }
+  if (typeof item.location === "string" && isHttpUrl(item.location)) {
+    add(normalizeWebsite(item.location));
+  }
+
+  if (item.kind === "web_search" || item.kind === "web_source" || item.kind === "browser") {
+    if (item.details) {
+      for (const site of extractWebsitesFromPayload(item.details)) add(site);
+    }
+    if (item.title) {
+      for (const site of extractWebsitesFromPayload(item.title)) add(site);
+    }
+  }
+
+  return list;
 }

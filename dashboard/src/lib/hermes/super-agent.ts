@@ -23,11 +23,14 @@ import {
 } from "./agency-agents.ts";
 import { RUNTIME_AGENT_PROFILES } from "./capability-combinations.ts";
 import {
+  RUNTIME_AGENT_GROUPS,
+  runtimeAgentBrief,
+} from "./runtime-agent-briefs.ts";
+import {
   INBOX_ZERO_AGENT_ID,
   INBOX_ZERO_COMMAND,
 } from "../inbox-zero/identity.ts";
-import { ensureN8nSession, n8nJson } from "../workflows/n8n.ts";
-import { summarizeLocalWorkflow } from "../workflows/execution.ts";
+import { listWorkflows } from "../workflows/store.ts";
 import type { LocalWorkflowSummary } from "../workflows/types.ts";
 import { researchPipelineRule } from "../research/directive.ts";
 import type { ResearchPlan } from "../research/types.ts";
@@ -128,31 +131,18 @@ function divisionEntries(agents: readonly AgencyAgentDefinition[]): {
   };
 }
 
-async function localWorkflows(): Promise<{
+async function localWorkflows(userId: number): Promise<{
   workflows: LocalWorkflowSummary[];
   reachable: boolean;
 }> {
   try {
-    const session = await ensureN8nSession();
-    const listed = await n8nJson("/rest/workflows?limit=100", {
-      method: "GET",
-      session,
-    });
-    const rows = Array.isArray(listed)
-      ? listed
-      : Array.isArray((listed as { data?: unknown })?.data)
-        ? ((listed as { data: unknown[] }).data)
-        : [];
     return {
-      workflows: rows
-        .map((row) => summarizeLocalWorkflow(row))
-        .filter((row): row is LocalWorkflowSummary => Boolean(row))
-        .slice(0, MAX_LISTED_WORKFLOWS),
+      workflows: listWorkflows(userId).slice(0, MAX_LISTED_WORKFLOWS),
       reachable: true,
     };
   } catch {
-    // The automation service is optional and started on demand. A super-agent
-    // turn must not fail because it is not running.
+    // Workflows now live in Breadboard's own database rather than a service that
+    // has to be running, but a read failure still must not fail the turn.
     return { workflows: [], reachable: false };
   }
 }
@@ -174,7 +164,7 @@ export async function loadSuperAgentInventory(input: {
     catalog.status === "ready"
       ? divisionEntries(catalog.agents)
       : { divisions: [], specialistCount: 0 };
-  const workflows = await localWorkflows();
+  const workflows = await localWorkflows(input.userId);
   return {
     skills: skills.entries.slice(0, MAX_LISTED_SKILLS),
     unlistedSkillCount: Math.max(0, skills.entries.length - MAX_LISTED_SKILLS),
@@ -305,6 +295,108 @@ function researchRoutingRule(inventory: SuperAgentInventory): string {
 }
 
 /**
+ * Choosing a runtime agent is a decision, so the prompt has to contain one.
+ *
+ * The catalogue used to be a list of names: `- vimax — ViMax (/agents:vimax)`.
+ * Nothing in it said what an agent does, which left the model two ways to pick
+ * and both were wrong. Agents with self-describing names were launched on topic
+ * match — a passing mention of markets was enough to staff a trading agent —
+ * and agents whose names describe nothing were never launched at all. Neither is
+ * a judgement; both are what you get when the only signal is a slug.
+ *
+ * `runtime-agent-briefs.ts` supplies the missing half: what each agent reaches
+ * and when it is the right choice. This function frames it, and the framing is
+ * the part that keeps a wide catalogue from becoming a reason to delegate. Three
+ * rules, in the order a decision actually happens:
+ *
+ * *Whether* comes first, and its default is no. The failure being prevented is
+ * not misrouting, it is delegating at all when the turn could have answered:
+ * every launch spends a confirmation and a wait, and hands back less than the
+ * answer already in hand. So the rule demands a named capability the turn does
+ * not have — the mailbox, the repository, a browser, a workspace outliving the
+ * turn, a file kind this turn cannot write — and says outright that topic match
+ * is not one.
+ *
+ * *How many* comes second, because "more agents" reads as thoroughness and is
+ * usually duplication. One at a time, reconsidering when the outcome returns as
+ * an internal turn, which is also what the serial launch queue really does.
+ * A second agent has to be doing a different job, not the same job again.
+ *
+ * *What it costs the user* comes last: most of these read and report, a few send
+ * mail, publish posts, or keep trading after the turn ends.
+ *
+ * Grouping by domain is not cosmetic. The hard calls here are all within a
+ * domain — ViMax invents footage where MoneyPrinter cuts existing footage, Stock
+ * Analyst takes tickers where Vibe Trading takes conditions — and those read as
+ * distinctions only when they sit next to each other.
+ */
+function runtimeAgentCatalogue(inventory: SuperAgentInventory): string {
+  const launchable = inventory.runtimeAgents.filter((agent) => agent.launchable);
+  const userOnly = inventory.runtimeAgents.filter((agent) => !agent.launchable);
+  const describe = (agent: (typeof inventory.runtimeAgents)[number]): string => {
+    const brief = runtimeAgentBrief(agent.id);
+    const head = `- ${agent.id} — ${agent.name} (\`${agent.command}\`).`;
+    if (!brief) return head.replace(/\.$/, "");
+    return [head, brief.does, brief.choose].filter(Boolean).join(" ");
+  };
+  // The form-driven agents are listed by command and never by id. The id is the
+  // argument `agent_launch` takes, so printing one next to an agent the tool
+  // cannot start is an invitation to call it and be refused; the command is the
+  // only thing that is any use here, because naming it is the whole action.
+  const describeUserOnly = (
+    agent: (typeof inventory.runtimeAgents)[number],
+  ): string => {
+    const brief = runtimeAgentBrief(agent.id);
+    return [`- \`${agent.command}\` — ${agent.name}.`, brief?.does]
+      .filter(Boolean)
+      .join(" ");
+  };
+  // A newly added agent with no brief still has to appear, or the model cannot
+  // reach something the user installed. It goes last, undescribed, rather than
+  // being silently dropped into a domain it may not belong to.
+  const grouped = RUNTIME_AGENT_GROUPS.flatMap((group) => {
+    const members = launchable.filter(
+      (agent) => runtimeAgentBrief(agent.id)?.group === group.key,
+    );
+    return members.length
+      ? [`\n### ${group.label}`, ...members.map(describe)]
+      : [];
+  });
+  const ungrouped = launchable.filter((agent) => !runtimeAgentBrief(agent.id));
+
+  return [
+    "## Runtime agents — start one with `agent_launch`",
+    "Each of these is a private worker you can hand a job to with `agent_launch`. Three things follow from how delegation works, and all matter:",
+    "- It has not run when the tool returns. It starts after your turn ends. Never write as though you have already seen its output, and never invent a result, file, artifact, or link.",
+    "- The agent cannot see this conversation. The brief is everything it gets: subject, constraints, and what the finished thing should be, written for a stranger.",
+    "- Its card is hidden. Its outcome always returns to you as an internal turn. Summarize the useful result in your own voice; if it produced an artifact or file, present that exact artifact or link to the user. Do not merely report that the worker finished.",
+    "",
+    "Choosing well starts with choosing whether, and the honest default is none of them. You have your own tools, and a request you can finish in this turn should be finished in this turn — a delegation the user did not need costs them a confirmation and a wait, and hands back less than the answer you already had.",
+    "",
+    "So name the reason before you launch anything: what does this agent reach that I cannot? The answers that count are concrete — it holds the user's real mailbox, the connected repository, a real browser, a workspace that outlives this turn, or it writes a kind of file this turn cannot produce. That the request is *about* an agent's topic is not one of them. If everything it would add is more words on a subject you already understand, launch nothing and answer.",
+    "",
+    "Then decide how many. Prefer one: launch the agent that unblocks the most, and when its outcome comes back as an internal turn, decide again knowing what it found. Reach for a second only when the request splits into parts needing genuinely different reach — a repository change and a market read are two jobs, while two market agents on one question is one job done twice. Where several agents share a domain below, what separates them is the shape of the input they take and what they hand back, so read those entries against each other rather than stopping at the first that sounds close.",
+    "",
+    "And weigh what starting one commits the user to. Most of these read something and report back. A few act outwardly — mail leaves, posts publish, a desk keeps trading after the turn is over — and those deserve a higher bar and a plain sentence about what you are setting in motion.",
+    ...grouped,
+    ...(ungrouped.length
+      ? [
+          "\n### Also installed",
+          ...ungrouped.map(
+            (agent) => `- ${agent.id} — ${agent.name} (\`${agent.command}\`)`,
+          ),
+        ]
+      : []),
+    ...(userOnly.length
+      ? [
+          "\nStarted from their own form, so only the user can run them, and `agent_launch` will refuse. When one is what the request needs, say what it does and name its command so they can start it themselves:",
+          ...userOnly.map(describeUserOnly),
+        ]
+      : []),
+  ].join("\n");
+}
+
+/**
  * The directive and the inventory, as one system-prompt section.
  *
  * Two things are stated as fact rather than left to inference. First, the agent
@@ -363,7 +455,7 @@ export function renderSuperAgentDirective(
     sections.push(
       [
         "## Automations — run one with `workflow_run`",
-        "These are the user's own local n8n automations. Call `workflow_run` with the workflow id and the input text when one of them is what the request is asking for.",
+        "These are the user's own saved automations. Call `workflow_run` with the workflow id and the input text when one of them is what the request is asking for.",
         ...inventory.workflows.map(
           (workflow) =>
             `- ${workflow.id} — ${workflow.name}${workflow.active ? "" : " (inactive)"}`,
@@ -374,7 +466,7 @@ export function renderSuperAgentDirective(
     sections.push(
       [
         "## Automations",
-        "The local automation service is not running this turn, so `workflow_run` has nothing to run. If the request needs one, say it needs the Workflows page opened first.",
+        "The saved automations could not be read this turn, so `workflow_run` has nothing to run. If the request needs one, say so rather than guessing an id.",
       ].join("\n"),
     );
   }
@@ -404,27 +496,7 @@ export function renderSuperAgentDirective(
   }
 
   if (inventory.runtimeAgents.length) {
-    const launchable = inventory.runtimeAgents.filter((agent) => agent.launchable);
-    const userOnly = inventory.runtimeAgents.filter((agent) => !agent.launchable);
-    sections.push(
-      [
-        "## Runtime agents — start one with `agent_launch`",
-        "Each of these is a private worker you can call with `agent_launch`. Give it a complete brief when the request is plainly its work rather than something you can finish yourself. Three things follow from how delegation works, and all matter:",
-        "- It has not run when the tool returns. It starts after your turn ends. Never write as though you have already seen its output, and never invent a result, file, artifact, or link.",
-        "- The agent cannot see this conversation. The brief is everything it gets: subject, constraints, and what the finished thing should be, written for a stranger.",
-        "- Its card is hidden. Its outcome always returns to you as an internal turn. Summarize the useful result in your own voice; if it produced an artifact or file, present that exact artifact or link to the user. Do not merely report that the worker finished.",
-        ...launchable.map(
-          (agent) => `- ${agent.id} — ${agent.name} (${agent.command})`,
-        ),
-        userOnly.length
-          ? `\nStarted from their own form, so only the user can run them — name the command instead of calling the tool: ${userOnly
-              .map((agent) => `${agent.command} (${agent.name})`)
-              .join(", ")}.`
-          : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    );
+    sections.push(runtimeAgentCatalogue(inventory));
 
     if (
       inventory.runtimeAgents.some((agent) => agent.id === INBOX_ZERO_AGENT_ID)

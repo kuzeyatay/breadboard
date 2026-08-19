@@ -28,6 +28,7 @@ import {
   toOpenAiReasoningEffort,
 } from "../assistant-reasoning.ts";
 import {
+  attachmentOrderManifest,
   chatMessageAttachments,
   type ChatAttachment,
 } from "../chat-attachments.ts";
@@ -178,7 +179,11 @@ function currentUserInput(
   text: string,
   attachments: readonly ChatAttachment[],
 ): EasyInputMessage {
-  const attachedText = attachments
+  // "The third screenshot" or "the second pdf" must resolve to the file in
+  // that position; the blocks and image parts below keep the user's order but
+  // nothing else says which came first, and image parts carry no filename.
+  const manifest = attachmentOrderManifest(attachments);
+  const attachedBlocks = attachments
     .flatMap((attachment) =>
       attachment.type === "text" || attachment.type === "document"
         ? [`--- Attached file: ${attachment.name} ---\n${attachment.text}`]
@@ -196,8 +201,10 @@ function currentUserInput(
                   `sounds; turning agent mode on lets Breadboard measure it.`,
               ]
             : [],
-    )
-    .join("\n\n");
+    );
+  const attachedText = [...(manifest ? [manifest] : []), ...attachedBlocks].join(
+    "\n\n",
+  );
   const images = attachments.filter(
     (attachment): attachment is Extract<ChatAttachment, { type: "image" }> =>
       attachment.type === "image",

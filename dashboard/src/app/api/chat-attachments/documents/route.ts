@@ -14,7 +14,11 @@ import {
   writeDocumentBlob,
   writeDocumentFigures,
 } from "@/lib/conversations/document-blob-store.ts";
-import { documentContextText, readDocument } from "@/lib/document-structure/index.ts";
+import {
+  documentContextText,
+  readDocument,
+  readOpenDocument,
+} from "@/lib/document-structure/index.ts";
 import fs from "node:fs";
 
 export const dynamic = "force-dynamic";
@@ -97,7 +101,16 @@ export async function POST(request: Request) {
     let warnings: string[] = [];
     try {
       const buffer = fs.readFileSync(stored.path);
-      const structure = readDocument(format, buffer);
+      // OpenDocument formats go through `officeparser`, whose zip
+      // decompression is inherently asynchronous — `readDocument`'s switch
+      // cannot await it because its other callers are synchronous. This
+      // route already is async, so it awaits the real reader directly rather
+      // than settling for the empty-structure fallback `readDocument` gives
+      // those three formats.
+      const structure =
+        format === "odt" || format === "ods" || format === "odp"
+          ? await readOpenDocument(buffer)
+          : readDocument(format, buffer);
       figureNames = writeDocumentFigures({
         userId,
         blobId: stored.blobId,

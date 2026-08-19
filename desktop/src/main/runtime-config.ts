@@ -83,8 +83,6 @@ export interface LaunchPorts {
   cliproxy?: number;
   /** Voicebox local speech service. Optional so older test/runtime configs remain valid. */
   voicebox?: number;
-  /** Private n8n workflow editor. Optional so older configs remain valid. */
-  n8n?: number;
   /**
    * Loopback port of the Recall capture engine. Not allocated dynamically: the
    * engine is started by the dashboard rather than the supervisor, and 3030 is

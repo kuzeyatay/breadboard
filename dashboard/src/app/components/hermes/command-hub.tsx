@@ -213,7 +213,7 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelect: (item: CommandHubItem) => void;
-  /** Runs one of the user's saved local n8n automations as a chat turn. */
+  /** Runs one of the user's saved automations as a chat turn. */
   onRunWorkflow?: (workflow: LocalWorkflowSummary) => void;
   /** Opens Settings → MCP for server setup and management. */
   onOpenMcpSettings?: () => void;

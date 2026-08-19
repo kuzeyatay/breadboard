@@ -73,6 +73,19 @@ test("selected-text questions are explicitly grounded in their excerpt", () => {
   assert.match(prompt, /Do not switch to another topic/);
 });
 
+test("a selection follow-up never owes live web evidence", () => {
+  // "what would be places to go?" asked on a highlighted excerpt matches the
+  // planner's live-recommendation signal, but the selection prompt binds the
+  // answer to the excerpt — a contract that can never satisfy the web gate.
+  // The dispatch must therefore leave the obligation off, and must not spend a
+  // decider call deciding something the contract already settles.
+  const turns = source("src/lib/conversations/turn-service.ts");
+  assert.match(
+    turns,
+    /adjudicateWebGrounding\(\{[\s\S]*?skip: Boolean\(input\.internalAgentContinuation\) \|\| Boolean\(input\.textSelection\)/,
+  );
+});
+
 test("the transcript exposes both actions and hides inline turns", () => {
   const ui = source("src/app/components/chat-text-selection-ui.tsx");
   const panel = source("src/app/components/hermes/agent-runtime-panel.tsx");
@@ -89,12 +102,12 @@ test("the transcript exposes both actions and hides inline turns", () => {
 test("selection context and anchors persist through the canonical turn API", () => {
   const route = source("src/app/api/hermes/sessions/[sessionId]/messages/route.ts");
   const turns = source("src/lib/conversations/turn-service.ts");
-  const sessions = source("src/app/api/hermes/sessions/route.ts");
+  const presentation = source("src/lib/hermes/session-presentation.ts");
   const hook = source("src/app/components/hermes/use-agent-session.ts");
   assert.match(route, /surfaceContext\.selectedText = textSelection\.quote/);
   assert.match(turns, /\{ textSelection: input\.textSelection \}/);
   assert.match(turns, /chatTextSelectionQuestionPrompt/);
-  assert.match(sessions, /normalizeChatTextSelectionReference/);
+  assert.match(presentation, /normalizeChatTextSelectionReference/);
   assert.match(hook, /selectedText: options\?\.textSelection\?\.quote/);
   assert.match(hook, /textSelection: options\?\.textSelection/);
 });

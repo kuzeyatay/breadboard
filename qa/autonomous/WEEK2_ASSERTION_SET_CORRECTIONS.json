@@ -1,0 +1,36 @@
+{
+  "pass": "W2-3H PartD",
+  "decision": "ASSERTION_CORRECTIONS_STILL_OPEN",
+  "generatedAt": "2026-08-18T17:58:54.989Z",
+  "initialFailingAssertions": 50,
+  "initialAffectedTests": 27,
+  "testsCompleted": 3,
+  "assertionsCorrected": 4,
+  "newAssertionsExposed": 1,
+  "testsFlippedAsPredicted": 3,
+  "unexpectedFlips": 11,
+  "unexpectedFlipsAttributableToCorrections": 0,
+  "unexpectedFlipAttribution": "browser-gated flaky family plus developer churn; one test went ABSENT mid-run. None in the three edited files.",
+  "counterexamples": {
+    "detected": 5,
+    "total": 5,
+    "nonVacuous": true
+  },
+  "remainingTests": 24,
+  "remainingCompletableNow": 17,
+  "dashboard": {
+    "tests": 5276,
+    "pass": 5217,
+    "fail": 38
+  },
+  "partC": {
+    "finding": "repair footprint reporting",
+    "fixed": true,
+    "changes": [
+      "finalizeRepairCapability returns repairFootprint separating repairFiles from snapshotContext",
+      "validateReceipt refuses a VERIFIED_REPAIR whose files_changed leaves allowed_paths"
+    ],
+    "regression": "qa/harness-selftest/repair-footprint.test.mjs — 6/6",
+    "provenInField": "the W23F-002 repair reported exactly 2 repairFiles"
+  }
+}

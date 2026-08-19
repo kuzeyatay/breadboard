@@ -28,6 +28,8 @@ export interface UploadSourceRow {
   conversation_public_id: string;
   conversation_title: string;
   surface: string;
+  /** The Garden addresses its chats by this rather than by the public id. */
+  legacy_chat_session_id?: number | null;
 }
 
 export interface StoredUpload {
@@ -47,6 +49,12 @@ export interface StoredUpload {
   conversationId: string;
   conversationTitle: string;
   surface: string;
+  /**
+   * The legacy chat-session id, when the chat has one. Garden Chat opens a chat
+   * by this id; the Terminal opens one by `conversationId`. Null for a chat that
+   * only exists canonically.
+   */
+  chatSessionId: number | null;
 }
 
 const IMAGE_MIME = /^data:([a-z0-9.+-]+\/[a-z0-9.+-]+);base64,/i;
@@ -139,6 +147,7 @@ export function collectUploads(
         conversationId: row.conversation_public_id,
         conversationTitle: row.conversation_title,
         surface: row.surface,
+        chatSessionId: row.legacy_chat_session_id ?? null,
       });
     });
     if (uploads.length >= limit) break;

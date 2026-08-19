@@ -323,13 +323,18 @@ test("delegation and trusted hand-backs do not trip factual-answer gates", () =>
     conversationTurns,
     /const geographicGrounding =[\s\S]*input\.internalAgentContinuation[\s\S]*trusted model-to-model continuation/,
   );
-  // The obligation is read from the plan's own web signal, never from the
+  // The obligation starts from the plan's own web signal, never from the
   // capability list: super agent adds `web_research` reach to every turn, so
   // reading it back made a greeting owe a web result and had its answer
-  // replaced by a refusal. See task-plan.ts `requiresWebEvidence`.
+  // replaced by a refusal. See task-plan.ts `requiresWebEvidence`. That signal
+  // is now a proposal the decider adjudicates, but it is still the only input.
   assert.match(
     conversationTurns,
-    /!input\.internalAgentContinuation && prepared\.plan\.requiresWebEvidence/,
+    /adjudicateWebGrounding\(\{[\s\S]*?plannerRequired: prepared\.plan\.requiresWebEvidence/,
+  );
+  assert.match(
+    conversationTurns,
+    /webGrounding: \{\s*required: true,\s*reason: webGroundingVerdict\.reason/,
   );
   assert.doesNotMatch(
     conversationTurns,

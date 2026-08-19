@@ -27,7 +27,7 @@ import {
 import { RUN_HEARTBEAT_INTERVAL_MS } from "./run-liveness.ts";
 import {
   assessVerification,
-  enforceRequiredWebEvidence,
+  reportWebGrounding,
   evidenceKindForTool,
   evidenceTitleForTool,
   type EvidenceRecord,
@@ -66,6 +66,7 @@ import {
   listAgentLaunchRequestsAfter,
 } from "./agent-launch-store.ts";
 import { listSuccessfulMemorySavesForRun } from "./memory-evidence.ts";
+import { capabilitySummaryForRun } from "./capability-evidence.ts";
 import { listCompletedTerminalCommandsForRun } from "./terminal-evidence.ts";
 import {
   acquireDetachedEventPump,
@@ -268,6 +269,21 @@ function driveSessionEventPump(
     session.row.conversation_id === null
       ? undefined
       : (researchCoverageSummary(session.row.conversation_id) ?? undefined);
+  // Which skills, connected accounts, automations and Breadboard products this
+  // turn actually reached for. The selections are read off the run — they were
+  // fixed before dispatch — and the usage from the calls that completed, so a
+  // capability the model merely had access to never appears.
+  const capabilitiesForTurn = () => {
+    streamRun ??= getActiveRuntimeRun(session.row.id);
+    return capabilitySummaryForRun({
+      runtimeSessionId: session.row.id,
+      runId: streamRun?.id,
+      selection: streamRun
+        ? parseRuntimeRunDispatch(streamRun).capabilities
+        : undefined,
+      toolCalls,
+    });
+  };
   const researchExhaustionForTurn = (): ResearchExhaustion => {
     const conversationId = session.row.conversation_id;
     streamRun ??= getActiveRuntimeRun(session.row.id);
@@ -548,7 +564,16 @@ function driveSessionEventPump(
           success: event.payload.success,
           toolCallId: event.payload.toolCallId,
           timestamp: event.timestamp,
-          details: { toolName: event.payload.toolName },
+          // The runtime already resolved which pages a search or fetch
+          // actually returned. Dropping them here is what made the evidence
+          // panel able to say "did 5 searches" without ever naming a source.
+          details: {
+            ...(event.payload.details ?? {}),
+            toolName: event.payload.toolName,
+          },
+          ...(event.payload.websites?.length
+            ? { websites: event.payload.websites }
+            : {}),
         });
         if (audit) {
           recordAuditEvent({
@@ -629,13 +654,8 @@ function driveSessionEventPump(
         if (!assistantText.trim() && narrationSegments.length) {
           assistantText = narrationSegments[narrationSegments.length - 1];
         }
-        if (status === "idle") {
-          assistantText = enforceRequiredWebEvidence(
-            assistantText,
-            evidence,
-            webGroundingAppliesToCompletion(),
-          );
-        }
+        // An unmet web obligation is carried by the verification summary
+        // below, never by rewriting the answer. See `reportWebGrounding`.
         // Read from the launch store rather than from what the stream managed
         // to emit: a delegation the agent asked for in its last breath belongs
         // in this answer's provenance even if the client never saw the event.
@@ -645,6 +665,7 @@ function driveSessionEventPump(
           externalAgents: externalAgentCallsForRun(streamRun?.id),
           researchExhaustion: researchExhaustionForTurn(),
           researchCoverage: researchCoverageForTurn(),
+          capabilities: capabilitiesForTurn(),
         });
         try {
           persistAssistantOnce(
@@ -1007,29 +1028,12 @@ function driveSessionEventPump(
               // Last chance: after this the stream closes, and an unemitted
               // launch would be a run the agent believes it started.
               emitAgentLaunchRequests();
-              const groundedAssistantText = enforceRequiredWebEvidence(
-                assistantText,
-                evidence,
-                webGroundingAppliesToCompletion(),
-              );
-              if (groundedAssistantText !== assistantText) {
-                assistantText = groundedAssistantText;
-                // The model's deltas may already be visible. Reuse the
-                // completion event as an explicit canonical replacement so
-                // the live transcript and persisted row fail closed together.
-                emit({
-                  type: "assistant.completed",
-                  sessionId: session.hermesSessionId,
-                  ...(assistantMessageId
-                    ? { messageId: assistantMessageId }
-                    : {}),
-                  timestamp: new Date().toISOString(),
-                  payload: {
-                    replacementText: assistantText,
-                    usage: tokenUsage,
-                  },
-                });
-              }
+              // The answer is never rewritten here any more. An unmet web
+              // obligation is reported through the verification summary
+              // emitted immediately below, which the evidence panel renders;
+              // substituting a refusal deleted correct answers whenever the
+              // pre-dispatch classifier misread the request. See
+              // `reportWebGrounding` in evidence.ts.
               emit({
                 type: "verification.updated",
                 sessionId: session.hermesSessionId,
@@ -1040,6 +1044,7 @@ function driveSessionEventPump(
                   externalAgents: externalAgentCallsForRun(streamRun?.id),
                   researchExhaustion: researchExhaustionForTurn(),
                   researchCoverage: researchCoverageForTurn(),
+                  capabilities: capabilitiesForTurn(),
                 }),
               });
               finalize("idle");

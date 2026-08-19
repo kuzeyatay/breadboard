@@ -287,6 +287,18 @@ silently swallowed. Set `stacksCapabilities` / `acceptsAttachments` only if the 
 route really resolves capability tokens / really forwards files; a test checks the
 flags against the route's source.
 
+**Selection brief** (`src/lib/hermes/runtime-agent-briefs.ts`) — add an entry
+keyed by the same id: a `group`, one sentence of `does` saying what the agent
+reaches, and — for anything a model may launch — one of `choose` saying when it
+wins and the nearest wrong reason to pick it. This is the only description a
+super-agent turn ever sees. Without it the agent reaches the model as a bare
+name, which in practice means it is launched on topic match or never launched at
+all, and `tests/runtime-agent-briefs.test.mjs` fails rather than letting that
+ship. If the new agent shares a domain with an existing one, say in both entries
+how the two differ — that is the distinction the chooser cannot infer. Omit
+`choose` when `launchableByModel` is false: advice toward a call the route
+refuses is worse than no advice.
+
 ---
 
 ## 8. Artifacts — they belong to the chat that made them
@@ -376,6 +388,7 @@ Structural tests do not prove an agent runs. Before calling it done:
 [ ] assistant-composer.tsx         chip, select, clear
 [ ] command-hub.tsx                palette row (+ settings button)
 [ ] capability-combinations.ts     runtime profile
+[ ] runtime-agent-briefs.ts        what it does + when to choose it, for super agent
 [ ] agent-settings/catalog.ts      run defaults, if there are any
 [ ] artifacts                      conversationPublicId from launch → createArtifact
 [ ] conversation context           route passes conversationContextFromBody, manager composes it

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import db from "../db.ts";
 import { isRuntimeRunAbandoned } from "./run-liveness.ts";
+import type { TurnCapabilitySelection } from "./capability-usage.ts";
 
 export type RuntimeRunStatus = "active" | "completed" | "cancelled" | "error";
 
@@ -70,10 +71,16 @@ export interface RuntimeRunDispatch {
     asks: string[];
     reason: string;
   };
-  /** The task plan classified this turn as requiring current web evidence. */
+  /**
+   * This turn owes current web evidence. Proposed by the deterministic task
+   * plan and adjudicated by lib/hermes/web-grounding-decider.ts; `decidedBy`
+   * records which of the two settled it, so a bad obligation can be traced to
+   * its author rather than blamed on the keyword sweep by default.
+   */
   webGrounding?: {
     required: boolean;
     reason: string;
+    decidedBy?: "planner" | "decider" | "decider_unavailable" | "skipped";
   };
   /**
    * The research classifier read this request as exhaustive enough to owe the
@@ -85,6 +92,15 @@ export interface RuntimeRunDispatch {
     intent: string;
     completenessRequired: boolean;
   };
+  /**
+   * Which of the user's capabilities Breadboard put in play for this turn, and
+   * how each one got there — typed by the user, selected automatically from the
+   * message, or handed over wholesale by super agent. Recorded here for the
+   * same reason the grounding blocks are: the selection is a fact about the
+   * turn, decided before the model spoke, and the evidence panel reports it
+   * rather than reconstructing it from whatever the answer implies.
+   */
+  capabilities?: TurnCapabilitySelection;
 }
 
 export interface ActiveRuntimeRunSummary {

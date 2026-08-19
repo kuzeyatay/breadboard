@@ -70,7 +70,8 @@ export async function POST(request: Request) {
         "Skill session scope is invalid.",
       );
     }
-    if (!getActiveRuntimeRun(session.id)) {
+    const run = getActiveRuntimeRun(session.id);
+    if (!run) {
       throw new ApiError(
         409,
         "skill_run_required",
@@ -134,6 +135,9 @@ export async function POST(request: Request) {
       userId: session.user_id,
       gardenId: session.garden_id,
       payload: {
+        // The run this was opened for. Without it the evidence panel cannot
+        // say which turn reached for the skill — see capability-evidence.ts.
+        runId: run.id,
         slug: skill.slug,
         surface: session.surface,
         tool: TOOL,

@@ -32,6 +32,7 @@
     "esbuild": "0.28.1",
     "flatted": "^3.4.4",
     "html-to-image": "^1.11.13",
+    "html-to-text": "^9.0.5",
     "js-yaml": "^4.1.1",
     "katex": "^0.16.45",
     "maplibre-gl": "^5.24.0",
@@ -41,6 +42,7 @@
     "mysql2": "^3.23.2",
     "next": "16.2.3",
     "next-auth": "^4.24.14",
+    "officeparser": "^5.2.2",
     "openai": "^6.34.0",
     "pdf-parse": "^2.4.5",
     "pdfjs-dist": "^5.4.296",
@@ -50,6 +52,7 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-markdown": "^10.1.0",
+    "reactflow": "^11.11.4",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
@@ -57,7 +60,8 @@
     "three": "0.185.1",
     "typescript": "^5",
     "undici": "^7.28.0",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

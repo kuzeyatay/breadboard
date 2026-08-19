@@ -2,7 +2,9 @@
 
 import {
   createContext,
+  type CSSProperties,
   type ReactNode,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -16,6 +18,7 @@ import { playSpeechBlob, stopSpeechPlayback } from "@/lib/speech/playback";
 
 type Feedback = "up" | "down" | null;
 type SpeechState = "idle" | "loading" | "playing";
+type DictationState = "idle" | "preparing";
 
 interface Props {
   content: string;
@@ -45,16 +48,22 @@ async function copyToClipboard(content: string): Promise<void> {
   await navigator.clipboard.writeText(content);
 }
 
-function downloadMarkdown(content: string): void {
-  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `breadboard-response-${new Date().toISOString().slice(0, 10)}.md`;
+  anchor.download = filename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+function downloadMarkdown(content: string): void {
+  saveBlob(
+    new Blob([content], { type: "text/markdown;charset=utf-8" }),
+    `breadboard-response-${new Date().toISOString().slice(0, 10)}.md`,
+  );
 }
 
 function responseTextForSpeech(content: string): string {
@@ -120,10 +129,17 @@ export default function AssistantMessageActions({
   const [menuOpen, setMenuOpen] = useState(false);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [speechState, setSpeechState] = useState<SpeechState>("idle");
+  const [dictationState, setDictationState] = useState<DictationState>("idle");
   const [speechMessage, setSpeechMessage] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const evidenceRef = useRef<HTMLDivElement>(null);
+  const [evidenceBox, setEvidenceBox] = useState<{
+    style: CSSProperties;
+    maxHeight: number;
+  } | null>(null);
   const copyTimerRef = useRef<number | null>(null);
   const speechAbortRef = useRef<AbortController | null>(null);
+  const dictationAbortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   const { slot, suppressActions } = useContext(MessageActionsSlotContext);
   const storageKey = useMemo(() => contentKey(content), [content]);
@@ -133,10 +149,73 @@ export default function AssistantMessageActions({
     setFeedback(stored === "up" || stored === "down" ? stored : null);
   }, [storageKey]);
 
+  /**
+   * The evidence panel is anchored, not stacked: it is measured against the
+   * action row and drawn in a fixed layer on the body. Laying it out with
+   * `absolute bottom-full` inside the row is what produced the bug this
+   * replaces — the row sits near the bottom of the viewport, so a panel 70vh
+   * tall grew straight off the top of the screen, taking its own heading and
+   * close button with it, and any ancestor with `overflow` clipped the rest.
+   */
+  const placeEvidence = useCallback(() => {
+    const anchor = menuRef.current?.getBoundingClientRect();
+    if (!anchor) return;
+    const margin = 12;
+    const gap = 6;
+    // The message scrolled out of the transcript. A panel still pinned where
+    // its trigger used to be describes an answer the reader cannot see.
+    if (anchor.bottom < 0 || anchor.top > window.innerHeight) {
+      setEvidenceOpen(false);
+      return;
+    }
+    const width = Math.min(384, window.innerWidth - margin * 2);
+    const above = anchor.top - gap - margin;
+    const below = window.innerHeight - anchor.bottom - gap - margin;
+    // Whichever side has more room, and never more height than that side has.
+    const openUp = above >= below;
+    const maxHeight = Math.min(
+      Math.max(openUp ? above : below, 160),
+      Math.round(window.innerHeight * 0.7),
+    );
+    const left = Math.min(
+      Math.max(margin, anchor.left),
+      Math.max(margin, window.innerWidth - width - margin),
+    );
+    setEvidenceBox({
+      maxHeight,
+      style: openUp
+        ? {
+            position: "fixed",
+            left,
+            bottom: window.innerHeight - anchor.top + gap,
+            width,
+          }
+        : { position: "fixed", left, top: anchor.bottom + gap, width },
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!evidenceOpen) {
+      setEvidenceBox(null);
+      return;
+    }
+    placeEvidence();
+    window.addEventListener("resize", placeEvidence);
+    // Capturing: the transcript is the element that scrolls, not the window.
+    window.addEventListener("scroll", placeEvidence, true);
+    return () => {
+      window.removeEventListener("resize", placeEvidence);
+      window.removeEventListener("scroll", placeEvidence, true);
+    };
+  }, [evidenceOpen, placeEvidence]);
+
   useEffect(() => {
     if (!menuOpen && !evidenceOpen) return;
     const closeMenu = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+      // The panel lives in a portal, so it is not inside the action row.
+      if (evidenceRef.current?.contains(target)) return;
+      if (!menuRef.current?.contains(target)) {
         setMenuOpen(false);
         setEvidenceOpen(false);
       }
@@ -161,6 +240,7 @@ export default function AssistantMessageActions({
         window.clearTimeout(copyTimerRef.current);
       mountedRef.current = false;
       speechAbortRef.current?.abort();
+      dictationAbortRef.current?.abort();
     },
     [],
   );
@@ -231,6 +311,58 @@ export default function AssistantMessageActions({
   function downloadResponse() {
     downloadMarkdown(content);
     setMenuOpen(false);
+  }
+
+  /**
+   * The spoken reading of this response, saved rather than played.
+   *
+   * A second press cancels: synthesis of a long answer takes as long as the
+   * answer takes to say, and the menu stays open throughout so the row that
+   * started the wait is the row reporting it.
+   */
+  async function downloadDictation() {
+    if (dictationState === "preparing") {
+      dictationAbortRef.current?.abort();
+      dictationAbortRef.current = null;
+      setDictationState("idle");
+      return;
+    }
+    setSpeechMessage(null);
+    const text = responseTextForSpeech(content);
+    if (!text) {
+      setMenuOpen(false);
+      setSpeechMessage("This response has no readable text.");
+      return;
+    }
+    const controller = new AbortController();
+    dictationAbortRef.current = controller;
+    setDictationState("preparing");
+    try {
+      const response = await fetch("/api/speech/synthesize/mp3", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(await speechError(response));
+      const recording = await response.blob();
+      if (!mountedRef.current) return;
+      saveBlob(
+        recording,
+        `breadboard-dictation-${new Date().toISOString().slice(0, 10)}.mp3`,
+      );
+      setMenuOpen(false);
+    } catch (error) {
+      if (!mountedRef.current) return;
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setMenuOpen(false);
+      setSpeechMessage(
+        error instanceof Error ? error.message : "This response could not be saved as a recording.",
+      );
+    } finally {
+      if (dictationAbortRef.current === controller) dictationAbortRef.current = null;
+      if (mountedRef.current) setDictationState("idle");
+    }
   }
 
   function retryResponse() {
@@ -376,16 +508,40 @@ export default function AssistantMessageActions({
             <button type="button" onClick={downloadResponse} className="block w-full rounded-lg px-3 py-2 text-left hover:bg-[var(--paper-strong)]">
               Download Markdown
             </button>
+            <button
+              type="button"
+              onClick={() => void downloadDictation()}
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-[var(--paper-strong)]"
+              title={
+                dictationState === "preparing"
+                  ? "Cancel the recording"
+                  : "Save the spoken reading of this response as an .mp3 file"
+              }
+            >
+              {dictationState === "preparing" ? (
+                <svg className="h-3.5 w-3.5 shrink-0 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <circle className="opacity-25" cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" />
+                  <path className="opacity-80" fill="currentColor" d="M12 3a9 9 0 0 1 9 9h-3a6 6 0 0 0-6-6V3Z" />
+                </svg>
+              ) : null}
+              <span>
+                {dictationState === "preparing" ? "Preparing dictation…" : "Download dictation"}
+              </span>
+            </button>
           </div>
         ) : null}
-        {evidenceOpen && verification ? (
-          <div className="absolute bottom-full left-0 z-20 mb-1">
-            <EvidencePanel
-              verification={verification}
-              onClose={() => setEvidenceOpen(false)}
-            />
-          </div>
-        ) : null}
+        {evidenceOpen && verification && evidenceBox && typeof document !== "undefined"
+          ? createPortal(
+              <div ref={evidenceRef} style={evidenceBox.style} className="z-50">
+                <EvidencePanel
+                  verification={verification}
+                  maxHeight={evidenceBox.maxHeight}
+                  onClose={() => setEvidenceOpen(false)}
+                />
+              </div>,
+              document.body,
+            )
+          : null}
       </div>
       {branch && branch.total > 1 ? (
         <div

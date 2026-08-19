@@ -214,6 +214,12 @@ export const WORLDMONITOR_TOOLS = [
   "worldmonitor_climate",
 ] as const;
 
+// Google image search, served by the vendored mcp-google-images-search MCP
+// server. A read over Google's public image index and nothing else: the tool
+// takes a query and returns links plus display metadata, so like the world
+// monitor there is no user-owned state behind it to change.
+export const IMAGE_SEARCH_TOOLS = ["image_search"] as const;
+
 // The map at /map, and the geographic state behind it. Every one of these is a
 // read of an external open-data service (Photon, Nominatim, Valhalla, Overpass)
 // plus a write to Breadboard's own conversation-scoped geographic state — the
@@ -334,7 +340,7 @@ export const RESEARCH_TOOLS = [
 // Super agent only. `skill_open` returns the guidance of one reviewed skill the
 // user already has installed — the same text typing `/its-slug` would inject —
 // so the agent can pick its own instrument instead of waiting to be handed one.
-// `workflow_run` runs one of the user's own local n8n automations and returns its
+// `workflow_run` runs one of the user's own saved automations and returns its
 // result. `agent_launch` queues one of the runtime agents for the chat surface to
 // start, which is the only way an agent that owns its own turn can be chosen by
 // anything but the user. All three are inert outside a super-agent turn: the
@@ -384,6 +390,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...OMH_TOOLS,
       ...MESSAGING_TOOLS,
       ...WORLDMONITOR_TOOLS,
+      ...IMAGE_SEARCH_TOOLS,
       ...MAP_TOOLS,
       ...CALENDAR_TOOLS,
       ...PLAN_TOOLS,
@@ -415,6 +422,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...OMH_TOOLS,
     ...MESSAGING_TOOLS,
     ...WORLDMONITOR_TOOLS,
+    ...IMAGE_SEARCH_TOOLS,
     ...MAP_TOOLS,
     ...CALENDAR_TOOLS,
     ...PLAN_TOOLS,

@@ -1,39 +1,35 @@
+// The user's saved workflows. Kept at this path because the chat palette, the
+// super-agent inventory, and the canvas home all read the same list; only the
+// backing store changed from n8n to Breadboard's own tables.
+
 import { NextRequest, NextResponse } from "next/server";
 import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
-import {
-  ensureN8nSession,
-  forwardN8nCookie,
-  n8nJson,
-} from "@/lib/workflows/n8n";
-import { summarizeLocalWorkflow } from "@/lib/workflows/execution";
+import { createWorkflow, listWorkflows } from "@/lib/workflows/store";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
-    await requireUserId();
-    const session = await ensureN8nSession(request.cookies.get("n8n-auth")?.value);
-    const query = new URLSearchParams({
-      skip: "0",
-      take: "100",
-      sortBy: "updatedAt:desc",
-      includeScopes: "true",
-    });
-    const payload = await n8nJson(`/rest/workflows?${query}`, {
-      method: "GET",
-      session,
-    });
-    const source = Array.isArray(payload) ? payload : [];
-    const workflows = source
-      .filter((item) => !(typeof item === "object" && item !== null && "isArchived" in item && item.isArchived === true))
-      .map(summarizeLocalWorkflow)
-      .filter((item) => item !== null);
-    const response = NextResponse.json(
-      { workflows },
+    const userId = await requireUserId();
+    return NextResponse.json(
+      { workflows: listWorkflows(userId) },
       { headers: { "Cache-Control": "no-store" } },
     );
-    forwardN8nCookie(response, session);
-    return response;
+  } catch (error) {
+    return routeErrorResponse(error);
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const userId = await requireUserId();
+    const body = (await request.json().catch(() => ({}))) as { name?: unknown; description?: unknown };
+    const workflow = createWorkflow(userId, {
+      name: typeof body.name === "string" ? body.name : undefined,
+      description: typeof body.description === "string" ? body.description : undefined,
+    });
+    return NextResponse.json({ id: workflow.id, name: workflow.name }, { status: 201 });
   } catch (error) {
     return routeErrorResponse(error);
   }

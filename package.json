@@ -11,8 +11,6 @@
     "dev:scriberr": "node scripts/start-scriberr.mjs",
     "dev:voicebox": "node scripts/start-voicebox.mjs",
     "setup:voicebox": "node scripts/setup-voicebox.mjs",
-    "dev:n8n": "node scripts/start-n8n.mjs",
-    "setup:n8n": "node scripts/start-n8n.mjs",
     "dev:gbrain": "node scripts/start-gbrain.mjs",
     "dev:cad": "node scripts/start-cad.mjs",
     "setup:cad": "node scripts/setup-cad.mjs",

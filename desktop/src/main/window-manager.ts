@@ -19,6 +19,10 @@ export interface WindowManagerOptions {
   welcomeGateMaxWaitMs?: number;
   dashboardPreloadGraceMs?: number;
   initialTheme?: BreadboardWindowTheme;
+  /** Overrides for the two timings that decide how long a stuck reconnect can
+   *  stay stuck. Only tests set these; see the constants they default to. */
+  loadWatchdogMs?: number;
+  recoveryHeartbeatMs?: number;
   /** Where window recovery reports what it is doing. Silent when omitted. */
   log?: (line: string) => void;
 }
@@ -43,6 +47,18 @@ export const LOCAL_PAGE_RECOVERY_DELAYS_MS = [250, 500, 1_000, 2_000, 5_000] as 
  * route build: it exists to break deadlocks, never to interrupt progress.
  */
 export const LOCAL_PAGE_LOAD_WATCHDOG_MS = 90_000;
+/**
+ * Every step of the retry loop is armed by the step before it, so any path that
+ * returns without arming the next one ends the loop and leaves the reconnect
+ * scene up for good. The watchdog covers a load that reports nothing; nothing
+ * covered the loop itself losing its place — and it can, because the retired
+ * window keeps its listeners and writes to the same recovery state the
+ * replacement is retrying from. This ticks over that state and restarts the
+ * loop whenever it finds no attempt in flight, scheduled, or painting.
+ */
+export const RECOVERY_HEARTBEAT_MS = 15_000;
+/** Floor between two attempts to put the reconnect scene back on screen. */
+export const RECOVERY_SCENE_RESHOW_MS = 2_000;
 
 /** Back off quickly at first, then keep checking without spinning forever. */
 export function localPageRecoveryDelayMs(attempt: number): number {
@@ -162,6 +178,11 @@ interface LocalPageRecoveryState {
   watchdog: ReturnType<typeof setTimeout> | null;
   replacement: BrowserWindow | null;
   paintToken: number;
+  /** Outstanding paint probes. An attempt with one running is still accounted
+   *  for even though its watchdog has been stood down; see the heartbeat. */
+  paintWaits: number;
+  /** Runs only while a replacement owns the loop; see the heartbeat constant. */
+  heartbeat: ReturnType<typeof setInterval> | null;
 }
 
 export function isFullScreenShortcut(input: FullScreenShortcutInput): boolean {
@@ -189,6 +210,7 @@ export class WindowManager {
   private startupContinued = false;
   private readonly startupContinueWaiters = new Set<() => void>();
   private dashboardPreload: DashboardPreload | null = null;
+  private recoverySceneShownAt = 0;
   private currentTheme: BreadboardWindowTheme;
   private readonly localPageRecovery = new WeakMap<
     BrowserWindow,
@@ -342,6 +364,8 @@ export class WindowManager {
       watchdog: null,
       replacement: null,
       paintToken: 0,
+      paintWaits: 0,
+      heartbeat: null,
     };
     this.localPageRecovery.set(window, state);
 
@@ -354,7 +378,14 @@ export class WindowManager {
     window.webContents.on("did-navigate-in-page", (_event, url) => {
       rememberAllowedUrl(url);
     });
+    // Once a replacement owns the retry loop, this window has been retired to
+    // the reconnect scene and shares nothing with the attempt in flight but the
+    // state object. Its remaining events are about a page nobody is waiting for
+    // any more, and letting them clear that state disarms the only thing
+    // bringing the dashboard back.
+    const retired = () => state.replacement !== null;
     window.webContents.on("did-finish-load", () => {
+      if (retired()) return;
       const url = window.webContents.getURL();
       // Chromium may finish loading its internal error document after emitting
       // did-fail-load. Only a real Breadboard URL proves recovery succeeded.
@@ -373,12 +404,22 @@ export class WindowManager {
         // still the attempt in flight, and something has to outlive a redirect
         // that leads nowhere.
         if (!isMainFrame || errorCode === -3) return;
+        if (retired()) return;
         rememberAllowedUrl(failedUrl);
         this.clearLoadWatchdog(state);
         this.scheduleLocalPageRecovery(window, state);
       },
     );
     window.webContents.on("render-process-gone", () => {
+      if (retired()) {
+        // Navigating a live http: page to the local reconnect scene retires its
+        // renderer, and Chromium reports that teardown here. Put the scene back
+        // if it went with it, but leave the retry loop alone: this is the exact
+        // event that used to strand the scene by clearing a watchdog belonging
+        // to a load in another window entirely.
+        this.showRecoveryScene(window);
+        return;
+      }
       this.clearLoadWatchdog(state);
       this.scheduleLocalPageRecovery(window, state);
     });
@@ -386,6 +427,7 @@ export class WindowManager {
       if (state.timer !== null) clearTimeout(state.timer);
       state.timer = null;
       this.clearLoadWatchdog(state);
+      this.stopRecoveryHeartbeat(state);
       state.paintToken += 1;
       const replacement = state.replacement;
       state.replacement = null;
@@ -422,6 +464,43 @@ export class WindowManager {
     state.watchdog = null;
   }
 
+  /** Put the local reconnect scene in a window. Rate limited, because the
+   *  renderer this restores can itself be the one that just died. */
+  private showRecoveryScene(window: BrowserWindow): void {
+    if (window.isDestroyed()) return;
+    const now = Date.now();
+    if (now - this.recoverySceneShownAt < RECOVERY_SCENE_RESHOW_MS) return;
+    this.recoverySceneShownAt = now;
+    void window
+      .loadFile(this.recoveryHtmlPath(), { query: { theme: this.currentTheme } })
+      .catch(() => undefined);
+  }
+
+  private startRecoveryHeartbeat(state: LocalPageRecoveryState): void {
+    if (state.heartbeat !== null) return;
+    state.heartbeat = setInterval(() => {
+      const replacement = state.replacement;
+      if (!replacement || replacement.isDestroyed()) {
+        this.stopRecoveryHeartbeat(state);
+        return;
+      }
+      // Scheduled, in flight under a watchdog, or painting: all three mean the
+      // loop still has somewhere to go on its own.
+      if (state.timer !== null || state.watchdog !== null || state.paintWaits > 0) return;
+      this.log(
+        `reconnect has nothing in flight for ${state.url}; the retry loop lost its place, restarting it`,
+      );
+      this.scheduleMainWindowReplacementLoad(state);
+    }, this.options.recoveryHeartbeatMs ?? RECOVERY_HEARTBEAT_MS);
+    // Never hold the app open for a window that is only waiting.
+    state.heartbeat.unref?.();
+  }
+
+  private stopRecoveryHeartbeat(state: LocalPageRecoveryState): void {
+    if (state.heartbeat !== null) clearInterval(state.heartbeat);
+    state.heartbeat = null;
+  }
+
   /**
    * Keep one load attempt accountable. Every other path out of a retry is an
    * event the load itself raises; this is the one that covers a load raising
@@ -433,11 +512,12 @@ export class WindowManager {
     retry: () => void,
   ): void {
     this.clearLoadWatchdog(state);
+    const watchdogMs = this.options.loadWatchdogMs ?? LOCAL_PAGE_LOAD_WATCHDOG_MS;
     state.watchdog = setTimeout(() => {
       state.watchdog = null;
       if (window.isDestroyed()) return;
       this.log(
-        `load of ${state.url} answered nothing for ${LOCAL_PAGE_LOAD_WATCHDOG_MS}ms; abandoning it and retrying`,
+        `load of ${state.url} answered nothing for ${watchdogMs}ms; abandoning it and retrying`,
       );
       state.paintToken += 1;
       try {
@@ -447,7 +527,7 @@ export class WindowManager {
         // finds it destroyed and stops there.
       }
       retry();
-    }, LOCAL_PAGE_LOAD_WATCHDOG_MS);
+    }, watchdogMs);
   }
 
   /**
@@ -508,7 +588,9 @@ export class WindowManager {
       if (state.timer !== null) clearTimeout(state.timer);
       state.timer = null;
       const paintToken = ++state.paintToken;
+      state.paintWaits += 1;
       void this.waitForFirstPaint(replacement).then(() => {
+        state.paintWaits -= 1;
         // A newer attempt owns the outcome now, and retired windows are somebody
         // else's to finish. Both are handled elsewhere; leaving is correct.
         if (state.replacement !== replacement || state.paintToken !== paintToken) return;
@@ -526,11 +608,9 @@ export class WindowManager {
     // Replacing a crashed renderer with a file page gives immediate, reliable
     // feedback while the network-backed dashboard is unavailable.
     this.log(`dashboard page lost; showing the reconnect scene and retrying ${state.url}`);
-    void failedWindow
-      .loadFile(this.recoveryHtmlPath(), {
-        query: { theme: this.currentTheme },
-      })
-      .catch(() => undefined);
+    this.recoverySceneShownAt = 0;
+    this.showRecoveryScene(failedWindow);
+    this.startRecoveryHeartbeat(state);
     retry();
   }
 
@@ -540,10 +620,16 @@ export class WindowManager {
     const replacement = state.replacement;
     if (!replacement || replacement.isDestroyed() || state.timer !== null) return;
     const delay = localPageRecoveryDelayMs(state.attempt);
-    state.attempt += 1;
+    const attempt = (state.attempt += 1);
     state.timer = setTimeout(() => {
       state.timer = null;
       if (state.replacement !== replacement || replacement.isDestroyed()) return;
+      // Once the delay reaches its ceiling this is roughly a line a minute, and
+      // a reconnect that does not lift is unreadable without knowing whether
+      // anything was still asking for the page.
+      if (attempt <= 3 || attempt % 12 === 0) {
+        this.log(`reconnect attempt ${attempt} for ${state.url}`);
+      }
       this.armLoadWatchdog(replacement, state, () =>
         this.scheduleMainWindowReplacementLoad(state),
       );
@@ -567,6 +653,14 @@ export class WindowManager {
     ) {
       if (!replacement.isDestroyed()) replacement.destroy();
       state.replacement = null;
+      this.stopRecoveryHeartbeat(state);
+      // Giving up here is only correct when there is no longer a reconnect
+      // scene to lift. A window still sitting on one has to be handed a fresh
+      // attempt, or this is the quiet return that strands it.
+      if (this.mainWindow === failedWindow && !failedWindow.isDestroyed()) {
+        this.log(`reconnect attempt was retired before it landed; starting another`);
+        this.beginMainWindowRecovery(failedWindow, state);
+      }
       return;
     }
 
@@ -579,6 +673,7 @@ export class WindowManager {
     if (state.timer !== null) clearTimeout(state.timer);
     state.timer = null;
     this.clearLoadWatchdog(state);
+    this.stopRecoveryHeartbeat(state);
     this.log(`dashboard came back; handing the window over to ${state.url}`);
 
     // These listeners belong only to the offscreen retry phase. The adopted

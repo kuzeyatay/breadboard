@@ -229,6 +229,7 @@ export async function POST(request: Request) {
         userId: session.user_id,
         gardenId: session.garden_id,
         payload: {
+          runId: run.id,
           connectionId: null,
           provider: "composio",
           slug,
@@ -249,6 +250,7 @@ export async function POST(request: Request) {
           userId: session.user_id,
           gardenId: session.garden_id,
           payload: {
+            runId: run.id,
             connectionId: null,
             provider: "composio",
             slug,
@@ -264,6 +266,7 @@ export async function POST(request: Request) {
           userId: session.user_id,
           gardenId: session.garden_id,
           payload: {
+            runId: run.id,
             connectionId: null,
             provider: "composio",
             slug,
@@ -340,6 +343,7 @@ export async function POST(request: Request) {
       userId: session.user_id,
       gardenId: session.garden_id,
       payload: {
+        runId: run.id,
         connectionId: connection.id,
         provider: "mcp",
         slug,
@@ -360,6 +364,7 @@ export async function POST(request: Request) {
         userId: session.user_id,
         gardenId: session.garden_id,
         payload: {
+          runId: run.id,
           connectionId: connection.id,
           provider: "mcp",
           slug,
@@ -375,6 +380,7 @@ export async function POST(request: Request) {
         userId: session.user_id,
         gardenId: session.garden_id,
         payload: {
+          runId: run.id,
           connectionId: connection.id,
           provider: "mcp",
           slug,

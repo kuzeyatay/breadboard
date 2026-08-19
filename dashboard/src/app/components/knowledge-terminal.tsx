@@ -9,11 +9,12 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
+import { useQueuedFollowUps } from '@/app/components/hermes/queued-follow-ups';
 import { useComposerInset } from '@/app/components/chat/use-composer-inset';
+import ChatDisclaimer from '@/app/components/chat/chat-disclaimer';
 import ChatGreetingEmptyState from '@/app/components/hermes/chat-greeting-empty-state';
 import { useChatGreeting } from '@/app/components/hermes/use-chat-greeting';
 import AssistantMessageActions from '@/app/components/assistant-message-actions';
@@ -35,6 +36,7 @@ import ChatMessageRail, {
   type ChatMessageRailItem,
 } from '@/app/components/chat-message-rail';
 import ChatMarkdown from '@/app/components/chat-markdown';
+import { useSmoothStreamText } from '@/app/components/chat/use-smooth-stream-text';
 import ChatTimeSeparator from '@/app/components/chat-time-separator';
 import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
 import { useAssistantModels } from '@/app/components/use-assistant-models';
@@ -297,6 +299,30 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  // The in-flight answer's request, so the composer's stop control can cancel
+  // it instead of leaving a working turn unstoppable.
+  const streamControllerRef = useRef<AbortController | null>(null);
+  // Messages typed while an answer is streaming queue above the composer
+  // instead of being dropped, and send as ordinary follow-ups once it settles.
+  // This transport has no runtime session behind it, so a queued message can
+  // never steer the active answer — it always waits its turn.
+  const { queueFollowUp, headerContent: queuedFollowUpsHeader } =
+    useQueuedFollowUps({
+      conversationKey: activeId === null ? null : String(activeId),
+      runInFlight: isStreaming,
+      steerableRunActive: false,
+      onSendQueued: async (text) => {
+        await sendMessage(text);
+      },
+    });
+  // The newest answer's text is revealed at a readable pace rather than drawn
+  // straight from the buffer, so a reply that arrives in bursts (or whole)
+  // still reads as a stream. Older messages render their content directly.
+  const newestMessage = messages[messages.length - 1];
+  const revealedAssistantContent = useSmoothStreamText(
+    newestMessage?.role === 'assistant' ? newestMessage.content : '',
+    isStreaming,
+  );
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   // Unsent text outlives a reload, filed under the chat it was typed in. These
   // chats are already a per-scope thing in this browser, so their drafts are too.
@@ -506,6 +532,8 @@ export default function KnowledgeTerminal({ scope }: Props) {
     setAttachmentStatus('');
     setIsStreaming(true);
     setMessages([...nextMessages, assistantMessage]);
+    const controller = new AbortController();
+    streamControllerRef.current = controller;
 
     try {
       const response = await fetch('/api/knowledge-chat', {
@@ -519,6 +547,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
           scope,
           adhdMode: isDirectModeEnabled(),
         }),
+        signal: controller.signal,
       });
 
       if (!response.ok || !response.body) {
@@ -600,12 +629,15 @@ export default function KnowledgeTerminal({ scope }: Props) {
       setMessages(finalMessages);
       updateSessionMessages(session.id, finalMessages);
     } catch (error) {
+      const aborted = error instanceof Error && error.name === 'AbortError';
       const message = error instanceof Error ? error.message : 'Assistant could not answer right now';
       const finalMessages: ChatMessage[] = [
         ...nextMessages,
         {
           role: 'assistant',
-          content: `I could not reach the knowledge base assistant yet. ${message}`,
+          content: aborted
+            ? 'The request was stopped.'
+            : `I could not reach the knowledge base assistant yet. ${message}`,
           createdAt: turnCreatedAt,
           sources: [],
           responseDurationMs: Math.round(performance.now() - responseStartedAt),
@@ -614,6 +646,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
       setMessages(finalMessages);
       updateSessionMessages(session.id, finalMessages);
     } finally {
+      if (streamControllerRef.current === controller) {
+        streamControllerRef.current = null;
+      }
       setIsStreaming(false);
     }
   }
@@ -636,9 +671,13 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const renderTranscriptRow = useCallback(
     (message: ChatMessage, index: number) => {
       const isNewest = index === messages.length - 1;
+      const paced =
+        isNewest &&
+        message.role === 'assistant' &&
+        revealedAssistantContent !== message.content;
       return (
         <TranscriptRow
-          message={message}
+          message={paced ? { ...message, content: revealedAssistantContent } : message}
           separatorLabel={timeSeparators[index] ?? null}
           responding={isStreaming && isNewest}
           onRetry={isNewest ? () => retryAssistantMessage(index) : undefined}
@@ -648,15 +687,8 @@ export default function KnowledgeTerminal({ scope }: Props) {
     // `retryAssistantMessage` is re-declared every render and is reachable only
     // from the newest row, which re-renders anyway.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [messages.length, timeSeparators, isStreaming],
+    [messages.length, timeSeparators, isStreaming, revealedAssistantContent],
   );
-
-  function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      void sendMessage();
-    }
-  }
 
   async function addAttachmentFiles(files: File[]) {
     if (files.length === 0) return;
@@ -915,9 +947,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
           <div className="relative flex min-h-0 flex-1 flex-col">
           <div
             ref={transcriptScrollRef}
-            className="bb-chat-scroll-fade min-h-0 flex-1 overflow-y-auto"
+            className="bb-chat-scroller min-h-0 flex-1 overflow-y-auto"
           >
-            <div className="bb-chat-scroll-tail mx-auto w-full max-w-3xl px-4 py-5">
+            <div className="bb-chat-scroll-tail mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 py-5">
               {messages.length === 0 ? (
                 <ChatGreetingEmptyState
                   greeting={chatGreeting.greeting}
@@ -939,6 +971,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
                   renderItem={renderTranscriptRow}
                 />
               )}
+              {messages.length > 0 ? <ChatDisclaimer /> : null}
             </div>
           </div>
             <ChatMessageRail
@@ -966,15 +999,17 @@ export default function KnowledgeTerminal({ scope }: Props) {
             />
             <AssistantComposer
               className="mx-auto w-full max-w-3xl"
-              transcriptAtEnd={!transcriptAwayFromBottom}
               compact
               value={input}
               onChange={setInput}
               textareaRef={composerTextareaRef}
               onSubmit={() => void sendMessage()}
-              onKeyDown={handleInputKeyDown}
               placeholder={isPublic ? 'Ask anything across all public gardens...' : 'Ask anything across your gardens...'}
               isSending={isStreaming}
+              runState={isStreaming ? 'running' : 'idle'}
+              onQueueSteer={queueFollowUp}
+              headerContent={queuedFollowUpsHeader}
+              onStop={() => streamControllerRef.current?.abort()}
               canSubmit={Boolean(input.trim() || chatAttachments.length > 0)}
               model={model}
               models={models}

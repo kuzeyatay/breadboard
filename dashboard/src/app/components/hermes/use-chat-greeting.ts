@@ -9,6 +9,7 @@ import {
   resolveChatGreeting,
   resolveChatSuggestions,
   type ChatGreeting,
+  type ChatGreetingGarden,
   type ChatGreetingScope,
   type ChatGreetingSignals,
 } from "@/lib/hermes/chat-greeting";
@@ -17,6 +18,8 @@ interface Options {
   scope: ChatGreetingScope;
   /** Off-the-record chats greet differently and open with different questions. */
   temporary: boolean;
+  /** The garden the chat is open inside — its questions and openers name it. */
+  garden?: ChatGreetingGarden | null;
 }
 
 export interface ChatGreetingState {
@@ -88,7 +91,7 @@ function normalizeSignals(value: unknown): ChatGreetingSignals {
  * what hour it is. A timer sleeping to the top of the hour then steps the
  * pools forward and re-reads the activity signals behind them.
  */
-export function useChatGreeting({ scope, temporary }: Options): ChatGreetingState {
+export function useChatGreeting({ scope, temporary, garden }: Options): ChatGreetingState {
   const [now, setNow] = useState<Date | null>(null);
   const [signals, setSignals] = useState<ChatGreetingSignals | null>(null);
   const [rotation, setRotation] = useState(0);
@@ -140,13 +143,21 @@ export function useChatGreeting({ scope, temporary }: Options): ChatGreetingStat
     };
   }, [rotation]);
 
+  const gardenName = garden?.name ?? null;
+  const gardenSlug = garden?.slug ?? null;
   return useMemo(() => {
     if (now === null || signals === null) return NOT_READY;
-    const input = { signals, scope, temporary, now };
+    const input = {
+      signals,
+      scope,
+      temporary,
+      garden: gardenName && gardenSlug ? { name: gardenName, slug: gardenSlug } : null,
+      now,
+    };
     return {
       ready: true,
       greeting: resolveChatGreeting(input),
       suggestions: resolveChatSuggestions(input),
     };
-  }, [now, scope, signals, temporary]);
+  }, [now, scope, signals, temporary, gardenName, gardenSlug]);
 }

@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { repositoryRoot } from "../runtime-paths.ts";
+import { RecursiveChunker } from "../sim/chunkers/recursive-chunker.ts";
 import type { DocumentChapter, DocumentStructure } from "./types.ts";
 
 const BRIDGE_TIMEOUT_MS = 120_000;
@@ -158,7 +159,68 @@ function headingTitle(line: string): string {
  * headings, then structural headings, then fixed windows), restricted to
  * Latin-script chapter words.
  */
-export function fallbackStructure(text: string): DocumentStructure {
+/**
+ * ~24,000 characters, the old fixed-stride window's size, expressed in the
+ * chunker's unit (1 token ≈ 4 characters). Kept equal on purpose: the point of
+ * this change is where the boundary falls, not how much text each window
+ * holds.
+ */
+const WINDOW_CHUNK_SIZE_TOKENS = 6000;
+
+/** The old loop's ceiling on window count, preserved so a pathologically large
+ * document still terminates in bounded work rather than producing thousands
+ * of one-paragraph chapters for `mergeToLimit` to fold back down. */
+const MAX_WINDOW_CHAPTERS = 200;
+
+/**
+ * Boundaries for a document with no detectable chapter headings, split at
+ * paragraph/sentence boundaries instead of a raw character count.
+ *
+ * The previous version of this function cut every 24,000 characters exactly,
+ * with no regard for what was at that position — routinely mid-sentence, and
+ * on a technical document sometimes mid-code-fence. That is the naive
+ * length-based split the vendored chunker exists to replace: `RecursiveChunker`
+ * (dashboard/src/lib/sim/chunkers/recursive-chunker.ts, vendored from
+ * simstudioai/sim) walks paragraph breaks, then sentence breaks, then word
+ * boundaries, only falling back to a raw character cut for a single run of
+ * text with no boundary of any kind in 24,000 characters.
+ *
+ * `RecursiveChunker.chunk()` cleans the text first (collapsing repeated
+ * whitespace, normalizing line endings) before splitting, so the chunk
+ * boundaries it returns are offsets into that *cleaned* copy, not into `text`
+ * — and `planChapters` later slices `text` itself at these offsets, so a
+ * cleaned-text offset would be silently wrong the moment a document has any
+ * CRLF line ending, tab, or run of blank lines. Cleaning never reorders or
+ * removes non-whitespace characters, though, so each chunk's own words are
+ * still a substring of `text` — this re-locates every chunk by searching for
+ * its opening words, in order, which is exact wherever it succeeds and only
+ * approximate (falling back to the running cursor) on the degenerate input
+ * that defeats the search entirely.
+ */
+async function windowChapters(text: string): Promise<DocumentChapter[]> {
+  const chunker = new RecursiveChunker({ chunkSize: WINDOW_CHUNK_SIZE_TOKENS, chunkOverlap: 0 });
+  const chunks = (await chunker.chunk(text)).slice(0, MAX_WINDOW_CHAPTERS);
+
+  const starts: number[] = [];
+  let cursor = 0;
+  for (const chunk of chunks) {
+    const anchor = chunk.text.slice(0, 80).trim();
+    const found = anchor ? text.indexOf(anchor, cursor) : -1;
+    const start = found >= 0 ? found : cursor;
+    starts.push(start);
+    cursor = start;
+  }
+
+  return chunks.map((_chunk, index) => ({
+    number: index + 1,
+    title: `Part ${index + 1}`,
+    start: starts[index],
+    end: index + 1 < chunks.length ? starts[index + 1] : text.length,
+    kind: "window" as const,
+  }));
+}
+
+export async function fallbackStructure(text: string): Promise<DocumentStructure> {
   const lines = text.split(/\r?\n/);
   const marks: Array<{ number: number; title: string; start: number; kind: DocumentChapter["kind"] }> = [];
   let offset = 0;
@@ -221,16 +283,7 @@ export function fallbackStructure(text: string): DocumentStructure {
       });
     });
   } else {
-    const window = 24000;
-    for (let index = 0; index * window < Math.max(text.length, 1) && index < 200; index += 1) {
-      chapters.push({
-        number: index + 1,
-        title: `Part ${index + 1}`,
-        start: index * window,
-        end: Math.min(text.length, (index + 1) * window),
-        kind: "window",
-      });
-    }
+    chapters.push(...(await windowChapters(text)));
   }
 
   const merged: DocumentChapter[] = [];

@@ -1,7 +1,10 @@
 :root {
   color-scheme: light;
   --titlebar-height: 32px;
-  --background: #e6f0e6;
+  /* Paper, not the app's green field: this scene stands where the window frame
+     already is, and a second colour under the caption strip reads as a seam
+     rather than as the app waiting. The startup screen is painted the same. */
+  --background: #faf7ef;
   --chrome: #faf7ef;
   --ink: #17261f;
   --muted: #607068;
@@ -12,7 +15,7 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --background: #18181a;
+  --background: #20211f;
   --chrome: #20211f;
   --ink: #e6ebe5;
   --muted: #9da8a1;
