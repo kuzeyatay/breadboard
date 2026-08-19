@@ -18,7 +18,8 @@ function createDatabase() {
   const db = new Database(":memory:");
   db.exec(`
     CREATE TABLE users (
-      id INTEGER PRIMARY KEY, username TEXT, email TEXT, created_at TEXT
+      id INTEGER PRIMARY KEY, username TEXT, email TEXT, created_at TEXT,
+      first_name TEXT, last_name TEXT
     );
     CREATE TABLE clusters (
       id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, slug TEXT

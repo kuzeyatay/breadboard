@@ -1,0 +1,58 @@
+{
+  "pass": "W2-3H PartA",
+  "decision": "COMMITTED_AND_REVERIFIED",
+  "generatedAt": "2026-08-18T17:56:40.692Z",
+  "commit": "3163069551fbb574db5ea79e49bae323fbbe13f2",
+  "parent": "5d7330a1c60449922df9a5dc9def275f675622bd",
+  "branch": "master",
+  "filesChanged": 4,
+  "insertions": 304,
+  "deletions": 25,
+  "pushed": false,
+  "prOpened": false,
+  "merged": false,
+  "subject": "fix(skills): make reviewed text pins line-ending invariant",
+  "stagedFootprint": {
+    "generatedAt": "2026-08-18T17:56:40.688Z",
+    "stagedFrom": "the finalized repair capability authorised writes plus the two verified factcheck updates",
+    "notStagedFrom": [
+      "git diff --all",
+      "whole snapshot diff",
+      "the old receipt files_changed list (150+ paths)"
+    ],
+    "staged": [
+      ".agents/skills/registry.json",
+      "dashboard/src/lib/hermes/skills.ts",
+      "dashboard/tests/factcheck-integration.test.mjs",
+      "dashboard/tests/reviewed-skill-pin-canonicalisation.test.mjs"
+    ],
+    "unrelatedStaged": [],
+    "diffStat": "4 files changed, 304 insertions(+), 25 deletions(-)",
+    "w23f002Excluded": {
+      "verifiedBy": [
+        "zero hits for requiresReviewedIntegrityPin/provenance in the staged diff",
+        "the pinnedHashes.length === 0 fail-open still present at skills.ts:429"
+      ]
+    }
+  },
+  "postCommit": {
+    "generatedAt": "2026-08-18T17:56:40.696Z",
+    "targetedSuites": "25/25 across reviewed-skill-pin-canonicalisation, factcheck-integration, premortem-integration",
+    "originalReproductionReplayed": {
+      "allThreeHealthy": true,
+      "bothInvocationsAccepted": true,
+      "quartzExposureUnchanged": true,
+      "reproduced": false
+    },
+    "committedStateAcrossCheckoutPolicies": {
+      "policies": [
+        "core.autocrlf=true",
+        "core.autocrlf=false",
+        "core.autocrlf=input"
+      ],
+      "allSkillsVerifyEverywhere": true,
+      "byteFormsDifferedAcrossArms": true
+    },
+    "conclusion": "Committed bytes equal verified bytes, and the repair holds from a fresh checkout under every policy."
+  }
+}

@@ -116,9 +116,6 @@ const voiceboxPort = /^\d+$/.test(process.env.VOICEBOX_PORT ?? "")
   ? process.env.VOICEBOX_PORT
   : "17493";
 const voiceboxBaseUrl = (process.env.VOICEBOX_BASE_URL || `http://127.0.0.1:${voiceboxPort}`).replace(/\/+$/, "");
-const n8nPort = /^\d+$/.test(process.env.N8N_PORT ?? "") ? process.env.N8N_PORT : "5678";
-const n8nBaseUrl = (process.env.N8N_BASE_URL || `http://127.0.0.1:${n8nPort}`).replace(/\/+$/, "");
-const n8nDataDir = process.env.N8N_DATA_DIR || path.join(repoRoot, ".runtime", "n8n");
 
 const runtimeEnv = {
   ...process.env,
@@ -195,16 +192,6 @@ const runtimeEnv = {
   VOICEBOX_STATUS_PATH:
     process.env.VOICEBOX_STATUS_PATH ||
     path.join(repoRoot, ".runtime", "voicebox", "startup-status.json"),
-  // n8n is local and private. The dashboard proxies catalog/import work and
-  // receives only these loopback and private-file paths.
-  N8N_PORT: n8nPort,
-  N8N_BASE_URL: n8nBaseUrl,
-  N8N_DASHBOARD_URL: process.env.N8N_DASHBOARD_URL || "http://localhost:3000",
-  N8N_SOURCE_DIR: process.env.N8N_SOURCE_DIR || path.join(repoRoot, "n8n"),
-  N8N_DATA_DIR: n8nDataDir,
-  N8N_STATUS_PATH: process.env.N8N_STATUS_PATH || path.join(n8nDataDir, "startup-status.json"),
-  N8N_CREDENTIALS_PATH:
-    process.env.N8N_CREDENTIALS_PATH || path.join(n8nDataDir, "breadboard-auth.json"),
 };
 const children = [];
 
@@ -250,18 +237,6 @@ async function main() {
       path.join(repoRoot, "scripts", "setup-mem0.mjs"),
       "--if-needed",
     ]);
-  }
-
-  // n8n has no dependency on the model gateway. Spawn it first so workflow
-  // discovery warms in parallel with ChatMock instead of waiting behind it.
-  const n8nAutostart = !/^(0|false|no|off)$/i.test(
-    process.env.N8N_AUTOSTART?.trim() ?? "",
-  );
-  if (n8nAutostart) {
-    startService("n8n", process.execPath, [path.join(repoRoot, "scripts", "start-n8n.mjs")]);
-    process.stdout.write(
-      `[stack] n8n warming on ${n8nBaseUrl}; automations will appear as soon as it is ready.\n`,
-    );
   }
 
   startService("chatmock", process.execPath, [path.join(repoRoot, "scripts", "start-chatmock.mjs")]);

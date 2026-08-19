@@ -31,6 +31,7 @@ import {
   whatsAppTimings,
 } from "./config.ts";
 import { formatAllowedNumbers, type WhatsAppMode } from "./identity.ts";
+import { applyOutboundGuardrails } from "../guardrails/service.ts";
 
 export type WhatsAppBridgeState =
   | "disconnected"
@@ -495,10 +496,13 @@ export class WhatsAppBridge {
   }
 
   async sendMessage(chatId: string, message: string): Promise<void> {
+    // Masked here, once, so every caller of the bridge (messaging_send, review
+    // pushes, the inbound-reply path) gets the guardrail for free rather than
+    // each needing to remember it. Verbatim pass-through when scrubbing is off.
     const response = await fetch(`${whatsAppBridgeBaseUrl()}/send`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chatId, message }),
+      body: JSON.stringify({ chatId, message: applyOutboundGuardrails(message) }),
       signal: AbortSignal.timeout(60_000),
     });
     if (!response.ok) {
@@ -520,7 +524,11 @@ export class WhatsAppBridge {
     const response = await fetch(`${whatsAppBridgeBaseUrl()}/send-media`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chatId, ...file }),
+      body: JSON.stringify({
+        chatId,
+        ...file,
+        caption: file.caption !== undefined ? applyOutboundGuardrails(file.caption) : file.caption,
+      }),
       signal: AbortSignal.timeout(120_000),
     });
     if (!response.ok) {

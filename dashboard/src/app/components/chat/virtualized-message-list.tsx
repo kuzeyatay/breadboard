@@ -197,6 +197,7 @@ export default function VirtualizedMessageList<T>({
   // height disagrees with the recorded one is resized in a single pass.
   const observedRowsRef = useRef<Set<HTMLElement> | null>(null);
   const sweepFrameRef = useRef<number | null>(null);
+  const sweepDeferralsRef = useRef(0);
 
   const sweepMeasurements = useCallback(() => {
     sweepFrameRef.current = null;
@@ -206,11 +207,17 @@ export default function VirtualizedMessageList<T>({
 
     // Still moving: try again on the next frame rather than fighting the
     // scroll. `isScrolling` falls 150ms after the last scroll event, so this
-    // settles on its own the moment the transcript does.
-    if (virtualizer.isScrolling) {
+    // usually settles the moment the transcript does — but only usually, so
+    // the wait is bounded. A transcript following a streaming answer writes
+    // `scrollTop` every frame and would postpone the correction for the whole
+    // turn; past the cap the sweep runs anyway, and rows are never left drawn
+    // on top of each other for more than a beat.
+    if (virtualizer.isScrolling && sweepDeferralsRef.current < 40) {
+      sweepDeferralsRef.current += 1;
       sweepFrameRef.current = window.requestAnimationFrame(sweepMeasurements);
       return;
     }
+    sweepDeferralsRef.current = 0;
 
     const corrections: Array<[number, number]> = [];
     for (const row of rows) {
@@ -222,12 +229,17 @@ export default function VirtualizedMessageList<T>({
       if (!Number.isInteger(index) || index < 0 || index >= itemsRef.current.length) {
         continue;
       }
+      const actual = row.offsetHeight;
+      // Still an empty shell: there is nothing true to record yet.
+      if (actual < 2) continue;
       const recorded = virtualizer.itemSizeCache.get(
         virtualizer.options.getItemKey(index),
       );
-      const actual = row.offsetHeight;
-      // Sub-pixel disagreement is what rounding leaves behind, not drift.
-      if (recorded === undefined || Math.abs(recorded - actual) < 1) continue;
+      // Sub-pixel disagreement is what rounding leaves behind, not drift. No
+      // recorded height at all is a row whose empty mount was skipped: the DOM
+      // now holds its first real height, so it is taken here — `resizeItem`
+      // no-ops when it happens to match the estimate.
+      if (recorded !== undefined && Math.abs(recorded - actual) < 1) continue;
       corrections.push([index, actual]);
     }
     if (corrections.length === 0) return;
@@ -241,6 +253,22 @@ export default function VirtualizedMessageList<T>({
     if (sweepFrameRef.current !== null) return;
     sweepFrameRef.current = window.requestAnimationFrame(sweepMeasurements);
   }, [sweepMeasurements]);
+
+  // A hard refresh lands on a conversation before its webfonts do: rows are
+  // measured in the fallback font, and when the real one arrives every row
+  // reflows at once — the classic refreshed-terminal transcript with rows
+  // drawn into each other. The per-row observers catch most of it; this
+  // catches all of it, in one sweep, the moment the fonts settle.
+  useEffect(() => {
+    if (typeof document === "undefined" || !document.fonts) return;
+    let cancelled = false;
+    document.fonts.ready.then(() => {
+      if (!cancelled) scheduleSweep();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [scheduleSweep]);
 
   const rowObserverRef = useRef<ResizeObserver | null>(null);
   const getRowObserver = useCallback(() => {
@@ -285,6 +313,13 @@ export default function VirtualizedMessageList<T>({
             // A row mounted and unmounted inside one commit was never observed,
             // so there is nothing to measure and nothing to clean up.
             if (!row.isConnected) continue;
+            // A row that mounts as an empty shell — markdown still hydrating, a
+            // dynamic import still resolving — must not have its emptiness
+            // recorded: a near-zero height in the size cache lays every row
+            // below out on top of this one, and the library never takes a
+            // measurement back on its own. The estimate stands until the
+            // content arrives; the sweep observer takes it from there.
+            if (row.offsetHeight < 2) continue;
             virtualizer.measureElement(row);
             measureFirstSize(row);
           }
@@ -328,8 +363,13 @@ export default function VirtualizedMessageList<T>({
     return () => bridge.attach(null);
   }, [bridge, getRowStart, scrollToEnd, scrollToIndex]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Not a redundant write: StrictMode mounts, runs the cleanup below, and
+    // mounts again — all on a component that then lives on. Left `true`, the
+    // flag silences the microtask measurement and the sweep for the lifetime
+    // of every development transcript, and rows stand at their estimates.
+    unmountedRef.current = false;
+    return () => {
       unmountedRef.current = true;
       if (typeof window !== "undefined") {
         if (releaseTimerRef.current !== null) {
@@ -342,9 +382,8 @@ export default function VirtualizedMessageList<T>({
       rowObserverRef.current?.disconnect();
       rowObserverRef.current = null;
       observedRowsRef.current = null;
-    },
-    [],
-  );
+    };
+  }, []);
 
   // Opening a different conversation must not inherit the last one's row
   // heights, or the reader lands somewhere arbitrary in a transcript laid out
@@ -391,6 +430,12 @@ export default function VirtualizedMessageList<T>({
     height: virtualizer.getTotalSize(),
     width: "100%",
     position: "relative",
+    // The transcripts lay this container out in a flex column (which is what
+    // lets the disclaimer sit at the bottom of a short conversation). Its
+    // rows are absolutely positioned, so its content-based minimum is zero —
+    // without this, flex would squash the whole conversation into the
+    // viewport instead of letting it scroll.
+    flexShrink: 0,
   };
 
   return (

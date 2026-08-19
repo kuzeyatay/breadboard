@@ -53,7 +53,12 @@ test("dashboard restarts show a themed recovery scene instead of a blank window"
     recoveryHtml.indexOf('<script src=".\/theme.js"><\/script>') <
       recoveryHtml.indexOf('<link rel="stylesheet" href=".\/recovery.css" \/>'),
   );
-  assert.match(recoveryCss, /--background: #e6f0e6;/);
+  // The scene stands in the window frame rather than inside the app, so its
+  // field is paper — the same colour as the caption strip above it, in both
+  // themes. Painting it the app's own background puts a seam across the top.
+  assert.match(recoveryCss, /--background: #faf7ef;\s+--chrome: #faf7ef;/);
+  assert.match(recoveryCss, /--background: #20211f;\s+--chrome: #20211f;/);
+  assert.doesNotMatch(recoveryCss, /#e6f0e6/);
   assert.match(recoveryCss, /:root\[data-theme="dark"\]/);
   assert.match(recoveryCss, /@media \(prefers-reduced-motion: reduce\)/);
 

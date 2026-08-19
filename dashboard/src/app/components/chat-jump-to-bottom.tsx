@@ -27,7 +27,14 @@ export default function ChatJumpToBottom({
     : "Jump to the newest message";
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
+    // The control floats clear of the composer, which is laid over the foot of
+    // the transcript rather than sitting below it. `--bb-composer-inset` is the
+    // measured height of that bar; on a surface that has not published one the
+    // fallback leaves the control where it always sat.
+    <div
+      className="pointer-events-none absolute inset-x-0 z-30 flex justify-center"
+      style={{ bottom: "calc(var(--bb-composer-inset, 0px) + 0.75rem)" }}
+    >
       <button
         type="button"
         onClick={onJump}

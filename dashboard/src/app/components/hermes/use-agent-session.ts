@@ -148,6 +148,13 @@ export interface AgentMessage {
    */
   memoryUpdated?: boolean;
   proposal?: unknown;
+  /**
+   * Present on a restored assistant turn that paused before dispatch for a
+   * permission the user never answered — the page went away with the approval
+   * card up, or before it could appear. The transcript restore turns this back
+   * into the live permission prompt so the turn can still be resumed.
+   */
+  pendingPermissions?: Array<Record<string, unknown>>;
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   verification?: VerificationSummary;
@@ -453,6 +460,56 @@ interface BlockedTurn {
   assistantMessageId: string;
 }
 
+/**
+ * One mapping from a capability preflight's pending permission — whether it
+ * arrived in a live blocked response or was restored from the transcript — to
+ * the actionable prompt the approval card renders.
+ */
+function permissionPromptFromPending(
+  pending: Record<string, unknown>,
+): PermissionPrompt {
+  const operations = Array.isArray(pending.operations)
+    ? pending.operations.filter(
+        (value): value is string => typeof value === "string",
+      )
+    : [];
+  const path = typeof pending.path === "string" ? pending.path : undefined;
+  const targetPath =
+    typeof pending.targetPath === "string" ? pending.targetPath : path;
+  const targetPaths = Array.isArray(pending.targetPaths)
+    ? pending.targetPaths.filter(
+        (item): item is string => typeof item === "string",
+      )
+    : targetPath
+      ? [targetPath]
+      : [];
+  const kind =
+    pending.kind === "filesystem" ||
+    pending.kind === "connection" ||
+    pending.kind === "confirmation"
+      ? pending.kind
+      : "confirmation";
+  return {
+    requestId: String(pending.id ?? "preflight-permission"),
+    permission: String(pending.capability ?? "capability"),
+    description: String(
+      pending.message ?? "This task needs additional permission.",
+    ),
+    risk: operations.includes("delete")
+      ? "delete"
+      : operations.includes("move")
+        ? "move"
+        : operations.some((operation) =>
+              ["create", "modify", "write"].includes(operation),
+            )
+          ? "write"
+          : "read",
+    affectedPaths: targetPaths,
+    allowSession: kind === "filesystem",
+    preflight: { kind, path, operations },
+  };
+}
+
 function normalizeRestoredMessages(value: unknown): AgentMessage[] {
   if (!Array.isArray(value)) return [];
 
@@ -483,6 +540,19 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
       }
       if (usage) normalized.usage = usage;
       else delete normalized.usage;
+      if (Array.isArray(message.pendingPermissions)) {
+        const pendingPermissions = message.pendingPermissions.filter(
+          (item): item is Record<string, unknown> =>
+            Boolean(item) && typeof item === "object",
+        );
+        if (pendingPermissions.length) {
+          normalized.pendingPermissions = pendingPermissions;
+        } else {
+          delete normalized.pendingPermissions;
+        }
+      } else {
+        delete normalized.pendingPermissions;
+      }
       if (
         typeof message.responseDurationMs === "number" &&
         Number.isFinite(message.responseDurationMs) &&
@@ -736,6 +806,11 @@ export interface UseAgentSessionResult {
     options?: AgentSendOptions,
   ) => Promise<void>;
   steer: (text: string) => Promise<boolean>;
+  /**
+   * Remove one exchange — a message and the answer it produced. Resolves false
+   * when the delete was refused; the reason is left in `error`.
+   */
+  deleteMessage: (clientMessageId: string) => Promise<boolean>;
   respondToPermission: (
     decision: "once" | "always" | "reject",
   ) => Promise<void>;
@@ -857,6 +932,17 @@ export function useAgentSession(
   }>({});
   const [yoloMode] = useYoloMode();
   const yoloSyncRef = useRef<Promise<void>>(Promise.resolve());
+  // A preflight pause YOLO is going to answer never becomes a
+  // `pendingPermission`: the approval card is bound to that state, so setting
+  // it mounts a card for the one frame before the auto-decision lands, which
+  // reads as a flicker rather than as a grant. The pause waits here instead,
+  // and the effect below resolves it after the same render the card path had.
+  const [autoApprovedPreflight, setAutoApprovedPreflight] =
+    useState<PermissionPrompt | null>(null);
+  // Request ids YOLO has already decided. A grant that fails restores a real
+  // card; without this the auto-approval would answer that card again and
+  // retry the same doomed request forever.
+  const yoloDecidedPermissionsRef = useRef(new Set<string>());
   const storageKey = activeConversationStorageKey(surface, createOptions);
   const temporaryChats = createOptions?.temporary === true;
 
@@ -885,6 +971,63 @@ export function useAgentSession(
     setRunState(next);
     setConnection(connectionForRunState(next));
   }, []);
+
+  // A turn that paused for permission before dispatch lives only in the DB
+  // once its page goes away — the approval card was client state. Rebuild the
+  // card from the persisted request so navigating away (or reloading) can
+  // never strand the turn: the user answers late, or YOLO answers on return.
+  const rehydrateAwaitingPermission = useCallback(
+    (restored: AgentMessage[]): boolean => {
+      const last = restored[restored.length - 1];
+      if (
+        !last ||
+        last.role !== "assistant" ||
+        last.content.trim() ||
+        !last.pendingPermissions?.length
+      ) {
+        return false;
+      }
+      const pending = last.pendingPermissions.find(
+        (value) => Boolean(value) && typeof value === "object",
+      );
+      if (!pending) return false;
+      const user = [...restored]
+        .reverse()
+        .find(
+          (message) =>
+            message.role === "user" &&
+            Boolean(message.clientMessageId) &&
+            message.clientMessageId === last.clientMessageId,
+        );
+      const text = user?.content.trim();
+      if (!user?.clientMessageId || !text) return false;
+      const prompt = permissionPromptFromPending(pending);
+      blockedTurnRef.current = {
+        text,
+        userMessageId: user.clientMessageId,
+        assistantMessageId: last.id ?? user.clientMessageId,
+      };
+      setActivities([
+        {
+          id: `permission-${prompt.requestId}`,
+          kind: "permission",
+          label: "Permission required",
+          detail: prompt.description,
+          status: "permission_required",
+          startedAt: last.createdAt ?? new Date().toISOString(),
+        },
+      ]);
+      if (isYoloModeEnabled()) {
+        setAutoApprovedPreflight(prompt);
+        transition("submitting");
+        return true;
+      }
+      setPendingPermission(prompt);
+      transition("waiting_for_permission");
+      return true;
+    },
+    [transition],
+  );
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -939,7 +1082,8 @@ export function useAgentSession(
         setFilesystemMode(
           restored.filesystemMode === "full" ? "full" : "restricted",
         );
-        setMessages(normalizeRestoredMessages(restored.messages));
+        const restoredMessages = normalizeRestoredMessages(restored.messages);
+        setMessages(restoredMessages);
         const restoredRun =
           restored.activeRun && typeof restored.activeRun === "object"
             ? (restored.activeRun as Record<string, unknown>)
@@ -967,6 +1111,8 @@ export function useAgentSession(
                 : undefined,
             viewEpoch: viewEpochRef.current,
           });
+        } else {
+          rehydrateAwaitingPermission(restoredMessages);
         }
       })
       .catch(() => undefined)
@@ -981,6 +1127,7 @@ export function useAgentSession(
     createOptions?.gardenSlug,
     createOptions?.pageSlug,
     markLoadingSession,
+    rehydrateAwaitingPermission,
     storageKey,
     transition,
   ]);
@@ -2160,7 +2307,11 @@ export function useAgentSession(
         ? messages.filter(
             (message) =>
               message.id !== resumedBlockedTurn.userMessageId &&
-              message.id !== resumedBlockedTurn.assistantMessageId,
+              message.id !== resumedBlockedTurn.assistantMessageId &&
+              // A rehydrated blocked turn's rows came back from the server
+              // under durable msg_N ids; the retry replaces them through the
+              // client message id they still share.
+              message.clientMessageId !== resumedBlockedTurn.userMessageId,
           )
         : selectedHistory ?? messages;
       const priorLocationRequests = transcript
@@ -2202,7 +2353,10 @@ export function useAgentSession(
       const responseStartedAtMs = Date.now();
       const resumedCreatedAt = resumedBlockedTurn
         ? messages.find(
-            (message) => message.id === resumedBlockedTurn.userMessageId,
+            (message) =>
+              message.id === resumedBlockedTurn.userMessageId ||
+              (message.role === "user" &&
+                message.clientMessageId === resumedBlockedTurn.userMessageId),
           )?.createdAt
         : undefined;
       const turnCreatedAt =
@@ -2476,55 +2630,13 @@ export function useAgentSession(
           if (!pending) {
             throw new Error("The agent paused without a permission request.");
           }
-          const operations = Array.isArray(pending.operations)
-            ? pending.operations.filter(
-                (value): value is string => typeof value === "string",
-              )
-            : [];
-          const path = typeof pending.path === "string" ? pending.path : undefined;
-          const targetPath =
-            typeof pending.targetPath === "string"
-              ? pending.targetPath
-              : path;
-          const targetPaths = Array.isArray(pending.targetPaths)
-            ? pending.targetPaths.filter(
-                (item): item is string => typeof item === "string",
-              )
-            : targetPath
-              ? [targetPath]
-              : [];
-          const kind =
-            pending.kind === "filesystem" ||
-            pending.kind === "connection" ||
-            pending.kind === "confirmation"
-              ? pending.kind
-              : "confirmation";
-          const prompt: PermissionPrompt = {
-            requestId: String(pending.id ?? "preflight-permission"),
-            permission: String(pending.capability ?? "capability"),
-            description: String(
-              pending.message ?? "This task needs additional permission.",
-            ),
-            risk: operations.includes("delete")
-              ? "delete"
-              : operations.includes("move")
-                ? "move"
-                : operations.some((operation) =>
-                      ["create", "modify", "write"].includes(operation),
-                    )
-                  ? "write"
-                  : "read",
-            affectedPaths: targetPaths,
-            allowSession: kind === "filesystem",
-            preflight: { kind, path, operations },
-          };
+          const prompt = permissionPromptFromPending(pending);
           blockedTurnRef.current = {
             text: trimmed,
             options,
             userMessageId: userMessage.id!,
             assistantMessageId: assistant.id!,
           };
-          setPendingPermission(prompt);
           setActivities([
             {
               id: `permission-${prompt.requestId}`,
@@ -2535,11 +2647,21 @@ export function useAgentSession(
               startedAt: new Date().toISOString(),
             },
           ]);
-          transition("waiting_for_permission");
+          const autoApproved = isYoloModeEnabled();
+          if (autoApproved) {
+            transition("submitting");
+          } else {
+            setPendingPermission(prompt);
+            transition("waiting_for_permission");
+          }
           abortRef.current?.abort();
           await streamPromise.catch((streamError) => {
             if ((streamError as Error).name !== "AbortError") throw streamError;
           });
+          // Handed over only once the aborted stream has settled: resolving the
+          // pause dispatches the replacement turn, which must not overlap this
+          // one.
+          if (autoApproved) setAutoApprovedPreflight(prompt);
           return;
         }
         if (typeof responseBody.runId !== "string" || !responseBody.runId) {
@@ -2743,6 +2865,115 @@ export function useAgentSession(
     [adoptDispatchedRun, pendingPermission, send, transition],
   );
 
+  /**
+   * Carry out a preflight decision against a prompt handed in directly. The
+   * card path routes the user's click here with the prompt it is displaying;
+   * YOLO calls it with a prompt that was never displayed at all.
+   */
+  const resolvePreflightPermission = useCallback(
+    async (prompt: PermissionPrompt, decision: "once" | "always" | "reject") => {
+      const preflight = prompt.preflight;
+      const blocked = blockedTurnRef.current;
+      if (!preflight || !blocked) return;
+      if (decision === "reject") {
+        blockedTurnRef.current = null;
+        setPendingPermission(null);
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === blocked.assistantMessageId
+              ? {
+                  ...message,
+                  content:
+                    "I didn’t access that resource because permission wasn’t granted.",
+                }
+              : message,
+          ),
+        );
+        setActivities((current) =>
+          current.map((item) =>
+            item.id === `permission-${prompt.requestId}`
+              ? { ...item, status: "denied", completedAt: new Date().toISOString() }
+              : item,
+          ),
+        );
+        transition("completed");
+        return;
+      }
+
+      // Remove the actionable card before the network round trip so a slow
+      // grant POST cannot be submitted repeatedly by double-clicking. The
+      // catch path restores the same prompt if approval fails.
+      setPendingPermission(null);
+      transition("submitting");
+      let oneTimeGrantId: string | null = null;
+      try {
+        if (preflight.kind === "filesystem") {
+          if (!preflight.path) {
+            throw new Error("The permission request did not identify a folder.");
+          }
+          const permissions = Object.fromEntries(
+            preflight.operations.map((operation) => [operation, true]),
+          );
+          const response = await fetch("/api/hermes/filesystem-grants", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              path: preflight.path,
+              permissions,
+              scope: decision === "always" ? "remembered" : "one_time",
+            }),
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(
+              typeof body.message === "string"
+                ? body.message
+                : "The folder permission could not be saved.",
+            );
+          }
+          if (
+            decision === "once" &&
+            body.grant &&
+            typeof body.grant.id === "string"
+          ) {
+            oneTimeGrantId = body.grant.id;
+          }
+        }
+        setActivities((current) =>
+          current.map((item) =>
+            item.id === `permission-${prompt.requestId}`
+              ? { ...item, status: "completed", completedAt: new Date().toISOString() }
+              : item,
+          ),
+        );
+        transition("idle");
+        await send(blocked.text, {
+          ...blocked.options,
+          confirmedPermissionIds:
+            preflight.kind === "confirmation"
+              ? [prompt.requestId]
+              : blocked.options?.confirmedPermissionIds,
+        });
+      } catch (permissionError) {
+        setPendingPermission(prompt);
+        transition("error");
+        setError(
+          permissionError instanceof Error
+            ? permissionError.message
+            : "The permission decision failed.",
+        );
+      } finally {
+        if (oneTimeGrantId) {
+          await fetch(
+            `/api/hermes/filesystem-grants?id=${encodeURIComponent(oneTimeGrantId)}`,
+            { method: "DELETE" },
+          ).catch(() => undefined);
+        }
+      }
+    },
+    [send, transition],
+  );
+
   const respondToPermission = useCallback(
     async (decision: "once" | "always" | "reject") => {
       const prompt = pendingPermission;
@@ -2750,103 +2981,7 @@ export function useAgentSession(
       if (!prompt || !activeSessionId) return;
 
       if (prompt.preflight) {
-        const blocked = blockedTurnRef.current;
-        if (!blocked) return;
-        if (decision === "reject") {
-          blockedTurnRef.current = null;
-          setPendingPermission(null);
-          setMessages((current) =>
-            current.map((message) =>
-              message.id === blocked.assistantMessageId
-                ? {
-                    ...message,
-                    content:
-                      "I didn’t access that resource because permission wasn’t granted.",
-                  }
-                : message,
-            ),
-          );
-          setActivities((current) =>
-            current.map((item) =>
-              item.id === `permission-${prompt.requestId}`
-                ? { ...item, status: "denied", completedAt: new Date().toISOString() }
-                : item,
-            ),
-          );
-          transition("completed");
-          return;
-        }
-
-        // Remove the actionable card before the network round trip so a slow
-        // grant POST cannot be submitted repeatedly by double-clicking. The
-        // catch path restores the same prompt if approval fails.
-        setPendingPermission(null);
-        transition("submitting");
-        let oneTimeGrantId: string | null = null;
-        try {
-          if (prompt.preflight.kind === "filesystem") {
-            if (!prompt.preflight.path) {
-              throw new Error("The permission request did not identify a folder.");
-            }
-            const permissions = Object.fromEntries(
-              prompt.preflight.operations.map((operation) => [operation, true]),
-            );
-            const response = await fetch("/api/hermes/filesystem-grants", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                path: prompt.preflight.path,
-                permissions,
-                scope: decision === "always" ? "remembered" : "one_time",
-              }),
-            });
-            const body = await response.json().catch(() => ({}));
-            if (!response.ok) {
-              throw new Error(
-                typeof body.message === "string"
-                  ? body.message
-                  : "The folder permission could not be saved.",
-              );
-            }
-            if (
-              decision === "once" &&
-              body.grant &&
-              typeof body.grant.id === "string"
-            ) {
-              oneTimeGrantId = body.grant.id;
-            }
-          }
-          setActivities((current) =>
-            current.map((item) =>
-              item.id === `permission-${prompt.requestId}`
-                ? { ...item, status: "completed", completedAt: new Date().toISOString() }
-                : item,
-            ),
-          );
-          transition("idle");
-          await send(blocked.text, {
-            ...blocked.options,
-            confirmedPermissionIds:
-              prompt.preflight.kind === "confirmation"
-                ? [prompt.requestId]
-                : blocked.options?.confirmedPermissionIds,
-          });
-        } catch (permissionError) {
-          setPendingPermission(prompt);
-          transition("error");
-          setError(
-            permissionError instanceof Error
-              ? permissionError.message
-              : "The permission decision failed.",
-          );
-        } finally {
-          if (oneTimeGrantId) {
-            await fetch(
-              `/api/hermes/filesystem-grants?id=${encodeURIComponent(oneTimeGrantId)}`,
-              { method: "DELETE" },
-            ).catch(() => undefined);
-          }
-        }
+        await resolvePreflightPermission(prompt, decision);
         return;
       }
 
@@ -2880,14 +3015,35 @@ export function useAgentSession(
         ),
       );
     },
-    [pendingPermission, send, transition],
+    [pendingPermission, resolvePreflightPermission, transition],
   );
 
+  // The pause YOLO took over instead of showing. Resolved from an effect so it
+  // lands after the same commit the card path waits for: a rehydrated
+  // transcript has to reach messagesRef before the replacement turn reads it.
   useEffect(() => {
-    if (!yoloMode || !pendingPermission) return;
+    if (!autoApprovedPreflight) return;
+    const prompt = autoApprovedPreflight;
     const timer = window.setTimeout(() => {
+      setAutoApprovedPreflight(null);
+      if (yoloDecidedPermissionsRef.current.has(prompt.requestId)) return;
+      yoloDecidedPermissionsRef.current.add(prompt.requestId);
       // YOLO is a live mode, not a permanent grant. A one-turn decision keeps
       // the fallback path aligned with the switch when it is later disabled.
+      void resolvePreflightPermission(prompt, "once");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [autoApprovedPreflight, resolvePreflightPermission]);
+
+  // A card already on screen when YOLO is switched on still gets answered.
+  // Skipping ids YOLO has already decided is what stops a failed auto-grant —
+  // which restores its card — from being retried forever.
+  useEffect(() => {
+    if (!yoloMode || !pendingPermission) return;
+    const requestId = pendingPermission.requestId;
+    if (yoloDecidedPermissionsRef.current.has(requestId)) return;
+    const timer = window.setTimeout(() => {
+      yoloDecidedPermissionsRef.current.add(requestId);
       void respondToPermission("once");
     }, 0);
     return () => window.clearTimeout(timer);
@@ -3009,6 +3165,53 @@ export function useAgentSession(
     );
   }, [pendingPermission, transition]);
 
+  /**
+   * Remove one exchange — a message and the answer it produced — for good.
+   *
+   * A user row and the answer that follows it share one client message id, so
+   * a single filter takes both out of the transcript on screen. The route does
+   * the durable half: it removes the rows, stops anything that turn still had
+   * running, and re-seeds the agent runtime from what is left, so the chat
+   * cannot go on referring to a message the reader has deleted.
+   *
+   * A chat that was never persisted has no rows to remove; dropping them from
+   * the transcript is then the entire operation.
+   */
+  const deleteMessage = useCallback(
+    async (clientMessageId: string): Promise<boolean> => {
+      const target = clientMessageId.trim();
+      if (!target) return false;
+      const activeSessionId = sessionRef.current;
+      if (activeSessionId) {
+        try {
+          const response = await fetch(
+            `/api/hermes/sessions/${encodeURIComponent(activeSessionId)}/messages/${encodeURIComponent(target)}`,
+            { method: "DELETE" },
+          );
+          if (!response.ok) {
+            const body = (await response.json().catch(() => null)) as
+              | { error?: string }
+              | null;
+            setError(body?.error || "This message could not be deleted.");
+            return false;
+          }
+        } catch {
+          setError("This message could not be deleted.");
+          return false;
+        }
+      }
+      setMessages((current) =>
+        current.filter((message) => message.clientMessageId !== target),
+      );
+      // The runtime now speaks from the trimmed transcript, so a history
+      // override left over from an earlier branch would only contradict it.
+      pendingHistoryOverrideRef.current = null;
+      if (surface !== "quartz_ai") notifyHermesSessionsChanged(surface);
+      return true;
+    },
+    [surface],
+  );
+
   const reset = useCallback(() => {
     const previousSessionId = sessionRef.current;
     viewEpochRef.current += 1;
@@ -3090,7 +3293,8 @@ export function useAgentSession(
         setFilesystemMode(
           restored.filesystemMode === "full" ? "full" : "restricted",
         );
-        setMessages(normalizeRestoredMessages(restored.messages));
+        const restoredMessages = normalizeRestoredMessages(restored.messages);
+        setMessages(restoredMessages);
 
         const restoredRun =
           restored.activeRun && typeof restored.activeRun === "object"
@@ -3120,6 +3324,8 @@ export function useAgentSession(
                 : undefined,
             viewEpoch,
           });
+        } else {
+          rehydrateAwaitingPermission(restoredMessages);
         }
       } catch (openError) {
         if (viewEpochRef.current !== viewEpoch) return;
@@ -3136,6 +3342,7 @@ export function useAgentSession(
     },
     [
       markLoadingSession,
+      rehydrateAwaitingPermission,
       reset,
       storageKey,
       surface,
@@ -3181,6 +3388,7 @@ export function useAgentSession(
     finishExternalAgentTurn,
     send,
     steer,
+    deleteMessage,
     respondToPermission,
     abort,
     reset,

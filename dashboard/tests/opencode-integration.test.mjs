@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
+// Normalized to LF so the structural regexes hold on a CRLF checkout too.
 const source = (relativePath) =>
-  fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
+  fs
+    .readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8")
+    .replaceAll("\r\n", "\n");
 
 const identity = await import("../src/lib/opencode/identity.ts");
 const runManager = await import("../src/lib/opencode/run-manager.ts");
@@ -204,7 +207,9 @@ test("OpenCode appears in Agents and renders durable inline run output", () => {
   assert.match(gardenWorkspace, /taskFromOpenCodeCommand\(text\)/);
   assert.match(gardenWorkspace, /gardenSlug: clusterSlug/);
   assert.match(gardenWorkspace, /attachments: attachments\.filter/);
-  assert.match(gardenWorkspace, /opencode-pending-/);
+  // The per-agent `opencode-pending-` placeholder row was folded into the
+  // shared pending turn every external launch draws first.
+  assert.match(gardenWorkspace, /prepareExternalAgentSession\(/);
   assert.match(terminal, /launchOpenCodeRun\([\s\S]*pendingAttachments/);
   assert.match(gardenWorkspace, /<InlineOpenCodeRun/);
   assert.match(panel, /message\.openCodeRun/);

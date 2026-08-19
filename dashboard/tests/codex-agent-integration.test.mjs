@@ -154,3 +154,81 @@ test("Codex Garden turns are durable before the launch response and finish witho
   assert.match(workspace, /visibilitychange/);
   assert.match(turns, /UPDATE chat_messages[\s\S]*?WHERE canonical_message_id = \?/);
 });
+
+test("Codex preambles land on the timeline, never in the saved chat message", () => {
+  const manager = source("src/lib/codex/run-manager.ts");
+  // An agent message is held until the run says what it was, so the narration
+  // Codex emits before reaching for a tool never becomes a chat message.
+  assert.match(manager, /pendingMessage: string;/);
+  assert.match(manager, /commitPendingMessage\(run\);\s*\n\s*run\.pendingMessage = message;/);
+  // Demotion happens past the kind filter, so only a real tool call can take a
+  // message away from the answer: bookkeeping items — a todo list, a plan —
+  // must not turn the run's last word into narration.
+  assert.match(
+    manager,
+    /demotePendingMessage\(run\);\s*\n\s*run\.toolCount \+= 1;\s*\n\s*emit\(run, "tool\.completed"/,
+  );
+  assert.match(manager, /function demotePendingMessage[\s\S]*?emit\(run, "reasoning\.completed"/);
+  assert.match(manager, /function commitPendingMessage[\s\S]*?emit\(run, "text\.completed"/);
+  // Only the message still pending when the run ends is the answer.
+  assert.match(manager, /if \(code === 0\) \{\s*\n\s*commitPendingMessage\(run\);/);
+  assert.match(manager, /demotePendingMessage\(run\);\s*\n\s*emit\(run, "run\.failed"/);
+  assert.match(manager, /demotePendingMessage\(run\);\s*\n\s*emit\(run, "run\.aborted"/);
+  // The old shape wrote every message straight into the run's output.
+  assert.doesNotMatch(
+    manager,
+    /const message = text\(item\.text, 100_000\)\.trim\(\);\s*\n\s*if \(!message\) return;\s*\n\s*run\.output\.push/,
+  );
+  // A run whose every message was a preamble still answers with the last thing
+  // it said. "Codex completed the task." is the last resort, not the ending.
+  assert.match(manager, /run\.lastNarration = message;/);
+  assert.match(
+    manager,
+    /run\.output\.join\("\\n\\n"\)\.trim\(\) \|\|\s*\n\s*run\.lastNarration\.trim\(\) \|\|\s*\n\s*"Codex completed the task\."/,
+  );
+});
+
+test("an inline run card can be reopened after it lands", () => {
+  const card = source("src/app/components/hermes/inline-opencode-run.tsx");
+  // The timeline folds away when the run finishes, but the toggle stays, so the
+  // whole run is one click away for as long as the message exists.
+  assert.match(card, /aria-expanded=\{activityOpen\}/);
+  assert.match(card, /setActivityOpen\(\(open\) => !open\)/);
+  assert.match(card, /if \(TERMINAL\.has\(status\)\) setActivityOpen\(false\);/);
+  // Live: the tail only. Reopened: everything, and nothing clamped.
+  assert.match(
+    card,
+    /const visibleTimeline = !activityOpen\s*\n\s*\? \[\]\s*\n\s*: terminal\s*\n\s*\? timeline\s*\n\s*: timeline\.slice\(-VISIBLE_ACTIVITY\)/,
+  );
+  assert.match(card, /terminal \? "" : "line-clamp-3"/);
+});
+
+test("a run card resumed after a reload keeps counting from the real start", () => {
+  const card = source("src/app/components/hermes/inline-opencode-run.tsx");
+  // The stopwatch is dated from the replayed event stream rather than from the
+  // moment the tab reopened, and the start can still move backwards after the
+  // timer is already ticking.
+  assert.match(card, /const at = Date\.parse\(event\.at\);/);
+  assert.match(card, /startedAtRef\.current === null \|\| at < startedAtRef\.current/);
+  assert.match(card, /const startedAt = startedAtRef\.current \?\? Date\.now\(\);/);
+  assert.doesNotMatch(card, /setInterval\(\s*\(\) => setElapsed/);
+  // A finished run reports how long it took, so the meta row survives a reload.
+  assert.match(card, /responseDurationMs: Math\.max\(0, Math\.round\(durationMs\)\)/);
+  assert.match(card, /\.\.\.\(reportedUsage \? \{ usage: reportedUsage \} : \{\}\)/);
+  assert.match(card, /useState\(\s*\(\) => \(persistedUsage\?\.responseDurationMs \?\? 0\) \/ 1_000,\s*\)/);
+});
+
+test("a transcript stays busy while any inline agent card is still running", () => {
+  const panel = source("src/app/components/hermes/agent-runtime-panel.tsx");
+  const workspace = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");
+  assert.match(
+    panel,
+    /const transcriptResponding =\s*\n\s*\(activeRun \|\| streaming \|\| externalRunActive\) &&/,
+  );
+  assert.match(panel, /externalRunLaunching \|\| messages\.some\(externalAgentRunInFlight\)/);
+  assert.match(workspace, /hasRunningExternalAgentInActiveChat;/);
+  // An all-zero usage record carries a duration, not a token count of nothing.
+  const meta = source("src/app/components/assistant-response-meta.tsx");
+  assert.match(meta, /const noTokenReport =/);
+  assert.match(meta, /sessionSnapshot \|\| noTokenReport \? undefined : reportedTokens/);
+});

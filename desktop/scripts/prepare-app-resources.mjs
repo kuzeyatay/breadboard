@@ -286,10 +286,6 @@ fs.copyFileSync(
   path.join(scriptsTarget, "start-postiz-supervisor.mjs"),
 );
 fs.copyFileSync(
-  path.join(repoRoot, "scripts", "start-n8n.mjs"),
-  path.join(scriptsTarget, "start-n8n.mjs"),
-);
-fs.copyFileSync(
   path.join(repoRoot, "scripts", "voicebox-status.mjs"),
   path.join(scriptsTarget, "voicebox-status.mjs"),
 );
@@ -317,25 +313,6 @@ fs.copyFileSync(
   fs.writeFileSync(path.join(target, "BREADBOARD_UPSTREAM_COMMIT"), `${actual}\n`, "utf8");
 }
 
-// Deploy the exact cloned and Breadboard-patched n8n build as a portable
-// production package. The installed app can then start workflows immediately;
-// it never downloads or compiles n8n on the user's first launch.
-const n8nRoot = path.join(repoRoot, "n8n");
-const n8nTarget = path.join(stagingRoot, "n8n-runtime");
-if (!fs.existsSync(path.join(n8nRoot, "pnpm-lock.yaml"))) {
-  fail(`n8n checkout not found at ${n8nRoot}`);
-}
-log("building the patched n8n runtime");
-runChecked("corepack", ["pnpm", "--filter", "n8n...", "build"], {
-  cwd: n8nRoot,
-  env: { ...process.env, CI: "true" },
-});
-freshDir(n8nTarget);
-log("deploying the production n8n runtime");
-runChecked("corepack", ["pnpm", "--filter", "n8n", "deploy", "--prod", "--legacy", n8nTarget], {
-  cwd: n8nRoot,
-  env: { ...process.env, CI: "true" },
-});
 const postizRuntimeTarget = path.join(stagingRoot, "dashboard", "src", "lib", "socials-manager");
 fs.mkdirSync(postizRuntimeTarget, { recursive: true });
 for (const entry of ["api-client.ts", "bootstrap.ts", "config.ts", "docker.ts", "stack.ts"]) {
@@ -821,7 +798,7 @@ function scanForbidden(dir) {
       // .env.example files are documentation, not secrets.
       if (entry.name.endsWith(".example")) continue;
       // Third-party packages sometimes ship an empty .env of their own (psl@1.9.0
-      // in n8n's dependency tree does). A zero-byte file inside node_modules holds
+      // is one). A zero-byte file inside node_modules holds
       // no secret, and blocking it only stops the build. Both conditions are
       // required: anything with content, or anywhere outside node_modules, still
       // fails as before.

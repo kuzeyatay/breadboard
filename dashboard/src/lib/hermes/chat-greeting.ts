@@ -56,6 +56,12 @@ export interface ChatGreetingInput {
   scope: ChatGreetingScope;
   /** Off-the-record chats get their own greeting and their own openers. */
   temporary: boolean;
+  /**
+   * The garden this chat is open inside, when it is open inside one. A garden
+   * chat is about one place, so its questions and openers name that place
+   * rather than asking which of your gardens the conversation is about.
+   */
+  garden?: ChatGreetingGarden | null;
   /** The reader's clock, not the server's — a greeting has to match their window. */
   now: Date;
 }
@@ -121,6 +127,8 @@ interface GreetingContext {
   /** A heavy day already. */
   busyDay: boolean;
   hasGardens: boolean;
+  /** The garden this chat is open inside, or null on the hub surfaces. */
+  garden: ChatGreetingGarden | null;
   /** They have accumulated a lot of gardens. */
   manyGardens: boolean;
   /**
@@ -165,11 +173,16 @@ function playfulHour(audience: string, bucket: number): boolean {
 
 function buildContext(input: ChatGreetingInput): GreetingContext {
   const { signals, scope, temporary, now } = input;
+  const garden = input.garden ?? null;
   const minutes = signals.minutesSinceLastPrompt;
   const weekday = now.getDay();
+  // The garden joins the audience so two gardens open in two tabs do not step
+  // through the pools in lockstep — but only when there is one: inserting a
+  // "hub" segment for everyone else would shift every existing reader's walk.
   const audience = [
     scope,
     temporary ? "temporary" : "kept",
+    ...(garden ? [`garden=${garden.slug}`] : []),
     signals.name ?? "anonymous",
     String(signals.gardenCount),
   ].join(":");
@@ -188,6 +201,7 @@ function buildContext(input: ChatGreetingInput): GreetingContext {
     returning: minutes !== null && minutes >= 6 * 24 * 60,
     busyDay: signals.promptsToday >= 12,
     hasGardens: signals.gardenCount > 0,
+    garden,
     manyGardens: signals.gardenCount >= 8,
     playful: playfulHour(audience, bucket),
     audience,
@@ -458,9 +472,17 @@ const QUESTIONS: QuestionCandidate[] = [
   { id: "recap", when: (c) => c.returning && !c.temporary, text: () => "Want a recap of where you got to?" },
   {
     id: "which-garden",
-    when: (c) => c.hasGardens && c.scope === "mine" && !c.temporary,
+    when: (c) => c.hasGardens && c.scope === "mine" && !c.temporary && !c.garden,
     text: () => "Which garden are we in today?",
   },
+
+  // Inside a garden the chat is about one place, and the second line says so.
+  { id: "garden-look", when: (c) => c.garden !== null, text: (c) => `What should we look at in ${c.garden!.name}?` },
+  { id: "garden-next", when: (c) => c.garden !== null, text: (c) => `What's next for ${c.garden!.name}?` },
+  { id: "garden-add", when: (c) => c.garden !== null, text: () => "What should this garden learn today?" },
+  { id: "garden-tending", playful: true, when: (c) => c.garden !== null, text: () => "What are we tending today?" },
+  { id: "garden-grow-page", playful: true, when: (c) => c.garden !== null, text: () => "Which page are we growing today?" },
+  { id: "garden-weeds", playful: true, when: (c) => c.garden !== null, text: () => "Shall we pull some weeds?" },
   { id: "whats-next", when: (c) => c.busyDay, text: () => "What's next?" },
   { id: "still-chasing", when: (c) => c.partOfDay === "late-night", text: () => "What are we still chasing?" },
   {
@@ -880,10 +902,117 @@ const TEMPORARY_PUBLIC_SUGGESTIONS: SuggestionCandidate[] = [
   },
 ];
 
+/**
+ * Openers for a chat standing inside one garden. Everything here is about this
+ * garden — no opener offers to compare gardens the chat cannot see, and the
+ * one that does reach outward names the reaching. The "page" family exists
+ * because a garden chat has an outcome the hub does not: an answer worth
+ * keeping can be saved into the garden as a page.
+ */
+const GARDEN_SUGGESTIONS: SuggestionCandidate[] = [
+  {
+    id: "garden-summary",
+    family: "recall",
+    when: always,
+    text: (c) => `Summarize what I know in ${c.garden!.name}.`,
+  },
+  {
+    id: "garden-blunt",
+    family: "recall",
+    when: always,
+    text: () => "Give me a blunt read on how well I understand this garden.",
+  },
+  {
+    id: "garden-forgotten",
+    family: "recall",
+    when: always,
+    text: () => "Tell me something in here I have completely forgotten about.",
+  },
+  {
+    id: "garden-quiz",
+    family: "review",
+    when: always,
+    text: (c) => `Quiz me on ${c.garden!.name} and do not go easy.`,
+  },
+  {
+    id: "garden-exam",
+    family: "review",
+    when: always,
+    text: () => "What here is worth reviewing before an exam?",
+  },
+  {
+    id: "garden-holes",
+    family: "gap",
+    when: always,
+    text: () => "Where are the holes in this garden?",
+  },
+  {
+    id: "garden-contradictions",
+    family: "gap",
+    when: always,
+    text: () => "Do any notes in this garden contradict each other?",
+  },
+  {
+    id: "garden-thin",
+    family: "garden",
+    when: always,
+    text: () => "What is still thin here, and what would fill it?",
+  },
+  {
+    id: "garden-tour",
+    family: "garden",
+    when: always,
+    text: () => "Walk me through this garden as if I were new to it.",
+  },
+  {
+    id: "garden-hardest",
+    family: "open",
+    when: always,
+    text: () => "Explain the hardest idea in this garden in plain words.",
+  },
+  {
+    id: "garden-direction",
+    family: "open",
+    when: always,
+    text: () => "Help me think through where this garden should go next.",
+  },
+  {
+    id: "garden-relate",
+    family: "connect",
+    when: (c) => c.signals.gardenCount >= 2,
+    text: (c) => `How does ${c.garden!.name} relate to my other gardens?`,
+  },
+  {
+    id: "garden-today",
+    family: "day",
+    when: (c) => c.partOfDay === "morning" || c.partOfDay === "early-morning",
+    text: () => "What should I work on here today?",
+  },
+  {
+    id: "garden-weekend",
+    family: "day",
+    when: (c) => c.weekend,
+    text: () => "What in this garden is worth a weekend read?",
+  },
+  {
+    id: "garden-late",
+    family: "day",
+    when: (c) => c.partOfDay === "late-night" || c.partOfDay === "night",
+    text: () => "Give me the short version of one idea, it is late.",
+  },
+  {
+    id: "garden-page",
+    family: "page",
+    when: always,
+    text: () => "Answer something here worth saving as a page.",
+  },
+];
+
 function suggestionPool(context: GreetingContext): SuggestionCandidate[] {
   if (context.temporary) {
     return context.scope === "public" ? TEMPORARY_PUBLIC_SUGGESTIONS : TEMPORARY_OWN_SUGGESTIONS;
   }
+  if (context.garden) return GARDEN_SUGGESTIONS;
   return context.scope === "public" ? PUBLIC_SUGGESTIONS : OWN_SUGGESTIONS;
 }
 

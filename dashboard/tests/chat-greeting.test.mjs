@@ -404,11 +404,121 @@ test("the lighter openers are prompts, not punchlines", () => {
   for (const prompt of day) assert.match(prompt, /[.?]$/);
 });
 
+test("inside a garden the chat is about that garden", () => {
+  const garden = { name: "breadboard-dev", slug: "breadboard-dev" };
+  const week = [];
+  for (let index = 0; index < 24 * 7; index += 1) {
+    const now = new Date(2026, 7, 19, 0, 0, 0, 0);
+    now.setHours(now.getHours() + index);
+    week.push({
+      now,
+      greeting: resolveChatGreeting({ signals: SIGNALS, scope: "mine", temporary: false, garden, now }),
+      suggestions: resolveChatSuggestions({ signals: SIGNALS, scope: "mine", temporary: false, garden, now }),
+    });
+  }
+
+  // Standing inside a garden, the chat never asks which garden it is in.
+  for (const entry of week) {
+    assert.notEqual(entry.greeting.questionId, "which-garden");
+  }
+  // And its own questions come up, naming the place.
+  const questions = new Set(week.map((entry) => entry.greeting.questionId));
+  assert.ok(questions.has("garden-look") || questions.has("garden-next"));
+  assert.ok(
+    week.some((entry) => entry.greeting.question.includes("breadboard-dev")),
+    "no question named the open garden all week",
+  );
+
+  const openers = new Set(week.flatMap((entry) => entry.suggestions));
+  // The openers are about this garden — by name, or as "here"/"this garden".
+  assert.ok(openers.has("Summarize what I know in breadboard-dev."));
+  assert.ok(openers.has("Quiz me on breadboard-dev and do not go easy."));
+  // The one outcome a garden chat has that the hub does not.
+  assert.ok(openers.has("Answer something here worth saving as a page."));
+  // Nothing offers another garden by name; the hub pools name recent gardens,
+  // and none of those belong in a chat that cannot see them.
+  for (const prompt of openers) {
+    assert.doesNotMatch(prompt, /Thermodynamics|Control Theory|Entropy and the second law/);
+  }
+  // Reaching outward is allowed only when it says so.
+  const outward = [...openers].filter((prompt) => prompt.includes("other gardens"));
+  assert.deepEqual(outward, ["How does breadboard-dev relate to my other gardens?"]);
+
+  // Four slots, always filled, even for an account with one garden and no history.
+  for (let index = 0; index < 24 * 3; index += 1) {
+    const now = new Date(2026, 7, 19, 0, 0, 0, 0);
+    now.setHours(now.getHours() + index);
+    const thin = resolveChatSuggestions({
+      signals: { ...EMPTY_CHAT_GREETING_SIGNALS, name: "Grey", gardenCount: 1 },
+      scope: "mine",
+      temporary: false,
+      garden,
+      now,
+    });
+    assert.equal(thin.length, CHAT_SUGGESTION_COUNT);
+    for (const prompt of thin) assert.doesNotMatch(prompt, /other gardens/);
+  }
+
+  // Two gardens open in two tabs do not say the same thing at the same hour.
+  const now = at(15);
+  const here = resolveChatGreeting({ signals: SIGNALS, scope: "mine", temporary: false, garden, now });
+  const there = resolveChatGreeting({
+    signals: SIGNALS,
+    scope: "mine",
+    temporary: false,
+    garden: { name: "Thermodynamics", slug: "thermodynamics" },
+    now,
+  });
+  assert.notEqual(`${here.leadId}/${here.questionId}`, `${there.leadId}/${there.questionId}`);
+});
+
 test("two people do not step through the pools in lockstep", () => {
   const now = at(13);
   const one = resolveChatGreeting({ signals: { ...SIGNALS, name: "Grey" }, scope: "mine", temporary: false, now });
   const two = resolveChatGreeting({ signals: { ...SIGNALS, name: "Robin" }, scope: "mine", temporary: false, now });
   assert.notEqual(`${one.leadId}/${one.questionId}`, `${two.leadId}/${two.questionId}`);
+});
+
+test("the card's outline draws, holds and lifts on the voice screen's cycle", () => {
+  const css = source("src/app/globals.css");
+  const block = css.slice(
+    css.indexOf("/* The four openers on a blank chat."),
+    css.indexOf("/* The openers of a temporary chat"),
+  );
+  assert.ok(block.length > 0, "the openers' own block is gone from globals.css");
+
+  // The voice ring's sketch language: the whole outline is one dash unit, and
+  // one dashoffset rule draws it in. Not a travelling fragment — an orbiting
+  // dash was built first and read as worms crawling around the cards.
+  assert.match(block, /stroke-dasharray:\s*1;/);
+  assert.match(block, /stroke-dashoffset:\s*1;/);
+  // Three of the voice ring's 2820ms — four cards at the ring's own rate read
+  // as frantic — and linear, because a hand going over a line moves evenly:
+  // easing the draw made the sweep lurch.
+  assert.match(block, /animation:\s*bb-suggestion-sketch 8460ms linear/);
+  const draw = block.slice(block.indexOf("@keyframes bb-suggestion-sketch"));
+  assert.match(draw, /0%\s*\{[^}]*animation-timing-function: linear;/);
+  assert.match(draw, /52%\s*\{[^}]*animation-timing-function: ease;/);
+
+  // The settled line under the pass — whole, faint, always there. Without it
+  // the pass's half-drawn moments read as a broken border.
+  assert.match(block, /path:first-child \{\s*opacity: 0\.16;/);
+
+  // Draw, hold, lift: complete just past halfway, rest whole on the border,
+  // fade off it rather than retracting.
+  const keyframes = block.slice(block.indexOf("@keyframes bb-suggestion-sketch"));
+  assert.match(keyframes, /52%\s*\{\s*stroke-dashoffset:\s*0;/);
+  assert.match(keyframes, /100%\s*\{\s*stroke-dashoffset:\s*0;\s*opacity:\s*0;/);
+
+  // The card's radius has one stated source; the component reads it back off
+  // the card (getComputedStyle) rather than restating it for the drawing.
+  assert.match(block, /--bb-suggestion-radius:\s*0\.5rem/);
+
+  // Nothing here explains anything, so reduced motion takes it away rather
+  // than freezing it — a stopped pass parks a half-drawn outline on the card,
+  // which reads as a rendering fault.
+  const reduced = block.slice(block.indexOf("@media (prefers-reduced-motion: reduce)"));
+  assert.match(reduced, /\.bb-terminal-suggestion-beam \{\s*display: none;/);
 });
 
 test("the old fixed heading is gone from both terminals", () => {
@@ -420,6 +530,22 @@ test("the old fixed heading is gone from both terminals", () => {
     assert.match(terminal, /<ChatGreetingEmptyState/);
     assert.match(terminal, /useChatGreeting\(\{ scope, temporary/);
   }
+});
+
+test("the garden workspace greets the same way, told which garden it is in", () => {
+  const workspace = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");
+  // The fixed "Chat about <garden>" heading is gone; the shared empty state
+  // stands in its place, given the open garden by name and slug.
+  assert.doesNotMatch(workspace, /Chat about <span/);
+  assert.match(workspace, /<ChatGreetingEmptyState/);
+  assert.match(workspace, /garden: greetingGarden/);
+  assert.match(workspace, /\{ name: clusterName, slug: clusterSlug \}/);
+  // Openers fill the workspace's own composer — they do not send.
+  assert.match(workspace, /onSelectSuggestion=\{fillComposerWithPrompt\}/);
+  assert.match(workspace, /composer\.setSelectionRange\(composer\.value\.length, composer\.value\.length\)/);
+  // The Save page hint survives, as the footnote under the openers.
+  assert.match(workspace, /footnote=/);
+  assert.match(workspace, /Save page<\/span> to keep the/);
 });
 
 test("picking an opener fills the composer instead of sending it", () => {

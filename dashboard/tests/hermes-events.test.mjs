@@ -327,3 +327,190 @@ test("maps interrupted and failed completions to terminal statuses", () => {
   });
   assert.equal(failed.at(-1).payload.status, "failed");
 });
+
+test("web search lifecycle captures query and extracted websites across start and complete", () => {
+  const state = createHermesEventNormalizationState();
+  const normalizeWith = (raw) =>
+    normalizeHermesEvent(raw, "live-1", "runtime-1", state);
+
+  const startEvents = normalizeWith({
+    type: "tool.start",
+    session_id: "live-1",
+    payload: {
+      tool_id: "call-search-1",
+      name: "web_search",
+      args_text: JSON.stringify({ query: "TU/e Eindhoven student teams" }),
+    },
+  });
+  assert.equal(startEvents.length, 1);
+  assert.equal(startEvents[0].type, "tool.started");
+  assert.equal(startEvents[0].payload.location, "TU/e Eindhoven student teams");
+
+  const completeEvents = normalizeWith({
+    type: "tool.complete",
+    session_id: "live-1",
+    payload: {
+      tool_id: "call-search-1",
+      name: "web_search",
+      summary: "Found 2 results",
+      result: "1. [Student Teams | TU/e](https://www.tue.nl/student-teams)\n2. [Solar Team](https://solarteam.nl)",
+    },
+  });
+  assert.equal(completeEvents.length, 1);
+  assert.equal(completeEvents[0].type, "tool.completed");
+  assert.equal(completeEvents[0].payload.location, "TU/e Eindhoven student teams");
+  assert.equal(completeEvents[0].payload.websites?.length, 2);
+  assert.equal(completeEvents[0].payload.websites[0].url, "https://www.tue.nl/student-teams");
+  assert.equal(completeEvents[0].payload.websites[0].title, "Student Teams | TU/e");
+  assert.equal(completeEvents[0].payload.websites[0].domain, "tue.nl");
+  assert.equal(completeEvents[0].payload.websites[1].url, "https://solarteam.nl");
+});
+
+test("web extract lifecycle captures URL in location and websites", () => {
+  const state = createHermesEventNormalizationState();
+  const normalizeWith = (raw) =>
+    normalizeHermesEvent(raw, "live-1", "runtime-1", state);
+
+  const startEvents = normalizeWith({
+    type: "tool.start",
+    session_id: "live-1",
+    payload: {
+      tool_id: "call-extract-1",
+      name: "web_extract",
+      args_text: JSON.stringify({ url: "https://www.tue.nl/en/education/student-teams" }),
+    },
+  });
+  assert.equal(startEvents.length, 1);
+  assert.equal(startEvents[0].payload.location, "https://www.tue.nl/en/education/student-teams");
+
+  const completeEvents = normalizeWith({
+    type: "tool.complete",
+    session_id: "live-1",
+    payload: {
+      tool_id: "call-extract-1",
+      name: "web_extract",
+      summary: "Extracted 2500 characters",
+      result: "Page content from TU/e student teams...",
+    },
+  });
+  assert.equal(completeEvents.length, 1);
+  assert.equal(completeEvents[0].payload.location, "https://www.tue.nl/en/education/student-teams");
+  assert.equal(completeEvents[0].payload.websites?.length, 1);
+  assert.equal(completeEvents[0].payload.websites[0].url, "https://www.tue.nl/en/education/student-teams");
+  assert.equal(completeEvents[0].payload.websites[0].domain, "tue.nl");
+});
+
+test("the live gateway's own tool.complete shape carries its result pages through", () => {
+  // Exactly what tui_gateway/server.py puts on the wire: args, a duration
+  // summary, and the parsed tool result. Nothing in the panel can name a
+  // source unless this event carries one.
+  const state = createHermesEventNormalizationState();
+  const events = normalizeHermesEvent(
+    {
+      type: "tool.complete",
+      session_id: "live-1",
+      payload: {
+        tool_id: "call-search-9",
+        name: "web_search",
+        args: { query: "TU/e student teams", limit: 5 },
+        duration_s: 6.4,
+        summary: "Did 5 searches in 6.4s",
+        result: {
+          success: true,
+          data: {
+            web: [
+              {
+                title: "Student Teams | TU/e",
+                url: "https://www.tue.nl/en/education/student-teams",
+                description: "Overview of official student teams.",
+                position: 1,
+              },
+              {
+                title: "Solar Team Eindhoven",
+                url: "https://solarteam.nl",
+                description: "Solar Team Eindhoven builds solar cars.",
+                position: 2,
+              },
+            ],
+          },
+        },
+      },
+    },
+    "live-1",
+    "runtime-1",
+    state,
+  );
+  assert.equal(events.length, 1);
+  assert.equal(events[0].payload.websites?.length, 2);
+  assert.equal(events[0].payload.websites[0].domain, "tue.nl");
+  assert.equal(events[0].payload.details.websites.length, 2);
+});
+
+test("a shell tool's incidental URL is never reported as a consulted website", () => {
+  const state = createHermesEventNormalizationState();
+  const events = normalizeHermesEvent(
+    {
+      type: "tool.complete",
+      session_id: "live-1",
+      payload: {
+        tool_id: "call-bash-1",
+        name: "terminal",
+        summary: "Ran a command",
+        result: "Cloning into https://github.com/example/repo.git",
+      },
+    },
+    "live-1",
+    "runtime-1",
+    state,
+  );
+  assert.equal(events.length, 1);
+  assert.equal(events[0].payload.websites, undefined);
+});
+
+test("web_search_tool and web_extract_tool names correctly extract websites and query", () => {
+  const state = createHermesEventNormalizationState();
+  const normalizeWith = (raw) =>
+    normalizeHermesEvent(raw, "live-1", "runtime-1", state);
+
+  const startEvents = normalizeWith({
+    type: "tool.start",
+    session_id: "live-1",
+    payload: {
+      tool_id: "call-search-tool-1",
+      name: "web_search_tool",
+      args: { query: "TU/e Eindhoven student teams", limit: 5 },
+    },
+  });
+  assert.equal(startEvents.length, 1);
+  assert.equal(startEvents[0].type, "tool.started");
+  assert.equal(startEvents[0].payload.location, "TU/e Eindhoven student teams");
+
+  const completeEvents = normalizeWith({
+    type: "tool.complete",
+    session_id: "live-1",
+    payload: {
+      tool_id: "call-search-tool-1",
+      name: "web_search_tool",
+      summary: "Did 5 searches in 6.5s",
+      result: {
+        success: true,
+        data: {
+          web: [
+            {
+              title: "Student Teams | TU/e",
+              url: "https://www.tue.nl/en/education/student-teams",
+              description: "Overview of official student teams.",
+            },
+          ],
+        },
+      },
+    },
+  });
+  assert.equal(completeEvents.length, 1);
+  assert.equal(completeEvents[0].type, "tool.completed");
+  assert.equal(completeEvents[0].payload.location, "TU/e Eindhoven student teams");
+  assert.equal(completeEvents[0].payload.websites?.length, 1);
+  assert.equal(completeEvents[0].payload.websites[0].url, "https://www.tue.nl/en/education/student-teams");
+  assert.equal(completeEvents[0].payload.websites[0].title, "Student Teams | TU/e");
+  assert.equal(completeEvents[0].payload.websites[0].domain, "tue.nl");
+});

@@ -91,6 +91,12 @@ export function composeHermesSystemPrompt(input: {
   if (decision.allowedTools.includes("websearch")) {
     sections.push(readSystemPrompt("web-grounding"));
   }
+  // The image-results display contract ships whenever image_search is on the
+  // turn: the fenced-block shape is Breadboard's own convention, so without
+  // this section the model has only the tool description to learn it from.
+  if (decision.allowedTools.includes("image_search")) {
+    sections.push(readSystemPrompt("image-results"));
+  }
   sections.push(
     [
       "# server_capability_decision",

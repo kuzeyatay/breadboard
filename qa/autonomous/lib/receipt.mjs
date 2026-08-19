@@ -130,6 +130,26 @@ export function validateReceipt(receipt) {
     if (receipt.assertion_integrity_result?.verdict === "REJECTED") {
       problems.push("VERIFIED_REPAIR cannot carry a rejected assertion-integrity verdict");
     }
+    // `files_changed` must be the repair, not the tree it ran in.
+    //
+    // A snapshot worktree carries the developer's whole in-flight tree, and a
+    // receipt built from a raw worktree diff reported 150+ files for a repair
+    // that wrote three. A verified repair can only have changed files it was
+    // authorised to change, so anything outside `allowed_paths` means the
+    // receipt is describing snapshot context as though the repair caused it.
+    if (Array.isArray(receipt.files_changed) && Array.isArray(receipt.allowed_paths)) {
+      const allowed = receipt.allowed_paths.map((entry) => String(entry).replace(/\\/g, "/"));
+      const outside = receipt.files_changed
+        .map((entry) => String(entry).replace(/\\/g, "/"))
+        .filter((file) => !allowed.some((prefix) => file === prefix || file.startsWith(prefix + "/")));
+      if (outside.length > 0) {
+        problems.push(
+          `files_changed reports ${outside.length} path(s) outside allowed_paths, so it is describing snapshot context rather than the repair: ${outside
+            .slice(0, 5)
+            .join(", ")}${outside.length > 5 ? ", …" : ""}`,
+        );
+      }
+    }
     if (receipt.isolation_result?.verified !== true) {
       problems.push("VERIFIED_REPAIR requires verified worktree isolation");
     }

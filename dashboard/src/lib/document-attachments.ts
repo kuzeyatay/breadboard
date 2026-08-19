@@ -15,7 +15,14 @@
 //
 // Deliberately free of Node imports — the composer imports this too.
 
-export type DocumentAttachmentFormat = "docx" | "xlsx" | "pptx" | "pdf";
+export type DocumentAttachmentFormat =
+  | "docx"
+  | "xlsx"
+  | "pptx"
+  | "pdf"
+  | "odt"
+  | "ods"
+  | "odp";
 
 export interface DocumentFormatDescriptor {
   mimeType: string;
@@ -47,6 +54,25 @@ export const DOCUMENT_ATTACHMENT_FORMATS: Record<
   // A PDF is kept for the same reason but is not rewritten in place: what an
   // agent produces from one is a new file, not an edit of the original.
   pdf: { mimeType: "application/pdf", label: "PDF", editable: false },
+  // OpenDocument formats are read as flat text (see document-structure/
+  // opendocument.ts) rather than the structured markdown a docx/xlsx/pptx
+  // gets, so they are kept readable but not marked editable: an agent has no
+  // structural model of the file to write revisions back into.
+  odt: {
+    mimeType: "application/vnd.oasis.opendocument.text",
+    label: "OpenDocument Text",
+    editable: false,
+  },
+  ods: {
+    mimeType: "application/vnd.oasis.opendocument.spreadsheet",
+    label: "OpenDocument Spreadsheet",
+    editable: false,
+  },
+  odp: {
+    mimeType: "application/vnd.oasis.opendocument.presentation",
+    label: "OpenDocument Presentation",
+    editable: false,
+  },
 };
 
 export const DOCUMENT_ATTACHMENT_EXTENSIONS = Object.keys(

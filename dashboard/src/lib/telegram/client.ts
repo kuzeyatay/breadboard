@@ -6,6 +6,7 @@
 // line. Errors carry Telegram's own `description` field and nothing else.
 
 import { telegramApiBase, telegramTimings } from "./config.ts";
+import { applyOutboundGuardrails } from "../guardrails/service.ts";
 
 export class TelegramApiError extends Error {
   /** HTTP status, or 0 when the request never got an answer. */
@@ -172,7 +173,9 @@ export async function sendChatAction(
  * unstyled one.
  */
 export async function sendMessage(token: string, chatId: string, text: string): Promise<void> {
-  for (const chunk of splitForTelegram(text)) {
+  // Masked BEFORE splitting: a token like <EMAIL_ADDRESS> must never straddle
+  // a chunk boundary, and detection needs the full message for context anyway.
+  for (const chunk of splitForTelegram(applyOutboundGuardrails(text))) {
     await callTelegram<unknown>(
       token,
       "sendMessage",
@@ -199,7 +202,7 @@ export async function sendDocument(
 ): Promise<void> {
   const form = new FormData();
   form.append("chat_id", chatId);
-  if (caption?.trim()) form.append("caption", caption.trim().slice(0, 1_024));
+  if (caption?.trim()) form.append("caption", applyOutboundGuardrails(caption.trim()).slice(0, 1_024));
   // Copied into a plain ArrayBuffer-backed view: a Node `Buffer` is backed by a
   // shared pool, which is not a `BlobPart`.
   const bytes = new Uint8Array(file.bytes.byteLength);

@@ -1,0 +1,92 @@
+{
+  "pass": "W2-3G PartA",
+  "findingId": "W23E-001",
+  "decision": "LANDED_AND_REVERIFIED",
+  "generatedAt": "2026-08-18T08:48:03.973Z",
+  "candidateIdentity": {
+    "intact": true,
+    "receiptStatus": "VERIFIED_REPAIR",
+    "capabilityId": "be228038-243c-495f-a057-69d7aaac2c04",
+    "finalized": true,
+    "unauthorisedChanges": [],
+    "assertionIntegrity": "REVIEW_REQUIRED",
+    "isolationVerified": true,
+    "repairFootprint": [
+      "dashboard/src/lib/hermes/skills.ts",
+      ".agents/skills/registry.json",
+      "dashboard/tests/reviewed-skill-pin-canonicalisation.test.mjs"
+    ],
+    "receiptFilesChangedNote": "receipt.files_changed lists 153 paths because it recorded the whole snapshot worktree diff. The repair footprint is the capability's 3 authorised writes; that is what is landed."
+  },
+  "targetCompatibility": {
+    "headMatches": true,
+    "overlappingDeveloperEdits": [],
+    "semanticConflicts": [],
+    "safeToLand": true
+  },
+  "landing": {
+    "method": "The verified candidate bytes were copied verbatim from the SH1 worktree. No merge, no conflict resolution, so the landed bytes are the verified bytes.",
+    "files": [
+      {
+        "path": "dashboard/src/lib/hermes/skills.ts",
+        "landedBytesEqualVerifiedBytes": true
+      },
+      {
+        "path": ".agents/skills/registry.json",
+        "landedBytesEqualVerifiedBytes": true
+      },
+      {
+        "path": "dashboard/tests/reviewed-skill-pin-canonicalisation.test.mjs",
+        "landedBytesEqualVerifiedBytes": true
+      }
+    ],
+    "allExact": true
+  },
+  "additionalTestCorrections": {
+    "count": 2,
+    "files": [
+      "dashboard/tests/factcheck-integration.test.mjs"
+    ],
+    "why": "Both encoded the superseded raw-byte contract and had to move with it. Non-vacuity proven: content drift and clone drift still fail; only line-ending differences stop mattering."
+  },
+  "postLandVerification": {
+    "generatedAt": "2026-08-18T08:48:03.972Z",
+    "note": "Re-run in the MAIN tree after landing, not read from the worktree receipt.",
+    "regressionSuite": "dashboard/tests/reviewed-skill-pin-canonicalisation.test.mjs 8/8",
+    "originalReproductionNowPasses": true,
+    "allThreeHealthy": true,
+    "allThreeDispatch": true,
+    "quartzScopeUnchanged": true,
+    "checkoutMatrix": {
+      "policies": [
+        "core.autocrlf=true",
+        "core.autocrlf=false",
+        "core.autocrlf=input"
+      ],
+      "allVerify": true,
+      "repoConfigUnchanged": true,
+      "globalConfigUnchanged": true
+    },
+    "adversarial": {
+      "representationsValid": true,
+      "contentMutationsRejected": true
+    },
+    "invalidUtf8FailsClosed": true,
+    "lineEndingIdentities": 1,
+    "rawIdentities": 6,
+    "dispatchGateStillClosed": true,
+    "verificationNegativesMet": true,
+    "regressionNonVacuous": true,
+    "affectedSkillSuites": "factcheck-integration 11/11, premortem-integration, hermes-skills, agent-loop-kit, hermes-capability-policy — 52/52"
+  },
+  "commit": {
+    "performed": false,
+    "reason": "loop-contract.yaml gates commit_push_open_pr_merge_or_schedule behind an explicit APPROVE LOOP ACTION string, which was not supplied. The change is applied to the working tree and stops at the commit gate.",
+    "approvalStringToProceed": "APPROVE LOOP ACTION: commit W23E-001 / dashboard/src/lib/hermes/skills.ts + .agents/skills/registry.json + the two test files / git revert the commit",
+    "suggestedMessage": "fix(skills): make reviewed text pins line-ending invariant"
+  },
+  "push": false,
+  "pullRequest": false,
+  "merge": false,
+  "evidenceDirectory": ".qa-results/week2-w23e001-landing/w23g-20260818T0900Z"
+}

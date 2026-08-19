@@ -25,12 +25,12 @@ import { ApiError } from "./route-core.ts";
 import { resolveCommandMessage } from "./commands.ts";
 import {
   assessVerification,
-  enforceRequiredWebEvidence,
   evidenceKindForTool,
   evidenceTitleForTool,
   type EvidenceRecord,
 } from "./evidence.ts";
 import { composeHermesSystemPrompt } from "./system-prompts.ts";
+import { adjudicateWebGrounding } from "./web-grounding-decider.ts";
 import { scheduleLoopxTickForConversation } from "../loopx/conversation-tick.ts";
 import {
   prepareTurn,
@@ -42,7 +42,9 @@ import { connectedAppRegistryForTurn } from "./unified-tool-registry.ts";
 import {
   beginRuntimeRun,
   finishRuntimeRun,
+  getRuntimeRun,
   markRuntimeRunSubmitted,
+  parseRuntimeRunDispatch,
 } from "./run-store.ts";
 import { hermesMessageId } from "./message-id.ts";
 import {
@@ -74,7 +76,17 @@ import { factcheckCommandText } from "./factcheck-intent.ts";
 import { agentLoopCommandText } from "./agent-loop-intent.ts";
 import { messagingCommandText } from "./messaging-intent.ts";
 import { imageTo3dCommandText, IMAGE_TO_3D_SKILL } from "./image-3d-intent.ts";
-import { diagramCommandText } from "./diagram-intent.ts";
+import { diagramCommandText, DIAGRAM_DESIGN_SKILL } from "./diagram-intent.ts";
+import {
+  githubExplorerCommandText,
+  GITHUB_EXPLORER_SKILL,
+} from "./github-explorer-intent.ts";
+import {
+  INTERACTIVE_VISUALIZER_SKILL,
+  INTERACTIVE_VISUALIZER_IN_CHAT_SKILL,
+} from "./interactive-visualizer-skills.ts";
+import { turnCapabilitySelection } from "./capability-usage.ts";
+import { capabilitySummaryForRun } from "./capability-evidence.ts";
 import { audioAnalysisCommandText, AUDIO_ANALYSIS_SKILL } from "./audio-intent.ts";
 import {
   hasAnalyzableAttachment,
@@ -273,9 +285,18 @@ export async function openGardenAgentChat(
     authenticated: true,
     priorMessages: messages,
   });
+  // The same second copy of the chain: a repo named for inspection has to
+  // select the skill here exactly as it does in conversations/turn-service.ts,
+  // after Diagram Design and before messaging for the same reasons.
+  const githubExplorerSelection = githubExplorerCommandText({
+    text: diagramSelection.text,
+    surface: "garden_chat",
+    authenticated: true,
+    priorMessages: messages,
+  });
   // Last in the chain: see the same call in conversations/turn-service.ts.
   const messagingSelection = messagingCommandText({
-    text: diagramSelection.text,
+    text: githubExplorerSelection.text,
     surface: "garden_chat",
     authenticated: true,
     priorMessages: messages,
@@ -297,7 +318,8 @@ export async function openGardenAgentChat(
     if (
       !imageTo3dSelection.automatic &&
       !audioSelection.automatic &&
-      !diagramSelection.automatic
+      !diagramSelection.automatic &&
+      !githubExplorerSelection.automatic
     ) throw error;
     return await resolveCommandMessage(
       userId,
@@ -317,6 +339,17 @@ export async function openGardenAgentChat(
   decision.selectedConnections = resolved.invocations
     .filter((item) => item.kind === "mcp")
     .map((item) => item.slug);
+
+  // Whether this turn owes live web evidence. The keyword planner's "no" is
+  // final and free; its "yes" is a proposal a cheap model adjudicates, because
+  // the planner matches keywords anywhere in the message and cannot tell an
+  // instruction from text the user pasted to be worked on. Fixed here, before
+  // dispatch, so the finished answer is judged against a standard it could not
+  // lower. See web-grounding-decider.ts.
+  const webGroundingVerdict = await adjudicateWebGrounding({
+    request: resolved.userText || text,
+    plannerRequired: prepared.plan.requiresWebEvidence,
+  });
 
   const runtime = getAgentRuntimeByKind(session.runtimeKind);
   const connectedApps = await connectedAppRegistryForTurn({
@@ -370,6 +403,7 @@ export async function openGardenAgentChat(
       automaticFactcheck: factcheckSelection.automatic,
       automaticInteractiveVisualizer: visualizerSelection.automatic,
       automaticDiagramDesign: diagramSelection.automatic,
+      automaticGithubExplorer: githubExplorerSelection.automatic,
       capabilityDecisionId: storedDecision.id,
       capabilityMode: decision.mode,
       intendedOutcome: prepared.plan.intendedOutcome,
@@ -457,6 +491,33 @@ export async function openGardenAgentChat(
       ? renderAgencyAgentPersona(activeAgencyAgent)
       : undefined,
   });
+  // Garden Chat's copy of the capability ledger the Terminal keeps. Same rule:
+  // only selections the resolver kept are recorded, so an automatic pick the
+  // availability fallback dropped never appears in this turn's provenance.
+  // Super agent does not reach this surface, so there is no inventory here.
+  const capabilitySelection = turnCapabilitySelection({
+    invocations: resolved.invocations,
+    automaticSkills: [
+      ...(imageTo3dSelection.automatic ? [{ slug: IMAGE_TO_3D_SKILL }] : []),
+      ...(audioSelection.automatic ? [{ slug: AUDIO_ANALYSIS_SKILL }] : []),
+      ...(diagramSelection.automatic ? [{ slug: DIAGRAM_DESIGN_SKILL }] : []),
+      ...(githubExplorerSelection.automatic
+        ? [{ slug: GITHUB_EXPLORER_SKILL }]
+        : []),
+      ...(premortemSelection.automatic ? [{ slug: "premortem" }] : []),
+      ...(factcheckSelection.automatic ? [{ slug: "bullshit-detector" }] : []),
+      ...(messagingSelection.automatic ? [{ slug: "send-to-my-phone" }] : []),
+      ...(agentLoopSelection.automatic
+        ? [{ slug: "agent-loop-engineering" }]
+        : []),
+      ...(visualizerSelection.automatic
+        ? [
+            { slug: INTERACTIVE_VISUALIZER_SKILL },
+            { slug: INTERACTIVE_VISUALIZER_IN_CHAT_SKILL },
+          ]
+        : []),
+    ],
+  });
   const run = beginRuntimeRun({
     runtimeSessionId: session.row.id,
     instruction: text,
@@ -467,6 +528,7 @@ export async function openGardenAgentChat(
       variant: engine.variant,
       tools: runTools,
       system: runSystem,
+      capabilities: capabilitySelection,
     },
   });
   const runtimeText =
@@ -479,6 +541,7 @@ export async function openGardenAgentChat(
     prepared,
     run.id,
     { messageId: runtimeMessageId, instruction: runtimeText },
+    webGroundingVerdict.required,
     () =>
     runtime.startRun({
       externalSessionId: session.externalSessionId,
@@ -614,12 +677,30 @@ function gardenTurnContext(
 }
 
 
+/**
+ * The capability selection recorded on a run, or nothing if the row has gone.
+ * Read back rather than closed over so the stream describes the exact turn it
+ * is finishing, the way the Terminal pump does.
+ */
+function capabilitySelectionForRun(runId: string) {
+  const run = getRuntimeRun(runId);
+  return run ? parseRuntimeRunDispatch(run).capabilities : undefined;
+}
+
 function legacyGardenEventStream(
   session: AuthorizedRuntimeSession,
   requestSignal: AbortSignal,
   prepared: PreparedTurn,
   runId: string,
   turnReference: { messageId: string; instruction: string },
+  /**
+   * Adjudicated before dispatch by the web-grounding decider, and passed in
+   * rather than re-derived here: the obligation must be the one this turn was
+   * sent under, and `prepared.plan.requiresWebEvidence` is only the keyword
+   * planner's proposal. Reading the proposal back at completion time is how a
+   * pasted report full of citation links came to owe live web evidence.
+   */
+  webGroundingRequired: boolean,
   sendMessage: () => Promise<void>,
 ): Response {
   const runtime = getAgentRuntimeByKind(session.runtimeKind);
@@ -840,7 +921,16 @@ function legacyGardenEventStream(
               success: event.payload.success,
               toolCallId: event.payload.toolCallId,
               timestamp: event.timestamp,
-              details: { toolName: event.payload.toolName },
+              // Carry the resolved sources, not just the tool's name: the
+              // evidence panel's whole claim is that it can show which pages
+              // an answer came from.
+              details: {
+                ...(event.payload.details ?? {}),
+                toolName: event.payload.toolName,
+              },
+              ...(event.payload.websites?.length
+                ? { websites: event.payload.websites }
+                : {}),
             });
             recordAuditEvent({
               eventType: "tool.completed",
@@ -874,16 +964,6 @@ function legacyGardenEventStream(
             if (!assistantText.trim() && narrationSegments.length) {
               assistantText = narrationSegments[narrationSegments.length - 1];
             }
-            const webGroundingRequired = prepared.plan.requiresWebEvidence;
-            const groundedAssistantText = enforceRequiredWebEvidence(
-              assistantText,
-              evidence,
-              webGroundingRequired,
-            );
-            if (groundedAssistantText !== assistantText) {
-              assistantText = groundedAssistantText;
-              emit({ type: "replace", text: assistantText });
-            }
             // A provider/runtime can close a successful stream without ever
             // emitting answer text. Do not leave the Garden transcript with a
             // blank assistant bubble and an apparently completed turn: make
@@ -902,6 +982,15 @@ function legacyGardenEventStream(
             const verification = assessVerification(assistantText, evidence, {
               webGroundingRequired,
               externalAgents: externalAgentCallsForRun(runId),
+              // Selections were fixed before dispatch — read back off the run
+              // rather than closed over, so this stream describes the turn it
+              // is finishing. Usage comes from the calls that completed.
+              capabilities: capabilitySummaryForRun({
+                runtimeSessionId: session.row.id,
+                runId,
+                selection: capabilitySelectionForRun(runId),
+                toolCalls,
+              }),
             });
             emitArtifactEvents();
             // Last chance before the stream closes: an unemitted launch would be

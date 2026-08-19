@@ -27,7 +27,7 @@ import { VIDEO_ATTACHMENT_EXTENSIONS } from "../video-attachments.ts";
  */
 const VIDEO_URL = new RegExp(
   "https?://(?:" +
-    "[^\\s<>\"']*\\b(?:youtube\\.com/(?:watch|shorts|live|embed|v)|youtu\\.be/|vimeo\\.com/\\d|dailymotion\\.com/video|twitch\\.tv/videos|tiktok\\.com/[^\\s]*/video)\\b[^\\s<>\"']*" +
+    "[^\\s<>\"']*\\b(?:youtube\\.com/(?:watch|shorts|live|embed|v)|youtu\\.be/|vimeo\\.com/\\d|dailymotion\\.com/video|twitch\\.tv/videos|tiktok\\.com/[^\\s]*/video|instagram\\.com/(?:reels?|p|tv)/)\\b[^\\s<>\"']*" +
     `|[^\\s<>"']+\\.(?:${VIDEO_ATTACHMENT_EXTENSIONS.join("|")})(?:\\?[^\\s<>"']*)?` +
     ")",
   "gi",
@@ -56,7 +56,7 @@ export function firstVideoUrl(text: string): string | null {
 export interface VideoSource {
   /** Stable across every spelling of the same link. */
   key: string;
-  provider: "youtube" | "web";
+  provider: "youtube" | "tiktok" | "instagram" | "web";
   /** What is actually fetched. */
   canonicalUrl: string;
   /** What the person typed. */
@@ -92,6 +92,42 @@ export function videoSourceFor(rawUrl: string): VideoSource | null {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
   if (url.username || url.password) return null;
+
+  const host = url.hostname.toLowerCase();
+
+  // A TikTok video's numeric id is globally unique — the handle in the path is
+  // presentation, so a re-shared copy of the same link under a renamed account
+  // still keys to one video. Share-link query noise (`is_from_webapp`, tokens)
+  // is dropped from both the identity and the fetch.
+  if (host === "tiktok.com" || host.endsWith(".tiktok.com")) {
+    const match = url.pathname.match(/^\/(@[^/]+)\/video\/(\d+)/);
+    if (!match) return null;
+    const [, handle, videoId] = match;
+    return {
+      key: `tiktok:${videoId}`,
+      provider: "tiktok",
+      canonicalUrl: `https://www.tiktok.com/${handle}/video/${videoId}`,
+      originalUrl: trimmed,
+      label: handle,
+    };
+  }
+
+  // Instagram serves the same post as /reel/, /reels/ and (historically) /p/ or
+  // /tv/ — the shortcode is the identity, the kind is kept in the canonical URL
+  // because the embed page lives under it. A /p/ link may turn out to be a
+  // photo; the fetch fails cleanly and the turn carries on with the URL.
+  if (host === "instagram.com" || host.endsWith(".instagram.com")) {
+    const match = url.pathname.match(/^\/(reels?|p|tv)\/([A-Za-z0-9_-]+)/);
+    if (!match) return null;
+    const kind = match[1] === "reels" ? "reel" : match[1];
+    return {
+      key: `instagram:${match[2]}`,
+      provider: "instagram",
+      canonicalUrl: `https://www.instagram.com/${kind}/${match[2]}/`,
+      originalUrl: trimmed,
+      label: match[2],
+    };
+  }
 
   // A non-YouTube link only counts when it names a media file outright. Fetching
   // an arbitrary page and hoping a video falls out is not something to do on

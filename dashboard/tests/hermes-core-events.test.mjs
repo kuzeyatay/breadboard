@@ -313,3 +313,68 @@ test("encodeSseEvent produces a valid SSE data frame", () => {
   assert.match(frame, /^data: \{/);
   assert.match(frame, /\n\n$/);
 });
+
+test("a completed web search carries the pages it returned and the query it ran", () => {
+  const state = createHermesEventNormalizationState();
+  const event = normalizeHermesEvent(
+    {
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: {
+          id: "part-1",
+          callID: "call-1",
+          sessionID: "s1",
+          type: "tool",
+          tool: "websearch",
+          state: {
+            status: "completed",
+            title: "Did 5 searches in 8.7s",
+            input: { query: "TU/e student teams" },
+            output: JSON.stringify({
+              results: [
+                { url: "https://www.tue.nl/student-teams", title: "Student Teams" },
+                { url: "https://solarteam.nl", title: "Solar Team Eindhoven" },
+              ],
+            }),
+          },
+        },
+      },
+    },
+    "s1",
+    state,
+  );
+  assert.equal(event?.type, "tool.completed");
+  assert.equal(event?.payload.location, "TU/e student teams");
+  assert.equal(event?.payload.websites?.length, 2);
+  assert.equal(event?.payload.websites[0].domain, "tue.nl");
+  assert.equal(event?.payload.websites[1].url, "https://solarteam.nl");
+});
+
+test("a shell command's incidental URLs are never listed as consulted websites", () => {
+  const state = createHermesEventNormalizationState();
+  const event = normalizeHermesEvent(
+    {
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: {
+          id: "part-2",
+          callID: "call-2",
+          sessionID: "s1",
+          type: "tool",
+          tool: "bash",
+          state: {
+            status: "completed",
+            title: "Ran a command",
+            output: "cloning from https://github.com/example/repo.git",
+          },
+        },
+      },
+    },
+    "s1",
+    state,
+  );
+  assert.equal(event?.type, "tool.completed");
+  assert.equal(event?.payload.websites, undefined);
+});

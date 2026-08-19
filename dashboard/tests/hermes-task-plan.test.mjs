@@ -460,6 +460,37 @@ test("only a live-information request owes web evidence", () => {
   assert.equal(download.requiresWebEvidence, false);
 });
 
+test("a video link is Watch's subject, not a web-evidence debt", () => {
+  // The regression: this exact shape selected the Watch skill, answered from
+  // the downloaded video, and then had the answer replaced by the grounding
+  // refusal because the pasted link had armed the web gate.
+  const watch = plan(
+    "in this video https://www.youtube.com/watch?v=XYOY2lk-QN4 what is the color of vision?",
+  );
+  assert.equal(watch.requiresWebEvidence, false);
+  assert.ok(!watch.requiredCapabilities.includes("web_research"));
+
+  // Short-host and direct-file video links are the same subject.
+  assert.equal(
+    plan("what happens at the end of https://youtu.be/XYOY2lk-QN4").requiresWebEvidence,
+    false,
+  );
+
+  // A page link still owes a live source: only video links are exempt.
+  assert.equal(
+    plan("summarize this article https://example.com/story").requiresWebEvidence,
+    true,
+  );
+
+  // A video link beside a page link keeps the obligation for the page.
+  assert.equal(
+    plan(
+      "compare this video https://youtu.be/XYOY2lk-QN4 with the claims in https://example.com/review",
+    ).requiresWebEvidence,
+    true,
+  );
+});
+
 test("resources are extracted for paths, urls and target formats", () => {
   const p = plan("Convert C:\\Users\\me\\notes\\draft.md to PDF and email it, see https://example.com/spec");
   const kinds = new Set(p.requiredResources.map((r) => r.kind));

@@ -5,6 +5,7 @@ import SettingsAgentMemory from "@/app/components/settings-agent-memory";
 import SettingsAccounts from "@/app/components/settings-accounts";
 import SettingsConnections from "@/app/components/settings-connections";
 import SettingsMessaging from "@/app/components/settings-messaging";
+import SettingsGuardrails from "@/app/components/settings-guardrails";
 import SettingsMcp from "@/app/components/settings-mcp";
 import SettingsProviders from "@/app/components/settings-providers";
 import SettingsRecall from "@/app/components/settings-recall";
@@ -19,6 +20,7 @@ export type SettingsTab =
   | "voice"
   | "speech"
   | "messaging"
+  | "guardrails"
   | "recall";
 
 interface SettingsDialogProps {
@@ -65,6 +67,11 @@ const TABS: Array<{ value: SettingsTab; label: string; description: string }> = 
     value: "messaging",
     label: "Messaging",
     description: "Reach Breadboard from WhatsApp or Telegram.",
+  },
+  {
+    value: "guardrails",
+    label: "Guardrails",
+    description: "Mask PII out of outbound messages before they're sent.",
   },
   {
     value: "recall",
@@ -150,8 +157,8 @@ export default function SettingsDialog({
         aria-modal={presentation === "modal" ? "true" : undefined}
         aria-labelledby="settings-dialog-title"
         className={`${open ? "flex" : "hidden"} ${presentation === "modal"
-          ? "bb-modal-panel neu-dialog max-h-[min(46rem,92vh)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border text-[var(--ink)]"
-          : "neu-popover absolute bottom-0 right-full z-50 mr-2 max-h-[min(42rem,calc(100vh-2rem))] w-[min(42rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--ink)] shadow-2xl"}`}
+          ? "bb-modal-panel neu-dialog max-h-[min(46rem,92vh)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border text-[var(--ink)]"
+          : "neu-popover absolute bottom-0 right-full z-50 mr-2 max-h-[min(42rem,calc(100vh-2rem))] w-[min(56rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--ink)] shadow-2xl"}`}
       >
         <div className="flex shrink-0 items-start justify-between gap-3 px-6 pb-4 pt-5">
           <div className="min-w-0">
@@ -181,9 +188,9 @@ export default function SettingsDialog({
             see is a section you will not find. `shrink-0` here and on the header
             is what keeps that true; without it both are flex items that give up
             their height to a tall panel, and the strip is squeezed to a sliver.
-            Now that accounts and providers are one section the labels fit on a
-            line, and if a narrow window ever leaves them short they wrap onto a
-            second one rather than being clipped. */}
+            The panel is wide enough to hold every section label on one line —
+            adding a section without widening it pushes the last one onto a
+            second row — and a narrow window wraps them rather than clipping. */}
         <div className="shrink-0 px-6">
           <div
             className="neu-segmented flex w-full flex-wrap gap-1 rounded-xl p-1"
@@ -281,6 +288,16 @@ export default function SettingsDialog({
               hidden={tab !== "messaging"}
             >
               <SettingsMessaging />
+            </div>
+          ) : null}
+          {visitedTabs.has("guardrails") ? (
+            <div
+              id="settings-panel-guardrails"
+              role="tabpanel"
+              aria-labelledby="settings-tab-guardrails"
+              hidden={tab !== "guardrails"}
+            >
+              <SettingsGuardrails />
             </div>
           ) : null}
           {visitedTabs.has("recall") ? (

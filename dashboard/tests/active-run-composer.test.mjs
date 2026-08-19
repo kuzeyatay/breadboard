@@ -12,6 +12,9 @@ const composer = source("../src/app/components/assistant-composer.tsx");
 const runtimePanel = source(
   "../src/app/components/hermes/agent-runtime-panel.tsx",
 );
+const queuedFollowUpsModule = source(
+  "../src/app/components/hermes/queued-follow-ups.tsx",
+);
 const sessionHook = source(
   "../src/app/components/hermes/use-agent-session.ts",
 );
@@ -75,7 +78,7 @@ test("the shared composer keeps its controls stable during an active run", () =>
   // Nothing can be sent without something to send. `canSend` is `canSubmit` for
   // every agent that takes a message, and the request's validity for the one
   // that takes a form instead.
-  assert.match(composer, /disabled=\{!canSend \|\| isSending \|\| disabled/);
+  assert.match(composer, /disabled=\{loading \|\| !canSend \|\| isSending \|\| disabled/);
   // Two agents take a form instead of a message — Trading Agent and Shorts —
   // so the rule is written once, against whichever of them is selected.
   assert.match(composer, /const canSend = formAgent \? formRequestReady : canSubmit/);
@@ -91,23 +94,26 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.match(composer, /headerContent/);
   assert.doesNotMatch(composer, /steerQueued/);
   assert.match(runtimePanel, /onQueueSteer=\{queueFollowUp\}/);
-  assert.match(runtimePanel, /queuedFollowUps\.map/);
-  assert.match(runtimePanel, /await onSteer\(item\.text\)/);
-  assert.match(runtimePanel, /Steer the active response with:/);
-  assert.match(runtimePanel, /Delete queued message:/);
-  assert.match(runtimePanel, /Edit queued message:/);
-  assert.match(runtimePanel, /draggable=\{editingQueuedId !== item\.id\}/);
-  assert.match(runtimePanel, /Drag to change steering order/);
-  assert.match(runtimePanel, /event\.key === "ArrowUp"/);
-  assert.match(runtimePanel, /event\.key === "ArrowDown"/);
-  assert.match(runtimePanel, /reorderQueuedFollowUps\(current, draggedQueuedId, targetId\)/);
-  assert.match(runtimePanel, /onSendQueued\(next\.text\)/);
+  assert.match(runtimePanel, /headerContent=\{queuedFollowUpsHeader\}/);
+  // The queue itself is shared: every chat surface renders the same list with
+  // the same edit, reorder, steer, and delete affordances.
+  assert.match(queuedFollowUpsModule, /visibleQueued\.map/);
+  assert.match(queuedFollowUpsModule, /await onSteer\(item\.text\)/);
+  assert.match(queuedFollowUpsModule, /Steer the active response with:/);
+  assert.match(queuedFollowUpsModule, /Delete queued message:/);
+  assert.match(queuedFollowUpsModule, /Edit queued message:/);
+  assert.match(queuedFollowUpsModule, /draggable=\{editingQueuedId !== item\.id\}/);
+  assert.match(queuedFollowUpsModule, /Drag to change steering order/);
+  assert.match(queuedFollowUpsModule, /event\.key === "ArrowUp"/);
+  assert.match(queuedFollowUpsModule, /event\.key === "ArrowDown"/);
+  assert.match(queuedFollowUpsModule, /reorderQueuedFollowUps\(current, draggedQueuedId, targetId\)/);
+  assert.match(queuedFollowUpsModule, /onSendQueued\(next\.text\)/);
   assert.doesNotMatch(composer, /Run status:/);
   assert.doesNotMatch(sessionHook, /Course correction applied/);
   assert.doesNotMatch(sessionHook, /steerFeedback/);
   assert.match(composer, /aria-label=\{runState === 'stopping' \? 'Stopping active run' : 'Stop active run'\}/);
   assert.match(composer, /h-11 w-11/);
-  assert.match(runtimePanel, /disabled=\{disabled\}/);
+  assert.match(runtimePanel, /disabled=\{conversationLocked\}/);
 });
 
 test("a working external agent holds the composer and the queue", () => {
@@ -138,7 +144,10 @@ test("a working external agent holds the composer and the queue", () => {
     /externalRunLaunching \|\| messages\.some\(externalAgentRunInFlight\)/,
   );
   assert.match(runtimePanel, /!\(runInFlight && index === lastAssistantIndex\)/);
-  assert.match(runtimePanel, /queuedFollowUps\.length === 0 \|\|\s*runInFlight \|\|/);
+  assert.match(
+    queuedFollowUpsModule,
+    /if \(runInFlight \|\| applyingSteerId \|\| sendingQueuedId\) return/,
+  );
   assert.match(runtimePanel, /externalRunActive=\{externalRunActive\}/);
   // The dispatch window, before the launched turn reaches the transcript.
   for (const surface of [terminal, garden]) {
@@ -151,7 +160,12 @@ test("a working external agent holds the composer and the queue", () => {
   );
   // Steering stays a chat-turn affordance: an agent card owns its own run, so
   // the queued message waits for it rather than trying to redirect it.
-  assert.match(runtimePanel, /!activeRun \|\|\s*runState === "stopping"/);
+  assert.match(
+    queuedFollowUpsModule,
+    /Boolean\(onSteer\) && steerableRunActive && !stopping/,
+  );
+  assert.match(runtimePanel, /steerableRunActive: activeRun/);
+  assert.match(runtimePanel, /stopping: runState === "stopping"/);
   // Stopping, though, is not a chat-turn affordance. A run card can be
   // suppressed (a quiet run) or never arrive, and then nothing on screen could
   // stop a working conversation — so the composer's square covers both.
@@ -202,17 +216,60 @@ test("the garden workspace stays editable and steers its active Hermes run", () 
   assert.match(composerBlock, /disabled=\{loadingChats\}/);
   assert.doesNotMatch(composerBlock, /disabled=\{isStreaming \|\| loadingChats\}/);
   assert.match(composerBlock, /runState=\{/);
-  assert.match(composerBlock, /onQueueSteer=\{handleSteerActiveResponse\}/);
-  assert.match(composerBlock, /onStop=\{agentActivity\.abort\}/);
-  assert.match(composerBlock, /externalRunActive=\{/);
-  assert.match(composerBlock, /agentLaunchQueue\.queued/);
-  assert.match(composerBlock, /delegatedAgentLaunching/);
+  // A mid-run message queues — it is never fired directly at a run that may
+  // not exist (an external agent run has no steerable Hermes turn behind it).
+  assert.match(composerBlock, /onQueueSteer=\{queueFollowUp\}/);
+  assert.match(composerBlock, /headerContent=\{queuedFollowUpsHeader\}/);
+  // Stop aborts only a Hermes turn. While only an external agent is working,
+  // withholding onStop keeps the send button, which queues — its card carries
+  // the run's own stop control.
+  assert.match(
+    composerBlock,
+    /onStop=\{steerableTurnActive \? agentActivity\.abort : undefined\}/,
+  );
+  assert.match(composerBlock, /externalRunActive=\{externalRunHoldsQueue\}/);
+  // Everything that occupies the conversation — a running agent card, a queued
+  // or in-flight launch — holds the queue rather than dropping the message.
+  assert.match(
+    workspace,
+    /const externalRunHoldsQueue =\s*hasRunningExternalAgentInActiveChat \|\|\s*agentLaunchQueue\.queued \|\|\s*delegatedAgentLaunching \|\|\s*launchingExternalAgent !== null/,
+  );
+  assert.match(workspace, /onSteer: steerActiveResponse/);
   assert.match(gardenAdapter, /sessionId: session\.row\.id,\s*runId,/);
   assert.match(legacyActivity, /const runtimeRunId = useRef<string \| null>\(null\)/);
   assert.match(legacyActivity, /sessions\/\$\{sessionId\}\/steer/);
   assert.match(legacyActivity, /clientRequestId: crypto\.randomUUID\(\)/);
   assert.match(workspace, /\.\.\.steerContext\.messages/);
   assert.match(workspace, /context\.messages\.push\(correctionMessage\)/);
+});
+
+test("the garden assistant and knowledge terminal queue and steer like the terminals", () => {
+  const gardenAssistant = source("../src/app/garden/garden-assistant.tsx");
+  const knowledgeTerminal = source(
+    "../src/app/components/knowledge-terminal.tsx",
+  );
+  for (const surface of [gardenAssistant, knowledgeTerminal]) {
+    assert.match(surface, /useQueuedFollowUps\(\{/);
+    assert.match(surface, /onQueueSteer=\{queueFollowUp\}/);
+    assert.match(surface, /headerContent=\{queuedFollowUpsHeader\}/);
+    assert.match(surface, /runState=\{/);
+    assert.match(surface, /onStop=\{/);
+  }
+  // The garden assistant runs on the legacy Hermes transport, so its queued
+  // messages can steer the streaming turn and the correction joins the
+  // transcript the same way the workspace's does.
+  assert.match(gardenAssistant, /onSteer: steerActiveResponse/);
+  assert.match(gardenAssistant, /agentActivity\.steer\(correction\)/);
+  assert.match(gardenAssistant, /context\.messages\.push\(correctionMessage\)/);
+  assert.match(gardenAssistant, /\.\.\.steerContext\.messages/);
+  // The knowledge terminal has no runtime session behind it: queued messages
+  // wait their turn, and its stop control aborts the in-flight request.
+  assert.match(knowledgeTerminal, /steerableRunActive: false/);
+  assert.match(knowledgeTerminal, /streamControllerRef\.current\?\.abort\(\)/);
+  assert.match(knowledgeTerminal, /signal: controller\.signal/);
+  // Enter must reach the shared composer handler, whose busy branch queues; a
+  // surface-level Enter handler would send into a guard that drops the turn.
+  assert.doesNotMatch(knowledgeTerminal, /onKeyDown=\{handleInputKeyDown\}/);
 });
 
 test("the dashboard assistant header is labeled only as Terminal", () => {

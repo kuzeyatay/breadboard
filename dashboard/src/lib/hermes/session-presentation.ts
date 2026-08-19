@@ -179,6 +179,17 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       verification: presented.metadata.verification,
       proposal: presented.metadata.proposal,
       interrupted: presented.status === "aborted",
+      // A turn that paused for permission before dispatch is only actionable
+      // while its approval card is on screen — client state that navigation
+      // throws away. Surfacing the persisted request lets the transcript
+      // restore rebuild the card instead of showing a dead blank turn.
+      ...(presented.role === "assistant" &&
+      presented.status === "failed" &&
+      presented.metadata.error === "awaiting_permission" &&
+      Array.isArray(presented.metadata.pendingPermissions) &&
+      presented.metadata.pendingPermissions.length > 0
+        ? { pendingPermissions: presented.metadata.pendingPermissions }
+        : {}),
       ...(presented.role === "assistant" &&
       memoryUpdatedClientMessageIds.has(presented.clientMessageId)
         ? { memoryUpdated: true }

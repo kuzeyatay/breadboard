@@ -39,14 +39,28 @@ function stage(name, command, args) {
   };
 }
 
+/**
+ * Discovered, never hand-listed.
+ *
+ * This used to name four files explicitly while the docstring above promised
+ * the whole glob. Three unit files — `repair-capability`, `source-snapshot` and
+ * `execution-snapshot`, which carry capability binding and execution identity —
+ * were therefore never run by `npm run qa:selftest`, and it reported 68 passing
+ * tests where the glob runs 125. A partial list that looks like a full suite is
+ * worse than no suite: it makes a green report mean less than the reader thinks.
+ */
+export function discoverHarnessUnitTests(root = path.join(repoRoot, "qa", "harness-selftest")) {
+  return fs
+    .readdirSync(root)
+    .filter((name) => name.endsWith(".test.mjs"))
+    .sort()
+    .map((name) => path.join(root, name));
+}
+
+const harnessUnitTests = discoverHarnessUnitTests();
+
 const stages = [
-  stage("harness-unit", process.execPath, [
-    "--test",
-    path.join(repoRoot, "qa", "harness-selftest", "repair-gate.test.mjs"),
-    path.join(repoRoot, "qa", "harness-selftest", "assertion-integrity.test.mjs"),
-    path.join(repoRoot, "qa", "harness-selftest", "receipt.test.mjs"),
-    path.join(repoRoot, "qa", "harness-selftest", "repair-worktree.test.mjs"),
-  ]),
+  stage("harness-unit", process.execPath, ["--test", ...harnessUnitTests]),
   stage("harness-playwright", process.execPath, [
     path.join(repoRoot, "node_modules", "@playwright", "test", "cli.js"),
     "test",

@@ -22,6 +22,12 @@
   --selection-yellow-line: #d8c275;
   --danger: #a45c5c; /* destructive / error */
   --danger-hover: #8f4d4d; /* destructive hover */
+  /* The one saturated green in the palette, reserved for "there is something
+     live here": the runtime is up, a chat finished and nobody has read it. The
+     muted sage the rest of the palette is built from disappeared against the
+     tan terminal bar, which is exactly the signal that must not be missed. */
+  --signal-live: #2f9e5a;
+  --signal-live-ring: color-mix(in srgb, var(--signal-live) 38%, transparent);
   --chat-link: #1d4ed8; /* hyperlinks in chat, in the blue people expect */
   --chat-link-hover: #1e3a8a; /* hyperlink hover */
 
@@ -539,6 +545,110 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
   border-color: color-mix(in srgb, var(--botanical) 62%, var(--paper-raised));
   background: color-mix(in srgb, var(--neu-chat-user-surface) 82%, transparent);
   box-shadow: none;
+}
+
+/* The four openers on a blank chat.
+   ---------------------------------------------------------------------------
+   Each card's outline is gone over by a sketch pass — the voice screen's
+   language on a rectangle. Two layers, exactly like the ring: a faint settled
+   line that is always there, and a brighter pass that draws along it, rests on
+   it, and lifts. Both are hand-drawn paths generated from the card's measured
+   size (src/lib/hermes/sketch-outline.ts, the ring's inkRingPath walked around
+   a rounded rectangle) — a geometric <rect> read as machine-drawn next to the
+   ring, and its percentage sizing could disagree with a card stretched by its
+   grid row. The settled line is what keeps the pass's half-drawn moments
+   legible: a fragment over a visible line reads as tracing it, a fragment over
+   nothing read as a broken border.
+
+   The cycle is three of the voice ring's (8460ms vs 2820ms): the ring is the
+   only thing on its screen and can afford urgency, while four cards ticking at
+   that rate read as frantic. The four run a quarter-cycle apart so the row is
+   four separate things being gone over, not one blinking bar.
+
+   The first version was a short dash orbiting the perimeter. It read as worms
+   crawling around the cards, and was cut: the voice language is never a
+   fragment in motion, it is a whole line being redrawn.
+
+   This is the one screen in the app where ambient motion is defensible: the
+   chat is empty, there is nothing to read and nothing running, and the cards
+   are the only thing being offered. */
+.bb-terminal-suggestion {
+  --bb-suggestion-radius: 0.5rem;
+  position: relative;
+  border-radius: var(--bb-suggestion-radius);
+}
+
+/* Sized in pixels by the component from the card's measured box — an SVG is a
+   replaced element, so `inset` alone would not size it, and percentages are
+   what let the old layer sit at the card's content height while a grid row
+   stretched the card taller. */
+.bb-terminal-suggestion-beam {
+  position: absolute;
+  inset: -1px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.bb-terminal-suggestion-beam path {
+  fill: none;
+  stroke: var(--botanical);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The settled line: whole, faint, always there. What the pass goes over. */
+.bb-terminal-suggestion-beam path:first-child {
+  opacity: 0.16;
+}
+
+/* `pathLength=1` normalises the dash to the whole outline; the viewBox matches
+   the element's pixel size, so nothing is stretched and the dash cannot repeat
+   (the non-uniform-stretch trap the voice caption fell into). */
+.bb-terminal-suggestion-beam path:last-child {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  opacity: 0;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--botanical) 40%, transparent));
+  /* Linear, because the sweep must not lurch: easing the draw made the hand
+     speed up mid-stroke, and a hand going over a line moves evenly. The fades
+     get their own curve inside the keyframes. The delay is negative, so all
+     four cards are already at different points of the pass on the first frame
+     instead of drawing in unison. */
+  animation: bb-suggestion-sketch 8460ms linear var(--bb-beam-delay, 0ms) infinite;
+}
+
+/* Draw, hold, lift — the voice ring's sketch shape: the line sweeps the
+   outline at one speed until just past halfway, rests whole on the border,
+   and fades back onto the settled line rather than retracting. */
+@keyframes bb-suggestion-sketch {
+  0% {
+    stroke-dashoffset: 1;
+    opacity: 0;
+    animation-timing-function: linear;
+  }
+  12% {
+    opacity: 0.5;
+    animation-timing-function: linear;
+  }
+  52% {
+    stroke-dashoffset: 0;
+    opacity: 0.5;
+    animation-timing-function: ease;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+}
+
+/* Nothing here explains anything, so the honest reduced-motion answer is to
+   take the whole layer away rather than slow it down — the card keeps its own
+   border and loses nothing it needs. */
+@media (prefers-reduced-motion: reduce) {
+  .bb-terminal-suggestion-beam {
+    display: none;
+  }
 }
 
 /* The openers of a temporary chat are the first thing the user types, so they
@@ -1174,6 +1284,7 @@ b {
 .chat-markdown ul,
 .chat-markdown ol,
 .chat-markdown .chat-code-block,
+.chat-markdown .chat-image-results,
 .chat-markdown blockquote,
 .chat-markdown table {
   margin: 0.65rem 0;
@@ -1183,6 +1294,7 @@ b {
 .chat-markdown.compact ul,
 .chat-markdown.compact ol,
 .chat-markdown.compact .chat-code-block,
+.chat-markdown.compact .chat-image-results,
 .chat-markdown.compact blockquote,
 .chat-markdown.compact table {
   margin: 0.3rem 0;
@@ -2681,6 +2793,11 @@ b {
   --selection-yellow-line: #a89555;
   --danger: #c98282;
   --danger-hover: #d99a9a;
+  /* Lifted off charcoal paper the way every other accent is here. The ring is
+     re-declared rather than inherited: its color-mix is substituted where it is
+     declared, so the :root copy would still carry the light green. */
+  --signal-live: #4fc27d;
+  --signal-live-ring: color-mix(in srgb, var(--signal-live) 38%, transparent);
   --chat-link: #7fb0ff;
   --chat-link-hover: #a8c9ff;
 
@@ -4308,13 +4425,15 @@ html[data-breadboard-desktop="true"] body > .bb-wm-shell {
 }
 
 /* ── The composer floats over the foot of the transcript ──────────────────
-   A conversation runs underneath the bar the way a page runs under a toolbar,
-   rather than stopping short of it. Three rules hold that together, and all of
-   them read `--bb-composer-inset`, which the surface publishes from the
-   measured height of the floating bar (see use-composer-inset.ts).
+   The conversation runs underneath the bar the way a page runs under a
+   toolbar. Only the pill itself covers anything: the wrapper is transparent,
+   so the transcript stays crisp right up to the pill's edge and shows around
+   it, exactly like the reference. The disclaimer is not part of this block —
+   it lives in the transcript flow, after the last message, so it scrolls with
+   the conversation. `--bb-composer-inset` is the measured height of this bar
+   (see use-composer-inset.ts).
    ------------------------------------------------------------------------ */
 
-/* The bar itself: lifted out of the column and laid over its foot. */
 .bb-composer-overlay {
   position: absolute;
   inset-inline: 0;
@@ -4322,40 +4441,21 @@ html[data-breadboard-desktop="true"] body > .bb-wm-shell {
   z-index: 20;
 }
 
-/* The tail the scrolled content ends on. As tall as the bar, so the newest
-   message can never come to rest behind it, plus the gap the reader sees
-   between that message and the bar once they are all the way down. The extra
-   travel is the point: the conversation keeps scrolling after the last line has
-   cleared the bar, and only at the end of it is the disclaimer uncovered. */
+/* The transcript scroller. A classic scrollbar steals ~15px of the scroller's
+   inner width the moment a conversation grows past one screen, which used to
+   shove the centered column — disclaimer included — a few pixels left of the
+   composer's centerline; short chats, with nothing to scroll, sat on the true
+   center. Reserving the gutter on both edges keeps the column on one axis
+   whether or not the conversation scrolls (and on overlay-scrollbar platforms
+   the gutter is zero and this is a no-op). */
+.bb-chat-scroller {
+  scrollbar-gutter: stable both-edges;
+}
+
+/* The tail the scrolled content ends on: as tall as the bar, so the transcript
+   — whose last in-flow line is the disclaimer — can scroll fully clear of the
+   pill, plus a breath of air between the disclaimer and the pill at full
+   scroll. One knob for the whole resting gap. */
 .bb-chat-scroll-tail {
-  padding-bottom: calc(var(--bb-composer-inset, 0px) + var(--bb-chat-tail-gap, 2.25rem));
+  padding-bottom: calc(var(--bb-composer-inset, 0px) + var(--bb-chat-tail-gap, 1rem));
 }
-
-/* What a message does as it passes under the bar. A mask rather than a
-   background gradient: the four transcripts sit on three different surface
-   colours across two themes, and a mask does not have to know any of them. The
-   fade is finished before the disclaimer's line, so nothing reads through it. */
-.bb-chat-scroll-fade {
-  /* The ramp is exactly the gap the tail leaves open, and it ends where the bar
-     begins. Both edges matter: a message at rest stops at the top of the ramp,
-     so it is never drawn faded; and anything still travelling is gone by the
-     time it reaches the bar, so nothing reads through the disclaimer. */
-  --bb-chat-fade-from: calc(
-    100% - var(--bb-composer-inset, 0px) - var(--bb-chat-tail-gap, 2.25rem)
-  );
-  --bb-chat-fade-to: calc(100% - var(--bb-composer-inset, 0px));
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    #000 var(--bb-chat-fade-from),
-    transparent var(--bb-chat-fade-to)
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    #000 var(--bb-chat-fade-from),
-    transparent var(--bb-chat-fade-to)
-  );
-}
-
-/* Before the bar has been measured the inset is 0, which collapses both stops
-   onto 100% — an unfaded transcript, which is the right thing to draw until
-   there is something to fade under. */

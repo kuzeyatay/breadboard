@@ -5,7 +5,12 @@ import {
 import { resolveCommandMessage } from "../hermes/commands.ts";
 import { prepareDocumentContext } from "../document-skills/turn.ts";
 import { prepareTurn, mergeSelectedTools } from "../hermes/dispatch-core.ts";
-import { listFilesystemGrants } from "../hermes/filesystem-grant-store.ts";
+import { adjudicateWebGrounding } from "../hermes/web-grounding-decider.ts";
+import {
+  grantFilesystemRoot,
+  listFilesystemGrants,
+  revokeFilesystemGrant,
+} from "../hermes/filesystem-grant-store.ts";
 import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { hermesMessageId } from "../hermes/message-id.ts";
 import { resolveHermesEngine } from "../hermes/model-selection.ts";
@@ -65,7 +70,12 @@ import {
 } from "./reference-resolution.ts";
 import { runtimeMessagesForBranch } from "./branch-history.ts";
 import { visualizerCommandText } from "../hermes/interactive-visualizer-intent.ts";
-import { selectedInteractiveVisualizerSkill } from "../hermes/interactive-visualizer-skills.ts";
+import {
+  selectedInteractiveVisualizerSkill,
+  INTERACTIVE_VISUALIZER_SKILL,
+  INTERACTIVE_VISUALIZER_IN_CHAT_SKILL,
+} from "../hermes/interactive-visualizer-skills.ts";
+import { turnCapabilitySelection } from "../hermes/capability-usage.ts";
 import { premortemCommandText } from "../hermes/premortem-intent.ts";
 import { factcheckCommandText } from "../hermes/factcheck-intent.ts";
 import { agentLoopCommandText } from "../hermes/agent-loop-intent.ts";
@@ -79,6 +89,10 @@ import {
   diagramCommandText,
   DIAGRAM_DESIGN_SKILL,
 } from "../hermes/diagram-intent.ts";
+import {
+  githubExplorerCommandText,
+  GITHUB_EXPLORER_SKILL,
+} from "../hermes/github-explorer-intent.ts";
 import {
   hasReconstructableAttachment,
   hasReconstructableImages,
@@ -420,13 +434,14 @@ export async function startConversationTurn(
       },
     });
   }
-  const prepared = prepareTurn({
+  const filesystemGrants = listFilesystemGrants(input.conversation.user_id);
+  let prepared = prepareTurn({
     request: input.text,
     priorRequests,
     resolvedResources,
     surface: input.surface,
     userId: input.conversation.user_id,
-    grants: listFilesystemGrants(input.conversation.user_id),
+    grants: filesystemGrants,
     workspaceRoot: session.activeDirectory,
     confirmedPermissionIds: input.confirmedPermissionIds,
     // WhatsApp and Telegram cannot surface Hermes's native approval request.
@@ -460,6 +475,103 @@ export async function startConversationTurn(
       session,
       message,
     };
+  }
+  // YOLO's auto-approval used to live only in the browser: the server answered
+  // "blocked", and the page created a one-time grant and resent the turn. A
+  // user who navigated away in that window stranded the turn as a blank failed
+  // message. The switch is the user's standing one-turn approval, so honor it
+  // here, where the turn keeps running with no viewer attached. The grants
+  // mirror the client's "once" decision exactly: one-time scope, only the
+  // operations the request named.
+  if (prepared.blocked && input.yoloMode === true) {
+    const filesystemRequests = prepared.pendingPermissions.filter(
+      (permission) =>
+        permission.kind === "filesystem" && Boolean(permission.path?.trim()),
+    );
+    const confirmations = prepared.pendingPermissions
+      .filter((permission) => permission.kind === "confirmation")
+      .map((permission) => permission.id);
+    const unresolvable = prepared.pendingPermissions.some(
+      (permission) =>
+        permission.kind !== "confirmation" &&
+        !(permission.kind === "filesystem" && Boolean(permission.path?.trim())),
+    );
+    if (!unresolvable) {
+      const createdGrantIds: string[] = [];
+      const widenedGrants = new Map<string, (typeof filesystemGrants)[number]>();
+      try {
+        for (const permission of filesystemRequests) {
+          const granted = grantFilesystemRoot({
+            userId: input.conversation.user_id,
+            requestedPath: permission.path!,
+            permissions: Object.fromEntries(
+              (permission.operations ?? ["read"]).map((operation) => [
+                operation,
+                true,
+              ]),
+            ),
+            scope: "one_time",
+          });
+          // Granting an already-approved folder rewrites that row in place, so
+          // remember the original to put back instead of revoking it away.
+          const previous = filesystemGrants.find(
+            (grant) => grant.id === granted.id,
+          );
+          if (previous) widenedGrants.set(granted.id, previous);
+          else createdGrantIds.push(granted.id);
+        }
+        const regranted = prepareTurn({
+          request: input.text,
+          priorRequests,
+          resolvedResources,
+          surface: input.surface,
+          userId: input.conversation.user_id,
+          grants: listFilesystemGrants(input.conversation.user_id),
+          workspaceRoot: session.activeDirectory,
+          confirmedPermissionIds: [
+            ...(input.confirmedPermissionIds ?? []),
+            ...confirmations,
+          ],
+          interactiveApprovals: !context.deliveryChannel,
+          superAgent: input.superAgent === true,
+        });
+        if (!regranted.blocked) {
+          prepared = regranted;
+          recordAuditEvent({
+            eventType: "conversation.permission_auto_granted",
+            runtimeSessionId: session.row.id,
+            userId: input.conversation.user_id,
+            gardenId: session.row.garden_id,
+            payload: {
+              conversationPublicId: input.conversation.public_id,
+              clientMessageId: input.clientMessageId,
+              reason: "yolo",
+              paths: filesystemRequests.map((permission) => permission.path),
+              confirmedPermissionIds: confirmations,
+            },
+          });
+        }
+      } catch {
+        // A grant that cannot be created (the folder does not exist, say)
+        // leaves the turn blocked; the normal permission card asks the user.
+      } finally {
+        // The re-prepared decision has already captured the approved roots and
+        // turned them into this turn's runtime rules, so the rows must not
+        // outlive the preflight — or "once" would quietly become "always".
+        for (const grantId of createdGrantIds) {
+          revokeFilesystemGrant(input.conversation.user_id, grantId);
+        }
+        for (const previous of widenedGrants.values()) {
+          grantFilesystemRoot({
+            userId: input.conversation.user_id,
+            requestedPath: previous.canonicalPath,
+            displayName: previous.displayName,
+            permissions: previous.permissions,
+            scope: previous.scope,
+          });
+        }
+      }
+    }
   }
   const decision = prepared.decision;
   const premortemSelection = premortemCommandText({
@@ -543,11 +655,20 @@ export async function startConversationTurn(
     authenticated: true,
     priorMessages: currentConversationMessages,
   });
+  // After Diagram Design, so "diagram the architecture of <repo>" stays a
+  // drawing; a repo named for inspection with no other claim on the turn is
+  // this skill's subject.
+  const githubExplorerSelection = githubExplorerCommandText({
+    text: diagramSelection.text,
+    surface: input.surface,
+    authenticated: true,
+    priorMessages: currentConversationMessages,
+  });
   // Last in the chain on purpose: "send this to my WhatsApp" is an errand
   // attached to whatever the turn was already about, so any skill that claimed
   // the turn on its own wording keeps it.
   const messagingSelection = messagingCommandText({
-    text: diagramSelection.text,
+    text: githubExplorerSelection.text,
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
@@ -573,7 +694,8 @@ export async function startConversationTurn(
       !watchSelection.automatic &&
       !imageTo3dSelection.automatic &&
       !audioSelection.automatic &&
-      !diagramSelection.automatic
+      !diagramSelection.automatic &&
+      !githubExplorerSelection.automatic
     ) {
       throw error;
     }
@@ -608,6 +730,11 @@ export async function startConversationTurn(
       (invocation) =>
         invocation.kind === "skill" && invocation.slug === DIAGRAM_DESIGN_SKILL,
     );
+  const automaticGithubExplorer = githubExplorerSelection.automatic &&
+    resolved.invocations.some(
+      (invocation) =>
+        invocation.kind === "skill" && invocation.slug === GITHUB_EXPLORER_SKILL,
+    );
   let turnConversation = reservation.conversation;
   let activeAgencyAgent: AgencyAgentDefinition | null = null;
   if (resolved.agencyAgentSelection?.action === "clear") {
@@ -640,6 +767,7 @@ export async function startConversationTurn(
       automaticImageTo3d,
       automaticAudioAnalysis,
       automaticDiagramDesign,
+      automaticGithubExplorer,
       activeAgencyAgentSlug: activeAgencyAgent?.slug ?? null,
     },
   });
@@ -954,6 +1082,26 @@ export async function startConversationTurn(
           priorRequests,
         )
       : { required: false, asks: [], reason: "map tools not available" };
+  // Whether this turn owes live web evidence. The deterministic planner votes
+  // first and its "no" is final and free; a "yes" is a proposal that a cheap
+  // model adjudicates, because the planner matches keywords anywhere in the
+  // message and cannot tell an instruction from text the user pasted to be
+  // worked on. See lib/hermes/web-grounding-decider.ts.
+  //
+  // A selection follow-up is excerpt-scoped by contract: its prompt tells the
+  // model to answer in relation to the highlighted excerpt and to say what
+  // cannot be determined from it. A turn bound to already-delivered
+  // conversation text can never owe live web evidence, and a trusted
+  // model-to-model continuation is not a user request at all — neither is worth
+  // a decider call.
+  const webGroundingVerdict = await adjudicateWebGrounding({
+    request: resolved.userText || input.text,
+    plannerRequired: prepared.plan.requiresWebEvidence,
+    skip: Boolean(input.internalAgentContinuation) || Boolean(input.textSelection),
+    skipReason: input.internalAgentContinuation
+      ? "trusted model-to-model continuation, not a user request"
+      : "excerpt-scoped selection follow-up, answered from delivered text",
+  });
   const baseSystem = composeHermesSystemPrompt({
     surface: input.surface,
     decision,
@@ -1070,6 +1218,65 @@ export async function startConversationTurn(
         .map((invocation) => invocation.slug),
     ),
   );
+  // Which capabilities this turn put in play, and how each got there. Built
+  // here — where the selections were actually made — and carried on the run so
+  // the evidence panel reports the decisions rather than reconstructing them
+  // from what the answer happens to mention. Only selections the resolver kept
+  // are listed: an automatic pick dropped by the availability fallback never
+  // ran, and naming it would describe a turn that did not happen.
+  const capabilitySelection = turnCapabilitySelection({
+    invocations: resolved.invocations,
+    automaticSkills: [
+      ...(automaticWatch
+        ? [
+            {
+              slug: "watch",
+              // Exhaustive by construction: watchCommandText selects only for an
+              // attachment on this message, one still in play from an earlier
+              // one, or a video link in the text.
+              reason:
+                turnVideos.length > 0
+                  ? "A video was attached to this message."
+                  : carriedVideo
+                    ? "A video from an earlier message is still the subject."
+                    : "The message linked a video.",
+            },
+          ]
+        : []),
+      ...(automaticImageTo3d ? [{ slug: IMAGE_TO_3D_SKILL }] : []),
+      ...(automaticAudioAnalysis ? [{ slug: AUDIO_ANALYSIS_SKILL }] : []),
+      ...(automaticDiagramDesign ? [{ slug: DIAGRAM_DESIGN_SKILL }] : []),
+      ...(automaticGithubExplorer ? [{ slug: GITHUB_EXPLORER_SKILL }] : []),
+      ...(premortemSelection.automatic ? [{ slug: "premortem" }] : []),
+      ...(factcheckSelection.automatic ? [{ slug: "bullshit-detector" }] : []),
+      ...(messagingSelection.automatic ? [{ slug: "send-to-my-phone" }] : []),
+      ...(agentLoopSelection.automatic
+        ? [{ slug: "agent-loop-engineering" }]
+        : []),
+      // Either visualizer slug may be the one the resolver kept; the one that
+      // is not in the invocation list is simply never rendered.
+      ...(visualizerSelection.automatic
+        ? [
+            { slug: INTERACTIVE_VISUALIZER_SKILL },
+            { slug: INTERACTIVE_VISUALIZER_IN_CHAT_SKILL },
+          ]
+        : []),
+    ],
+    superAgent,
+    ...(superAgentInventory
+      ? {
+          inventory: {
+            skills: superAgentInventory.skillSlugs.length,
+            connections: superAgentInventory.connections.length,
+            workflows: superAgentInventory.workflows.length,
+          },
+          workflows: superAgentInventory.workflows,
+          skillNames: new Map(
+            superAgentInventory.skills.map((skill) => [skill.slug, skill.name]),
+          ),
+        }
+      : {}),
+  });
   const run = beginRuntimeRun({
     runtimeSessionId: session.row.id,
     instruction: resolved.userText || input.text,
@@ -1123,11 +1330,14 @@ export async function startConversationTurn(
             },
           }
         : {}),
-      ...(!input.internalAgentContinuation && prepared.plan.requiresWebEvidence
+      // Adjudicated above by the web-grounding decider: the keyword planner
+      // proposes, a model disposes. See `webGroundingVerdict`.
+      ...(webGroundingVerdict.required
         ? {
             webGrounding: {
               required: true,
-              reason: "The deterministic task plan requires current external evidence.",
+              reason: webGroundingVerdict.reason,
+              decidedBy: webGroundingVerdict.source,
             },
           }
         : {}),
@@ -1143,6 +1353,7 @@ export async function startConversationTurn(
             },
           }
         : {}),
+      capabilities: capabilitySelection,
     },
   });
   markStatus(session, "busy");

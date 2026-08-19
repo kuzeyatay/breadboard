@@ -7,7 +7,6 @@ import { ServiceManager, type ServiceStatus } from "./service-manager";
 import {
   buildServiceDefinitions,
   missingRuntimes,
-  n8nServiceUrl,
   resolveRuntimeBinaries,
   serviceUrls,
 } from "./service-definitions";
@@ -229,7 +228,6 @@ export class AppLifecycle {
         quartz: await allocatePort(8081, taken),
         quartzWs: await allocatePort(3001, taken),
         voicebox: await allocatePort(17493, taken),
-        n8n: await allocatePort(5678, taken),
         // GBrain adapter port is only allocated when GBrain is enabled.
         ...(persistent.gbrainMode !== "disabled" ? { gbrain: await allocatePort(7717, taken) } : {}),
         // UI-TARS adapter port is only allocated when UI-TARS is not disabled.
@@ -273,7 +271,6 @@ export class AppLifecycle {
     const allowed = allowedOriginsFor([
       urls.dashboard,
       urls.quartz,
-      n8nServiceUrl(this.config),
       pathToFileURL(startupHtmlPath).toString(),
       pathToFileURL(recoveryHtmlPath).toString(),
     ]);

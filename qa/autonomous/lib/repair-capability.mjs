@@ -405,6 +405,25 @@ export function finalizeRepairCapability({ capability, worktree, now = Date.now(
     findingId: capability.findingId,
     sourceFingerprint: capability.sourceFingerprint ?? null,
     baselineMode: record.baselineManifest ? "source-snapshot-manifest" : "git-status-vs-head",
+    /**
+     * What this repair changed, and what merely surrounded it.
+     *
+     * A snapshot worktree deliberately carries the developer's whole in-flight
+     * tree, so a raw worktree diff describes their work, not the repair. Three
+     * separate mechanisms have now had to learn that — unauthorised-change
+     * detection, the assertion-integrity guard, and receipt file reporting —
+     * so the distinction is stated once here instead of being rediscovered a
+     * fourth time. Report `repairFiles` as the mutation; keep
+     * `snapshotContext` if the surrounding state matters, but never present it
+     * as something the repair did.
+     */
+    repairFootprint: {
+      repairFiles: actual,
+      snapshotContext: {
+        baselineMode: record.baselineManifest ? "source-snapshot-manifest" : "git-status-vs-head",
+        note: "Pre-existing snapshot changes are context, not repair mutations.",
+      },
+    },
     finalized: problems.length === 0,
     authorisedWrites: [...record.writes.values()],
     unauthorisedChanges: unauthorised,

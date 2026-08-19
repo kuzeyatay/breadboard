@@ -473,8 +473,14 @@ export default function InlineRufloRun({
           {terminalContent}
         </p>
       ) : null}
-      {terminal && edits && gardenSlug ? (
-        <AgentEditsCard gardenSlug={gardenSlug} edits={edits} agentName="Ruflo" />
+      {terminal && (edits ?? persistedEdits) && gardenSlug ? (
+        <AgentEditsCard
+          gardenSlug={gardenSlug}
+          // History can land after the card mounts; the stored bracket is the
+          // fallback when this tab's own finalize never produced one.
+          edits={(edits ?? persistedEdits)!}
+          agentName="Ruflo"
+        />
       ) : null}
       {terminal ? (
         <AssistantMessageActions content={terminalContent} onRetry={onRetry} />

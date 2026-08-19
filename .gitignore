@@ -134,6 +134,10 @@ hermes-skills/approved/
 /deer-flow/
 /diagram-design/
 /emilkowalski-skills/
+# Hijacked upstream clone kept only as evidence — contains a malware zip in
+# bluely/; the skill was re-authored clean into hermes-skills/prebuilt/.
+# Recommend deleting the directory outright.
+/github-explorer-skill/
 /hallmark/
 /harvey-labs/
 /hermes-agent/
@@ -143,9 +147,9 @@ hermes-skills/approved/
 /inbox-zero/
 /loopx/
 /manim/
+/mcp-google-images-search/
 /mem0/
 /meta-prompting/
-/n8n/
 /nango/
 /oh-my-hermes/
 /open-alpha-arena/
@@ -236,3 +240,6 @@ dashboard/chat-videos/
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 graft/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+dashboard/.runtime/graft/breadboard-75cf7a099e62b7d2/

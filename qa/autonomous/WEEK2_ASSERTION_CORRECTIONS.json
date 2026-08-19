@@ -1,0 +1,46 @@
+{
+  "pass": "W2-3G PartC+D",
+  "decision": "ASSERTION_CORRECTIONS_STILL_OPEN",
+  "generatedAt": "2026-08-18T08:48:17.261Z",
+  "sourceShapeAssertionsCorrected": 0,
+  "whyStillOpen": "The per-assertion inventory is closed and every failing assertion is mapped to its test, but no source-shape correction was applied. 11 of the 27 affected tests carry more than one failing assertion, so a partial correction would repeat the prediction error this work exists to prevent, and there was not budget to land whole test groups with counterexamples.",
+  "evidenceFreshness": "No frozen assertion evidence was invalidated by developer drift or by the W23E-001 landing. The 50 failing assertions are the same 50.",
+  "failingAssertions": 50,
+  "affectedTests": 27,
+  "testsWithMoreThanOne": 11,
+  "contractEncodingAssertionsCorrected": 2,
+  "counterexample": {
+    "nonVacuous": true,
+    "checks": 7
+  },
+  "flips": {
+    "predictionsMatched": "4/6",
+    "unexpectedFlipCount": 21,
+    "unexpectedBreakdown": {
+      "newDeveloperTests": 19,
+      "flaky": 1,
+      "predictionNameMatchArtefact": 1
+    }
+  },
+  "remainingContractMap": {
+    "failingTests": 43,
+    "withAssertionIds": 21,
+    "withoutAssertionIds": 22,
+    "remainingFailingAssertions": 30,
+    "flakyObserved": [
+      {
+        "test": "exact browser self-test diagnostics reach the next AI repair packet",
+        "file": "dashboard/tests/generated-visualization-pipeline.test.mjs",
+        "evidence": "PASS in the pre-landing full run, FAIL in the post-landing full run, PASS 3/3 in isolation. Neither the test nor its production dependencies are touched by W23E-001.",
+        "classification": "FLAKY (suite-order interference)",
+        "notCausedByThisPass": true
+      }
+    ]
+  },
+  "partD": {
+    "contract": "B - the full harness unit suite",
+    "fixed": true,
+    "unitFilesDiscovered": 0
+  },
+  "evidenceDirectory": ".qa-results/week2-assertion-corrections/w23g-20260818T0900Z"
+}

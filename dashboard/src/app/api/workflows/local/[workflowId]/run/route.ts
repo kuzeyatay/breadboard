@@ -1,13 +1,13 @@
+// User-driven run of a saved workflow, invoked from the chat palette and the
+// garden workspace. The response is the shared WorkflowRunResponse so the chat
+// surfaces can post `assistantContent` straight into the transcript.
+
 import { NextRequest, NextResponse } from "next/server";
 import { requireUserId, RouteError, routeErrorResponse } from "@/lib/server-auth";
-import {
-  ensureN8nSession,
-  forwardN8nCookie,
-  n8nJson,
-} from "@/lib/workflows/n8n";
-import { runLocalWorkflow } from "@/lib/workflows/execution";
+import { runWorkflowById } from "@/lib/workflows/native-execution";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 export const maxDuration = 120;
 
 export async function POST(
@@ -15,26 +15,22 @@ export async function POST(
   { params }: { params: Promise<{ workflowId: string }> },
 ) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     const { workflowId } = await params;
-    if (!/^[a-z0-9_-]{1,128}$/i.test(workflowId)) {
+    if (!/^[a-z0-9-]{1,128}$/i.test(workflowId)) {
       throw new RouteError(400, "A valid automation is required.");
     }
-    const body = await request.json().catch(() => ({})) as { input?: unknown };
+    const body = (await request.json().catch(() => ({}))) as { input?: unknown };
     if (body.input !== undefined && typeof body.input !== "string") {
       throw new RouteError(400, "Automation input must be text.");
     }
-    const session = await ensureN8nSession(request.cookies.get("n8n-auth")?.value);
-    const workflow = await n8nJson(`/rest/workflows/${encodeURIComponent(workflowId)}`, {
-      method: "GET",
-      session,
+    const result = await runWorkflowById({
+      workflowId,
+      input: body.input ?? "",
+      triggerKind: "chat",
+      userId,
     });
-    const result = await runLocalWorkflow(workflow, body.input ?? "", session);
-    const response = NextResponse.json(result, {
-      headers: { "Cache-Control": "no-store" },
-    });
-    forwardN8nCookie(response, session);
-    return response;
+    return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return routeErrorResponse(error);
   }

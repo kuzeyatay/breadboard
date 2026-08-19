@@ -22,6 +22,19 @@ interface ConversationRow {
   title: string;
   updated_at: string;
   pinned_at: string | null;
+  legacy_chat_session_id: number | null;
+}
+
+/** The cluster behind a garden slug, or null when the user cannot read it. */
+function gardenClusterId(slug: string, userId: number): number | null {
+  const row = db
+    .prepare("SELECT id, user_id, chat_accessible FROM clusters WHERE slug = ?")
+    .get(slug) as
+    | { id: number; user_id: number; chat_accessible: number }
+    | undefined;
+  if (!row) return null;
+  if (row.user_id !== userId && row.chat_accessible !== 1) return null;
+  return row.id;
 }
 
 /**
@@ -31,6 +44,12 @@ interface ConversationRow {
  * whose chats may be read. A conversation is never returned across users, the
  * surface filter keeps a Terminal search out of Garden transcripts, and a
  * temporary chat is never a candidate — search is history by another name.
+ *
+ * `gardenSlug` narrows further, to the chats of one garden. That search runs
+ * from inside a garden, where a chat is addressed by its legacy chat-session
+ * id rather than by the conversation's public id, so those hits answer in the
+ * id that surface can actually open — and a garden conversation with no legacy
+ * row is left out rather than offered as a result that opens nothing.
  */
 export async function GET(request: Request) {
   try {
@@ -45,15 +64,28 @@ export async function GET(request: Request) {
         : null;
     if (!query) return NextResponse.json({ results: [] });
 
+    const gardenSlug = (url.searchParams.get("gardenSlug") ?? "").trim();
+    let clusterId: number | null = null;
+    if (gardenSlug) {
+      clusterId = gardenClusterId(gardenSlug, userId);
+      if (clusterId === null) return NextResponse.json({ results: [] });
+    }
+
     const conversations = db
       .prepare(
-        `SELECT id, public_id, title, updated_at, pinned_at
+        `SELECT id, public_id, title, updated_at, pinned_at, legacy_chat_session_id
          FROM conversations
-         WHERE user_id = ? AND temporary = 0${surface ? " AND surface = ?" : ""}
+         WHERE user_id = ? AND temporary = 0${surface ? " AND surface = ?" : ""}${
+           clusterId === null
+             ? ""
+             : " AND default_garden_id = ? AND legacy_chat_session_id IS NOT NULL"
+         }
          ORDER BY updated_at DESC, id DESC
          LIMIT ${MAX_CONVERSATIONS}`,
       )
-      .all(...(surface ? [userId, surface] : [userId])) as ConversationRow[];
+      .all(
+        ...[userId, ...(surface ? [surface] : []), ...(clusterId === null ? [] : [clusterId])],
+      ) as ConversationRow[];
 
     const readMessages = db.prepare(
       `SELECT role, substr(content, 1, 2000) AS content
@@ -64,7 +96,10 @@ export async function GET(request: Request) {
     );
 
     const candidates: ConversationSearchCandidate[] = conversations.map((row) => ({
-      id: row.public_id,
+      id:
+        clusterId === null || row.legacy_chat_session_id === null
+          ? row.public_id
+          : String(row.legacy_chat_session_id),
       title: row.title,
       updatedAt: row.updated_at,
       pinned: row.pinned_at !== null,

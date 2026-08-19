@@ -15,6 +15,7 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import { isSameTabNavigationClick, rememberWorkflowReturnPath } from '@/lib/workflows/navigation';
+import ChatImageResults from './chat-image-results';
 
 interface Props {
   content: string;
@@ -140,6 +141,24 @@ async function writeToClipboard(value: string): Promise<void> {
 }
 
 type MarkdownPreProps = ComponentProps<'pre'> & { node?: unknown };
+
+// Dispatches fenced blocks before CodeBlock mounts: an ```image-results block
+// is the image_search tool's display contract and renders as an image grid,
+// not as code. A separate component (not a branch inside CodeBlock) so
+// CodeBlock's hooks are never conditionally skipped.
+function MarkdownPre({ children, node, ...props }: MarkdownPreProps) {
+  const language = getCodeClassName(children)
+    ?.match(/(?:^|\s)language-([^\s]+)/)?.[1]
+    ?.toLowerCase();
+  if (language === 'image-results') {
+    return <ChatImageResults code={getTextContent(children)} />;
+  }
+  return (
+    <CodeBlock node={node} {...props}>
+      {children}
+    </CodeBlock>
+  );
+}
 
 function CodeBlock({ children, node, ...props }: MarkdownPreProps) {
   const [copied, setCopied] = useState(false);
@@ -293,7 +312,7 @@ const baseComponents = {
       loading="lazy"
     />
   ),
-  pre: CodeBlock,
+  pre: MarkdownPre,
   blockquote: CopyableBlockquote,
 } satisfies Components;
 
@@ -450,4 +469,32 @@ function ChatMarkdown({
   );
 }
 
-export default memo(ChatMarkdown);
+// Annotations are compared by value: the transcripts build the prop as
+// `get(id) ?? []`, which is a fresh array on every render, and an identity
+// compare would send the whole message back through remark/rehype each time.
+// That parse is the most expensive thing a transcript row does — a table-heavy
+// answer re-parsed on every scroll frame is a visibly laggy chat.
+export function chatTextAnnotationsEqual(
+  left: readonly ChatTextAnnotation[] | undefined,
+  right: readonly ChatTextAnnotation[] | undefined,
+): boolean {
+  const a = left ?? [];
+  const b = right ?? [];
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every(
+    (annotation, index) =>
+      annotation.id === b[index].id &&
+      annotation.start === b[index].start &&
+      annotation.end === b[index].end,
+  );
+}
+
+export default memo(
+  ChatMarkdown,
+  (prev, next) =>
+    prev.content === next.content &&
+    prev.compact === next.compact &&
+    prev.onTextAnnotationClick === next.onTextAnnotationClick &&
+    chatTextAnnotationsEqual(prev.textAnnotations, next.textAnnotations),
+);

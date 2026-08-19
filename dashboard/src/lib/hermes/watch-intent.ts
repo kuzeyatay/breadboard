@@ -43,7 +43,7 @@ const ANY_URL = /\bhttps?:\/\/\S+/gi;
 
 /** A link that is a video, or a page whose whole purpose is one. */
 const VIDEO_URL =
-  /https?:\/\/(?:[^\s<>"']*\b(?:youtube\.com\/(?:watch|shorts|live)|youtu\.be\/|vimeo\.com\/\d|dailymotion\.com\/video|twitch\.tv\/videos|tiktok\.com\/[^\s]*\/video)\b[^\s<>"']*|[^\s<>"']+\.(?:mp4|mov|m4v|mkv|webm|avi|mpe?g)(?:\?[^\s<>"']*)?)/i;
+  /https?:\/\/(?:[^\s<>"']*\b(?:youtube\.com\/(?:watch|shorts|live)|youtu\.be\/|vimeo\.com\/\d|dailymotion\.com\/video|twitch\.tv\/videos|tiktok\.com\/[^\s]*\/video|instagram\.com\/(?:reels?|p|tv)\/)\b[^\s<>"']*|[^\s<>"']+\.(?:mp4|mov|m4v|mkv|webm|avi|mpe?g)(?:\?[^\s<>"']*)?)/i;
 
 export function hasVideoUrl(text: string): boolean {
   return VIDEO_URL.test(text);

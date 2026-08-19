@@ -62,6 +62,11 @@ const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
   // classifier reads a manifest of markup as implementation work — which would
   // confine "draw me an architecture diagram" to scoped implementation mode.
   "diagram-design",
+  // A repository dossier is research, not repository coding. Its guidance is
+  // full of api.github.com URL templates because that is where the facts live,
+  // and a manifest of API endpoints must not confine "is this repo any good?"
+  // to scoped implementation mode.
+  "github-explorer",
 ]);
 
 export type SkillEligibility =

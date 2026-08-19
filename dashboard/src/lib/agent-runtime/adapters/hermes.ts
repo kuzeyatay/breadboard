@@ -6,7 +6,10 @@ import {
   normalizeAssistantModelId,
 } from "../../ai-models.ts";
 import { BREAD_ASSISTANT_IDENTITY } from "../../assistant-identity.ts";
-import type { ChatAttachment } from "../../chat-attachments.ts";
+import {
+  attachmentOrderManifest,
+  type ChatAttachment,
+} from "../../chat-attachments.ts";
 import { modelAttachmentPromptText } from "../../model-attachments.ts";
 import { readHermesConfig } from "../../hermes/config.ts";
 import type { NormalizedAgentEvent } from "../../hermes/events.ts";
@@ -121,14 +124,20 @@ function withTextAttachments(
   text: string,
   attachments: ChatAttachment[] | undefined,
 ): string {
-  const blocks = (attachments ?? []).flatMap((attachment) => {
+  const list = attachments ?? [];
+  // "The third screenshot" or "the second pdf" must resolve to the file in
+  // that position. The blocks below and the separately-attached images carry
+  // names but not places in the row, so the row itself is spelled out.
+  const manifest = attachmentOrderManifest(list);
+  const blocks = list.flatMap((attachment, index) => {
+    const position = manifest ? ` position="${index + 1}"` : "";
     // A document reads the same way as a text file here — its `text` is the
     // structured reading rather than a flattened one, so tables arrive as
     // tables and equations as LaTeX.
     if (attachment.type === "text" || attachment.type === "document") {
       return [
         [
-          `<breadboard_attachment name=${JSON.stringify(attachment.name)}>`,
+          `<breadboard_attachment name=${JSON.stringify(attachment.name)}${position}>`,
           attachment.text,
           "</breadboard_attachment>",
         ].join("\n"),
@@ -139,7 +148,7 @@ function withTextAttachments(
     if (attachment.type === "model") {
       return [
         [
-          `<breadboard_attachment name=${JSON.stringify(attachment.name)} kind="3d-model">`,
+          `<breadboard_attachment name=${JSON.stringify(attachment.name)} kind="3d-model"${position}>`,
           modelAttachmentPromptText(attachment),
           "</breadboard_attachment>",
         ].join("\n"),
@@ -147,7 +156,8 @@ function withTextAttachments(
     }
     return [];
   });
-  return blocks.length > 0 ? `${text}\n\n${blocks.join("\n\n")}` : text;
+  const sections = [...(manifest ? [manifest] : []), ...blocks];
+  return sections.length > 0 ? `${text}\n\n${sections.join("\n\n")}` : text;
 }
 
 function imageBase64(dataUrl: string): string {
@@ -625,6 +635,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
             type: "tool.complete",
             session_id: session.liveSessionId,
             payload: {
+              ...value,
               tool_id: toolCallId,
               name: toolName,
               ...(typeof value.success === "boolean"

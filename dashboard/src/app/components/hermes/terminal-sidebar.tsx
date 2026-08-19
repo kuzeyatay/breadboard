@@ -16,6 +16,15 @@ import { CHAT_HIGHLIGHTS, chatHighlight } from "@/lib/conversations/highlights";
 
 export type TerminalPanel = "artifacts" | "uploads" | "scheduled" | "hooks" | "processes";
 
+/** Reading order of the rail's panel buttons, whichever subset is shown. */
+export const TERMINAL_PANELS: readonly TerminalPanel[] = [
+  "artifacts",
+  "uploads",
+  "scheduled",
+  "hooks",
+  "processes",
+];
+
 export interface TerminalSidebarChat {
   id: string;
   title: string;
@@ -39,6 +48,13 @@ interface Props {
   openPanel: TerminalPanel | null;
   onNewChat: () => void;
   onTogglePanel: (panel: TerminalPanel) => void;
+  /**
+   * Which panel buttons the rail offers, in `TERMINAL_PANELS` order. Defaults to
+   * all of them. Garden Chat passes every panel but Artifacts: a garden already
+   * carries its artifacts in its own pages, so a second archive beside the
+   * transcript would be a duplicate of something the garden is.
+   */
+  panels?: readonly TerminalPanel[];
   onOpenSearch: () => void;
   onOpenChat: (chat: TerminalSidebarChat) => void;
   onRenameChat: (chat: TerminalSidebarChat, title: string) => void;
@@ -117,6 +133,32 @@ function ProcessesIcon({ className = "h-[18px] w-[18px]" }: { className?: string
     </svg>
   );
 }
+
+/** The rail's actions under New chat, in reading order. */
+const NAV_ORDER: readonly (TerminalPanel | "search")[] = [
+  "artifacts",
+  "uploads",
+  "search",
+  "scheduled",
+  "hooks",
+  "processes",
+];
+
+const PANEL_LABELS: Record<TerminalPanel, string> = {
+  artifacts: "Artifacts",
+  uploads: "Uploads",
+  scheduled: "Scheduled",
+  hooks: "Hooks",
+  processes: "Processes",
+};
+
+const PANEL_ICONS: Record<TerminalPanel, React.ReactNode> = {
+  artifacts: <ArtifactArchiveIcon className="h-[18px] w-[18px]" />,
+  uploads: <UploadsIcon />,
+  scheduled: <ScheduledIcon />,
+  hooks: <HooksIcon />,
+  processes: <ProcessesIcon />,
+};
 
 function PinIcon({ className = "h-3.5 w-3.5", filled = false }: { className?: string; filled?: boolean }) {
   return (
@@ -900,6 +942,7 @@ export default function TerminalSidebar({
   openPanel,
   onNewChat,
   onTogglePanel,
+  panels = TERMINAL_PANELS,
   onOpenSearch,
   onOpenChat,
   onRenameChat,
@@ -1005,6 +1048,13 @@ export default function TerminalSidebar({
   const paint = (chat: TerminalSidebarChat) =>
     onHighlightChat(chat, chat.highlight === pen ? null : pen);
 
+  // Rendered from the shared order rather than from the order the caller
+  // happened to pass, so the rail reads the same on every surface — Search
+  // keeps its seat among the panels even where one of them is left out.
+  const navEntries = NAV_ORDER.filter(
+    (entry) => entry === "search" || panels.includes(entry),
+  );
+
   // Collapsed the actions stack as a centered column of icons; open they are a
   // list of rows.
   const navClassName = collapsed
@@ -1052,47 +1102,26 @@ export default function TerminalSidebar({
             compact={collapsed}
             onClick={onNewChat}
           />
-          <NavButton
-            label="Artifacts"
-            icon={<ArtifactArchiveIcon className="h-[18px] w-[18px]" />}
-            active={openPanel === "artifacts"}
-            compact={collapsed}
-            onClick={() => onTogglePanel("artifacts")}
-          />
-          <NavButton
-            label="Uploads"
-            icon={<UploadsIcon />}
-            active={openPanel === "uploads"}
-            compact={collapsed}
-            onClick={() => onTogglePanel("uploads")}
-          />
-          <NavButton
-            label="Search"
-            icon={<SearchIcon />}
-            compact={collapsed}
-            onClick={onOpenSearch}
-          />
-          <NavButton
-            label="Scheduled"
-            icon={<ScheduledIcon />}
-            active={openPanel === "scheduled"}
-            compact={collapsed}
-            onClick={() => onTogglePanel("scheduled")}
-          />
-          <NavButton
-            label="Hooks"
-            icon={<HooksIcon />}
-            active={openPanel === "hooks"}
-            compact={collapsed}
-            onClick={() => onTogglePanel("hooks")}
-          />
-          <NavButton
-            label="Processes"
-            icon={<ProcessesIcon />}
-            active={openPanel === "processes"}
-            compact={collapsed}
-            onClick={() => onTogglePanel("processes")}
-          />
+          {navEntries.map((entry) =>
+            entry === "search" ? (
+              <NavButton
+                key="search"
+                label="Search"
+                icon={<SearchIcon />}
+                compact={collapsed}
+                onClick={onOpenSearch}
+              />
+            ) : (
+              <NavButton
+                key={entry}
+                label={PANEL_LABELS[entry]}
+                icon={PANEL_ICONS[entry]}
+                active={openPanel === entry}
+                compact={collapsed}
+                onClick={() => onTogglePanel(entry)}
+              />
+            ),
+          )}
         </nav>
 
         <div

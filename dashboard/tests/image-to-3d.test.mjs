@@ -323,7 +323,7 @@ test("Garden Chat's own pipeline selects the skill too", () => {
     adapter,
     /decision\.selectedConditionalSkills\.includes\(IMAGE_TO_3D_SKILL\)/,
   );
-  assert.match(adapter, /if \(!imageTo3dSelection\.automatic[^)]*\) throw error;/);
+  assert.match(adapter, /if \(\s*!imageTo3dSelection\.automatic[^)]*\) throw error;/);
   // The context block is conditional, so the joined prompt has to drop the
   // empty string rather than open with a blank line.
   assert.match(adapter, /\]\.filter\(Boolean\)\.join\("\\n\\n"\)/);

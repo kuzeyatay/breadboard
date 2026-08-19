@@ -19,7 +19,7 @@ const quartz = source(
 
 test("the shared composer sends on Enter without breaking commands or multiline input", () => {
   const start = composer.indexOf('onKeyDown={(event) => {');
-  const block = composer.slice(start, start + 900);
+  const block = composer.slice(start, start + 1_200);
   assert.ok(start >= 0);
   assert.match(block, /commandHubRef\.current\?\.handleKeyDown\(event\)/);
   assert.match(block, /onKeyDown\?\.\(event\)/);

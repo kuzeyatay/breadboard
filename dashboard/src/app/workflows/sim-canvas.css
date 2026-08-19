@@ -1,0 +1,57 @@
+/* Sim canvas token scope — light-theme values vendored from simstudioai/sim
+   (Apache-2.0, apps/sim/app/_styles/globals.css) so the vendored
+   workflow-renderer views keep the sim canvas look inside Breadboard's paper
+   theme. Scoped under .sim-canvas so nothing leaks into the rest of the app. */
+.sim-canvas {
+  --surface-1: #fbfbfb;
+  --surface-2: #ffffff;
+  --surface-3: #f7f7f7;
+  --surface-4: #f5f5f5;
+  --surface-5: #f3f3f3;
+  --surface-6: #e5e5e5;
+  --surface-7: #d9d9d9;
+  --surface-hover: #f2f2f2;
+  --surface-active: #ececec;
+  --workflow-edge: #d4d4d4;
+  --text-primary: #1a1a1a;
+  --text-secondary: #525252;
+  --text-tertiary: #5c5c5c;
+  --text-muted: #7a7a7a;
+  --text-icon: #5a5a5a;
+  --text-inverse: #ffffff;
+  --text-error: #ef4444;
+  --border: #e0e0e0;
+  --border-1: var(--border);
+  --border-success: #e0e0e0;
+  --brand-accent: #33c482;
+  --warning: #ea580c;
+  --white: #ffffff;
+  color: var(--text-primary);
+}
+
+/* Sim's custom text-size utility used by the vendored views. */
+.sim-canvas .text-caption {
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* Block action bar: hidden until the card is hovered or selected, mirroring
+   sim's action-menu swell reveal without the swell's focus machinery. */
+.sim-canvas .bb-block-action-bar {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.sim-canvas .group:hover .bb-block-action-bar,
+.sim-canvas [data-node-selected] .bb-block-action-bar {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* React Flow chrome tuned to the sim look. */
+.sim-canvas .react-flow__attribution {
+  display: none;
+}
+.sim-canvas .react-flow__pane {
+  cursor: default;
+}

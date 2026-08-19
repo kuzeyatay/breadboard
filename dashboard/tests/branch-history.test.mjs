@@ -78,8 +78,18 @@ test("the sessions endpoint restores only the projected active branch", () => {
     "utf8",
   );
 
+  // Presentation was extracted from the route into session-presentation.ts,
+  // which the route imports. What has to stay true is that the transcript a
+  // session hands back is branch-projected somewhere on that path -- the
+  // projection itself is exercised behaviourally above -- so this asserts the
+  // wiring at the module that now holds it rather than at the old location.
+  const sessionPresentation = readFileSync(
+    new URL("../src/lib/hermes/session-presentation.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(sessionsRoute, /from "@\/lib\/hermes\/session-presentation\.ts"/);
   assert.match(
-    sessionsRoute,
+    sessionPresentation,
     /projectConversationBranchMessages\(\s*listConversationMessages\(conversation\.id\),?\s*\)\.map/,
   );
 });

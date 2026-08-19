@@ -14,6 +14,7 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import ModelCubeIcon from "@/app/components/model-cube-icon";
 import type { ModelViewerHandle, StandardView } from "@/app/components/cad/model-viewer";
 import type { ChatMessageAttachment } from "@/lib/chat-attachments";
@@ -235,7 +236,7 @@ export default function ModelAttachmentViewer({
         ) : null}
       </div>
 
-      {mode === "fullscreen" ? (
+      {mode === "fullscreen" && typeof document !== "undefined" ? createPortal(
         <div
           className="fixed inset-0 z-[200] flex flex-col bg-[var(--paper)] p-3 sm:p-5"
           role="dialog"
@@ -268,7 +269,8 @@ export default function ModelAttachmentViewer({
           <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)]">
             {canvas}
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </>
   );

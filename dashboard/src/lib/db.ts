@@ -15,6 +15,7 @@ import { ensureCadSchema } from "./cad/schema.ts";
 import { ensureAgentSettingsSchema } from "./agent-settings/schema.ts";
 import { ensureNangoSchema } from "./nango/schema.ts";
 import { ensureScheduledChatSchema } from "./schedules/schema.ts";
+import { ensureWorkflowSchema } from "./workflows/schema.ts";
 import { ensureCalendarSchema } from "./calendar/schema.ts";
 import { ensurePlanSchema } from "./plan/schema.ts";
 import { ensureMapSchema } from "./map/schema.ts";
@@ -390,6 +391,12 @@ ensureColumn("chat_messages", "token_usage", "token_usage TEXT");
 // Virtual grouping of clusters into folders on the dashboard / garden overview.
 ensureColumn("clusters", "folder", "folder TEXT");
 ensureColumn("users", "username", "username TEXT");
+// What the person is actually called, set by them on the profile page. A
+// username is a handle rather than a name — "kuzeyata" is how you sign in,
+// not what anyone calls you — so the greeting and every turn's memory
+// context prefer these when they are set.
+ensureColumn("users", "first_name", "first_name TEXT");
+ensureColumn("users", "last_name", "last_name TEXT");
 
 // --- Hermes runtime integration ---------------------------------------
 // The interactive surfaces (dashboard terminal, garden chat, Quartz page AI)
@@ -770,6 +777,8 @@ ensureNangoSchema(db);
 // Additive cron-scheduled chat jobs; the schema lives with its store in
 // src/lib/schedules/ and is safe to re-apply.
 ensureScheduledChatSchema(db);
+// Native workflows; after users so the owner foreign key resolves.
+ensureWorkflowSchema(db);
 
 // Additive calendar tables (named calendars + their events). Times are stored
 // as timezone-free wall-clock stamps; see src/lib/calendar/wallclock.ts.

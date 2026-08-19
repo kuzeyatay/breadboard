@@ -17,6 +17,7 @@ import {
 import type { ChatMessageAttachment } from "../chat-attachments.ts";
 import type { ChatTokenUsage } from "../chat-token-usage.ts";
 import type { GraftRunContext, GraftServer } from "../code-index/index-service.ts";
+import { finalizeRunSnapshot } from "../agent-edits/snapshot.ts";
 
 export interface CodexEvent {
   sequenceNumber: number;
@@ -31,6 +32,7 @@ interface RunState {
   runId: string;
   userId: number;
   task: string;
+  repositoryPath: string;
   repositoryName: string;
   gardenSlug: string;
   status: RunStatus;
@@ -39,6 +41,17 @@ interface RunState {
   child: ChildProcess | null;
   stderr: string;
   output: string[];
+  /**
+   * The most recent agent message, held back until the run says what it was.
+   * See `commitPendingMessage`.
+   */
+  pendingMessage: string;
+  /**
+   * The last message demoted to narration. A run that ends without ever
+   * committing one still has something to say, and that is better than the
+   * placeholder — see the summary in the exit handler.
+   */
+  lastNarration: string;
   startedAt: number;
   toolCount: number;
   runtimeError: string;
@@ -198,7 +211,18 @@ export function runtimeAvailability(env: NodeJS.ProcessEnv = process.env): {
   };
 }
 
+/**
+ * Closing the undo bracket here, rather than when a browser notices, keeps
+ * edits the user makes after the run out of the run's own diff. OpenCode and
+ * Ruflo already do this; without it the Codex "after" snapshot was only taken
+ * whenever a client got around to asking for it.
+ */
+const TERMINAL_EVENTS = new Set(["run.completed", "run.failed", "run.aborted"]);
+
 function emit(run: RunState, type: string, payload: Record<string, unknown> = {}): void {
+  if (TERMINAL_EVENTS.has(type)) {
+    finalizeRunSnapshot(run.runId, run.repositoryPath);
+  }
   run.sequence += 1;
   run.events.push({
     sequenceNumber: run.sequence,
@@ -209,6 +233,31 @@ function emit(run: RunState, type: string, payload: Record<string, unknown> = {}
   if (run.events.length > MAX_EVENTS) {
     run.events.splice(0, run.events.length - MAX_EVENTS);
   }
+}
+
+/**
+ * Codex narrates before it acts, and that narration arrives on the same channel
+ * as its answer. A message is therefore held until the run reveals which one it
+ * was: still pending when the run ends, it is the answer and is committed to the
+ * saved chat message; followed by a tool call, it was a preamble and is demoted
+ * to the card's timeline, where it reads as the step it announced instead of as
+ * a message the user has to scroll past.
+ */
+function commitPendingMessage(run: RunState): void {
+  const message = run.pendingMessage;
+  if (!message) return;
+  run.pendingMessage = "";
+  run.output.push(message);
+  if (run.output.length > MAX_OUTPUT_PARTS) run.output.shift();
+  emit(run, "text.completed", { text: message });
+}
+
+function demotePendingMessage(run: RunState): void {
+  const message = run.pendingMessage;
+  if (!message) return;
+  run.pendingMessage = "";
+  run.lastNarration = message;
+  emit(run, "reasoning.completed", { text: message });
 }
 
 function publishTerminal(run: RunState, result: CodexTerminalResult): void {
@@ -322,9 +371,10 @@ function ingestCodexEvent(run: RunState, value: Record<string, unknown>): void {
   if (kind === "agent_message") {
     const message = text(item.text, 100_000).trim();
     if (!message) return;
-    run.output.push(message);
-    if (run.output.length > MAX_OUTPUT_PARTS) run.output.shift();
-    emit(run, "text.completed", { text: message });
+    // Two messages with no tool call between them are one answer split in two,
+    // so the earlier one is kept rather than demoted to narration.
+    commitPendingMessage(run);
+    run.pendingMessage = message;
     return;
   }
   if (kind === "reasoning") {
@@ -354,8 +404,15 @@ function ingestCodexEvent(run: RunState, value: Record<string, unknown>): void {
     tool = "web_search";
     title = text(item.query, 400);
   } else {
+    // Bookkeeping items — a todo list, a rendered plan — are not the agent
+    // reaching for a tool, so a message before one is still a candidate answer.
     return;
   }
+  // Whatever the model said just before reaching for a tool was a preamble
+  // ("I am going to search the codebase…"), not its answer. Demoting here, past
+  // the filter above, means only a real tool call can take a message away from
+  // the summary.
+  demotePendingMessage(run);
   run.toolCount += 1;
   emit(run, "tool.completed", { tool, title, summary, status });
 }
@@ -405,6 +462,7 @@ export function startRun(input: {
     runId,
     userId: input.userId,
     task: input.task,
+    repositoryPath: input.repositoryPath,
     repositoryName: input.repositoryName,
     gardenSlug: input.gardenSlug,
     status: "queued",
@@ -413,6 +471,8 @@ export function startRun(input: {
     child: null,
     stderr: "",
     output: [],
+    pendingMessage: "",
+    lastNarration: "",
     startedAt: Date.now(),
     toolCount: 0,
     runtimeError: "",
@@ -510,21 +570,22 @@ export function startRun(input: {
   let stdout = "";
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
+  const ingestLine = (line: string) => {
+    if (!line.trim()) return;
+    try {
+      const value = JSON.parse(line) as unknown;
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        ingestCodexEvent(run, value as Record<string, unknown>);
+      }
+    } catch {
+      // Codex diagnostics that are not JSONL are intentionally ignored.
+    }
+  };
   child.stdout.on("data", (chunk: string) => {
     stdout += chunk;
     const lines = stdout.split(/\r?\n/);
     stdout = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const value = JSON.parse(line) as unknown;
-        if (value && typeof value === "object" && !Array.isArray(value)) {
-          ingestCodexEvent(run, value as Record<string, unknown>);
-        }
-      } catch {
-        // Codex diagnostics that are not JSONL are intentionally ignored.
-      }
-    }
+    for (const line of lines) ingestLine(line);
   });
   child.stderr.on("data", (chunk: string) => {
     run.stderr = `${run.stderr}${chunk}`.slice(-MAX_STDERR);
@@ -542,13 +603,32 @@ export function startRun(input: {
     emit(run, "run.failed", { error: error.message });
     publishTerminal(run, { outcome: "failed", content: error.message, usage: run.usage });
   });
-  child.on("exit", (code) => {
+  // `close`, not `exit`. `exit` fires the moment the process ends, while its
+  // stdout pipe can still hold the last JSONL frames — including the frame
+  // carrying Codex's answer. Ending the run there raced the reader: the card
+  // went terminal and drew its action row while text was still arriving under
+  // it, and whatever landed after the terminal result was published never
+  // reached the saved turn at all. `close` fires only once every stdio stream
+  // is drained, so the answer is whole before the run is called finished.
+  child.on("close", (code) => {
     if (run.child === child) run.child = null;
     if (childErrored || run.status === "aborted") return;
+    // A final frame written without a trailing newline never reached the line
+    // loop; it is still sitting in the buffer.
+    const trailing = stdout;
+    stdout = "";
+    ingestLine(trailing);
     cleanup();
     const elapsedSec = Math.max(0, (Date.now() - run.startedAt) / 1_000);
     if (code === 0) {
-      const summary = run.output.join("\n\n").trim() || "Codex completed the task.";
+      commitPendingMessage(run);
+      // A run that spent everything it said on preambles still owes the chat an
+      // answer, so the last thing it said stands in for one. "Codex completed
+      // the task." is the last resort, not the ordinary ending.
+      const summary =
+        run.output.join("\n\n").trim() ||
+        run.lastNarration.trim() ||
+        "Codex completed the task.";
       run.status = "completed";
       emit(run, "run.completed", {
         summary,
@@ -564,6 +644,7 @@ export function startRun(input: {
       run.stderr.trim().split(/\r?\n/).slice(-1)[0] ||
       `Codex exited with code ${code ?? "unknown"}`;
     run.status = "failed";
+    demotePendingMessage(run);
     emit(run, "run.failed", { error, elapsedSec, toolCount: run.toolCount });
     publishTerminal(run, { outcome: "failed", content: error, usage: run.usage });
   });
@@ -605,6 +686,7 @@ export function abortRun(userId: number, runId: string): boolean {
   }
   run.cleanup?.();
   run.cleanup = null;
+  demotePendingMessage(run);
   emit(run, "run.aborted", { summary: "Codex task stopped." });
   publishTerminal(run, { outcome: "aborted", content: "Codex task stopped.", usage: run.usage });
   return true;

@@ -45,7 +45,7 @@ import {
  * file server-side, so a track can be dropped into any chat that has one.
  */
 export const CHAT_ATTACHMENT_ACCEPT =
-  `.pdf,.jpg,.jpeg,.png,.webp,.txt,.md,.csv,.json,.docx,.pptx,.xlsx,.zip,${MODEL_ATTACHMENT_ACCEPT},${AUDIO_ATTACHMENT_ACCEPT}`;
+  `.pdf,.jpg,.jpeg,.png,.webp,.txt,.md,.csv,.json,.docx,.pptx,.xlsx,.odt,.ods,.odp,.zip,${MODEL_ATTACHMENT_ACCEPT},${AUDIO_ATTACHMENT_ACCEPT}`;
 
 /**
  * The Terminal accepts one thing the other chats do not: a video. Reading one
@@ -185,6 +185,61 @@ export type ChatMessageAttachment =
       summary?: DocumentAttachmentSummary;
       figures?: string[];
     };
+
+/**
+ * The word an ordinal reference to this attachment would use. Documents count
+ * by format because that is how people point at them — "the second pdf" means
+ * the second .pdf, not the second document of whatever format.
+ */
+function attachmentOrdinalLabel(attachment: ChatAttachment): string {
+  switch (attachment.type) {
+    case 'document':
+      return attachment.format;
+    case 'text':
+      return 'text file';
+    case 'model':
+      return '3D model';
+    default:
+      return attachment.type;
+  }
+}
+
+/**
+ * The order of one message's attachments, spelled out for the model.
+ *
+ * "The third screenshot" or "the second pdf" is only resolvable when the model
+ * knows which file sat in which position: inlined texts and attached images
+ * carry names, but nothing else says which came first, and images often reach
+ * the model as bare pixels. Returns null below two attachments, where every
+ * reference is already unambiguous.
+ */
+export function attachmentOrderManifest(
+  attachments: readonly ChatAttachment[] | undefined,
+): string | null {
+  const list = attachments ?? [];
+  if (list.length < 2) return null;
+  const totals = new Map<string, number>();
+  for (const attachment of list) {
+    const label = attachmentOrdinalLabel(attachment);
+    totals.set(label, (totals.get(label) ?? 0) + 1);
+  }
+  const seen = new Map<string, number>();
+  const lines = list.map((attachment, index) => {
+    const label = attachmentOrdinalLabel(attachment);
+    const ordinal = (seen.get(label) ?? 0) + 1;
+    seen.set(label, ordinal);
+    const total = totals.get(label) ?? ordinal;
+    const place = total > 1 ? `${label} ${ordinal} of ${total}` : label;
+    return `${index + 1}. ${JSON.stringify(attachment.name)} — ${place}`;
+  });
+  return [
+    `<breadboard_attachment_order count="${list.length}">`,
+    'The user attached these files to this message, in this order:',
+    ...lines,
+    'When the user refers to an attachment by position — "the second image", "the third screenshot", "the first pdf" — count within that kind, in the order above. Attached images reach you in this same order.',
+    '</breadboard_attachment_order>',
+  ].join('\n');
+}
 
 const CHAT_IMAGE_DATA_URL = /^data:image\/(?:jpeg|png|webp|gif);base64,[a-z0-9+/=\s]+$/i;
 

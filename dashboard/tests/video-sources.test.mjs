@@ -76,6 +76,46 @@ test("things that are not a single video are refused", () => {
   }
 });
 
+test("a TikTok video link is one source, share-link noise dropped", () => {
+  const shared = videoSourceFor(
+    "https://www.tiktok.com/@helinelvereen/video/7646439191223487762?is_from_webapp=1&sender_device=pc",
+  );
+  assert.equal(shared?.provider, "tiktok");
+  assert.equal(shared?.key, "tiktok:7646439191223487762");
+  assert.equal(
+    shared?.canonicalUrl,
+    "https://www.tiktok.com/@helinelvereen/video/7646439191223487762",
+  );
+  // The numeric id is the identity — the same video under a plain spelling
+  // collapses onto it.
+  const plain = videoSourceFor("https://tiktok.com/@helinelvereen/video/7646439191223487762");
+  assert.equal(plain?.key, shared?.key);
+  // A profile is not a video.
+  assert.equal(videoSourceFor("https://www.tiktok.com/@helinelvereen"), null);
+  // …and it is found inside prose, like any other video link.
+  assert.equal(
+    firstVideoSource(
+      "look at https://www.tiktok.com/@helinelvereen/video/7646439191223487762?is_from_webapp=1 please",
+    )?.key,
+    "tiktok:7646439191223487762",
+  );
+});
+
+test("every spelling of one Instagram post is one source key", () => {
+  const reel = videoSourceFor("https://www.instagram.com/reel/DAbc123xy-Z/?igsh=token");
+  assert.equal(reel?.provider, "instagram");
+  assert.equal(reel?.key, "instagram:DAbc123xy-Z");
+  assert.equal(reel?.canonicalUrl, "https://www.instagram.com/reel/DAbc123xy-Z/");
+  // /reels/ and /reel/ are the same post.
+  assert.equal(videoSourceFor("https://instagram.com/reels/DAbc123xy-Z")?.key, reel?.key);
+  // The old /p/ spelling keys the same but keeps its kind for the embed page.
+  const post = videoSourceFor("https://www.instagram.com/p/DAbc123xy-Z/");
+  assert.equal(post?.key, reel?.key);
+  assert.equal(post?.canonicalUrl, "https://www.instagram.com/p/DAbc123xy-Z/");
+  // A profile is not a video.
+  assert.equal(videoSourceFor("https://www.instagram.com/someone/"), null);
+});
+
 test("a direct media link is a video, keyed without its query string", () => {
   const plain = videoSourceFor("https://cdn.example.com/talks/keynote.mp4");
   assert.equal(plain?.provider, "web");

@@ -54,8 +54,35 @@ const STREAMED_EVENT_TYPES = [
 ];
 const TERMINAL = new Set(["completed", "failed", "aborted"]);
 
+/** How many timeline entries a live run keeps on screen. */
+const VISIBLE_ACTIVITY = 6;
+
 function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * The duration belongs to the turn, not to the browser tab that watched it: a
+ * reload restarts every client-side stopwatch at zero, and a finished card that
+ * was never told how long it took shows nothing at all. Carrying it in the
+ * persisted usage is what makes "Thinking · 4m 12s" survive a refresh.
+ */
+function usageWithDuration(
+  usage: ChatTokenUsage | null,
+  durationMs: number | undefined,
+): ChatTokenUsage | undefined {
+  if (!usage && durationMs === undefined) return undefined;
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedInputTokens: 0,
+    reasoningTokens: 0,
+    ...(usage ?? {}),
+    ...(durationMs === undefined
+      ? {}
+      : { responseDurationMs: Math.max(0, Math.round(durationMs)) }),
+  };
 }
 
 function appendActivity(
@@ -83,6 +110,7 @@ export default function InlineOpenCodeRun({
   persistedOutcome,
   persistedActivity,
   persistedEdits,
+  persistedUsage,
   onTerminal,
   onRetry,
   agentName = "OpenCode",
@@ -98,10 +126,13 @@ export default function InlineOpenCodeRun({
   persistedActivity?: ExternalAgentActivityEntry[];
   /** Snapshots bracketing the run, so its edits stay reviewable and undoable. */
   persistedEdits?: ExternalAgentEdits;
+  /** The stored tokens and duration, so a reloaded card keeps its meta row. */
+  persistedUsage?: ChatTokenUsage;
   onTerminal?: (result: {
     outcome: ExternalAgentTerminalOutcome;
     content: string;
     activity: ExternalAgentActivityEntry[];
+    usage?: ChatTokenUsage;
     edits?: ExternalAgentEdits;
   }) => void;
   onRetry?: () => void;
@@ -131,14 +162,23 @@ export default function InlineOpenCodeRun({
       ? persistedContent
       : "",
   );
-  const [elapsed, setElapsed] = useState(0);
-  const [usage, setUsage] = useState<ChatTokenUsage | null>(null);
+  const [elapsed, setElapsed] = useState(
+    () => (persistedUsage?.responseDurationMs ?? 0) / 1_000,
+  );
+  const [usage, setUsage] = useState<ChatTokenUsage | null>(
+    persistedUsage ?? null,
+  );
+  // When the run started, in this browser's clock. A reload has no memory of
+  // it, so it is recovered from the timestamp on the first replayed event
+  // rather than restarted — a resumed card keeps counting from the real start.
   const startedAtRef = useRef<number | null>(null);
   const reportedRef = useRef(false);
   const onTerminalRef = useRef(onTerminal);
-  // The timeline is reported with the terminal result, so it has to be readable
-  // synchronously — a queued state update is not yet visible when a run ends.
+  // The timeline and usage are reported with the terminal result, so they have
+  // to be readable synchronously — a queued state update is not yet visible
+  // when a run ends.
   const activityRef = useRef<ActivityEvent[]>(activity);
+  const usageRef = useRef<ChatTokenUsage | null>(usage);
   const timelineId = useId();
   const base = `/api/${apiSlug}/runs/${runId}`;
 
@@ -151,7 +191,17 @@ export default function InlineOpenCodeRun({
    * stored with the turn and the edits stay revertable after a reload.
    */
   const reportTerminal = useCallback(
-    async (outcome: ExternalAgentTerminalOutcome, content: string) => {
+    async (
+      outcome: ExternalAgentTerminalOutcome,
+      content: string,
+      durationMs?: number,
+    ) => {
+      const measured =
+        durationMs ??
+        (startedAtRef.current === null
+          ? undefined
+          : Math.max(0, Date.now() - startedAtRef.current));
+      const reportedUsage = usageWithDuration(usageRef.current, measured);
       let finalized: ExternalAgentEdits | undefined;
       if (gardenSlug) {
         try {
@@ -178,6 +228,7 @@ export default function InlineOpenCodeRun({
         outcome,
         content,
         activity: activityRef.current,
+        ...(reportedUsage ? { usage: reportedUsage } : {}),
         ...(finalized ? { edits: finalized } : {}),
       });
     },
@@ -194,15 +245,29 @@ export default function InlineOpenCodeRun({
   // History can arrive after the card mounts, so fall back to it until the
   // stream produces something of its own.
   const timeline = activity.length ? activity : (persistedActivity ?? []);
+  // Same fallback for the undo bracket: the server stores it with the turn the
+  // moment the run ends, so even when this tab's own finalize call lost the
+  // race (or failed), the stored bracket still puts the edits card on screen.
+  const shownEdits = edits ?? persistedEdits ?? null;
 
   useEffect(() => {
     reportedRef.current = false;
-    startedAtRef.current = Date.now();
+    startedAtRef.current = null;
   }, [runId]);
 
   const applyEvent = useCallback(
     (event: RunEvent) => {
       const payload = event.payload;
+      // Every replayed frame carries when it happened, so the earliest one seen
+      // dates the run. Without this a refreshed card would start its clock at
+      // the moment the tab reopened and report minutes of work as seconds.
+      const at = Date.parse(event.at);
+      if (
+        Number.isFinite(at) &&
+        (startedAtRef.current === null || at < startedAtRef.current)
+      ) {
+        startedAtRef.current = at;
+      }
       if (event.type === "run.started") setStatus("running");
       if (
         event.type === "reasoning.completed" &&
@@ -215,7 +280,9 @@ export default function InlineOpenCodeRun({
         });
       }
       if (event.type === "agent.usage") {
-        setUsage(normalizeChatTokenUsage(payload));
+        const next = normalizeChatTokenUsage(payload);
+        usageRef.current = next;
+        setUsage(next);
       }
       if (event.type === "run.retrying") {
         setStatus("running");
@@ -252,13 +319,20 @@ export default function InlineOpenCodeRun({
           typeof payload.summary === "string"
             ? payload.summary
             : `${agentName} completed the task.`;
+        // The run measured itself; that reading outlives whatever this tab
+        // happened to observe.
+        const elapsedSec = numberValue(payload.elapsedSec);
         setStatus("completed");
         setResult(summary);
-        setElapsed(numberValue(payload.elapsedSec));
+        if (elapsedSec > 0) setElapsed(elapsedSec);
         if (!reportedRef.current) {
           reportedRef.current = true;
           notifyTaskCompleted(`${agentName} finished: ${task}`);
-          void reportTerminal("completed", summary);
+          void reportTerminal(
+            "completed",
+            summary,
+            elapsedSec > 0 ? elapsedSec * 1_000 : undefined,
+          );
         }
       }
       if (event.type === "run.failed" || event.type === "run.aborted") {
@@ -271,11 +345,17 @@ export default function InlineOpenCodeRun({
               : outcome === "aborted"
                 ? `${agentName} task stopped.`
                 : `${agentName} could not complete the task.`;
+        const failedAfterSec = numberValue(payload.elapsedSec);
         setStatus(outcome);
         setFailure(message);
+        if (failedAfterSec > 0) setElapsed(failedAfterSec);
         if (!reportedRef.current) {
           reportedRef.current = true;
-          void reportTerminal(outcome, message);
+          void reportTerminal(
+            outcome,
+            message,
+            failedAfterSec > 0 ? failedAfterSec * 1_000 : undefined,
+          );
         }
       }
     },
@@ -317,14 +397,19 @@ export default function InlineOpenCodeRun({
     return () => source.close();
   }, [agentName, applyEvent, base, persistedContent, persistedOutcome]);
 
+  // The start is read on every tick rather than captured once: the first
+  // replayed event can move it backwards after the timer is already running.
   useEffect(() => {
     if (TERMINAL.has(status)) return;
-    const startedAt = startedAtRef.current ?? Date.now();
-    startedAtRef.current = startedAt;
-    const timer = window.setInterval(
-      () => setElapsed((Date.now() - startedAt) / 1_000),
-      1_000,
-    );
+    const tick = () => {
+      // Until a frame dates the run, now is the best guess; a replayed event
+      // then pulls the start backwards to where it really was.
+      const startedAt = startedAtRef.current ?? Date.now();
+      startedAtRef.current = startedAt;
+      setElapsed(Math.max(0, (Date.now() - startedAt) / 1_000));
+    };
+    tick();
+    const timer = window.setInterval(tick, 1_000);
     return () => window.clearInterval(timer);
   }, [status]);
 
@@ -335,6 +420,16 @@ export default function InlineOpenCodeRun({
   const terminal = TERMINAL.has(status);
   const callCount = timeline.filter((item) => item.kind === "tool").length;
   const callLabel = `${callCount} ${callCount === 1 ? "call" : "calls"}`;
+  // A live run shows the tail of what it is doing rather than every step it has
+  // ever taken, which is what keeps the card slim while it works. Reopening a
+  // finished one is a deliberate act — "show me the whole run" — so that view
+  // holds nothing back.
+  const visibleTimeline = !activityOpen
+    ? []
+    : terminal
+      ? timeline
+      : timeline.slice(-VISIBLE_ACTIVITY);
+  const hiddenCount = timeline.length - visibleTimeline.length;
   const terminalContent =
     result.trim() ||
     failure.trim() ||
@@ -376,83 +471,100 @@ export default function InlineOpenCodeRun({
         </div>
       </header>
 
-      <div className="space-y-[13px] p-[21px]">
       {timeline.length ? (
-        <button
-          type="button"
-          onClick={() => setActivityOpen((open) => !open)}
-          aria-expanded={activityOpen}
-          aria-controls={timelineId}
-          className="bb-agent-run-label flex w-full items-center gap-[8px] transition-colors hover:text-[var(--ink-heading)]"
-        >
-          <svg
-            aria-hidden
-            className={`h-3 w-3 transition-transform ${activityOpen ? "rotate-90" : ""}`}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
+        <div className="space-y-[9px] px-[15px] py-[13px]">
+          <button
+            type="button"
+            onClick={() => setActivityOpen((open) => !open)}
+            aria-expanded={activityOpen}
+            aria-controls={timelineId}
+            className="bb-agent-run-label flex w-full items-center gap-[8px] transition-colors hover:text-[var(--ink-heading)]"
           >
-            <path strokeLinecap="round" strokeLinejoin="round" d="m9 6 6 6-6 6" />
-          </svg>
-          {callLabel}
-          <span className="ml-auto">{activityOpen ? "Hide" : "Show"}</span>
-        </button>
-      ) : null}
-
-      {timeline.length && activityOpen ? (
-        <ol
-          id={timelineId}
-          className="relative space-y-4 py-1"
-          aria-label={`${agentName} activity timeline`}
-        >
-          <span
-            aria-hidden
-            className="absolute bottom-2 left-[3px] top-2 w-px bg-[var(--line)]"
-          />
-          {timeline.map((item) => (
-            <li
-              key={item.key}
-              className="relative grid min-w-0 grid-cols-[8px_minmax(0,1fr)] gap-4"
+            <svg
+              aria-hidden
+              className={`h-3 w-3 transition-transform ${activityOpen ? "rotate-90" : ""}`}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="m9 6 6 6-6 6" />
+            </svg>
+            <span className="tabular-nums">{callLabel}</span>
+            <span className="ml-auto">{activityOpen ? "Hide" : "Show"}</span>
+          </button>
+          {hiddenCount > 0 && activityOpen ? (
+            <p className="bb-agent-run-label tabular-nums">
+              {hiddenCount} earlier {hiddenCount === 1 ? "step" : "steps"}
+            </p>
+          ) : null}
+          {visibleTimeline.length ? (
+            <ol
+              id={timelineId}
+              className="relative space-y-[11px] py-1"
+              aria-label={`${agentName} activity timeline`}
             >
               <span
                 aria-hidden
-                className={`relative z-10 mt-[7px] h-2 w-2 rounded-full ${
-                  item.kind === "tool" && (item.status === "error" || item.status === "failed")
-                    ? "bg-[var(--danger)]"
-                    : item.kind === "tool"
-                      ? "bg-[var(--botanical-2)]"
-                      : "bg-[var(--ink-muted)]"
-                } ${
-                  !terminal && item.key === timeline[timeline.length - 1]?.key
-                    ? "motion-safe:animate-pulse"
-                    : ""
-                }`}
+                className="absolute bottom-2 left-[3px] top-2 w-px bg-[var(--line)]"
               />
-              {item.kind === "tool" ? (
-                <div className="min-w-0">
-                  <p className="text-[13px] leading-[1.4] text-[var(--ink-muted)]">
-                    <span className="font-medium text-[var(--ink-heading)]">
-                      {toolLabel(item.tool)}
-                    </span>
-                    {item.title ? ` ${item.title}` : ""}
-                  </p>
-                  {item.summary ? (
-                    <pre className="bb-agent-run-inset bb-agent-run-readout mt-[5px] max-w-full whitespace-pre-wrap break-words p-[13px]">
-                      {item.summary}
-                    </pre>
-                  ) : null}
-                </div>
-              ) : (
-                <div className="bb-agent-run-text">
-                  <ChatMarkdown content={item.text} compact />
-                </div>
-              )}
-            </li>
-          ))}
-        </ol>
+              {visibleTimeline.map((item) => (
+                <li
+                  key={item.key}
+                  className="relative grid min-w-0 grid-cols-[8px_minmax(0,1fr)] gap-3"
+                >
+                  <span
+                    aria-hidden
+                    className={`relative z-10 mt-[7px] h-2 w-2 rounded-full ${
+                      item.kind === "tool" && (item.status === "error" || item.status === "failed")
+                        ? "bg-[var(--danger)]"
+                        : item.kind === "tool"
+                          ? "bg-[var(--botanical-2)]"
+                          : "bg-[var(--ink-muted)]"
+                    } ${
+                      !terminal && item.key === timeline[timeline.length - 1]?.key
+                        ? "motion-safe:animate-pulse"
+                        : ""
+                    }`}
+                  />
+                  {item.kind === "tool" ? (
+                    <div className="min-w-0">
+                      <p
+                        className={`text-[13px] leading-[1.4] text-[var(--ink-muted)] ${
+                          terminal ? "break-words" : "truncate"
+                        }`}
+                      >
+                        <span className="font-medium text-[var(--ink-heading)]">
+                          {toolLabel(item.tool)}
+                        </span>
+                        {item.title ? ` ${item.title}` : ""}
+                      </p>
+                      {item.summary ? (
+                        // A live card keeps each readout short so the tail of the
+                        // run stays on screen; a reopened one is being read, so it
+                        // gets the room the edits card gets.
+                        <pre
+                          className={`bb-agent-run-inset bb-agent-run-readout mt-[5px] max-w-full overflow-y-auto whitespace-pre-wrap break-words p-[9px] ${
+                            terminal ? "max-h-80" : "max-h-[120px]"
+                          }`}
+                        >
+                          {item.summary}
+                        </pre>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div
+                      className={`bb-agent-run-text ${terminal ? "" : "line-clamp-3"}`}
+                    >
+                      <ChatMarkdown content={item.text} compact />
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ol>
+          ) : null}
+        </div>
       ) : null}
-      </div>
       </div>
       {result ? (
         <section className="bb-agent-run-text mt-[13px] px-1">
@@ -465,8 +577,8 @@ export default function InlineOpenCodeRun({
           {terminalContent}
         </p>
       ) : null}
-      {terminal && edits && gardenSlug ? (
-        <AgentEditsCard gardenSlug={gardenSlug} edits={edits} agentName={agentName} />
+      {terminal && shownEdits && gardenSlug ? (
+        <AgentEditsCard gardenSlug={gardenSlug} edits={shownEdits} agentName={agentName} />
       ) : null}
       {terminal ? (
         <AssistantMessageActions content={terminalContent} onRetry={onRetry} />

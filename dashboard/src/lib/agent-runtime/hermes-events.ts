@@ -1,3 +1,10 @@
+import {
+  type EvidenceWebsite,
+  evidenceKindForTool,
+  extractWebsitesFromPayload,
+  isHttpUrl,
+  normalizeWebsite,
+} from "../hermes/evidence.ts";
 import type {
   NormalizedAgentEvent,
   PermissionRisk,
@@ -19,6 +26,16 @@ export interface RawHermesEvent {
   payload?: unknown;
 }
 
+export interface HermesActiveTool {
+  toolName: string;
+  location?: string;
+  query?: string;
+  url?: string;
+  summary?: string;
+  websites?: EvidenceWebsite[];
+  details?: Record<string, unknown>;
+}
+
 export interface HermesEventNormalizationState {
   assistantText: string;
   /**
@@ -27,10 +44,15 @@ export interface HermesEventNormalizationState {
    * `assistantText` is what the conversation store writes.
    */
   emDash: EmDashFilter;
+  activeTools?: Map<string, HermesActiveTool>;
 }
 
 export function createHermesEventNormalizationState(): HermesEventNormalizationState {
-  return { assistantText: "", emDash: createEmDashFilter() };
+  return {
+    assistantText: "",
+    emDash: createEmDashFilter(),
+    activeTools: new Map(),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -56,6 +78,18 @@ function parsePersonaSlug(goal: string | undefined): string | undefined {
 
 function now(): string {
   return new Date().toISOString();
+}
+
+/**
+ * Whether a tool call's payload may be read for consulted websites.
+ *
+ * A URL printed by a shell command or sitting in a file that was read is not a
+ * source the answer consulted. Listing one under "websites consulted" would be
+ * provenance the turn never earned, so only web-shaped tools are walked.
+ */
+function webShapedTool(toolName: string): boolean {
+  const kind = evidenceKindForTool(toolName);
+  return kind === "web_search" || kind === "web_source" || kind === "browser";
 }
 
 function safeSingleLine(value: unknown): string | undefined {
@@ -257,8 +291,64 @@ export function normalizeHermesEvent(
 
     case "tool.start": {
       const toolName = asString(payload.name) ?? "tool";
+      const toolCallId =
+        asString(payload.tool_id) ??
+        `${toolName}:${timestamp}`;
+      const websites = webShapedTool(toolName)
+        ? extractWebsitesFromPayload(payload)
+        : [];
+      let location = safeSingleLine(payload.location) ?? safeSingleLine(payload.context);
+      let query: string | undefined;
+      let url: string | undefined;
+      const rawArgs = payload.args ?? payload.args_text;
+      if (typeof rawArgs === "string") {
+        try {
+          const parsed = JSON.parse(rawArgs);
+          if (isRecord(parsed)) {
+            if (typeof parsed.query === "string") query = parsed.query;
+            if (typeof parsed.url === "string") url = parsed.url;
+            if (webShapedTool(toolName)) {
+              for (const site of extractWebsitesFromPayload(parsed)) {
+                if (!websites.some((s) => s.url === site.url)) websites.push(site);
+              }
+            }
+          }
+        } catch {
+          // not JSON
+        }
+      } else if (isRecord(rawArgs)) {
+        if (typeof rawArgs.query === "string") query = rawArgs.query as string;
+        if (typeof rawArgs.url === "string") url = rawArgs.url as string;
+        if (webShapedTool(toolName)) {
+          for (const site of extractWebsitesFromPayload(rawArgs)) {
+            if (!websites.some((s) => s.url === site.url)) websites.push(site);
+          }
+        }
+      }
+      if (!location) {
+        if (url && isHttpUrl(url)) location = url;
+        else if (query) location = query;
+        else if (websites.length > 0) location = websites[0].url;
+      }
+      if (url && isHttpUrl(url) && !websites.some((s) => s.url === url)) {
+        const site = normalizeWebsite(url);
+        if (site) websites.push(site);
+      }
+      if (location && isHttpUrl(location) && !websites.some((s) => s.url === location)) {
+        const site = normalizeWebsite(location);
+        if (site) websites.push(site);
+      }
+      state.activeTools?.set(toolCallId, {
+        toolName,
+        location,
+        query,
+        url,
+        summary: safeSingleLine(payload.summary) ?? safeSingleLine(payload.context),
+        websites,
+        details: isRecord(payload.details) ? payload.details : (isRecord(payload) ? payload : undefined),
+      });
       // Text streamed before a tool call is by definition commentary about the
-      // work, not the final answer — seal it so the answer buffer starts fresh.
+      // work, not the final answer ? seal it so the answer buffer starts fresh.
       // Usually a no-op: the loop emits `message.interim` for the same text
       // before its tool calls, and that seal already drained the buffer.
       return [...sealStreamedSegment(), {
@@ -266,14 +356,14 @@ export function normalizeHermesEvent(
         sessionId: publicSessionId,
         timestamp,
         payload: {
-          toolCallId:
-            asString(payload.tool_id) ??
-            `${toolName}:${timestamp}`,
+          toolCallId,
           toolName,
           summary:
+            safeSingleLine(payload.summary) ??
             safeSingleLine(payload.context) ??
             safeSingleLine(payload.args_text),
-          location: safeSingleLine(payload.context),
+          location,
+          ...(websites.length > 0 ? { websites } : {}),
         },
       }];
     }
@@ -283,7 +373,7 @@ export function normalizeHermesEvent(
       // narration, acknowledgements, an attempted answer before a
       // verify-on-stop nudge) the moment it is appended, before its tool
       // calls execute. `already_streamed` says whether the same text already
-      // went out via message.delta — then the streamed buffer IS the segment.
+      // went out via message.delta ? then the streamed buffer IS the segment.
       if (payload.already_streamed === true) return sealStreamedSegment();
       const text = stripEmDashes(asString(payload.text) ?? "").trim();
       if (!text) return [];
@@ -298,19 +388,88 @@ export function normalizeHermesEvent(
 
     case "tool.complete": {
       const toolName = asString(payload.name) ?? "tool";
+      const toolCallId =
+        asString(payload.tool_id) ??
+        `${toolName}:${timestamp}`;
+      const started = state.activeTools?.get(toolCallId);
+      let query: string | undefined = started?.query;
+      let url: string | undefined = started?.url;
+      const rawArgs = payload.args ?? payload.args_text;
+      if (typeof rawArgs === "string") {
+        try {
+          const parsed = JSON.parse(rawArgs);
+          if (isRecord(parsed)) {
+            if (!query && typeof parsed.query === "string") query = parsed.query;
+            if (!url && typeof parsed.url === "string") url = parsed.url;
+          }
+        } catch {
+          // not JSON
+        }
+      } else if (isRecord(rawArgs)) {
+        if (!query && typeof rawArgs.query === "string") query = rawArgs.query as string;
+        if (!url && typeof rawArgs.url === "string") url = rawArgs.url as string;
+      }
+      const extractedWebsites = webShapedTool(toolName)
+        ? [
+            ...extractWebsitesFromPayload(payload),
+            ...(rawArgs ? extractWebsitesFromPayload(rawArgs) : []),
+            ...(payload.result ? extractWebsitesFromPayload(payload.result) : []),
+            ...(payload.data ? extractWebsitesFromPayload(payload.data) : []),
+            ...(payload.details ? extractWebsitesFromPayload(payload.details) : []),
+          ]
+        : [];
+      const combinedWebsites = [...(started?.websites ?? []), ...extractedWebsites];
+      if (url && isHttpUrl(url) && !combinedWebsites.some((s) => s.url === url)) {
+        const site = normalizeWebsite(url);
+        if (site) combinedWebsites.push(site);
+      }
+      if (started?.url && isHttpUrl(started.url) && !combinedWebsites.some((s) => s.url === started.url)) {
+        const site = normalizeWebsite(started.url);
+        if (site) combinedWebsites.push(site);
+      }
+      if (started?.location && isHttpUrl(started.location) && !combinedWebsites.some((s) => s.url === started.location)) {
+        const site = normalizeWebsite(started.location);
+        if (site) combinedWebsites.push(site);
+      }
+      const normalizedWebsites = combinedWebsites.filter(
+        (site, index, self) =>
+          self.findIndex((s) => s.url.trim().toLowerCase() === site.url.trim().toLowerCase()) === index,
+      );
+      let location =
+        safeSingleLine(payload.location) ??
+        started?.location;
+      if (!location) {
+        if (url && isHttpUrl(url)) location = url;
+        else if (started?.url && isHttpUrl(started.url)) location = started.url;
+        else if (query) location = query;
+        else if (started?.query) location = started.query;
+        else if (normalizedWebsites.length > 0 && (toolName.includes("extract") || toolName.includes("fetch"))) {
+          location = normalizedWebsites[0].url;
+        }
+      }
+      state.activeTools?.delete(toolCallId);
       return [{
         type: "tool.completed",
         sessionId: publicSessionId,
         timestamp,
         payload: {
-          toolCallId:
-            asString(payload.tool_id) ??
-            `${toolName}:${timestamp}`,
+          toolCallId,
           toolName,
           success: toolSucceeded(payload),
           summary:
             safeSingleLine(payload.summary) ??
             safeSingleLine(payload.error),
+          location,
+          ...(normalizedWebsites.length > 0 ? { websites: normalizedWebsites } : {}),
+          details: {
+            toolName,
+            ...(query ? { query } : {}),
+            ...(url ? { url } : {}),
+            ...(rawArgs && isRecord(rawArgs) ? { args: rawArgs } : {}),
+            ...(payload.result ? { result: payload.result } : {}),
+            ...(payload.data ? { data: payload.data } : {}),
+            ...(normalizedWebsites.length > 0 ? { websites: normalizedWebsites } : {}),
+          },
         },
       }];
     }

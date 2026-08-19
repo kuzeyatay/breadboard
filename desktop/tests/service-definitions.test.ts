@@ -5,9 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   buildServiceDefinitions,
-  n8nServiceUrl,
   resolveAgencyAgentsPath,
-  resolveN8nRuntime,
   resolveHermesPython,
   resolveVoiceboxRuntime,
   serviceUrls,
@@ -36,7 +34,6 @@ function fixture(mode: "dev" | "packaged", overrides: Partial<ReturnType<typeof 
       quartz: 4303,
       quartzWs: 4304,
       voicebox: 4310,
-      n8n: 4311,
     },
   };
   const binaries = {
@@ -203,68 +200,6 @@ test("dashboard account switching and ChatMock requests share one credential hom
   assert.equal(chatmock.env["CODEX_HOME"], paths.codexHome);
   assert.equal(chatmock.env["CODEX_HOME"], dashboard.env["CODEX_HOME"]);
   assert.equal(chatmock.restartOnChange, undefined);
-});
-
-test("n8n is supervised from the cloned checkout and stays out of public endpoints", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-n8n-"));
-  try {
-    const source = path.join(root, "n8n");
-    const launcher = path.join(root, "scripts", "start-n8n.mjs");
-    fs.mkdirSync(source, { recursive: true });
-    fs.mkdirSync(path.dirname(launcher), { recursive: true });
-    fs.writeFileSync(path.join(source, "package.json"), "{}");
-    fs.writeFileSync(launcher, "");
-    const base = fixture("packaged");
-    const paths = { ...base.paths, mode: "dev" as const, appRoot: root };
-    const runtime = resolveN8nRuntime(paths, base.binaries);
-    assert.ok(runtime);
-    assert.equal(runtime.command, base.binaries.node);
-    assert.deepEqual(runtime.args, [launcher]);
-    assert.equal(n8nServiceUrl(base.config), "http://127.0.0.1:4311");
-
-    const definitions = buildServiceDefinitions({ paths, config: base.config, binaries: base.binaries });
-    const n8n = definitions.find((definition) => definition.id === "n8n");
-    const dashboard = definitions.find((definition) => definition.id === "dashboard");
-    assert.ok(n8n && dashboard);
-    assert.equal(n8n.required, false);
-    assert.equal(n8n.startInBackground, true);
-    assert.equal(n8n.healthCheck, undefined);
-    assert.equal(n8n.env["N8N_PORT"], "4311");
-    assert.equal(n8n.env["N8N_DASHBOARD_URL"], "http://127.0.0.1:4300");
-    assert.equal(n8n.env["N8N_SOURCE_DIR"], source);
-    assert.equal(n8n.env["N8N_RUNTIME_ENTRY"], undefined);
-    assert.equal(dashboard.env["N8N_BASE_URL"], "http://127.0.0.1:4311");
-    assert.equal(dashboard.env["N8N_STATUS_PATH"], n8n.env["N8N_STATUS_PATH"]);
-    assert.equal(dashboard.env["N8N_CREDENTIALS_PATH"], n8n.env["N8N_CREDENTIALS_PATH"]);
-    assert.ok(!Object.values(serviceUrls(base.config)).includes(n8nServiceUrl(base.config)));
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("packaged startup supervises the prebuilt n8n runtime", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-n8n-packaged-"));
-  try {
-    const launcher = path.join(root, "scripts", "start-n8n.mjs");
-    const runtimeEntry = path.join(root, "n8n-runtime", "bin", "n8n");
-    fs.mkdirSync(path.dirname(launcher), { recursive: true });
-    fs.mkdirSync(path.dirname(runtimeEntry), { recursive: true });
-    fs.writeFileSync(launcher, "");
-    fs.writeFileSync(runtimeEntry, "");
-    const base = fixture("packaged");
-    const paths = { ...base.paths, appRoot: root };
-    const runtime = resolveN8nRuntime(paths, base.binaries);
-    assert.ok(runtime);
-    assert.equal(runtime.runtimeEntry, runtimeEntry);
-    const definitions = buildServiceDefinitions({ paths, config: base.config, binaries: base.binaries });
-    const n8n = definitions.find((definition) => definition.id === "n8n");
-    assert.ok(n8n);
-    assert.equal(n8n.startInBackground, true);
-    assert.equal(n8n.env["N8N_RUNTIME_ENTRY"], runtimeEntry);
-    assert.equal(n8n.env["N8N_SOURCE_DIR"], undefined);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
 });
 
 test("dashboard catalog proxy URL honors a server-side environment override", () => {

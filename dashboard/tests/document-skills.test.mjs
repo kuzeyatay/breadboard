@@ -69,7 +69,7 @@ test("segmentation splits at the body headings, not at the table of contents", a
 test("the TS fallback reaches the same boundaries as the clone", async () => {
   const text = book({ toc: true, index: true });
   const fromClone = await bridge.segmentDocument(text);
-  const fallback = bridge.fallbackStructure(text);
+  const fallback = await bridge.fallbackStructure(text);
 
   assert.equal(fallback.fromClone, false);
   assert.deepEqual(
@@ -79,10 +79,28 @@ test("the TS fallback reaches the same boundaries as the clone", async () => {
   );
 });
 
-test("a document with no headings still becomes readable pieces", () => {
-  const structure = bridge.fallbackStructure("prose without any structure. ".repeat(4000));
+test("a document with no headings still becomes readable pieces", async () => {
+  const structure = await bridge.fallbackStructure("prose without any structure. ".repeat(4000));
   assert.ok(structure.chapters.length >= 2);
   assert.ok(structure.chapters.every((chapter) => chapter.kind === "window"));
+});
+
+test("window chapters split at sentence boundaries, not mid-word", async () => {
+  // A repeated sentence has an obvious right answer for where a boundary
+  // should fall — at the ". " between two repetitions — and a wrong answer
+  // that the old fixed-stride split was prone to: a cut through the middle of
+  // a word like "structure" or "without". This is what the vendored
+  // RecursiveChunker buys over the raw character-count loop it replaced.
+  const source = "prose without any structure. ".repeat(4000);
+  const structure = await bridge.fallbackStructure(source);
+  assert.ok(structure.chapters.length >= 2, "the stress input must actually produce multiple windows");
+  for (const chapter of structure.chapters.slice(0, -1)) {
+    const boundary = chapter.end;
+    const charBefore = source[boundary - 1];
+    const charAfter = source[boundary];
+    const midWord = /[a-z]/i.test(charBefore) && /[a-z]/i.test(charAfter);
+    assert.equal(midWord, false, `chapter ${chapter.number} ends mid-word at offset ${boundary}`);
+  }
 });
 
 // ------------------------------------------------------------- build rules --

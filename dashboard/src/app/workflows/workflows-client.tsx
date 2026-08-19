@@ -1,15 +1,37 @@
 "use client";
 
+// Native workflow canvas entry point, replacing the n8n iframe client. Two
+// views behind one route (mirrors the old file's shape, which kept `/workflows`
+// working as a single entry and used the `workflow` query param to select a
+// workflow — use-workflow-automation.ts's "Open automation settings" links
+// hardcode that same param, so it stays the identifier here):
+//  - no `workflow` param: the workflows HOME list (create/open/delete).
+//  - `?workflow=<id>`: the CANVAS view for that workflow.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { backLabelFor } from "@/lib/nav-history";
 import { consumeWorkflowReturnPath, peekWorkflowReturnPath } from "@/lib/workflows/navigation";
-
-type Startup = { phase?: string; message?: string; updatedAt?: string } | null;
-type StatusResponse = { ready?: boolean; baseUrl?: string | null; startup?: Startup; error?: string };
+import { CanvasEditor } from "./components/canvas-editor";
+import "./sim-canvas.css";
+import type { WorkflowStateJson } from "./lib/types";
 
 const BACK_FALLBACK_LABEL = "Back to dashboard";
+
+type WorkflowListItem = {
+  id: string;
+  name: string;
+  description?: string | null;
+  blockCount?: number;
+  updatedAt: string | null;
+};
+
+type WorkflowDetail = {
+  id: string;
+  name: string;
+  description?: string | null;
+  state: WorkflowStateJson | null;
+};
 
 function BackIcon() {
   return (
@@ -19,172 +41,266 @@ function BackIcon() {
   );
 }
 
-function Loader() {
-  return <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--line-strong)] border-t-[var(--botanical)]" />;
+function PlusIcon() {
+  return (
+    <svg aria-hidden className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
+      <path strokeLinecap="round" d="M12 5v14M5 12h14" />
+    </svg>
+  );
 }
 
-function friendlyPhase(startup: Startup): string {
-  if (startup?.message && startup.phase !== "ready" && startup.phase !== "stopped") {
-    return startup.message;
-  }
-  switch (startup?.phase) {
-    case "installing": return "Installing n8n for its first use. This can take several minutes.";
-    case "building": return "Building the local workflow editor for its first use.";
-    case "starting": return "Starting your private workflow workspace.";
-    case "error": return "n8n could not finish starting.";
-    default: return "Preparing your private workflow workspace.";
-  }
+function WorkflowIcon() {
+  return (
+    <svg aria-hidden className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <circle cx="6" cy="6" r="2.25" />
+      <circle cx="18" cy="12" r="2.25" />
+      <circle cx="6" cy="18" r="2.25" />
+      <path strokeLinecap="round" d="M8.2 6h2.3a3 3 0 0 1 3 3v0a3 3 0 0 0 3 3M8.2 18h2.3a3 3 0 0 0 3-3v0a3 3 0 0 1 3-3" />
+    </svg>
+  );
 }
 
-export default function WorkflowsClient({
-  mode,
-  templateId,
-  workflowId,
-}: {
-  mode: "new" | "home";
-  templateId: number | null;
-  workflowId: string | null;
-}) {
-  const router = useRouter();
-  const [frameUrl, setFrameUrl] = useState<string | null>(null);
-  const [baseUrl, setBaseUrl] = useState<string | null>(null);
-  const [startup, setStartup] = useState<Startup>(null);
-  const [stage, setStage] = useState<"preparing" | "ready" | "error">("preparing");
+function formatUpdatedAt(value: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function HomeView({ onOpen }: { onOpen: (id: string) => void }) {
+  const [items, setItems] = useState<WorkflowListItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // The stored return path only exists in the browser, so the label starts at
-  // the fallback and is corrected once the client has mounted.
+  const [creating, setCreating] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    fetch("/api/workflows/local", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const payload = (await response.json().catch(() => ({}))) as { workflows?: WorkflowListItem[]; error?: string };
+        if (!response.ok) throw new Error(payload.error || "Your workflows could not be loaded.");
+        setItems(payload.workflows ?? []);
+      })
+      .catch((cause) => {
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        setError(cause instanceof Error ? cause.message : "Your workflows could not be loaded.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [reloadToken]);
+
+  async function createWorkflow() {
+    if (creating) return;
+    setCreating(true);
+    try {
+      const response = await fetch("/api/workflows/local", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Untitled workflow" }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as { id?: string; error?: string };
+      if (!response.ok || !payload.id) throw new Error(payload.error || "The workflow could not be created.");
+      onOpen(payload.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The workflow could not be created.");
+      setCreating(false);
+    }
+  }
+
+  async function deleteWorkflow(id: string) {
+    setItems((current) => current.filter((item) => item.id !== id));
+    try {
+      const response = await fetch(`/api/workflows/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Delete failed");
+    } catch {
+      setReloadToken((token) => token + 1);
+    }
+  }
+
+  return (
+    <main className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col gap-4 overflow-y-auto px-4 py-6 sm:px-6">
+      <div className="neu-surface-subtle flex items-center justify-between gap-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4">
+        <div>
+          <h2 className="font-semibold text-[var(--ink-heading)]">Your workflows</h2>
+          <p className="mt-1 text-xs leading-5 text-[var(--ink-muted)]">
+            Build an automation on the canvas, then run it from here or from chat.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={createWorkflow}
+          disabled={creating}
+          className="neu-button-primary inline-flex shrink-0 items-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <PlusIcon /> New workflow
+        </button>
+      </div>
+
+      {error ? (
+        <div className="rounded-xl border border-[var(--danger)]/40 bg-[var(--danger-soft)] p-3 text-xs text-[var(--danger)]">
+          {error}
+          <button type="button" onClick={() => setReloadToken((token) => token + 1)} className="ml-2 underline underline-offset-2">
+            Try again
+          </button>
+        </div>
+      ) : null}
+
+      {loading ? <div className="py-8 text-center text-xs text-[var(--ink-muted)]">Loading your workflows…</div> : null}
+
+      {!loading && !error && items.length === 0 ? (
+        <div className="neu-inset rounded-2xl border border-[var(--line)] px-4 py-10 text-center">
+          <p className="text-sm font-medium text-[var(--ink-heading)]">No workflows yet</p>
+          <p className="mt-1 text-xs text-[var(--ink-muted)]">Create one to start building an automation on the canvas.</p>
+        </div>
+      ) : null}
+
+      {!loading && items.length > 0 ? (
+        <div className="space-y-2">
+          {items.map((workflow) => (
+            <div key={workflow.id} className="neu-button flex items-center gap-3 rounded-2xl border border-[var(--line)] p-3">
+              <button
+                type="button"
+                onClick={() => onOpen(workflow.id)}
+                className="group flex min-w-0 flex-1 items-center gap-3 rounded-xl px-1 py-1 text-left"
+              >
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--paper-strong)] text-[var(--botanical)]">
+                  <WorkflowIcon />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-[var(--ink-heading)] group-hover:text-[var(--botanical)]">
+                    {workflow.name}
+                  </span>
+                  <span className="mt-0.5 block text-[11px] text-[var(--ink-muted)]">
+                    {typeof workflow.blockCount === "number" ? `${workflow.blockCount} blocks` : ""}
+                    {workflow.updatedAt ? ` · Updated ${formatUpdatedAt(workflow.updatedAt)}` : ""}
+                  </span>
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteWorkflow(workflow.id)}
+                aria-label={`Delete ${workflow.name}`}
+                className="neu-button-icon flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--line)] text-[var(--ink-muted)] transition hover:text-[var(--danger)]"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </main>
+  );
+}
+
+export default function WorkflowsClient({ workflowId }: { workflowId: string | null }) {
+  const router = useRouter();
+  const [activeId, setActiveId] = useState<string | null>(workflowId);
+  const [detail, setDetail] = useState<WorkflowDetail | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [backLabel, setBackLabel] = useState(BACK_FALLBACK_LABEL);
-  const opening = useRef(false);
+  const openedFromChatRef = useRef(Boolean(workflowId));
 
   useEffect(() => {
     const returnPath = peekWorkflowReturnPath();
     setBackLabel(returnPath ? backLabelFor(returnPath, BACK_FALLBACK_LABEL) : BACK_FALLBACK_LABEL);
   }, []);
 
-  const openWorkspace = useCallback(async () => {
-    if (opening.current) return;
-    opening.current = true;
-    try {
-      setError(null);
-      const sessionResponse = await fetch("/api/workflows/session", { method: "POST" });
-      const session = await sessionResponse.json() as { baseUrl?: string; error?: string };
-      if (!sessionResponse.ok || !session.baseUrl) throw new Error(session.error || "Could not open n8n.");
-      setBaseUrl(session.baseUrl);
-
-      const target = templateId
-        ? `/templates/${encodeURIComponent(templateId)}`
-        : workflowId
-          ? `/workflow/${encodeURIComponent(workflowId)}`
-          : mode === "new"
-            ? "/workflow/new"
-            : "/home/workflows";
-      setFrameUrl(`${session.baseUrl}${target}`);
-      setStage("ready");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not open the workflow workspace.");
-      setStage("error");
-      opening.current = false;
-    }
-  }, [mode, templateId, workflowId]);
+  useEffect(() => {
+    setActiveId(workflowId);
+  }, [workflowId]);
 
   useEffect(() => {
-    let cancelled = false;
-    let timer: number | null = null;
-    const poll = async () => {
-      try {
-        const response = await fetch("/api/workflows/status", { cache: "no-store" });
-        const payload = await response.json() as StatusResponse;
-        if (cancelled) return;
-        if (!response.ok) throw new Error(payload.error || "Could not check n8n.");
-        setStartup(payload.startup ?? null);
-        if (payload.ready) {
-          await openWorkspace();
-          return;
-        }
-      } catch (cause) {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not check n8n.");
-      }
-      if (!cancelled) timer = window.setTimeout(poll, 2_000);
-    };
-    void poll();
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [openWorkspace]);
+    if (!activeId) {
+      setDetail(null);
+      return;
+    }
+    const controller = new AbortController();
+    setDetail(null);
+    setDetailError(null);
+    fetch(`/api/workflows/${encodeURIComponent(activeId)}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const payload = (await response.json().catch(() => ({}))) as Partial<WorkflowDetail> & { error?: string };
+        if (!response.ok || !payload.id) throw new Error(payload.error || "This workflow could not be opened.");
+        setDetail({ id: payload.id, name: payload.name ?? "Untitled workflow", description: payload.description ?? "", state: payload.state ?? null });
+      })
+      .catch((cause) => {
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        setDetailError(cause instanceof Error ? cause.message : "This workflow could not be opened.");
+      });
+    return () => controller.abort();
+  }, [activeId]);
 
-  function retry() {
-    opening.current = false;
-    setStage("preparing");
-    setError(null);
-    void openWorkspace();
-  }
+  const openWorkflow = useCallback(
+    (id: string) => {
+      setActiveId(id);
+      router.replace(`/workflows?workflow=${encodeURIComponent(id)}`, { scroll: false });
+    },
+    [router],
+  );
+
+  const goHome = useCallback(() => {
+    setActiveId(null);
+    setDetail(null);
+    setDetailError(null);
+    router.replace("/workflows", { scroll: false });
+  }, [router]);
 
   function leaveWorkflows() {
     const returnPath = consumeWorkflowReturnPath();
-
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-    setFrameUrl(null);
-    // n8n's iframe contributes entries to the browser's joint history, so a
-    // generic Back can be consumed by the embedded editor. Navigate directly
-    // to the exact Breadboard route that opened Workflows instead.
     router.replace(returnPath ?? "/dashboard", { scroll: false });
   }
 
   return (
     <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-[var(--paper-bg)] text-[var(--ink)]">
-      {/* One navbar, the same shape Garden Chat and Quartz use: back control,
-          then where you are. n8n's own editor carries the workflow actions. */}
       <header className="bb-neu-toolbar breadboard-flower-navbar neu-surface-subtle relative flex shrink-0 items-center justify-between gap-4 border-b border-gray-800 px-6 py-3.5">
         <NavbarFlowerWind />
         <div className="relative z-10 flex min-w-0 items-center gap-3">
           <button
             type="button"
-            onClick={leaveWorkflows}
+            onClick={activeId && !openedFromChatRef.current ? goHome : leaveWorkflows}
             className="flex shrink-0 items-center gap-1.5 text-sm text-gray-500 transition-colors hover:text-white"
           >
             <BackIcon />
-            {backLabel}
+            {activeId && !openedFromChatRef.current ? "All workflows" : backLabel}
           </button>
           <span className="text-gray-700">/</span>
           <h1 className="truncate text-sm font-semibold text-white">Workflows</h1>
         </div>
-        <div className="relative z-10 flex items-center gap-2">
-          {/* `--amber` was never a Breadboard token, so the starting dot used to
-              render with no fill at all. */}
-          <span className="bb-agent-run-pill inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] text-[var(--ink-muted)]">
-            <span className={`h-1.5 w-1.5 rounded-full ${stage === "ready" ? "bg-[var(--botanical)]" : stage === "error" ? "bg-[var(--danger)]" : "animate-pulse bg-[var(--selection-yellow-line)]"}`} />
-            {stage === "ready" ? "Local n8n ready" : stage === "error" ? "Needs attention" : "Starting locally"}
-          </span>
-        </div>
       </header>
 
-      <main className="flex min-h-0 flex-1 flex-col gap-3 px-3 pb-3 pt-3 sm:px-5">
-        <section className="neu-surface-raised relative min-h-0 flex-1 overflow-hidden rounded-[22px] border border-[var(--line)] bg-[var(--paper-raised)]">
-          {frameUrl ? (
-            <iframe
-              src={frameUrl}
-              title="Breadboard workflow editor"
-              className="h-full w-full border-0 bg-[var(--paper-raised)]"
-              allow="clipboard-read; clipboard-write"
-            />
-          ) : (
-            <div className="flex h-full min-h-96 items-center justify-center p-6">
-              <div className="neu-inset w-full max-w-lg rounded-3xl border border-[var(--line)] p-7 text-center">
-                {stage !== "error" ? <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[var(--paper-raised)] text-[var(--botanical)]"><Loader /></span> : null}
-                <h2 className="mt-4 text-base font-semibold text-[var(--ink-heading)]">
-                  {stage === "error" ? "The workflow workspace did not open" : "Preparing workflows"}
-                </h2>
-                <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[var(--ink-muted)]">
-                  {error || friendlyPhase(startup)}
-                </p>
-                {stage === "error" ? <button type="button" onClick={retry} className="neu-button-accent mt-5 rounded-xl border px-4 py-2.5 text-sm font-medium">Try again</button> : null}
-              </div>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {!activeId ? (
+          <HomeView onOpen={openWorkflow} />
+        ) : detailError ? (
+          <div className="flex flex-1 items-center justify-center p-6">
+            <div className="neu-inset w-full max-w-md rounded-3xl border border-[var(--line)] p-7 text-center">
+              <h2 className="text-base font-semibold text-[var(--ink-heading)]">This workflow did not open</h2>
+              <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[var(--ink-muted)]">{detailError}</p>
+              <button type="button" onClick={goHome} className="neu-button-accent mt-5 rounded-xl border px-4 py-2.5 text-sm font-medium">
+                Back to workflows
+              </button>
             </div>
-          )}
-        </section>
-        {baseUrl ? <p className="sr-only">Local workflow service: {baseUrl}</p> : null}
-      </main>
+          </div>
+        ) : detail && detail.id === activeId ? (
+          <CanvasEditor
+            workflowId={detail.id}
+            initialName={detail.name}
+            initialDescription={detail.description ?? ""}
+            initialState={detail.state}
+            onBack={goHome}
+          />
+        ) : (
+          <div className="flex flex-1 items-center justify-center">
+            <span className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--line-strong)] border-t-[var(--botanical)]" />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
