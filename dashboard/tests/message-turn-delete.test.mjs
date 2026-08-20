@@ -238,14 +238,22 @@ test("the route authorizes, stops the turn's work, and re-seeds the runtime", ()
   assert.match(routeSource, /historyOverride: runtimeMessagesForBranch\(plan\.remaining\)/);
 });
 
-test("both chats offer the delete, confirm it, and drop the branch with it", () => {
+test("both chats offer the delete in the app's dialog and drop the branch with it", () => {
   for (const [name, source] of [
     ["terminal", panelSource],
     ["garden workspace", workspace],
   ]) {
     assert.match(source, /aria-label="Delete this message and its answer"/, name);
     assert.match(source, /function deleteMessageTurn/, name);
-    assert.match(source, /window\.confirm\(/, name);
+    assert.match(source, /confirmMessageDeletion\(\{/, name);
+    assert.match(source, /title: "Delete this message\?"/, name);
+    assert.match(source, /confirmLabel: "Delete message"/, name);
+    assert.match(source, /\{messageDeleteDialog\}/, name);
+    assert.doesNotMatch(
+      source,
+      /window\.confirm\(\s*"Delete this message/,
+      `${name} still uses the desktop shell confirmation`,
+    );
   }
   // The variants are snapshots of a transcript that no longer exists: left
   // behind, the switcher would offer to restore the deleted exchange.

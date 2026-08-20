@@ -18,8 +18,10 @@ import type {
 } from "./store.ts";
 
 export type {
+  BuzzAgentSeat,
   BuzzMember,
   BuzzMessage,
+  BuzzMessageHit,
   BuzzRoom,
   BuzzAuthorKind,
   BuzzMemberKind,
@@ -30,16 +32,32 @@ export type {
   BuzzRoomVisibility,
 } from "./store.ts";
 
-export function listRooms(userId: number, includeArchived = false): BuzzRoom[] {
-  return store.listRooms(db, userId, { includeArchived });
+/** Rooms in one organization. */
+export function listRooms(
+  organizationId: number,
+  includeArchived = false,
+): BuzzRoom[] {
+  return store.listRooms(db, organizationId, { includeArchived });
+}
+
+/** Rooms across every organization the reader belongs to. */
+export function listRoomsForUser(
+  userId: number,
+  includeArchived = false,
+): BuzzRoom[] {
+  return store.listRoomsForUser(db, userId, { includeArchived });
 }
 
 export function getRoom(userId: number, publicId: string): BuzzRoom | null {
-  return store.getRoomByPublicId(db, userId, publicId);
+  return store.getRoomForUser(db, userId, publicId);
 }
 
-export function createRoom(userId: number, input: CreateRoomInput): BuzzRoom {
-  return store.createRoom(db, userId, input);
+export function createRoom(
+  organizationId: number,
+  createdByUserId: number,
+  input: CreateRoomInput,
+): BuzzRoom {
+  return store.createRoom(db, organizationId, createdByUserId, input);
 }
 
 export function updateRoom(
@@ -154,11 +172,35 @@ export function unreadCounts(userId: number): Map<number, number> {
   return store.unreadCounts(db, userId);
 }
 
+/** Messages matching a query, across every room the reader can open. */
+export function searchMessages(
+  userId: number,
+  query: string,
+  limit?: number,
+): store.BuzzMessageHit[] {
+  return store.searchMessages(db, userId, query, limit);
+}
+
+/** What is waiting for the reader, across every room they can open. */
+export function listUnreadMessages(
+  userId: number,
+  limit?: number,
+): store.BuzzMessageHit[] {
+  return store.listUnreadMessages(db, userId, limit);
+}
+
+/** Every agent seat the reader shares a room with. */
+export function listAgentSeats(userId: number): store.BuzzAgentSeat[] {
+  return store.listAgentSeats(db, userId);
+}
+
 /**
- * The account's own member row in a room, created on first need.
+ * A person's member row in a room, created on first need.
  *
- * Every room has exactly one human member — reactions and read state are keyed
- * to a member id, so the person needs a row like anyone else.
+ * A room can hold several people, so this is keyed by account rather than by
+ * "the" human: reactions and read state are keyed to a member id, so everyone
+ * who opens the room needs a row of their own. Opening a public room is what
+ * enrols you in it, which is how an organization's rooms stay walk-in-able.
  */
 export function ensureSelfMember(
   roomId: number,

@@ -79,7 +79,13 @@ import {
   type CurrentLocationSnapshot,
 } from "@/lib/current-location";
 import { requestUsesCurrentLocation } from "@/lib/hermes/current-location-context";
+import {
+  delegatedAgentActivityLabel,
+  delegatedAgentCompletedLabel,
+  superAgentActivityLabelForTool,
+} from "@/lib/hermes/super-agent-activity";
 import { scrubbed } from "@/lib/watermarks/scrub-text";
+import { formatAssistantModelChangeName } from "@/lib/ai-models";
 
 export type AgentSurface = "dashboard_terminal" | "garden_chat" | "quartz_ai";
 
@@ -112,6 +118,8 @@ export interface ActivityItem {
   id: string;
   kind: EvidenceKind | "reasoning" | "permission" | "answer" | "artifact";
   label: string;
+  /** Past-tense outcome that replaces Thought when this activity completes. */
+  completedLabel?: string;
   detail?: string;
   status:
     | "running"
@@ -134,6 +142,12 @@ export interface AgentMessage {
   createdAt?: string;
   role: "user" | "assistant";
   content: string;
+  /** Presentation-only row derived from `modelChangeAfter`. */
+  modelChange?: string;
+  /** Persistent model boundaries rendered immediately after this answer. */
+  modelChangesAfter?: string[];
+  /** Latest boundary retained for compatibility with older restored chats. */
+  modelChangeAfter?: string;
   /** Model-to-model hand-back; kept in context but never rendered as the user. */
   internalAgentContinuation?: boolean;
   reasoning?: string;
@@ -283,6 +297,7 @@ export interface AgentMessage {
    * production and the finished film opens from its own artifact card.
    */
   vimaxRun?: { runId: string; brief: string };
+  voxDirectorRun?: { runId: string; brief: string };
   /**
    * Present when this assistant turn is a Shorts run. The card streams the cut
    * and each finished clip opens from its own video artifact.
@@ -346,6 +361,8 @@ export interface AgentMessage {
     repository: string;
   };
   externalAgentOutcome?: ExternalAgentOutcome;
+  /** Durable start of an attached external worker phase. */
+  externalAgentStartedAt?: string;
   /** Model-selected worker state; its observer stays mounted but its card is hidden. */
   delegatedAgentRun?: boolean;
   /** The Super Agent text that remains visible while its worker runs. */
@@ -364,6 +381,8 @@ export interface AgentMessage {
 export interface ExternalAgentTurnInput {
   clientMessageId: string;
   userContent: string;
+  /** The chat model to reuse for first-message title generation. */
+  model?: string;
   assistantContent?: string;
   run?: ExternalAgentRun;
   outcome?: ExternalAgentOutcome;
@@ -427,6 +446,8 @@ export interface AgentSendOptions {
   branchGroupId?: string;
   /** Selected assistant text this question quotes or answers in place. */
   textSelection?: ChatTextSelectionReference;
+  /** The server has durably stored this user turn, even if its answer is pending. */
+  onTurnPersisted?: (sessionId: string) => void;
 }
 
 interface BranchHistoryReference {
@@ -562,6 +583,31 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
       } else {
         delete normalized.responseDurationMs;
       }
+      delete normalized.modelChange;
+      const modelChangesAfter = Array.isArray(message.modelChangesAfter)
+        ? message.modelChangesAfter
+            .filter(
+              (value): value is string =>
+                typeof value === "string" && Boolean(value.trim()),
+            )
+            .map((value) => value.trim().slice(0, 160))
+            .slice(-50)
+        : [];
+      if (modelChangesAfter.length) {
+        normalized.modelChangesAfter = modelChangesAfter;
+      } else {
+        delete normalized.modelChangesAfter;
+      }
+      if (
+        typeof message.modelChangeAfter === "string" &&
+        message.modelChangeAfter.trim()
+      ) {
+        normalized.modelChangeAfter = message.modelChangeAfter
+          .trim()
+          .slice(0, 160);
+      } else {
+        delete normalized.modelChangeAfter;
+      }
       if (
         typeof message.branchGroupId !== "string" ||
         !message.branchGroupId.trim()
@@ -668,6 +714,7 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["resource2SkillRun", "resource2skill"],
   ["openMontageRun", "openmontage"],
   ["vimaxRun", "vimax"],
+  ["voxDirectorRun", "vox_director"],
   ["shortsRun", "shorts"],
   ["formsmithRun", "formsmith"],
   ["videoUseRun", "video_use"],
@@ -793,6 +840,8 @@ export interface UseAgentSessionResult {
   openSession: (id: string, messages?: AgentMessage[]) => Promise<void>;
   refreshSession: () => Promise<void>;
   ensureConversation: (clientMessageId?: string) => Promise<string>;
+  /** Persist a model selected now as a boundary after the latest answer. */
+  queueModelChange: (model: string) => Promise<void>;
   /** Arm the next external-agent preview to reuse this assistant turn. */
   beginDelegatedExternalAgentTurn: (clientMessageId: string) => void;
   /** Cancel an armed delegation; true means no launcher ever previewed it. */
@@ -829,16 +878,27 @@ async function ensureSession(
     activeDirectory: string | null;
     filesystemMode: "restricted" | "full";
   },
+  initialTurn?: {
+    clientMessageId: string;
+    text: string;
+    attachments?: ChatAttachment[];
+    branchGroupId?: string;
+    textSelection?: ChatTextSelectionReference;
+    internalAgentContinuation?: boolean;
+  },
 ): Promise<{
   id: string;
   activeDirectory: string | null;
   filesystemMode: "restricted" | "full";
+  initialTurnReserved: boolean;
 }> {
-  if (currentId) return { id: currentId, ...current };
+  if (currentId) {
+    return { id: currentId, ...current, initialTurnReserved: false };
+  }
   const response = await fetch("/api/hermes/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ surface, ...options }),
+    body: JSON.stringify({ surface, ...options, initialTurn }),
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
@@ -858,6 +918,7 @@ async function ensureSession(
         : null,
     filesystemMode:
       data.session.filesystemMode === "full" ? "full" : "restricted",
+    initialTurnReserved: data.initialTurnReserved === true,
   };
 }
 
@@ -883,6 +944,7 @@ export function useAgentSession(
     instruction: string;
     startedAt?: string;
     clientMessageId?: string;
+    superAgent: boolean;
     viewEpoch: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -908,6 +970,7 @@ export function useAgentSession(
   const sessionRef = useRef<string | null>(null);
   const runStateRef = useRef<AgentRunState>("idle");
   const activeRunIdRef = useRef<string | null>(null);
+  const activeSuperAgentRef = useRef(false);
   const externalThinkingTurnIdsRef = useRef(new Set<string>());
   // A background agent belongs to the conversation that launched it, not to
   // whichever conversation happens to be selected when its start request (or
@@ -935,6 +998,9 @@ export function useAgentSession(
   }>({});
   const [yoloMode] = useYoloMode();
   const yoloSyncRef = useRef<Promise<void>>(Promise.resolve());
+  // Model selections can arrive faster than their persistence requests. Keep
+  // them ordered so every durable boundary matches the click order.
+  const modelChangeWriteRef = useRef<Promise<void>>(Promise.resolve());
   // A preflight pause YOLO is going to answer never becomes a
   // `pendingPermission`: the approval card is bound to that state, so setting
   // it mounts a card for the one frame before the auto-decision lands, which
@@ -1112,6 +1178,7 @@ export function useAgentSession(
               typeof restoredRun.clientMessageId === "string"
                 ? restoredRun.clientMessageId
                 : undefined,
+            superAgent: restoredRun.superAgent === true,
             viewEpoch: viewEpochRef.current,
           });
         } else {
@@ -1152,6 +1219,7 @@ export function useAgentSession(
       commit: (message: AgentMessage) => void,
       onConnected: () => void,
       responseStartedAtMs: number,
+      superAgentEnabled = false,
       reconnectAttempt = 0,
       controller = new AbortController(),
       seenEventFrames = new Set<string>(),
@@ -1223,6 +1291,7 @@ export function useAgentSession(
           commit,
           onConnected,
           responseStartedAtMs,
+          superAgentEnabled,
           reconnectAttempt + 1,
           controller,
           seenEventFrames,
@@ -1359,15 +1428,36 @@ export function useAgentSession(
               );
               continue;
             }
-            // Subagent delegation events feed the "company" org-chart panel. Like
-            // artifact events, re-broadcast on window and skip the chat activity
-            // switch so the tree stays decoupled from the message transcript.
+            // Subagent delegation events always feed the company org chart. A
+            // Super Agent turn also gets a compact live label in its response
+            // header; ordinary agent turns keep the transcript unchanged.
             if (event.type === "subagent.update") {
               window.dispatchEvent(
                 new CustomEvent("breadboard:subagent-event", {
                   detail: { ...payload },
                 }),
               );
+              if (superAgentEnabled) {
+                const subagentId = String(payload.subagentId ?? "specialist");
+                const subagentStatus = String(payload.status ?? "running");
+                const completed = subagentStatus === "done";
+                const failed = subagentStatus === "failed";
+                upsertActivity({
+                  id: `subagent-${subagentId}`,
+                  kind: "subagent",
+                  label:
+                    subagentStatus === "thinking"
+                      ? "Consulting specialist"
+                      : "Running specialist",
+                  detail:
+                    typeof payload.goal === "string" ? payload.goal : undefined,
+                  status: failed ? "failed" : completed ? "completed" : "running",
+                  startedAt: new Date().toISOString(),
+                  ...(failed || completed
+                    ? { completedAt: new Date().toISOString() }
+                    : {}),
+                });
+              }
               continue;
             }
             switch (event.type) {
@@ -1425,7 +1515,10 @@ export function useAgentSession(
               upsertActivity({
                 id: "reasoning",
                 kind: "reasoning",
-                label: String(payload.label ?? "Thinking"),
+                label:
+                  superAgentEnabled && (payload.label ?? "Thinking") === "Thinking"
+                    ? "Planning next step"
+                    : String(payload.label ?? "Thinking"),
                 status: "running",
                 startedAt: new Date().toISOString(),
               });
@@ -1448,18 +1541,22 @@ export function useAgentSession(
               }
               break;
             }
-            case "tool.started":
+            case "tool.started": {
+              const toolName = String(payload.toolName);
               tools.set(String(payload.toolCallId), {
                 toolCallId: String(payload.toolCallId),
-                toolName: String(payload.toolName),
+                toolName,
                 summary: payload.summary as string | undefined,
                 status: "running",
               });
               setActiveTools(Array.from(tools.values()));
               upsertActivity({
                 id: `tool-${String(payload.toolCallId)}`,
-                kind: evidenceKindForTool(String(payload.toolName)),
-                label: activityLabelForTool(String(payload.toolName)),
+                kind: evidenceKindForTool(toolName),
+                label:
+                  (superAgentEnabled
+                    ? superAgentActivityLabelForTool(toolName)
+                    : undefined) ?? activityLabelForTool(toolName),
                 detail: payload.summary as string | undefined,
                 status: "running",
                 startedAt: new Date().toISOString(),
@@ -1467,24 +1564,29 @@ export function useAgentSession(
               });
               flushAssistant();
               break;
+            }
             case "tool.completed": {
               const id = String(payload.toolCallId);
+              const toolName = String(payload.toolName);
               const existing = tools.get(id);
               tools.set(id, {
                 toolCallId: id,
-                toolName: String(payload.toolName),
+                toolName,
                 summary:
                   (payload.summary as string | undefined) ?? existing?.summary,
                 status: payload.success ? "completed" : "failed",
               });
-              if (payload.success && String(payload.toolName) === "save_memory") {
+              if (payload.success && toolName === "save_memory") {
                 assistant = { ...assistant, memoryUpdated: true };
               }
               setActiveTools(Array.from(tools.values()));
               upsertActivity({
                 id: `tool-${id}`,
-                kind: evidenceKindForTool(String(payload.toolName)),
-                label: activityLabelForTool(String(payload.toolName)),
+                kind: evidenceKindForTool(toolName),
+                label:
+                  (superAgentEnabled
+                    ? superAgentActivityLabelForTool(toolName)
+                    : undefined) ?? activityLabelForTool(toolName),
                 detail:
                   (payload.summary as string | undefined) ?? existing?.summary,
                 status: payload.success ? "completed" : "failed",
@@ -1498,6 +1600,17 @@ export function useAgentSession(
             case "agent.launch_requested": {
               const request = parseAgentLaunchRequest(event);
               if (request) {
+                if (superAgentEnabled) {
+                  upsertActivity({
+                    id: `agent-launch-${request.requestId}`,
+                    kind: "subagent",
+                    label: delegatedAgentActivityLabel(request.agentName),
+                    completedLabel: delegatedAgentCompletedLabel(request.agentName),
+                    detail: request.reason || request.brief,
+                    status: "running",
+                    startedAt: new Date().toISOString(),
+                  });
+                }
                 setAgentLaunchRequests((current) =>
                   current.some(
                     (item) => item.requestId === request.requestId,
@@ -1707,6 +1820,7 @@ export function useAgentSession(
       instruction: string,
       startedAt?: string,
       clientMessageId?: string,
+      superAgentEnabled = false,
       viewEpoch = viewEpochRef.current,
     ) => {
       await activeStreamRef.current?.catch(() => undefined);
@@ -1717,6 +1831,7 @@ export function useAgentSession(
       const responseStartedAtMs = Number.isFinite(parsedStartedAt)
         ? parsedStartedAt
         : Date.now();
+      activeSuperAgentRef.current = superAgentEnabled;
       const restoredAssistant = [...messages]
         .reverse()
         .find(
@@ -1781,6 +1896,7 @@ export function useAgentSession(
           commit,
           markConnected,
           responseStartedAtMs,
+          superAgentEnabled,
         );
         adoptedStream = streamPromise;
         streamController = abortRef.current;
@@ -1847,6 +1963,7 @@ export function useAgentSession(
       runToResume.instruction,
       runToResume.startedAt,
       runToResume.clientMessageId,
+      runToResume.superAgent,
       runToResume.viewEpoch,
     );
   }, [adoptDispatchedRun, runToResume]);
@@ -1912,6 +2029,164 @@ export function useAgentSession(
     rememberActiveConversation,
     surface,
   ]);
+
+  const queueModelChange = useCallback(
+    async (model: string): Promise<void> => {
+      const target = [...messagesRef.current]
+        .reverse()
+        .find(
+          (message) =>
+            message.role === "assistant" &&
+            !message.modelChange &&
+            Boolean(message.clientMessageId?.trim()),
+        );
+      if (!target?.clientMessageId) {
+        const modelChange = formatAssistantModelChangeName(model);
+        if (!modelChange) return;
+        setMessages((current) => [
+          ...current,
+          {
+            id: `model-change:${crypto.randomUUID()}`,
+            role: "assistant",
+            content: "",
+            modelChange,
+          },
+        ]);
+        return;
+      }
+
+      const answerClientMessageId = target.clientMessageId;
+      const optimisticLabel = formatAssistantModelChangeName(model);
+      if (!optimisticLabel) return;
+
+      /** Rewrite the boundary list carried by the answer this switch follows. */
+      const reviseBoundaries = (
+        revise: (boundaries: string[]) => string[] | null,
+      ) => {
+        setMessages((current) => {
+          const answerIndex = current.findIndex(
+            (message) =>
+              message.role === "assistant" &&
+              message.clientMessageId === answerClientMessageId,
+          );
+          if (answerIndex < 0) return current;
+          const answer = current[answerIndex];
+          const boundaries = answer.modelChangesAfter?.length
+            ? answer.modelChangesAfter
+            : answer.modelChangeAfter
+              ? [answer.modelChangeAfter]
+              : [];
+          const revised = revise([...boundaries]);
+          if (!revised) return current;
+          const next = [...current];
+          const kept = revised.slice(-50);
+          next[answerIndex] = {
+            ...answer,
+            modelChangesAfter: kept,
+            modelChangeAfter: kept.at(-1),
+          };
+          return next;
+        });
+      };
+
+      const viewEpoch = viewEpochRef.current;
+      // Draw the boundary on this paint. Its label is derived from the model
+      // the person just picked, so the write that follows only confirms what
+      // the transcript already shows -- and that write waits on the
+      // conversation, on SQLite, and on a turn-reservation retry that can back
+      // off for seconds, which is how long the separator used to stay missing.
+      reviseBoundaries((boundaries) => [...boundaries, optimisticLabel]);
+      const withdrawBoundary = () =>
+        reviseBoundaries((boundaries) => {
+          const index = boundaries.lastIndexOf(optimisticLabel);
+          if (index < 0) return null;
+          boundaries.splice(index, 1);
+          return boundaries;
+        });
+      let conversationId: string;
+      try {
+        conversationId = await ensureConversation();
+      } catch (conversationError) {
+        withdrawBoundary();
+        throw conversationError;
+      }
+      const persist = modelChangeWriteRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          let response: Response | null = null;
+          let body: Record<string, unknown> = {};
+          // On an existing chat, the optimistic assistant can paint a moment
+          // before its turn reservation reaches SQLite. Retry only that narrow
+          // race; ownership, validation, and real missing-chat errors remain
+          // terminal.
+          for (const delay of [0, 100, 250, 500, 1_000, 2_000]) {
+            if (delay) {
+              await new Promise<void>((resolve) =>
+                window.setTimeout(resolve, delay),
+              );
+            }
+            response = await fetch(
+              `/api/hermes/sessions/${conversationId}/model-change`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  surface,
+                  model,
+                  afterClientMessageId: target.clientMessageId,
+                }),
+              },
+            );
+            body = await response.json().catch(() => ({}));
+            if (
+              response.ok ||
+              response.status !== 404 ||
+              body.code !== "turn_not_found"
+            ) {
+              break;
+            }
+          }
+          if (!response) {
+            withdrawBoundary();
+            throw new Error("The model change could not be saved.");
+          }
+          if (!response.ok) {
+            withdrawBoundary();
+            throw new Error(
+              typeof body.error === "string"
+                ? body.error
+                : "The model change could not be saved.",
+            );
+          }
+          const modelChange =
+            typeof body.modelChange === "string"
+              ? body.modelChange.trim().slice(0, 160)
+              : "";
+          if (!modelChange) {
+            withdrawBoundary();
+            throw new Error("The model change could not be saved.");
+          }
+          if (
+            viewEpochRef.current !== viewEpoch ||
+            sessionRef.current !== conversationId ||
+            modelChange === optimisticLabel
+          ) {
+            // The stored label matches the one already on screen; the paint
+            // this turn made is the paint the transcript keeps.
+            return;
+          }
+          reviseBoundaries((boundaries) => {
+            const index = boundaries.lastIndexOf(optimisticLabel);
+            if (index < 0) return null;
+            boundaries[index] = modelChange;
+            return boundaries;
+          });
+        });
+      modelChangeWriteRef.current = persist;
+      await persist;
+    },
+    [ensureConversation, surface],
+  );
 
   const beginDelegatedExternalAgentTurn = useCallback(
     (clientMessageId: string) => {
@@ -2073,6 +2348,13 @@ export function useAgentSession(
         if (restored.length !== expectedMessageCount) {
           throw new Error("The external agent turn returned an invalid transcript.");
         }
+        // The external-turn route waits for the first-message title before it
+        // answers. Refresh now rather than when the agent eventually finishes:
+        // long research runs should acquire their real name while they work,
+        // and failed runs should not be stranded as "New chat".
+        if (surface !== "quartz_ai") {
+          notifyHermesSessionsChanged(surface);
+        }
         // The durable write above always targets the launch conversation. Only
         // mirror it into React state when that conversation is still visible;
         // otherwise the newly selected transcript must remain untouched.
@@ -2174,12 +2456,15 @@ export function useAgentSession(
       commit: (message: AgentMessage) => void;
       options?: AgentSendOptions;
       retry: boolean;
+      onTurnPersisted: () => void;
       responseStartedAtMs: number;
       viewEpoch: number;
       currentLocation?: CurrentLocationSnapshot;
     }): Promise<void> => {
       const controller = new AbortController();
-      abortRef.current = controller;
+      // Stop belongs to the chat on screen. A turn whose reader has already
+      // moved on still runs, but it must not take the abort handle with it.
+      if (input.viewEpoch === viewEpochRef.current) abortRef.current = controller;
       let assistant = input.assistant;
       const response = await fetch(
         `/api/hermes/sessions/${input.sessionId}/direct`,
@@ -2211,14 +2496,17 @@ export function useAgentSession(
             : "The model provider could not answer this message.",
         );
       }
-      transition("running");
-      setActivities((current) =>
-        current.map((item) =>
-          item.id === "reasoning" && item.status === "running"
-            ? { ...item, label: "Answering" }
-            : item,
-        ),
-      );
+      input.onTurnPersisted();
+      if (input.viewEpoch === viewEpochRef.current) {
+        transition("running");
+        setActivities((current) =>
+          current.map((item) =>
+            item.id === "reasoning" && item.status === "running"
+              ? { ...item, label: "Answering" }
+              : item,
+          ),
+        );
+      }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -2301,6 +2589,8 @@ export function useAgentSession(
       // surfaces disable the composer for this window, so reaching here means a
       // path that outran the flag -- drop the turn rather than corrupt the view.
       if (loadingSessionRef.current) return;
+      const superAgentEnabled = isSuperAgentEnabled();
+      activeSuperAgentRef.current = superAgentEnabled;
       const viewEpoch = viewEpochRef.current;
       const resumedBlockedTurn =
         blockedTurnRef.current?.text === trimmed ? blockedTurnRef.current : null;
@@ -2336,8 +2626,13 @@ export function useAgentSession(
         requestUsesCurrentLocation(trimmed, priorLocationRequests)
           ? locationPreference.snapshot
           : undefined;
+      // A hidden agent continuation appends to the conversation the delegated
+      // run belongs to; it never regenerates a turn. Branching it would rebuild
+      // the runtime from whatever history the surface happened to be holding
+      // and throw away the context the continuation is meant to speak from.
       const branchHistory =
-        selectedHistory !== undefined
+        selectedHistory !== undefined &&
+        options?.internalAgentContinuation !== true
           ? branchHistoryReferences(selectedHistory)
           : undefined;
       if (resumedBlockedTurn) blockedTurnRef.current = null;
@@ -2414,6 +2709,17 @@ export function useAgentSession(
       const baseline = [...transcript, userMessage, assistant];
       setMessages(baseline);
 
+      let turnPersisted = false;
+      const markTurnPersisted = (persistedSessionId: string) => {
+        if (turnPersisted) return;
+        turnPersisted = true;
+        try {
+          options?.onTurnPersisted?.(persistedSessionId);
+        } catch {
+          // Persistence is authoritative even if a surface cleanup callback fails.
+        }
+      };
+
       const commit = (message: AgentMessage) => {
         if (viewEpochRef.current !== viewEpoch) return;
         setMessages((current) => {
@@ -2431,23 +2737,60 @@ export function useAgentSession(
       > | null = null;
       let streamController: AbortController | null = null;
       try {
-        const ensured = await ensureSession(
-          surface,
-          createOptions,
-          sessionRef.current,
-          { activeDirectory, filesystemMode },
-        );
+        const startingSessionId = sessionRef.current;
+        const initialCreation = {
+          viewEpoch,
+          promise: ensureSession(
+            surface,
+            createOptions,
+            startingSessionId,
+            { activeDirectory, filesystemMode },
+            {
+              clientMessageId: userMessage.id!,
+              text: trimmed,
+              attachments: options?.attachments,
+              branchGroupId: options?.branchGroupId,
+              textSelection: options?.textSelection,
+              internalAgentContinuation:
+                options?.internalAgentContinuation === true,
+            },
+          ),
+        };
+        if (!startingSessionId) {
+          pendingConversationCreationRef.current = initialCreation;
+        }
+        let ensured: Awaited<ReturnType<typeof ensureSession>>;
+        try {
+          ensured = await initialCreation.promise;
+        } finally {
+          if (pendingConversationCreationRef.current === initialCreation) {
+            pendingConversationCreationRef.current = null;
+          }
+        }
         const activeSessionId = ensured.id;
-        if (viewEpochRef.current !== viewEpoch) return;
+        if (ensured.initialTurnReserved) {
+          markTurnPersisted(activeSessionId);
+        }
+        // Everything from here on belongs to the turn, not to the view. Opening
+        // another chat used to drop a message that had already been composed
+        // and painted -- most visibly a regenerate, whose branch-runtime hop
+        // and stream handshake leave seconds for the person to click away, and
+        // whose transcript kept the branch switcher for an attempt that never
+        // reached the server. A turn nobody cancelled is dispatched either way;
+        // only the view updates are held back, and the durable resume path
+        // attaches a viewer when the person comes back to it.
+        const stillViewing = () => viewEpochRef.current === viewEpoch;
         if (stopRequestedRef.current) {
-          transition("cancelled");
+          if (stillViewing()) transition("cancelled");
           return;
         }
-        sessionRef.current = activeSessionId;
-        setSessionId(activeSessionId);
-        rememberActiveConversation(activeSessionId);
-        setActiveDirectory(ensured.activeDirectory);
-        setFilesystemMode(ensured.filesystemMode);
+        if (stillViewing()) {
+          sessionRef.current = activeSessionId;
+          setSessionId(activeSessionId);
+          rememberActiveConversation(activeSessionId);
+          setActiveDirectory(ensured.activeDirectory);
+          setFilesystemMode(ensured.filesystemMode);
+        }
         // Agent mode off: the message goes to the provider instead of the
         // runtime. Read at send time, not at render time, so the switch the user
         // sees is the one that governs the message they just sent.
@@ -2458,7 +2801,8 @@ export function useAgentSession(
             assistant,
             commit,
             options,
-            retry: Boolean(resumedBlockedTurn),
+            retry: Boolean(resumedBlockedTurn) || ensured.initialTurnReserved,
+            onTurnPersisted: () => markTurnPersisted(activeSessionId),
             responseStartedAtMs,
             viewEpoch,
             currentLocation,
@@ -2494,7 +2838,58 @@ export function useAgentSession(
             );
           }
           branchContextId = branchBody.branchContextId;
-          if (viewEpochRef.current !== viewEpoch) return;
+        }
+
+        /** Hand the composed turn to the server. The one authoritative send. */
+        const dispatchTurn = async (): Promise<Response> => {
+          // A rapid toggle followed by Send must not let an older session update
+          // land after this turn's authoritative value.
+          await yoloSyncRef.current;
+          const dispatched = await fetch(
+            `/api/hermes/sessions/${activeSessionId}/messages`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                clientMessageId: userMessage.id,
+                text: trimmed,
+                surface,
+                surfaceContext: {
+                  activeGardenSlug: createOptions?.gardenSlug,
+                  activePageSlug: createOptions?.pageSlug,
+                  selectedText: options?.textSelection?.quote,
+                },
+                model: options?.model,
+                reasoningEffort: options?.reasoningEffort,
+                continuation: options?.continuation,
+                internalAgentContinuation:
+                  options?.internalAgentContinuation === true,
+                attachments: options?.attachments,
+                confirmedPermissionIds: options?.confirmedPermissionIds,
+                retry: Boolean(resumedBlockedTurn) || ensured.initialTurnReserved,
+                branchGroupId: options?.branchGroupId,
+                textSelection: options?.textSelection,
+                branchHistory,
+                branchContextId,
+                // Per-message, like the model and the effort beside it: the switch
+                // as it stood when this message was sent governs this turn only.
+                superAgent: superAgentEnabled,
+                adhdMode: isDirectModeEnabled(),
+                goalMode: isGoalModeEnabled(),
+                yoloMode: isYoloModeEnabled(),
+                currentLocation,
+              }),
+            },
+          );
+          if (dispatched.ok) markTurnPersisted(activeSessionId);
+          return dispatched;
+        };
+
+        // Already looking at another chat: send it without a viewer rather than
+        // opening this chat's event stream over the one on screen.
+        if (!stillViewing()) {
+          await dispatchTurn();
+          return;
         }
         transition("connecting");
 
@@ -2510,6 +2905,7 @@ export function useAgentSession(
           commit,
           markConnected,
           responseStartedAtMs,
+          superAgentEnabled,
         );
         let dispatchAccepted = false;
         let streamFailedBeforeDispatch = false;
@@ -2523,16 +2919,24 @@ export function useAgentSession(
         ownedStream = streamPromise;
         streamController = abortRef.current;
         activeStreamRef.current = streamPromise;
-        await Promise.race([
-          connected,
-          streamPromise.then(() => {
-            throw new Error(
-              "The agent event stream closed before it became ready.",
-            );
-          }),
-        ]);
-        if (viewEpochRef.current !== viewEpoch) {
+        try {
+          await Promise.race([
+            connected,
+            streamPromise.then(() => {
+              throw new Error(
+                "The agent event stream closed before it became ready.",
+              );
+            }),
+          ]);
+        } catch (handshakeError) {
+          // Opening another chat aborts this view's stream. That is a viewer
+          // going away, not a turn being cancelled, so the send still happens
+          // below and the durable resume path finds the run on the way back.
+          if (stillViewing()) throw handshakeError;
+        }
+        if (!stillViewing()) {
           streamController?.abort();
+          await dispatchTurn();
           return;
         }
         if (stopRequestedRef.current) {
@@ -2540,45 +2944,7 @@ export function useAgentSession(
           transition("cancelled");
           return;
         }
-        // A rapid toggle followed by Send must not let an older session update
-        // land after this turn's authoritative value.
-        await yoloSyncRef.current;
-        const sendResponse = await fetch(
-          `/api/hermes/sessions/${activeSessionId}/messages`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              clientMessageId: userMessage.id,
-              text: trimmed,
-              surface,
-              surfaceContext: {
-                activeGardenSlug: createOptions?.gardenSlug,
-                activePageSlug: createOptions?.pageSlug,
-                selectedText: options?.textSelection?.quote,
-              },
-              model: options?.model,
-              reasoningEffort: options?.reasoningEffort,
-              continuation: options?.continuation,
-              internalAgentContinuation:
-                options?.internalAgentContinuation === true,
-              attachments: options?.attachments,
-              confirmedPermissionIds: options?.confirmedPermissionIds,
-              retry: Boolean(resumedBlockedTurn),
-              branchGroupId: options?.branchGroupId,
-              textSelection: options?.textSelection,
-              branchHistory,
-              branchContextId,
-              // Per-message, like the model and the effort beside it: the switch
-              // as it stood when this message was sent governs this turn only.
-              superAgent: isSuperAgentEnabled(),
-              adhdMode: isDirectModeEnabled(),
-              goalMode: isGoalModeEnabled(),
-              yoloMode: isYoloModeEnabled(),
-              currentLocation,
-            }),
-          },
-        );
+        const sendResponse = await dispatchTurn();
         if (viewEpochRef.current !== viewEpoch) {
           streamController?.abort();
           return;
@@ -2687,6 +3053,7 @@ export function useAgentSession(
             instruction: trimmed,
             startedAt: new Date(responseStartedAtMs).toISOString(),
             clientMessageId: userMessage.id,
+            superAgent: superAgentEnabled,
             viewEpoch,
           });
           return;
@@ -2834,7 +3201,14 @@ export function useAgentSession(
         });
         setActiveInstruction(trimmed);
         if (body.mode === "follow_up" && typeof body.runId === "string") {
-          void adoptDispatchedRun(activeSessionId, body.runId, trimmed);
+          void adoptDispatchedRun(
+            activeSessionId,
+            body.runId,
+            trimmed,
+            undefined,
+            undefined,
+            activeSuperAgentRef.current,
+          );
           return true;
         }
         if (
@@ -3285,7 +3659,12 @@ export function useAgentSession(
         optimisticMessages.length > 0 ? optimisticMessages : cached?.messages,
       );
       setMessages(normalizedOptimistic);
-      pendingHistoryOverrideRef.current = normalizedOptimistic;
+      // An empty placeholder is the absence of a history, not a history that is
+      // empty. Storing it as the override would make the next send branch the
+      // runtime onto nothing -- which is how a chat opened cold, whose first
+      // turn is a hidden agent continuation, lost its whole transcript.
+      pendingHistoryOverrideRef.current =
+        normalizedOptimistic.length > 0 ? normalizedOptimistic : null;
       window.localStorage.setItem(storageKey, id);
       window.localStorage.setItem("breadboard-active-conversation", id);
 
@@ -3307,6 +3686,11 @@ export function useAgentSession(
         );
         const restoredMessages = normalizeRestoredMessages(restored.messages);
         setMessages(restoredMessages);
+        // The restore is authoritative and the runtime re-seeds itself from the
+        // same durable rows, so the placeholder override has nothing left to
+        // protect: a send from here reads the restored transcript and needs no
+        // branch. Anything still holding it would only contradict both.
+        pendingHistoryOverrideRef.current = null;
 
         const restoredRun =
           restored.activeRun && typeof restored.activeRun === "object"
@@ -3334,6 +3718,7 @@ export function useAgentSession(
               typeof restoredRun.clientMessageId === "string"
                 ? restoredRun.clientMessageId
                 : undefined,
+            superAgent: restoredRun.superAgent === true,
             viewEpoch,
           });
         } else {
@@ -3393,6 +3778,7 @@ export function useAgentSession(
     openSession,
     refreshSession,
     ensureConversation,
+    queueModelChange,
     beginDelegatedExternalAgentTurn,
     cancelDelegatedExternalAgentTurn,
     previewExternalAgentTurn,

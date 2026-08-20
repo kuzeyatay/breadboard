@@ -7,6 +7,9 @@
 // page inside Breadboard, and the vendored primitives only ever read `isDark`
 // — dialog and sheet use it to pick an overlay tint. So this provides that,
 // plus the class the vendored stylesheet keys its dark palette on.
+//
+// Light is the default because that is Buzz's own: Catppuccin Latte over the
+// cream gradient, not the charcoal a dark-by-default page would show.
 
 import {
   createContext,
@@ -27,14 +30,14 @@ interface BuzzThemeValue {
 }
 
 const BuzzThemeContext = createContext<BuzzThemeValue>({
-  isDark: true,
+  isDark: false,
   setIsDark: () => {},
   toggle: () => {},
 });
 
 export function BuzzThemeProvider({
   children,
-  defaultDark = true,
+  defaultDark = false,
 }: {
   children: ReactNode;
   defaultDark?: boolean;

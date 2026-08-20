@@ -11,8 +11,16 @@
 // reasoning-effort selection, session history with new-chat, skill review, and
 // the proposals reviewer.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
+import { useConfirmDialog } from "@/app/components/confirm-dialog";
+import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
 import { reusableChatAttachments } from "@/lib/chat-attachments";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import AgentRuntimePanel from "./agent-runtime-panel";
@@ -44,11 +52,18 @@ import {
   useAgentSession,
   type ExternalAgentTurnResult,
 } from "./use-agent-session";
-import { chatDraftKey, clearChatDraft, forgetChatDrafts } from "@/lib/conversations/drafts";
+import {
+  chatDraftKey,
+  clearChatDraft,
+  forgetChatDrafts,
+} from "@/lib/conversations/drafts";
 import { useChatDraft } from "./use-chat-draft";
 import { useWorkflowAutomation } from "./use-workflow-automation";
 import { useDeepResearchAgent } from "./use-deep-research-agent";
-import { taskFromDeepResearchCommand } from "@/lib/deep-research/identity.ts";
+import {
+  directDeepResearchInvocation,
+  taskFromDeepResearchIntent,
+} from "@/lib/deep-research/identity.ts";
 import { taskFromOpenCodeCommand } from "@/lib/opencode/identity.ts";
 import { useOpenCodeAgent } from "./use-opencode-agent";
 import { taskFromCodexCommand } from "@/lib/codex/identity.ts";
@@ -123,25 +138,45 @@ function formatChatTime(value: string): string {
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Props) {
+export default function GardenAgentChat({
+  gardenSlug,
+  gardenName,
+  onClose,
+}: Props) {
   const [input, setInput] = useState("");
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [view, setView] = useState<PanelView>("chat");
   const {
-    model,
-    setModel,
-    reasoningEffort,
+    model: selectedModel,
+    setModel: setSelectedModel,
+    reasoningEffort: selectedReasoningEffort,
     setReasoningEffort,
-    intelligenceModes,
+    intelligenceModes: selectedIntelligenceModes,
     failover: modelFailover,
   } = useAssistantIntelligence();
+  const [activeAnswerIntelligence, setActiveAnswerIntelligence] = useState<{
+    model: string;
+    reasoningEffort: typeof selectedReasoningEffort;
+    intelligenceModes: typeof selectedIntelligenceModes;
+  } | null>(null);
+  const model = activeAnswerIntelligence?.model ?? selectedModel;
+  const reasoningEffort =
+    activeAnswerIntelligence?.reasoningEffort ?? selectedReasoningEffort;
+  const intelligenceModes =
+    activeAnswerIntelligence?.intelligenceModes ?? selectedIntelligenceModes;
   const { models } = useAssistantModels({ eager: true });
   const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  // Asked in the app's own sheet; `confirmDialog` is rendered at the foot of
+  // the tray, and portals itself out of this fixed panel.
+  const { confirm, confirmDialog } = useConfirmDialog();
   const deepResearchDispatchingRef = useRef(false);
   const [researchNotice, setResearchNotice] = useState("");
-  const session = useAgentSession("garden_chat", { gardenSlug, title: `${gardenName ?? gardenSlug} chat` });
+  const session = useAgentSession("garden_chat", {
+    gardenSlug,
+    title: `${gardenName ?? gardenSlug} chat`,
+  });
   // Unsent text survives a reload here too. The garden is part of the surface
   // key: an unstarted chat belongs to the garden it was opened from.
   const draftSurface = `garden_chat:${gardenSlug}`;
@@ -153,7 +188,7 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
   });
   const runWorkflowAutomation = useWorkflowAutomation(session);
   const finishExternalAgentTurn = session.finishExternalAgentTurn;
-  const deepResearch = useDeepResearchAgent(session, setResearchNotice);
+  const deepResearch = useDeepResearchAgent(session, setResearchNotice, model);
   const openCode = useOpenCodeAgent(
     session,
     model,
@@ -181,13 +216,37 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
     openCode.launching ||
     ruflo.launching;
   const currentChatActive =
-    busy ||
-    externalRunLaunching ||
-    chatSessionIsActive(null, session.messages);
+    busy || externalRunLaunching || chatSessionIsActive(null, session.messages);
   const externalAgentRunActive = session.messages.some(
     externalAgentRunInFlight,
   );
   const refreshSession = session.refreshSession;
+
+  useLayoutEffect(() => {
+    if (!currentChatActive) setActiveAnswerIntelligence(null);
+  }, [currentChatActive]);
+
+  const changeModel = useCallback(
+    (nextModel: string) => {
+      if (nextModel === selectedModel) return;
+      if (currentChatActive) {
+        setActiveAnswerIntelligence((current) =>
+          current ?? { model, reasoningEffort, intelligenceModes },
+        );
+      }
+      void session.queueModelChange(nextModel).catch(() => undefined);
+      setSelectedModel(nextModel);
+    },
+    [
+      currentChatActive,
+      intelligenceModes,
+      model,
+      reasoningEffort,
+      selectedModel,
+      session,
+      setSelectedModel,
+    ],
+  );
 
   useEffect(() => {
     if (!externalAgentRunActive || view !== "chat") return;
@@ -225,10 +284,20 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
 
   useEffect(() => {
     const listener = (raw: Event) => {
-      const artifact = (raw as CustomEvent<{ id?: string; title?: string; gardenId?: string | null; renderer?: string; sourceSkill?: string | null }>).detail;
+      const artifact = (
+        raw as CustomEvent<{
+          id?: string;
+          title?: string;
+          gardenId?: string | null;
+          renderer?: string;
+          sourceSkill?: string | null;
+        }>
+      ).detail;
       if (!artifact?.id || artifact.gardenId !== gardenSlug) return;
       setView("chat");
-      setInput(`${interactiveVisualizerCommandForArtifact(artifact)}Revise the selected artifact "${artifact.title ?? "artifact"}" (${artifact.id}): `);
+      setInput(
+        `${interactiveVisualizerCommandForArtifact(artifact)}Revise the selected artifact "${artifact.title ?? "artifact"}" (${artifact.id}): `,
+      );
     };
     window.addEventListener(ARTIFACT_REVISE_EVENT, listener);
     return () => window.removeEventListener(ARTIFACT_REVISE_EVENT, listener);
@@ -236,7 +305,9 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
 
   const loadProposals = useCallback(async () => {
     try {
-      const response = await fetch(`/api/gardens/${encodeURIComponent(gardenSlug)}/proposals?status=pending`);
+      const response = await fetch(
+        `/api/gardens/${encodeURIComponent(gardenSlug)}/proposals?status=pending`,
+      );
       if (!response.ok) return;
       const data = await response.json();
       // setState after an async fetch is the endorsed "subscribe to external
@@ -265,7 +336,8 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
   useEffect(() => {
     const listener = () => void loadProposals();
     window.addEventListener(GARDEN_PROPOSALS_CHANGED_EVENT, listener);
-    return () => window.removeEventListener(GARDEN_PROPOSALS_CHANGED_EVENT, listener);
+    return () =>
+      window.removeEventListener(GARDEN_PROPOSALS_CHANGED_EVENT, listener);
   }, [loadProposals]);
 
   // Refresh the recents list between turns so past garden sessions can be
@@ -281,18 +353,23 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           if (cancelled) return;
           setHistory(
             sessions
-              .filter((item): item is HermesSessionSnapshot & { id: string } =>
-                typeof item.id === "string" &&
-                item.id.startsWith("conv_") &&
-                item.gardenId === gardenSlug,
+              .filter(
+                (item): item is HermesSessionSnapshot & { id: string } =>
+                  typeof item.id === "string" &&
+                  item.id.startsWith("conv_") &&
+                  item.gardenId === gardenSlug,
               )
               .map((item) => {
                 return {
                   id: item.id,
-                  title: typeof item.title === "string" ? item.title : "New chat",
-                  updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "",
+                  title:
+                    typeof item.title === "string" ? item.title : "New chat",
+                  updatedAt:
+                    typeof item.updatedAt === "string" ? item.updatedAt : "",
                   gardenId: gardenSlug,
-                  active: Boolean(item.activeRun) || item.externalAgentActive === true,
+                  active:
+                    Boolean(item.activeRun) ||
+                    item.externalAgentActive === true,
                 };
               }),
           );
@@ -310,7 +387,8 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
       if (document.visibilityState === "visible") refreshHistory(true);
     };
     const onSessionsChanged = (event: Event) => {
-      const changedSurface = (event as CustomEvent<{ surface?: string }>).detail?.surface;
+      const changedSurface = (event as CustomEvent<{ surface?: string }>).detail
+        ?.surface;
       if (changedSurface === "garden_chat") refreshHistory(true);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -319,7 +397,10 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
       cancelled = true;
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener(HERMES_SESSIONS_CHANGED_EVENT, onSessionsChanged);
+      window.removeEventListener(
+        HERMES_SESSIONS_CHANGED_EVENT,
+        onSessionsChanged,
+      );
     };
   }, [gardenSlug]);
 
@@ -356,9 +437,21 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
 
   const routeDeepResearchCommand = useCallback(
     (text: string, options: { branchGroupId?: string } = {}): boolean => {
-      const task = taskFromDeepResearchCommand(text);
-      if (task === null) return false;
-      if (deepResearch.launching || deepResearchDispatchingRef.current) return true;
+      const invocation = directDeepResearchInvocation(
+        text,
+        isSuperAgentEnabled(),
+      );
+      if (!invocation) {
+        if (
+          isSuperAgentEnabled() &&
+          taskFromDeepResearchIntent(text) !== null
+        ) {
+          deepResearch.clear();
+        }
+        return false;
+      }
+      if (deepResearch.launching || deepResearchDispatchingRef.current)
+        return true;
       deepResearchDispatchingRef.current = true;
       setResearchNotice("");
       codex.clear();
@@ -366,8 +459,13 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
       ruflo.clear();
       void (async () => {
         try {
-          if (!deepResearch.agent) await deepResearch.select();
-          await deepResearch.launch(task, options);
+          if (invocation.selectAgent && !deepResearch.agent) {
+            await deepResearch.select();
+          }
+          await deepResearch.launch(invocation.task, {
+            ...options,
+            ...(invocation.selectAgent ? {} : { userContent: text }),
+          });
         } finally {
           deepResearchDispatchingRef.current = false;
         }
@@ -479,22 +577,28 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
     [busy, model, reasoningEffort, session],
   );
 
-  const steer = useCallback(async (text: string): Promise<boolean> => {
-    const trimmed = text.trim();
-    if (!trimmed) return false;
-    return session.steer(trimmed);
-  }, [session]);
+  const steer = useCallback(
+    async (text: string): Promise<boolean> => {
+      const trimmed = text.trim();
+      if (!trimmed) return false;
+      return session.steer(trimmed);
+    },
+    [session],
+  );
 
-  const sendQueued = useCallback(async (text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    if (routeDeepResearchCommand(trimmed)) return;
-    if (deepResearch.agent) {
-      await deepResearch.launch(trimmed);
-      return;
-    }
-    await session.send(trimmed, { model, reasoningEffort });
-  }, [deepResearch, model, reasoningEffort, routeDeepResearchCommand, session]);
+  const sendQueued = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      if (routeDeepResearchCommand(trimmed)) return;
+      if (deepResearch.agent) {
+        await deepResearch.launch(trimmed);
+        return;
+      }
+      await session.send(trimmed, { model, reasoningEffort });
+    },
+    [deepResearch, model, reasoningEffort, routeDeepResearchCommand, session],
+  );
 
   const editMessage = useCallback(
     (messageIndex: number, text: string, branchGroupId: string) => {
@@ -529,16 +633,21 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
       }
       void session.send(text, { model, reasoningEffort });
     },
-    [busy, deepResearch, model, reasoningEffort, routeDeepResearchCommand, session],
+    [
+      busy,
+      deepResearch,
+      model,
+      reasoningEffort,
+      routeDeepResearchCommand,
+      session,
+    ],
   );
 
   const retryMessage = useCallback(
     (userMessageIndex: number, branchGroupId: string) => {
       const previousUser = session.messages[userMessageIndex];
       if (previousUser) {
-        if (
-          routeDeepResearchCommand(previousUser.content, { branchGroupId })
-        ) {
+        if (routeDeepResearchCommand(previousUser.content, { branchGroupId })) {
           return;
         }
         void session.send(previousUser.content, {
@@ -580,13 +689,13 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
   // The route stops whatever the chat still has running before it removes the
   // rows, so a streaming response is no longer a reason to refuse the delete.
   async function deleteHistorySession(item: RuntimeHistorySession) {
-    if (
-      !window.confirm(
-        `Delete "${item.title}"? Anything it is still running is stopped, and its messages and any artifacts it produced are removed for good.`,
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: "Delete this chat?",
+      subject: `“${item.title}”`,
+      body: "Anything it is still running is stopped, and its messages and any artifacts it produced are removed for good.",
+      confirmLabel: "Delete chat",
+    });
+    if (!confirmed) return;
     setHistoryError(null);
     const result = await deleteChatSession(item.id);
     if (!result.deleted) {
@@ -611,11 +720,11 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
 
   return (
     <div className="bb-neu-tray neu-surface-raised fixed bottom-4 right-4 z-50 flex h-[76vh] w-[480px] max-w-[95vw] flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-950">
-      <header
-        className="bb-neu-toolbar flex shrink-0 items-center justify-between gap-2 border-b border-gray-800 px-4 py-2.5"
-      >
+      <header className="bb-neu-toolbar flex shrink-0 items-center justify-between gap-2 border-b border-gray-800 px-4 py-2.5">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-gray-100">{gardenName ?? gardenSlug}</p>
+          <p className="truncate text-sm font-semibold text-gray-100">
+            {gardenName ?? gardenSlug}
+          </p>
           <p className="truncate text-[11px] text-gray-500">
             Garden agent · grounded, proposal-only · Hermes
           </p>
@@ -666,7 +775,9 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           >
             Proposals
             {proposals.length > 0 ? (
-              <span className="ml-1 rounded-full bg-amber-600 px-1.5 text-[10px] text-white">{proposals.length}</span>
+              <span className="ml-1 rounded-full bg-amber-600 px-1.5 text-[10px] text-white">
+                {proposals.length}
+              </span>
             ) : null}
           </button>
           <button
@@ -710,12 +821,16 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
             Recents
           </div>
           {historyError ? (
-            <p className="mb-2 px-1 text-[11px] text-[#a45f56]">{historyError}</p>
+            <p className="mb-2 px-1 text-[11px] text-[#a45f56]">
+              {historyError}
+            </p>
           ) : null}
           {historyLoading && history.length === 0 ? (
             <ChatHistoryLoading />
           ) : history.length === 0 ? (
-            <p className="py-8 text-center text-xs text-gray-500">No chats in this garden yet.</p>
+            <p className="py-8 text-center text-xs text-gray-500">
+              No chats in this garden yet.
+            </p>
           ) : (
             <ul className="space-y-0.5">
               {history.map((item) => (
@@ -733,15 +848,19 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
                     className="min-w-0 flex-1 rounded-md px-2.5 py-2 text-left"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-xs font-medium">{item.title}</span>
+                      <span className="truncate text-xs font-medium">
+                        {item.title}
+                      </span>
                       <span className="shrink-0 text-[10px] text-gray-600">
                         {formatChatTime(item.updatedAt)}
                       </span>
                     </div>
                   </button>
-                  {(item.id === session.sessionId
-                    ? currentChatActive
-                    : item.active) ? (
+                  {(
+                    item.id === session.sessionId
+                      ? currentChatActive
+                      : item.active
+                  ) ? (
                     <ActiveChatIcon
                       label={`${item.title} is running`}
                       className="h-3.5 w-3.5"
@@ -771,7 +890,10 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
         // panel the Terminal shows, pointed at this garden.
         <TerminalScheduledPanel surface="garden_chat" gardenSlug={gardenSlug} />
       ) : view === "review" ? (
-        <ReviewSettingsPanel gardenSlug={gardenSlug} onClose={() => setView("chat")} />
+        <ReviewSettingsPanel
+          gardenSlug={gardenSlug}
+          onClose={() => setView("chat")}
+        />
       ) : view === "artifacts" ? (
         <ArtifactPanel
           compact
@@ -784,21 +906,30 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
       ) : view === "proposals" ? (
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
           {proposals.length === 0 ? (
-            <p className="py-8 text-center text-xs text-gray-500">No pending proposals.</p>
+            <p className="py-8 text-center text-xs text-gray-500">
+              No pending proposals.
+            </p>
           ) : (
             <ul className="space-y-3">
               {proposals.map((proposal) => (
-                <li key={proposal.id} className="rounded-lg border border-gray-800 bg-gray-900/50 p-3">
+                <li
+                  key={proposal.id}
+                  className="rounded-lg border border-gray-800 bg-gray-900/50 p-3"
+                >
                   <div className="flex items-center justify-between">
                     <span className="rounded-full border border-gray-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-400">
                       {proposal.kind.replace("_", " ")}
                     </span>
                     {proposal.pageSlug ? (
-                      <span className="truncate text-[10px] text-gray-500">{proposal.pageSlug}</span>
+                      <span className="truncate text-[10px] text-gray-500">
+                        {proposal.pageSlug}
+                      </span>
                     ) : null}
                   </div>
                   {proposal.rationale ? (
-                    <p className="mt-2 text-xs text-gray-300">{proposal.rationale}</p>
+                    <p className="mt-2 text-xs text-gray-300">
+                      {proposal.rationale}
+                    </p>
                   ) : null}
                   <pre className="mt-2 max-h-40 overflow-auto rounded bg-gray-950 p-2 text-[10px] text-gray-400">
                     {JSON.stringify(proposal.payload, null, 2)}
@@ -849,16 +980,18 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           onDeleteMessage={session.deleteMessage}
           onSelectBranch={selectBranch}
           onAbort={() => void session.abort()}
-          onPermissionDecision={(decision) => void session.respondToPermission(decision)}
+          onPermissionDecision={(decision) =>
+            void session.respondToPermission(decision)
+          }
           onRetryMessage={retryMessage}
           onExternalAgentTerminal={handleExternalAgentTerminal}
           placeholder={`Ask about ${gardenName ?? "this garden"}…`}
-          model={model}
+          model={selectedModel}
           models={models}
-          onModelChange={setModel}
-          reasoningEffort={reasoningEffort}
+          onModelChange={changeModel}
+          reasoningEffort={selectedReasoningEffort}
           onReasoningEffortChange={setReasoningEffort}
-          intelligenceModes={intelligenceModes}
+          intelligenceModes={selectedIntelligenceModes}
           modelFailover={modelFailover}
           statusMessage={researchNotice}
           deepResearchAgent={deepResearch.agent}
@@ -911,8 +1044,9 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
               <div>
                 <p className="text-sm font-medium text-gray-200">Quartz AI</p>
                 <p className="mt-1.5 text-xs text-gray-500">
-                  Grounded answers with citations. Ask it to trace a source, compare sections, find gaps, quiz
-                  you, or propose a correction.
+                  Grounded answers with citations. Ask it to trace a source,
+                  compare sections, find gaps, quiz you, or propose a
+                  correction.
                 </p>
               </div>
               <div className="grid w-full max-w-md gap-2">
@@ -932,6 +1066,8 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           }
         />
       )}
+
+      {confirmDialog}
     </div>
   );
 }

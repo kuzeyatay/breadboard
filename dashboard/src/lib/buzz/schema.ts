@@ -19,15 +19,28 @@
 // keeps tools, memory, streaming, attachments and output scrubbing on the one
 // code path they already have, and it is why `conversations` gains a single
 // additive column below rather than a new surface value.
+//
+// Who a room belongs to
+// ---------------------
+// A room belongs to an organization, not to a person — organizations are
+// already Breadboard's group of accounts, and they are exactly what Buzz calls
+// a community. So access is decided by organization membership: any member of
+// the organization can see its public rooms, several people and several agents
+// share one transcript, and read state is per person. A room outlives the
+// account that created it, which is why `created_by_user_id` is nullable and
+// `organization_id` is not.
 
 import type Database from "better-sqlite3";
 
 export function ensureBuzzSchema(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS buzz_rooms (
-      id               INTEGER PRIMARY KEY AUTOINCREMENT,
-      public_id        TEXT NOT NULL UNIQUE,
-      user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      public_id          TEXT NOT NULL UNIQUE,
+      organization_id    INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      -- Nullable on purpose: a room is the organization's, and it must survive
+      -- the account that opened it leaving.
+      created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
       slug             TEXT NOT NULL,
       name             TEXT NOT NULL,
       topic            TEXT NOT NULL DEFAULT '',
@@ -42,15 +55,16 @@ export function ensureBuzzSchema(database: Database.Database): void {
       last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
       created_at       TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE(user_id, slug)
+      UNIQUE(organization_id, slug)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_buzz_rooms_user_activity
-      ON buzz_rooms(user_id, archived_at, last_activity_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_buzz_rooms_org_activity
+      ON buzz_rooms(organization_id, archived_at, last_activity_at DESC, id DESC);
 
-    -- Who is in the room. A member is either the account itself or one agent
-    -- persona from the org-chart roster; both post into the same transcript
-    -- and are addressed the same way, which is the whole point of the model.
+    -- Who is in the room. A member is either an account from the owning
+    -- organization or one agent persona from the org-chart roster; both post
+    -- into the same transcript and are addressed the same way, which is the
+    -- whole point of the model. People and agents are peers here.
     CREATE TABLE IF NOT EXISTS buzz_room_members (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
       room_id         INTEGER NOT NULL REFERENCES buzz_rooms(id) ON DELETE CASCADE,
@@ -78,6 +92,11 @@ export function ensureBuzzSchema(database: Database.Database): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_buzz_room_members_persona
       ON buzz_room_members(room_id, persona_slug)
       WHERE persona_slug IS NOT NULL;
+    -- One row per person per room, so opening a room twice cannot enrol the
+    -- same account under two handles.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_buzz_room_members_user
+      ON buzz_room_members(room_id, user_id)
+      WHERE user_id IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS buzz_room_messages (
       id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,8 +142,9 @@ export function ensureBuzzSchema(database: Database.Database): void {
       PRIMARY KEY (message_id, member_id, emoji)
     );
 
-    -- One read marker per person per room. Agents do not carry unread state:
-    -- they are told what to read when they are asked to speak.
+    -- One read marker per person per room; several people in one room each
+    -- keep their own place. Agents carry no unread state — they are told what
+    -- to read when they are asked to speak.
     CREATE TABLE IF NOT EXISTS buzz_room_reads (
       room_id              INTEGER NOT NULL REFERENCES buzz_rooms(id) ON DELETE CASCADE,
       user_id              INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

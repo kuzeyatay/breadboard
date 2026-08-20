@@ -372,6 +372,42 @@ const vimaxProductionRenderer: ArtifactRenderer = {
 };
 
 /**
+ * A Vox Director production stores the whole film as the artifact source — the
+ * beat map, every poster prompt as the clone's own composer wrote it, the
+ * element and camera plan each shot was animated from, and which backend
+ * actually produced each piece. Reopening a film therefore never needs the
+ * model again, and the structure is verified before publication because a
+ * malformed production would open as a film that still looked authoritative.
+ * The MP4 and the posters are ordinary video and image artifacts, referenced
+ * by id, so nothing here is a viewer only this page can open.
+ */
+const voxDirectorProductionRenderer: ArtifactRenderer = {
+  id: "vox-director-production",
+  kind: "data",
+  mimeType: "application/vnd.breadboard.vox-director-production+json",
+  extension: ".json",
+  async validate(content) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return { ok: false, error: "A Vox Director production must contain valid JSON." };
+    }
+    const { parseStoredProduction } = await import("../vox-director/schemas.ts");
+    const result = parseStoredProduction(parsed);
+    return result.ok
+      ? { ok: true }
+      : { ok: false, error: `${result.error} ${result.issues.slice(0, 3).join("; ")}`.trim() };
+  },
+  async render(content, context) {
+    const outputPath = path.join(context.directory, context.filename);
+    atomicWrite(outputPath, `${JSON.stringify(JSON.parse(content), null, 2)}
+`);
+    return { outputPath, previewPath: outputPath, mimeType: this.mimeType };
+  },
+};
+
+/**
  * A social post stores the post itself — copy, network, character ceiling,
  * artwork and calendar slot — because a post is something to finish rather than
  * something to read. Its viewer is the post studio, so the structure is checked
@@ -478,6 +514,7 @@ const registry = new Map<ArtifactRendererId, ArtifactRenderer>([
   ["hardware-blueprint", hardwareBlueprintRenderer],
   ["parametric-cad", parametricCadRenderer],
   ["vimax-production", vimaxProductionRenderer],
+  ["vox-director-production", voxDirectorProductionRenderer],
   ["socials-manager-post", socialsManagerPostRenderer],
   ["gadget", gadgetRenderer],
 ]);

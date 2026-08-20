@@ -1,4 +1,5 @@
 import db from "../db.ts";
+import type Database from "better-sqlite3";
 import type {
   Organization,
   OrganizationMember,
@@ -104,8 +105,11 @@ export function sharedOrganizationIds(
   return rows.map((row) => row.id);
 }
 
-function readMembers(organizationId: number): OrganizationMember[] {
-  const rows = db
+function readMembers(
+  organizationId: number,
+  database: Database.Database = db,
+): OrganizationMember[] {
+  const rows = database
     .prepare(
       `SELECT m.user_id, m.role, m.joined_at, u.username, u.email
        FROM organization_members m
@@ -134,8 +138,9 @@ function readMembers(organizationId: number): OrganizationMember[] {
 
 function readPendingInvites(
   organizationId: number,
+  database: Database.Database = db,
 ): OrganizationPendingInvite[] {
-  const rows = db
+  const rows = database
     .prepare(
       `SELECT i.id, i.role, i.created_at, u.username, u.email
        FROM organization_invites i
@@ -160,8 +165,11 @@ function readPendingInvites(
   }));
 }
 
-export function listOrganizations(userId: number): Organization[] {
-  const rows = db
+export function listOrganizations(
+  userId: number,
+  database: Database.Database = db,
+): Organization[] {
+  const rows = database
     .prepare(
       `SELECT o.id, o.name, o.created_at, m.role
        FROM organization_members m
@@ -181,8 +189,8 @@ export function listOrganizations(userId: number): Organization[] {
     name: row.name,
     createdAt: row.created_at,
     role: normalizeRole(row.role),
-    members: readMembers(row.id),
-    invites: readPendingInvites(row.id),
+    members: readMembers(row.id, database),
+    invites: readPendingInvites(row.id, database),
   }));
 }
 
@@ -339,6 +347,76 @@ export function respondToInvite(
   });
 
   respond();
+}
+
+/**
+ * Put an account into an organization outright, no invite round trip.
+ *
+ * The invite flow exists for the case where the other person decides; this is
+ * the case where the organization's own admin does. Buzz needs it because
+ * bringing someone into a room is how people join a community now — there is
+ * no separate screen to accept an invitation on — and a room member who is not
+ * an organization member cannot read the room they were just added to.
+ *
+ * Idempotent: already being in the organization is a success, not a clash, so
+ * two people adding the same colleague at once cannot fail the second one.
+ */
+export function addOrganizationMember(
+  organizationId: number,
+  actingUserId: number,
+  targetUserId: number,
+  role: OrganizationRole = "member",
+): void {
+  requireRole(organizationId, actingUserId, "admin");
+  db.prepare(
+    `INSERT INTO organization_members (organization_id, user_id, role)
+     VALUES (?, ?, ?)
+     ON CONFLICT(organization_id, user_id) DO NOTHING`,
+  ).run(organizationId, targetUserId, normalizeRole(role));
+}
+
+/**
+ * Accounts matching a query, for the "add someone" pickers.
+ *
+ * Deliberately the whole account table rather than one organization's roster:
+ * this is how a person is brought into a community in the first place, so a
+ * search that could only find people already in it would never add anyone.
+ * Answers the two things a picker shows and nothing else — no email hashes, no
+ * timestamps, no role.
+ */
+/** One account, by id — the name a picker's chosen row belongs to. */
+export function getAccount(
+  userId: number,
+): { userId: number; username: string } | null {
+  const row = db
+    .prepare("SELECT id, username FROM users WHERE id = ?")
+    .get(userId) as { id: number; username: string } | undefined;
+  return row ? { userId: row.id, username: row.username } : null;
+}
+
+export function searchAccounts(
+  query: string,
+  options: { excludeUserIds?: readonly number[]; limit?: number } = {},
+): Array<{ userId: number; username: string }> {
+  const needle = query.trim();
+  const excluded = new Set(options.excludeUserIds ?? []);
+  const rows = db
+    .prepare(
+      `SELECT id, username FROM users
+       WHERE (@needle = '' OR username LIKE @like ESCAPE '\\' OR email LIKE @like ESCAPE '\\')
+       ORDER BY username
+       LIMIT @limit`,
+    )
+    .all({
+      needle,
+      // The wildcards are ours; whatever was typed stays literal.
+      like: `%${needle.replace(/[\\%_]/g, (character) => `\\${character}`)}%`,
+      limit: (options.limit ?? 20) + excluded.size,
+    }) as Array<{ id: number; username: string }>;
+  return rows
+    .filter((row) => !excluded.has(row.id))
+    .slice(0, options.limit ?? 20)
+    .map((row) => ({ userId: row.id, username: row.username }));
 }
 
 export function setMemberRole(

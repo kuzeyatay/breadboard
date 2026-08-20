@@ -212,7 +212,9 @@ test("both Recents lists delete a chat behind a confirmation", () => {
   assert.match(historyClient, /\/api\/hermes\/sessions\/\$\{encodeURIComponent\(sessionId\)\}/);
   for (const [label, source] of [["garden chat", gardenChat], ["terminal", terminal]]) {
     assert.match(source, /deleteChatSession/, label);
-    assert.match(source, /window\.confirm\(/, label);
+    // Asked in the app's own sheet, not the shell's dialog.
+    assert.match(source, /await confirm\(\{/, label);
+    assert.doesNotMatch(source, /window\.confirm\(/, label);
     // A failed delete must not silently drop the row from the list.
     assert.match(source, /if \(!result\.deleted\) \{[\s\S]*?setHistoryError/, label);
     // The confirmation says what the delete now does to work still in flight.
@@ -245,8 +247,10 @@ test("the terminal deletes a batch of chats behind one confirmation, and reports
   assert.match(terminal, /onDeleteChats=\{\(selected\) => void deleteHistorySessions\(selected\)\}/);
   assert.match(terminal, /if \(items\.length === 0\) return;/);
   // One confirmation for the batch, naming what is about to go.
-  assert.match(terminal, /items\.length === 1 \? `"\$\{items\[0\]\.title\}"` : `\$\{items\.length\} chats`/);
-  assert.match(terminal, /window\.confirm\(\s*`Delete \$\{subject\}\?/);
+  assert.match(terminal, /const single = items\.length === 1;/);
+  assert.match(terminal, /title: single \? "Delete this chat\?" : `Delete \$\{items\.length\} chats\?`/);
+  assert.match(terminal, /subject: single \? `“\$\{items\[0\]\.title\}”` : null/);
+  assert.doesNotMatch(terminal, /window\.confirm\(\s*`Delete /);
 
   // A delete can still fail for other reasons, so a partial result is normal:
   // only the chats that actually went leave the list, and the rest are counted

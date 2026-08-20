@@ -1,0 +1,201 @@
+/*
+ * Where Buzz meets Breadboard.
+ *
+ * `buzz-theme.css` is generated from upstream and gets overwritten every time
+ * the vendor script runs, so nothing Breadboard-specific may live there. This
+ * file holds the handful of rules that exist only because Buzz is running
+ * inside this app rather than inside its own Tauri window.
+ */
+
+/*
+ * Buzz assumes it owns the window. In the desktop shell it does not: the
+ * Electron caption strip sits above the page, and a `100vh` workspace is
+ * exactly that strip taller than the space it has — which is what put a
+ * scrollbar down the side of a chat app that should never scroll as a whole.
+ *
+ * Breadboard already solves this for pages that are direct children of `body`
+ * (`html[data-breadboard-desktop] body > .h-screen`). The Buzz shell sits
+ * inside the sidebar provider's wrapper, so it needs the same subtraction
+ * addressed to it by name.
+ */
+.buzz-host-shell {
+  height: 100vh;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+html[data-breadboard-desktop="true"] .buzz-host-shell {
+  height: calc(100vh - var(--breadboard-titlebar-height));
+}
+
+/*
+ * The provider's wrapper is a flex container in its own right. Left at its
+ * defaults it establishes a second, taller box around the workspace and the
+ * rails overflow it sideways; the workspace owns the layout, so the wrapper is
+ * flattened to a plain full-size box.
+ */
+.buzz-host-shell > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+/*
+ * Breadboard styles headings and bold text globally:
+ *
+ *   h1, h2, h3, h4 { color: var(--quartz-dark); font-family: var(--font-schibsted) … }
+ *   strong, b      { color: var(--quartz-dark) }
+ *
+ * Both reach into Buzz, and `--quartz-dark` follows Breadboard's own theme. On
+ * an account running Breadboard dark that ink is nearly white, so every room
+ * title, panel heading and bold word rendered pale-on-cream — and in Schibsted
+ * rather than Inter, which is what made the type look soft next to the real
+ * app. Buzz owns its own typography, so inside the page both are handed back.
+ */
+.buzz-root :is(h1, h2, h3, h4, h5, h6) {
+  color: inherit;
+  font-family: inherit;
+  letter-spacing: inherit;
+}
+
+.buzz-root :is(strong, b) {
+  color: inherit;
+}
+
+/*
+ * Buzz's gradient is painted by an absolutely-positioned layer at `-z-10`,
+ * sitting behind the rails and the content card. Upstream that layer is a
+ * child of the app surface, whose own fill is transparent; here `.buzz-root`
+ * inherits the `body { background-color: hsl(var(--buzz-background)) }` rule
+ * from the vendored sheet, so it paints an opaque Latte grey of its own.
+ *
+ * Without a stacking context on `.buzz-root`, a negative-z child is hoisted
+ * into the nearest ancestor that has one — the document — and lands *under*
+ * that fill. Every rail and panel then rendered flat #eff1f5 and the
+ * cream-to-slate wash the app is recognisable by never appeared at all.
+ *
+ * `isolation` makes `.buzz-root` the stacking context, which puts the layer
+ * exactly where the markup says it is: above the page's own background,
+ * below everything drawn in it.
+ */
+.buzz-root {
+  isolation: isolate;
+}
+
+/*
+ * Buzz's light surface is warm paper, not Catppuccin's blue-grey.
+ *
+ * Upstream's Latte base (`#eff1f5`) is a cool grey. Inside Breadboard it sits
+ * directly against the window chrome — the caption strip and the native button
+ * cluster beside it, both painted `--paper-surface` (#faf7ef) — and against
+ * Buzz's own cream gradient in the gutters around the card. A cool card in a
+ * warm frame reads as two materials in one window.
+ *
+ * So the three tokens that mean "the page's own paper" take Breadboard's paper
+ * instead. Everything layered on top — muted, accent, border, the greys that
+ * separate one row from the next — is untouched: those are the contrast
+ * Catppuccin tuned against a light base, and they still work against this one.
+ *
+ * Dark is already warmer than Latte's blue (`--buzz-content-dark`), so it is
+ * left alone; the override is scoped to light for that reason.
+ */
+.buzz-root:not(.dark) {
+  /* `--paper-surface: #faf7ef` in globals.css, as bare HSL for `hsl()`. */
+  --buzz-background: 44 52% 96%;
+  --card: 44 52% 96%;
+  --popover: 44 52% 96%;
+}
+
+/*
+ * Where Buzz's page meets the desktop window's own chrome.
+ *
+ * Two edges have the same problem. Along the top, Electron's caption strip
+ * runs the full width but only its left part is ours — Windows paints the
+ * minimise/maximise/close cluster through `titleBarOverlay`, whose colour is
+ * fixed in the main process and knows nothing about which page is open. Down
+ * the right, the 8px gutter beside the content card shows Buzz's own gradient,
+ * which meets that same paper-coloured chrome at the corner.
+ *
+ * Both are resolved the same way: ramp from Buzz's colour to the shell's,
+ * arriving exactly where the shell takes over. The two ends come from
+ * different themes and that is not a mistake — the start is Buzz's own
+ * light/dark, the end is Breadboard's, because the chrome beside it is painted
+ * from Breadboard's palette. An account can run one dark and the other light.
+ */
+html[data-breadboard-desktop="true"]:has(.buzz-root) {
+  /* Buzz's `--buzz-gradient-light-top`. */
+  --buzz-caption-start: #e6e6b6;
+  /* `BREADBOARD_TITLE_BAR.color` in desktop/src/main/window-options.ts. */
+  --buzz-caption-end: #faf7ef;
+}
+
+html[data-breadboard-desktop="true"]:has(.buzz-root.dark) {
+  --buzz-caption-start: #4a4616;
+}
+
+html[data-breadboard-desktop="true"][data-theme="dark"]:has(.buzz-root) {
+  --buzz-caption-end: #171916;
+}
+
+html[data-breadboard-desktop="true"]:has(.buzz-root) {
+  /*
+   * Where the content card starts: the community rail (`w-[68px]`) plus the
+   * room rail (`w-60`). Everything left of this shows the page's own gradient
+   * behind the strip; everything right of it is covered by the card.
+   */
+  --buzz-rail-width: 308px;
+}
+
+/*
+ * The top strip, fading rightwards.
+ *
+ * Chromium publishes where the native cluster begins as
+ * `env(titlebar-area-width)` — the width of the draggable region, everything
+ * left of the buttons — so the ramp lands on the shell's colour exactly at the
+ * seam. The fallback fades across the whole strip, which is what a window with
+ * no overlay wants.
+ *
+ * The ramp is held flat until the content card starts. Above the rails the
+ * page's own gradient is at its top stop and unshaded, so a strip that had
+ * already begun lightening drew a visible step along its whole left third —
+ * the two surfaces meet there and have to agree. Past that point the card is
+ * opaque and there is nothing left to disagree with, so the fade has the width
+ * of the transcript to travel and lands on the shell's colour by the buttons.
+ */
+html[data-breadboard-desktop="true"]:has(.buzz-root) .desktop-title-bar {
+  background: linear-gradient(
+    to right,
+    var(--buzz-caption-start),
+    var(--buzz-caption-start) var(--buzz-rail-width),
+    var(--buzz-caption-end) env(titlebar-area-width, 100%)
+  );
+}
+
+/*
+ * The right gutter, fading upwards.
+ *
+ * `mr-2` on the content card leaves 8px of Buzz's gradient down the window's
+ * right edge, and at the top that gutter used to butt straight into the pale
+ * caption strip. Fading it bottom-to-top into the same colour turns that
+ * corner into a continuous ramp rather than a step.
+ *
+ * Drawn by the gradient layer's own `::after` so it needs no extra element:
+ * the layer is `absolute inset-0` inside `.buzz-root`'s stacking context, and
+ * a pseudo-element declared last paints over the three gradient layers that
+ * are its siblings while staying behind the rails and the card.
+ */
+html[data-breadboard-desktop="true"] .buzz-theme-gradient-layer::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  /*
+   * The gutter is the card's `mr-2` — 8px — but the card is `rounded-2xl`, and
+   * its top-right corner cuts a 16px wedge out of itself that the background
+   * shows through. At 8px the ramp stopped short of that wedge and left a
+   * green notch in the corner against the pale strip above it. The extra 16px
+   * is covered by the card everywhere else, so widening costs nothing.
+   */
+  width: calc(0.5rem + 1rem);
+  background: linear-gradient(to top, transparent, var(--buzz-caption-end));
+}

@@ -276,10 +276,11 @@ export interface CliproxyStatus {
   providers: Array<{
     id: string;
     label: string;
+    vendorLabel: string;
     description: string;
     flow: "redirect" | "device";
     connected: boolean;
-    /** Vendors that can hold only one account, so no second sign-in is offered. */
+    /** Vendors that can hold only one account, so their second sign-in is disabled. */
     singleAccount: boolean;
   }>;
   accounts: CliproxyAccount[];
@@ -336,6 +337,7 @@ export async function readStatus(): Promise<CliproxyStatus> {
     providers: CLIPROXY_PROVIDERS.map((provider) => ({
       id: provider.id,
       label: provider.label,
+      vendorLabel: provider.vendorLabel,
       description: provider.description,
       flow: provider.flow,
       connected: accounts.some((account) => account.provider === provider.id),

@@ -265,24 +265,17 @@ function CapabilitiesSection({
 }: {
   capabilities: NonNullable<VerificationSummary["capabilities"]>;
 }) {
-  const { inventory, superAgent, used } = capabilities;
+  const { used } = capabilities;
   return (
     <div className="mb-2.5">
       <SectionLabel>Capabilities used</SectionLabel>
       {/*
-        What was on the table, kept strictly separate from what came off it. A
-        super-agent turn is handed the whole catalogue, and letting that number
-        sit next to the used rows without saying which is which would read as a
-        claim to have used all of it.
+        What was on the table is deliberately not reported. A super-agent turn
+        is handed the whole catalogue, so "24 skills were available" describes
+        the mode the user switched on, not this answer — and it sat at the top
+        of the panel saying so on every single turn. Only what actually came off
+        the table is listed below.
       */}
-      {superAgent ? (
-        <p className="mt-1 text-[10px] text-[var(--ink-muted)]">
-          Super agent
-          {inventory
-            ? ` — ${inventory.skills} skills, ${inventory.connections} connections and ${inventory.workflows} automations were available to choose from.`
-            : " chose from your whole catalogue."}
-        </p>
-      ) : null}
       {CAPABILITY_GROUPS.map(({ kind, title }) => {
         const rows = used.filter((use) => use.kind === kind);
         if (!rows.length) return null;
@@ -319,14 +312,24 @@ export default function EvidencePanel({
   const sources = collectSources(verification.evidence);
   // A capability section with nothing in it is a heading plus a denial; the
   // absence of the section says the same thing without spending three lines.
-  const capabilities =
-    verification.capabilities &&
-    (verification.capabilities.superAgent || verification.capabilities.used.length)
-      ? verification.capabilities
-      : null;
+  // Super agent alone no longer opens it: with the inventory line gone there is
+  // nothing left for a turn that used none of what it was offered to show.
+  const capabilities = verification.capabilities?.used.length
+    ? verification.capabilities
+    : null;
   const agents = verification.externalAgents?.length
     ? verification.externalAgents
     : null;
+  const carriedAgent = agents?.find((agent) => agent.carried) ?? null;
+  // The verdict describes the claims in the answer against this turn's own
+  // evidence, and a hand-back turn has none: it made no calls, it reported a
+  // worker's finished run. "No external verification needed" is the wrong thing
+  // to say about that answer, so name what actually produced it. The state
+  // itself is left alone — it is a fact about the turn, not a headline.
+  const title =
+    carriedAgent && verification.state === "not_applicable"
+      ? `Answered by ${carriedAgent.agentName}`
+      : LABELS[verification.state];
 
   return (
     <section
@@ -342,7 +345,7 @@ export default function EvidencePanel({
       <div className="flex shrink-0 items-baseline justify-between gap-3 border-b border-[var(--line)] px-3 py-2">
         <div className="min-w-0">
           <h3 className="truncate font-medium text-[var(--ink-heading)]">
-            {LABELS[verification.state]}
+            {title}
           </h3>
           {verification.evidence.length ? (
             <p className="mt-0.5 text-[10px] text-[var(--ink-muted)]">
@@ -429,7 +432,14 @@ export default function EvidencePanel({
           </div>
         ) : (
           <p className="text-[var(--ink-muted)]">
-            No external tool evidence was recorded for this answer.
+            {/*
+              A hand-back turn makes no calls of its own, and flatly denying
+              evidence on one hid the fact that everything it says came out of
+              a runtime agent's run. Name where the calls actually live.
+            */}
+            {agents?.some((agent) => agent.carried)
+              ? "This turn made no calls of its own — the work was done by the runtime agent below, and its tool calls belong to that run."
+              : "No external tool evidence was recorded for this answer."}
           </p>
         )}
 
@@ -529,8 +539,18 @@ export default function EvidencePanel({
                       {agent.command}
                     </span>
                   </span>
+                  {/*
+                    A carried delegation is the one this answer is made of: the
+                    worker ran on the previous turn and this turn exists to
+                    report it. Saying "delegated" there would describe a launch
+                    this turn never made.
+                  */}
                   <span className="shrink-0 text-[10px] text-[var(--ink-muted)]">
-                    {agent.requiresApproval ? "needs approval" : "delegated"}
+                    {agent.carried
+                      ? "answered by"
+                      : agent.requiresApproval
+                        ? "needs approval"
+                        : "delegated"}
                   </span>
                 </li>
               ))}

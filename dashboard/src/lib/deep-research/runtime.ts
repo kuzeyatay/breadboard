@@ -125,8 +125,13 @@ async function startLocalService(env: NodeJS.ProcessEnv): Promise<boolean> {
   if (await responds(serviceUrl)) return true;
 
   if (!runtime.child || runtime.child.exitCode !== null) {
+    // Next's development worker is replaced during hot reloads. Keep a research
+    // run alive across that transient parent exit; the next worker reuses the
+    // authenticated loopback service after its health check.
+    const surviveWorkerRestart = env.NODE_ENV === "development";
     const child = spawn(process.execPath, [engine.tsx, engine.entry], {
       cwd: engine.root,
+      detached: surviveWorkerRestart,
       windowsHide: true,
       stdio: "ignore",
       env: {
@@ -156,12 +161,19 @@ async function startLocalService(env: NodeJS.ProcessEnv): Promise<boolean> {
       },
     });
     runtime.child = child;
-    child.once("exit", () => {
+    child.once("exit", (code, signal) => {
+      if (code !== 0 || signal) {
+        console.error(
+          `[deep-research] local service exited (code=${code ?? "none"}, signal=${signal ?? "none"})`,
+        );
+      }
       if (runtime.child === child) runtime.child = null;
     });
-    child.once("error", () => {
+    child.once("error", (error) => {
+      console.error(`[deep-research] local service failed to start: ${error.message}`);
       if (runtime.child === child) runtime.child = null;
     });
+    if (surviveWorkerRestart) child.unref();
   }
 
   // `tsx` plus the engine imports can take several seconds on a cold Windows

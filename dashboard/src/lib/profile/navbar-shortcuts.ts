@@ -3,10 +3,10 @@
 // A navbar is chrome every page in its area shows, so a seat in it is
 // expensive: each entry is a permanent cost paid by everyone. The Work timer
 // earned its seat by default — it opens and closes in place rather than
-// stealing the tab — while World monitor stays off until asked for. Plan keeps
-// its existing default seat, but can be removed from the same profile control.
-// Fast-read is the same bargain on the garden and PDF navbars: a reading mode
-// most sessions never reach for, so it waits to be asked for.
+// stealing the tab. Plan keeps its existing default seat, but can be removed
+// from the same profile control. Fast-read is the same bargain on the garden
+// and PDF navbars: a reading mode most sessions never reach for, so it waits to
+// be asked for.
 //
 // Nothing here touches a database: the storage lives in
 // `navbar-shortcuts-store.ts` so the shape and the rules can be exercised
@@ -16,7 +16,6 @@ import type Database from "better-sqlite3";
 
 export interface NavbarShortcuts {
   workTimer: boolean;
-  worldMonitor: boolean;
   plan: boolean;
   fastRead: boolean;
   buzz: boolean;
@@ -49,12 +48,6 @@ export const NAVBAR_SHORTCUTS: readonly NavbarShortcutDefinition[] = [
       "A pomodoro timer that opens and closes in place; the full Paint Pomodoro page is one click further.",
   },
   {
-    key: "worldMonitor",
-    label: "World monitor",
-    href: "/worldmonitor",
-    description: "The world console — reported events beside measured climate and hazard data.",
-  },
-  {
     key: "plan",
     label: "Plan",
     href: "/plan",
@@ -62,10 +55,10 @@ export const NAVBAR_SHORTCUTS: readonly NavbarShortcutDefinition[] = [
   },
   {
     key: "buzz",
-    label: "Buzz",
+    label: "Organization",
     href: "/buzz",
     description:
-      "Chat rooms where you and your agent personas talk in one shared transcript, with threads.",
+      "Rooms where your team and their agents talk in one shared transcript, with threads.",
   },
   {
     key: "fastRead",
@@ -76,12 +69,11 @@ export const NAVBAR_SHORTCUTS: readonly NavbarShortcutDefinition[] = [
 ];
 
 /**
- * Preserve the existing navbar: Work timer and Plan on, World monitor and
- * Fast-read opt-in.
+ * Preserve the existing navbar: Work timer and Plan on, Fast-read and Buzz
+ * opt-in.
  */
 export const DEFAULT_NAVBAR_SHORTCUTS: NavbarShortcuts = {
   workTimer: true,
-  worldMonitor: false,
   plan: true,
   fastRead: false,
   buzz: false,
@@ -116,7 +108,6 @@ export function ensureNavbarShortcutSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS navbar_shortcut_settings (
       user_id       INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       work_timer    INTEGER NOT NULL DEFAULT 0,
-      world_monitor INTEGER NOT NULL DEFAULT 0,
       plan           INTEGER NOT NULL DEFAULT 1,
       fast_read     INTEGER NOT NULL DEFAULT 0,
       buzz          INTEGER NOT NULL DEFAULT 0,
@@ -146,9 +137,9 @@ export function ensureNavbarShortcutSchema(database: Database.Database): void {
       "ALTER TABLE navbar_shortcut_settings ADD COLUMN buzz INTEGER NOT NULL DEFAULT 0",
     );
   }
-  // A `map_page` column survives on databases written before the map shortcut
-  // was withdrawn. It is left alone: it defaults to 0, so writes that no longer
-  // name it still satisfy its NOT NULL.
+  // `map_page` and `world_monitor` columns survive on databases written before
+  // those shortcuts were withdrawn. They are left alone: both default to 0, so
+  // writes that no longer name them still satisfy their NOT NULL.
 }
 
 export function readNavbarShortcuts(
@@ -157,12 +148,11 @@ export function readNavbarShortcuts(
 ): NavbarShortcuts {
   const row = database
     .prepare(
-      "SELECT work_timer, world_monitor, plan, fast_read, buzz FROM navbar_shortcut_settings WHERE user_id = ?",
+      "SELECT work_timer, plan, fast_read, buzz FROM navbar_shortcut_settings WHERE user_id = ?",
     )
     .get(userId) as
     | {
         work_timer: number;
-        world_monitor: number;
         plan: number;
         fast_read: number;
         buzz: number;
@@ -173,7 +163,6 @@ export function readNavbarShortcuts(
   if (!row) return { ...DEFAULT_NAVBAR_SHORTCUTS };
   return {
     workTimer: row.work_timer === 1,
-    worldMonitor: row.world_monitor === 1,
     plan: row.plan === 1,
     fastRead: row.fast_read === 1,
     buzz: row.buzz === 1,
@@ -188,11 +177,10 @@ export function writeNavbarShortcuts(
   const next = applyNavbarShortcutPatch(readNavbarShortcuts(database, userId), patch);
   database
     .prepare(
-      `INSERT INTO navbar_shortcut_settings (user_id, work_timer, world_monitor, plan, fast_read, buzz, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO navbar_shortcut_settings (user_id, work_timer, plan, fast_read, buzz, updated_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(user_id) DO UPDATE SET
          work_timer = excluded.work_timer,
-         world_monitor = excluded.world_monitor,
          plan = excluded.plan,
          fast_read = excluded.fast_read,
          buzz = excluded.buzz,
@@ -201,7 +189,6 @@ export function writeNavbarShortcuts(
     .run(
       userId,
       next.workTimer ? 1 : 0,
-      next.worldMonitor ? 1 : 0,
       next.plan ? 1 : 0,
       next.fastRead ? 1 : 0,
       next.buzz ? 1 : 0,

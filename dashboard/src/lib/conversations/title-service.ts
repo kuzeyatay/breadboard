@@ -13,6 +13,72 @@ export const CONVERSATION_TITLE_INSTRUCTION =
 
 const TITLE_TIMEOUT_MS = 15_000;
 const MAX_PROMPT_CHARS = 4_000;
+const TITLE_STOP_WORDS = new Set([
+  "a",
+  "about",
+  "am",
+  "an",
+  "and",
+  "are",
+  "at",
+  "be",
+  "been",
+  "being",
+  "can",
+  "considered",
+  "could",
+  "did",
+  "do",
+  "does",
+  "explain",
+  "for",
+  "from",
+  "had",
+  "has",
+  "have",
+  "how",
+  "i",
+  "if",
+  "in",
+  "into",
+  "is",
+  "it",
+  "its",
+  "may",
+  "me",
+  "might",
+  "must",
+  "my",
+  "of",
+  "on",
+  "or",
+  "our",
+  "please",
+  "should",
+  "tell",
+  "than",
+  "that",
+  "the",
+  "then",
+  "these",
+  "this",
+  "those",
+  "to",
+  "was",
+  "we",
+  "were",
+  "what",
+  "when",
+  "where",
+  "which",
+  "who",
+  "why",
+  "will",
+  "with",
+  "would",
+  "you",
+  "your",
+]);
 
 interface ChatCompletionPayload {
   choices?: Array<{
@@ -59,6 +125,40 @@ export function normalizeGeneratedConversationTitle(value: unknown): string | nu
   return title || null;
 }
 
+/**
+ * A local last resort for naming a chat when the small title completion is
+ * unavailable. It deliberately favors the beginning and end of a longer
+ * prompt: questions usually put the subject first and its scope last.
+ */
+export function fallbackConversationTitle(firstPrompt: string): string | null {
+  const words = firstPrompt
+    .replace(/(?:^|\s)\/[^\s]+/g, " ")
+    .match(/[\p{L}\p{N}][\p{L}\p{N}'â€™.+#-]*/gu)
+    ?.filter((word) => !TITLE_STOP_WORDS.has(word.toLocaleLowerCase())) ?? [];
+  const unique = words.filter(
+    (word, index) =>
+      words.findIndex(
+        (candidate) =>
+          candidate.toLocaleLowerCase() === word.toLocaleLowerCase(),
+      ) === index,
+  );
+  if (unique.length === 0) return null;
+
+  const selected =
+    unique.length <= 4 ? unique : [...unique.slice(0, 2), ...unique.slice(-2)];
+  while (selected.length < 3) {
+    selected.push(selected.length === 1 ? "Chat" : "Discussion");
+  }
+  return selected
+    .map((word) => {
+      if (/^[A-Z0-9.+#-]{2,}$/.test(word)) return word;
+      return `${word.charAt(0).toLocaleUpperCase()}${word.slice(1)}`;
+    })
+    .join(" ")
+    .slice(0, 80)
+    .trim();
+}
+
 function completionUrl(baseUrl: string): string {
   const normalized = normalizeChatmockBaseUrl(baseUrl) ?? localChatmockBaseUrl();
   return `${normalized}/chat/completions`;
@@ -78,6 +178,7 @@ export async function generateConversationTitle(input: {
 }): Promise<string | null> {
   const firstPrompt = input.firstPrompt.trim();
   if (!firstPrompt) return null;
+  const fallbackTitle = fallbackConversationTitle(firstPrompt);
   const model = normalizeAssistantModelId(input.model) ?? DEFAULT_MODEL;
   const controller = new AbortController();
   const timeout = setTimeout(
@@ -120,14 +221,16 @@ export async function generateConversationTitle(input: {
         signal: controller.signal,
       },
     );
-    if (!response.ok) return null;
+    if (!response.ok) return fallbackTitle;
     const payload = await response.json() as ChatCompletionPayload;
-    return normalizeGeneratedConversationTitle(
-      payload.choices?.[0]?.message?.content,
+    return (
+      normalizeGeneratedConversationTitle(
+        payload.choices?.[0]?.message?.content,
+      ) ?? fallbackTitle
     );
   } catch {
     // Titling is helpful metadata, never a reason to fail the actual message.
-    return null;
+    return fallbackTitle;
   } finally {
     clearTimeout(timeout);
   }

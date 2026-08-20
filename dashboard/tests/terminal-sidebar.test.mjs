@@ -25,6 +25,8 @@ const source = (relativePath) =>
 
 const sidebar = source("../src/app/components/hermes/terminal-sidebar.tsx");
 const terminal = source("../src/app/components/hermes/dashboard-agent-terminal.tsx");
+const agentSession = source("../src/app/components/hermes/use-agent-session.ts");
+const globalCss = source("../src/app/globals.css");
 const historyClient = source("../src/app/components/hermes/history-client.tsx");
 const searchDialog = source("../src/app/components/hermes/chat-search-dialog.tsx");
 const uploadsPanel = source("../src/app/components/hermes/uploads-panel.tsx");
@@ -75,6 +77,28 @@ test("per-chat actions are hover-revealed and cover pin, rename and delete", () 
   // Renaming happens in the row rather than in a dialog, and Escape restores.
   assert.match(sidebar, /if \(renaming\) \{/);
   assert.match(sidebar, /event\.key === "Escape"[\s\S]{0,160}setRenaming\(false\)/);
+});
+
+test("automatic titles replace New chat immediately and type into the rail", () => {
+  assert.match(terminal, /title: "New chat", temporary: temporaryChat/);
+  assert.doesNotMatch(terminal, /title: "Assistant conversation", temporary: temporaryChat/);
+  assert.match(terminal, /let refreshQueued = false;/);
+  assert.match(terminal, /if \(force\) refreshQueued = true;/);
+
+  const append = agentSession.slice(
+    agentSession.indexOf("const appendExternalAgentTurn = useCallback"),
+    agentSession.indexOf("const finishExternalAgentTurn = useCallback"),
+  );
+  assert.match(append, /notifyHermesSessionsChanged\(surface\)/);
+  assert.match(sidebar, /PLACEHOLDER_CHAT_TITLES/);
+  assert.match(sidebar, /data-title-renaming=\{titleTransition\.typing \? "true" : undefined\}/);
+  assert.match(sidebar, /"--bb-title-character-count": Math\.max\(1, chat\.title\.length\)/);
+  assert.match(globalCss, /@keyframes bb-chat-title-type/);
+  assert.match(globalCss, /steps\(var\(--bb-title-character-count, 1\), end\)/);
+  assert.match(
+    globalCss,
+    /@media \(prefers-reduced-motion: reduce\)[\s\S]*?bb-chat-title-fade/,
+  );
 });
 
 test("the Recents header hides a menu of its own behind the same hover", () => {

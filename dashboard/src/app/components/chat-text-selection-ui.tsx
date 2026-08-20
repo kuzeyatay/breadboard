@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -295,6 +296,8 @@ export function InlineSelectionAnswerPopover({
   startedAt,
   onClose,
   onDelete,
+  onStop,
+  onAskAgain,
 }: {
   anchor: FloatingAnchorRect;
   question?: string;
@@ -305,15 +308,40 @@ export function InlineSelectionAnswerPopover({
   startedAt?: string;
   onClose: () => void;
   onDelete: () => void;
+  onStop?: () => void;
+  onAskAgain?: (question: string) => void;
 }) {
   const popoverRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const [stopRequested, setStopRequested] = useState(false);
+  // `null` means "not editing". The question is copied into a draft only when
+  // the person clicks it, so an arriving answer never overwrites their typing.
+  const [draft, setDraft] = useState<string | null>(null);
+  const editing = draft !== null;
+
+  // A retry opens a new run, and the square belongs to that run rather than to
+  // the answer that was stopped before it. The reset is taken during render
+  // rather than in an effect so the new run never paints a frame of a
+  // spent, disabled Stop.
+  const [runWasPending, setRunWasPending] = useState(pending);
+  if (runWasPending !== pending) {
+    setRunWasPending(pending);
+    if (pending) setStopRequested(false);
+  }
 
   useEffect(() => {
     function closeOnOutsidePointer(event: PointerEvent) {
       if (!popoverRef.current?.contains(event.target as Node)) onClose();
     }
     function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      // Escape belongs to an open editor first: closing the whole popover would
+      // throw away a half-typed question without having been asked to.
+      if (editing) {
+        setDraft(null);
+        return;
+      }
+      onClose();
     }
     document.addEventListener("pointerdown", closeOnOutsidePointer);
     window.addEventListener("keydown", closeOnEscape);
@@ -321,7 +349,19 @@ export function InlineSelectionAnswerPopover({
       document.removeEventListener("pointerdown", closeOnOutsidePointer);
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [onClose]);
+  }, [editing, onClose]);
+
+  useEffect(() => {
+    if (editing) editorRef.current?.focus();
+  }, [editing]);
+
+  function submitEdit() {
+    const next = (draft ?? "").trim();
+    setDraft(null);
+    // An unchanged question is a cancelled edit, not a reason to spend a turn.
+    if (!next || next === question) return;
+    onAskAgain?.(next);
+  }
 
   if (typeof document === "undefined") return null;
   const width = Math.min(580, window.innerWidth - 32);
@@ -347,13 +387,59 @@ export function InlineSelectionAnswerPopover({
       aria-label="Answer about highlighted text"
     >
       <div className="flex items-start justify-between gap-4">
-        {question ? (
+        {editing ? (
           <div className="bb-inline-answer-question neu-inset min-w-0 flex-1 rounded-2xl border px-4 py-3">
+            <div className="flex items-start gap-2.5">
+              <SelectionArrowIcon className="mt-0.5 h-4 w-4 shrink-0 text-[var(--botanical)]" />
+              <textarea
+                ref={editorRef}
+                value={draft ?? ""}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    submitEdit();
+                  }
+                }}
+                rows={2}
+                className="w-full resize-none bg-transparent text-sm leading-6 text-[var(--ink-heading)] outline-none"
+                aria-label="Edit question about highlighted text"
+              />
+            </div>
+            <div className="mt-2 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDraft(null)}
+                className="rounded-full px-3 py-1 text-xs font-medium text-[var(--ink-muted)] transition hover:text-[var(--ink-heading)]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitEdit}
+                disabled={!onAskAgain || !(draft ?? "").trim()}
+                className="rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] px-3 py-1 text-xs font-medium text-[var(--paper-raised)] transition hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)]"
+              >
+                Ask again
+              </button>
+            </div>
+          </div>
+        ) : question ? (
+          // The question is the edit affordance: clicking it reopens the words
+          // that were asked, and sending replaces the answer under them.
+          <button
+            type="button"
+            onClick={() => setDraft(question)}
+            disabled={!onAskAgain}
+            className="bb-inline-answer-question neu-inset min-w-0 flex-1 rounded-2xl border px-4 py-3 text-left transition disabled:cursor-default"
+            title={onAskAgain ? "Edit this question" : undefined}
+            aria-label={onAskAgain ? "Edit this question" : undefined}
+          >
             <div className="flex items-start gap-2.5">
               <SelectionArrowIcon className="mt-0.5 h-4 w-4 shrink-0 text-[var(--botanical)]" />
               <p className="text-sm leading-6 text-[var(--ink-heading)]">{question}</p>
             </div>
-          </div>
+          </button>
         ) : (
           <div className="min-w-0 flex-1" />
         )}
@@ -376,16 +462,39 @@ export function InlineSelectionAnswerPopover({
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m3 0-1 13H7L6 7" />
             </svg>
           </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="neu-button-icon rounded-full border p-2 text-[var(--ink-muted)] hover:text-[var(--ink-heading)]"
-            aria-label="Close answer"
-          >
-            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden>
-              <path strokeLinecap="round" d="m6 6 12 12M18 6 6 18" />
-            </svg>
-          </button>
+          {/* One slot, two jobs. An "Ask here" turn is stopped from its own
+              popover rather than from the composer - the chat below is not the
+              thing that is working - and once the run is over the same corner
+              becomes the retry for the answer that was stopped. */}
+          {pending ? (
+            <button
+              type="button"
+              onClick={() => {
+                setStopRequested(true);
+                onStop?.();
+              }}
+              disabled={!onStop || stopRequested}
+              className="neu-button-icon flex items-center justify-center rounded-full border p-2 text-[var(--ink-heading)] disabled:cursor-wait disabled:opacity-55"
+              aria-label={stopRequested ? "Stopping this answer" : "Stop this answer"}
+              aria-busy={stopRequested}
+              title={stopRequested ? "Stopping..." : "Stop"}
+            >
+              <span className="block h-3.5 w-3.5 rounded-[3px] bg-current" aria-hidden />
+            </button>
+          ) : question ? (
+            <button
+              type="button"
+              onClick={() => onAskAgain?.(question)}
+              disabled={!onAskAgain}
+              className="neu-button-icon rounded-full border p-2 text-[var(--ink-muted)] hover:text-[var(--ink-heading)] disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label="Ask this question again"
+              title="Retry"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M20 6v5h-5M4 18v-5h5m9.7-3A7 7 0 0 0 6.1 7.1L4 11m16 2-2.1 3.9A7 7 0 0 1 5.3 14" />
+              </svg>
+            </button>
+          ) : null}
         </div>
       </div>
       <div className={question ? "mt-4" : "mt-1"}>
@@ -404,7 +513,9 @@ export function InlineSelectionAnswerPopover({
           </div>
         ) : pending ? null : (
           <p className="text-sm leading-6 text-[var(--ink-muted)]">
-            Ask a question in the chat field to attach an answer to this highlight.
+            {question
+              ? "This highlight has no answer yet - retry to ask the question again."
+              : "Ask a question in the chat field to attach an answer to this highlight."}
           </p>
         )}
       </div>

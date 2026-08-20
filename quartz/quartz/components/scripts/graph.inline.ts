@@ -83,6 +83,10 @@ function stableUnit(value: string): number {
   return stableHash(value) / 4294967295
 }
 
+function connectionId(link: LinkData): string {
+  return `${link.source.id}\u0000${link.target.id}`
+}
+
 function clusterPrefixForSlug(slug: SimpleSlug): string | null {
   if (slug === "/" || slug.startsWith("tags/")) return null
   const cleaned = slug.replace(/\/$/, "")
@@ -217,6 +221,22 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
         target: nodes.find((n) => n.id === l.target)!,
       })),
   }
+  const degrees = new Map<SimpleSlug, number>()
+  for (const link of graphData.links) {
+    degrees.set(link.source.id, (degrees.get(link.source.id) ?? 0) + 1)
+    degrees.set(link.target.id, (degrees.get(link.target.id) ?? 0) + 1)
+  }
+  const labelBudget = graphData.nodes.length > 700 ? 42 : graphData.nodes.length > 300 ? 64 : 90
+  const labelPriorityIds = new Set(
+    [...graphData.nodes]
+      .sort((left, right) =>
+        (degrees.get(right.id) ?? 0) - (degrees.get(left.id) ?? 0) ||
+        left.text.localeCompare(right.text),
+      )
+      .slice(0, labelBudget)
+      .map((node) => node.id),
+  )
+  labelPriorityIds.add(slug)
 
   const width = graph.offsetWidth
   const height = Math.max(graph.offsetHeight, 250)
@@ -301,19 +321,36 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
     },
     {} as Record<(typeof cssVars)[number], string>,
   )
-  const graphColors = {
-    current: "#93c5fd",
-    source: "#67e8f9",
-    textbook: "#86efac",
-    legacyTopic: "#bbf7d0",
-    savedChat: "#f9a8d4",
-    internal: "#94a3b8",
-    tag: "#facc15",
-    neutral: computedStyleMap["--gray"],
-    edge: "#334155",
-    edgeActive: "#cbd5e1",
-    search: "#fde047",
-  }
+  const isDarkTheme = document.documentElement.getAttribute("saved-theme") === "dark"
+  const graphColors = isDarkTheme
+    ? {
+        current: "#60a5fa",
+        source: "#22d3ee",
+        textbook: "#4ade80",
+        legacyTopic: "#a3e635",
+        savedChat: "#f472b6",
+        internal: "#cbd5e1",
+        tag: "#facc15",
+        neutral: computedStyleMap["--gray"],
+        edge: "#92a198",
+        edgeActive: "#f4f1e8",
+        edgeSelected: "#60a5fa",
+        search: "#facc15",
+      }
+    : {
+        current: "#2563eb",
+        source: "#0e7490",
+        textbook: "#15803d",
+        legacyTopic: "#4d7c0f",
+        savedChat: "#be185d",
+        internal: "#475569",
+        tag: "#a16207",
+        neutral: computedStyleMap["--gray"],
+        edge: "#40544b",
+        edgeActive: "#0f1a16",
+        edgeSelected: "#1d4ed8",
+        search: "#a16207",
+      }
 
   // calculate color
   const color = (d: NodeData) => {
@@ -357,13 +394,19 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
 
   let hoveredNodeId: string | null = null
   let selectedGraphNodeId: string | null = null
+  let selectedGraphConnectionId: string | null = null
   let hoveredNeighbours: Set<string> = new Set()
   let searchQuery = ""
   let searchedNodeIds: Set<string> = new Set()
   let searchedNeighbours: Set<string> = new Set()
-  let currentZoomLabelAlpha = 0
+  let currentZoomLabelAlpha = isGlobalGraph ? 0.18 : 0.34
   const linkRenderData: LinkRenderData[] = []
   const nodeRenderData: NodeRenderData[] = []
+
+  function restingLabelAlpha(nodeId: SimpleSlug): number {
+    if (labelPriorityIds.has(nodeId)) return Math.max(0.72, currentZoomLabelAlpha)
+    return currentZoomLabelAlpha >= 0.55 ? currentZoomLabelAlpha * 0.72 : 0
+  }
 
   function fieldsForSearch(node: NodeData): string {
     return [node.text, node.id, node.sourceFile, ...(node.locations ?? []), ...(node.tags ?? [])]
@@ -446,22 +489,29 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
     const tweenGroup = new TweenGroup()
 
     for (const l of linkRenderData) {
+      const isSelected = connectionId(l.simulationData) === selectedGraphConnectionId
       const touchesSearch =
         searchedNodeIds.has(l.simulationData.source.id) ||
         searchedNodeIds.has(l.simulationData.target.id)
       const touchesTag =
         l.simulationData.source.id.startsWith("tags/") ||
         l.simulationData.target.id.startsWith("tags/")
-      let alpha = isOverviewGraph ? (touchesTag ? 0.12 : 0.24) : 1
+      let alpha = isOverviewGraph ? (touchesTag ? 0.3 : 0.5) : 0.72
 
-      if (searchQuery) {
+      if (isSelected) {
+        alpha = 1
+      } else if (searchQuery) {
         alpha = touchesSearch ? 0.95 : 0.035
       } else if (hoveredNodeId) {
-        alpha = l.active ? 0.95 : 0.06
+        alpha = l.active ? 1 : 0.1
+      } else if (selectedGraphConnectionId) {
+        alpha = 0.12
       }
 
       l.color =
-        searchQuery && touchesSearch
+        isSelected
+          ? graphColors.edgeSelected
+          : searchQuery && touchesSearch
           ? graphColors.search
           : l.active
             ? graphColors.edgeActive
@@ -486,12 +536,28 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
 
     const defaultScale = 1 / scale
     const activeScale = defaultScale * 1.1
+    const selectedConnection = linkRenderData.find(
+      (link) => connectionId(link.simulationData) === selectedGraphConnectionId,
+    )?.simulationData
     for (const n of nodeRenderData) {
       const nodeId = n.simulationData.id
+      const isConnectionEndpoint = selectedConnection
+        ? selectedConnection.source.id === nodeId || selectedConnection.target.id === nodeId
+        : false
       const isSearchHit = searchedNodeIds.has(nodeId)
       const isSearchNeighbour = searchedNeighbours.has(nodeId)
 
-      if (searchQuery && isSearchHit) {
+      if (isConnectionEndpoint) {
+        tweenGroup.add(
+          new Tweened<Text>(n.label).to(
+            {
+              alpha: 1,
+              scale: { x: activeScale, y: activeScale },
+            },
+            100,
+          ),
+        )
+      } else if (searchQuery && isSearchHit) {
         tweenGroup.add(
           new Tweened<Text>(n.label).to(
             {
@@ -535,7 +601,7 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
         tweenGroup.add(
           new Tweened<Text>(n.label).to(
             {
-              alpha: currentZoomLabelAlpha,
+              alpha: restingLabelAlpha(nodeId),
               scale: { x: defaultScale, y: defaultScale },
             },
             100,
@@ -557,19 +623,29 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
     tweens.get("hover")?.stop()
 
     const tweenGroup = new TweenGroup()
+    const selectedConnection = linkRenderData.find(
+      (link) => connectionId(link.simulationData) === selectedGraphConnectionId,
+    )?.simulationData
     for (const n of nodeRenderData) {
       const nodeId = n.simulationData.id
+      const isConnectionEndpoint = selectedConnection
+        ? selectedConnection.source.id === nodeId || selectedConnection.target.id === nodeId
+        : false
       const isSearchHit = searchedNodeIds.has(nodeId)
       const isSearchNeighbour = searchedNeighbours.has(nodeId)
       let alpha = 1
 
-      if (searchQuery) {
+      if (isConnectionEndpoint) {
+        alpha = 1
+      } else if (searchQuery) {
         alpha = isSearchHit ? 1 : isSearchNeighbour ? 0.52 : 0.14
       } else if (hoveredNodeId !== null && focusOnHover) {
         alpha = n.active ? 1 : 0.2
+      } else if (selectedGraphConnectionId) {
+        alpha = 0.24
       }
 
-      n.searchRing.alpha = isSearchHit ? 0.95 : 0
+      n.searchRing.alpha = isSearchHit || isConnectionEndpoint ? 0.95 : 0
       tweenGroup.add(new Tweened<Graphics>(n.gfx, tweenGroup).to({ alpha }, 200))
     }
 
@@ -620,12 +696,24 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
       interactive: false,
       eventMode: "none",
       text: n.text,
-      alpha: 0,
+      alpha: restingLabelAlpha(nodeId),
       anchor: { x: 0.5, y: 1.2 },
       style: {
-        fontSize: fontSize * 15,
+        fontSize: fontSize * 16,
         fill: computedStyleMap["--dark"],
         fontFamily: computedStyleMap["--bodyFont"],
+        fontWeight: "500",
+        stroke: {
+          color: computedStyleMap["--light"],
+          width: 2.5,
+          join: "round",
+        },
+        dropShadow: {
+          color: isDarkTheme ? "#000000" : "#ffffff",
+          alpha: 0.5,
+          blur: 2,
+          distance: 0,
+        },
       },
       resolution: window.devicePixelRatio * 4,
     })
@@ -651,13 +739,13 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
       cursor: "pointer",
     })
       .circle(0, 0, radius + (isTagNode ? 2 : 5))
-      .fill({ color: nodeColor, alpha: isTagNode ? 0.05 : 0.16 })
+      .fill({ color: nodeColor, alpha: isTagNode ? 0.12 : 0.24 })
       .circle(0, 0, radius)
       .fill({
         color: isTagNode ? computedStyleMap["--light"] : nodeColor,
-        alpha: isTagNode ? 0.22 : 0.92,
+        alpha: isTagNode ? 0.34 : 0.98,
       })
-      .stroke({ width: isTagNode ? 1.5 : 1, color: nodeColor, alpha: isTagNode ? 0.7 : 0.9 })
+      .stroke({ width: isTagNode ? 1.7 : 1.4, color: nodeColor, alpha: 1 })
       .on("pointerover", (e) => {
         updateHoverInfo(e.target.label)
         oldLabelOpacity = label.alpha
@@ -691,7 +779,19 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
   }
 
   for (const l of graphData.links) {
-    const gfx = new Graphics({ interactive: false, eventMode: "none" })
+    const id = connectionId(l)
+    const gfx = new Graphics({
+      interactive: true,
+      eventMode: "static",
+      cursor: "pointer",
+      label: id,
+    }).on("pointertap", (event) => {
+      event.stopPropagation()
+      selectedGraphConnectionId = selectedGraphConnectionId === id ? null : id
+      selectedGraphNodeId = null
+      renderPixiFromD3()
+      emitGraphContext(null)
+    })
     linkContainer.addChild(gfx)
 
     const linkRenderDatum: LinkRenderData = {
@@ -707,6 +807,9 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
 
   let currentTransform = zoomIdentity
   function emitGraphContext(selectedNodeSlug: string | null) {
+    const selectedConnection = linkRenderData.find(
+      (link) => connectionId(link.simulationData) === selectedGraphConnectionId,
+    )?.simulationData
     const directNeighborSlugs = selectedNodeSlug
       ? graphData.links.flatMap((link) => {
           if (link.source.id === selectedNodeSlug) return [link.target.id]
@@ -716,12 +819,19 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
       : []
     const detail = {
       selectedNodeSlug,
+      selectedConnection: selectedConnection
+        ? {
+            sourceSlug: selectedConnection.source.id,
+            targetSlug: selectedConnection.target.id,
+            type: "link",
+          }
+        : null,
       visibleNodeSlugs: graphData.nodes.map((node) => node.id).slice(0, 24),
       directNeighborSlugs,
       activeCluster: scopeCluster ?? scopeClusters[0] ?? clusterPrefixForSlug(slug) ?? "",
       filters: searchQuery ? [searchQuery] : [],
       depth: configuredDepth < 0 ? 3 : configuredDepth,
-      relationshipTypes: ["link"],
+      relationshipTypes: selectedConnection ? ["link:selected"] : ["link"],
       viewport: {
         x: currentTransform.x,
         y: currentTransform.y,
@@ -767,6 +877,7 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
           // if the time between mousedown and mouseup is short, we consider it a click
           if ((isGlobalGraph || clickToNavigate) && Date.now() - dragStartTime < 500) {
             const node = graphData.nodes.find((n) => n.id === event.subject.id) as NodeData
+            selectedGraphConnectionId = null
             selectedGraphNodeId = node.id
             emitGraphContext(node.id)
             const targ = resolveRelative(fullSlug, node.id)
@@ -778,6 +889,7 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
     for (const node of nodeRenderData) {
       node.gfx.on("click", () => {
         if (!isGlobalGraph && !clickToNavigate) return
+        selectedGraphConnectionId = null
         selectedGraphNodeId = node.simulationData.id
         emitGraphContext(node.simulationData.id)
         const targ = resolveRelative(fullSlug, node.simulationData.id)
@@ -802,15 +914,12 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
 
           // zoom adjusts opacity of labels too
           const scale = transform.k * opacityScale
-          let scaleOpacity = Math.max((scale - 1) / 3.75, 0)
+          const baseline = isGlobalGraph ? 0.18 : 0.34
+          const scaleOpacity = Math.min(1, Math.max(baseline, (scale - 0.55) / 1.65))
           currentZoomLabelAlpha = scaleOpacity
-          const activeNodes = nodeRenderData
-            .filter((n) => n.active || searchedNodeIds.has(n.simulationData.id))
-            .flatMap((n) => n.label)
-
-          for (const label of labelsContainer.children) {
-            if (!activeNodes.includes(label)) {
-              label.alpha = scaleOpacity
+          for (const node of nodeRenderData) {
+            if (!node.active && !searchedNodeIds.has(node.simulationData.id)) {
+              node.label.alpha = restingLabelAlpha(node.simulationData.id)
             }
           }
         }),
@@ -832,11 +941,19 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
 
     for (const l of linkRenderData) {
       const linkData = l.simulationData
+      const selected = connectionId(linkData) === selectedGraphConnectionId
+      const x1 = linkData.source.x! + width / 2
+      const y1 = linkData.source.y! + height / 2
+      const x2 = linkData.target.x! + width / 2
+      const y2 = linkData.target.y! + height / 2
       l.gfx.clear()
-      l.gfx.moveTo(linkData.source.x! + width / 2, linkData.source.y! + height / 2)
       l.gfx
-        .lineTo(linkData.target.x! + width / 2, linkData.target.y! + height / 2)
-        .stroke({ alpha: l.alpha, width: 1, color: l.color })
+        .moveTo(x1, y1)
+        .lineTo(x2, y2)
+        .stroke({ alpha: 0.001, width: 14, color: l.color })
+        .moveTo(x1, y1)
+        .lineTo(x2, y2)
+        .stroke({ alpha: l.alpha, width: selected ? 3 : 1.25, color: l.color })
     }
 
     tweens.forEach((t) => t.update(time))

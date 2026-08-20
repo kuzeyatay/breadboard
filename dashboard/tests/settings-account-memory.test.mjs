@@ -511,11 +511,18 @@ test("a second ChatGPT account can be added, listed, and removed", () => {
 });
 
 test("adding an account happens in the account list, not somewhere else", () => {
-  // Both buttons used to scroll to the other section, and neither signed
-  // anything in. The picker starts the real flow for the vendor pressed.
+  // The old page-level picker and refresh controls are gone. Each account row
+  // owns Add another beside Switch and starts the real flow for that provider.
   assert.doesNotMatch(accountPanel, /onOpenProviders/);
-  assert.match(accountPanel, /aria-expanded=\{adding\}/);
-  assert.match(accountPanel, /startSubscriptionLogin\(provider\.id, provider\.label, null\)/);
+  assert.doesNotMatch(accountPanel, /aria-expanded=\{adding\}/);
+  assert.doesNotMatch(accountPanel, /Add an account/);
+  assert.doesNotMatch(accountPanel, />\s*Refresh\s*</);
+  assert.match(accountPanel, /onClick=\{\(\) => void addChatgptAccount\(\)\}/);
+  assert.match(
+    accountPanel,
+    /startSubscriptionLogin\(\s*subscription\.provider,\s*subscription\.vendorLabel,\s*null,/,
+  );
+  assert.match(accountPanel, /"Switch"[\s\S]*"Add another"[\s\S]*Sign out/);
 });
 
 test("the memory panel shows the summary and per-chat memory, and nothing else", () => {

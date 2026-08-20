@@ -20,16 +20,18 @@ type Feedback = "up" | "down" | null;
 type SpeechState = "idle" | "loading" | "playing";
 type DictationState = "idle" | "preparing";
 
+export interface AssistantResponseBranch {
+  current: number;
+  total: number;
+  onPrevious: () => void;
+  onNext: () => void;
+}
+
 interface Props {
   content: string;
   onRetry?: () => void;
   verification?: VerificationSummary;
-  branch?: {
-    current: number;
-    total: number;
-    onPrevious: () => void;
-    onNext: () => void;
-  };
+  branch?: AssistantResponseBranch;
 }
 
 function contentKey(content: string): string {
@@ -86,6 +88,50 @@ async function speechError(response: Response): Promise<string> {
 
 const actionClass =
   "rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] focus:outline-none focus:ring-2 focus:ring-[var(--line-strong)]";
+
+export function AssistantResponseBranchNavigation({
+  branch,
+  className = "",
+}: {
+  branch: AssistantResponseBranch;
+  className?: string;
+}) {
+  if (branch.total <= 1) return null;
+  return (
+    <div
+      className={`${className} flex items-center gap-0.5 text-xs text-[var(--ink-muted)]`}
+      aria-label={`Response branch ${branch.current} of ${branch.total}`}
+    >
+      <button
+        type="button"
+        onClick={branch.onPrevious}
+        disabled={branch.current <= 1}
+        className="rounded-md p-1 transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] disabled:opacity-30"
+        aria-label="Previous response branch"
+        title="Previous branch"
+      >
+        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+          <path strokeLinecap="round" strokeLinejoin="round" d="m15 18-6-6 6-6" />
+        </svg>
+      </button>
+      <span className="min-w-8 text-center tabular-nums">
+        {branch.current}/{branch.total}
+      </span>
+      <button
+        type="button"
+        onClick={branch.onNext}
+        disabled={branch.current >= branch.total}
+        className="rounded-md p-1 transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] disabled:opacity-30"
+        aria-label="Next response branch"
+        title="Next branch"
+      >
+        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+          <path strokeLinecap="round" strokeLinejoin="round" d="m9 18 6-6-6-6" />
+        </svg>
+      </button>
+    </div>
+  );
+}
 
 /**
  * Where a message's action row belongs: under everything the message produced.
@@ -543,39 +589,8 @@ export default function AssistantMessageActions({
             )
           : null}
       </div>
-      {branch && branch.total > 1 ? (
-        <div
-          className="ml-1 flex items-center gap-0.5 text-xs text-[var(--ink-muted)]"
-          aria-label={`Response branch ${branch.current} of ${branch.total}`}
-        >
-          <button
-            type="button"
-            onClick={branch.onPrevious}
-            disabled={branch.current <= 1}
-            className="rounded-md p-1 transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] disabled:opacity-30"
-            aria-label="Previous response branch"
-            title="Previous branch"
-          >
-            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
-              <path strokeLinecap="round" strokeLinejoin="round" d="m15 18-6-6 6-6" />
-            </svg>
-          </button>
-          <span className="min-w-8 text-center tabular-nums">
-            {branch.current}/{branch.total}
-          </span>
-          <button
-            type="button"
-            onClick={branch.onNext}
-            disabled={branch.current >= branch.total}
-            className="rounded-md p-1 transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] disabled:opacity-30"
-            aria-label="Next response branch"
-            title="Next branch"
-          >
-            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
-              <path strokeLinecap="round" strokeLinejoin="round" d="m9 18 6-6-6-6" />
-            </svg>
-          </button>
-        </div>
+      {branch ? (
+        <AssistantResponseBranchNavigation branch={branch} className="ml-1" />
       ) : null}
     </div>
   );

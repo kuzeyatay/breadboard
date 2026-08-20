@@ -47,6 +47,7 @@ import AssistantMessageActions, {
 } from "@/app/components/assistant-message-actions";
 import { isDirectModeEnabled } from "@/app/components/use-direct-mode";
 import {
+  applyBranchVariant,
   cloneMessages,
   createConversationBranch,
   messageBranchId,
@@ -86,6 +87,13 @@ import type {
   PermissionPrompt,
 } from "@/app/components/hermes/use-agent-session";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
+import {
+  delegatedAgentActivityLabelForMessage,
+  delegatedAgentCompletedLabelForMessage,
+  delegatedAgentStartedAtForMessage,
+  delegatedTurnCarriedDurationMs,
+  delegatedTurnTotalUsage,
+} from "@/lib/hermes/super-agent-activity";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
 import ChatMessageRail, {
@@ -140,6 +148,7 @@ import InlineOpenworkRun from "@/app/components/hermes/inline-openwork-run";
 import InlineOpenscienceRun from "@/app/components/hermes/inline-openscience-run";
 import InlineInboxZeroRun from "@/app/components/hermes/inline-inbox-zero-run";
 import InlineVimaxRun from "@/app/components/hermes/inline-vimax-run";
+import InlineVoxDirectorRun from "@/app/components/hermes/inline-vox-director-run";
 import InlineMoneyPrinterRun from "@/app/components/hermes/inline-money-printer-run";
 import InlineLegalRun from "@/app/components/hermes/inline-legal-run";
 import InlineWardrobeRun from "@/app/components/hermes/inline-wardrobe-run";
@@ -178,7 +187,14 @@ import {
   inboxZeroUserMessage,
   taskFromInboxZeroCommand,
 } from "@/lib/inbox-zero/identity.ts";
-import { briefFromVimaxCommand, vimaxUserMessage } from "@/lib/vimax/identity.ts";
+import {
+  briefFromVimaxCommand,
+  vimaxUserMessage,
+} from "@/lib/vimax/identity.ts";
+import {
+  briefFromVoxDirectorCommand,
+  voxDirectorUserMessage,
+} from "@/lib/vox-director/identity.ts";
 import {
   briefFromMoneyPrinterCommand,
   moneyPrinterUserMessage,
@@ -196,6 +212,7 @@ import {
 import LearnConfirmationDialog, {
   type LearnDestructiveAction,
 } from "@/app/components/learn-confirmation-dialog";
+import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import ViewportPopover from "@/app/components/viewport-popover";
 import KnowledgeGraph from "@/app/components/knowledge-graph";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
@@ -211,7 +228,10 @@ import {
 import { formatAssistantModelName } from "@/lib/ai-models";
 import { chatTimeSeparatorLabels } from "@/lib/chat-time-separators";
 import { requestChatTitleFromFirstMessage } from "@/lib/chat-session-title";
-import type { LocalWorkflowSummary, WorkflowRunResponse } from "@/lib/workflows/types";
+import type {
+  LocalWorkflowSummary,
+  WorkflowRunResponse,
+} from "@/lib/workflows/types";
 import {
   attachAudioFile,
   attachModelFile,
@@ -241,9 +261,9 @@ import {
   taskFromAgentBrowserCommand,
 } from "@/lib/agent-browser/identity";
 import {
+  directDeepResearchInvocation,
   deepResearchUserMessage,
   parseResearchRequest,
-  taskFromDeepResearchCommand,
 } from "@/lib/deep-research/identity";
 import { loadAgentSettings } from "@/lib/agent-settings/client.ts";
 import { deepResearchDefaults } from "@/lib/agent-settings/defaults.ts";
@@ -364,6 +384,7 @@ import {
 import {
   assistantExternalAgentRunId,
   externalAgentCardContent,
+  externalAgentResponseDurationMs,
   type ExternalAgentActivityEntry,
   type ExternalAgentEdits,
   type ExternalAgentOutcome,
@@ -429,6 +450,7 @@ interface Message {
   openscienceRun?: { runId: string; task: string };
   inboxZeroRun?: { runId: string; task: string };
   vimaxRun?: { runId: string; brief: string };
+  voxDirectorRun?: { runId: string; brief: string };
   moneyPrinterRun?: { runId: string; brief: string };
   legalRun?: { runId: string; task: string };
   wardrobeRun?: { runId: string; task: string };
@@ -442,6 +464,7 @@ interface Message {
     repository: string;
   };
   externalAgentOutcome?: ExternalAgentOutcome;
+  externalAgentStartedAt?: string;
   /** Model-selected worker state; observed invisibly by the Super Agent host. */
   delegatedAgentRun?: boolean;
   /** The Super Agent text that remains visible while its worker runs. */
@@ -466,9 +489,12 @@ const TerminalScheduledPanel = dynamic(
   () => import("@/app/components/hermes/terminal-scheduled-panel"),
   { ssr: false },
 );
-const HooksPanel = dynamic(() => import("@/app/components/hermes/hooks-panel"), {
-  ssr: false,
-});
+const HooksPanel = dynamic(
+  () => import("@/app/components/hermes/hooks-panel"),
+  {
+    ssr: false,
+  },
+);
 const ProcessesPanel = dynamic(
   () => import("@/app/components/hermes/processes-panel"),
   { ssr: false },
@@ -552,10 +578,10 @@ function loadBranchGroups(
       Object.entries(parsed).filter(([, group]) =>
         Boolean(
           group &&
-            typeof group.id === "string" &&
-            Number.isInteger(group.activeIndex) &&
-            Array.isArray(group.variants) &&
-            group.variants.length > 1,
+          typeof group.id === "string" &&
+          Number.isInteger(group.activeIndex) &&
+          Array.isArray(group.variants) &&
+          group.variants.length > 1,
         ),
       ),
     );
@@ -1050,37 +1076,38 @@ function hasRunningExternalAgent(message: Message): boolean {
     message.role === "assistant" &&
     Boolean(
       message.agentBrowserRun ||
-        message.deepResearchRun ||
-        message.codexRun ||
-        message.openCodeRun ||
-        message.openPlanterRun ||
-        message.agentReachRun ||
-        message.getDocRun ||
-        message.meetingNotesRun ||
-        message.deepTutorRun ||
-        message.careerOpsRun ||
-        message.tradingAgentsRun ||
-        message.vibeTradingRun ||
-        message.stockAnalystRun ||
-        message.paperTraderRun ||
-        message.deerFlowRun ||
-        message.socialsManagerRun ||
-        message.hardwareBlueprintRun ||
-        message.parametricCadRun ||
-        message.hyperframesRun ||
-        message.resource2SkillRun ||
-        message.openMontageRun ||
-        message.openworkRun ||
-        message.openscienceRun ||
-        message.inboxZeroRun ||
-        message.vimaxRun ||
-        message.moneyPrinterRun ||
-        message.legalRun ||
-        message.wardrobeRun ||
-        message.shortsRun ||
-        message.formsmithRun ||
-        message.videoUseRun ||
-        message.rufloRun,
+      message.deepResearchRun ||
+      message.codexRun ||
+      message.openCodeRun ||
+      message.openPlanterRun ||
+      message.agentReachRun ||
+      message.getDocRun ||
+      message.meetingNotesRun ||
+      message.deepTutorRun ||
+      message.careerOpsRun ||
+      message.tradingAgentsRun ||
+      message.vibeTradingRun ||
+      message.stockAnalystRun ||
+      message.paperTraderRun ||
+      message.deerFlowRun ||
+      message.socialsManagerRun ||
+      message.hardwareBlueprintRun ||
+      message.parametricCadRun ||
+      message.hyperframesRun ||
+      message.resource2SkillRun ||
+      message.openMontageRun ||
+      message.openworkRun ||
+      message.openscienceRun ||
+      message.inboxZeroRun ||
+      message.vimaxRun ||
+      message.voxDirectorRun ||
+      message.moneyPrinterRun ||
+      message.legalRun ||
+      message.wardrobeRun ||
+      message.shortsRun ||
+      message.formsmithRun ||
+      message.videoUseRun ||
+      message.rufloRun,
     ) &&
     (message.externalAgentOutcome ?? "running") === "running"
   );
@@ -1113,6 +1140,14 @@ interface ChatTranscriptProps {
     result: ExternalAgentTerminalResult,
   ) => void;
   inlineArtifactRetireVersion: number;
+  /**
+   * A model-delegated worker is somewhere in its hand-off — queued behind the
+   * turn that asked for it, starting, running, or finished and waiting to be
+   * handed back. Passed in because for most of that span there is nothing in
+   * the transcript to read it from: the run has no card, no chat connection,
+   * and often no row of its own yet.
+   */
+  delegationInFlight: boolean;
   /** The scroller this transcript is drawn inside, owned by the workspace. */
   transcriptScrollRef: RefObject<HTMLElement | null>;
   transcriptVirtual: ChatVirtualBridge;
@@ -1149,8 +1184,10 @@ function buildTranscriptRows(messages: readonly Message[]): TranscriptRow[] {
     // person reads after a delegation — visible while it streamed, gone on the
     // next reload.
     if (
-      storedMessage.role === "user" &&
-      storedMessage.internalAgentContinuation === true
+      (storedMessage.role === "user" &&
+        storedMessage.internalAgentContinuation === true) ||
+      (storedMessage.delegatedAgentRun === true &&
+        messages[index + 1]?.internalAgentContinuation === true)
     ) {
       return;
     }
@@ -1189,6 +1226,7 @@ const ChatTranscript = memo(function ChatTranscript({
   onSwitchBranch,
   onExternalAgentTerminal,
   inlineArtifactRetireVersion,
+  delegationInFlight,
   transcriptScrollRef,
   transcriptVirtual,
 }: ChatTranscriptProps) {
@@ -1197,6 +1235,10 @@ const ChatTranscript = memo(function ChatTranscript({
   const [messageEditText, setMessageEditText] = useState("");
   const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
   const [promptToSave, setPromptToSave] = useState<string | null>(null);
+  const {
+    confirm: confirmMessageDeletion,
+    confirmDialog: messageDeleteDialog,
+  } = useConfirmDialog();
   const lastAssistantIndex = messages.reduce(
     (lastIndex, message, index) =>
       message.role === "assistant" ? index : lastIndex,
@@ -1269,15 +1311,14 @@ const ChatTranscript = memo(function ChatTranscript({
     onEditMessage(messageIndex, text);
   }
 
-  function deleteMessageTurn(messageIndex: number) {
+  async function deleteMessageTurn(messageIndex: number) {
     if (isStreaming) return;
-    if (
-      !window.confirm(
-        "Delete this message and the answer it produced? This cannot be undone.",
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirmMessageDeletion({
+      title: "Delete this message?",
+      body: "The message and the answer it produced will be permanently removed from this chat. This cannot be undone.",
+      confirmLabel: "Delete message",
+    });
+    if (!confirmed) return;
     onDeleteMessage(messageIndex);
   }
 
@@ -1287,897 +1328,1125 @@ const ChatTranscript = memo(function ChatTranscript({
       gardenSlug={clusterSlug}
       retireVersion={inlineArtifactRetireVersion}
     >
-    {/* w-full is load-bearing, not decoration: auto inline margins cancel a
+      {/* w-full is load-bearing, not decoration: auto inline margins cancel a
         flex item's stretch, so this column is sized to its content — and every
         transcript row is absolutely positioned by the virtualizer, which
         contributes no content width at all. Without it the column collapses to
         zero and each message is drawn at its min-content width, one word per
         line, down the middle of the pane. */}
-    <div className="w-full max-w-5xl mx-auto flex flex-col gap-6">
-      {loadingChats ? (
-        <div className="flex items-center justify-center py-28 text-gray-700">
-          <Spinner className="w-5 h-5" />
-        </div>
-      ) : (
-        messages.length === 0 && (
-          // The same greeting empty state the terminals draw, with this
-          // garden's name in its questions and openers. The Save page hint —
-          // the one thing the old heading said that mattered — survives as
-          // the footnote.
-          <div className="py-16">
-            <ChatGreetingEmptyState
-              greeting={greeting}
-              suggestions={greetingSuggestions}
-              onSelectSuggestion={onSelectSuggestion}
-              footnote={
-                <>
-                  After the conversation, hit{" "}
-                  <span className="text-gray-500">Save page</span> to keep the
-                  answer in your lessons
-                </>
-              }
-            />
+      <div className="w-full max-w-5xl mx-auto flex flex-col gap-6">
+        {loadingChats ? (
+          <div className="flex items-center justify-center py-28 text-gray-700">
+            <Spinner className="w-5 h-5" />
           </div>
-        )
-      )}
-
-      {transcriptRows.length > 0 ? (
-      <VirtualizedMessageList
-        surface="garden-chat"
-        className="w-full"
-        items={transcriptRows}
-        scrollRef={transcriptScrollRef}
-        bridge={transcriptVirtual}
-        // What `gap-6` drew between rows.
-        gap={24}
-        resetKey={chatSessionId}
-        getItemKey={transcriptRowKey}
-        estimateSize={transcriptRowHeight}
-        renderItem={({ message: msg, index: i }) => {
-        const messageInteractionId = msg.id ?? `user-message-${i}`;
-        const externalRun =
-          msg.agentBrowserRun ??
-          msg.deepResearchRun ??
-          msg.codexRun ??
-          msg.openCodeRun ??
-          msg.openPlanterRun ??
-          msg.agentReachRun ??
-          msg.getDocRun ??
-          msg.meetingNotesRun ??
-          msg.deepTutorRun ??
-          msg.careerOpsRun ??
-          msg.tradingAgentsRun ??
-          msg.vibeTradingRun ??
-          msg.stockAnalystRun ??
-          msg.paperTraderRun ??
-          msg.deerFlowRun ??
-          msg.socialsManagerRun ??
-          msg.hardwareBlueprintRun ??
-          msg.parametricCadRun ??
-          msg.hyperframesRun ??
-          msg.resource2SkillRun ??
-          msg.openMontageRun ??
-          msg.openworkRun ??
-          msg.openscienceRun ??
-          msg.inboxZeroRun ??
-          msg.vimaxRun ??
-          msg.moneyPrinterRun ??
-          msg.legalRun ??
-          msg.wardrobeRun ??
-          msg.shortsRun ??
-          msg.formsmithRun ??
-          msg.videoUseRun ??
-          msg.rufloRun;
-        return (
-        <div className="flex w-full flex-col gap-3">
-          {timeSeparators[i] ? (
-            <ChatTimeSeparator
-              label={timeSeparators[i]}
-              dateTime={msg.createdAt}
-            />
-          ) : null}
-          <div
-            className={`${msg.role === "user" ? "group " : ""}flex flex-col gap-2 ${msg.role === "user" ? "items-end" : "items-start"}`}
-          >
-            {msg.role === "user" ? (
-              <div className="flex flex-col items-end gap-1 max-w-[80%]">
-              <ChatMessageAttachments
-                attachments={msg.attachments}
-                attachmentNames={msg.attachmentNames}
-              />
-              <ChatVideoLinkEmbeds
-                text={msg.content}
-                attachments={msg.attachments}
-              />
-              {msg.content ? (
-                editingMessageId === messageInteractionId ? (
-                  <form
-                    className="neu-chat-message neu-chat-message-user min-w-64 rounded-[22px] p-2"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      saveMessageEdit(i);
-                    }}
-                  >
-                    <textarea
-                      value={messageEditText}
-                      onChange={(event) => setMessageEditText(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (
-                          event.key === "Enter" &&
-                          (event.ctrlKey || event.metaKey)
-                        ) {
-                          event.preventDefault();
-                          event.currentTarget.form?.requestSubmit();
-                        }
-                      }}
-                      rows={Math.min(
-                        6,
-                        Math.max(2, messageEditText.split("\n").length),
-                      )}
-                      className="max-h-40 w-full resize-none bg-transparent px-2 py-1 text-sm leading-6 text-[var(--ink)] outline-none"
-                      aria-label="Edit message"
-                      autoFocus
-                    />
-                    <div className="mt-1 flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setEditingMessageId(null)}
-                        className="rounded-full px-3 py-1 text-xs text-[var(--ink-muted)] hover:bg-[var(--paper-strong)]"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="submit"
-                        disabled={isStreaming || !messageEditText.trim()}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] px-3 text-xs font-medium text-[var(--paper-raised)] shadow-sm transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)] disabled:shadow-none"
-                      >
-                        <span>Save &amp; send</span>
-                        <svg
-                          className="h-3.5 w-3.5"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                          strokeWidth={2.2}
-                          aria-hidden
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M12 19.5v-15m0 0-6 6m6-6 6 6"
-                          />
-                        </svg>
-                      </button>
-                    </div>
-                  </form>
-                ) : (
+        ) : (
+          messages.length === 0 && (
+            // The same greeting empty state the terminals draw, with this
+            // garden's name in its questions and openers. The Save page hint —
+            // the one thing the old heading said that mattered — survives as
+            // the footnote.
+            <div className="py-16">
+              <ChatGreetingEmptyState
+                greeting={greeting}
+                suggestions={greetingSuggestions}
+                onSelectSuggestion={onSelectSuggestion}
+                footnote={
                   <>
-                    <div className="neu-chat-message neu-chat-message-user w-full rounded-2xl rounded-tr-sm px-4 py-3 text-sm">
-                      {splitLeadingCommandTokens(msg.content) ? (
-                        <UserMessageText content={msg.content} />
-                      ) : (
-                        <ChatMarkdown content={msg.content} compact />
-                      )}
-                    </div>
-                    <div className="mt-1 flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void copyUserMessage(
-                            msg,
-                            messageInteractionId,
-                          )
-                        }
-                        className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
-                        title={
-                          copiedUserId === messageInteractionId
-                            ? "Copied"
-                            : "Copy message"
-                        }
-                        aria-label={
-                          copiedUserId === messageInteractionId
-                            ? "Message copied"
-                            : "Copy message"
-                        }
-                      >
-                        {copiedUserId === messageInteractionId ? (
-                          <svg
-                            className="h-4 w-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.8}
-                            aria-hidden
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="m5 12 4 4L19 6"
-                            />
-                          </svg>
-                        ) : (
-                          <svg
-                            className="h-4 w-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.7}
-                            aria-hidden
-                          >
-                            <rect x="8" y="8" width="11" height="11" rx="2" />
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"
-                            />
-                          </svg>
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPromptToSave(msg.content)}
-                        className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
-                        title="Save to Prompts"
-                        aria-label="Save message to Prompts"
-                      >
-                        <svg
-                          className="h-4 w-4"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth={1.7}
-                          aria-hidden
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M6 4.75A1.75 1.75 0 0 1 7.75 3h8.5A1.75 1.75 0 0 1 18 4.75V21l-6-3.75L6 21V4.75Z"
-                          />
-                          <path strokeLinecap="round" d="M9 7.5h6" />
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          beginMessageEdit(
-                            msg,
-                            messageInteractionId,
-                          )
-                        }
-                        disabled={isStreaming}
-                        className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] disabled:cursor-not-allowed disabled:opacity-35"
-                        title="Edit message"
-                        aria-label="Edit message and create a branch"
-                      >
-                        <svg
-                          className="h-4 w-4"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                          strokeWidth={1.7}
-                          aria-hidden
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
-                          />
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteMessageTurn(i)}
-                        disabled={isStreaming}
-                        className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--danger)] disabled:cursor-not-allowed disabled:opacity-35"
-                        title="Delete message"
-                        aria-label="Delete this message and its answer"
-                      >
-                        <svg
-                          className="h-4 w-4"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                          strokeWidth={1.7}
-                          aria-hidden
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M4 7h16M10 7V5.5A1.5 1.5 0 0 1 11.5 4h1A1.5 1.5 0 0 1 14 5.5V7m-7 0 .8 11.2A2 2 0 0 0 9.8 20h4.4a2 2 0 0 0 2-1.8L17 7"
-                          />
-                        </svg>
-                      </button>
-                    </div>
+                    After the conversation, hit{" "}
+                    <span className="text-gray-500">Save page</span> to keep the
+                    answer in your lessons
                   </>
-                )
-              ) : null}
+                }
+              />
             </div>
-            ) : (
-              <div className="flex w-full flex-col gap-2">
-              <MessageActionsSlot>
-              {msg.delegatedAgentPreamble ? (
-                <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
-                  <ChatMarkdown content={msg.delegatedAgentPreamble} />
+          )
+        )}
+
+        {transcriptRows.length > 0 ? (
+          <VirtualizedMessageList
+            surface="garden-chat"
+            className="w-full"
+            items={transcriptRows}
+            scrollRef={transcriptScrollRef}
+            bridge={transcriptVirtual}
+            // What `gap-6` drew between rows.
+            gap={24}
+            resetKey={chatSessionId}
+            getItemKey={transcriptRowKey}
+            estimateSize={transcriptRowHeight}
+            renderItem={({ message: msg, index: i }) => {
+              const messageInteractionId = msg.id ?? `user-message-${i}`;
+              const externalRun =
+                msg.agentBrowserRun ??
+                msg.deepResearchRun ??
+                msg.codexRun ??
+                msg.openCodeRun ??
+                msg.openPlanterRun ??
+                msg.agentReachRun ??
+                msg.getDocRun ??
+                msg.meetingNotesRun ??
+                msg.deepTutorRun ??
+                msg.careerOpsRun ??
+                msg.tradingAgentsRun ??
+                msg.vibeTradingRun ??
+                msg.stockAnalystRun ??
+                msg.paperTraderRun ??
+                msg.deerFlowRun ??
+                msg.socialsManagerRun ??
+                msg.hardwareBlueprintRun ??
+                msg.parametricCadRun ??
+                msg.hyperframesRun ??
+                msg.resource2SkillRun ??
+                msg.openMontageRun ??
+                msg.openworkRun ??
+                msg.openscienceRun ??
+                msg.inboxZeroRun ??
+                msg.vimaxRun ??
+                msg.voxDirectorRun ??
+                msg.moneyPrinterRun ??
+                msg.legalRun ??
+                msg.wardrobeRun ??
+                msg.shortsRun ??
+                msg.formsmithRun ??
+                msg.videoUseRun ??
+                msg.rufloRun;
+              const isAgentContinuationResponse = Boolean(
+                msg.role === "assistant" &&
+                  messages[i - 1]?.internalAgentContinuation === true,
+              );
+              const continuationOwner = isAgentContinuationResponse
+                ? messages[i - 2]
+                : undefined;
+              const continuationPreamble =
+                continuationOwner?.delegatedAgentRun === true
+                  ? continuationOwner.delegatedAgentPreamble?.trim() ||
+                    continuationOwner.content.trim()
+                  : "";
+              // The delegating turn is hidden behind this row, so its time
+              // belongs to this row's clock. Without it the answer claimed the
+              // seconds of its synthesis as the whole operation's.
+              const carriedDurationMs =
+                delegatedTurnCarriedDurationMs(continuationOwner);
+              // The hidden turn's tokens are part of what this answer cost.
+              const totalUsage = delegatedTurnTotalUsage(
+                continuationOwner,
+                msg.usage,
+              );
+              const visibleAssistantContent =
+                i === lastAssistantIndex
+                  ? revealedAssistantContent || continuationPreamble
+                  : msg.content || continuationPreamble;
+              const delegatedAgentCompleted =
+                delegatedAgentCompletedLabelForMessage(msg);
+              const delegatedAgentStartedAt =
+                delegatedAgentStartedAtForMessage(msg);
+              // A delegated worker owns no visible card, so this row is the
+              // only sign the turn is still going — and it has to hold that
+              // sign across the whole hand-off, not just the part with a run
+              // row behind it. `delegationInFlight` covers the launch that has
+              // not produced a run yet and the result not yet handed back;
+              // both used to settle this row into its past tense and stop its
+              // timer while the work carried on.
+              const delegatedAgentActive =
+                Boolean(
+                  msg.delegatedAgentPreamble &&
+                    externalRun &&
+                    (msg.externalAgentOutcome ?? "running") === "running",
+                ) ||
+                (i === lastAssistantIndex && delegationInFlight);
+              // Past tense while it runs read as an answer that had stopped
+              // mid-thought.
+              const delegatedAgentLabel = delegatedAgentActive
+                ? delegatedAgentActivityLabelForMessage(msg) ??
+                  delegatedAgentCompleted
+                : delegatedAgentCompleted;
+              return (
+                <div className="flex w-full flex-col gap-3">
+                  {timeSeparators[i] ? (
+                    <ChatTimeSeparator
+                      label={timeSeparators[i]}
+                      dateTime={msg.createdAt}
+                    />
+                  ) : null}
+                  <div
+                    className={`${msg.role === "user" ? "group " : ""}flex flex-col gap-2 ${msg.role === "user" ? "items-end" : "items-start"}`}
+                  >
+                    {msg.role === "user" ? (
+                      <div className="flex flex-col items-end gap-1 max-w-[80%]">
+                        <ChatMessageAttachments
+                          attachments={msg.attachments}
+                          attachmentNames={msg.attachmentNames}
+                        />
+                        <ChatVideoLinkEmbeds
+                          text={msg.content}
+                          attachments={msg.attachments}
+                        />
+                        {msg.content ? (
+                          editingMessageId === messageInteractionId ? (
+                            <form
+                              className="neu-chat-message neu-chat-message-user min-w-64 rounded-[22px] p-2"
+                              onSubmit={(event) => {
+                                event.preventDefault();
+                                saveMessageEdit(i);
+                              }}
+                            >
+                              <textarea
+                                value={messageEditText}
+                                onChange={(event) =>
+                                  setMessageEditText(event.target.value)
+                                }
+                                onKeyDown={(event) => {
+                                  if (
+                                    event.key === "Enter" &&
+                                    (event.ctrlKey || event.metaKey)
+                                  ) {
+                                    event.preventDefault();
+                                    event.currentTarget.form?.requestSubmit();
+                                  }
+                                }}
+                                rows={Math.min(
+                                  6,
+                                  Math.max(
+                                    2,
+                                    messageEditText.split("\n").length,
+                                  ),
+                                )}
+                                className="max-h-40 w-full resize-none bg-transparent px-2 py-1 text-sm leading-6 text-[var(--ink)] outline-none"
+                                aria-label="Edit message"
+                                autoFocus
+                              />
+                              <div className="mt-1 flex justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingMessageId(null)}
+                                  className="rounded-full px-3 py-1 text-xs text-[var(--ink-muted)] hover:bg-[var(--paper-strong)]"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="submit"
+                                  disabled={
+                                    isStreaming || !messageEditText.trim()
+                                  }
+                                  className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] px-3 text-xs font-medium text-[var(--paper-raised)] shadow-sm transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)] disabled:shadow-none"
+                                >
+                                  <span>Save &amp; send</span>
+                                  <svg
+                                    className="h-3.5 w-3.5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke="currentColor"
+                                    strokeWidth={2.2}
+                                    aria-hidden
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      d="M12 19.5v-15m0 0-6 6m6-6 6 6"
+                                    />
+                                  </svg>
+                                </button>
+                              </div>
+                            </form>
+                          ) : (
+                            <>
+                              <div className="neu-chat-message neu-chat-message-user w-full rounded-2xl rounded-tr-sm px-4 py-3 text-sm">
+                                {splitLeadingCommandTokens(msg.content) ? (
+                                  <UserMessageText content={msg.content} />
+                                ) : (
+                                  <ChatMarkdown content={msg.content} compact />
+                                )}
+                              </div>
+                              <div className="mt-1 flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    void copyUserMessage(
+                                      msg,
+                                      messageInteractionId,
+                                    )
+                                  }
+                                  className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
+                                  title={
+                                    copiedUserId === messageInteractionId
+                                      ? "Copied"
+                                      : "Copy message"
+                                  }
+                                  aria-label={
+                                    copiedUserId === messageInteractionId
+                                      ? "Message copied"
+                                      : "Copy message"
+                                  }
+                                >
+                                  {copiedUserId === messageInteractionId ? (
+                                    <svg
+                                      className="h-4 w-4"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                      strokeWidth={1.8}
+                                      aria-hidden
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="m5 12 4 4L19 6"
+                                      />
+                                    </svg>
+                                  ) : (
+                                    <svg
+                                      className="h-4 w-4"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                      strokeWidth={1.7}
+                                      aria-hidden
+                                    >
+                                      <rect
+                                        x="8"
+                                        y="8"
+                                        width="11"
+                                        height="11"
+                                        rx="2"
+                                      />
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"
+                                      />
+                                    </svg>
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setPromptToSave(msg.content)}
+                                  className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
+                                  title="Save to Prompts"
+                                  aria-label="Save message to Prompts"
+                                >
+                                  <svg
+                                    className="h-4 w-4"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth={1.7}
+                                    aria-hidden
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      d="M6 4.75A1.75 1.75 0 0 1 7.75 3h8.5A1.75 1.75 0 0 1 18 4.75V21l-6-3.75L6 21V4.75Z"
+                                    />
+                                    <path strokeLinecap="round" d="M9 7.5h6" />
+                                  </svg>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    beginMessageEdit(msg, messageInteractionId)
+                                  }
+                                  disabled={isStreaming}
+                                  className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] disabled:cursor-not-allowed disabled:opacity-35"
+                                  title="Edit message"
+                                  aria-label="Edit message and create a branch"
+                                >
+                                  <svg
+                                    className="h-4 w-4"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke="currentColor"
+                                    strokeWidth={1.7}
+                                    aria-hidden
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
+                                    />
+                                  </svg>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => deleteMessageTurn(i)}
+                                  disabled={isStreaming}
+                                  className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--danger)] disabled:cursor-not-allowed disabled:opacity-35"
+                                  title="Delete message"
+                                  aria-label="Delete this message and its answer"
+                                >
+                                  <svg
+                                    className="h-4 w-4"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke="currentColor"
+                                    strokeWidth={1.7}
+                                    aria-hidden
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      d="M4 7h16M10 7V5.5A1.5 1.5 0 0 1 11.5 4h1A1.5 1.5 0 0 1 14 5.5V7m-7 0 .8 11.2A2 2 0 0 0 9.8 20h4.4a2 2 0 0 0 2-1.8L17 7"
+                                    />
+                                  </svg>
+                                </button>
+                              </div>
+                            </>
+                          )
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="flex w-full flex-col gap-2">
+                        <MessageActionsSlot>
+                          {msg.delegatedAgentPreamble ? (
+                            <ActivityPanel
+                              activities={[]}
+                              connection={
+                                delegatedAgentActive ? "streaming" : "idle"
+                              }
+                              pendingPermission={null}
+                              usage={msg.usage}
+                              responseDurationMs={msg.responseDurationMs}
+                              activePhaseStartedAt={delegatedAgentStartedAt}
+                              onPermissionDecision={onPermissionDecision}
+                              stateLabel={delegatedAgentLabel}
+                              completedLabel={delegatedAgentCompleted}
+                            />
+                          ) : null}
+                          {msg.delegatedAgentPreamble ? (
+                            <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
+                              <ChatMarkdown
+                                content={msg.delegatedAgentPreamble}
+                              />
+                            </div>
+                          ) : null}
+                          {!externalRun ? (
+                            <ActivityPanel
+                              activities={
+                                i === lastAssistantIndex ? activities : []
+                              }
+                              connection={
+                                // A worker running behind this row keeps it
+                                // alive even though the chat connection is
+                                // idle: the turn is not over until its
+                                // delegation is.
+                                delegatedAgentActive
+                                  ? "streaming"
+                                  : i === lastAssistantIndex
+                                    ? connection
+                                    : "idle"
+                              }
+                              pendingPermission={
+                                i === lastAssistantIndex
+                                  ? pendingPermission
+                                  : null
+                              }
+                              usage={totalUsage}
+                              responseDurationMs={msg.responseDurationMs}
+                              // The delegation's own clock, so the timer
+                              // carries on from the turn instead of restarting.
+                              activePhaseStartedAt={delegatedAgentStartedAt}
+                              carriedDurationMs={carriedDurationMs}
+                              onPermissionDecision={onPermissionDecision}
+                              completedLabel={delegatedAgentLabel}
+                              stateLabel={
+                                delegatedAgentActive && delegatedAgentLabel
+                                  ? delegatedAgentLabel
+                                  : isAgentContinuationResponse
+                                    ? i === lastAssistantIndex && isStreaming
+                                      ? "Synthesizing research"
+                                      : "Research synthesized"
+                                    : undefined
+                              }
+                            />
+                          ) : null}
+                          {externalRun ? (
+                            <div
+                              className={
+                                msg.delegatedAgentRun ? "hidden" : "contents"
+                              }
+                              aria-hidden={msg.delegatedAgentRun || undefined}
+                            >
+                              {msg.agentBrowserRun ? (
+                                <InlineAgentBrowserRun
+                                  agentId={msg.agentBrowserRun.agentId}
+                                  runId={msg.agentBrowserRun.runId}
+                                  task={msg.agentBrowserRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.agentBrowserRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.deepResearchRun ? (
+                                <InlineDeepResearchRun
+                                  runId={msg.deepResearchRun.runId}
+                                  query={msg.deepResearchRun.query}
+                                  output={msg.deepResearchRun.output}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.deepResearchRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.codexRun ? (
+                                <InlineOpenCodeRun
+                                  runId={msg.codexRun.runId}
+                                  task={msg.codexRun.task}
+                                  gardenSlug={msg.codexRun.gardenSlug}
+                                  agentName="Codex"
+                                  apiSlug="codex"
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedActivity={msg.externalAgentActivity}
+                                  persistedEdits={msg.externalAgentEdits}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.codexRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.openCodeRun ? (
+                                <InlineOpenCodeRun
+                                  runId={msg.openCodeRun.runId}
+                                  task={msg.openCodeRun.task}
+                                  gardenSlug={msg.openCodeRun.gardenSlug}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedActivity={msg.externalAgentActivity}
+                                  persistedEdits={msg.externalAgentEdits}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.openCodeRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.openPlanterRun ? (
+                                <InlineOpenPlanterRun
+                                  runId={msg.openPlanterRun.runId}
+                                  task={msg.openPlanterRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.openPlanterRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.agentReachRun ? (
+                                <InlineAgentReachRun
+                                  runId={msg.agentReachRun.runId}
+                                  task={msg.agentReachRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.agentReachRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.deepTutorRun ? (
+                                <InlineDeepTutorRun
+                                  runId={msg.deepTutorRun.runId}
+                                  task={msg.deepTutorRun.task}
+                                  capability={msg.deepTutorRun.capability}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.deepTutorRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.meetingNotesRun ? (
+                                <InlineMeetingNotesRun
+                                  runId={msg.meetingNotesRun.runId}
+                                  task={msg.meetingNotesRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.meetingNotesRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.getDocRun ? (
+                                <InlineGetDocRun
+                                  runId={msg.getDocRun.runId}
+                                  query={msg.getDocRun.query}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.getDocRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.tradingAgentsRun ? (
+                                <InlineTradingAgentsRun
+                                  runId={msg.tradingAgentsRun.runId}
+                                  task={msg.tradingAgentsRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.tradingAgentsRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.vibeTradingRun ? (
+                                <InlineVibeTradingRun
+                                  runId={msg.vibeTradingRun.runId}
+                                  task={msg.vibeTradingRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.vibeTradingRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.stockAnalystRun ? (
+                                <InlineStockAnalystRun
+                                  runId={msg.stockAnalystRun.runId}
+                                  task={msg.stockAnalystRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.stockAnalystRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.paperTraderRun ? (
+                                <InlinePaperTraderRun
+                                  runId={msg.paperTraderRun.runId}
+                                  task={msg.paperTraderRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.paperTraderRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.deerFlowRun ? (
+                                <InlineDeerFlowRun
+                                  runId={msg.deerFlowRun.runId}
+                                  task={msg.deerFlowRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.deerFlowRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.careerOpsRun ? (
+                                <InlineCareerOpsRun
+                                  runId={msg.careerOpsRun.runId}
+                                  task={msg.careerOpsRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.careerOpsRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.socialsManagerRun ? (
+                                <InlineSocialsManagerRun
+                                  runId={msg.socialsManagerRun.runId}
+                                  brief={msg.socialsManagerRun.brief}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.socialsManagerRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.hardwareBlueprintRun ? (
+                                <InlineHardwareBlueprintRun
+                                  runId={msg.hardwareBlueprintRun.runId}
+                                  brief={msg.hardwareBlueprintRun.brief}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  persistedState={msg.externalAgentState}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.hardwareBlueprintRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.parametricCadRun ? (
+                                <InlineParametricCadRun
+                                  runId={msg.parametricCadRun.runId}
+                                  brief={msg.parametricCadRun.brief}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.parametricCadRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.hyperframesRun ? (
+                                <InlineHyperframesRun
+                                  runId={msg.hyperframesRun.runId}
+                                  brief={msg.hyperframesRun.brief}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.hyperframesRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.resource2SkillRun ? (
+                                <InlineResource2SkillRun
+                                  runId={msg.resource2SkillRun!.runId}
+                                  brief={msg.resource2SkillRun!.brief}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.resource2SkillRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.openMontageRun ? (
+                                <InlineOpenMontageRun
+                                  runId={msg.openMontageRun.runId}
+                                  brief={msg.openMontageRun.brief}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.openMontageRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.openworkRun ? (
+                                <InlineOpenworkRun
+                                  runId={msg.openworkRun.runId}
+                                  task={msg.openworkRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.openworkRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.openscienceRun ? (
+                                <InlineOpenscienceRun
+                                  runId={msg.openscienceRun.runId}
+                                  task={msg.openscienceRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.openscienceRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.inboxZeroRun ? (
+                                <InlineInboxZeroRun
+                                  runId={msg.inboxZeroRun.runId}
+                                  task={msg.inboxZeroRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.inboxZeroRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.vimaxRun ? (
+                                <InlineVimaxRun
+                                  runId={msg.vimaxRun.runId}
+                                  brief={msg.vimaxRun.brief}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.vimaxRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.voxDirectorRun ? (
+                                <InlineVoxDirectorRun
+                                  runId={msg.voxDirectorRun.runId}
+                                  brief={msg.voxDirectorRun.brief}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.voxDirectorRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.moneyPrinterRun ? (
+                                <InlineMoneyPrinterRun
+                                  runId={msg.moneyPrinterRun.runId}
+                                  brief={msg.moneyPrinterRun.brief}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.moneyPrinterRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.legalRun ? (
+                                <InlineLegalRun
+                                  runId={msg.legalRun.runId}
+                                  task={msg.legalRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.legalRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.wardrobeRun ? (
+                                <InlineWardrobeRun
+                                  runId={msg.wardrobeRun.runId}
+                                  task={msg.wardrobeRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.wardrobeRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.shortsRun ? (
+                                <InlineShortsRun
+                                  runId={msg.shortsRun.runId}
+                                  task={msg.shortsRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.shortsRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.formsmithRun ? (
+                                <InlineFormsmithRun
+                                  runId={msg.formsmithRun.runId}
+                                  task={msg.formsmithRun.task}
+                                  persistedContent={externalAgentCardContent(
+                                    msg,
+                                  )}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.formsmithRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.videoUseRun ? (
+                                <InlineVideoUseRun
+                                  runId={msg.videoUseRun.runId}
+                                  task={msg.videoUseRun.task}
+                                  quiet={msg.videoUseRun.quiet === true}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.videoUseRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.rufloRun ? (
+                                <InlineRufloRun
+                                  runId={msg.rufloRun.runId}
+                                  task={msg.rufloRun.task}
+                                  gardenSlug={msg.rufloRun.gardenSlug}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedEdits={msg.externalAgentEdits}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.rufloRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : null}
+                            </div>
+                          ) : visibleAssistantContent ? (
+                            <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
+                              <ChatMarkdown content={visibleAssistantContent} />
+                            </div>
+                          ) : null}
+                          {chatSessionId ? (
+                            <InlineArtifactCards
+                              ownerMessageId={
+                                msg.artifactMessageId ?? msg.id ?? null
+                              }
+                            />
+                          ) : null}
+                          {!externalRun &&
+                          !(isStreaming && i === lastAssistantIndex) ? (
+                            <AssistantMessageActions
+                              content={
+                                msg.content ||
+                                continuationPreamble ||
+                                "Response unavailable"
+                              }
+                              verification={msg.verification}
+                              branch={(() => {
+                                const branch = branchForAssistant(msg, i);
+                                return branch
+                                  ? {
+                                      current: branch.activeIndex + 1,
+                                      total: branch.variants.length,
+                                      onPrevious: () =>
+                                        onSwitchBranch(branch.id, -1),
+                                      onNext: () =>
+                                        onSwitchBranch(branch.id, 1),
+                                    }
+                                  : undefined;
+                              })()}
+                              onRetry={
+                                i === lastAssistantIndex
+                                  ? () => onRetryAssistant(i)
+                                  : undefined
+                              }
+                            />
+                          ) : null}
+                        </MessageActionsSlot>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              ) : null}
-            {!externalRun ? (
-                <ActivityPanel
-                  activities={i === lastAssistantIndex ? activities : []}
-                  connection={i === lastAssistantIndex ? connection : "idle"}
-                  pendingPermission={i === lastAssistantIndex ? pendingPermission : null}
-                  usage={msg.usage}
-                  responseDurationMs={msg.responseDurationMs}
-                  onPermissionDecision={onPermissionDecision}
-                />
-              ) : null}
-              {externalRun ? (
-                <div
-                  className={msg.delegatedAgentRun ? "hidden" : "contents"}
-                  aria-hidden={msg.delegatedAgentRun || undefined}
-                >
-              {msg.agentBrowserRun ? (
-                <InlineAgentBrowserRun
-                  agentId={msg.agentBrowserRun.agentId}
-                  runId={msg.agentBrowserRun.runId}
-                  task={msg.agentBrowserRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.agentBrowserRun!.runId, result)
-                  }
-                />
-              ) : msg.deepResearchRun ? (
-                <InlineDeepResearchRun
-                  runId={msg.deepResearchRun.runId}
-                  query={msg.deepResearchRun.query}
-                  output={msg.deepResearchRun.output}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.deepResearchRun!.runId, result)
-                  }
-                />
-              ) : msg.codexRun ? (
-                <InlineOpenCodeRun
-                  runId={msg.codexRun.runId}
-                  task={msg.codexRun.task}
-                  gardenSlug={msg.codexRun.gardenSlug}
-                  agentName="Codex"
-                  apiSlug="codex"
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedActivity={msg.externalAgentActivity}
-                  persistedEdits={msg.externalAgentEdits}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.codexRun!.runId, result)
-                  }
-                />
-              ) : msg.openCodeRun ? (
-                <InlineOpenCodeRun
-                  runId={msg.openCodeRun.runId}
-                  task={msg.openCodeRun.task}
-                  gardenSlug={msg.openCodeRun.gardenSlug}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedActivity={msg.externalAgentActivity}
-                  persistedEdits={msg.externalAgentEdits}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.openCodeRun!.runId, result)
-                  }
-                />
-              ) : msg.openPlanterRun ? (
-                <InlineOpenPlanterRun
-                  runId={msg.openPlanterRun.runId}
-                  task={msg.openPlanterRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.openPlanterRun!.runId, result)
-                  }
-                />
-              ) : msg.agentReachRun ? (
-                <InlineAgentReachRun
-                  runId={msg.agentReachRun.runId}
-                  task={msg.agentReachRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.agentReachRun!.runId, result)
-                  }
-                />
-              ) : msg.deepTutorRun ? (
-                <InlineDeepTutorRun
-                  runId={msg.deepTutorRun.runId}
-                  task={msg.deepTutorRun.task}
-                  capability={msg.deepTutorRun.capability}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.deepTutorRun!.runId, result)
-                  }
-                />
-              ) : msg.meetingNotesRun ? (
-                <InlineMeetingNotesRun
-                  runId={msg.meetingNotesRun.runId}
-                  task={msg.meetingNotesRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.meetingNotesRun!.runId, result)
-                  }
-                />
-              ) : msg.getDocRun ? (
-                <InlineGetDocRun
-                  runId={msg.getDocRun.runId}
-                  query={msg.getDocRun.query}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.getDocRun!.runId, result)
-                  }
-                />
-              ) : msg.tradingAgentsRun ? (
-                <InlineTradingAgentsRun
-                  runId={msg.tradingAgentsRun.runId}
-                  task={msg.tradingAgentsRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.tradingAgentsRun!.runId, result)
-                  }
-                />
-              ) : msg.vibeTradingRun ? (
-                <InlineVibeTradingRun
-                  runId={msg.vibeTradingRun.runId}
-                  task={msg.vibeTradingRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.vibeTradingRun!.runId, result)
-                  }
-                />
-              ) : msg.stockAnalystRun ? (
-                <InlineStockAnalystRun
-                  runId={msg.stockAnalystRun.runId}
-                  task={msg.stockAnalystRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.stockAnalystRun!.runId, result)
-                  }
-                />
-              ) : msg.paperTraderRun ? (
-                <InlinePaperTraderRun
-                  runId={msg.paperTraderRun.runId}
-                  task={msg.paperTraderRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.paperTraderRun!.runId, result)
-                  }
-                />
-              ) : msg.deerFlowRun ? (
-                <InlineDeerFlowRun
-                  runId={msg.deerFlowRun.runId}
-                  task={msg.deerFlowRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.deerFlowRun!.runId, result)
-                  }
-                />
-              ) : msg.careerOpsRun ? (
-                <InlineCareerOpsRun
-                  runId={msg.careerOpsRun.runId}
-                  task={msg.careerOpsRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.careerOpsRun!.runId, result)
-                  }
-                />
-              ) : msg.socialsManagerRun ? (
-                <InlineSocialsManagerRun
-                  runId={msg.socialsManagerRun.runId}
-                  brief={msg.socialsManagerRun.brief}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.socialsManagerRun!.runId, result)
-                  }
-                />
-              ) : msg.hardwareBlueprintRun ? (
-                <InlineHardwareBlueprintRun
-                  runId={msg.hardwareBlueprintRun.runId}
-                  brief={msg.hardwareBlueprintRun.brief}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedUsage={msg.usage}
-                  persistedState={msg.externalAgentState}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.hardwareBlueprintRun!.runId, result)
-                  }
-                />
-              ) : msg.parametricCadRun ? (
-                <InlineParametricCadRun
-                  runId={msg.parametricCadRun.runId}
-                  brief={msg.parametricCadRun.brief}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.parametricCadRun!.runId, result)
-                  }
-                />
-              ) : msg.hyperframesRun ? (
-                <InlineHyperframesRun
-                  runId={msg.hyperframesRun.runId}
-                  brief={msg.hyperframesRun.brief}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.hyperframesRun!.runId, result)
-                  }
-                />
-              ) : msg.resource2SkillRun ? (
-                <InlineResource2SkillRun
-                  runId={msg.resource2SkillRun!.runId}
-                  brief={msg.resource2SkillRun!.brief}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.resource2SkillRun!.runId, result)
-                  }
-                />
-              ) : msg.openMontageRun ? (
-                <InlineOpenMontageRun
-                  runId={msg.openMontageRun.runId}
-                  brief={msg.openMontageRun.brief}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.openMontageRun!.runId, result)
-                  }
-                />
-              ) : msg.openworkRun ? (
-                <InlineOpenworkRun
-                  runId={msg.openworkRun.runId}
-                  task={msg.openworkRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.openworkRun!.runId, result)
-                  }
-                />
-              ) : msg.openscienceRun ? (
-                <InlineOpenscienceRun
-                  runId={msg.openscienceRun.runId}
-                  task={msg.openscienceRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.openscienceRun!.runId, result)
-                  }
-                />
-              ) : msg.inboxZeroRun ? (
-                <InlineInboxZeroRun
-                  runId={msg.inboxZeroRun.runId}
-                  task={msg.inboxZeroRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.inboxZeroRun!.runId, result)
-                  }
-                />
-              ) : msg.vimaxRun ? (
-                <InlineVimaxRun
-                  runId={msg.vimaxRun.runId}
-                  brief={msg.vimaxRun.brief}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedUsage={msg.usage}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.vimaxRun!.runId, result)
-                  }
-                />
-              ) : msg.moneyPrinterRun ? (
-                <InlineMoneyPrinterRun
-                  runId={msg.moneyPrinterRun.runId}
-                  brief={msg.moneyPrinterRun.brief}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.moneyPrinterRun!.runId, result)
-                  }
-                />
-              ) : msg.legalRun ? (
-                <InlineLegalRun
-                  runId={msg.legalRun.runId}
-                  task={msg.legalRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.legalRun!.runId, result)
-                  }
-                />
-              ) : msg.wardrobeRun ? (
-                <InlineWardrobeRun
-                  runId={msg.wardrobeRun.runId}
-                  task={msg.wardrobeRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.wardrobeRun!.runId, result)
-                  }
-                />
-              ) : msg.shortsRun ? (
-                <InlineShortsRun
-                  runId={msg.shortsRun.runId}
-                  task={msg.shortsRun.task}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.shortsRun!.runId, result)
-                  }
-                />
-              ) : msg.formsmithRun ? (
-                <InlineFormsmithRun
-                  runId={msg.formsmithRun.runId}
-                  task={msg.formsmithRun.task}
-                  persistedContent={externalAgentCardContent(msg)}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.formsmithRun!.runId, result)
-                  }
-                />
-              ) : msg.videoUseRun ? (
-                <InlineVideoUseRun
-                  runId={msg.videoUseRun.runId}
-                  task={msg.videoUseRun.task}
-                  quiet={msg.videoUseRun.quiet === true}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.videoUseRun!.runId, result)
-                  }
-                />
-              ) : msg.rufloRun ? (
-                <InlineRufloRun
-                  runId={msg.rufloRun.runId}
-                  task={msg.rufloRun.task}
-                  gardenSlug={msg.rufloRun.gardenSlug}
-                  persistedContent={msg.content}
-                  persistedOutcome={msg.externalAgentOutcome}
-                  persistedEdits={msg.externalAgentEdits}
-                  onRetry={
-                    i === lastAssistantIndex && !isStreaming
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                  onTerminal={(result) =>
-                    onExternalAgentTerminal(msg.rufloRun!.runId, result)
-                  }
-                />
-              ) : null}
-                </div>
-              ) : msg.content ? (
-                <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
-                  <ChatMarkdown
-                    content={
-                      i === lastAssistantIndex
-                        ? revealedAssistantContent
-                        : msg.content
-                    }
-                  />
-                </div>
-              ) : null}
-              {chatSessionId ? (
-                <InlineArtifactCards
-                  ownerMessageId={msg.artifactMessageId ?? msg.id ?? null}
-                />
-              ) : null}
-              {!externalRun &&
-              !(isStreaming && i === lastAssistantIndex) ? (
-                <AssistantMessageActions
-                  content={msg.content || "Response unavailable"}
-                  verification={msg.verification}
-                  branch={(() => {
-                    const branch = branchForAssistant(msg, i);
-                    return branch
-                      ? {
-                          current: branch.activeIndex + 1,
-                          total: branch.variants.length,
-                          onPrevious: () => onSwitchBranch(branch.id, -1),
-                          onNext: () => onSwitchBranch(branch.id, 1),
-                        }
-                      : undefined;
-                  })()}
-                  onRetry={
-                    i === lastAssistantIndex
-                      ? () => onRetryAssistant(i)
-                      : undefined
-                  }
-                />
-              ) : null}
-              </MessageActionsSlot>
-              </div>
-            )}
-          </div>
-        </div>
-        );
-        }}
-      />
+              );
+            }}
+          />
+        ) : null}
+        {chatSessionId ? <InlineArtifactCards ownerMessageId={null} /> : null}
+      </div>
+      {promptToSave !== null ? (
+        <SavePromptDialog
+          content={promptToSave}
+          onClose={() => setPromptToSave(null)}
+        />
       ) : null}
-      {chatSessionId ? (
-        <InlineArtifactCards ownerMessageId={null} />
-      ) : null}
-    </div>
-    {promptToSave !== null ? (
-      <SavePromptDialog
-        content={promptToSave}
-        onClose={() => setPromptToSave(null)}
-      />
-    ) : null}
+      {messageDeleteDialog}
     </InlineArtifactCardsProvider>
   );
 });
@@ -2360,6 +2629,9 @@ export default function WorkspaceClient({
   const [sidePanel, setSidePanel] = useState<TerminalPanel | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [railError, setRailError] = useState<string | null>(null);
+  // The rail's deletes ask in the app's own sheet; `confirmDialog` is rendered
+  // beside the other dialogs at the foot of the page.
+  const { confirm: confirmDestructive, confirmDialog } = useConfirmDialog();
   const [unreadChats, setUnreadChats] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
@@ -2411,10 +2683,12 @@ export default function WorkspaceClient({
   // to whatever the transcript holds. This is how they learn the retried turn
   // is being replaced rather than followed — the Terminal does the same thing
   // inside its session hook.
-  const retryBranchRef = useRef<{ chatId: number; historyLength: number } | null>(
-    null,
-  );
-  const [inlineArtifactRetireVersion, setInlineArtifactRetireVersion] = useState(0);
+  const retryBranchRef = useRef<{
+    chatId: number;
+    historyLength: number;
+  } | null>(null);
+  const [inlineArtifactRetireVersion, setInlineArtifactRetireVersion] =
+    useState(0);
   const [loadingChats, setLoadingChats] = useState(true);
   const [viewPublicChats, setViewPublicChats] = useState(false);
   // Renaming and delete confirmation live inside the rail: it owns the input
@@ -2436,14 +2710,16 @@ export default function WorkspaceClient({
     useState<ExternalAgentSelection | null>(null);
   const [openCodeAgent, setOpenCodeAgent] =
     useState<ExternalAgentSelection | null>(null);
-  const [codexAgent, setCodexAgent] =
-    useState<ExternalAgentSelection | null>(null);
+  const [codexAgent, setCodexAgent] = useState<ExternalAgentSelection | null>(
+    null,
+  );
   const [openPlanterAgent, setOpenPlanterAgent] =
     useState<ExternalAgentSelection | null>(null);
   const [agentReachAgent, setAgentReachAgent] =
     useState<ExternalAgentSelection | null>(null);
-  const [getDocAgent, setGetDocAgent] =
-    useState<ExternalAgentSelection | null>(null);
+  const [getDocAgent, setGetDocAgent] = useState<ExternalAgentSelection | null>(
+    null,
+  );
   const [meetingNotesAgent, setMeetingNotesAgent] =
     useState<ExternalAgentSelection | null>(null);
   const [deepTutorAgent, setDeepTutorAgent] =
@@ -2464,15 +2740,19 @@ export default function WorkspaceClient({
   // starts a run, because a symbol and a date are not a sentence.
   const [tradingAgentsSeed, setTradingAgentsSeed] =
     useState<Partial<TradingAgentsRequest> | null>(null);
-  const [shortsAgent, setShortsAgent] =
-    useState<ExternalAgentSelection | null>(null);
+  const [shortsAgent, setShortsAgent] = useState<ExternalAgentSelection | null>(
+    null,
+  );
   const [formsmithAgent, setFormsmithAgent] =
     useState<ExternalAgentSelection | null>(null);
   // Same contract for Shorts: a pasted command pre-fills the form, and a video
   // still has to be chosen before anything runs.
-  const [shortsSeed, setShortsSeed] = useState<Partial<ShortsRequest> | null>(null);
-  const [rufloAgent, setRufloAgent] =
-    useState<ExternalAgentSelection | null>(null);
+  const [shortsSeed, setShortsSeed] = useState<Partial<ShortsRequest> | null>(
+    null,
+  );
+  const [rufloAgent, setRufloAgent] = useState<ExternalAgentSelection | null>(
+    null,
+  );
   const [launchingExternalAgent, setLaunchingExternalAgent] = useState<
     | "agent-browser"
     | "deep-research"
@@ -2498,6 +2778,7 @@ export default function WorkspaceClient({
     | "openscience"
     | "inbox-zero"
     | "vimax"
+    | "vox-director"
     | "money-printer"
     | "legal"
     | "wardrobe"
@@ -2532,6 +2813,7 @@ export default function WorkspaceClient({
     | "openscience"
     | "inbox-zero"
     | "vimax"
+    | "vox-director"
     | "money-printer"
     | "legal"
     | "wardrobe"
@@ -2610,13 +2892,15 @@ export default function WorkspaceClient({
 
   useEffect(() => {
     const listener = (raw: Event) => {
-      const artifact = (raw as CustomEvent<{
-        id?: string;
-        title?: string;
-        gardenId?: string | null;
-        renderer?: string;
-        sourceSkill?: string | null;
-      }>).detail;
+      const artifact = (
+        raw as CustomEvent<{
+          id?: string;
+          title?: string;
+          gardenId?: string | null;
+          renderer?: string;
+          sourceSkill?: string | null;
+        }>
+      ).detail;
       if (!artifact?.id || artifact.gardenId !== clusterSlug) return;
       setInput(
         `${interactiveVisualizerCommandForArtifact(artifact)}Revise the existing artifact "${artifact.title || "Untitled artifact"}" (artifact ID: ${artifact.id}). `,
@@ -2657,7 +2941,9 @@ export default function WorkspaceClient({
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [extractingAttachments, setExtractingAttachments] = useState(false);
   /** What a blocking document distillation is doing right now, or null. */
-  const [attachmentDistillStatus, setAttachmentDistillStatus] = useState<string | null>(null);
+  const [attachmentDistillStatus, setAttachmentDistillStatus] = useState<
+    string | null
+  >(null);
   const chatFileInputRef = useRef<HTMLInputElement>(null);
 
   // Garden note generation
@@ -2687,7 +2973,9 @@ export default function WorkspaceClient({
   const learnDocumentMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   // Syllabus: the document Learn treats as the course study guide rather than as
   // subject matter. null means "no syllabus".
-  const [learnSyllabusSlug, setLearnSyllabusSlug] = useState<string | null>(null);
+  const [learnSyllabusSlug, setLearnSyllabusSlug] = useState<string | null>(
+    null,
+  );
   const [learnSyllabusMenuOpen, setLearnSyllabusMenuOpen] = useState(false);
   const learnSyllabusMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [learnSyllabusUploading, setLearnSyllabusUploading] = useState(false);
@@ -2765,10 +3053,12 @@ export default function WorkspaceClient({
 
   useEffect(() => {
     const handleGardenDocumentsChanged = (raw: Event) => {
-      const detail = (raw as CustomEvent<{
-        gardenId?: string;
-        folder?: string;
-      }>).detail;
+      const detail = (
+        raw as CustomEvent<{
+          gardenId?: string;
+          folder?: string;
+        }>
+      ).detail;
       if (detail?.gardenId !== clusterSlug) return;
       if (detail.folder) {
         setExpandedFolders((current) => new Set(current).add(detail.folder!));
@@ -2776,8 +3066,15 @@ export default function WorkspaceClient({
       setGraphRefreshVersion((current) => current + 1);
       void fetchDocuments();
     };
-    window.addEventListener(GARDEN_DOCUMENTS_CHANGED_EVENT, handleGardenDocumentsChanged);
-    return () => window.removeEventListener(GARDEN_DOCUMENTS_CHANGED_EVENT, handleGardenDocumentsChanged);
+    window.addEventListener(
+      GARDEN_DOCUMENTS_CHANGED_EVENT,
+      handleGardenDocumentsChanged,
+    );
+    return () =>
+      window.removeEventListener(
+        GARDEN_DOCUMENTS_CHANGED_EVENT,
+        handleGardenDocumentsChanged,
+      );
   }, [clusterSlug, fetchDocuments]);
 
   const fetchSavedLinks = useCallback(async () => {
@@ -3075,7 +3372,9 @@ export default function WorkspaceClient({
       // A rename or delete that landed while this was in flight owns the title
       // now, exactly as it does for the full reload above.
       if (chatHistoryEpoch.current !== epoch) return;
-      const titles = new Map(sessions.map((session) => [session.id, session.title]));
+      const titles = new Map(
+        sessions.map((session) => [session.id, session.title]),
+      );
       setChatSessions((previous) =>
         previous.map((session) => {
           const title = titles.get(session.id);
@@ -3175,6 +3474,17 @@ export default function WorkspaceClient({
     [messages],
   );
 
+  // What the composer's arrow keys recall. Built off the drawn rows for the
+  // same reason as the rail: pressing Up should only return sentences this
+  // person actually typed, never a turn the app inserted on their behalf.
+  const sentMessages = useMemo(
+    () =>
+      buildTranscriptRows(messages).flatMap((row) =>
+        row.message.role === "user" ? [row.message.content] : [],
+      ),
+    [messages],
+  );
+
   // A runtime agent a super-agent turn asked for, and the follow-up turn its
   // result comes back on. The structured delegation goes straight to the
   // selected launcher so its slash command is never persisted as user input.
@@ -3186,7 +3496,9 @@ export default function WorkspaceClient({
   } | null>(null);
   const launchHopsRef = useRef(0);
   const continuedDelegatedRunsRef = useRef(new Set<string>());
-  const delegatedAgentLaunchRef = useRef<AgentLaunchRequestPayload | null>(null);
+  const delegatedAgentLaunchRef = useRef<AgentLaunchRequestPayload | null>(
+    null,
+  );
   const [pendingLaunchContinuation, setPendingLaunchContinuation] = useState<
     string | null
   >(null);
@@ -3271,7 +3583,11 @@ export default function WorkspaceClient({
           await launchRuflo(request.brief);
           return;
         case "deep-research":
-          if (!deepResearchAgent) await selectDeepResearch();
+          // Deliberately not selected. `launchDeepResearch` needs nothing from
+          // the chip, so selecting would only put `/agents:deep-research` in
+          // the composer — and the snapshot below cannot take it back until the
+          // whole launch settles, which is long enough for the person to type
+          // into it and have their next message routed into Deep Research.
           await launchDeepResearch(request.brief);
           return;
         case "agent-browser": {
@@ -3349,11 +3665,16 @@ export default function WorkspaceClient({
         case "vimax":
           await launchVimax(request.brief);
           return;
+        case "vox-director":
+          await launchVoxDirector(request.brief);
+          return;
         case "money-printer":
           await launchMoneyPrinter(request.brief);
           return;
         default:
-          setExternalAgentStatus(`${request.agentName} cannot be launched from this chat.`);
+          setExternalAgentStatus(
+            `${request.agentName} cannot be launched from this chat.`,
+          );
       }
     } finally {
       restoreComposerAgentSelection(composerSelection);
@@ -3401,10 +3722,16 @@ export default function WorkspaceClient({
   // external agent run — queue above the composer instead of being dropped. A
   // steerable chat turn can take one as a mid-run correction; anything still
   // queued when the run settles is sent as an ordinary follow-up.
-  const externalRunHoldsQueue =
-    hasRunningExternalAgentInActiveChat ||
+  // Every moment of a delegation the person cannot see: queued behind the turn
+  // that asked for it, starting, and finished but not yet handed back. The
+  // worker's own run is covered separately, by the transcript.
+  const delegationInFlight =
     agentLaunchQueue.queued ||
     delegatedAgentLaunching ||
+    pendingLaunchContinuation !== null;
+  const externalRunHoldsQueue =
+    hasRunningExternalAgentInActiveChat ||
+    delegationInFlight ||
     launchingExternalAgent !== null;
   // A Hermes chat turn this tab is streaming — the one thing a queued message
   // can steer, and the one thing the composer's stop square can abort. An
@@ -4444,7 +4771,8 @@ export default function WorkspaceClient({
     const targetId = sessionId ?? activeChatId;
     if (!targetId) return false;
     const targetSession = chatSessions.find((s) => s.id === targetId);
-    if (!targetSession || (targetSession.isOwn === false && !isOwner)) return false;
+    if (!targetSession || (targetSession.isOwn === false && !isOwner))
+      return false;
     chatHistoryEpoch.current += 1;
     forgetChatDrafts(window.localStorage, draftSurface, [String(targetId)]);
     forgetUnreadChats([String(targetId)]);
@@ -4465,13 +4793,13 @@ export default function WorkspaceClient({
   }
 
   async function deleteChatFromRail(chat: TerminalSidebarChat) {
-    if (
-      !window.confirm(
-        `Delete "${chat.title}"? Anything it is still running is stopped, and its messages are removed for good.`,
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirmDestructive({
+      title: "Delete this chat?",
+      subject: `“${chat.title}”`,
+      body: "Anything it is still running is stopped, and its messages are removed for good.",
+      confirmLabel: "Delete chat",
+    });
+    if (!confirmed) return;
     setRailError(null);
     if (!(await handleDeleteChat(Number(chat.id)))) {
       setRailError("This chat could not be deleted.");
@@ -4480,15 +4808,16 @@ export default function WorkspaceClient({
 
   async function deleteChatsFromRail(chats: TerminalSidebarChat[]) {
     if (chats.length === 0) return;
-    const subject =
-      chats.length === 1 ? `"${chats[0].title}"` : `${chats.length} chats`;
-    if (
-      !window.confirm(
-        `Delete ${subject}? Anything they are still running is stopped, and their messages are removed for good.`,
-      )
-    ) {
-      return;
-    }
+    const single = chats.length === 1;
+    const confirmed = await confirmDestructive({
+      title: single ? "Delete this chat?" : `Delete ${chats.length} chats?`,
+      subject: single ? `“${chats[0].title}”` : null,
+      body: single
+        ? "Anything it is still running is stopped, and its messages are removed for good."
+        : "Anything they are still running is stopped, and their messages are removed for good.",
+      confirmLabel: single ? "Delete chat" : `Delete ${chats.length} chats`,
+    });
+    if (!confirmed) return;
     setRailError(null);
     let failed = 0;
     // One at a time: each delete stops that chat's live work before removing
@@ -4901,7 +5230,11 @@ export default function WorkspaceClient({
   }
 
   async function handleResumeLearn() {
-    if (learnPauseBusy || learnCancelBusy || learnState?.job?.status !== "paused")
+    if (
+      learnPauseBusy ||
+      learnCancelBusy ||
+      learnState?.job?.status !== "paused"
+    )
       return;
     await postLearnAction("resume", { expectedJobId: learnState?.job?.id });
   }
@@ -5091,7 +5424,11 @@ export default function WorkspaceClient({
       ...current,
       [groupId]: { ...group, activeIndex: targetIndex, variants },
     }));
-    const nextMessages = cloneMessages(variants[targetIndex]);
+    const nextMessages = applyBranchVariant({
+      messages,
+      variant: variants[targetIndex],
+      groupId,
+    });
     setInlineArtifactRetireVersion((current) => current + 1);
     updateChatMessages(activeChat.id, nextMessages);
     void persistChatSession(activeChat.id, nextMessages);
@@ -5136,11 +5473,7 @@ export default function WorkspaceClient({
     if (!previousUser || previousUser.role !== "user") return;
     const editedAttachments = reusableChatAttachments(previousUser.attachments);
     setInlineArtifactRetireVersion((current) => current + 1);
-    void handleSubmit(
-      text,
-      messages.slice(0, messageIndex),
-      editedAttachments,
-    );
+    void handleSubmit(text, messages.slice(0, messageIndex), editedAttachments);
   }
 
   // Applies one queued message to the active chat turn as a course
@@ -5237,7 +5570,9 @@ export default function WorkspaceClient({
       return selected;
     } catch (error) {
       setExternalAgentStatus(
-        error instanceof Error ? error.message : "Agent Browser is unavailable.",
+        error instanceof Error
+          ? error.message
+          : "Agent Browser is unavailable.",
       );
       return null;
     }
@@ -5386,7 +5721,10 @@ export default function WorkspaceClient({
               : "Meeting Notes is unavailable.",
         );
       }
-      const selected = { id: MEETING_NOTES_AGENT_ID, name: MEETING_NOTES_AGENT_NAME };
+      const selected = {
+        id: MEETING_NOTES_AGENT_ID,
+        name: MEETING_NOTES_AGENT_NAME,
+      };
       setAgentBrowserAgent(null);
       setDeepResearchAgent(null);
       setCodexAgent(null);
@@ -5408,7 +5746,9 @@ export default function WorkspaceClient({
       return selected;
     } catch (error) {
       setExternalAgentStatus(
-        error instanceof Error ? error.message : "Meeting Notes is unavailable.",
+        error instanceof Error
+          ? error.message
+          : "Meeting Notes is unavailable.",
       );
       return null;
     }
@@ -5591,7 +5931,9 @@ export default function WorkspaceClient({
       }
       return selected;
     } catch (error) {
-      setExternalAgentStatus(error instanceof Error ? error.message : "Formsmith is unavailable.");
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "Formsmith is unavailable.",
+      );
       return null;
     }
   }
@@ -5599,19 +5941,43 @@ export default function WorkspaceClient({
   useEffect(() => {
     if (!formsmithAgent) return;
     if (
-      agentBrowserAgent || deepResearchAgent || codexAgent || openCodeAgent ||
-      openPlanterAgent || rufloAgent || agentReachAgent || getDocAgent || meetingNotesAgent ||
-      deepTutorAgent || careerOpsAgent || tradingAgentsAgent || vibeTradingAgent ||
-      deerFlowAgent || shortsAgent
+      agentBrowserAgent ||
+      deepResearchAgent ||
+      codexAgent ||
+      openCodeAgent ||
+      openPlanterAgent ||
+      rufloAgent ||
+      agentReachAgent ||
+      getDocAgent ||
+      meetingNotesAgent ||
+      deepTutorAgent ||
+      careerOpsAgent ||
+      tradingAgentsAgent ||
+      vibeTradingAgent ||
+      deerFlowAgent ||
+      shortsAgent
     ) {
       // This synchronizes a newly added selector with the older selector states.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setFormsmithAgent(null);
     }
   }, [
-    agentBrowserAgent, agentReachAgent, careerOpsAgent, codexAgent, deepResearchAgent,
-    deepTutorAgent, deerFlowAgent, formsmithAgent, getDocAgent, meetingNotesAgent, openCodeAgent,
-    openPlanterAgent, rufloAgent, shortsAgent, tradingAgentsAgent, vibeTradingAgent,
+    agentBrowserAgent,
+    agentReachAgent,
+    careerOpsAgent,
+    codexAgent,
+    deepResearchAgent,
+    deepTutorAgent,
+    deerFlowAgent,
+    formsmithAgent,
+    getDocAgent,
+    meetingNotesAgent,
+    openCodeAgent,
+    openPlanterAgent,
+    rufloAgent,
+    shortsAgent,
+    tradingAgentsAgent,
+    vibeTradingAgent,
   ]);
 
   async function selectTradingAgents(): Promise<ExternalAgentSelection | null> {
@@ -5652,7 +6018,9 @@ export default function WorkspaceClient({
       return selected;
     } catch (error) {
       setExternalAgentStatus(
-        error instanceof Error ? error.message : "Trading Agent is unavailable.",
+        error instanceof Error
+          ? error.message
+          : "Trading Agent is unavailable.",
       );
       return null;
     }
@@ -5731,7 +6099,10 @@ export default function WorkspaceClient({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.available !== true) {
           setExternalAgentStatus(
-            explainCodexError(data.reason ?? data.error, "Codex is unavailable."),
+            explainCodexError(
+              data.reason ?? data.error,
+              "Codex is unavailable.",
+            ),
           );
         }
       } catch {
@@ -5810,7 +6181,10 @@ export default function WorkspaceClient({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.available !== true) {
           setExternalAgentStatus(
-            explainRufloError(data.reason ?? data.error, "Ruflo is unavailable."),
+            explainRufloError(
+              data.reason ?? data.error,
+              "Ruflo is unavailable.",
+            ),
           );
         } else if (data.repository?.name) {
           setExternalAgentStatus(
@@ -5855,7 +6229,13 @@ export default function WorkspaceClient({
       const createdAt = new Date().toISOString();
       return [
         { role: "user", content: userContent, createdAt, ...userMessageFields },
-        { role: "assistant", content: "", createdAt, sources: [], thinking: "" },
+        {
+          role: "assistant",
+          content: "",
+          createdAt,
+          sources: [],
+          thinking: "",
+        },
       ];
     };
     // Thinking belongs to the turn rather than to the run that answers it, so
@@ -5914,7 +6294,9 @@ export default function WorkspaceClient({
         }
       }
       if (assistantIndex < 0) {
-        throw new Error("The assistant message for this delegated run was not found.");
+        throw new Error(
+          "The assistant message for this delegated run was not found.",
+        );
       }
       const delegatedResult =
         (assistantMessage.externalAgentOutcome &&
@@ -5938,7 +6320,7 @@ export default function WorkspaceClient({
                 assistantMessage.externalAgentOutcome ??
                 (delegatedResult !== undefined
                   ? "failed"
-                  : message.externalAgentOutcome ?? "running"),
+                  : (message.externalAgentOutcome ?? "running")),
               ...(message.delegatedAgentPreamble?.trim()
                 ? { delegatedAgentPreamble: message.delegatedAgentPreamble }
                 : message.content.trim()
@@ -5950,8 +6332,13 @@ export default function WorkspaceClient({
                   ? { externalAgentResult: message.externalAgentResult }
                   : {}),
               ...(delegatedAgentLaunchRef.current?.agentName
-                ? { externalAgentName: delegatedAgentLaunchRef.current.agentName }
+                ? {
+                    externalAgentName:
+                      delegatedAgentLaunchRef.current.agentName,
+                  }
                 : {}),
+              externalAgentStartedAt:
+                message.externalAgentStartedAt ?? createdAt,
               createdAt: message.createdAt ?? createdAt,
             }
           : message,
@@ -5971,7 +6358,10 @@ export default function WorkspaceClient({
     await persistChatSession(session.id, nextMessages, title);
   }
 
-  async function runWorkflowAutomation(workflow: LocalWorkflowSummary, workflowInput: string) {
+  async function runWorkflowAutomation(
+    workflow: LocalWorkflowSummary,
+    workflowInput: string,
+  ) {
     const request = workflowInput.trim();
     const userContent = request
       ? `Run the ${workflow.name} automation\n\n${request}`
@@ -5980,12 +6370,19 @@ export default function WorkspaceClient({
     if (!prepared) return;
     setChatStreaming(prepared.session.id, true);
     try {
-      const response = await fetch(`/api/workflows/local/${encodeURIComponent(workflow.id)}/run`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ input: workflowInput }),
-      });
-      const payload = await response.json().catch(() => ({})) as Partial<WorkflowRunResponse> & { error?: string };
+      const response = await fetch(
+        `/api/workflows/local/${encodeURIComponent(workflow.id)}/run`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ input: workflowInput }),
+        },
+      );
+      const payload = (await response
+        .json()
+        .catch(() => ({}))) as Partial<WorkflowRunResponse> & {
+        error?: string;
+      };
       if (!response.ok || typeof payload.assistantContent !== "string") {
         throw new Error(payload.error || `${workflow.name} could not be run.`);
       }
@@ -5999,7 +6396,10 @@ export default function WorkspaceClient({
         prepared.title,
       );
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : `${workflow.name} could not be run.`;
+      const message =
+        cause instanceof Error
+          ? cause.message
+          : `${workflow.name} could not be run.`;
       await commitExternalAgentTurn(
         prepared.session,
         userContent,
@@ -6081,7 +6481,10 @@ export default function WorkspaceClient({
     }
   }
 
-  async function launchDeepResearch(task: string) {
+  async function launchDeepResearch(
+    task: string,
+    userContentOverride?: string,
+  ) {
     if (externalAgentLaunchRef.current) return;
     // The saved defaults first, then whatever flags this message carries.
     const request = parseResearchRequest(
@@ -6095,7 +6498,8 @@ export default function WorkspaceClient({
     externalAgentLaunchRef.current = "deep-research";
     setLaunchingExternalAgent("deep-research");
     setExternalAgentStatus("");
-    const userContent = deepResearchUserMessage(task);
+    const userContent =
+      userContentOverride?.trim() || deepResearchUserMessage(task);
     const prepared = await prepareExternalAgentSession(userContent);
     if (!prepared) {
       externalAgentLaunchRef.current = null;
@@ -6138,7 +6542,9 @@ export default function WorkspaceClient({
       );
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "The research run could not start.";
+        error instanceof Error
+          ? error.message
+          : "The research run could not start.";
       await commitExternalAgentTurn(
         prepared.session,
         userContent,
@@ -6295,7 +6701,8 @@ export default function WorkspaceClient({
 
   async function launchGetDoc(task: string) {
     if (!task || externalAgentLaunchRef.current) {
-      if (!task) setExternalAgentStatus("Describe the paper you are looking for.");
+      if (!task)
+        setExternalAgentStatus("Describe the paper you are looking for.");
       return;
     }
     externalAgentLaunchRef.current = "get-doc";
@@ -6366,7 +6773,8 @@ export default function WorkspaceClient({
    */
   async function launchDeepTutor(task: string) {
     if (!task || externalAgentLaunchRef.current) {
-      if (!task) setExternalAgentStatus("Ask Deep Tutor something about this Garden.");
+      if (!task)
+        setExternalAgentStatus("Ask Deep Tutor something about this Garden.");
       return;
     }
     externalAgentLaunchRef.current = "deep-tutor";
@@ -6659,7 +7067,9 @@ export default function WorkspaceClient({
         if (data.available !== true && typeof data.reason === "string") {
           setExternalAgentStatus(data.reason);
         } else if (data?.desk?.running === true) {
-          setExternalAgentStatus("The trading desk is already running. Send to see it, or say stop.");
+          setExternalAgentStatus(
+            "The trading desk is already running. Send to see it, or say stop.",
+          );
         }
       } catch {
         // The run route reports the real reason if it comes to that.
@@ -6674,19 +7084,46 @@ export default function WorkspaceClient({
   useEffect(() => {
     if (!paperTraderAgent) return;
     if (
-      agentBrowserAgent || deepResearchAgent || codexAgent || openCodeAgent ||
-      openPlanterAgent || rufloAgent || agentReachAgent || getDocAgent || meetingNotesAgent ||
-      deepTutorAgent || careerOpsAgent || tradingAgentsAgent || vibeTradingAgent ||
-      stockAnalystAgent || deerFlowAgent || shortsAgent || formsmithAgent
+      agentBrowserAgent ||
+      deepResearchAgent ||
+      codexAgent ||
+      openCodeAgent ||
+      openPlanterAgent ||
+      rufloAgent ||
+      agentReachAgent ||
+      getDocAgent ||
+      meetingNotesAgent ||
+      deepTutorAgent ||
+      careerOpsAgent ||
+      tradingAgentsAgent ||
+      vibeTradingAgent ||
+      stockAnalystAgent ||
+      deerFlowAgent ||
+      shortsAgent ||
+      formsmithAgent
     ) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setPaperTraderAgent(null);
     }
   }, [
-    agentBrowserAgent, agentReachAgent, careerOpsAgent, codexAgent, deepResearchAgent,
-    deepTutorAgent, deerFlowAgent, formsmithAgent, getDocAgent, meetingNotesAgent, openCodeAgent,
-    openPlanterAgent, paperTraderAgent, rufloAgent, shortsAgent, stockAnalystAgent,
-    tradingAgentsAgent, vibeTradingAgent,
+    agentBrowserAgent,
+    agentReachAgent,
+    careerOpsAgent,
+    codexAgent,
+    deepResearchAgent,
+    deepTutorAgent,
+    deerFlowAgent,
+    formsmithAgent,
+    getDocAgent,
+    meetingNotesAgent,
+    openCodeAgent,
+    openPlanterAgent,
+    paperTraderAgent,
+    rufloAgent,
+    shortsAgent,
+    stockAnalystAgent,
+    tradingAgentsAgent,
+    vibeTradingAgent,
   ]);
 
   async function selectStockAnalyst(): Promise<ExternalAgentSelection | null> {
@@ -6736,7 +7173,9 @@ export default function WorkspaceClient({
       return selected;
     } catch (error) {
       setExternalAgentStatus(
-        error instanceof Error ? error.message : "Stock Analyst is unavailable.",
+        error instanceof Error
+          ? error.message
+          : "Stock Analyst is unavailable.",
       );
       return null;
     }
@@ -6747,19 +7186,44 @@ export default function WorkspaceClient({
   useEffect(() => {
     if (!stockAnalystAgent) return;
     if (
-      agentBrowserAgent || deepResearchAgent || codexAgent || openCodeAgent ||
-      openPlanterAgent || rufloAgent || agentReachAgent || getDocAgent || meetingNotesAgent ||
-      deepTutorAgent || careerOpsAgent || tradingAgentsAgent || vibeTradingAgent ||
-      deerFlowAgent || shortsAgent || formsmithAgent
+      agentBrowserAgent ||
+      deepResearchAgent ||
+      codexAgent ||
+      openCodeAgent ||
+      openPlanterAgent ||
+      rufloAgent ||
+      agentReachAgent ||
+      getDocAgent ||
+      meetingNotesAgent ||
+      deepTutorAgent ||
+      careerOpsAgent ||
+      tradingAgentsAgent ||
+      vibeTradingAgent ||
+      deerFlowAgent ||
+      shortsAgent ||
+      formsmithAgent
     ) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setStockAnalystAgent(null);
     }
   }, [
-    agentBrowserAgent, agentReachAgent, careerOpsAgent, codexAgent, deepResearchAgent,
-    deepTutorAgent, deerFlowAgent, formsmithAgent, getDocAgent, meetingNotesAgent, openCodeAgent,
-    openPlanterAgent, rufloAgent, shortsAgent, stockAnalystAgent,
-    tradingAgentsAgent, vibeTradingAgent,
+    agentBrowserAgent,
+    agentReachAgent,
+    careerOpsAgent,
+    codexAgent,
+    deepResearchAgent,
+    deepTutorAgent,
+    deerFlowAgent,
+    formsmithAgent,
+    getDocAgent,
+    meetingNotesAgent,
+    openCodeAgent,
+    openPlanterAgent,
+    rufloAgent,
+    shortsAgent,
+    stockAnalystAgent,
+    tradingAgentsAgent,
+    vibeTradingAgent,
   ]);
 
   /**
@@ -6784,12 +7248,18 @@ export default function WorkspaceClient({
       const response = await fetch("/api/shorts/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ request, model, chatSessionId: prepared.session.id }),
+        body: JSON.stringify({
+          request,
+          model,
+          chatSessionId: prepared.session.id,
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.run?.runId) {
         throw new Error(
-          typeof data?.error === "string" ? data.error : "The clips could not start.",
+          typeof data?.error === "string"
+            ? data.error
+            : "The clips could not start.",
         );
       }
       setChatStreaming(prepared.session.id, true);
@@ -6843,7 +7313,11 @@ export default function WorkspaceClient({
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.run?.runId) {
-        throw new Error(typeof data?.error === "string" ? data.error : "The reconstruction could not start.");
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The reconstruction could not start.",
+        );
       }
       setChatStreaming(prepared.session.id, true);
       await commitExternalAgentTurn(
@@ -7275,7 +7749,10 @@ export default function WorkspaceClient({
 
   async function launchSocialsManager(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
-      if (!brief) setExternalAgentStatus("Tell the Socials Manager what the post is about.");
+      if (!brief)
+        setExternalAgentStatus(
+          "Tell the Socials Manager what the post is about.",
+        );
       return;
     }
     externalAgentLaunchRef.current = "socials-manager";
@@ -7348,7 +7825,8 @@ export default function WorkspaceClient({
 
   async function launchHardwareBlueprint(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
-      if (!brief) setExternalAgentStatus("Tell Hardware Blueprint what to build.");
+      if (!brief)
+        setExternalAgentStatus("Tell Hardware Blueprint what to build.");
       return;
     }
     externalAgentLaunchRef.current = "hardware-blueprint";
@@ -7424,7 +7902,8 @@ export default function WorkspaceClient({
 
   async function launchParametricCad(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
-      if (!brief) setExternalAgentStatus("Tell Parametric CAD what part to design.");
+      if (!brief)
+        setExternalAgentStatus("Tell Parametric CAD what part to design.");
       return;
     }
     externalAgentLaunchRef.current = "parametric-cad";
@@ -7583,14 +8062,100 @@ export default function WorkspaceClient({
   }
 
   /**
+   * Vox Director turns a topic into a narrated paper-collage explainer: a beat
+   * map, a poster per beat, cut-out pieces animated locally, and an MP4. The run
+   * is long and entirely local, so the turn is recorded as soon as it starts and
+   * the card streams into it.
+   */
+  async function launchVoxDirector(brief: string) {
+    if (!brief || externalAgentLaunchRef.current) {
+      if (!brief) setExternalAgentStatus("Tell Vox Director what to explain.");
+      return;
+    }
+    externalAgentLaunchRef.current = "vox-director";
+    setLaunchingExternalAgent("vox-director");
+    setExternalAgentStatus("");
+    const userContent = voxDirectorUserMessage(brief);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...transcriptForRetriedTurn(prepared.session),
+      {
+        id: `vox-director-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/vox-director/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The explainer could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          voxDirectorRun: { runId: String(data.run.runId), brief },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The explainer could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  /**
    * The Legal Agent works on the documents attached to the message: they are
    * written into the run's workspace and read there, one file at a time, so
    * the answer can cite which document a point came from. Whatever it drafts
    * comes back as an artifact of this Garden's chat.
    */
-  async function launchLegal(task: string, attachments: readonly ChatAttachment[]) {
+  async function launchLegal(
+    task: string,
+    attachments: readonly ChatAttachment[],
+  ) {
     if (!task || externalAgentLaunchRef.current) {
-      if (!task) setExternalAgentStatus("Tell the Legal Agent what the assignment is.");
+      if (!task)
+        setExternalAgentStatus("Tell the Legal Agent what the assignment is.");
       return;
     }
     externalAgentLaunchRef.current = "legal";
@@ -7642,7 +8207,10 @@ export default function WorkspaceClient({
         {
           role: "assistant",
           content: "",
-          legalRun: { runId: String(data.run.runId), task: legalRunLabel({ task }) },
+          legalRun: {
+            runId: String(data.run.runId),
+            task: legalRunLabel({ task }),
+          },
           externalAgentOutcome: "running",
         },
         prepared.title,
@@ -7673,7 +8241,10 @@ export default function WorkspaceClient({
    * generator. Every cutout and modeled photo comes back as an artifact of this
    * Garden's chat.
    */
-  async function launchWardrobe(direction: string, attachments: readonly ChatAttachment[]) {
+  async function launchWardrobe(
+    direction: string,
+    attachments: readonly ChatAttachment[],
+  ) {
     if (externalAgentLaunchRef.current) return;
     if (!attachments.some((attachment) => attachment.type === "image")) {
       setExternalAgentStatus("Attach photos of the clothes you want imported.");
@@ -7730,7 +8301,8 @@ export default function WorkspaceClient({
           wardrobeRun: {
             runId: String(data.run.runId),
             task: wardrobeRunLabel({
-              photos: attachments.filter((item) => item.type === "image").length,
+              photos: attachments.filter((item) => item.type === "image")
+                .length,
               direction,
             }),
           },
@@ -7764,7 +8336,10 @@ export default function WorkspaceClient({
    */
   async function launchMoneyPrinter(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
-      if (!brief) setExternalAgentStatus("Tell MoneyPrinter what the video should be about.");
+      if (!brief)
+        setExternalAgentStatus(
+          "Tell MoneyPrinter what the video should be about.",
+        );
       return;
     }
     externalAgentLaunchRef.current = "money-printer";
@@ -7844,7 +8419,8 @@ export default function WorkspaceClient({
    */
   async function launchOpenwork(task: string) {
     if (!task || externalAgentLaunchRef.current) {
-      if (!task) setExternalAgentStatus("Tell OpenWork what to do in your workspace.");
+      if (!task)
+        setExternalAgentStatus("Tell OpenWork what to do in your workspace.");
       return;
     }
     externalAgentLaunchRef.current = "openwork";
@@ -7918,7 +8494,6 @@ export default function WorkspaceClient({
     }
   }
 
-
   /**
    * Inbox Zero works on the user's mailbox rather than on this Garden, so the
    * turn carries only the instruction — there is no repository to name and
@@ -7927,7 +8502,8 @@ export default function WorkspaceClient({
    */
   async function launchInboxZero(task: string) {
     if (!task || externalAgentLaunchRef.current) {
-      if (!task) setExternalAgentStatus("Tell Inbox Zero what to do with your email.");
+      if (!task)
+        setExternalAgentStatus("Tell Inbox Zero what to do with your email.");
       return;
     }
     externalAgentLaunchRef.current = "inbox-zero";
@@ -8007,7 +8583,8 @@ export default function WorkspaceClient({
    */
   async function launchOpenscience(task: string) {
     if (!task || externalAgentLaunchRef.current) {
-      if (!task) setExternalAgentStatus("Tell OpenScience what to investigate.");
+      if (!task)
+        setExternalAgentStatus("Tell OpenScience what to investigate.");
       return;
     }
     externalAgentLaunchRef.current = "openscience";
@@ -8083,7 +8660,8 @@ export default function WorkspaceClient({
 
   async function launchHyperframes(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
-      if (!brief) setExternalAgentStatus("Tell HyperFrames what video to make.");
+      if (!brief)
+        setExternalAgentStatus("Tell HyperFrames what video to make.");
       return;
     }
     externalAgentLaunchRef.current = "hyperframes";
@@ -8159,7 +8737,10 @@ export default function WorkspaceClient({
 
   async function launchResource2Skill(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
-      if (!brief) setExternalAgentStatus("Describe the artifact Resource2Skill should build.");
+      if (!brief)
+        setExternalAgentStatus(
+          "Describe the artifact Resource2Skill should build.",
+        );
       return;
     }
     externalAgentLaunchRef.current = "resource2skill";
@@ -8174,30 +8755,54 @@ export default function WorkspaceClient({
     }
     updateChatMessages(prepared.session.id, [
       ...transcriptForRetriedTurn(prepared.session),
-      { id: `resource2skill-pending-${crypto.randomUUID()}`, role: "user", content: userContent, createdAt: new Date().toISOString() },
+      {
+        id: `resource2skill-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
     ]);
     try {
       const response = await fetch("/api/resource2skill/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ brief, model, reasoningEffort, chatSessionId: prepared.session.id }),
+        body: JSON.stringify({
+          brief,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data?.run?.runId) {
-        throw new Error(typeof data?.message === "string" ? data.message : typeof data?.error === "string" ? data.error : "The Resource2Skill run could not start.");
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The Resource2Skill run could not start.",
+        );
       }
       setChatStreaming(prepared.session.id, true);
       await commitExternalAgentTurn(
         prepared.session,
         userContent,
-        { role: "assistant", content: "", resource2SkillRun: { runId: String(data.run.runId), brief }, externalAgentOutcome: "running" },
+        {
+          role: "assistant",
+          content: "",
+          resource2SkillRun: { runId: String(data.run.runId), brief },
+          externalAgentOutcome: "running",
+        },
         prepared.title,
       );
     } catch (error) {
       await commitExternalAgentTurn(
         prepared.session,
         userContent,
-        { role: "assistant", content: `The Resource2Skill run could not start: ${error instanceof Error ? error.message : "unknown error"}` },
+        {
+          role: "assistant",
+          content: `The Resource2Skill run could not start: ${error instanceof Error ? error.message : "unknown error"}`,
+        },
         prepared.title,
       );
     } finally {
@@ -8209,7 +8814,8 @@ export default function WorkspaceClient({
 
   async function launchOpenMontage(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
-      if (!brief) setExternalAgentStatus("Tell OpenMontage what video to produce.");
+      if (!brief)
+        setExternalAgentStatus("Tell OpenMontage what video to produce.");
       return;
     }
     externalAgentLaunchRef.current = "openmontage";
@@ -8301,7 +8907,9 @@ export default function WorkspaceClient({
     const persistedAttachments = chatMessageAttachments(attachments);
     const userMessageFields = persistedAttachments.length
       ? {
-          attachmentNames: persistedAttachments.map((attachment) => attachment.name),
+          attachmentNames: persistedAttachments.map(
+            (attachment) => attachment.name,
+          ),
           attachments: persistedAttachments,
         }
       : {};
@@ -8328,13 +8936,21 @@ export default function WorkspaceClient({
           chatSessionId: prepared.session.id,
           clientMessageId,
           attachToExistingTurn: Boolean(delegatedRequest),
-          attachments: attachments.filter((attachment) => attachment.type === "image"),
+          attachments: attachments.filter(
+            (attachment) => attachment.type === "image",
+          ),
         }),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.run?.runId || !data.run.gardenSlug || !data.run.repository) {
+      if (
+        !response.ok ||
+        !data?.run?.runId ||
+        !data.run.gardenSlug ||
+        !data.run.repository
+      ) {
         throw new Error(
-          data?.message ?? explainCodexError(data?.error, "The Codex task could not start."),
+          data?.message ??
+            explainCodexError(data?.error, "The Codex task could not start."),
         );
       }
       const assistantMessage: Message = {
@@ -8363,7 +8979,12 @@ export default function WorkspaceClient({
           settleExternalTurnActivity();
           updateChatMessages(prepared.session.id, [
             ...transcriptForRetriedTurn(prepared.session),
-            { role: "user", content: userContent, createdAt, ...userMessageFields },
+            {
+              role: "user",
+              content: userContent,
+              createdAt,
+              ...userMessageFields,
+            },
             { ...assistantMessage, createdAt },
           ]);
         }
@@ -8414,7 +9035,9 @@ export default function WorkspaceClient({
     const persistedAttachments = chatMessageAttachments(attachments);
     const userMessageFields = persistedAttachments.length
       ? {
-          attachmentNames: persistedAttachments.map((attachment) => attachment.name),
+          attachmentNames: persistedAttachments.map(
+            (attachment) => attachment.name,
+          ),
           attachments: persistedAttachments,
         }
       : {};
@@ -8502,7 +9125,8 @@ export default function WorkspaceClient({
     attachments: readonly ChatAttachment[] = [],
   ) {
     if (!task || externalAgentLaunchRef.current) {
-      if (!task) setExternalAgentStatus("Type an objective for the Ruflo swarm.");
+      if (!task)
+        setExternalAgentStatus("Type an objective for the Ruflo swarm.");
       return;
     }
     externalAgentLaunchRef.current = "ruflo";
@@ -8512,7 +9136,9 @@ export default function WorkspaceClient({
     const persistedAttachments = chatMessageAttachments(attachments);
     const userMessageFields = persistedAttachments.length
       ? {
-          attachmentNames: persistedAttachments.map((attachment) => attachment.name),
+          attachmentNames: persistedAttachments.map(
+            (attachment) => attachment.name,
+          ),
           attachments: persistedAttachments,
         }
       : {};
@@ -8603,26 +9229,32 @@ export default function WorkspaceClient({
       candidate.messages.some(ownsRun),
     );
     if (!session) return;
+    const completedAtMs = Date.now();
     const nextMessages = session.messages.map((message) => {
-      return ownsRun(message)
-        ? {
-            ...message,
-            content:
-              message.delegatedAgentRun === true
-                ? message.content
-                : result.content,
-            ...(message.delegatedAgentRun === true
-              ? { externalAgentResult: result.content }
-              : {}),
-            externalAgentOutcome: result.outcome,
-            ...(result.usage ? { usage: result.usage } : {}),
-            ...(result.activity?.length
-              ? { externalAgentActivity: result.activity }
-              : {}),
-            ...(result.edits ? { externalAgentEdits: result.edits } : {}),
-            ...(result.state ? { externalAgentState: result.state } : {}),
-          }
-        : message;
+      if (!ownsRun(message)) return message;
+      const responseDurationMs = externalAgentResponseDurationMs({
+        baseDurationMs: message.responseDurationMs,
+        startedAt: message.externalAgentStartedAt,
+        endedAtMs: completedAtMs,
+      });
+      return {
+        ...message,
+        content:
+          message.delegatedAgentRun === true
+            ? message.content
+            : result.content,
+        ...(message.delegatedAgentRun === true
+          ? { externalAgentResult: result.content }
+          : {}),
+        externalAgentOutcome: result.outcome,
+        ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
+        ...(result.usage ? { usage: result.usage } : {}),
+        ...(result.activity?.length
+          ? { externalAgentActivity: result.activity }
+          : {}),
+        ...(result.edits ? { externalAgentEdits: result.edits } : {}),
+        ...(result.state ? { externalAgentState: result.state } : {}),
+      };
     });
     setChatStreaming(session.id, false);
     updateChatMessages(session.id, nextMessages);
@@ -8705,7 +9337,7 @@ export default function WorkspaceClient({
         (formsmithAgent && "formsmith") ||
         (vibeTradingAgent && "vibe-trading") ||
         (stockAnalystAgent && "stock-analyst") ||
-    (paperTraderAgent && "paper-trader") ||
+        (paperTraderAgent && "paper-trader") ||
         (deerFlowAgent && "deer-flow") ||
         (agentBrowserAgent && "agent-browser") ||
         null,
@@ -8725,7 +9357,8 @@ export default function WorkspaceClient({
         if (!codexAgent) await selectCodex();
         if (codexTask || codexAttachments.length) {
           await launchCodex(
-            codexTask || "Review the attached screenshot and implement the requested fix.",
+            codexTask ||
+              "Review the attached screenshot and implement the requested fix.",
             codexAttachments,
           );
         }
@@ -8742,7 +9375,8 @@ export default function WorkspaceClient({
         if (!rufloAgent) await selectRuflo();
         if (rufloTask || rufloAttachments.length) {
           await launchRuflo(
-            rufloTask || "Review the attached screenshot and implement the requested fix.",
+            rufloTask ||
+              "Review the attached screenshot and implement the requested fix.",
             rufloAttachments,
           );
         }
@@ -8759,7 +9393,8 @@ export default function WorkspaceClient({
         if (!openCodeAgent) await selectOpenCode();
         if (openCodeTask || openCodeAttachments.length) {
           await launchOpenCode(
-            openCodeTask || "Review the attached screenshot and implement the requested fix.",
+            openCodeTask ||
+              "Review the attached screenshot and implement the requested fix.",
             openCodeAttachments,
           );
         }
@@ -8981,6 +9616,15 @@ export default function WorkspaceClient({
       return;
     }
 
+    const explainerBrief = briefFromVoxDirectorCommand(text);
+    if (explainerBrief !== null) {
+      setExternalAgentStatus("");
+      if (explainerBrief) {
+        void launchVoxDirector(explainerBrief);
+      }
+      return true;
+    }
+
     const filmBrief = briefFromVimaxCommand(text);
     if (filmBrief !== null) {
       setInput("");
@@ -9018,13 +9662,18 @@ export default function WorkspaceClient({
       return;
     }
 
-    const deepResearchTask = taskFromDeepResearchCommand(text);
-    if (deepResearchTask !== null) {
+    const deepResearchInvocation = directDeepResearchInvocation(text, false);
+    if (deepResearchInvocation) {
       setInput("");
       setChatAttachments([]);
       void (async () => {
-        if (!deepResearchAgent) await selectDeepResearch();
-        await launchDeepResearch(deepResearchTask);
+        if (deepResearchInvocation.selectAgent && !deepResearchAgent) {
+          await selectDeepResearch();
+        }
+        await launchDeepResearch(
+          deepResearchInvocation.task,
+          deepResearchInvocation.selectAgent ? undefined : text,
+        );
       })();
       return;
     }
@@ -9044,7 +9693,8 @@ export default function WorkspaceClient({
       setInput("");
       setChatAttachments([]);
       void launchRuflo(
-        text || "Review the attached screenshot and implement the requested fix.",
+        text ||
+          "Review the attached screenshot and implement the requested fix.",
         pendingAttachments,
       );
       return;
@@ -9053,7 +9703,8 @@ export default function WorkspaceClient({
       setInput("");
       setChatAttachments([]);
       void launchCodex(
-        text || "Review the attached screenshot and implement the requested fix.",
+        text ||
+          "Review the attached screenshot and implement the requested fix.",
         pendingAttachments,
       );
       return;
@@ -9062,7 +9713,8 @@ export default function WorkspaceClient({
       setInput("");
       setChatAttachments([]);
       void launchOpenCode(
-        text || "Review the attached screenshot and implement the requested fix.",
+        text ||
+          "Review the attached screenshot and implement the requested fix.",
         pendingAttachments,
       );
       return;
@@ -9366,6 +10018,12 @@ export default function WorkspaceClient({
           attachments: pendingAttachments,
           selectedDocumentSlugs,
           adhdMode: isDirectModeEnabled(),
+          // A worker's result is handed back on a hidden turn, and that turn is
+          // the visible answer. Say so, or its evidence panel cannot name the
+          // agent whose run it is reporting.
+          ...(internalAgentContinuation
+            ? { internalAgentContinuation: true }
+            : {}),
         }),
         signal: agentSignal,
       });
@@ -9476,7 +10134,8 @@ export default function WorkspaceClient({
               // Park it in the thinking strip; the bubble restarts with the
               // next segment.
               if (typeof event.text === "string" && event.text.trim()) {
-                assistantMsg.thinking = `${assistantMsg.thinking ?? ""}\n${event.text}`.trim();
+                assistantMsg.thinking =
+                  `${assistantMsg.thinking ?? ""}\n${event.text}`.trim();
               }
               if (event.streamed) assistantMsg.content = "";
               finalMessages = messagesWithAssistant();
@@ -9515,7 +10174,9 @@ export default function WorkspaceClient({
                 finalMessages = messagesWithAssistant();
                 updateChatMessages(sessionId, finalMessages);
               }
-              window.dispatchEvent(new CustomEvent(ARTIFACT_BROWSER_EVENT, { detail: event }));
+              window.dispatchEvent(
+                new CustomEvent(ARTIFACT_BROWSER_EVENT, { detail: event }),
+              );
             }
           } catch {
             // malformed event — skip
@@ -9672,9 +10333,10 @@ export default function WorkspaceClient({
   const effectiveLearnIncludedSourceSlugs =
     learnIncludedSourceSlugs === null
       ? learnEligibleSourceDocuments.map((doc) => doc.slug)
-      : learnIncludedSourceSlugs.filter((sourceSlug) =>
-          availableLearnSourceSlugSet.has(sourceSlug) &&
-          sourceSlug !== learnSyllabusSlug,
+      : learnIncludedSourceSlugs.filter(
+          (sourceSlug) =>
+            availableLearnSourceSlugSet.has(sourceSlug) &&
+            sourceSlug !== learnSyllabusSlug,
         );
   const effectiveLearnIncludedSourceSlugSet = new Set(
     effectiveLearnIncludedSourceSlugs,
@@ -9685,8 +10347,7 @@ export default function WorkspaceClient({
   // Only meaningful for the syllabus the last run actually read; a freshly
   // picked one has no coverage until Learn runs again.
   const learnSyllabusCoverage =
-    learnSyllabusDocument &&
-    learnState?.syllabusSourceId === learnSyllabusSlug
+    learnSyllabusDocument && learnState?.syllabusSourceId === learnSyllabusSlug
       ? (learnState?.syllabusCoverage ?? null)
       : null;
 
@@ -9707,7 +10368,10 @@ export default function WorkspaceClient({
       formData.append("isHandwriting", "false");
       formData.append("generateMap", "false");
 
-      const res = await fetch("/api/ingest", { method: "POST", body: formData });
+      const res = await fetch("/api/ingest", {
+        method: "POST",
+        body: formData,
+      });
       if (!res.ok || !res.body) {
         let message = "Syllabus upload failed";
         try {
@@ -9803,7 +10467,9 @@ export default function WorkspaceClient({
           body: JSON.stringify({ prompt }),
         },
       );
-      const data = await res.json().catch(() => ({}) as Record<string, unknown>);
+      const data = await res
+        .json()
+        .catch(() => ({}) as Record<string, unknown>);
       if (!res.ok || data?.success !== true) {
         throw new Error(
           typeof data?.error === "string" && data.error.trim()
@@ -9813,7 +10479,9 @@ export default function WorkspaceClient({
       }
       const slug = typeof data.slug === "string" ? data.slug : "";
       if (!slug) {
-        throw new Error("The syllabus was written but no document slug came back");
+        throw new Error(
+          "The syllabus was written but no document slug came back",
+        );
       }
 
       chooseLearnSyllabusDocument(slug);
@@ -9970,7 +10638,9 @@ export default function WorkspaceClient({
       ? status === "failed"
         ? "Starting Learn retry..."
         : "Starting Learn..."
-      : status === "failed" || status === "cancelled" || staleReviewForExistingGarden
+      : status === "failed" ||
+          status === "cancelled" ||
+          staleReviewForExistingGarden
         ? ""
         : job?.currentStep ||
           activeStageMessage[status] ||
@@ -10037,514 +10707,23 @@ export default function WorkspaceClient({
 
             <div className="flex min-w-0 flex-1 items-start gap-2">
               <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-2 gap-y-1.5 md:flex-nowrap">
-              <div className="relative">
-                <button
-                  ref={learnDocumentMenuButtonRef}
-                  type="button"
-                  onClick={() => {
-                    setLearnSyllabusMenuOpen(false);
-                    setLearnDocumentMenuOpen((open) => !open);
-                  }}
-                  className="neu-button flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-gray-800 px-2 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
-                  aria-expanded={learnDocumentMenuOpen}
-                  aria-haspopup="menu"
-                  title="Choose which source documents Learn may use"
-                >
-                  <svg
-                    className="h-3.5 w-3.5"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.8}
-                    aria-hidden="true"
+                <div className="relative">
+                  <button
+                    ref={learnDocumentMenuButtonRef}
+                    type="button"
+                    onClick={() => {
+                      setLearnSyllabusMenuOpen(false);
+                      setLearnDocumentMenuOpen((open) => !open);
+                    }}
+                    className="neu-button flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-gray-800 px-2 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
+                    aria-expanded={learnDocumentMenuOpen}
+                    aria-haspopup="menu"
+                    title="Choose which source documents Learn may use"
                   >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M6.75 3.75h7.5l3 3v13.5H6.75z"
-                    />
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M14.25 3.75v3h3M9.5 11h5M9.5 14.5h5"
-                    />
-                  </svg>
-                  Documents {learnTeachingSourceSlugs.length}/
-                  {learnEligibleSourceDocuments.length}
-                  <svg
-                    className={`h-3 w-3 transition-transform ${learnDocumentMenuOpen ? "rotate-180" : ""}`}
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                    aria-hidden="true"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                </button>
-                {learnDocumentMenuOpen ? (
-                  <ViewportPopover
-                    anchorRef={learnDocumentMenuButtonRef}
-                    ariaLabel="Documents included in Learn"
-                    className="neu-popover fixed z-[100] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-lg border border-gray-800 bg-gray-950 p-2"
-                    onClose={() => setLearnDocumentMenuOpen(false)}
-                  >
-                    <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-2">
-                      <div>
-                        <p className="text-xs font-medium text-gray-200">
-                          Documents for Learn
-                        </p>
-                        <p className="mt-0.5 text-[10px] text-gray-600">
-                          The syllabus is reserved for planning. Unchecked
-                          documents are excluded from this run.
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setLearnIncludedSourceSlugs(
-                            learnTeachingSourceSlugs.length ===
-                              learnEligibleSourceDocuments.length
-                              ? []
-                              : learnEligibleSourceDocuments.map(
-                                  (doc) => doc.slug,
-                                ),
-                          )
-                        }
-                        disabled={learnDocumentSelectionLocked}
-                        className="text-[10px] text-gray-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        {learnTeachingSourceSlugs.length ===
-                        learnEligibleSourceDocuments.length
-                          ? "Clear all"
-                          : "Select all"}
-                      </button>
-                    </div>
-                    <div className="max-h-56 space-y-1 overflow-y-auto">
-                      {sourceDocuments.map((doc) => {
-                        const isSyllabus = doc.slug === learnSyllabusSlug;
-                        const checked = effectiveLearnIncludedSourceSlugSet.has(
-                          doc.slug,
-                        );
-                        const fileLabel =
-                          doc.sourcePdf ||
-                          doc.sourceFile ||
-                          doc.name ||
-                          doc.title;
-                        return (
-                          <label
-                            key={doc.slug}
-                            className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${
-                              isSyllabus
-                                ? "cursor-not-allowed bg-gray-900/50 opacity-60"
-                                : "cursor-pointer hover:bg-gray-900"
-                            }`}
-                            title={
-                              isSyllabus
-                                ? "Used as the syllabus and excluded from teaching documents"
-                                : undefined
-                            }
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() =>
-                                toggleLearnSourceDocument(doc.slug)
-                              }
-                              disabled={
-                                learnDocumentSelectionLocked || isSyllabus
-                              }
-                              className="mt-0.5 h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
-                            />
-                            <span className="min-w-0">
-                              <span className="block truncate text-xs text-gray-300">
-                                {fileLabel}
-                              </span>
-                              {isSyllabus ? (
-                                <span className="mt-0.5 block text-[10px] text-gray-500">
-                                  Used as syllabus — not teaching material
-                                </span>
-                              ) : doc.description ? (
-                                <span className="mt-0.5 block truncate text-[10px] text-gray-600">
-                                  {doc.description}
-                                </span>
-                              ) : null}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                    {learnDocumentSelectionLocked ? (
-                      <p className="mt-2 border-t border-gray-800 pt-2 text-[10px] text-gray-600">
-                        This selection is locked for the current Learning Map.
-                      </p>
-                    ) : null}
-                  </ViewportPopover>
-                ) : null}
-              </div>
-              <div className="relative min-w-0">
-                <button
-                  ref={learnSyllabusMenuButtonRef}
-                  type="button"
-                  onClick={() => {
-                    setLearnDocumentMenuOpen(false);
-                    setLearnSyllabusMenuOpen((open) => !open);
-                  }}
-                  className="neu-button flex h-[30px] w-full min-w-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-gray-800 px-2 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
-                  aria-expanded={learnSyllabusMenuOpen}
-                  aria-haspopup="menu"
-                  title="Choose a syllabus or study guide for Learn to plan against"
-                >
-                  <svg
-                    className="h-3.5 w-3.5 shrink-0"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.8}
-                    aria-hidden="true"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H5.5A1.5 1.5 0 0 1 4 15.5z"
-                    />
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M20 5.5A1.5 1.5 0 0 0 18.5 4H14a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h4.5a1.5 1.5 0 0 0 1.5-1.5z"
-                    />
-                  </svg>
-                  <span
-                    className="min-w-0 flex-1 max-w-28 truncate sm:max-w-32"
-                    title={
-                      learnSyllabusDocument
-                        ? learnSyllabusDocument.name ||
-                          learnSyllabusDocument.title
-                        : undefined
-                    }
-                  >
-                    {learnSyllabusDocument
-                      ? `Syllabus: ${learnSyllabusDocument.name || learnSyllabusDocument.title}`
-                      : "Syllabus: none"}
-                  </span>
-                  <svg
-                    className={`h-3 w-3 shrink-0 transition-transform ${learnSyllabusMenuOpen ? "rotate-180" : ""}`}
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                    aria-hidden="true"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                </button>
-                {learnSyllabusMenuOpen ? (
-                  <ViewportPopover
-                    anchorRef={learnSyllabusMenuButtonRef}
-                    ariaLabel="Syllabus for Learn"
-                    className="neu-popover fixed z-[100] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-lg border border-gray-800 bg-gray-950 p-2"
-                    onClose={() => setLearnSyllabusMenuOpen(false)}
-                  >
-                    <div className="mb-2 border-b border-gray-800 pb-2">
-                      <p className="text-xs font-medium text-gray-200">
-                        Syllabus for Learn
-                      </p>
-                      <p className="mt-0.5 text-[10px] text-gray-600">
-                        A study guide Learn plans against: it sets which topics
-                        to cover, in what order, and how deep. It is not taught
-                        as source material.
-                      </p>
-                    </div>
-                    <div className="max-h-56 space-y-1 overflow-y-auto">
-                      <label className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-gray-900">
-                        <input
-                          type="radio"
-                          name="learn-syllabus"
-                          checked={learnSyllabusSlug === null}
-                          onChange={() => chooseLearnSyllabusDocument(null)}
-                          disabled={learnDocumentSelectionLocked}
-                          className="mt-0.5 h-3.5 w-3.5 border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
-                        />
-                        <span className="block text-xs text-gray-300">
-                          No syllabus
-                        </span>
-                      </label>
-                      {sourceDocuments.map((doc) => {
-                        const fileLabel =
-                          doc.sourcePdf ||
-                          doc.sourceFile ||
-                          doc.name ||
-                          doc.title;
-                        return (
-                          <label
-                            key={doc.slug}
-                            className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-gray-900"
-                          >
-                            <input
-                              type="radio"
-                              name="learn-syllabus"
-                              checked={learnSyllabusSlug === doc.slug}
-                              onChange={() =>
-                                chooseLearnSyllabusDocument(doc.slug)
-                              }
-                              disabled={learnDocumentSelectionLocked}
-                              className="mt-0.5 h-3.5 w-3.5 border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
-                            />
-                            <span className="min-w-0">
-                              <span className="block truncate text-xs text-gray-300">
-                                {fileLabel}
-                              </span>
-                              {doc.description ? (
-                                <span className="mt-0.5 block truncate text-[10px] text-gray-600">
-                                  {doc.description}
-                                </span>
-                              ) : null}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                    {learnSyllabusCoverage ? (
-                      <div className="mt-2 rounded-md border border-gray-800 bg-gray-900/60 px-2 py-1.5">
-                        <p className="text-[10px] text-gray-400">
-                          Read {learnSyllabusCoverage.unitCount} unit
-                          {learnSyllabusCoverage.unitCount === 1 ? "" : "s"} and{" "}
-                          {learnSyllabusCoverage.materialCount} assigned
-                          material
-                          {learnSyllabusCoverage.materialCount === 1 ? "" : "s"};{" "}
-                          {learnSyllabusCoverage.availableCount} matched a
-                          document in this garden.
-                        </p>
-                        {learnSyllabusCoverage.missingCount > 0 ? (
-                          <>
-                            <p className="mt-1 text-[10px] text-amber-300">
-                              {learnSyllabusCoverage.missingCount} assigned work
-                              {learnSyllabusCoverage.missingCount === 1
-                                ? " is"
-                                : "s are"}{" "}
-                              not uploaded. Lessons are never written from{" "}
-                              {learnSyllabusCoverage.missingCount === 1
-                                ? "it"
-                                : "them"}
-                              — upload{" "}
-                              {learnSyllabusCoverage.missingCount === 1
-                                ? "it"
-                                : "them"}{" "}
-                              to have{" "}
-                              {learnSyllabusCoverage.missingCount === 1
-                                ? "that topic"
-                                : "those topics"}{" "}
-                              covered.
-                            </p>
-                            <ul className="mt-1 space-y-0.5">
-                              {learnSyllabusCoverage.missingCitations
-                                .slice(0, 5)
-                                .map((citation) => (
-                                  <li
-                                    key={citation}
-                                    className="truncate text-[10px] text-gray-500"
-                                    title={citation}
-                                  >
-                                    · {citation}
-                                  </li>
-                                ))}
-                              {learnSyllabusCoverage.missingCitations.length >
-                              5 ? (
-                                <li className="text-[10px] text-gray-600">
-                                  ·{" "}
-                                  {learnSyllabusCoverage.missingCitations
-                                    .length - 5}{" "}
-                                  more
-                                </li>
-                              ) : null}
-                            </ul>
-                          </>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    <div className="mt-2 border-t border-gray-800 pt-2">
-                      <label
-                        className="block text-[10px] font-medium text-gray-400"
-                        htmlFor="learn-syllabus-prompt"
-                      >
-                        Or describe what you want to learn
-                      </label>
-                      <textarea
-                        id="learn-syllabus-prompt"
-                        value={learnSyllabusPrompt}
-                        onChange={(event) =>
-                          setLearnSyllabusPrompt(event.target.value)
-                        }
-                        onKeyDown={(event) => {
-                          if (
-                            (event.metaKey || event.ctrlKey) &&
-                            event.key === "Enter"
-                          ) {
-                            event.preventDefault();
-                            void handleSyllabusGenerate();
-                          }
-                        }}
-                        rows={2}
-                        maxLength={4000}
-                        disabled={
-                          learnDocumentSelectionLocked ||
-                          learnSyllabusGenerating ||
-                          learnSyllabusUploading
-                        }
-                        placeholder="I want to learn everything introductory about electronics"
-                        className="neu-input mt-1 w-full resize-y rounded-md border border-gray-800 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-200 placeholder:text-gray-700 focus:border-gray-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => void handleSyllabusGenerate()}
-                        disabled={
-                          learnDocumentSelectionLocked ||
-                          learnSyllabusGenerating ||
-                          learnSyllabusUploading ||
-                          !learnSyllabusPrompt.trim()
-                        }
-                        className="neu-button mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-md border border-gray-800 px-2 py-1.5 text-[11px] text-gray-300 transition-colors hover:border-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        {learnSyllabusGenerating ? (
-                          <>
-                            <Spinner className="h-3 w-3" />
-                            Writing syllabus…
-                          </>
-                        ) : (
-                          <>
-                            <svg
-                              className="h-3.5 w-3.5"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth={1.8}
-                              aria-hidden="true"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="m12 3 1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8zM18 15l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9z"
-                              />
-                            </svg>
-                            Generate a syllabus
-                          </>
-                        )}
-                      </button>
-                      <p className="mt-1.5 text-[10px] text-gray-600">
-                        Written as a course outline over the documents in this
-                        garden, then saved to Documents like any other syllabus.
-                        It assigns no outside readings, so every unit is one your
-                        material can teach.
-                      </p>
-                    </div>
-                    <div className="mt-2 border-t border-gray-800 pt-2">
-                      <input
-                        ref={learnSyllabusInputRef}
-                        type="file"
-                        accept={ACCEPTED}
-                        className="hidden"
-                        onChange={(event) => {
-                          const file = event.target.files?.[0];
-                          event.target.value = "";
-                          if (file) void handleSyllabusUpload(file);
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => learnSyllabusInputRef.current?.click()}
-                        disabled={
-                          learnDocumentSelectionLocked ||
-                          learnSyllabusUploading ||
-                          learnSyllabusGenerating
-                        }
-                        className="neu-button flex w-full items-center justify-center gap-1.5 rounded-md border border-gray-800 px-2 py-1.5 text-[11px] text-gray-300 transition-colors hover:border-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        {learnSyllabusUploading ? (
-                          <>
-                            <Spinner className="h-3 w-3" />
-                            Uploading syllabus…
-                          </>
-                        ) : (
-                          <>
-                            <svg
-                              className="h-3.5 w-3.5"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth={1.8}
-                              aria-hidden="true"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M12 16V4m0 0L8 8m4-4 4 4M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"
-                              />
-                            </svg>
-                            Upload a syllabus
-                          </>
-                        )}
-                      </button>
-                      <p className="mt-1.5 text-[10px] text-gray-600">
-                        Uploaded syllabi are added to Documents so you can reuse
-                        them later.
-                      </p>
-                    </div>
-                    {learnDocumentSelectionLocked ? (
-                      <p className="mt-2 border-t border-gray-800 pt-2 text-[10px] text-gray-600">
-                        The syllabus is locked for the current Learning Map.
-                      </p>
-                    ) : null}
-                  </ViewportPopover>
-                ) : null}
-              </div>
-              <label className="flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-gray-500">
-                <input
-                  type="checkbox"
-                  checked={learnSourceOnly}
-                  onChange={(event) => setLearnSourceOnly(event.target.checked)}
-                  disabled={learnBusy || active}
-                  className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
-                />
-                Source-only
-              </label>
-              <label
-                className="flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-gray-500"
-                title="Automatically confirm the learning map and continue generating lessons"
-              >
-                <input
-                  type="checkbox"
-                  checked={learnSkipManualReview}
-                  onChange={(event) => {
-                    learnSkipManualReviewRef.current = event.target.checked;
-                    setLearnSkipManualReview(event.target.checked);
-                  }}
-                  disabled={
-                    status === "awaiting_confirmation" ||
-                    (active && status !== "planning")
-                  }
-                  className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
-                />
-                Skip review
-              </label>
-              {status === "complete" && (
-                <button
-                  type="button"
-                  onClick={handleRepairIssues}
-                  disabled={!canStart}
-                  title="Repairs only failing pages and components; unaffected content is preserved"
-                  className="neu-button-primary flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap px-3 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {learnBusy ? (
-                    <Spinner className="h-3.5 w-3.5" />
-                  ) : (
                     <svg
                       className="h-3.5 w-3.5"
-                      fill="none"
                       viewBox="0 0 24 24"
+                      fill="none"
                       stroke="currentColor"
                       strokeWidth={1.8}
                       aria-hidden="true"
@@ -10552,138 +10731,637 @@ export default function WorkspaceClient({
                       <path
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        d="M12 6.75v10.5m0-10.5c-1.5-1-3.5-1.5-6-1.5v10.5c2.5 0 4.5.5 6 1.5m0-10.5c1.5-1 3.5-1.5 6-1.5v10.5c-2.5 0-4.5.5-6 1.5"
+                        d="M6.75 3.75h7.5l3 3v13.5H6.75z"
+                      />
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M14.25 3.75v3h3M9.5 11h5M9.5 14.5h5"
                       />
                     </svg>
-                  )}
-                  {learnBusy ? "Repairing..." : "Repair issues"}
-                </button>
-              )}
-              {hasExistingLearnContent &&
-                (status === "complete" ||
-                  status === "failed" ||
-                  status === "cancelled" ||
-                  status === "awaiting_confirmation") && (
-                <button
-                  type="button"
-                  onClick={handleFullRebuild}
-                  disabled={!canStart}
-                  className="neu-button-destructive h-[30px] shrink-0 whitespace-nowrap rounded-lg border border-red-900/70 px-3 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
-                  title="Destructive: recreate the Learning Map, contract, all pages, and visuals"
-                >
-                  Rebuild entire garden
-                </button>
-              )}
-              {hasLearnData && !active && (
-                <button
-                  type="button"
-                  onClick={handleClearLearnData}
-                  disabled={learnBusy || learnCancelBusy || active}
-                  className="neu-button-destructive h-[30px] shrink-0 whitespace-nowrap rounded-lg border border-red-900/70 px-3 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
-                  title="Destructive: remove generated Learn content and Learn history while preserving sources and non-Learn notes"
-                >
-                  Clear data
-                </button>
-              )}
-              {showPrimaryAction && !active && (
-                <button
-                  type="button"
-                  onClick={
-                    shouldRepairFromPrimaryAction
-                      ? handleRepairIssues
-                      : status === "cancelled"
-                        ? handleGenerateAfterCancellation
-                        : handleLearnPrimary
-                  }
-                  disabled={
-                    learnCancelBusy ||
-                    (!canStart && status !== "awaiting_confirmation")
-                  }
-                  className="neu-button-primary flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-white px-3 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {learnBusy || active ? (
-                    <Spinner className="h-3.5 w-3.5" />
+                    Documents {learnTeachingSourceSlugs.length}/
+                    {learnEligibleSourceDocuments.length}
+                    <svg
+                      className={`h-3 w-3 transition-transform ${learnDocumentMenuOpen ? "rotate-180" : ""}`}
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </button>
+                  {learnDocumentMenuOpen ? (
+                    <ViewportPopover
+                      anchorRef={learnDocumentMenuButtonRef}
+                      ariaLabel="Documents included in Learn"
+                      className="neu-popover fixed z-[100] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-lg border border-gray-800 bg-gray-950 p-2"
+                      onClose={() => setLearnDocumentMenuOpen(false)}
+                    >
+                      <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-2">
+                        <div>
+                          <p className="text-xs font-medium text-gray-200">
+                            Documents for Learn
+                          </p>
+                          <p className="mt-0.5 text-[10px] text-gray-600">
+                            The syllabus is reserved for planning. Unchecked
+                            documents are excluded from this run.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setLearnIncludedSourceSlugs(
+                              learnTeachingSourceSlugs.length ===
+                                learnEligibleSourceDocuments.length
+                                ? []
+                                : learnEligibleSourceDocuments.map(
+                                    (doc) => doc.slug,
+                                  ),
+                            )
+                          }
+                          disabled={learnDocumentSelectionLocked}
+                          className="text-[10px] text-gray-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {learnTeachingSourceSlugs.length ===
+                          learnEligibleSourceDocuments.length
+                            ? "Clear all"
+                            : "Select all"}
+                        </button>
+                      </div>
+                      <div className="max-h-56 space-y-1 overflow-y-auto">
+                        {sourceDocuments.map((doc) => {
+                          const isSyllabus = doc.slug === learnSyllabusSlug;
+                          const checked =
+                            effectiveLearnIncludedSourceSlugSet.has(doc.slug);
+                          const fileLabel =
+                            doc.sourcePdf ||
+                            doc.sourceFile ||
+                            doc.name ||
+                            doc.title;
+                          return (
+                            <label
+                              key={doc.slug}
+                              className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${
+                                isSyllabus
+                                  ? "cursor-not-allowed bg-gray-900/50 opacity-60"
+                                  : "cursor-pointer hover:bg-gray-900"
+                              }`}
+                              title={
+                                isSyllabus
+                                  ? "Used as the syllabus and excluded from teaching documents"
+                                  : undefined
+                              }
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() =>
+                                  toggleLearnSourceDocument(doc.slug)
+                                }
+                                disabled={
+                                  learnDocumentSelectionLocked || isSyllabus
+                                }
+                                className="mt-0.5 h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                              />
+                              <span className="min-w-0">
+                                <span className="block truncate text-xs text-gray-300">
+                                  {fileLabel}
+                                </span>
+                                {isSyllabus ? (
+                                  <span className="mt-0.5 block text-[10px] text-gray-500">
+                                    Used as syllabus — not teaching material
+                                  </span>
+                                ) : doc.description ? (
+                                  <span className="mt-0.5 block truncate text-[10px] text-gray-600">
+                                    {doc.description}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      {learnDocumentSelectionLocked ? (
+                        <p className="mt-2 border-t border-gray-800 pt-2 text-[10px] text-gray-600">
+                          This selection is locked for the current Learning Map.
+                        </p>
+                      ) : null}
+                    </ViewportPopover>
                   ) : null}
-                  {shouldRepairFromPrimaryAction
-                    ? learnBusy
-                      ? "Repairing..."
-                      : "Repair issues"
-                    : status === "failed"
-                      ? learnBusy
-                        ? "Retrying..."
-                        : "Retry Learn"
-                    : status === "cancelled"
-                      ? learnBusy
-                        ? hasExistingLearnContent
-                          ? "Repairing..."
-                          : "Generating..."
-                        : hasExistingLearnContent
-                          ? "Repair issues"
-                          : "Generate"
-                      : (learnState?.buttonLabel ?? "Learn")}
-                </button>
-              )}
-              {active && showPauseControl && (
-                <button
-                  type="button"
-                  onClick={paused ? handleResumeLearn : handlePauseLearn}
-                  disabled={learnPauseBusy || learnCancelBusy}
-                  className={
-                    paused
-                      ? "neu-button-primary flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-white text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-wait disabled:opacity-60"
-                      : "neu-button flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg border border-gray-800 text-gray-300 transition-colors hover:border-gray-700 hover:text-gray-100 disabled:cursor-wait disabled:opacity-60"
-                  }
-                  aria-label={
-                    learnPauseBusy
-                      ? paused
-                        ? "Resuming Learn run"
-                        : "Pausing Learn run"
-                      : paused
-                        ? "Resume Learn run"
-                        : "Pause Learn run"
-                  }
-                  title={
-                    paused
-                      ? "Resume this Learn run from the checkpoint it stopped at"
-                      : "Hold this Learn run at the next checkpoint. Nothing is discarded and the timer stops."
-                  }
+                </div>
+                <div className="relative min-w-0">
+                  <button
+                    ref={learnSyllabusMenuButtonRef}
+                    type="button"
+                    onClick={() => {
+                      setLearnDocumentMenuOpen(false);
+                      setLearnSyllabusMenuOpen((open) => !open);
+                    }}
+                    className="neu-button flex h-[30px] w-full min-w-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-gray-800 px-2 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
+                    aria-expanded={learnSyllabusMenuOpen}
+                    aria-haspopup="menu"
+                    title="Choose a syllabus or study guide for Learn to plan against"
+                  >
+                    <svg
+                      className="h-3.5 w-3.5 shrink-0"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={1.8}
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H5.5A1.5 1.5 0 0 1 4 15.5z"
+                      />
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M20 5.5A1.5 1.5 0 0 0 18.5 4H14a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h4.5a1.5 1.5 0 0 0 1.5-1.5z"
+                      />
+                    </svg>
+                    <span
+                      className="min-w-0 flex-1 max-w-28 truncate sm:max-w-32"
+                      title={
+                        learnSyllabusDocument
+                          ? learnSyllabusDocument.name ||
+                            learnSyllabusDocument.title
+                          : undefined
+                      }
+                    >
+                      {learnSyllabusDocument
+                        ? `Syllabus: ${learnSyllabusDocument.name || learnSyllabusDocument.title}`
+                        : "Syllabus: none"}
+                    </span>
+                    <svg
+                      className={`h-3 w-3 shrink-0 transition-transform ${learnSyllabusMenuOpen ? "rotate-180" : ""}`}
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </button>
+                  {learnSyllabusMenuOpen ? (
+                    <ViewportPopover
+                      anchorRef={learnSyllabusMenuButtonRef}
+                      ariaLabel="Syllabus for Learn"
+                      className="neu-popover fixed z-[100] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-lg border border-gray-800 bg-gray-950 p-2"
+                      onClose={() => setLearnSyllabusMenuOpen(false)}
+                    >
+                      <div className="mb-2 border-b border-gray-800 pb-2">
+                        <p className="text-xs font-medium text-gray-200">
+                          Syllabus for Learn
+                        </p>
+                        <p className="mt-0.5 text-[10px] text-gray-600">
+                          A study guide Learn plans against: it sets which
+                          topics to cover, in what order, and how deep. It is
+                          not taught as source material.
+                        </p>
+                      </div>
+                      <div className="max-h-56 space-y-1 overflow-y-auto">
+                        <label className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-gray-900">
+                          <input
+                            type="radio"
+                            name="learn-syllabus"
+                            checked={learnSyllabusSlug === null}
+                            onChange={() => chooseLearnSyllabusDocument(null)}
+                            disabled={learnDocumentSelectionLocked}
+                            className="mt-0.5 h-3.5 w-3.5 border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                          />
+                          <span className="block text-xs text-gray-300">
+                            No syllabus
+                          </span>
+                        </label>
+                        {sourceDocuments.map((doc) => {
+                          const fileLabel =
+                            doc.sourcePdf ||
+                            doc.sourceFile ||
+                            doc.name ||
+                            doc.title;
+                          return (
+                            <label
+                              key={doc.slug}
+                              className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-gray-900"
+                            >
+                              <input
+                                type="radio"
+                                name="learn-syllabus"
+                                checked={learnSyllabusSlug === doc.slug}
+                                onChange={() =>
+                                  chooseLearnSyllabusDocument(doc.slug)
+                                }
+                                disabled={learnDocumentSelectionLocked}
+                                className="mt-0.5 h-3.5 w-3.5 border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                              />
+                              <span className="min-w-0">
+                                <span className="block truncate text-xs text-gray-300">
+                                  {fileLabel}
+                                </span>
+                                {doc.description ? (
+                                  <span className="mt-0.5 block truncate text-[10px] text-gray-600">
+                                    {doc.description}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      {learnSyllabusCoverage ? (
+                        <div className="mt-2 rounded-md border border-gray-800 bg-gray-900/60 px-2 py-1.5">
+                          <p className="text-[10px] text-gray-400">
+                            Read {learnSyllabusCoverage.unitCount} unit
+                            {learnSyllabusCoverage.unitCount === 1
+                              ? ""
+                              : "s"}{" "}
+                            and {learnSyllabusCoverage.materialCount} assigned
+                            material
+                            {learnSyllabusCoverage.materialCount === 1
+                              ? ""
+                              : "s"}
+                            ; {learnSyllabusCoverage.availableCount} matched a
+                            document in this garden.
+                          </p>
+                          {learnSyllabusCoverage.missingCount > 0 ? (
+                            <>
+                              <p className="mt-1 text-[10px] text-amber-300">
+                                {learnSyllabusCoverage.missingCount} assigned
+                                work
+                                {learnSyllabusCoverage.missingCount === 1
+                                  ? " is"
+                                  : "s are"}{" "}
+                                not uploaded. Lessons are never written from{" "}
+                                {learnSyllabusCoverage.missingCount === 1
+                                  ? "it"
+                                  : "them"}
+                                — upload{" "}
+                                {learnSyllabusCoverage.missingCount === 1
+                                  ? "it"
+                                  : "them"}{" "}
+                                to have{" "}
+                                {learnSyllabusCoverage.missingCount === 1
+                                  ? "that topic"
+                                  : "those topics"}{" "}
+                                covered.
+                              </p>
+                              <ul className="mt-1 space-y-0.5">
+                                {learnSyllabusCoverage.missingCitations
+                                  .slice(0, 5)
+                                  .map((citation) => (
+                                    <li
+                                      key={citation}
+                                      className="truncate text-[10px] text-gray-500"
+                                      title={citation}
+                                    >
+                                      · {citation}
+                                    </li>
+                                  ))}
+                                {learnSyllabusCoverage.missingCitations.length >
+                                5 ? (
+                                  <li className="text-[10px] text-gray-600">
+                                    ·{" "}
+                                    {learnSyllabusCoverage.missingCitations
+                                      .length - 5}{" "}
+                                    more
+                                  </li>
+                                ) : null}
+                              </ul>
+                            </>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      <div className="mt-2 border-t border-gray-800 pt-2">
+                        <label
+                          className="block text-[10px] font-medium text-gray-400"
+                          htmlFor="learn-syllabus-prompt"
+                        >
+                          Or describe what you want to learn
+                        </label>
+                        <textarea
+                          id="learn-syllabus-prompt"
+                          value={learnSyllabusPrompt}
+                          onChange={(event) =>
+                            setLearnSyllabusPrompt(event.target.value)
+                          }
+                          onKeyDown={(event) => {
+                            if (
+                              (event.metaKey || event.ctrlKey) &&
+                              event.key === "Enter"
+                            ) {
+                              event.preventDefault();
+                              void handleSyllabusGenerate();
+                            }
+                          }}
+                          rows={2}
+                          maxLength={4000}
+                          disabled={
+                            learnDocumentSelectionLocked ||
+                            learnSyllabusGenerating ||
+                            learnSyllabusUploading
+                          }
+                          placeholder="I want to learn everything introductory about electronics"
+                          className="neu-input mt-1 w-full resize-y rounded-md border border-gray-800 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-200 placeholder:text-gray-700 focus:border-gray-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void handleSyllabusGenerate()}
+                          disabled={
+                            learnDocumentSelectionLocked ||
+                            learnSyllabusGenerating ||
+                            learnSyllabusUploading ||
+                            !learnSyllabusPrompt.trim()
+                          }
+                          className="neu-button mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-md border border-gray-800 px-2 py-1.5 text-[11px] text-gray-300 transition-colors hover:border-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {learnSyllabusGenerating ? (
+                            <>
+                              <Spinner className="h-3 w-3" />
+                              Writing syllabus…
+                            </>
+                          ) : (
+                            <>
+                              <svg
+                                className="h-3.5 w-3.5"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth={1.8}
+                                aria-hidden="true"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="m12 3 1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8zM18 15l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9z"
+                                />
+                              </svg>
+                              Generate a syllabus
+                            </>
+                          )}
+                        </button>
+                        <p className="mt-1.5 text-[10px] text-gray-600">
+                          Written as a course outline over the documents in this
+                          garden, then saved to Documents like any other
+                          syllabus. It assigns no outside readings, so every
+                          unit is one your material can teach.
+                        </p>
+                      </div>
+                      <div className="mt-2 border-t border-gray-800 pt-2">
+                        <input
+                          ref={learnSyllabusInputRef}
+                          type="file"
+                          accept={ACCEPTED}
+                          className="hidden"
+                          onChange={(event) => {
+                            const file = event.target.files?.[0];
+                            event.target.value = "";
+                            if (file) void handleSyllabusUpload(file);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => learnSyllabusInputRef.current?.click()}
+                          disabled={
+                            learnDocumentSelectionLocked ||
+                            learnSyllabusUploading ||
+                            learnSyllabusGenerating
+                          }
+                          className="neu-button flex w-full items-center justify-center gap-1.5 rounded-md border border-gray-800 px-2 py-1.5 text-[11px] text-gray-300 transition-colors hover:border-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {learnSyllabusUploading ? (
+                            <>
+                              <Spinner className="h-3 w-3" />
+                              Uploading syllabus…
+                            </>
+                          ) : (
+                            <>
+                              <svg
+                                className="h-3.5 w-3.5"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth={1.8}
+                                aria-hidden="true"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="M12 16V4m0 0L8 8m4-4 4 4M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"
+                                />
+                              </svg>
+                              Upload a syllabus
+                            </>
+                          )}
+                        </button>
+                        <p className="mt-1.5 text-[10px] text-gray-600">
+                          Uploaded syllabi are added to Documents so you can
+                          reuse them later.
+                        </p>
+                      </div>
+                      {learnDocumentSelectionLocked ? (
+                        <p className="mt-2 border-t border-gray-800 pt-2 text-[10px] text-gray-600">
+                          The syllabus is locked for the current Learning Map.
+                        </p>
+                      ) : null}
+                    </ViewportPopover>
+                  ) : null}
+                </div>
+                <label className="flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-gray-500">
+                  <input
+                    type="checkbox"
+                    checked={learnSourceOnly}
+                    onChange={(event) =>
+                      setLearnSourceOnly(event.target.checked)
+                    }
+                    disabled={learnBusy || active}
+                    className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                  />
+                  Source-only
+                </label>
+                <label
+                  className="flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-gray-500"
+                  title="Automatically confirm the learning map and continue generating lessons"
                 >
-                  {learnPauseBusy ? (
-                    <Spinner className="h-3.5 w-3.5" />
-                  ) : paused ? (
-                    <svg
-                      className="h-3.5 w-3.5"
-                      viewBox="0 0 24 24"
-                      fill="currentColor"
-                      aria-hidden="true"
+                  <input
+                    type="checkbox"
+                    checked={learnSkipManualReview}
+                    onChange={(event) => {
+                      learnSkipManualReviewRef.current = event.target.checked;
+                      setLearnSkipManualReview(event.target.checked);
+                    }}
+                    disabled={
+                      status === "awaiting_confirmation" ||
+                      (active && status !== "planning")
+                    }
+                    className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                  />
+                  Skip review
+                </label>
+                {status === "complete" && (
+                  <button
+                    type="button"
+                    onClick={handleRepairIssues}
+                    disabled={!canStart}
+                    title="Repairs only failing pages and components; unaffected content is preserved"
+                    className="neu-button-primary flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap px-3 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {learnBusy ? (
+                      <Spinner className="h-3.5 w-3.5" />
+                    ) : (
+                      <svg
+                        className="h-3.5 w-3.5"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={1.8}
+                        aria-hidden="true"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M12 6.75v10.5m0-10.5c-1.5-1-3.5-1.5-6-1.5v10.5c2.5 0 4.5.5 6 1.5m0-10.5c1.5-1 3.5-1.5 6-1.5v10.5c-2.5 0-4.5.5-6 1.5"
+                        />
+                      </svg>
+                    )}
+                    {learnBusy ? "Repairing..." : "Repair issues"}
+                  </button>
+                )}
+                {hasExistingLearnContent &&
+                  (status === "complete" ||
+                    status === "failed" ||
+                    status === "cancelled" ||
+                    status === "awaiting_confirmation") && (
+                    <button
+                      type="button"
+                      onClick={handleFullRebuild}
+                      disabled={!canStart}
+                      className="neu-button-destructive h-[30px] shrink-0 whitespace-nowrap rounded-lg border border-red-900/70 px-3 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                      title="Destructive: recreate the Learning Map, contract, all pages, and visuals"
                     >
-                      <path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.7-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14Z" />
-                    </svg>
-                  ) : (
-                    <svg
-                      className="h-3.5 w-3.5"
-                      viewBox="0 0 24 24"
-                      fill="currentColor"
-                      aria-hidden="true"
-                    >
-                      <rect x="6" y="4.5" width="4" height="15" rx="1" />
-                      <rect x="14" y="4.5" width="4" height="15" rx="1" />
-                    </svg>
+                      Rebuild entire garden
+                    </button>
                   )}
-                </button>
-              )}
-              {active && (
-                <button
-                  type="button"
-                  onClick={handleCancelLearn}
-                  disabled={learnCancelBusy}
-                  className="neu-button-destructive flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-red-900/60 bg-red-950/30 px-3 text-sm font-medium text-red-300 transition-colors hover:border-red-700 hover:text-red-200 disabled:cursor-wait disabled:opacity-60"
-                  title="Cancel this Learn run and roll back what it wrote"
-                >
-                  {learnCancelBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
-                  {learnCancelBusy ? "Cancelling..." : "Cancel"}
-                </button>
-              )}
+                {hasLearnData && !active && (
+                  <button
+                    type="button"
+                    onClick={handleClearLearnData}
+                    disabled={learnBusy || learnCancelBusy || active}
+                    className="neu-button-destructive h-[30px] shrink-0 whitespace-nowrap rounded-lg border border-red-900/70 px-3 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    title="Destructive: remove generated Learn content and Learn history while preserving sources and non-Learn notes"
+                  >
+                    Clear data
+                  </button>
+                )}
+                {showPrimaryAction && !active && (
+                  <button
+                    type="button"
+                    onClick={
+                      shouldRepairFromPrimaryAction
+                        ? handleRepairIssues
+                        : status === "cancelled"
+                          ? handleGenerateAfterCancellation
+                          : handleLearnPrimary
+                    }
+                    disabled={
+                      learnCancelBusy ||
+                      (!canStart && status !== "awaiting_confirmation")
+                    }
+                    className="neu-button-primary flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-white px-3 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {learnBusy || active ? (
+                      <Spinner className="h-3.5 w-3.5" />
+                    ) : null}
+                    {shouldRepairFromPrimaryAction
+                      ? learnBusy
+                        ? "Repairing..."
+                        : "Repair issues"
+                      : status === "failed"
+                        ? learnBusy
+                          ? "Retrying..."
+                          : "Retry Learn"
+                        : status === "cancelled"
+                          ? learnBusy
+                            ? hasExistingLearnContent
+                              ? "Repairing..."
+                              : "Generating..."
+                            : hasExistingLearnContent
+                              ? "Repair issues"
+                              : "Generate"
+                          : (learnState?.buttonLabel ?? "Learn")}
+                  </button>
+                )}
+                {active && showPauseControl && (
+                  <button
+                    type="button"
+                    onClick={paused ? handleResumeLearn : handlePauseLearn}
+                    disabled={learnPauseBusy || learnCancelBusy}
+                    className={
+                      paused
+                        ? "neu-button-primary flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-white text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-wait disabled:opacity-60"
+                        : "neu-button flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg border border-gray-800 text-gray-300 transition-colors hover:border-gray-700 hover:text-gray-100 disabled:cursor-wait disabled:opacity-60"
+                    }
+                    aria-label={
+                      learnPauseBusy
+                        ? paused
+                          ? "Resuming Learn run"
+                          : "Pausing Learn run"
+                        : paused
+                          ? "Resume Learn run"
+                          : "Pause Learn run"
+                    }
+                    title={
+                      paused
+                        ? "Resume this Learn run from the checkpoint it stopped at"
+                        : "Hold this Learn run at the next checkpoint. Nothing is discarded and the timer stops."
+                    }
+                  >
+                    {learnPauseBusy ? (
+                      <Spinner className="h-3.5 w-3.5" />
+                    ) : paused ? (
+                      <svg
+                        className="h-3.5 w-3.5"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <path d="M8 5.14v13.72a1 1 0 0 0 1.53.85l10.7-6.86a1 1 0 0 0 0-1.7L9.53 4.29A1 1 0 0 0 8 5.14Z" />
+                      </svg>
+                    ) : (
+                      <svg
+                        className="h-3.5 w-3.5"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <rect x="6" y="4.5" width="4" height="15" rx="1" />
+                        <rect x="14" y="4.5" width="4" height="15" rx="1" />
+                      </svg>
+                    )}
+                  </button>
+                )}
+                {active && (
+                  <button
+                    type="button"
+                    onClick={handleCancelLearn}
+                    disabled={learnCancelBusy}
+                    className="neu-button-destructive flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-red-900/60 bg-red-950/30 px-3 text-sm font-medium text-red-300 transition-colors hover:border-red-700 hover:text-red-200 disabled:cursor-wait disabled:opacity-60"
+                    title="Cancel this Learn run and roll back what it wrote"
+                  >
+                    {learnCancelBusy ? (
+                      <Spinner className="h-3.5 w-3.5" />
+                    ) : null}
+                    {learnCancelBusy ? "Cancelling..." : "Cancel"}
+                  </button>
+                )}
               </div>
               {!active &&
                 (status !== "awaiting_confirmation" ||
@@ -12161,13 +12839,31 @@ export default function WorkspaceClient({
             <ArtifactArchiveIcon className="h-3.5 w-3.5 shrink-0" />
             Artifacts
           </div>
-          <svg className={`w-3.5 h-3.5 transition-transform duration-200 ${artifactsExpanded ? "" : "rotate-180"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
+          <svg
+            className={`w-3.5 h-3.5 transition-transform duration-200 ${artifactsExpanded ? "" : "rotate-180"}`}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="m4.5 15.75 7.5-7.5 7.5 7.5"
+            />
           </svg>
         </button>
         {artifactsExpanded ? (
-          <div id="garden-artifacts-panel" className="bb-neu-accordion-panel h-[min(58vh,620px)] border-t border-gray-800">
-            <ArtifactPanel compact hideHeader gardenSlug={clusterSlug} sourceSurface="garden_chat" />
+          <div
+            id="garden-artifacts-panel"
+            className="bb-neu-accordion-panel h-[min(58vh,620px)] border-t border-gray-800"
+          >
+            <ArtifactPanel
+              compact
+              hideHeader
+              gardenSlug={clusterSlug}
+              sourceSurface="garden_chat"
+            />
           </div>
         ) : null}
       </div>
@@ -12177,9 +12873,7 @@ export default function WorkspaceClient({
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
       {/* Header */}
-      <header
-        className="bb-neu-toolbar breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0"
-      >
+      <header className="bb-neu-toolbar breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0">
         <NavbarFlowerWind />
         <div className="relative z-10 flex items-center gap-3">
           {/* Garden chat is the top of its own surface: always leave to the
@@ -12206,9 +12900,11 @@ export default function WorkspaceClient({
           </Link>
           <span className="text-gray-700">/</span>
           <Link
-            href={primarySourceDocument
-              ? gardenDocumentHref(clusterSlug, primarySourceDocument)
-              : `/garden/${clusterSlug}`}
+            href={
+              primarySourceDocument
+                ? gardenDocumentHref(clusterSlug, primarySourceDocument)
+                : `/garden/${clusterSlug}`
+            }
             className="text-sm font-semibold text-white truncate max-w-xs hover:text-cyan-100 transition-colors"
             title={
               primarySourceDocument
@@ -12402,273 +13098,273 @@ export default function WorkspaceClient({
           }
         />
 
-            {/* Sources — collapsible at bottom */}
-            <div className="hidden">
-              <button
-                onClick={() => setSourceDocsExpanded((v) => !v)}
-                className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+        {/* Sources — collapsible at bottom */}
+        <div className="hidden">
+          <button
+            onClick={() => setSourceDocsExpanded((v) => !v)}
+            className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
               >
-                <div className="flex items-center gap-2">
-                  <svg
-                    className="w-3.5 h-3.5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
-                    />
-                  </svg>
-                  Documents
-                  {sourceDocuments.length > 0
-                    ? sourceDocSearchTerms.length > 0
-                      ? ` (${filteredSourceDocuments.length}/${sourceDocuments.length})`
-                      : ` (${sourceDocuments.length})`
-                    : ""}
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span
-                    role="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openUploadModal();
-                    }}
-                    className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
-                    aria-label="Add document"
-                  >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
+                />
+              </svg>
+              Documents
+              {sourceDocuments.length > 0
+                ? sourceDocSearchTerms.length > 0
+                  ? ` (${filteredSourceDocuments.length}/${sourceDocuments.length})`
+                  : ` (${sourceDocuments.length})`
+                : ""}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span
+                role="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openUploadModal();
+                }}
+                className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
+                aria-label="Add document"
+              >
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 4.5v15m7.5-7.5h-15"
+                  />
+                </svg>
+              </span>
+              <svg
+                className={`w-3.5 h-3.5 transition-transform duration-200 ${sourceDocsExpanded ? "" : "rotate-180"}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="m4.5 15.75 7.5-7.5 7.5 7.5"
+                />
+              </svg>
+            </div>
+          </button>
+          {sourceDocsExpanded && (
+            <div className="border-t border-gray-800">
+              {!loadingDocs && sourceDocuments.length > 0 && (
+                <div className="border-b border-gray-800 px-3 py-2">
+                  <div className="relative">
                     <svg
-                      className="w-3.5 h-3.5"
+                      className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-600"
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
-                      strokeWidth={2}
+                      strokeWidth={1.7}
                     >
                       <path
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        d="M12 4.5v15m7.5-7.5h-15"
+                        d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"
                       />
                     </svg>
-                  </span>
-                  <svg
-                    className={`w-3.5 h-3.5 transition-transform duration-200 ${sourceDocsExpanded ? "" : "rotate-180"}`}
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="m4.5 15.75 7.5-7.5 7.5 7.5"
+                    <input
+                      value={sourceDocSearch}
+                      onChange={(e) => setSourceDocSearch(e.target.value)}
+                      placeholder="Search PDFs"
+                      className="h-8 w-full rounded-md border border-gray-800 bg-gray-950 pl-8 pr-8 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                      aria-label="Search source PDFs"
                     />
-                  </svg>
-                </div>
-              </button>
-              {sourceDocsExpanded && (
-                <div className="border-t border-gray-800">
-                  {!loadingDocs && sourceDocuments.length > 0 && (
-                    <div className="border-b border-gray-800 px-3 py-2">
-                      <div className="relative">
+                    {sourceDocSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setSourceDocSearch("")}
+                        className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
+                        aria-label="Clear PDF search"
+                        title="Clear search"
+                      >
                         <svg
-                          className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-600"
+                          className="h-3.5 w-3.5"
                           fill="none"
                           viewBox="0 0 24 24"
                           stroke="currentColor"
-                          strokeWidth={1.7}
+                          strokeWidth={2}
                         >
                           <path
                             strokeLinecap="round"
                             strokeLinejoin="round"
-                            d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"
+                            d="M6 18 18 6M6 6l12 12"
                           />
                         </svg>
-                        <input
-                          value={sourceDocSearch}
-                          onChange={(e) => setSourceDocSearch(e.target.value)}
-                          placeholder="Search PDFs"
-                          className="h-8 w-full rounded-md border border-gray-800 bg-gray-950 pl-8 pr-8 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
-                          aria-label="Search source PDFs"
-                        />
-                        {sourceDocSearch && (
-                          <button
-                            type="button"
-                            onClick={() => setSourceDocSearch("")}
-                            className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
-                            aria-label="Clear PDF search"
-                            title="Clear search"
-                          >
-                            <svg
-                              className="h-3.5 w-3.5"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2}
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M6 18 18 6M6 6l12 12"
-                              />
-                            </svg>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  <div className="max-h-44 overflow-y-auto">
-                    {loadingDocs ? (
-                      <div className="flex justify-center py-6">
-                        <Spinner className="w-4 h-4 text-gray-700" />
-                      </div>
-                    ) : sourceDocuments.length === 0 ? (
-                      <div className="flex flex-col items-center py-6 px-4 text-center">
-                        <p className="text-xs text-gray-600 mb-2">
-                          No source documents yet
-                        </p>
-                        <button
-                          onClick={openUploadModal}
-                          className="text-xs text-gray-500 hover:text-white underline underline-offset-2 transition-colors"
-                        >
-                          Upload your first
-                        </button>
-                      </div>
-                    ) : filteredSourceDocuments.length === 0 ? (
-                      <div className="flex flex-col items-center px-4 py-6 text-center">
-                        <p className="text-xs text-gray-600">
-                          No PDFs match {sourceDocSearch.trim()}
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => setSourceDocSearch("")}
-                          className="mt-2 text-xs text-gray-500 underline underline-offset-2 transition-colors hover:text-white"
-                        >
-                          Clear search
-                        </button>
-                      </div>
-                    ) : (
-                      renderMarkdownRows(filteredSourceDocuments)
+                      </button>
                     )}
                   </div>
                 </div>
               )}
+              <div className="max-h-44 overflow-y-auto">
+                {loadingDocs ? (
+                  <div className="flex justify-center py-6">
+                    <Spinner className="w-4 h-4 text-gray-700" />
+                  </div>
+                ) : sourceDocuments.length === 0 ? (
+                  <div className="flex flex-col items-center py-6 px-4 text-center">
+                    <p className="text-xs text-gray-600 mb-2">
+                      No source documents yet
+                    </p>
+                    <button
+                      onClick={openUploadModal}
+                      className="text-xs text-gray-500 hover:text-white underline underline-offset-2 transition-colors"
+                    >
+                      Upload your first
+                    </button>
+                  </div>
+                ) : filteredSourceDocuments.length === 0 ? (
+                  <div className="flex flex-col items-center px-4 py-6 text-center">
+                    <p className="text-xs text-gray-600">
+                      No PDFs match {sourceDocSearch.trim()}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setSourceDocSearch("")}
+                      className="mt-2 text-xs text-gray-500 underline underline-offset-2 transition-colors hover:text-white"
+                    >
+                      Clear search
+                    </button>
+                  </div>
+                ) : (
+                  renderMarkdownRows(filteredSourceDocuments)
+                )}
+              </div>
             </div>
+          )}
+        </div>
 
-            <div className="hidden">
-              <button
-                onClick={() => setDocsExpanded((v) => !v)}
-                className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+        <div className="hidden">
+          <button
+            onClick={() => setDocsExpanded((v) => !v)}
+            className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
               >
-                <div className="flex items-center gap-2">
-                  <svg
-                    className="w-3.5 h-3.5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
-                    />
-                  </svg>
-                  Lessons
-                  {markdownDocuments.length > 0
-                    ? ` (${markdownDocuments.length})`
-                    : ""}
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
+                />
+              </svg>
+              Lessons
+              {markdownDocuments.length > 0
+                ? ` (${markdownDocuments.length})`
+                : ""}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span
+                role="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!creatingFolder) handleCreateFolder("");
+                }}
+                className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
+                aria-label="New folder"
+                title="New folder"
+              >
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.6}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 10.5v6m3-3h-6M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.061.44H18A2.25 2.25 0 0 1 20.25 9v.776"
+                  />
+                </svg>
+              </span>
+              <span
+                role="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openNewNoteModal();
+                }}
+                className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
+                aria-label="New page"
+                title="New page"
+              >
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 4.5v15m7.5-7.5h-15"
+                  />
+                </svg>
+              </span>
+              <svg
+                className={`w-3.5 h-3.5 transition-transform duration-200 ${docsExpanded ? "" : "rotate-180"}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="m4.5 15.75 7.5-7.5 7.5 7.5"
+                />
+              </svg>
+            </div>
+          </button>
+          {docsExpanded && (
+            <div className="max-h-56 overflow-y-auto border-t border-gray-800">
+              {loadingDocs ? (
+                <div className="flex justify-center py-6">
+                  <Spinner className="w-4 h-4 text-gray-700" />
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <span
-                    role="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (!creatingFolder) handleCreateFolder("");
-                    }}
-                    className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
-                    aria-label="New folder"
-                    title="New folder"
+              ) : markdownDocuments.length === 0 && folders.length === 0 ? (
+                <div className="flex flex-col items-center py-6 px-4 text-center">
+                  <p className="text-xs text-gray-600 mb-2">
+                    No lesson pages yet
+                  </p>
+                  <button
+                    onClick={openUploadModal}
+                    className="text-xs text-gray-500 hover:text-white underline underline-offset-2 transition-colors"
                   >
-                    <svg
-                      className="w-3.5 h-3.5"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={1.6}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M12 10.5v6m3-3h-6M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.061.44H18A2.25 2.25 0 0 1 20.25 9v.776"
-                      />
-                    </svg>
-                  </span>
-                  <span
-                    role="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openNewNoteModal();
-                    }}
-                    className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
-                    aria-label="New page"
-                    title="New page"
-                  >
-                    <svg
-                      className="w-3.5 h-3.5"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M12 4.5v15m7.5-7.5h-15"
-                      />
-                    </svg>
-                  </span>
-                  <svg
-                    className={`w-3.5 h-3.5 transition-transform duration-200 ${docsExpanded ? "" : "rotate-180"}`}
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="m4.5 15.75 7.5-7.5 7.5 7.5"
-                    />
-                  </svg>
+                    Upload your first
+                  </button>
                 </div>
-              </button>
-              {docsExpanded && (
-                <div className="max-h-56 overflow-y-auto border-t border-gray-800">
-                  {loadingDocs ? (
-                    <div className="flex justify-center py-6">
-                      <Spinner className="w-4 h-4 text-gray-700" />
-                    </div>
-                  ) : markdownDocuments.length === 0 && folders.length === 0 ? (
-                    <div className="flex flex-col items-center py-6 px-4 text-center">
-                      <p className="text-xs text-gray-600 mb-2">
-                        No lesson pages yet
-                      </p>
-                      <button
-                        onClick={openUploadModal}
-                        className="text-xs text-gray-500 hover:text-white underline underline-offset-2 transition-colors"
-                      >
-                        Upload your first
-                      </button>
-                    </div>
-                  ) : (
-                    renderMarkdownTreeRoot()
-                  )}
-                </div>
+              ) : (
+                renderMarkdownTreeRoot()
               )}
             </div>
+          )}
+        </div>
 
         {/* Chat area — warm paper surface so the green sidebars read as a frame */}
         {/* min-w-0: without it the column keeps its ~1056px min-content width and
@@ -12685,35 +13381,34 @@ export default function WorkspaceClient({
               ref={transcriptScrollRef}
               className="bb-chat-scroller bb-chat-scroll-tail flex flex-1 flex-col overflow-y-auto px-4 py-6"
             >
-            <ChatTranscript
-              clusterName={clusterName}
-              clusterSlug={clusterSlug}
-              greeting={chatGreeting.greeting}
-              greetingSuggestions={chatGreeting.suggestions}
-              onSelectSuggestion={fillComposerWithPrompt}
-              chatSessionId={activeChatId}
-              isStreaming={
-                isStreaming || agentLaunchQueue.queued || delegatedAgentLaunching
-              }
-              loadingChats={loadingChats}
-              messages={messages}
-              activities={agentActivity.activities}
-              connection={agentActivity.connection}
-              pendingPermission={agentActivity.pendingPermission}
-              onPermissionDecision={(decision) =>
-                void agentActivity.respondToPermission(decision)
-              }
-              onEditMessage={handleEditUserMessage}
-              onDeleteMessage={handleDeleteUserMessage}
-              onRetryAssistant={handleRetryAssistant}
-              branchGroups={branchGroups}
-              onSwitchBranch={switchBranch}
-              onExternalAgentTerminal={handleExternalAgentTerminal}
-              inlineArtifactRetireVersion={inlineArtifactRetireVersion}
-              transcriptScrollRef={transcriptScrollRef}
-              transcriptVirtual={transcriptVirtual}
-            />
-            {messages.length > 0 ? <ChatDisclaimer /> : null}
+              <ChatTranscript
+                clusterName={clusterName}
+                clusterSlug={clusterSlug}
+                greeting={chatGreeting.greeting}
+                greetingSuggestions={chatGreeting.suggestions}
+                onSelectSuggestion={fillComposerWithPrompt}
+                chatSessionId={activeChatId}
+                isStreaming={isStreaming || delegationInFlight}
+                loadingChats={loadingChats}
+                messages={messages}
+                activities={agentActivity.activities}
+                connection={agentActivity.connection}
+                pendingPermission={agentActivity.pendingPermission}
+                onPermissionDecision={(decision) =>
+                  void agentActivity.respondToPermission(decision)
+                }
+                onEditMessage={handleEditUserMessage}
+                onDeleteMessage={handleDeleteUserMessage}
+                onRetryAssistant={handleRetryAssistant}
+                branchGroups={branchGroups}
+                onSwitchBranch={switchBranch}
+                onExternalAgentTerminal={handleExternalAgentTerminal}
+                inlineArtifactRetireVersion={inlineArtifactRetireVersion}
+                delegationInFlight={delegationInFlight}
+                transcriptScrollRef={transcriptScrollRef}
+                transcriptVirtual={transcriptVirtual}
+              />
+              {messages.length > 0 ? <ChatDisclaimer /> : null}
             </main>
             <ChatMessageRail
               surface="garden-chat"
@@ -12724,14 +13419,19 @@ export default function WorkspaceClient({
             <ChatJumpToBottom
               visible={transcriptAwayFromBottom}
               busy={
-                isStreaming || agentLaunchQueue.queued || delegatedAgentLaunching
+                isStreaming ||
+                agentLaunchQueue.queued ||
+                delegatedAgentLaunching
               }
               onJump={jumpToNewestMessage}
             />
           </div>
 
           {/* Input area */}
-          <div ref={composerInset.ref} className="bb-composer-overlay px-4 py-4">
+          <div
+            ref={composerInset.ref}
+            className="bb-composer-overlay px-4 py-4"
+          >
             {/* A runtime agent the assistant chose, waiting to be started. */}
             {agentLaunchQueue.pending ? (
               <div className="mx-auto mb-2 w-full max-w-5xl">
@@ -12799,6 +13499,7 @@ export default function WorkspaceClient({
               onChange={setInput}
               onSubmit={handleSubmit}
               onRunWorkflow={runWorkflowAutomation}
+              history={sentMessages}
               onPaste={handleChatPaste}
               textareaRef={textareaRef}
               placeholder="Ask about your documents…"
@@ -12814,8 +13515,8 @@ export default function WorkspaceClient({
               onModelChange={setModel}
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={setReasoningEffort}
-          intelligenceModes={intelligenceModes}
-          modelFailover={modelFailover}
+              intelligenceModes={intelligenceModes}
+              modelFailover={modelFailover}
               onAddDocuments={() => chatFileInputRef.current?.click()}
               isAddingDocuments={extractingAttachments}
               attachments={chatAttachments}
@@ -12860,6 +13561,7 @@ export default function WorkspaceClient({
               onSelectOpenscience={() => {}}
               onSelectInboxZero={() => {}}
               onSelectVimax={() => {}}
+              onSelectVoxDirector={() => {}}
               onSelectMoneyPrinter={() => {}}
               onSelectLegal={() => {}}
               onSelectWardrobe={() => {}}
@@ -12877,7 +13579,7 @@ export default function WorkspaceClient({
               onSelectGetDoc={() => void selectGetDoc()}
               onClearGetDoc={() => {
                 setGetDocAgent(null);
-      setMeetingNotesAgent(null);
+                setMeetingNotesAgent(null);
                 setExternalAgentStatus("");
               }}
               deepTutorAgent={deepTutorAgent}
@@ -12925,7 +13627,9 @@ export default function WorkspaceClient({
                 setTradingAgentsSeed(null);
                 setExternalAgentStatus("");
               }}
-              onSubmitTradingAgents={(request) => void launchTradingAgents(request)}
+              onSubmitTradingAgents={(request) =>
+                void launchTradingAgents(request)
+              }
               shortsAgent={shortsAgent}
               shortsSeed={shortsSeed}
               onSelectShorts={() => void selectShorts()}
@@ -12977,7 +13681,10 @@ export default function WorkspaceClient({
                 onOpenChat={openChatById}
               />
             ) : sidePanel === "scheduled" ? (
-              <TerminalScheduledPanel surface="garden_chat" gardenSlug={clusterSlug} />
+              <TerminalScheduledPanel
+                surface="garden_chat"
+                gardenSlug={clusterSlug}
+              />
             ) : sidePanel === "hooks" ? (
               <HooksPanel gardenSlug={clusterSlug} />
             ) : (
@@ -13807,6 +14514,8 @@ export default function WorkspaceClient({
           onConfirm={() => void handleConfirmLearnDestructiveAction()}
         />
       ) : null}
+
+      {confirmDialog}
 
       <Toaster toasts={toasts} onDismiss={dismissToast} />
     </div>

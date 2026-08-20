@@ -29,7 +29,10 @@ import { apiErrorResponse } from '@/lib/hermes/route-helpers.ts';
 import { recordAuditEvent } from '@/lib/hermes/runtime-store.ts';
 import { cogniviaSection } from '@/lib/cognivia/index.ts';
 import { directModeSection } from '@/lib/hermes/direct-mode.ts';
-import { responseStylePrompt } from '@/lib/hermes/system-prompts.ts';
+import {
+  readerComprehensionPrompt,
+  responseStylePrompt,
+} from '@/lib/hermes/system-prompts.ts';
 import { createEmDashFilter } from '@/lib/prose-punctuation.ts';
 import {
   assistantTextFromOutputItem,
@@ -426,6 +429,10 @@ export async function POST(request: Request) {
         '\n\nWhen the question is complex or analytical, think carefully before giving your final answer. ' +
         'Use the relevant notes and relationships to check your answer before responding.';
     }
+
+    // Retrieved notes and Direct mode can shape content and layout, but the
+    // last instruction still has to make the result usable to a new reader.
+    systemPrompt += `\n\n${readerComprehensionPrompt()}`;
 
     const client = new OpenAI({
       baseURL,

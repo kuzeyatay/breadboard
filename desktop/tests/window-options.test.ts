@@ -9,6 +9,7 @@ import {
   backgroundColorForTheme,
   isWindowSurface,
   mainWindowOptions,
+  popupBackgroundColor,
   titleBarForSurface,
   titleBarForTheme,
 } from "../src/main/window-options";
@@ -122,6 +123,30 @@ test("dark window chrome meshes with the charcoal application palette", () => {
   );
   assert.equal(darkOptions.backgroundColor, "#18181a");
   assert.deepEqual(darkOptions.titleBarOverlay, BREADBOARD_DARK_TITLE_BAR);
+});
+
+test("a window waits in the colour of the page it is opening", () => {
+  // Chat paints its own palette edge to edge; a window that waited in
+  // Breadboard's green would flash the wrong app before turning cream.
+  assert.equal(popupBackgroundColor("http://localhost:3000/buzz", "light"), "#e6e6b6");
+  assert.equal(popupBackgroundColor("http://localhost:3000/buzz", "dark"), "#4a4616");
+  // A room deep-link is still Chat.
+  assert.equal(
+    popupBackgroundColor("http://localhost:3000/buzz/room_abc", "light"),
+    "#e6e6b6",
+  );
+  // A path that merely starts with the same letters is not.
+  assert.equal(
+    popupBackgroundColor("http://localhost:3000/buzzer", "light"),
+    backgroundColorForTheme("light"),
+  );
+  // Everything else waits in Breadboard's own paper.
+  assert.equal(
+    popupBackgroundColor("http://localhost:3000/pomodoro", "light"),
+    backgroundColorForTheme("light"),
+  );
+  // An unreadable target must not throw on the way to a window.
+  assert.equal(popupBackgroundColor("not a url", "dark"), backgroundColorForTheme("dark"));
 });
 
 test("the startup scene stays visible long enough to perceive its motion", () => {

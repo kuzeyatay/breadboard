@@ -40,6 +40,19 @@ function synchronizeTheme(theme: AppTheme): void {
   }
 }
 
+/**
+ * How far ahead the automatic-theme timer is ever allowed to be set.
+ *
+ * A single timer armed for the exact sunrise instant is a monotonic-clock
+ * deadline, and on Windows that clock does not advance while the machine is
+ * asleep. A laptop closed at midnight wakes at nine with most of the night
+ * still left to run on a timer that was due at dawn, so the page sits dark in
+ * full daylight. Re-arming at most a minute out means every tick re-reads the
+ * wall clock instead of trusting one long countdown, which also covers a
+ * throttled background renderer and a clock the user (or NTP) moved.
+ */
+const THEME_RECHECK_INTERVAL_MS = 60_000;
+
 export default function AppThemeRuntime() {
   useEffect(() => {
     let theme = getStoredAppTheme(window.localStorage);
@@ -50,7 +63,11 @@ export default function AppThemeRuntime() {
       transitionTimer = null;
     };
 
-    const refreshFromPreference = (announce: boolean) => {
+    // `reapply` writes the theme out even when it has not changed, for the
+    // moments that genuinely need it: the first paint, and a window coming
+    // back to the foreground with iframes that may have missed a change. The
+    // minute tick leaves it off, so a quiet day costs nothing but the check.
+    const refreshFromPreference = (announce: boolean, reapply = false) => {
       clearTransitionTimer();
       const mode = getStoredAppThemeMode(window.localStorage);
       const location = getStoredAppThemeLocation(window.localStorage);
@@ -60,8 +77,10 @@ export default function AppThemeRuntime() {
           : getStoredAppTheme(window.localStorage);
       const changed = nextTheme !== theme;
       theme = nextTheme;
-      rememberEffectiveAppTheme(theme);
-      synchronizeTheme(theme);
+      if (changed || reapply) {
+        rememberEffectiveAppTheme(theme);
+        synchronizeTheme(theme);
+      }
       if (announce && changed) {
         window.dispatchEvent(
           new CustomEvent<AppTheme>(APP_THEME_CHANGE_EVENT, { detail: theme }),
@@ -71,7 +90,10 @@ export default function AppThemeRuntime() {
         const transition = nextAppThemeTransition(new Date(), location);
         const delay = Math.max(
           1_000,
-          Math.min(2_147_000_000, transition.getTime() - Date.now() + 1_000),
+          Math.min(
+            THEME_RECHECK_INTERVAL_MS,
+            transition.getTime() - Date.now() + 1_000,
+          ),
         );
         transitionTimer = window.setTimeout(
           () => refreshFromPreference(true),
@@ -80,7 +102,7 @@ export default function AppThemeRuntime() {
       }
     };
 
-    refreshFromPreference(false);
+    refreshFromPreference(false, true);
 
     const handleThemeChange = (event: Event) => {
       const nextTheme = (event as CustomEvent<unknown>).detail;
@@ -89,14 +111,14 @@ export default function AppThemeRuntime() {
       synchronizeTheme(theme);
     };
 
-    const handleModeChange = () => refreshFromPreference(true);
+    const handleModeChange = () => refreshFromPreference(true, true);
 
     const handleStorage = (event: StorageEvent) => {
       if (
         event.key === APP_THEME_MODE_STORAGE_KEY ||
         event.key === APP_THEME_LOCATION_STORAGE_KEY
       ) {
-        refreshFromPreference(true);
+        refreshFromPreference(true, true);
         return;
       }
       if (

@@ -266,6 +266,7 @@ test("a delegated worker keeps its Super Agent message while storing the result 
     conversationId: chat.id,
     clientMessageId,
     content: "I’m checking the official sources now.",
+    metadata: { responseDurationMs: 36_000 },
   });
 
   const attached = turns.attachExternalAgentRun({
@@ -283,6 +284,7 @@ test("a delegated worker keeps its Super Agent message while storing the result 
     originalAssistant.content,
   );
   assert.equal(presented.metadata.externalAgentOutcome, "running");
+  assert.ok(Number.isFinite(Date.parse(presented.metadata.externalAgentStartedAt)));
   assert.deepEqual(presented.metadata.externalAgentRun, descriptors[2]);
   assert.deepEqual(
     store.listConversationMessages(chat.id).map((message) => message.id),
@@ -295,6 +297,10 @@ test("a delegated worker keeps its Super Agent message while storing the result 
     run: descriptors[2],
   });
   assert.equal(replay.id, originalAssistant.id);
+  assert.equal(
+    store.presentConversationMessage(replay).metadata.externalAgentStartedAt,
+    presented.metadata.externalAgentStartedAt,
+  );
   assert.equal(store.listConversationMessages(chat.id).length, 2);
 
   const finished = turns.finishExternalAgentTurn({
@@ -319,6 +325,10 @@ test("a delegated worker keeps its Super Agent message while storing the result 
   assert.equal(
     store.presentConversationMessage(finished).metadata.externalAgentOutcome,
     "completed",
+  );
+  assert.ok(
+    store.presentConversationMessage(finished).metadata.responseDurationMs >=
+      36_000,
   );
 
   const lateStartReplay = turns.attachExternalAgentRun({

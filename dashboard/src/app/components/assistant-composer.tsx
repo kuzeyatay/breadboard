@@ -28,6 +28,12 @@ import SlashCommandMenu, {
 } from '@/app/components/hermes/slash-command-menu';
 import { splitLeadingCommandTokens } from '@/app/components/hermes/command-text';
 import { slashQueryAt, slashQueryReplacementRange } from '@/lib/hermes/slash-query';
+import {
+  caretOnFirstLine,
+  caretOnLastLine,
+  composerHistory,
+  composerHistoryMove,
+} from '@/lib/hermes/composer-history';
 import { useDirectMode } from '@/app/components/use-direct-mode';
 import { useGoalMode } from '@/app/components/use-goal-mode';
 import { useYoloMode } from '@/app/components/use-yolo-mode';
@@ -95,6 +101,7 @@ import { OPENWORK_COMMAND } from '@/lib/openwork/identity.ts';
 import { OPENSCIENCE_COMMAND } from '@/lib/openscience/identity.ts';
 import { INBOX_ZERO_COMMAND } from '@/lib/inbox-zero/identity.ts';
 import { VIMAX_COMMAND } from '@/lib/vimax/identity.ts';
+import { VOX_DIRECTOR_COMMAND } from '@/lib/vox-director/identity.ts';
 import { MONEY_PRINTER_COMMAND } from '@/lib/money-printer/identity.ts';
 import { LEGAL_COMMAND } from '@/lib/legal/identity.ts';
 import { WARDROBE_COMMAND } from '@/lib/wardrobe/identity.ts';
@@ -135,6 +142,16 @@ interface Props {
   /** Invokes a saved automation with the current composer text as input. */
   onRunWorkflow?: (workflow: LocalWorkflowSummary, input: string) => void | Promise<void>;
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  /**
+   * What the person has already sent in this conversation, oldest first. Up and
+   * Down walk it from the edges of the draft, the way a terminal does — see
+   * `@/lib/hermes/composer-history` for the rules.
+   *
+   * Memoize it at the call site. A fresh array identity reads as a new
+   * conversation and drops the walk in progress, which is right when the
+   * conversation really did change and wrong on every unrelated re-render.
+   */
+  history?: readonly string[];
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
   onPasteFiles?: (files: File[]) => void | Promise<void>;
   textareaRef?: Ref<HTMLTextAreaElement>;
@@ -143,10 +160,17 @@ interface Props {
   disabled?: boolean;
   /**
    * The conversation under the composer is still arriving. Typing stays open —
-   * the box keeps its own placeholder — and only sending is held back, with the
-   * send button spinning in place of its arrow rather than greying out.
+   * the box keeps its own placeholder — and a submitted draft joins the visible
+   * follow-up queue until the transcript is ready. With no draft, the send button
+   * keeps showing the loading state rather than greying out.
    */
   loading?: boolean;
+  /**
+   * Blocks loading-time queueing independently from the other disabled composer
+   * controls. This lets a host keep attachments and modes locked while history
+   * loads without also disabling the typed draft's queue arrow.
+   */
+  queueDisabled?: boolean;
   isSending?: boolean;
   canSubmit: boolean;
   model: string;
@@ -186,12 +210,14 @@ interface Props {
    * An external agent run owns the conversation even though `runState` is idle
    * — those runs live in their own inline card, not in the Hermes run-state
    * machine. The next message must queue behind it exactly as it would behind a
-   * chat turn, but the card keeps its own Stop control, so this never turns the
-   * send button into a stop button.
+   * chat turn, and the composer exposes the same Stop affordance even when the
+   * agent's own card is hidden by a delegated turn.
    */
   externalRunActive?: boolean;
   onQueueSteer?: (text: string) => void;
   onStop?: () => void;
+  /** A stop request was accepted locally and is waiting for terminal state. */
+  stopPending?: boolean;
   permissionPending?: boolean;
   /**
    * Active Agent TARS (browser operator). When set, a chip shows in the composer
@@ -321,6 +347,7 @@ interface Props {
   /** Inbox Zero likewise: the command carries the instruction for the mailbox. */
   onSelectInboxZero?: () => void;
   onSelectVimax?: () => void;
+  onSelectVoxDirector?: () => void;
   onSelectMoneyPrinter?: () => void;
   /** The Legal Agent likewise: the command carries the assignment. */
   onSelectLegal?: () => void;
@@ -376,7 +403,7 @@ function CheckIcon() {
 
 function Spinner() {
   return (
-    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+    <svg className="h-4 w-4 animate-spin motion-reduce:animate-none" viewBox="0 0 24 24" fill="none">
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z" />
     </svg>
@@ -403,6 +430,10 @@ function composerMaxHeight(lineHeight: number) {
   );
 }
 
+// One frozen empty list for every composer that is not given a history, so the
+// absence of one is a stable identity and never restarts the walk on its own.
+const NO_SENT_MESSAGES: readonly string[] = [];
+
 type ActiveAgencyAgent = {
   id: string;
   slug: string;
@@ -418,6 +449,7 @@ export default function AssistantComposer({
   onSubmit,
   onRunWorkflow,
   onKeyDown,
+  history: sentMessages = NO_SENT_MESSAGES,
   onPaste,
   onPasteFiles,
   textareaRef,
@@ -425,6 +457,7 @@ export default function AssistantComposer({
   placeholder,
   disabled = false,
   loading = false,
+  queueDisabled = disabled,
   isSending = false,
   canSubmit,
   model,
@@ -451,6 +484,7 @@ export default function AssistantComposer({
   externalRunActive = false,
   onQueueSteer,
   onStop,
+  stopPending = false,
   permissionPending = false,
   browserAgent,
   onClearBrowserAgent,
@@ -515,6 +549,7 @@ export default function AssistantComposer({
   onSelectOpenscience,
   onSelectInboxZero,
   onSelectVimax,
+  onSelectVoxDirector,
   onSelectMoneyPrinter,
   onSelectLegal,
   onSelectWardrobe,
@@ -844,10 +879,16 @@ export default function AssistantComposer({
   // Anything still working on this conversation — a chat turn or an external
   // agent run — makes the next message a queued one rather than a send.
   const runInFlight = activeRun || externalRunActive;
+  const stopping = runState === 'stopping' || stopPending;
+  // Transcript loading holds messages for the same reason as an active run: a
+  // direct send would race history restoration and could be overwritten by it.
+  // Unlike `runInFlight`, loading has nothing to stop, so it only changes the
+  // draft's send path into a queue path.
+  const queueHeld = loading || runInFlight;
   // Runtime availability controls actions, not drafting. Keeping the textarea
   // editable means a transient runtime health check never eats or blocks the
   // user's next message.
-  const sessionActionsDisabled = disabled || runState === 'stopping';
+  const sessionActionsDisabled = disabled || stopping;
   // Two agents take a request rather than a message — Trading Agent analyses an
   // instrument, Shorts cuts a video — and while either is selected there is no
   // message to send, so the whole send path runs off its form's validity
@@ -902,13 +943,11 @@ export default function AssistantComposer({
     else if (paperTraderSelection) onSubmit();
   };
   const canSend = formAgent ? formRequestReady : canSubmit;
-  const canQueueSteer =
-    runInFlight &&
-    !disabled &&
-    canSubmit &&
-    Boolean(onQueueSteer) &&
-    runState !== 'steering' &&
-    runState !== 'stopping';
+  const canQueueFollowUp =
+    queueHeld &&
+    !queueDisabled &&
+    Boolean(value.trim()) &&
+    Boolean(onQueueSteer);
 
   useEffect(() => {
     if (!capabilitySessionId || capabilitySurface === 'quartz_ai') {
@@ -969,6 +1008,64 @@ export default function AssistantComposer({
     setIntelligencePanel(null);
   }
 
+  // Where the arrow-key walk through sent messages currently stands, and the
+  // draft it interrupted. A ref rather than state: nothing renders from it —
+  // the recalled text goes to the host through `onChange` like any keystroke.
+  const historyWalkRef = useRef<{ index: number; draft: string } | null>(null);
+  const messageHistory = useMemo(() => composerHistory(sentMessages), [sentMessages]);
+
+  // A new list means a message was just sent, or the conversation changed under
+  // the composer. Either way the walk is over and the next Up starts from the
+  // newest message rather than from wherever it had got to.
+  useEffect(() => {
+    historyWalkRef.current = null;
+  }, [messageHistory]);
+
+  /**
+   * Up and Down recall what was sent, as in a terminal — but only from the
+   * edges of the draft, so inside a message being written they still move the
+   * caret. Returns whether the key was spent on the walk.
+   */
+  function walkMessageHistory(event: KeyboardEvent<HTMLTextAreaElement>) {
+    const older = event.key === 'ArrowUp';
+    if (!older && event.key !== 'ArrowDown') return false;
+    // A modifier makes the arrow mean something else — selecting, moving by
+    // paragraph, jumping to the ends of the field — and none of those are recall.
+    if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return false;
+    if (event.nativeEvent.isComposing) return false;
+
+    const textarea = event.currentTarget;
+    const caret = textarea.selectionStart;
+    // A live selection is being extended or replaced; recall would throw it away.
+    if (caret !== textarea.selectionEnd) return false;
+    if (older ? !caretOnFirstLine(value, caret) : !caretOnLastLine(value, caret)) return false;
+
+    const walk = historyWalkRef.current;
+    const draft = walk?.draft ?? value;
+    const move = composerHistoryMove(
+      messageHistory,
+      walk?.index ?? null,
+      older ? 'older' : 'newer',
+      draft,
+    );
+    // Nowhere to go: leave the key to the caret rather than swallowing it.
+    if (!move) return false;
+
+    event.preventDefault();
+    historyWalkRef.current = move.index === null ? null : { index: move.index, draft };
+    onChange(move.text);
+    // The recalled message is the host's state, so it lands one render later;
+    // the caret goes to its end then, ready to be edited rather than sitting
+    // wherever the previous draft happened to leave it.
+    window.setTimeout(() => {
+      const node = internalTextareaRef.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(move.text.length, move.text.length);
+    }, 0);
+    return true;
+  }
+
   function assignTextareaRef(node: HTMLTextAreaElement | null) {
     internalTextareaRef.current = node;
     if (node) resizeTextarea();
@@ -976,7 +1073,7 @@ export default function AssistantComposer({
 
   function queueSteer() {
     const text = value.trim();
-    if (!text || !canQueueSteer) return;
+    if (!text || !canQueueFollowUp) return;
     onQueueSteer?.(text);
     onChange('');
     window.setTimeout(() => internalTextareaRef.current?.focus(), 0);
@@ -1081,6 +1178,7 @@ export default function AssistantComposer({
     onSelectOpenscience ? 'openscience' : null,
     onSelectInboxZero ? 'inbox-zero' : null,
     onSelectVimax ? 'vimax' : null,
+    onSelectVoxDirector ? 'vox-director' : null,
     onSelectMoneyPrinter ? 'money-printer' : null,
     onSelectLegal ? 'legal' : null,
     onSelectWardrobe ? 'wardrobe' : null,
@@ -1802,6 +1900,9 @@ export default function AssistantComposer({
             onSelectOpenscience={onSelectOpenscience ? () => insertCommandToken(OPENSCIENCE_COMMAND) : undefined}
             onSelectInboxZero={onSelectInboxZero ? () => insertCommandToken(INBOX_ZERO_COMMAND) : undefined}
             onSelectVimax={onSelectVimax ? () => insertCommandToken(VIMAX_COMMAND) : undefined}
+            onSelectVoxDirector={
+              onSelectVoxDirector ? () => insertCommandToken(VOX_DIRECTOR_COMMAND) : undefined
+            }
             onSelectMoneyPrinter={
               onSelectMoneyPrinter ? () => insertCommandToken(MONEY_PRINTER_COMMAND) : undefined
             }
@@ -1964,6 +2065,7 @@ export default function AssistantComposer({
                       if (commandHubRef.current?.handleKeyDown(event)) return;
                       onKeyDown?.(event);
                       if (event.defaultPrevented) return;
+                      if (walkMessageHistory(event)) return;
                       if (
                         event.key !== 'Enter' ||
                         event.shiftKey ||
@@ -1972,11 +2074,10 @@ export default function AssistantComposer({
                         return;
                       }
                       event.preventDefault();
-                      // A chat that has not finished loading takes no Enter at
-                      // all — not even as a queued steer, since there is no
-                      // settled conversation to queue against yet.
-                      if (loading) return;
-                      if (runInFlight) {
+                      // Loading history and an active response both hold this
+                      // message in the visible follow-up queue. The host drains
+                      // it only after the conversation is safe to write.
+                      if (queueHeld) {
                         queueSteer();
                         return;
                       }
@@ -1988,7 +2089,7 @@ export default function AssistantComposer({
                     rows={1}
                     wrap="soft"
                     placeholder={placeholder}
-                    className={`block w-full min-w-0 max-w-full resize-none overflow-y-hidden bg-transparent px-1 py-0 outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${mirrored ? 'text-transparent caret-[var(--ink)]' : 'text-[var(--ink)]'} ${compact ? 'min-h-5 text-sm leading-5' : 'min-h-6 text-[15px] leading-6'}`}
+                    className={`block w-full min-w-0 max-w-full resize-none overflow-y-hidden bg-transparent px-1 py-0 caret-[var(--composer-caret)] outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${mirrored ? 'text-transparent' : 'text-[var(--ink)]'} ${compact ? 'min-h-5 text-sm leading-5' : 'min-h-6 text-[15px] leading-6'}`}
                     style={textareaStyle}
                   />
                 </>
@@ -2254,39 +2355,48 @@ export default function AssistantComposer({
               (a quiet run) or never arrive at all, and then nothing on screen
               could stop a working conversation. Enter still queues the draft
               either way, exactly as it does during a chat turn. */}
-          {runInFlight && onStop ? (
+          {runInFlight && onStop && !canQueueFollowUp ? (
             <button
               type="button"
               onClick={onStop}
-              disabled={runState === 'stopping'}
+              disabled={stopping}
               className={`neu-button-accent flex shrink-0 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-wait disabled:opacity-55 ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
-              aria-label={runState === 'stopping' ? 'Stopping active run' : 'Stop active run'}
-              title={runState === 'stopping' ? 'Stopping...' : 'Stop'}
+              aria-label={stopping ? 'Stopping active run' : 'Stop active run'}
+              aria-busy={stopping}
+              title={stopping ? 'Stopping...' : 'Stop'}
             >
-              {runState === 'stopping' ? <Spinner /> : <span className="h-3 w-3 rounded-[3px] bg-current" aria-hidden />}
+              {stopping ? <Spinner /> : <span className="h-3 w-3 rounded-[3px] bg-current" aria-hidden />}
             </button>
           ) : (
           <button
             type="button"
-            // An external agent run keeps its own Stop control on its card, so
-            // the button stays a send button — it just queues instead, matching
-            // what Enter does while that run is working.
+            // A typed draft takes precedence over the loading/stop affordance:
+            // its arrow queues the message, matching Enter. With the field empty
+            // the active run still exposes Stop above.
             onClick={() =>
               formAgent
                 ? submitFormAgent()
-                : externalRunActive
+                : queueHeld
                   ? queueSteer()
                   : onSubmit()
             }
-            disabled={loading || !canSend || isSending || disabled || (Boolean(formAgent) && runInFlight)}
-            // While the chat loads the button keeps its accent colour and turns
-            // into a spinner: greying it out reads as "nothing to send", where
-            // this is "not yet". Every other block still greys out as before.
+            disabled={
+              !canSend ||
+              (formAgent
+                ? disabled || queueHeld || isSending
+                : queueHeld
+                  ? !canQueueFollowUp
+                  : disabled || isSending)
+            }
+            // While the chat loads with no draft, the button keeps its accent
+            // colour and spinner. A draft restores the enabled arrow immediately.
             className={`neu-button-accent flex shrink-0 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] ${loading ? 'disabled:cursor-wait disabled:opacity-55' : 'disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)]'} ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
             aria-label={
-              loading
-                ? 'Loading this chat'
-                : tradingAgentsAgent
+              canQueueFollowUp
+                ? 'Queue message'
+                : loading
+                  ? 'Loading this chat'
+                  : tradingAgentsAgent
                   ? 'Run analysis'
                   : shortsAgent
                     ? 'Cut the clips'
@@ -2294,12 +2404,14 @@ export default function AssistantComposer({
                       ? 'Reconstruct the picture'
                       : paperTraderSelection
                         ? 'Open the trading desk'
-                        : externalRunActive ? 'Queue message' : 'Send'
+                        : 'Send'
             }
             title={
-              loading
-                ? 'Loading this chat…'
-                : formAgent
+              canQueueFollowUp
+                ? 'Queue until the conversation is ready'
+                : loading
+                  ? 'Loading this chat…'
+                  : formAgent
                   ? runInFlight
                     ? 'Wait for the running agent to finish'
                     : tradingAgentsAgent
@@ -2309,12 +2421,10 @@ export default function AssistantComposer({
                         : paperTraderSelection
                           ? 'Open the trading desk'
                           : 'Reconstruct the picture'
-                  : externalRunActive
-                    ? 'Queue until the running agent finishes'
-                    : 'Send'
+                  : 'Send'
             }
           >
-            {isSending || loading ? (
+            {(isSending || loading) && !canQueueFollowUp ? (
               <Spinner />
             ) : (
               <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>

@@ -35,6 +35,7 @@ interface SessionLike {
   appendExternalAgentTurn: (input: {
     clientMessageId: string;
     userContent: string;
+    model?: string;
     assistantContent?: string;
     run?: {
       kind: "deep_research";
@@ -50,18 +51,23 @@ interface SessionLike {
 
 export interface DeepResearchLaunchOptions {
   branchGroupId?: string;
+  /** Preserve a one-turn natural-language request instead of inventing a slash command. */
+  userContent?: string;
 }
 
 const ERROR_TEXT: Record<string, string> = {
-  deep_research_disabled: "Deep Research is disabled (DEEP_RESEARCH_MODE=disabled).",
+  deep_research_disabled:
+    "Deep Research is disabled (DEEP_RESEARCH_MODE=disabled).",
   service_unavailable:
     "Breadboard could not start the local research service. Check the Deep Research checkout and try again.",
   service_misconfigured:
     "The dashboard and the research service do not share a secret (DEEP_RESEARCH_SECRET).",
   search_not_configured:
     "No search backend is configured. Set CHATMOCK_BASE_URL to use ChatMock's built-in web search.",
-  model_not_configured: "The research service has no model configured. Check CHATMOCK_BASE_URL.",
-  too_many_runs: "The service is already running its maximum number of research runs.",
+  model_not_configured:
+    "The research service has no model configured. Check CHATMOCK_BASE_URL.",
+  too_many_runs:
+    "The service is already running its maximum number of research runs.",
   rate_limited: "Too many research runs started recently. Try again later.",
   invalid_query: "Add a research question after the command.",
 };
@@ -71,7 +77,11 @@ function explain(code: string | undefined, fallback: string): string {
   return ERROR_TEXT[code] ?? fallback;
 }
 
-export function useDeepResearchAgent(session: SessionLike, onStatus?: (message: string) => void) {
+export function useDeepResearchAgent(
+  session: SessionLike,
+  onStatus?: (message: string) => void,
+  titleModel?: string,
+) {
   const [agent, setAgent] = useState<DeepResearchAgent | null>(null);
   const [launching, setLaunching] = useState(false);
   const launchingRef = useRef(false);
@@ -91,11 +101,16 @@ export function useDeepResearchAgent(session: SessionLike, onStatus?: (message: 
       return;
     }
     const transcript = session.messages;
-    if (!transcript?.length || restoredConversationRef.current === conversationId) {
+    if (
+      !transcript?.length ||
+      restoredConversationRef.current === conversationId
+    ) {
       return;
     }
     restoredConversationRef.current = conversationId;
-    const latestUser = [...transcript].reverse().find((message) => message.role === "user");
+    const latestUser = [...transcript]
+      .reverse()
+      .find((message) => message.role === "user");
     setAgent(
       latestUser && taskFromDeepResearchCommand(latestUser.content) !== null
         ? AGENT
@@ -156,7 +171,8 @@ export function useDeepResearchAgent(session: SessionLike, onStatus?: (message: 
         deepResearchDefaults(await loadAgentSettings("deep-research")),
       );
       let clientMessageId = crypto.randomUUID();
-      const userContent = deepResearchUserMessage(task);
+      const userContent =
+        options.userContent?.trim() || deepResearchUserMessage(task);
       clientMessageId = session.previewExternalAgentTurn({
         clientMessageId,
         userContent,
@@ -168,6 +184,7 @@ export function useDeepResearchAgent(session: SessionLike, onStatus?: (message: 
           await session.appendExternalAgentTurn({
             clientMessageId,
             userContent,
+            model: titleModel,
             assistantContent: ERROR_TEXT.invalid_query,
             outcome: "failed",
             branchGroupId: options.branchGroupId,
@@ -189,18 +206,25 @@ export function useDeepResearchAgent(session: SessionLike, onStatus?: (message: 
         // The launching chat decides whether this run may be given memory, so
         // the conversation is materialized before the run starts rather than
         // when its turn is saved. The call is idempotent.
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/deep-research/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...request, conversationPublicId, clientMessageId }),
+          body: JSON.stringify({
+            ...request,
+            conversationPublicId,
+            clientMessageId,
+          }),
         });
         const data = (await response.json().catch(() => ({}))) as {
           error?: string;
           run?: { runId?: string };
         };
         if (!response.ok || !data.run?.runId) {
-          throw new Error(explain(data.error, "The research run could not start."));
+          throw new Error(
+            explain(data.error, "The research run could not start."),
+          );
         }
         const run = {
           runId: String(data.run.runId),
@@ -220,6 +244,7 @@ export function useDeepResearchAgent(session: SessionLike, onStatus?: (message: 
         await session.appendExternalAgentTurn({
           clientMessageId,
           userContent,
+          model: titleModel,
           run: {
             kind: "deep_research",
             ...deepResearchRun,
@@ -236,11 +261,14 @@ export function useDeepResearchAgent(session: SessionLike, onStatus?: (message: 
           return;
         }
         const assistantContent =
-          cause instanceof Error ? cause.message : "The research run could not start.";
+          cause instanceof Error
+            ? cause.message
+            : "The research run could not start.";
         try {
           await session.appendExternalAgentTurn({
             clientMessageId,
             userContent,
+            model: titleModel,
             assistantContent,
             outcome: "failed",
             branchGroupId: options.branchGroupId,
@@ -257,7 +285,7 @@ export function useDeepResearchAgent(session: SessionLike, onStatus?: (message: 
         setLaunching(false);
       }
     },
-    [onStatus, session],
+    [onStatus, session, titleModel],
   );
 
   return { agent, select, clear, launch, launching };

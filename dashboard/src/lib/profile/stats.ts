@@ -32,7 +32,14 @@ export interface ProfileAccount {
   /** Both halves of the name they set on this page. Either may be empty. */
   firstName: string;
   lastName: string;
-  /** What the assistant calls them: their first name, else the username. */
+  /** The "about you" fields from the same page. Any of them may be empty. */
+  nickname: string;
+  occupation: string;
+  about: string;
+  /**
+   * What the assistant calls them: their nickname, else their first name, else
+   * the username.
+   */
   displayName: string | null;
   email: string;
   joinedAt: string;
@@ -412,6 +419,9 @@ export function readProfileStats(
       username: user.username?.trim() || user.email,
       firstName: identity.firstName,
       lastName: identity.lastName,
+      nickname: identity.nickname,
+      occupation: identity.occupation,
+      about: identity.about,
       displayName: identity.displayName,
       email: user.email,
       joinedAt: user.created_at,

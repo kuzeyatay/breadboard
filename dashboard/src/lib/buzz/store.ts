@@ -24,7 +24,8 @@ export type BuzzMessageStatus =
 export interface BuzzRoom {
   id: number;
   publicId: string;
-  userId: number;
+  organizationId: number;
+  createdByUserId: number | null;
   slug: string;
   name: string;
   topic: string;
@@ -120,15 +121,15 @@ export function canonicalHandle(value: string): string {
 
 function uniqueSlug(
   database: Database.Database,
-  userId: number,
+  organizationId: number,
   base: string,
 ): string {
   let candidate = base;
   let suffix = 2;
   const taken = database.prepare(
-    "SELECT 1 FROM buzz_rooms WHERE user_id = ? AND slug = ?",
+    "SELECT 1 FROM buzz_rooms WHERE organization_id = ? AND slug = ?",
   );
-  while (taken.get(userId, candidate)) {
+  while (taken.get(organizationId, candidate)) {
     candidate = `${base}-${suffix}`;
     suffix += 1;
   }
@@ -140,7 +141,8 @@ function uniqueSlug(
 interface RoomRow {
   id: number;
   public_id: string;
-  user_id: number;
+  organization_id: number;
+  created_by_user_id: number | null;
   slug: string;
   name: string;
   topic: string;
@@ -157,7 +159,8 @@ function toRoom(row: RoomRow): BuzzRoom {
   return {
     id: row.id,
     publicId: row.public_id,
-    userId: row.user_id,
+    organizationId: row.organization_id,
+    createdByUserId: row.created_by_user_id,
     slug: row.slug,
     name: row.name,
     topic: row.topic,
@@ -267,31 +270,81 @@ function toMessage(row: MessageRow): BuzzMessage {
 
 /* ── rooms ───────────────────────────────────────────────────────────────── */
 
+/** Every room in one organization. */
 export function listRooms(
+  database: Database.Database,
+  organizationId: number,
+  options: { includeArchived?: boolean } = {},
+): BuzzRoom[] {
+  const rows = database
+    .prepare(
+      `SELECT * FROM buzz_rooms
+       WHERE organization_id = ?
+         AND (? = 1 OR archived_at IS NULL)
+       ORDER BY kind = 'dm', last_activity_at DESC, id DESC`,
+    )
+    .all(organizationId, options.includeArchived ? 1 : 0) as RoomRow[];
+  return rows.map(toRoom);
+}
+
+/**
+ * A room the reader is allowed to open.
+ *
+ * Membership of the owning organization is the whole access rule, and it is
+ * enforced in the query rather than by the caller — a room in an organization
+ * the reader does not belong to is indistinguishable from one that does not
+ * exist.
+ *
+ * A private room narrows that further: it opens only for someone already
+ * enrolled in it, so an organization-wide reader cannot walk into a side
+ * conversation just by knowing its id.
+ */
+export function getRoomForUser(
+  database: Database.Database,
+  userId: number,
+  publicId: string,
+): BuzzRoom | null {
+  const row = database
+    .prepare(
+      `SELECT r.* FROM buzz_rooms r
+       JOIN organization_members om
+         ON om.organization_id = r.organization_id AND om.user_id = ?
+       WHERE r.public_id = ?
+         AND (
+           r.visibility = 'public'
+           OR EXISTS (
+             SELECT 1 FROM buzz_room_members m
+             WHERE m.room_id = r.id AND m.user_id = ?
+           )
+         )`,
+    )
+    .get(userId, publicId, userId) as RoomRow | undefined;
+  return row ? toRoom(row) : null;
+}
+
+/** Rooms across every organization the reader belongs to. */
+export function listRoomsForUser(
   database: Database.Database,
   userId: number,
   options: { includeArchived?: boolean } = {},
 ): BuzzRoom[] {
   const rows = database
     .prepare(
-      `SELECT * FROM buzz_rooms
-       WHERE user_id = ?
-         AND (? = 1 OR archived_at IS NULL)
-       ORDER BY kind = 'dm', last_activity_at DESC, id DESC`,
+      `SELECT r.* FROM buzz_rooms r
+       JOIN organization_members om
+         ON om.organization_id = r.organization_id AND om.user_id = ?
+       WHERE (? = 1 OR r.archived_at IS NULL)
+         AND (
+           r.visibility = 'public'
+           OR EXISTS (
+             SELECT 1 FROM buzz_room_members m
+             WHERE m.room_id = r.id AND m.user_id = ?
+           )
+         )
+       ORDER BY r.organization_id, r.kind = 'dm', r.last_activity_at DESC, r.id DESC`,
     )
-    .all(userId, options.includeArchived ? 1 : 0) as RoomRow[];
+    .all(userId, options.includeArchived ? 1 : 0, userId) as RoomRow[];
   return rows.map(toRoom);
-}
-
-export function getRoomByPublicId(
-  database: Database.Database,
-  userId: number,
-  publicId: string,
-): BuzzRoom | null {
-  const row = database
-    .prepare("SELECT * FROM buzz_rooms WHERE user_id = ? AND public_id = ?")
-    .get(userId, publicId) as RoomRow | undefined;
-  return row ? toRoom(row) : null;
 }
 
 export interface CreateRoomInput {
@@ -304,19 +357,23 @@ export interface CreateRoomInput {
 
 export function createRoom(
   database: Database.Database,
-  userId: number,
+  organizationId: number,
+  createdByUserId: number,
   input: CreateRoomInput,
 ): BuzzRoom {
   const name = input.name.trim().slice(0, 80) || "new-room";
-  const slug = uniqueSlug(database, userId, canonicalRoomSlug(name));
+  const slug = uniqueSlug(database, organizationId, canonicalRoomSlug(name));
   const info = database
     .prepare(
-      `INSERT INTO buzz_rooms (public_id, user_id, slug, name, topic, purpose, kind, visibility)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO buzz_rooms
+         (public_id, organization_id, created_by_user_id, slug, name, topic,
+          purpose, kind, visibility)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       publicRoomId(),
-      userId,
+      organizationId,
+      createdByUserId,
       slug,
       name,
       (input.topic ?? "").slice(0, 240),
@@ -776,7 +833,14 @@ export function markRoomRead(
     .run(roomId, userId, lastReadMessageId);
 }
 
-/** Unread counts per room, for the sidebar badges. */
+/**
+ * Unread counts per room, for the sidebar badges.
+ *
+ * Unread means "posted by someone other than me". In a room with several
+ * people another person's message is exactly as unread as an agent's, so the
+ * reader's own lines are excluded by member identity rather than by author
+ * kind — which is what makes the count right for a shared room.
+ */
 export function unreadCounts(
   database: Database.Database,
   userId: number,
@@ -786,14 +850,223 @@ export function unreadCounts(
       `SELECT m.room_id, COUNT(*) AS unread
        FROM buzz_room_messages m
        JOIN buzz_rooms r ON r.id = m.room_id
+       JOIN organization_members om
+         ON om.organization_id = r.organization_id AND om.user_id = ?
+       LEFT JOIN buzz_room_members author ON author.id = m.member_id
        LEFT JOIN buzz_room_reads rd
          ON rd.room_id = m.room_id AND rd.user_id = ?
-       WHERE r.user_id = ?
-         AND m.deleted_at IS NULL
-         AND m.author_kind <> 'human'
+       WHERE m.deleted_at IS NULL
+         AND COALESCE(author.user_id, -1) <> ?
          AND m.id > COALESCE(rd.last_read_message_id, 0)
        GROUP BY m.room_id`,
     )
-    .all(userId, userId) as Array<{ room_id: number; unread: number }>;
+    .all(userId, userId, userId) as Array<{ room_id: number; unread: number }>;
   return new Map(rows.map((row) => [row.room_id, row.unread]));
+}
+
+/* ── search and inbox ────────────────────────────────────────────────────── */
+
+/**
+ * A message with enough of its room attached to be shown outside it.
+ *
+ * Search results and inbox items are read across every room at once, so a hit
+ * has to say where it came from — the caller has no room in hand to look it up
+ * in, and jumping to a hit means opening its room first.
+ */
+export interface BuzzMessageHit {
+  message: BuzzMessage;
+  roomPublicId: string;
+  roomName: string;
+  roomSlug: string;
+  roomKind: BuzzRoomKind;
+  organizationId: number;
+  /** True when the body names the reader by handle. */
+  mentionsYou: boolean;
+}
+
+/**
+ * The access rule from `listRoomsForUser`, as a fragment.
+ *
+ * Search and the inbox read messages rather than rooms, but they must not
+ * widen who can see what by one row: both join through this so a private room
+ * the reader is not enrolled in stays as invisible to a search as it is to the
+ * sidebar.
+ */
+const VISIBLE_ROOM_JOIN = `
+  JOIN buzz_rooms r ON r.id = m.room_id
+  JOIN organization_members om
+    ON om.organization_id = r.organization_id AND om.user_id = @userId
+  AND (
+    r.visibility = 'public'
+    OR EXISTS (
+      SELECT 1 FROM buzz_room_members rm
+      WHERE rm.room_id = r.id AND rm.user_id = @userId
+    )
+  )
+`;
+
+interface HitRow extends MessageRow {
+  room_public_id: string;
+  room_name: string;
+  room_slug: string;
+  room_kind: BuzzRoomKind;
+  organization_id: number;
+}
+
+function toHit(row: HitRow, handles: ReadonlySet<string>): BuzzMessageHit {
+  return {
+    message: toMessage(row),
+    roomPublicId: row.room_public_id,
+    roomName: row.room_name,
+    roomSlug: row.room_slug,
+    roomKind: row.room_kind,
+    organizationId: row.organization_id,
+    mentionsYou: mentionsAnyHandle(row.body, handles),
+  };
+}
+
+/** Whether a body names one of these handles — `@ada`, not `ada@example.com`. */
+function mentionsAnyHandle(body: string, handles: ReadonlySet<string>): boolean {
+  if (handles.size === 0) return false;
+  const pattern = /(^|[^\w@.])@([a-z0-9][a-z0-9-]{0,39})/gi;
+  let match = pattern.exec(body);
+  while (match) {
+    if (handles.has(match[2].toLowerCase())) return true;
+    match = pattern.exec(body);
+  }
+  return false;
+}
+
+/** Every handle the reader posts under, across their rooms. */
+export function handlesForUser(
+  database: Database.Database,
+  userId: number,
+): Set<string> {
+  const rows = database
+    .prepare("SELECT DISTINCT handle FROM buzz_room_members WHERE user_id = ?")
+    .all(userId) as Array<{ handle: string }>;
+  return new Set(rows.map((row) => row.handle.toLowerCase()));
+}
+
+/**
+ * Messages matching a query, newest first, across every room the reader can
+ * open.
+ *
+ * A substring match rather than FTS: rooms hold thousands of messages, not
+ * millions, and an index Buzz would have to keep in step with edits, deletes
+ * and half-written agent answers is a second source of truth for the one thing
+ * that must never disagree with the transcript.
+ */
+export function searchMessages(
+  database: Database.Database,
+  userId: number,
+  query: string,
+  limit = 40,
+): BuzzMessageHit[] {
+  const needle = query.trim();
+  if (needle === "") return [];
+  const handles = handlesForUser(database, userId);
+  const rows = database
+    .prepare(
+      `SELECT m.*, r.public_id AS room_public_id, r.name AS room_name,
+              r.slug AS room_slug, r.kind AS room_kind,
+              r.organization_id AS organization_id
+       FROM buzz_room_messages m
+       ${VISIBLE_ROOM_JOIN}
+       WHERE m.deleted_at IS NULL
+         AND m.body <> ''
+         AND m.body LIKE @needle ESCAPE '\\'
+       ORDER BY m.id DESC
+       LIMIT @limit`,
+    )
+    .all({
+      userId,
+      // The wildcards are ours; anything the reader typed is a literal.
+      needle: `%${needle.replace(/[\\%_]/g, (character) => `\\${character}`)}%`,
+      limit,
+    }) as HitRow[];
+  return rows.map((row) => toHit(row, handles));
+}
+
+/**
+ * What is waiting for the reader: every message posted since they last read
+ * its room, newest first.
+ *
+ * The same "not mine" rule the badges use, so the inbox and the unread counts
+ * can never tell two different stories about the same room.
+ */
+export function listUnreadMessages(
+  database: Database.Database,
+  userId: number,
+  limit = 60,
+): BuzzMessageHit[] {
+  const handles = handlesForUser(database, userId);
+  const rows = database
+    .prepare(
+      `SELECT m.*, r.public_id AS room_public_id, r.name AS room_name,
+              r.slug AS room_slug, r.kind AS room_kind,
+              r.organization_id AS organization_id
+       FROM buzz_room_messages m
+       ${VISIBLE_ROOM_JOIN}
+       LEFT JOIN buzz_room_members author ON author.id = m.member_id
+       LEFT JOIN buzz_room_reads rd
+         ON rd.room_id = m.room_id AND rd.user_id = @userId
+       WHERE m.deleted_at IS NULL
+         AND m.parent_id IS NULL
+         AND COALESCE(author.user_id, -1) <> @userId
+         AND m.id > COALESCE(rd.last_read_message_id, 0)
+       ORDER BY m.id DESC
+       LIMIT @limit`,
+    )
+    .all({ userId, limit }) as HitRow[];
+  return rows.map((row) => toHit(row, handles));
+}
+
+/** Every agent seat the reader shares a room with, newest room first. */
+export interface BuzzAgentSeat {
+  member: BuzzMember;
+  roomPublicId: string;
+  roomName: string;
+  roomSlug: string;
+  organizationId: number;
+}
+
+export function listAgentSeats(
+  database: Database.Database,
+  userId: number,
+): BuzzAgentSeat[] {
+  const rows = database
+    .prepare(
+      `SELECT m.*, r.public_id AS room_public_id, r.name AS room_name,
+              r.slug AS room_slug, r.organization_id AS organization_id
+       FROM buzz_room_members m
+       JOIN buzz_rooms r ON r.id = m.room_id
+       JOIN organization_members om
+         ON om.organization_id = r.organization_id AND om.user_id = ?
+       WHERE m.kind = 'agent'
+         AND r.archived_at IS NULL
+         AND (
+           r.visibility = 'public'
+           OR EXISTS (
+             SELECT 1 FROM buzz_room_members rm
+             WHERE rm.room_id = r.id AND rm.user_id = ?
+           )
+         )
+       ORDER BY r.last_activity_at DESC, r.id DESC, m.display_name`,
+    )
+    .all(userId, userId) as Array<
+    MemberRow & {
+      room_public_id: string;
+      room_name: string;
+      room_slug: string;
+      organization_id: number;
+    }
+  >;
+  return rows.map((row) => ({
+    member: toMember(row),
+    roomPublicId: row.room_public_id,
+    roomName: row.room_name,
+    roomSlug: row.room_slug,
+    organizationId: row.organization_id,
+  }));
 }

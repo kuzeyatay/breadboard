@@ -40,7 +40,7 @@ export interface CliproxyProviderSpec {
   description: string;
   /**
    * True when this vendor can only ever hold one signed-in account, so the UI
-   * offers no "Add another". Claude is the only one: its credential belongs to
+   * disables "Add another". Claude is the only one: its credential belongs to
    * the official Claude Code CLI, which keeps a single login at a time, and
    * signing in again replaces it rather than adding a sibling.
    */

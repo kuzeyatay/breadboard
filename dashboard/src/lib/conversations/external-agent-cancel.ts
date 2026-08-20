@@ -95,6 +95,8 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../openmontage/run-manager.ts")).abortRun(userId, runId),
   vimax: async (userId, runId) =>
     (await import("../vimax/run-manager.ts")).abortRun(userId, runId),
+  vox_director: async (userId, runId) =>
+    (await import("../vox-director/run-manager.ts")).abortRun(userId, runId),
   shorts: async (userId, runId) =>
     (await import("../shorts/run-manager.ts")).abortRun(userId, runId),
   // Formsmith runs on shaper, and its stop is the one that is not named abortRun.

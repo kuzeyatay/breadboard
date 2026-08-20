@@ -6,7 +6,7 @@ import {
   isNavigationAllowed,
   type AllowedOrigins,
 } from "./security";
-import { mainWindowOptions } from "./window-options";
+import { mainWindowOptions, popupBackgroundColor } from "./window-options";
 import type { BreadboardWindowTheme } from "./window-options";
 
 export interface WindowManagerOptions {
@@ -255,14 +255,18 @@ export class WindowManager {
   }
 
   /** A hardened, still-hidden Breadboard window. Callers decide when it shows. */
-  private buildWindow(): BrowserWindow {
+  private buildWindow(backgroundColor?: string): BrowserWindow {
+    const options = mainWindowOptions(
+      this.options.preloadPath,
+      this.options.iconPath,
+      process.platform,
+      this.currentTheme,
+    );
     const window = new BrowserWindow(
-      mainWindowOptions(
-        this.options.preloadPath,
-        this.options.iconPath,
-        process.platform,
-        this.currentTheme,
-      ),
+      // The colour is settled at construction: it is what Chromium paints for
+      // the frames before the renderer has one of its own, so setting it after
+      // the fact would be setting it too late.
+      backgroundColor ? { ...options, backgroundColor } : options,
     );
     hardenWindow(window, this.options.allowed, (url) => this.openPopupWindow(url));
     this.installWindowShortcuts(window);
@@ -719,7 +723,11 @@ export class WindowManager {
    * dashboard instead of navigating it away.
    */
   openPopupWindow(targetUrl: string): BrowserWindow {
-    const window = this.buildWindow();
+    // A window opened for a page that paints its own palette should wait in
+    // that palette, not in Breadboard's — the wait is the first thing seen.
+    const window = this.buildWindow(
+      popupBackgroundColor(targetUrl, this.currentTheme),
+    );
     this.installLocalPageRecovery(window, targetUrl);
     this.revealWhenReady(window);
     void window.loadURL(targetUrl);

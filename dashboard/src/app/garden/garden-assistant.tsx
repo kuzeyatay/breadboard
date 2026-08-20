@@ -58,6 +58,7 @@ import {
 } from '@/lib/chat-token-usage';
 import { chatTimeSeparatorLabels } from '@/lib/chat-time-separators';
 import type { VerificationSummary } from '@/lib/hermes/evidence';
+import { delegatedAgentCompletedLabelForMessage } from '@/lib/hermes/super-agent-activity';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -456,6 +457,7 @@ const TranscriptRow = memo(function TranscriptRow({
               usage={message.usage}
               responseDurationMs={message.responseDurationMs}
               onPermissionDecision={onPermissionDecision}
+              completedLabel={delegatedAgentCompletedLabelForMessage(message)}
             />
             {message.content ? <ChatMarkdown content={message.content} compact /> : null}
           </>
@@ -757,6 +759,14 @@ export default function GardenAssistant({
           ? [{ rowIndex: index, label: message.content }]
           : [],
       ),
+    [messages],
+  );
+
+  // What the composer's arrow keys recall — the same messages the rail ticks,
+  // as text rather than as landmarks.
+  const sentMessages = useMemo(
+    () =>
+      messages.flatMap((message) => (message.role === 'user' ? [message.content] : [])),
     [messages],
   );
 
@@ -1759,6 +1769,7 @@ export default function GardenAssistant({
           value={input}
           onChange={setInput}
           onSubmit={() => void sendMessage()}
+          history={sentMessages}
           placeholder={hasActiveCluster ? 'Ask about a topic, page, source, or link...' : 'Open a garden first...'}
           disabled={!hasActiveCluster}
           isSending={isStreaming}

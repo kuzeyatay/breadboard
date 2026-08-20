@@ -46,6 +46,38 @@ export function titleBarForTheme(theme: BreadboardWindowTheme) {
   return titleBarForSurface(theme);
 }
 
+/**
+ * The sheet a window shows before its page has painted anything.
+ *
+ * Chromium paints the window's own background colour for the gap between "this
+ * window exists" and "the renderer has a frame to show", and `revealWhenReady`
+ * puts a ceiling on how long it will wait — so a page whose server half takes
+ * longer than that ceiling is revealed as a flat sheet of this colour, with no
+ * markup in it at all. A route's own `loading.tsx` cannot help: there is no
+ * document yet for it to be part of.
+ *
+ * Breadboard's pages are paper, so paper is the right sheet for them. Chat
+ * paints its own palette edge to edge, and flashing Breadboard's green before
+ * turning cream reads as the wrong app opening.
+ */
+export function popupBackgroundColor(
+  targetUrl: string,
+  theme: BreadboardWindowTheme,
+): string {
+  let pathname = "";
+  try {
+    pathname = new URL(targetUrl).pathname;
+  } catch {
+    // Not a URL this can read; the theme's own background stands.
+  }
+  if (pathname === "/buzz" || pathname.startsWith("/buzz/")) {
+    // Buzz's gradient starts here — `--buzz-gradient-light-top` and its dark
+    // twin, the same two colours `buzz-host.css` gives the caption strip.
+    return theme === "dark" ? "#4a4616" : "#e6e6b6";
+  }
+  return backgroundColorForTheme(theme);
+}
+
 export function backgroundColorForTheme(theme: BreadboardWindowTheme): string {
   return backgroundColorForSurface(theme);
 }

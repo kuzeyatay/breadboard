@@ -72,6 +72,14 @@ export interface ExternalAgentCall {
   /** The surface must confirm before this run starts. */
   requiresApproval: boolean;
   requestedAt: string;
+  /**
+   * This answer speaks for a run an earlier turn started, rather than one this
+   * turn queued. Super Agent delegates on one turn and reports the worker's
+   * result on the next, and the second turn is the only one the user ever sees
+   * — so without carrying the delegation forward, the visible answer showed no
+   * trace of the agent its whole content came from.
+   */
+  carried?: boolean;
 }
 
 export interface VerificationSummary {

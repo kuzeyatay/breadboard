@@ -208,3 +208,19 @@ export function formatAssistantModelName(modelId: string): string {
   if (/^claude-/i.test(bare)) return formatClaudeModelName(bare);
   return bare.replace(/^gpt-/i, 'GPT-');
 }
+
+/**
+ * Compact transcript label for a model boundary.
+ *
+ * The boundary itself supplies the meaning, so it contains only the readable
+ * model name. Dashes are removed even from vendor-specific display names to
+ * keep the persisted label consistent with that deliberately minimal UI.
+ */
+export function formatAssistantModelChangeName(modelId: string): string {
+  const lastSlash = modelId.lastIndexOf('/');
+  const bareModelId = lastSlash < 0 ? modelId : modelId.slice(lastSlash + 1);
+  return formatAssistantModelName(bareModelId)
+    .replace(/[-\u2013\u2014]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}

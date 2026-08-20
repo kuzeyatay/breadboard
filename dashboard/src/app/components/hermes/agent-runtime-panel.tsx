@@ -17,6 +17,7 @@ import {
 } from "react";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import ChatTimeSeparator from "@/app/components/chat-time-separator";
+import ChatModelChangeSeparator from "@/app/components/chat-model-change-separator";
 import ChatMessageAttachments from "@/app/components/chat-message-attachments";
 import ChatVideoLinkEmbeds from "@/app/components/chat-video-link-embed";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
@@ -25,6 +26,8 @@ import AssistantComposer, {
 } from "@/app/components/assistant-composer";
 import AssistantMessageActions, {
   MessageActionsSlot,
+  AssistantResponseBranchNavigation,
+  type AssistantResponseBranch,
 } from "@/app/components/assistant-message-actions";
 import {
   chatAutoScrollResponseKey,
@@ -41,6 +44,7 @@ import ChatJumpToBottom from "@/app/components/chat-jump-to-bottom";
 import { useComposerInset } from "@/app/components/chat/use-composer-inset";
 import { useSmoothStreamText } from "@/app/components/chat/use-smooth-stream-text";
 import ChatDisclaimer from "@/app/components/chat/chat-disclaimer";
+import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import ChatMessageRail, {
   type ChatMessageRailItem,
 } from "@/app/components/chat-message-rail";
@@ -77,6 +81,7 @@ import InlineOpenworkRun from "./inline-openwork-run";
 import InlineOpenscienceRun from "./inline-openscience-run";
 import InlineInboxZeroRun from "./inline-inbox-zero-run";
 import InlineVimaxRun from "./inline-vimax-run";
+import InlineVoxDirectorRun from "./inline-vox-director-run";
 import InlineMoneyPrinterRun from "./inline-money-printer-run";
 import InlineLegalRun from "./inline-legal-run";
 import InlineWardrobeRun from "./inline-wardrobe-run";
@@ -118,6 +123,7 @@ import {
   type CourseCorrectionBoundary,
 } from "@/lib/steered-response";
 import {
+  applyBranchVariant,
   cloneMessages,
   createConversationBranch,
   messageBranchId,
@@ -139,6 +145,13 @@ import {
   normalizeChatTextSelectionReference,
   type ChatTextSelectionReference,
 } from "@/lib/chat-text-selection";
+import {
+  delegatedAgentActivityLabelForMessage,
+  delegatedAgentCompletedLabelForMessage,
+  delegatedAgentStartedAtForMessage,
+  delegatedTurnCarriedDurationMs,
+  delegatedTurnTotalUsage,
+} from "@/lib/hermes/super-agent-activity";
 
 interface Props {
   messages: AgentMessage[];
@@ -150,6 +163,14 @@ interface Props {
    * already be queueing during that window.
    */
   externalRunLaunching?: boolean;
+  /**
+   * A model-delegated worker is somewhere in its hand-off — queued behind the
+   * turn that asked for it, starting, running, or finished and waiting to be
+   * handed back. It is passed in rather than read off the transcript because
+   * for most of that span there is nothing in the transcript to read: the run
+   * has no card, no chat connection, and often no row of its own yet.
+   */
+  delegationInFlight?: boolean;
   /**
    * This chat is off the record. Only the transcript's appearance changes here:
    * what the user says is drawn on a broken outline, so the thing that will not
@@ -194,6 +215,8 @@ interface Props {
     messageIndex: number,
   ) => void | Promise<unknown>;
   onAbort: () => void;
+  /** Stop also ends any pending delegated-agent hand-back owned by the surface. */
+  onStopRequested?: (externalClientMessageIds: string[]) => void;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   onRetryMessage?: (userMessageIndex: number, branchGroupId: string) => void;
   placeholder?: string;
@@ -290,6 +313,7 @@ interface Props {
   onSelectOpenscience?: () => void;
   onSelectInboxZero?: () => void;
   onSelectVimax?: () => void;
+  onSelectVoxDirector?: () => void;
   onSelectMoneyPrinter?: () => void;
   onSelectLegal?: () => void;
   onSelectWardrobe?: () => void;
@@ -435,17 +459,58 @@ function loadBranchGroups(sessionId: string): Record<string, ConversationBranchG
  */
 type TranscriptRow = { index: number; message: AgentMessage };
 
+function deepResearchAbortTerminalResult(
+  payload: unknown,
+): ExternalAgentTerminalResult | null {
+  if (!payload || typeof payload !== "object") return null;
+  const run = (payload as {
+    run?: {
+      status?: unknown;
+      result?: unknown;
+      failure?: { message?: unknown };
+    };
+  }).run;
+  if (!run || typeof run.status !== "string" || run.status === "running") {
+    return null;
+  }
+  if (run.status === "completed") {
+    return {
+      outcome: "completed",
+      content:
+        typeof run.result === "string" && run.result.trim()
+          ? run.result
+          : "Research completed.",
+    };
+  }
+  if (run.status === "failed") {
+    return {
+      outcome: "failed",
+      content:
+        typeof run.failure?.message === "string" && run.failure.message.trim()
+          ? run.failure.message
+          : "The research run failed.",
+    };
+  }
+  if (run.status === "aborted") {
+    return { outcome: "aborted", content: "Research was aborted." };
+  }
+  return null;
+}
+
 const transcriptRowKey = (row: TranscriptRow) =>
   chatRowKey(row.message, row.index);
 
 const transcriptRowHeight = (row: TranscriptRow) =>
-  estimateChatRowHeight(row.message, { minimum: 88 });
+  row.message.modelChange
+    ? 40
+    : estimateChatRowHeight(row.message, { minimum: 88 });
 
 export default function AgentRuntimePanel({
   messages,
   connection,
   runState,
   externalRunLaunching = false,
+  delegationInFlight = false,
   temporaryChat = false,
   steerError,
   error,
@@ -463,6 +528,7 @@ export default function AgentRuntimePanel({
   onSelectBranch,
   onDeleteMessage,
   onAbort,
+  onStopRequested,
   onPermissionDecision,
   onRetryMessage,
   placeholder,
@@ -549,6 +615,7 @@ export default function AgentRuntimePanel({
   onSelectOpenscience,
   onSelectInboxZero,
   onSelectVimax,
+  onSelectVoxDirector,
   onSelectMoneyPrinter,
   onSelectLegal,
   onSelectWardrobe,
@@ -576,7 +643,13 @@ export default function AgentRuntimePanel({
   const [messageEditText, setMessageEditText] = useState("");
   const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
   const [promptToSave, setPromptToSave] = useState<string | null>(null);
+  const {
+    confirm: confirmMessageDeletion,
+    confirmDialog: messageDeleteDialog,
+  } = useConfirmDialog();
   const [inlineArtifactRetireVersion, setInlineArtifactRetireVersion] = useState(0);
+  const [stopRequestPending, setStopRequestPending] = useState(false);
+  const stopRequestPendingRef = useRef(false);
   // Ask for this chat's artifacts as soon as it is selected, not after its
   // transcript has rendered, so the cards arrive with the messages.
   useInlineArtifactPrefetch({
@@ -614,15 +687,21 @@ export default function AgentRuntimePanel({
   // would look free while a blueprint, research or coding card is still
   // working, and the next message would overtake it instead of queueing.
   const externalRunActive =
-    externalRunLaunching || messages.some(externalAgentRunInFlight);
+    externalRunLaunching ||
+    delegationInFlight ||
+    messages.some(externalAgentRunInFlight);
   const runInFlight = activeRun || externalRunActive;
+  // A transcript still being restored holds follow-ups too. Keeping this
+  // separate from `runInFlight` avoids offering Stop for a history request,
+  // while the queue remains visible and drains as soon as loading settles.
+  const queueHeld = loadingTranscript || runInFlight;
   // Messages typed while the conversation is working queue here; each can be
   // applied to the active chat turn as a course correction, and whatever is
   // still queued when the run settles is sent as ordinary follow-ups.
   const { queueFollowUp, headerContent: queuedFollowUpsHeader } =
     useQueuedFollowUps({
       conversationKey: sessionId ?? null,
-      runInFlight,
+      runInFlight: queueHeld,
       steerableRunActive: activeRun,
       stopping: runState === "stopping",
       externalRunActive,
@@ -630,9 +709,9 @@ export default function AgentRuntimePanel({
       onSendQueued,
     });
   // Until the transcript has landed there is no history to answer against, and
-  // the arriving one would overwrite whatever the turn had already put on
-  // screen. Everything that writes to the conversation waits for it: the
-  // composer, a retry, and a question asked of a selection.
+  // the arriving one would overwrite whatever a direct turn had already put on
+  // screen. Destructive/direct actions stay locked; the composer instead adds
+  // typed messages to the held queue above it.
   const conversationLocked = Boolean(disabled) || loadingTranscript;
   // The composer's stop has to reach whatever is actually working. A Hermes
   // turn is stopped through the session; an external agent runs outside that
@@ -640,19 +719,79 @@ export default function AgentRuntimePanel({
   // run was delegated mid-turn, so this stops everything in flight rather than
   // picking one — a stop button that stops only some of a busy conversation
   // reads as broken.
-  const externalStops = useMemo(
-    () => externalAgentAbortUrls(messages),
-    [messages],
-  );
-  const stopEverything = useCallback(() => {
-    if (activeRun) onAbort();
-    for (const url of externalStops) {
-      void fetch(url, { method: "POST" }).catch(() => {
-        // The run may have finished between the click and the request; its
-        // card reports the real outcome either way.
-      });
+  const externalStops = useMemo(() => {
+    const stops = new Map<
+      string,
+      { url: string; clientMessageId?: string }
+    >();
+    for (const message of messages) {
+      if (!externalAgentRunInFlight(message)) continue;
+      for (const url of externalAgentAbortUrls([message])) {
+        stops.set(url, { url, clientMessageId: message.clientMessageId });
+      }
     }
-  }, [activeRun, externalStops, onAbort]);
+    return [...stops.values()];
+  }, [messages]);
+  const stopEverything = useCallback(async () => {
+    // State updates land on the next render; the ref makes the click lock
+    // synchronous so a double-click cannot dispatch a second cancellation.
+    if (stopRequestPendingRef.current) return;
+    stopRequestPendingRef.current = true;
+    setStopRequestPending(true);
+    onStopRequested?.(
+      externalStops.flatMap(({ clientMessageId }) =>
+        clientMessageId ? [clientMessageId] : [],
+      ),
+    );
+    if (activeRun) onAbort();
+    const accepted = await Promise.all(
+      externalStops.map(async ({ url, clientMessageId }) => {
+        try {
+          const response = await fetch(url, { method: "POST" });
+          const payload = await response.json().catch(() => null);
+          if (
+            !response.ok ||
+            (payload &&
+              typeof payload === "object" &&
+              (payload as { ok?: unknown }).ok === false)
+          ) {
+            return false;
+          }
+          // Deep Research returns its terminal snapshot from abort. Consume it
+          // here so a hidden delegated card is not the only thing capable of
+          // persisting the stop (or an already-failed stale run).
+          if (url.startsWith("/api/deep-research/") && clientMessageId) {
+            const terminal = deepResearchAbortTerminalResult(payload);
+            if (terminal) onExternalAgentTerminal?.(clientMessageId, terminal);
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      }),
+    );
+    // A refused/unreachable cancellation is retryable. Accepted requests stay
+    // locked until their terminal transcript update removes runInFlight.
+    if (!activeRun && !accepted.some(Boolean)) {
+      stopRequestPendingRef.current = false;
+      setStopRequestPending(false);
+    }
+  }, [
+    activeRun,
+    externalStops,
+    onAbort,
+    onExternalAgentTerminal,
+    onStopRequested,
+  ]);
+  useEffect(() => {
+    if (runInFlight) return;
+    stopRequestPendingRef.current = false;
+    setStopRequestPending(false);
+  }, [runInFlight]);
+  useEffect(() => {
+    stopRequestPendingRef.current = false;
+    setStopRequestPending(false);
+  }, [sessionId]);
   // During the dispatch window a launch is in flight but its run does not exist
   // yet, so there is genuinely nothing to stop. Withholding the handler leaves
   // the composer on its send button, which queues — a square that did nothing
@@ -660,7 +799,9 @@ export default function AgentRuntimePanel({
   const canStop = activeRun || externalStops.length > 0;
   const lastAssistantIndex = messages.reduce(
     (lastIndex, message, index) =>
-      message.role === "assistant" && message.textSelection?.mode !== "inline"
+      message.role === "assistant" &&
+      !message.modelChange &&
+      message.textSelection?.mode !== "inline"
         ? index
         : lastIndex,
     -1,
@@ -678,7 +819,7 @@ export default function AgentRuntimePanel({
   // selection answers render elsewhere, so failures there keep the
   // standalone notice below the transcript.
   const failureText = error || steerError || null;
-  const lastMessage = messages[messages.length - 1];
+  const lastMessage = messages.findLast((message) => !message.modelChange);
   const failureInline = Boolean(
     failureText &&
       lastMessage &&
@@ -726,9 +867,9 @@ export default function AgentRuntimePanel({
     return { byAssistantIndex, hiddenMessageIndices };
   }, [messages]);
   // Every message that actually draws something, paired with its position in
-  // the whole conversation. Rows that drew nothing before — a continuation, an
-  // inline selection, a folded course correction, a delegated turn whose visible
-  // content moved to its continuation — are dropped rather than kept as
+  // the whole conversation. Rows that draw nothing — a continuation, an
+  // inline selection, a folded course correction, or a delegated turn folded
+  // into its continuation — are dropped rather than kept as
   // zero-height rows, which would still claim the spacing on both sides of
   // themselves. The original index travels with the message because editing,
   // retrying, branching and the newest-answer checks all speak in those terms.
@@ -766,12 +907,30 @@ export default function AgentRuntimePanel({
               }
             : storedMessage,
       });
+      const modelChanges = storedMessage.modelChangesAfter?.length
+        ? storedMessage.modelChangesAfter
+        : storedMessage.modelChangeAfter
+          ? [storedMessage.modelChangeAfter]
+          : [];
+      if (!(runInFlight && index === lastAssistantIndex)) {
+        modelChanges.forEach((modelChange, modelChangeIndex) => {
+          rows.push({
+            index,
+            message: {
+              id: `${storedMessage.id ?? storedMessage.clientMessageId ?? index}:model-change:${modelChangeIndex}`,
+              role: "assistant",
+              content: "",
+              modelChange,
+            },
+          });
+        });
+      }
     });
     return rows;
-  }, [messages, inlinedCourseCorrections]);
+  }, [messages, inlinedCourseCorrections, lastAssistantIndex, runInFlight]);
   // One tick per question asked, for the rail down the right edge. Numbered off
   // the rows rather than off `messages`, because everything dropped above —
-  // continuations, inline selections, folded corrections — is exactly what makes
+  // continuations, inline selections and folded corrections — is exactly what makes
   // the two differ, and the rail has to speak the virtualizer's indices.
   const railItems = useMemo<ChatMessageRailItem[]>(
     () =>
@@ -779,6 +938,16 @@ export default function AgentRuntimePanel({
         row.message.role === "user"
           ? [{ rowIndex, label: row.message.content }]
           : [],
+      ),
+    [transcriptRows],
+  );
+  // What the arrow keys recall in the composer. Off the drawn rows for the same
+  // reason as the rail: continuations and folded corrections are messages this
+  // app wrote, and pressing Up should only ever return your own sentences.
+  const sentMessages = useMemo(
+    () =>
+      transcriptRows.flatMap((row) =>
+        row.message.role === "user" ? [row.message.content] : [],
       ),
     [transcriptRows],
   );
@@ -801,8 +970,20 @@ export default function AgentRuntimePanel({
         selection,
         pending: false,
       };
-      if (message.role === "user") current.question = message.content;
-      else {
+      if (message.role === "user") {
+        current.question = message.content;
+        // The turn is pending from the moment the question is sent, not from
+        // the moment its answer row exists. Without this, a re-asked question
+        // shows a retry — and its predecessor's answer — for the frames before
+        // the assistant row arrives.
+        if (activeRun && messageIndex === messages.length - 1) {
+          current.pending = true;
+          current.answer = undefined;
+          current.usage = undefined;
+          current.responseDurationMs = undefined;
+          current.startedAt = message.createdAt;
+        }
+      } else {
         current.answer = message.content || undefined;
         current.pending = activeRun && messageIndex === messages.length - 1;
         current.usage = message.usage;
@@ -830,21 +1011,28 @@ export default function AgentRuntimePanel({
   );
   const visibleScrollKey = useMemo(() => {
     const visible = messages.findLast(
-      (message) => message.textSelection?.mode !== "inline",
+      (message) =>
+        message.textSelection?.mode !== "inline" &&
+        !(message.modelChange && runInFlight),
     );
     return visible
-      ? `${visible.clientMessageId ?? visible.id ?? visible.role}:${visible.content.length}:${visible.content.slice(-32)}`
+      ? `${visible.clientMessageId ?? visible.id ?? visible.role}:${visible.content.length}:${visible.content.slice(-32)}:${runInFlight ? "" : (visible.modelChangesAfter ?? [visible.modelChangeAfter ?? ""]).join("|")}`
       : "empty";
-  }, [messages]);
+  }, [messages, runInFlight]);
   const visibleResponseKey = useMemo(
     () =>
       chatAutoScrollResponseKey(
-        messages.filter((message) => message.textSelection?.mode !== "inline"),
+        messages.filter(
+          (message) =>
+            message.textSelection?.mode !== "inline" && !message.modelChange,
+        ),
       ),
     [messages],
   );
   const respondingToInlineSelection =
-    activeRun && messages.at(-1)?.textSelection?.mode === "inline";
+    activeRun &&
+    messages.findLast((message) => !message.modelChange)?.textSelection?.mode ===
+      "inline";
   // An external agent's card is the only thing still working after a reload —
   // `runState` is idle and no stream is open — so without it the transcript
   // would look settled while a coding or research run is mid-flight, stop
@@ -1054,15 +1242,19 @@ export default function AgentRuntimePanel({
    * that no longer exists, so leaving the group behind would keep offering a
    * "1/2" switcher that restores the deleted turn.
    */
-  function deleteMessageTurn(message: AgentMessage, messageIndex: number) {
+  async function deleteMessageTurn(
+    message: AgentMessage,
+    messageIndex: number,
+  ) {
     if (!onDeleteMessage || activeRun || conversationLocked) return;
-    if (
-      !window.confirm(
-        "Delete this message and the answer it produced? Any file that answer created goes with it. This cannot be undone.",
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirmMessageDeletion({
+      title: "Delete this message?",
+      body: "The message and the answer it produced will be removed from this chat.",
+      detail:
+        "Any files that answer created will be deleted too. This cannot be undone.",
+      confirmLabel: "Delete message",
+    });
+    if (!confirmed) return;
     const groupId = messageBranchId(message, messageIndex);
     setBranchGroups((current) => {
       if (!(groupId in current)) return current;
@@ -1142,6 +1334,21 @@ export default function AgentRuntimePanel({
     return group && group.variants.length > 1 ? group : null;
   }
 
+  function branchNavigationForAssistant(
+    message: AgentMessage,
+    messageIndex: number,
+  ): AssistantResponseBranch | undefined {
+    const branch = branchForAssistant(message, messageIndex);
+    return branch
+      ? {
+          current: branch.activeIndex + 1,
+          total: branch.variants.length,
+          onPrevious: () => switchBranch(branch, -1),
+          onNext: () => switchBranch(branch, 1),
+        }
+      : undefined;
+  }
+
   function switchBranch(
     group: ConversationBranchGroup,
     direction: -1 | 1,
@@ -1160,7 +1367,13 @@ export default function AgentRuntimePanel({
       ...current,
       [group.id]: nextGroup,
     }));
-    onSelectBranch(cloneMessages(variants[targetIndex]));
+    onSelectBranch(
+      applyBranchVariant({
+        messages,
+        variant: variants[targetIndex],
+        groupId: group.id,
+      }),
+    );
   }
 
   // Stable identities: these two are props of every memoized assistant
@@ -1271,6 +1484,27 @@ export default function AgentRuntimePanel({
     });
   }
 
+  // The inline popover's own Stop. An "Ask here" question runs as an
+  // ordinary Hermes turn, so cancelling it is the same abort the composer would
+  // have sent — only reachable from the highlight it belongs to.
+  const stopInlineAnswer = useCallback(() => {
+    if (activeRun) onAbort();
+  }, [activeRun, onAbort]);
+
+  // Retry and edit are one path: both send the question again against the same
+  // highlight, and the thread map keeps the newest question/answer pair for the
+  // selection id, so the popover redraws around the new turn.
+  function askInlineSelectionAgain(
+    selection: ChatTextSelectionReference,
+    question: string,
+  ) {
+    const trimmed = question.trim();
+    if (!trimmed || !onAskSelection || activeRun || conversationLocked) return;
+    // A question the composer is still holding for some other highlight is
+    // left alone: it belongs to that highlight, not to this turn.
+    void onAskSelection(trimmed, selection);
+  }
+
   const openThread = openInlineAnswer
     ? inlineSelectionThreads.get(openInlineAnswer.id)
     : undefined;
@@ -1333,6 +1567,11 @@ export default function AgentRuntimePanel({
                 getItemKey={transcriptRowKey}
                 estimateSize={transcriptRowHeight}
                 renderItem={({ message, index }) => {
+                if (message.modelChange) {
+                  return (
+                    <ChatModelChangeSeparator modelName={message.modelChange} />
+                  );
+                }
                 const responseInterrupted = Boolean(
                   message.role === "assistant" &&
                     !isExternalAgentRunMessage(message) &&
@@ -1343,6 +1582,52 @@ export default function AgentRuntimePanel({
                   message.role === "assistant" &&
                     messages[index - 1]?.internalAgentContinuation === true,
                 );
+                const continuationOwner = isAgentContinuationResponse
+                  ? messages[index - 2]
+                  : undefined;
+                const continuationPreamble =
+                  continuationOwner?.delegatedAgentRun === true
+                    ? continuationOwner.delegatedAgentPreamble?.trim() ||
+                      continuationOwner.content.trim()
+                    : "";
+                // The delegating turn is hidden behind this row, so its time
+                // belongs to this row's clock. Without it the answer claimed
+                // the seconds of its synthesis as the whole operation's.
+                const carriedDurationMs =
+                  delegatedTurnCarriedDurationMs(continuationOwner);
+                // The hidden turn's tokens are part of what this answer cost.
+                const totalUsage = delegatedTurnTotalUsage(
+                  continuationOwner,
+                  message.usage,
+                );
+                // Keep one visible assistant row during the hand-back. Until
+                // synthesis emits its first text, the row retains the sentence
+                // the person was already reading instead of collapsing to an
+                // otherwise empty status line.
+                const visibleAssistantContent =
+                  index === lastAssistantIndex
+                    ? revealedAssistantContent || continuationPreamble
+                    : message.content || continuationPreamble;
+                const delegatedAgentCompleted =
+                  delegatedAgentCompletedLabelForMessage(message);
+                const delegatedAgentStartedAt =
+                  delegatedAgentStartedAtForMessage(message);
+                // A delegated worker owns no visible card, so this row is the
+                // only sign the turn is still going — and it has to hold that
+                // sign across the whole hand-off, not just the part with a run
+                // row behind it. `delegationInFlight` covers the launch that
+                // has not produced a run yet and the result not yet handed
+                // back; both used to settle this row into its past tense and
+                // stop its timer while the work carried on.
+                const delegatedAgentActive =
+                  externalAgentRunInFlight(message) ||
+                  (index === lastAssistantIndex && delegationInFlight);
+                // Past tense while it runs read as an answer that had stopped
+                // mid-thought.
+                const delegatedAgentLabel = delegatedAgentActive
+                  ? delegatedAgentActivityLabelForMessage(message) ??
+                    delegatedAgentCompleted
+                  : delegatedAgentCompleted;
                 return (
                 <div
                   className={timeSeparators[index] ? "space-y-3" : undefined}
@@ -1372,11 +1657,20 @@ export default function AgentRuntimePanel({
                         attachments={message.attachments}
                       />
                     ) : null}
-                    {/* A delegated turn whose continuation has landed never
-                        reaches here — it was dropped from the row list. */}
                     {message.role === "assistant" &&
                     message.delegatedAgentPreamble ? (
                       <div className="mb-3 text-sm leading-7 text-gray-200">
+                        <ActivityPanel
+                          activities={[]}
+                          connection={delegatedAgentActive ? "streaming" : "idle"}
+                          pendingPermission={null}
+                          usage={message.usage}
+                          responseDurationMs={message.responseDurationMs}
+                          activePhaseStartedAt={delegatedAgentStartedAt}
+                          onPermissionDecision={onPermissionDecision}
+                          stateLabel={delegatedAgentLabel}
+                          completedLabel={delegatedAgentCompleted}
+                        />
                         <SelectableAssistantMarkdown
                           content={message.delegatedAgentPreamble}
                           sourceMessageId={`${messageSelectionSourceId(
@@ -2082,6 +2376,29 @@ export default function AgentRuntimePanel({
                           }}
                         />
                       </div>
+                    ) : message.voxDirectorRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlineVoxDirectorRun
+                          runId={message.voxDirectorRun.runId}
+                          brief={message.voxDirectorRun.brief}
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          persistedUsage={message.usage}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted ||
+                              index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
                     ) : message.shortsRun ? (
                       <div className="text-sm leading-7 text-gray-200">
                         <InlineShortsRun
@@ -2291,26 +2608,39 @@ export default function AgentRuntimePanel({
                               : []
                           }
                           connection={
-                            index === lastAssistantIndex && !inlineRunActive
-                              ? connection
-                              : "idle"
+                            // A worker running behind this row keeps it alive
+                            // even though the chat connection itself is idle:
+                            // the turn is not over until its delegation is.
+                            delegatedAgentActive
+                              ? "streaming"
+                              : index === lastAssistantIndex && !inlineRunActive
+                                ? connection
+                                : "idle"
                           }
                           pendingPermission={
                             index === lastAssistantIndex && !inlineRunActive
                               ? pendingPermission
                               : null
                           }
-                          usage={message.usage}
+                          usage={totalUsage}
                           responseDurationMs={message.responseDurationMs}
+                          // The delegation's own clock. Without it the timer
+                          // restarts from zero when the worker phase begins,
+                          // losing the time the turn had already spent.
+                          activePhaseStartedAt={delegatedAgentStartedAt}
+                          carriedDurationMs={carriedDurationMs}
                           onPermissionDecision={onPermissionDecision}
+                          completedLabel={delegatedAgentLabel}
                           stateLabel={
                             responseInterrupted
                               ? "Interrupted"
-                              : isAgentContinuationResponse
-                                ? index === lastAssistantIndex && streaming
-                                  ? "Synthesizing research"
-                                  : "Research synthesized"
-                                : undefined
+                              : delegatedAgentActive && delegatedAgentLabel
+                                ? delegatedAgentLabel
+                                : isAgentContinuationResponse
+                                  ? index === lastAssistantIndex && streaming
+                                    ? "Synthesizing research"
+                                    : "Research synthesized"
+                                  : undefined
                           }
                           stateFailed={responseInterrupted}
                         />
@@ -2320,26 +2650,18 @@ export default function AgentRuntimePanel({
                             <span>Memory updated</span>
                           </div>
                         ) : null}
-                        {message.content ||
+                        {visibleAssistantContent ||
                         inlinedCourseCorrections.byAssistantIndex.has(index) ? (
                           inlinedCourseCorrections.byAssistantIndex.has(index) ? (
                             <SteeredAssistantResponse
-                              content={
-                                index === lastAssistantIndex
-                                  ? revealedAssistantContent
-                                  : message.content
-                              }
+                              content={visibleAssistantContent}
                               corrections={
                                 inlinedCourseCorrections.byAssistantIndex.get(index) ?? []
                               }
                             />
                           ) : (
                             <SelectableAssistantMarkdown
-                              content={
-                                index === lastAssistantIndex
-                                  ? revealedAssistantContent
-                                  : message.content
-                              }
+                              content={visibleAssistantContent}
                               sourceMessageId={messageSelectionSourceId(
                                 message,
                                 index,
@@ -2354,7 +2676,13 @@ export default function AgentRuntimePanel({
                             />
                           )
                         ) : null}
-                        {failureInline && index === lastAssistantIndex ? (
+                        {failureInline &&
+                        index === lastAssistantIndex &&
+                        // A gate that replaces the answer with its own
+                        // explanation sends that sentence twice: once as the
+                        // message, once as this notice. Print it once.
+                        (failureText ?? "").trim() !==
+                          visibleAssistantContent.trim() ? (
                           <div role="alert">
                             <ChatMarkdown content={failureText ?? ""} />
                           </div>
@@ -2371,6 +2699,22 @@ export default function AgentRuntimePanel({
                        />
                      ) : null}
                     {message.role === "assistant" &&
+                    isExternalAgentRunMessage(message) &&
+                    !(runInFlight && index === lastAssistantIndex) ? (
+                      (() => {
+                        const branch = branchNavigationForAssistant(
+                          message,
+                          index,
+                        );
+                        return branch ? (
+                          <AssistantResponseBranchNavigation
+                            branch={branch}
+                            className="mt-2"
+                          />
+                        ) : null;
+                      })()
+                    ) : null}
+                    {message.role === "assistant" &&
                     !isExternalAgentRunMessage(message) &&
                     !(runInFlight && index === lastAssistantIndex) ? (
                       <AssistantMessageActions
@@ -2384,17 +2728,7 @@ export default function AgentRuntimePanel({
                             : "Response unavailable")
                         }
                         verification={message.verification}
-                        branch={(() => {
-                          const branch = branchForAssistant(message, index);
-                          return branch
-                            ? {
-                                current: branch.activeIndex + 1,
-                                total: branch.variants.length,
-                                onPrevious: () => switchBranch(branch, -1),
-                                onNext: () => switchBranch(branch, 1),
-                              }
-                            : undefined;
-                        })()}
+                        branch={branchNavigationForAssistant(message, index)}
                         onRetry={
                           (!responseInterrupted || !disabled) &&
                           onRetryMessage &&
@@ -2475,7 +2809,9 @@ export default function AgentRuntimePanel({
               <ChatMarkdown content={failureText} />
             </div>
           ) : null}
-          {messages.length > 0 ? <ChatDisclaimer /> : null}
+          {messages.some((message) => !message.modelChange) ? (
+            <ChatDisclaimer />
+          ) : null}
         </div>
       </div>
         <ChatMessageRail
@@ -2510,6 +2846,13 @@ export default function AgentRuntimePanel({
           startedAt={openThread.startedAt}
           onClose={() => setOpenInlineAnswer(null)}
           onDelete={() => deleteInlineSelection(openThread.selection.id)}
+          onStop={openThread.pending ? stopInlineAnswer : undefined}
+          onAskAgain={
+            onAskSelection && !activeRun && !conversationLocked
+              ? (question: string) =>
+                  askInlineSelectionAgain(openThread.selection, question)
+              : undefined
+          }
         />
       ) : null}
 
@@ -2534,6 +2877,7 @@ export default function AgentRuntimePanel({
           onChange={onInputChange}
           onSubmit={submitComposer}
           onRunWorkflow={onRunWorkflow}
+          history={sentMessages}
           textareaRef={composerTextareaRef}
           // A chat that is still arriving keeps its ordinary invitation and
           // stays typable: the wait belongs on the send button, which spins,
@@ -2541,6 +2885,7 @@ export default function AgentRuntimePanel({
           placeholder={placeholder ?? "Ask the agent…"}
           disabled={conversationLocked}
           loading={loadingTranscript}
+          queueDisabled={Boolean(disabled)}
           isSending={streaming}
           canSubmit={Boolean(input.trim() || (!streaming && attachments?.length))}
           model={model ?? ""}
@@ -2619,6 +2964,7 @@ export default function AgentRuntimePanel({
           onSelectOpenscience={onSelectOpenscience}
           onSelectInboxZero={onSelectInboxZero}
           onSelectVimax={onSelectVimax}
+          onSelectVoxDirector={onSelectVoxDirector}
           onSelectMoneyPrinter={onSelectMoneyPrinter}
           onSelectLegal={onSelectLegal}
           onSelectWardrobe={onSelectWardrobe}
@@ -2639,7 +2985,12 @@ export default function AgentRuntimePanel({
           runState={runState}
           externalRunActive={externalRunActive}
           onQueueSteer={queueFollowUp}
-          onStop={canStop ? stopEverything : undefined}
+          // An "Ask here" turn is the popover's run, not the chat's: its
+          // question and answer never enter the transcript, so a square where
+          // the send button lives would be stopping something the composer is
+          // not showing. The popover carries that turn's own Stop instead.
+          onStop={canStop && !respondingToInlineSelection ? stopEverything : undefined}
+          stopPending={stopRequestPending}
           permissionPending={Boolean(pendingPermission)}
         />
       </div>
@@ -2649,6 +3000,7 @@ export default function AgentRuntimePanel({
           onClose={() => setPromptToSave(null)}
         />
       ) : null}
+      {messageDeleteDialog}
     </div>
   );
 }

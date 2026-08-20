@@ -25,7 +25,10 @@ import { withCouncil } from '@/lib/council';
 import { requireUserId, routeErrorResponse } from '@/lib/server-auth';
 import { cogniviaSection } from '@/lib/cognivia/index.ts';
 import { directModeSection } from '@/lib/hermes/direct-mode.ts';
-import { responseStylePrompt } from '@/lib/hermes/system-prompts.ts';
+import {
+  readerComprehensionPrompt,
+  responseStylePrompt,
+} from '@/lib/hermes/system-prompts.ts';
 import { createEmDashFilter } from '@/lib/prose-punctuation.ts';
 import {
   assistantTextFromOutputItem,
@@ -289,6 +292,8 @@ export async function POST(request: Request) {
         '\n\nWhen the question is complex or analytical, think carefully before giving your final answer. ' +
         'Use the relevant notes and relationships across gardens to check your answer before responding.';
     }
+
+    systemPrompt += `\n\n${readerComprehensionPrompt()}`;
 
     const client = new OpenAI({
       baseURL,

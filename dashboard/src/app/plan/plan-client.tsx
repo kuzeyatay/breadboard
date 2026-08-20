@@ -345,7 +345,7 @@ export default function PlanClient({
 
   return (
     <main className="bb-calendar-shell flex min-h-0 flex-col bg-gray-950 text-gray-300">
-      <header className="bb-neu-toolbar flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2.5">
+      <header className="bb-neu-toolbar breadboard-flower-navbar flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-2.5">
         <a
           href="/dashboard"
           className="flex items-center gap-2 text-sm font-medium text-white"

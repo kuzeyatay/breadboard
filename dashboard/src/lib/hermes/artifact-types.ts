@@ -40,6 +40,7 @@ export type ArtifactRendererId =
   | "hardware-blueprint"
   | "parametric-cad"
   | "vimax-production"
+  | "vox-director-production"
   | "socials-manager-post"
   | "gadget";
 

@@ -78,6 +78,78 @@ const RENAMED_TOKENS = [
   ["--foreground", "--buzz-foreground"],
 ];
 
+/*
+ * Buzz resolves a handful of `@apply` rules against its own tailwind.config.js
+ * — `text-message`, `text-nsec-key`, `border-border`. This sheet is imported
+ * on its own, where Tailwind has no theme to resolve them from, and two of
+ * them name the very tokens that were renamed above. Expanding them to plain
+ * CSS is both the fix and an improvement: the vendored sheet stops depending
+ * on utility resolution altogether, so it cannot break again when either
+ * project's Tailwind config moves.
+ */
+const APPLY_EXPANSIONS = [
+  [
+    "@apply text-message font-normal tracking-normal;",
+    `font-size: var(--conversation-message-font-size);
+  line-height: var(--conversation-message-line-height);
+  font-weight: 400;
+  letter-spacing: 0;`,
+  ],
+  ["@apply border-border;", "border-color: hsl(var(--border));"],
+  [
+    "@apply bg-background text-foreground antialiased;",
+    `background-color: hsl(var(--buzz-background));
+    color: hsl(var(--buzz-foreground));
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;`,
+  ],
+  [
+    "@apply w-full break-all [overflow-wrap:anywhere] font-mono text-nsec-key;",
+    `width: 100%;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: calc(var(--buzz-type-rem) * 2.25);
+    line-height: 1.3;`,
+  ],
+];
+
+/*
+ * Buzz's own components — and the shadcn primitives vendored alongside them —
+ * are written against `bg-background` and `text-foreground`. Renaming the two
+ * colliding tokens above kept the palettes apart, but it also left those 29
+ * utility usages resolving to Breadboard's `--background` / `--foreground`,
+ * which are not defined inside `.buzz-root`. The result was text and button
+ * fills with no colour at all.
+ *
+ * So the two names are given back inside the scope, as finished colours rather
+ * than the bare HSL components Buzz stores. Breadboard maps them straight
+ * through (`--color-background: var(--background)`), so `bg-background` now
+ * resolves to Buzz's background on the Buzz page and to paper everywhere else,
+ * with neither sheet overwriting the other.
+ */
+const SCOPE_TOKEN_ALIASES = `
+/* Added by scripts/vendor-buzz-css.mjs — see SCOPE_TOKEN_ALIASES. */
+.buzz-root {
+  --background: hsl(var(--buzz-background));
+  --foreground: hsl(var(--buzz-foreground));
+}
+`;
+
+function expandApply(css) {
+  let out = css;
+  for (const [from, to] of APPLY_EXPANSIONS) {
+    out = out.split(from).join(to);
+  }
+  if (out.includes("@apply ")) {
+    throw new Error(
+      "An @apply rule appeared that this script does not expand: " +
+        (out.match(/@apply [^;]*;/) ?? [""])[0],
+    );
+  }
+  return out;
+}
+
 function renameTokens(css) {
   let out = css;
   for (const [from, to] of RENAMED_TOKENS) {
@@ -122,9 +194,13 @@ const parts = [HEADER];
 for (const name of SHEETS) {
   const css = readFileSync(`scripts/buzz-upstream-css/${name}.css`, "utf8");
   const scoped = postcss([plugin]).process(css, { from: `scripts/buzz-upstream-css/${name}.css` }).css;
-  const out = renameTokens(scoped);
+  const out = expandApply(renameTokens(scoped));
   parts.push(`/* ── ${name}.css ─────────────────────────────────────────── */\n${out}`);
 }
 
-writeFileSync("src/app/buzz/buzz-theme.css", parts.join("\n\n"), "utf8");
+writeFileSync(
+  "src/app/buzz/buzz-theme.css",
+  `${parts.join("\n\n")}\n${SCOPE_TOKEN_ALIASES}`,
+  "utf8",
+);
 console.log("wrote src/app/buzz/buzz-theme.css", readFileSync("src/app/buzz/buzz-theme.css", "utf8").length, "bytes");

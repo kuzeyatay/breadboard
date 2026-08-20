@@ -83,7 +83,10 @@ test("in-progress artifact builds reserve their finished card with an animated b
   assert.match(agentSession, /kind: "artifact"/);
   assert.match(agentSession, /`Building \$\{title\}…`/);
   assert.match(activityPanel, /item\.kind === "artifact"/);
-  assert.match(activityPanel, /stateLabel \?\? artifactState\?\.label \?\? "Thinking"/);
+  assert.match(
+    activityPanel,
+    /stateLabel \?\?[\s\S]*?artifactState\?\.label \?\?[\s\S]*?responseActive/,
+  );
   assert.match(cards, /function ArtifactBloomLoader\(\)/);
   assert.match(cards, /motion-safe:animate-spin/);
   assert.match(cards, /Your artifact is taking shape/);

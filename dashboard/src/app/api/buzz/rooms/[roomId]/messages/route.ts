@@ -103,6 +103,7 @@ export async function POST(
         memberId: responder.id,
         trigger: message,
         clientMessageId: `${clientMessageId}:${responder.handle}`,
+        actingUserId: userId,
       });
       started.push({
         memberId: responder.id,

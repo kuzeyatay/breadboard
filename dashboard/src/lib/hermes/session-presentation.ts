@@ -76,11 +76,13 @@ function presentActiveRun(runtimeSessionId: number | null) {
     ? null
     : getActiveRuntimeRun(runtimeSessionId);
   if (!activeRun) return null;
+  const dispatch = parseRuntimeRunDispatch(activeRun);
   return {
     id: activeRun.id,
     instruction: activeRun.instruction,
     startedAt: activeRun.started_at,
-    clientMessageId: parseRuntimeRunDispatch(activeRun).clientMessageId,
+    clientMessageId: dispatch.clientMessageId,
+    superAgent: dispatch.capabilities?.superAgent === true,
   };
 }
 
@@ -139,6 +141,30 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
     const textSelection = normalizeChatTextSelectionReference(
       presented.metadata.textSelection,
     );
+    const normalizeModelChangeLabel = (value: unknown) =>
+      typeof value === "string"
+        ? value
+            .replace(/[-\u2013\u2014]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 160)
+        : "";
+    const persistedModelChanges = Array.isArray(
+      presented.metadata.modelChangeLabels,
+    )
+      ? presented.metadata.modelChangeLabels
+          .map(normalizeModelChangeLabel)
+          .filter(Boolean)
+      : [];
+    const legacyModelChange = normalizeModelChangeLabel(
+      presented.metadata.modelChangeLabel,
+    );
+    const modelChangesAfter = persistedModelChanges.length
+      ? persistedModelChanges
+      : legacyModelChange
+        ? [legacyModelChange]
+        : [];
+    const modelChangeAfter = modelChangesAfter.at(-1) ?? "";
     let externalAgent = externalAgentMessageFields(presented.metadata);
     if (
       presented.role === "assistant" &&
@@ -213,6 +239,8 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       ...(typeof presented.metadata.courseCorrectionOffset === "number"
         ? { courseCorrectionOffset: presented.metadata.courseCorrectionOffset }
         : {}),
+      ...(modelChangesAfter.length ? { modelChangesAfter } : {}),
+      ...(modelChangeAfter ? { modelChangeAfter } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
     };
   });

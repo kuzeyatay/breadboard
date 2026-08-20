@@ -141,7 +141,27 @@ export default function AssistantResponseMeta({
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-1 py-1 text-sm leading-6 text-[var(--ink-muted)]">
           <span className={shimmer ? "thinking-shimmer" : ""}>{displayLabel}</span>
-          {metadata ? <span title={usageBreakdown}>({metadata})</span> : null}
+          {metadata ? (
+            <span title={usageBreakdown}>
+              (
+              {elapsedMs === undefined
+                ? null
+                : formatResponseDuration(elapsedMs)}
+              {elapsedMs !== undefined && tokenLabel ? " · " : null}
+              {tokenLabel ? (
+                <>
+                  <span
+                    aria-hidden="true"
+                    className={active ? "thinking-token-arrow" : undefined}
+                  >
+                    ↓
+                  </span>
+                  {tokenLabel.slice(1)}
+                </>
+              ) : null}
+              )
+            </span>
+          ) : null}
         </div>
         {action}
       </div>

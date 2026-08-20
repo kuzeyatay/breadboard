@@ -20,10 +20,10 @@ test("garden chat offers the terminal's model and reasoning-effort picker", () =
   // The catalog itself comes from the shared hook, which is also what makes a
   // newly connected provider appear without restarting the app.
   assert.match(chat, /useAssistantModels\(\{ eager: true \}\)/);
-  assert.match(chat, /model=\{model\}/);
+  assert.match(chat, /model=\{selectedModel\}/);
   assert.match(chat, /models=\{models\}/);
-  assert.match(chat, /onModelChange=\{setModel\}/);
-  assert.match(chat, /reasoningEffort=\{reasoningEffort\}/);
+  assert.match(chat, /onModelChange=\{changeModel\}/);
+  assert.match(chat, /reasoningEffort=\{selectedReasoningEffort\}/);
   assert.match(chat, /onReasoningEffortChange=\{setReasoningEffort\}/);
   // Every dispatch path carries the picker values.
   const sendsWithOptions = chat.match(/session\.send\([^)]*\{ model, reasoningEffort \}\)/g) ?? [];

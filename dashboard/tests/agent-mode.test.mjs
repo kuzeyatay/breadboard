@@ -17,9 +17,7 @@ const composer = source("../src/app/components/assistant-composer.tsx");
 const agentSession = source(
   "../src/app/components/hermes/use-agent-session.ts",
 );
-const directService = source(
-  "../src/lib/conversations/direct-turn-service.ts",
-);
+const directService = source("../src/lib/conversations/direct-turn-service.ts");
 const turnService = source("../src/lib/conversations/turn-service.ts");
 const superAgentDirective = source("../src/lib/hermes/super-agent.ts");
 
@@ -60,24 +58,30 @@ test("the Intelligence menu offers Goal Mode between Agent and Super agent", () 
 
 test("agent mode defaults to on and super agent to off", async () => {
   installBrowser();
-  const store = await import(
-    "../src/app/components/use-agent-mode.ts?default-check"
-  );
+  const store =
+    await import("../src/app/components/use-agent-mode.ts?default-check");
   assert.equal(store.isAgentModeEnabled(), true);
   assert.equal(store.isSuperAgentEnabled(), false);
 });
 
 test("super agent turns agent mode on, and agent mode off turns it off", async () => {
   const stored = installBrowser();
-  const store = await import(
-    "../src/app/components/use-agent-mode.ts?coupling-check"
-  );
+  const store =
+    await import("../src/app/components/use-agent-mode.ts?coupling-check");
 
   store.setSuperAgentEnabled(true);
   assert.equal(store.isSuperAgentEnabled(), true);
-  assert.equal(store.isAgentModeEnabled(), true, "Hermes follows super agent on");
+  assert.equal(
+    store.isAgentModeEnabled(),
+    true,
+    "Hermes follows super agent on",
+  );
   assert.equal(stored.get("breadboard:agent-mode"), "true");
-  assert.equal(stored.get("breadboard:yolo-mode"), "true", "Super Agent implies YOLO");
+  assert.equal(
+    stored.get("breadboard:yolo-mode"),
+    "true",
+    "Super Agent implies YOLO",
+  );
 
   store.setAgentModeEnabled(false);
   assert.equal(store.isAgentModeEnabled(), false);
@@ -94,16 +98,17 @@ test("a stale stored super agent never survives agent mode being off", async () 
     "breadboard:agent-mode": "false",
     "breadboard:super-agent": "true",
   });
-  const store = await import(
-    "../src/app/components/use-agent-mode.ts?stale-check"
-  );
+  const store =
+    await import("../src/app/components/use-agent-mode.ts?stale-check");
   assert.equal(store.isSuperAgentEnabled(), false);
 });
 
 test("Goal Mode turns Agent mode on before its next message", async () => {
   const stored = installBrowser({ "breadboard:agent-mode": "false" });
-  const goal = await import("../src/app/components/use-goal-mode.ts?coupling-check");
-  const agent = await import("../src/app/components/use-agent-mode.ts?goal-coupling-check");
+  const goal =
+    await import("../src/app/components/use-goal-mode.ts?coupling-check");
+  const agent =
+    await import("../src/app/components/use-agent-mode.ts?goal-coupling-check");
 
   goal.setGoalModeEnabled(true);
   assert.equal(goal.isGoalModeEnabled(), true);
@@ -120,7 +125,8 @@ test("the chat client routes by agent mode and sends its selected runtime modes 
     /if \(!isAgentModeEnabled\(\)\) \{[\s\S]{0,400}?streamDirectTurn\(\{/,
   );
   assert.match(agentSession, /sessions\/\$\{input\.sessionId\}\/direct/);
-  assert.match(agentSession, /superAgent: isSuperAgentEnabled\(\)/);
+  assert.match(agentSession, /const superAgentEnabled = isSuperAgentEnabled\(\)/);
+  assert.match(agentSession, /superAgent: superAgentEnabled/);
   assert.match(agentSession, /goalMode: isGoalModeEnabled\(\)/);
   // The agent path is still the only one that opens an event stream.
   assert.match(agentSession, /\/events\?\$\{streamContext\.toString\(\)\}/);
@@ -154,7 +160,10 @@ test("a live agent run blocks a direct turn in the same chat", () => {
 test("super agent elevates the plan without widening the filesystem", async () => {
   const { planTask, elevateForSuperAgent, SUPER_AGENT_CAPABILITIES } =
     await import("../src/lib/hermes/task-plan.ts");
-  const plan = planTask({ request: "sort this out for me", authenticated: true });
+  const plan = planTask({
+    request: "sort this out for me",
+    authenticated: true,
+  });
   const elevated = elevateForSuperAgent(plan);
 
   for (const capability of SUPER_AGENT_CAPABILITIES) {
@@ -237,15 +246,18 @@ test("a super-agent turn selects the whole inventory for itself", () => {
   );
   // How exhaustive the request is is decided before dispatch, from the request
   // text, so the turn cannot argue itself into a cheaper obligation later.
-  assert.match(turnService, /classifyResearch\(\{ question: resolved\.userText \|\| input\.text \}\)/);
+  assert.match(
+    turnService,
+    /classifyResearch\(\{ question: resolved\.userText \|\| input\.text \}\)/,
+  );
   assert.match(turnService, /researchPipelineApplies\(researchPlan\)/);
 });
 
 test("the tracked research pipeline is offered only to a request that earns it", async () => {
-  const { classifyResearch, researchPipelineApplies } = await import(
-    "../src/lib/research/classify.ts"
-  );
-  const { researchPipelineRule } = await import("../src/lib/research/directive.ts");
+  const { classifyResearch, researchPipelineApplies } =
+    await import("../src/lib/research/classify.ts");
+  const { researchPipelineRule } =
+    await import("../src/lib/research/directive.ts");
 
   // Super agent plus a trivial question stays exactly as fast as it was: the
   // classifier declines, so the protocol section is never composed at all.
@@ -272,7 +284,10 @@ test("the tracked research pipeline is offered only to a request that earns it",
 
   // The directive composes it only when a plan is supplied, so every ordinary
   // super-agent turn — and every non-super-agent turn — is unchanged.
-  assert.match(superAgentDirective, /if \(researchPlan\) sections\.push\(researchPipelineRule\(researchPlan\)\)/);
+  assert.match(
+    superAgentDirective,
+    /if \(researchPlan\) sections\.push\(researchPipelineRule\(researchPlan\)\)/,
+  );
 });
 
 test("super agent staffs web research across every instrument it has", () => {
@@ -282,11 +297,11 @@ test("super agent staffs web research across every instrument it has", () => {
   );
   // The failure this replaced: a survey answered out of search-result snippets
   // because `web_search` was the tool the turn could run by itself.
+  assert.match(superAgentDirective, /never by quoting search-result snippets/);
   assert.match(
     superAgentDirective,
-    /never by quoting search-result snippets/,
+    /Open the official page with `web_extract` first/,
   );
-  assert.match(superAgentDirective, /Open the official page with `web_extract` first/);
   // Each research worker is offered for the part it is actually good at, and
   // only when it is launchable on this surface.
   for (const id of ["deep-research", "agent-reach", "get-doc"]) {
@@ -307,12 +322,31 @@ test("super agent staffs web research across every instrument it has", () => {
     /whether a method works, its benefits or harms, and whether learning is retained/,
   );
   assert.match(superAgentDirective, /Begin the brief with `--answer`/);
-  assert.match(superAgentDirective, /A broad request earns more than one worker/);
+  assert.match(
+    superAgentDirective,
+    /explicitly says to do, conduct, run, perform, or use deep research/,
+  );
+  assert.match(
+    superAgentDirective,
+    /instruction to launch `deep-research` with `agent_launch`/,
+  );
+  assert.match(
+    superAgentDirective,
+    /not permission to substitute your own `web_search`/,
+  );
+  assert.match(superAgentDirective, /worker stays private/);
+  assert.match(
+    superAgentDirective,
+    /A broad request earns more than one worker/,
+  );
   // Launches are serial, so a brief that waits on another worker's findings
   // cannot work — the reconciliation happens in this agent instead.
   assert.match(superAgentDirective, /They run one at a time, in order/);
   assert.match(superAgentDirective, /write each brief to stand alone/);
   assert.match(superAgentDirective, /You are the one who reconciles/);
   // And the silent-degradation rule: a failed tool is reported, not papered over.
-  assert.match(superAgentDirective, /A tool that returned an error did no work/);
+  assert.match(
+    superAgentDirective,
+    /A tool that returned an error did no work/,
+  );
 });

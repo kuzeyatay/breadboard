@@ -59,9 +59,14 @@ function presentExternalMessage(
 ) {
   const presented = presentConversationMessage(row);
   const externalAgent = externalAgentMessageFields(presented.metadata);
+  const metadataDuration = Number(presented.metadata.responseDurationMs);
   return {
     ...presented,
     ...delegatedAgentPresentation(presented.content, externalAgent),
+    verification: presented.metadata.verification,
+    ...(Number.isFinite(metadataDuration) && metadataDuration >= 0
+      ? { responseDurationMs: metadataDuration }
+      : {}),
     ...(Array.isArray(presented.metadata.attachmentNames)
       ? { attachmentNames: presented.metadata.attachmentNames }
       : {}),

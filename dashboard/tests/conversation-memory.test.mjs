@@ -92,6 +92,37 @@ function finishTurn(conversationRow, clientMessageId, surface, userText, assista
   return reserved;
 }
 
+test("a failed turn keeps the tokens it spent", () => {
+  const chat = conversation();
+  store.reserveConversationTurn({
+    conversation: chat,
+    clientMessageId: "terminal-failed-001",
+    surface: "dashboard_terminal",
+    content: "do deep research on robotics",
+  });
+  // The turn burned its context before the gate stopped it. Persisting the
+  // failure without the usage left the row reporting nothing, so the count the
+  // live meter had been showing disappeared on the next reload.
+  store.failAssistantMessage({
+    conversationId: chat.id,
+    clientMessageId: "terminal-failed-001",
+    status: "failed",
+    content: "The required visualizer was not published before this turn ended.",
+    error: "failed",
+    tokenUsage: { inputTokens: 35_200, outputTokens: 1_100, totalTokens: 36_300 },
+  });
+
+  const row = db.prepare(
+    "SELECT status, token_usage FROM conversation_messages WHERE conversation_id = ? AND client_message_id = ? AND role = 'assistant'",
+  ).get(chat.id, "terminal-failed-001");
+  assert.equal(row.status, "failed");
+  assert.deepEqual(JSON.parse(row.token_usage), {
+    inputTokens: 35_200,
+    outputTokens: 1_100,
+    totalTokens: 36_300,
+  });
+});
+
 test("same conversation has exact cross-surface continuity", () => {
   const chat = conversation();
   finishTurn(chat, "terminal-aurora-001", "dashboard_terminal", "My temporary project codename is Aurora.");
@@ -473,6 +504,63 @@ test("client retries deduplicate and simultaneous turns are serialized", () => {
   assert.equal(rows.length, 2);
   assert.deepEqual(rows.map((row) => row.order_index), [0, 1]);
   assert.equal(rows[1].content, "Hello back");
+});
+
+test("a new conversation and its first prompt commit as one recoverable unit", () => {
+  const created = store.createConversationWithInitialTurn({
+    conversation: {
+      userId: 1,
+      title: "New chat",
+      surface: "dashboard_terminal",
+    },
+    turn: {
+      clientMessageId: "initial-turn-0001",
+      surface: "dashboard_terminal",
+      content: "Why is robotics considered the future?",
+      metadata: {
+        attachmentNames: ["forecast.pdf"],
+        attachments: [{ type: "file", name: "forecast.pdf" }],
+      },
+    },
+  });
+
+  const rows = store.listConversationMessages(created.conversation.id);
+  assert.deepEqual(rows.map((row) => [row.role, row.status, row.order_index]), [
+    ["user", "complete", 0],
+    ["assistant", "aborted", 1],
+  ]);
+  assert.equal(rows[0].content, "Why is robotics considered the future?");
+  assert.deepEqual(store.presentConversationMessage(rows[0]).metadata, {
+    attachmentNames: ["forecast.pdf"],
+    attachments: [{ type: "file", name: "forecast.pdf" }],
+  });
+  assert.equal(store.isPreDispatchReservedAssistant(rows[1]), true);
+
+  const retried = store.retryAssistantMessage(
+    created.conversation.id,
+    "initial-turn-0001",
+  );
+  assert.equal(retried.status, "pending");
+  assert.equal(store.isPreDispatchReservedAssistant(retried), false);
+});
+
+test("an invalid first turn rolls its newly-created conversation back", () => {
+  const before = db.prepare("SELECT COUNT(*) AS total FROM conversations").get().total;
+  assert.throws(
+    () => store.createConversationWithInitialTurn({
+      conversation: { userId: 1, title: "New chat" },
+      turn: {
+        clientMessageId: "short",
+        surface: "dashboard_terminal",
+        content: "This must not leave an empty chat behind.",
+      },
+    }),
+    (error) => error.code === "invalid_client_message_id",
+  );
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS total FROM conversations").get().total,
+    before,
+  );
 });
 
 test("course correction is inserted before the pending assistant deterministically", () => {

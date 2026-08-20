@@ -45,6 +45,7 @@ const WIRED = [
   { agent: "cad", file: "src/lib/cad/design-service.ts", seam: /promptWithContext\(brief, input\.conversationContext\)/ },
   { agent: "hardware-blueprint", file: "src/lib/hardware/model-client.ts", seam: /promptWithContext\(input\.brief/ },
   { agent: "vimax", file: "src/lib/vimax/prompts.ts", seam: /tagged\("CONVERSATION_SO_FAR", input\.conversation\)/ },
+  { agent: "vox-director", file: "src/lib/vox-director/prompts.ts", seam: /tagged\("CONVERSATION_SO_FAR", input\.conversation\)/ },
   { agent: "wardrobe", file: "src/lib/wardrobe/run-manager.ts", seam: /promptWithContext\(run\.request\.direction/ },
 ];
 
@@ -76,7 +77,7 @@ test("the launch routes hand the conversation to their run manager", () => {
     "openscience", "openwork", "legal", "deer-flow", "inbox-zero",
     "hyperframes", "openmontage", "vibe-trading", "stock-analyst",
     "socials-manager", "resource2skill", "video-use", "meeting-notes",
-    "hardware-blueprint", "vimax", "wardrobe",
+    "hardware-blueprint", "vimax", "vox-director", "wardrobe",
   ];
   for (const agent of routes) {
     const route = source(`src/app/api/${agent}/runs/route.ts`);

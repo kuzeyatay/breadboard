@@ -6,6 +6,8 @@
 //    the agent shows a diagnostic "unavailable" state.
 //  - required: dev/dedicated only; callers may surface an actionable error.
 
+import { DEFAULT_BREADTH, DEFAULT_DEPTH } from "./identity.ts";
+
 export type DeepResearchMode = "disabled" | "optional" | "required";
 
 export interface DeepResearchConfig {
@@ -74,7 +76,7 @@ export function validateRunRequest(input: unknown): RunRequestValidation {
     return { ok: false, error: "invalid_query" };
   }
 
-  const breadth = Number(body.breadth ?? 3);
+  const breadth = Number(body.breadth ?? DEFAULT_BREADTH);
   if (
     !Number.isInteger(breadth) ||
     breadth < RUN_LIMITS.minBreadth ||
@@ -83,7 +85,7 @@ export function validateRunRequest(input: unknown): RunRequestValidation {
     return { ok: false, error: "invalid_breadth" };
   }
 
-  const depth = Number(body.depth ?? 2);
+  const depth = Number(body.depth ?? DEFAULT_DEPTH);
   if (!Number.isInteger(depth) || depth < RUN_LIMITS.minDepth || depth > RUN_LIMITS.maxDepth) {
     return { ok: false, error: "invalid_depth" };
   }

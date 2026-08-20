@@ -45,34 +45,9 @@ export default function NavBar({
       {/* Agents live in the capability palette's Agents tab (the slash button),
           not in this navbar. */}
       <div className="relative z-10 flex items-center gap-4">
-        {/* Work timer and Plan ship on by default; World monitor stays opt-in.
+        {/* Work timer and Plan ship on by default; the rest stay opt-in.
             Every seat can be changed from the profile page. */}
         {shortcuts.workTimer && <WorkTimerShortcut />}
-        {shortcuts.worldMonitor && (
-          <a
-            href="/worldmonitor"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
-            title="Open World monitor in a new tab"
-          >
-            <svg
-              className="h-3.5 w-3.5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.8}
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="8.5" />
-              <path
-                strokeLinecap="round"
-                d="M3.5 12h17M12 3.5c2.4 2.4 3.6 5.3 3.6 8.5s-1.2 6.1-3.6 8.5c-2.4-2.4-3.6-5.3-3.6-8.5S9.6 5.9 12 3.5Z"
-              />
-            </svg>
-            World monitor
-          </a>
-        )}
         {shortcuts.plan && (
           <a
             href="/plan"
@@ -102,8 +77,10 @@ export default function NavBar({
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
-            title="Open Buzz — rooms you share with your agents — in a new tab"
+            title="Open Organization — rooms you share with your team and their agents — in a new tab"
           >
+            {/* An org chart, not a speech bubble: the room list is organised by
+                team, so the glyph names the structure rather than the chatter. */}
             <svg
               className="h-3.5 w-3.5"
               viewBox="0 0 24 24"
@@ -114,10 +91,12 @@ export default function NavBar({
               strokeLinejoin="round"
               aria-hidden="true"
             >
-              <path d="M4 5.5h16M4 10.5h16" />
-              <path d="M10 3.5 8.5 20.5M15.5 3.5 14 20.5" />
+              <rect x="9" y="3" width="6" height="5" rx="1.4" />
+              <rect x="2.5" y="16" width="6" height="5" rx="1.4" />
+              <rect x="15.5" y="16" width="6" height="5" rx="1.4" />
+              <path d="M12 8v3.5M5.5 16v-2.5h13V16" />
             </svg>
-            Buzz
+            Organization
           </a>
         )}
         {/* The profile chip is the way to the profile page, which is where

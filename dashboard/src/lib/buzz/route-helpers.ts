@@ -35,8 +35,9 @@ export async function requireBuzzUser(): Promise<{
 /**
  * The room named by a route, or a 404.
  *
- * Missing and foreign rooms answer identically, so the id space cannot be
- * probed for rooms belonging to another account.
+ * `getRoom` decides access from organization membership, so a room in an
+ * organization the caller does not belong to answers exactly like one that
+ * does not exist and the id space cannot be probed.
  */
 export function requireRoom(userId: number, publicId: string): BuzzRoom {
   const room = getRoom(userId, publicId);

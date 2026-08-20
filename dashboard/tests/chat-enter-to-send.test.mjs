@@ -27,7 +27,7 @@ test("the shared composer sends on Enter without breaking commands or multiline 
   assert.match(block, /event\.key !== 'Enter'/);
   assert.match(block, /event\.shiftKey/);
   assert.match(block, /event\.nativeEvent\.isComposing/);
-  assert.match(block, /if \(runInFlight\)/);
+  assert.match(block, /if \(queueHeld\)/);
   assert.match(block, /queueSteer\(\)/);
   assert.match(block, /!canSubmit \|\| isSending \|\| disabled/);
   assert.match(block, /onSubmit\(\)/);
@@ -38,9 +38,12 @@ test("Enter queues behind an external agent run, not only a chat turn", () => {
   // runState "idle", so gating on activeRun alone sent the next message
   // straight past the working agent.
   assert.match(composer, /const runInFlight = activeRun \|\| externalRunActive/);
+  assert.match(composer, /const queueHeld = loading \|\| runInFlight/);
   assert.match(composer, /externalRunActive = false,/);
   assert.match(runtime, /externalRunLaunching \|\| messages\.some\(externalAgentRunInFlight\)/);
   assert.match(runtime, /const runInFlight = activeRun \|\| externalRunActive/);
+  assert.match(runtime, /const queueHeld = loadingTranscript \|\| runInFlight/);
+  assert.match(runtime, /runInFlight: queueHeld/);
   assert.match(runtime, /externalRunActive=\{externalRunActive\}/);
 });
 
@@ -59,7 +62,7 @@ test("the shared send button does not forward its click event as message text", 
   const clicks = composer.replace(/\s+/g, " ");
   assert.match(
     clicks,
-    /onClick=\{\(\) => formAgent \? submitFormAgent\(\) : externalRunActive \? queueSteer\(\) : onSubmit\(\) \}/,
+    /onClick=\{\(\) => formAgent \? submitFormAgent\(\) : queueHeld \? queueSteer\(\) : onSubmit\(\) \}/,
   );
   // …and the shared submit dispatches to the agent that is selected.
   assert.match(

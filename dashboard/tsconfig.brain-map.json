@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false,
+    "plugins": []
+  },
+  "include": [
+    "next-env.d.ts",
+    "tests/brain-map-types.d.ts",
+    "src/app/api/profile/brain-graph/**/*.ts",
+    "src/app/profile/brain-map-*.tsx",
+    "src/app/profile/page.tsx",
+    "src/app/buzz/page.tsx",
+    "src/app/buzz/buzz-client.tsx",
+    "src/lib/profile/brain-graph-*.ts",
+    "src/lib/profile/brain-graph-sources/**/*.ts",
+    "src/lib/quartz-brain-graph/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next*",
+    "openwork-runtime",
+    "scripts"
+  ]
+}

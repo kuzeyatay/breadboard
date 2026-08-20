@@ -7,6 +7,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -16,15 +17,14 @@ import {
 } from "react";
 import KnowledgeTerminal from "@/app/components/knowledge-terminal";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
+import { useConfirmDialog } from "@/app/components/confirm-dialog";
 import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import AgentRuntimePanel from "./agent-runtime-panel";
 import ChatGreetingEmptyState from "./chat-greeting-empty-state";
 import { useChatGreeting } from "./use-chat-greeting";
 import { ArtifactDockHostProvider } from "./artifact-dock-host";
-import ArtifactPanel, {
-  ARTIFACT_REVISE_EVENT,
-} from "./artifact-panel";
+import ArtifactPanel, { ARTIFACT_REVISE_EVENT } from "./artifact-panel";
 // The Terminal reads GBrain status but never words it: the header dot carries
 // it. GBrainStatusBadge itself stays a Garden Chat component.
 import { useGBrainStatus } from "./gbrain-status-badge";
@@ -40,7 +40,11 @@ import {
   sameChatIds,
   writeUnreadChats,
 } from "@/lib/conversations/unread";
-import { chatDraftKey, clearChatDraft, forgetChatDrafts } from "@/lib/conversations/drafts";
+import {
+  chatDraftKey,
+  clearChatDraft,
+  forgetChatDrafts,
+} from "@/lib/conversations/drafts";
 import { useChatDraft } from "./use-chat-draft";
 import {
   invalidateHermesSessionSummaries,
@@ -149,7 +153,10 @@ import {
   taskFromDeerFlowCommand,
   deerFlowUserMessage,
 } from "@/lib/deer-flow/identity.ts";
-import { taskFromDeepResearchCommand } from "@/lib/deep-research/identity.ts";
+import {
+  directDeepResearchInvocation,
+  taskFromDeepResearchIntent,
+} from "@/lib/deep-research/identity.ts";
 import {
   MEETING_NOTES_AGENT_ID,
   MEETING_NOTES_AGENT_NAME,
@@ -174,12 +181,22 @@ import {
   openPlanterUserMessage,
   taskFromOpenPlanterCommand,
 } from "@/lib/openplanter/identity.ts";
-import { socialsManagerUserMessage, taskFromSocialsManagerCommand } from "@/lib/socials-manager/identity.ts";
+import {
+  socialsManagerUserMessage,
+  taskFromSocialsManagerCommand,
+} from "@/lib/socials-manager/identity.ts";
 import {
   hardwareBlueprintUserMessage,
   taskFromHardwareBlueprintCommand,
 } from "@/lib/hardware/identity.ts";
-import { briefFromVimaxCommand, vimaxUserMessage } from "@/lib/vimax/identity.ts";
+import {
+  briefFromVimaxCommand,
+  vimaxUserMessage,
+} from "@/lib/vimax/identity.ts";
+import {
+  briefFromVoxDirectorCommand,
+  voxDirectorUserMessage,
+} from "@/lib/vox-director/identity.ts";
 import {
   briefFromMoneyPrinterCommand,
   moneyPrinterUserMessage,
@@ -222,7 +239,10 @@ import {
   inboxZeroUserMessage,
   taskFromInboxZeroCommand,
 } from "@/lib/inbox-zero/identity.ts";
-import { agentTarsUserMessage, taskFromAgentTarsCommand } from "@/lib/ui-tars/identity.ts";
+import {
+  agentTarsUserMessage,
+  taskFromAgentTarsCommand,
+} from "@/lib/ui-tars/identity.ts";
 import { useDeepResearchAgent } from "./use-deep-research-agent";
 import { useOpenCodeAgent } from "./use-opencode-agent";
 import { taskFromOpenCodeCommand } from "@/lib/opencode/identity.ts";
@@ -341,11 +361,16 @@ function navOffsetAtTop(): number {
 // would bury the top it just went to fetch.
 function openHeight(preferred: number | null): number {
   if (typeof window === "undefined") return 720;
-  const max = Math.max(MIN_HEIGHT, Math.round(window.innerHeight - navOffsetAtTop()));
+  const max = Math.max(
+    MIN_HEIGHT,
+    Math.round(window.innerHeight - navOffsetAtTop()),
+  );
   // Floored as well as capped: a height remembered from a drag that ended just
   // short of shut would otherwise reopen the dock into the band it cannot
   // render, and go on doing so on every visit.
-  return preferred === null ? max : Math.min(Math.max(preferred, MIN_OPEN_HEIGHT), max);
+  return preferred === null
+    ? max
+    : Math.min(Math.max(preferred, MIN_OPEN_HEIGHT), max);
 }
 
 function prefersReducedMotion(): boolean {
@@ -404,16 +429,17 @@ const TERMINAL_BAR_GLASS = {
 };
 
 type VideoUseLaunchSource =
-  | Extract<ChatAttachment, { type: "video" }>
-  | { name: string; url: string };
-
+  Extract<ChatAttachment, { type: "video" }> | { name: string; url: string };
 
 export default function DashboardAgentTerminal({
   scope,
   initialPanel = null,
   backdropImage = null,
 }: Props) {
-  const [health, setHealth] = useState<HealthState>({ status: "checking", mode: "required" });
+  const [health, setHealth] = useState<HealthState>({
+    status: "checking",
+    mode: "required",
+  });
   const [healthRefreshVersion, setHealthRefreshVersion] = useState(0);
 
   useEffect(() => {
@@ -424,18 +450,21 @@ export default function DashboardAgentTerminal({
       let shouldRetry = false;
       try {
         const response = await fetch("/api/hermes/health");
-        if (!response.ok) throw new Error(`Runtime health returned ${response.status}`);
+        if (!response.ok)
+          throw new Error(`Runtime health returned ${response.status}`);
         const data = await response.json();
         if (cancelled) return;
-        const mode = data?.dashboardMode === "preferred" || data?.dashboardMode === "legacy"
-          ? data.dashboardMode
-          : "required";
-        if (data?.enabled && data?.healthy) setHealth({ status: "runtime", mode });
+        const mode =
+          data?.dashboardMode === "preferred" ||
+          data?.dashboardMode === "legacy"
+            ? data.dashboardMode
+            : "required";
+        if (data?.enabled && data?.healthy)
+          setHealth({ status: "runtime", mode });
         else if (data?.enabled) {
           setHealth({ status: "unavailable", mode });
           shouldRetry = true;
-        }
-        else setHealth({ status: "disabled", mode });
+        } else setHealth({ status: "disabled", mode });
       } catch {
         if (cancelled) return;
         setHealth((current) => ({ ...current, status: "unavailable" }));
@@ -443,7 +472,10 @@ export default function DashboardAgentTerminal({
       }
 
       if (!cancelled && shouldRetry) {
-        retryTimer = window.setTimeout(() => void checkHealth(), HEALTH_RETRY_DELAY_MS);
+        retryTimer = window.setTimeout(
+          () => void checkHealth(),
+          HEALTH_RETRY_DELAY_MS,
+        );
       }
     }
 
@@ -551,21 +583,49 @@ function RuntimeTerminal({
     storageKey: "breadboard:terminal:sidebar-width",
   });
   const [input, setInput] = useState("");
+  // Keep the just-submitted words in the draft store until the server confirms
+  // the user turn is durable. The composer can still clear immediately.
+  const [submittedDraft, setSubmittedDraft] = useState<string | null>(null);
+  // A persistence acknowledgement can arrive after the reader has switched
+  // chats and submitted the same words somewhere else. Only the acknowledgement
+  // for the current retained draft may clear its React shadow; each callback
+  // still clears the localStorage keys for the turn it actually persisted.
+  const submittedDraftSequence = useRef(0);
   // Handed down to the panel so picking an opener can put the caret where the
   // text just landed.
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // A click or keyboard press on the collapsed bar is an intent to start
+  // chatting. Remember it across the render that mounts the textarea so focus
+  // can follow the dock open instead of remaining on the header.
+  const focusComposerAfterOpenRef = useRef(false);
   const {
-    model,
-    setModel,
-    reasoningEffort,
+    model: selectedModel,
+    setModel: setSelectedModel,
+    reasoningEffort: selectedReasoningEffort,
     setReasoningEffort,
-    intelligenceModes,
+    intelligenceModes: selectedIntelligenceModes,
     failover: modelFailover,
   } = useAssistantIntelligence();
+  // A model picked while this answer is active is a setting for the next
+  // answer. Keep every callback in the current run on the intelligence pair it
+  // started with, including delegated/external-agent continuations.
+  const [activeAnswerIntelligence, setActiveAnswerIntelligence] = useState<{
+    model: string;
+    reasoningEffort: typeof selectedReasoningEffort;
+    intelligenceModes: typeof selectedIntelligenceModes;
+  } | null>(null);
+  const model = activeAnswerIntelligence?.model ?? selectedModel;
+  const reasoningEffort =
+    activeAnswerIntelligence?.reasoningEffort ?? selectedReasoningEffort;
+  const intelligenceModes =
+    activeAnswerIntelligence?.intelligenceModes ?? selectedIntelligenceModes;
   const { models } = useAssistantModels({ eager: true });
   const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  // Destructive questions are asked in the app's own sheet rather than the
+  // shell's dialog; `confirmDialog` is rendered at the foot of the dock.
+  const { confirm, confirmDialog } = useConfirmDialog();
   // Chats whose run finished while the user was somewhere else. Restored from
   // localStorage in an effect rather than in the initial state, so the first
   // render matches the server's.
@@ -589,7 +649,9 @@ function RuntimeTerminal({
   const [attachmentStatus, setAttachmentStatus] = useState("");
   // One panel at a time opens beside the transcript: the artifact archive,
   // uploads, scheduling, or route-owned automations. All live in the left rail.
-  const [sidePanel, setSidePanel] = useState<TerminalPanel | null>(initialPanel);
+  const [sidePanel, setSidePanel] = useState<TerminalPanel | null>(
+    initialPanel,
+  );
   // The lane an opened artifact fills, beside the transcript and inside the
   // dock. Held in state rather than a ref so the viewers below re-render once
   // it exists and can portal into it.
@@ -598,62 +660,107 @@ function RuntimeTerminal({
   // Linking a phone (WhatsApp, Telegram) lives in Settings → Messaging, reached
   // from the Intelligence menu. It is a once-a-year setup task, not a control
   // that earned permanent space in the chat bar.
-  const [browserAgent, setBrowserAgent] = useState<{ id: string; name: string } | null>(null);
-  const [agentBrowserAgent, setAgentBrowserAgent] = useState<{ id: string; name: string } | null>(null);
-  const [openPlanterAgent, setOpenPlanterAgent] = useState<{ id: string; name: string } | null>(null);
-  const [agentReachAgent, setAgentReachAgent] = useState<{ id: string; name: string } | null>(null);
-  const [getDocAgent, setGetDocAgent] = useState<{ id: string; name: string } | null>(null);
-  const [meetingNotesAgent, setMeetingNotesAgent] = useState<{ id: string; name: string } | null>(null);
-  const [deepTutorAgent, setDeepTutorAgent] = useState<{ id: string; name: string } | null>(null);
-  const [careerOpsAgent, setCareerOpsAgent] = useState<{ id: string; name: string } | null>(null);
-  const [tradingAgentsAgent, setTradingAgentsAgent] = useState<{ id: string; name: string } | null>(
-    null,
-  );
-  const [vibeTradingAgent, setVibeTradingAgent] = useState<{ id: string; name: string } | null>(
-    null,
-  );
-  const [stockAnalystAgent, setStockAnalystAgent] = useState<{ id: string; name: string } | null>(
-    null,
-  );
-  const [paperTraderAgent, setPaperTraderAgent] = useState<{ id: string; name: string } | null>(
-    null,
-  );
-  const [deerFlowAgent, setDeerFlowAgent] = useState<{ id: string; name: string } | null>(null);
-  const [shortsAgent, setShortsAgent] = useState<{ id: string; name: string } | null>(null);
+  const [browserAgent, setBrowserAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [agentBrowserAgent, setAgentBrowserAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [openPlanterAgent, setOpenPlanterAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [agentReachAgent, setAgentReachAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [getDocAgent, setGetDocAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [meetingNotesAgent, setMeetingNotesAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [deepTutorAgent, setDeepTutorAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [careerOpsAgent, setCareerOpsAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [tradingAgentsAgent, setTradingAgentsAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [vibeTradingAgent, setVibeTradingAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [stockAnalystAgent, setStockAnalystAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [paperTraderAgent, setPaperTraderAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [deerFlowAgent, setDeerFlowAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [shortsAgent, setShortsAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
   const [launchingShortsRun, setLaunchingShortsRun] = useState(false);
-  const [formsmithAgent, setFormsmithAgent] = useState<{ id: string; name: string } | null>(null);
+  const [formsmithAgent, setFormsmithAgent] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
   const [launchingFormsmithRun, setLaunchingFormsmithRun] = useState(false);
   const [launchingVideoUseRun, setLaunchingVideoUseRun] = useState(false);
   // A typed or pasted /agents:shorts command pre-fills the request form rather
   // than running, for the same reason Trading Agent's does.
-  const [shortsSeed, setShortsSeed] = useState<Partial<ShortsRequest> | null>(null);
+  const [shortsSeed, setShortsSeed] = useState<Partial<ShortsRequest> | null>(
+    null,
+  );
   const [launchingBrowserRun, setLaunchingBrowserRun] = useState(false);
   const [launchingOpenPlanterRun, setLaunchingOpenPlanterRun] = useState(false);
   const [launchingAgentReachRun, setLaunchingAgentReachRun] = useState(false);
   const [launchingGetDocRun, setLaunchingGetDocRun] = useState(false);
-  const [launchingMeetingNotesRun, setLaunchingMeetingNotesRun] = useState(false);
+  const [launchingMeetingNotesRun, setLaunchingMeetingNotesRun] =
+    useState(false);
   const [launchingDeepTutorRun, setLaunchingDeepTutorRun] = useState(false);
   const [launchingCareerOpsRun, setLaunchingCareerOpsRun] = useState(false);
-  const [launchingTradingAgentsRun, setLaunchingTradingAgentsRun] = useState(false);
+  const [launchingTradingAgentsRun, setLaunchingTradingAgentsRun] =
+    useState(false);
   const [launchingVibeTradingRun, setLaunchingVibeTradingRun] = useState(false);
-  const [launchingStockAnalystRun, setLaunchingStockAnalystRun] = useState(false);
+  const [launchingStockAnalystRun, setLaunchingStockAnalystRun] =
+    useState(false);
   const [launchingPaperTraderRun, setLaunchingPaperTraderRun] = useState(false);
   const [launchingDeerFlowRun, setLaunchingDeerFlowRun] = useState(false);
   // A typed or pasted /agents:trading-agent command pre-fills the request form
   // rather than running: whatever it carries is a starting point, and anything
   // unrecognised in it is dropped instead of being forwarded as a prompt.
-  const [tradingAgentsSeed, setTradingAgentsSeed] = useState<
-    Partial<TradingAgentsRequest> | null
-  >(null);
-  const [launchingSocialsManagerRun, setLaunchingSocialsManagerRun] = useState(false);
+  const [tradingAgentsSeed, setTradingAgentsSeed] =
+    useState<Partial<TradingAgentsRequest> | null>(null);
+  const [launchingSocialsManagerRun, setLaunchingSocialsManagerRun] =
+    useState(false);
   const [launchingHardwareRun, setLaunchingHardwareRun] = useState(false);
   const [launchingVimaxRun, setLaunchingVimaxRun] = useState(false);
-  const [launchingMoneyPrinterRun, setLaunchingMoneyPrinterRun] = useState(false);
+  const [launchingVoxDirectorRun, setLaunchingVoxDirectorRun] = useState(false);
+  const [launchingMoneyPrinterRun, setLaunchingMoneyPrinterRun] =
+    useState(false);
   const [launchingLegalRun, setLaunchingLegalRun] = useState(false);
   const [launchingWardrobeRun, setLaunchingWardrobeRun] = useState(false);
   const [launchingCadRun, setLaunchingCadRun] = useState(false);
   const [launchingHyperframesRun, setLaunchingHyperframesRun] = useState(false);
-  const [launchingResource2SkillRun, setLaunchingResource2SkillRun] = useState(false);
+  const [launchingResource2SkillRun, setLaunchingResource2SkillRun] =
+    useState(false);
   const [launchingOpenMontageRun, setLaunchingOpenMontageRun] = useState(false);
   const [launchingOpenworkRun, setLaunchingOpenworkRun] = useState(false);
   const [launchingOpenscienceRun, setLaunchingOpenscienceRun] = useState(false);
@@ -672,6 +779,7 @@ function RuntimeTerminal({
   const openscienceDispatchingRef = useRef(false);
   const inboxZeroDispatchingRef = useRef(false);
   const vimaxDispatchingRef = useRef(false);
+  const voxDirectorDispatchingRef = useRef(false);
   const moneyPrinterDispatchingRef = useRef(false);
   const legalDispatchingRef = useRef(false);
   const wardrobeDispatchingRef = useRef(false);
@@ -742,6 +850,16 @@ function RuntimeTerminal({
     }
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen || !focusComposerAfterOpenRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (!focusComposerAfterOpenRef.current) return;
+      focusComposerAfterOpenRef.current = false;
+      composerTextareaRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [isOpen]);
+
   useEffect(
     () => () => {
       if (headerCloseTimer.current !== null) {
@@ -772,7 +890,7 @@ function RuntimeTerminal({
   // toggle behaves like a detour rather than a reset.
   const chatBeforeTemporary = useRef<string | null>(null);
   const sessionCreateOptions = useMemo(
-    () => ({ title: "Assistant conversation", temporary: temporaryChat }),
+    () => ({ title: "New chat", temporary: temporaryChat }),
     [temporaryChat],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
@@ -782,12 +900,16 @@ function RuntimeTerminal({
   useChatDraft({
     surface: "dashboard_terminal",
     sessionId: session.sessionId,
-    value: input,
+    value: input || submittedDraft || "",
     onRestore: setInput,
     enabled: !temporaryChat,
   });
   const runWorkflowAutomation = useWorkflowAutomation(session);
-  const deepResearch = useDeepResearchAgent(session, setAttachmentStatus);
+  const deepResearch = useDeepResearchAgent(
+    session,
+    setAttachmentStatus,
+    model,
+  );
   const { clear: clearDeepResearch } = deepResearch;
   const openCode = useOpenCodeAgent(
     session,
@@ -853,6 +975,7 @@ function RuntimeTerminal({
     launchingSocialsManagerRun ||
     launchingHardwareRun ||
     launchingVimaxRun ||
+    launchingVoxDirectorRun ||
     launchingMoneyPrinterRun ||
     launchingLegalRun ||
     launchingWardrobeRun ||
@@ -868,10 +991,34 @@ function RuntimeTerminal({
     openCode.launching ||
     ruflo.launching;
   const currentChatActive =
-    busy ||
-    externalRunLaunching ||
-    chatSessionIsActive(null, session.messages);
+    busy || externalRunLaunching || chatSessionIsActive(null, session.messages);
   const isPublic = scope === "public";
+
+  useLayoutEffect(() => {
+    if (!currentChatActive) setActiveAnswerIntelligence(null);
+  }, [currentChatActive]);
+
+  const changeModel = useCallback(
+    (nextModel: string) => {
+      if (nextModel === selectedModel) return;
+      if (currentChatActive) {
+        setActiveAnswerIntelligence((current) =>
+          current ?? { model, reasoningEffort, intelligenceModes },
+        );
+      }
+      void session.queueModelChange(nextModel).catch(() => undefined);
+      setSelectedModel(nextModel);
+    },
+    [
+      currentChatActive,
+      intelligenceModes,
+      model,
+      reasoningEffort,
+      selectedModel,
+      session,
+      setSelectedModel,
+    ],
+  );
 
   const refreshTerminal = useCallback(async () => {
     if (runtimeOnline || refreshingTerminal) return;
@@ -886,26 +1033,33 @@ function RuntimeTerminal({
     } finally {
       setRefreshingTerminal(false);
     }
-  }, [
-    onRefreshRuntime,
-    refreshingTerminal,
-    runtimeOnline,
-    session,
-  ]);
+  }, [onRefreshRuntime, refreshingTerminal, runtimeOnline, session]);
 
   useEffect(() => {
     const listener = (raw: Event) => {
-      const artifact = (raw as CustomEvent<{ id?: string; title?: string; conversationId?: string; renderer?: string; sourceSkill?: string | null }>).detail;
-      if (!artifact?.id || artifact.conversationId !== session.sessionId) return;
+      const artifact = (
+        raw as CustomEvent<{
+          id?: string;
+          title?: string;
+          conversationId?: string;
+          renderer?: string;
+          sourceSkill?: string | null;
+        }>
+      ).detail;
+      if (!artifact?.id || artifact.conversationId !== session.sessionId)
+        return;
       setSidePanel((current) => (current === "artifacts" ? null : current));
-      setInput(`${interactiveVisualizerCommandForArtifact(artifact)}Revise the selected artifact "${artifact.title ?? "artifact"}" (${artifact.id}): `);
+      setInput(
+        `${interactiveVisualizerCommandForArtifact(artifact)}Revise the selected artifact "${artifact.title ?? "artifact"}" (${artifact.id}): `,
+      );
     };
     window.addEventListener(ARTIFACT_REVISE_EVENT, listener);
     return () => window.removeEventListener(ARTIFACT_REVISE_EVENT, listener);
   }, [session.sessionId]);
 
   useEffect(() => {
-    const onResize = () => setHeight((current) => settleHeight(clampHeight(current)));
+    const onResize = () =>
+      setHeight((current) => settleHeight(clampHeight(current)));
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -933,7 +1087,8 @@ function RuntimeTerminal({
         return;
       }
 
-      const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+      const scrollbarWidth =
+        window.innerWidth - document.documentElement.clientWidth;
       body.style.overflow = "hidden";
       if (scrollbarWidth > 0) body.style.paddingRight = `${scrollbarWidth}px`;
     };
@@ -947,7 +1102,8 @@ function RuntimeTerminal({
     // Collapsed the threshold cannot be met at any scroll position, so the
     // listener is only worth its layout read while the dock is open.
     const watchesScroll = height > COLLAPSED_HEIGHT + 8;
-    if (watchesScroll) window.addEventListener("scroll", sync, { passive: true });
+    if (watchesScroll)
+      window.addEventListener("scroll", sync, { passive: true });
     return () => {
       window.removeEventListener("resize", sync);
       if (watchesScroll) window.removeEventListener("scroll", sync);
@@ -959,8 +1115,16 @@ function RuntimeTerminal({
   useEffect(() => {
     let cancelled = false;
     let inFlight = false;
-    const refreshHistory = (force = false) => {
-      if (inFlight || document.visibilityState === "hidden") return;
+    let refreshQueued = false;
+    const refreshHistory = (force = false): void => {
+      if (inFlight) {
+        // A title can finish while the creation refresh is still in flight.
+        // Remember that invalidation so "New chat" cannot survive merely
+        // because its generated title arrived one request too early.
+        if (force) refreshQueued = true;
+        return;
+      }
+      if (document.visibilityState === "hidden") return;
       inFlight = true;
       const epoch = historyEpoch.current;
       void loadHermesSessionSummaries("dashboard_terminal", { force })
@@ -968,18 +1132,24 @@ function RuntimeTerminal({
           if (cancelled || historyEpoch.current !== epoch) return;
           setHistory(
             sessions
-              .filter((item): item is HermesSessionSnapshot & { id: string } =>
-                typeof item.id === "string" && item.id.startsWith("conv_"),
+              .filter(
+                (item): item is HermesSessionSnapshot & { id: string } =>
+                  typeof item.id === "string" && item.id.startsWith("conv_"),
               )
               .map((item) => {
                 return {
                   id: item.id,
-                  title: typeof item.title === "string" ? item.title : "New chat",
-                  updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "",
-                  active: Boolean(item.activeRun) || item.externalAgentActive === true,
+                  title:
+                    typeof item.title === "string" ? item.title : "New chat",
+                  updatedAt:
+                    typeof item.updatedAt === "string" ? item.updatedAt : "",
+                  active:
+                    Boolean(item.activeRun) ||
+                    item.externalAgentActive === true,
                   pinned: item.pinned === true,
                   // The server already rejected anything outside the palette.
-                  highlight: typeof item.highlight === "string" ? item.highlight : null,
+                  highlight:
+                    typeof item.highlight === "string" ? item.highlight : null,
                 };
               }),
           );
@@ -988,6 +1158,10 @@ function RuntimeTerminal({
         .finally(() => {
           inFlight = false;
           if (!cancelled) setHistoryLoading(false);
+          if (refreshQueued && !cancelled) {
+            refreshQueued = false;
+            refreshHistory(true);
+          }
         });
     };
     setHistoryLoading(true);
@@ -997,7 +1171,8 @@ function RuntimeTerminal({
       if (document.visibilityState === "visible") refreshHistory(true);
     };
     const onSessionsChanged = (event: Event) => {
-      const changedSurface = (event as CustomEvent<{ surface?: string }>).detail?.surface;
+      const changedSurface = (event as CustomEvent<{ surface?: string }>).detail
+        ?.surface;
       if (changedSurface === "dashboard_terminal") refreshHistory(true);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -1006,7 +1181,10 @@ function RuntimeTerminal({
       cancelled = true;
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener(HERMES_SESSIONS_CHANGED_EVENT, onSessionsChanged);
+      window.removeEventListener(
+        HERMES_SESSIONS_CHANGED_EVENT,
+        onSessionsChanged,
+      );
     };
   }, [scope]);
 
@@ -1083,15 +1261,25 @@ function RuntimeTerminal({
       const response = await fetch("/api/ui-tars/agents");
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(typeof data?.error === "string" ? data.error : "Agent TARS is unavailable.");
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "Agent TARS is unavailable.",
+        );
       }
       const agents = Array.isArray(data?.agents) ? data.agents : [];
       const pick =
-        agents.find((agent: { runtimeState?: string }) => agent.runtimeState === "available") ??
+        agents.find(
+          (agent: { runtimeState?: string }) =>
+            agent.runtimeState === "available",
+        ) ??
         agents.find((agent: { isDefault?: boolean }) => agent.isDefault) ??
         agents[0];
       if (!pick?.id) throw new Error("No Agent TARS agent is configured.");
-      const selected = { id: String(pick.id), name: String(pick.name ?? "Agent TARS") };
+      const selected = {
+        id: String(pick.id),
+        name: String(pick.name ?? "Agent TARS"),
+      };
       setAgentBrowserAgent(null);
       setOpenPlanterAgent(null);
       setAgentReachAgent(null);
@@ -1115,7 +1303,9 @@ function RuntimeTerminal({
       }
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "Agent TARS is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : "Agent TARS is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -1135,18 +1325,26 @@ function RuntimeTerminal({
         content: agentTarsUserMessage(task),
       };
       const userContent = userMessage.content;
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
-        const response = await fetch(`/api/ui-tars/agents/${selectedAgent.id}/runs`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task }),
-        });
+        const response = await fetch(
+          `/api/ui-tars/agents/${selectedAgent.id}/runs`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ task }),
+          },
+        );
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.id) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The Agent TARS run could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The Agent TARS run could not start.",
           );
         }
         runStarted = true;
@@ -1201,15 +1399,25 @@ function RuntimeTerminal({
       const response = await fetch("/api/agent-browser/agents");
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(typeof data?.error === "string" ? data.error : "Agent Browser is unavailable.");
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "Agent Browser is unavailable.",
+        );
       }
       const agents = Array.isArray(data?.agents) ? data.agents : [];
       const pick =
-        agents.find((agent: { runtimeState?: string }) => agent.runtimeState === "available") ??
+        agents.find(
+          (agent: { runtimeState?: string }) =>
+            agent.runtimeState === "available",
+        ) ??
         agents.find((agent: { isDefault?: boolean }) => agent.isDefault) ??
         agents[0];
       if (!pick?.id) throw new Error("No Agent Browser agent is configured.");
-      const selected = { id: String(pick.id), name: String(pick.name ?? "Agent Browser") };
+      const selected = {
+        id: String(pick.id),
+        name: String(pick.name ?? "Agent Browser"),
+      };
       setBrowserAgent(null);
       setOpenPlanterAgent(null);
       setAgentReachAgent(null);
@@ -1233,7 +1441,11 @@ function RuntimeTerminal({
       }
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "Agent Browser is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error
+          ? cause.message
+          : "Agent Browser is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -1250,14 +1462,20 @@ function RuntimeTerminal({
         content: agentBrowserUserMessage(task),
       };
       const userContent = userMessage.content;
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
-        const response = await fetch(`/api/agent-browser/agents/${selectedAgent.id}/runs`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task }),
-        });
+        const response = await fetch(
+          `/api/agent-browser/agents/${selectedAgent.id}/runs`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ task }),
+          },
+        );
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(agentBrowserStartFailure(data?.error));
@@ -1320,7 +1538,10 @@ function RuntimeTerminal({
               : "OpenPlanter is unavailable.",
         );
       }
-      const selected = { id: OPENPLANTER_AGENT_ID, name: OPENPLANTER_AGENT_NAME };
+      const selected = {
+        id: OPENPLANTER_AGENT_ID,
+        name: OPENPLANTER_AGENT_NAME,
+      };
       setBrowserAgent(null);
       setAgentBrowserAgent(null);
       setAgentReachAgent(null);
@@ -1339,7 +1560,9 @@ function RuntimeTerminal({
       setOpenPlanterAgent(selected);
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "OpenPlanter is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : "OpenPlanter is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -1359,7 +1582,10 @@ function RuntimeTerminal({
               : "Agent Reach is unavailable.",
         );
       }
-      const selected = { id: AGENT_REACH_AGENT_ID, name: AGENT_REACH_AGENT_NAME };
+      const selected = {
+        id: AGENT_REACH_AGENT_ID,
+        name: AGENT_REACH_AGENT_NAME,
+      };
       setBrowserAgent(null);
       setAgentBrowserAgent(null);
       setOpenPlanterAgent(null);
@@ -1369,7 +1595,9 @@ function RuntimeTerminal({
       clearRuflo();
       setAgentReachAgent(selected);
       const live = Array.isArray(data.channels)
-        ? data.channels.filter((channel: { status?: string }) => channel.status === "ok").length
+        ? data.channels.filter(
+            (channel: { status?: string }) => channel.status === "ok",
+          ).length
         : 0;
       if (!live) {
         setAttachmentStatus(
@@ -1378,7 +1606,9 @@ function RuntimeTerminal({
       }
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "Agent Reach is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : "Agent Reach is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -1408,7 +1638,10 @@ function RuntimeTerminal({
               : "Meeting Notes is unavailable.",
         );
       }
-      const selected = { id: MEETING_NOTES_AGENT_ID, name: MEETING_NOTES_AGENT_NAME };
+      const selected = {
+        id: MEETING_NOTES_AGENT_ID,
+        name: MEETING_NOTES_AGENT_NAME,
+      };
       setBrowserAgent(null);
       setAgentBrowserAgent(null);
       setOpenPlanterAgent(null);
@@ -1431,7 +1664,9 @@ function RuntimeTerminal({
       return selected;
     } catch (cause) {
       setAttachmentStatus(
-        cause instanceof Error ? cause.message : "Meeting Notes is unavailable.",
+        cause instanceof Error
+          ? cause.message
+          : "Meeting Notes is unavailable.",
       );
       return null;
     }
@@ -1473,7 +1708,9 @@ function RuntimeTerminal({
       }
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "Get Doc is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : "Get Doc is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -1511,7 +1748,8 @@ function RuntimeTerminal({
       clearOpenCode();
       clearRuflo();
       setDeepTutorAgent(selected);
-      const scope = data.scope as { rootCount?: number; label?: string } | undefined;
+      const scope = data.scope as
+        { rootCount?: number; label?: string } | undefined;
       if (!scope?.rootCount) {
         setAttachmentStatus(
           "Deep Tutor selected, but there are no files in scope here — it will answer from the conversation alone.",
@@ -1519,7 +1757,9 @@ function RuntimeTerminal({
       }
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "Deep Tutor is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : "Deep Tutor is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -1563,7 +1803,9 @@ function RuntimeTerminal({
       }
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "Career Ops is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : "Career Ops is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -1587,7 +1829,10 @@ function RuntimeTerminal({
               : "Trading Agent is unavailable.",
         );
       }
-      const selected = { id: TRADINGAGENTS_AGENT_ID, name: TRADINGAGENTS_AGENT_NAME };
+      const selected = {
+        id: TRADINGAGENTS_AGENT_ID,
+        name: TRADINGAGENTS_AGENT_NAME,
+      };
       setBrowserAgent(null);
       setAgentBrowserAgent(null);
       setOpenPlanterAgent(null);
@@ -1606,7 +1851,11 @@ function RuntimeTerminal({
       }
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "Trading Agent is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error
+          ? cause.message
+          : "Trading Agent is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -1652,7 +1901,9 @@ function RuntimeTerminal({
       }
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "Shorts is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : "Shorts is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -1696,7 +1947,9 @@ function RuntimeTerminal({
       }
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "Formsmith is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : "Formsmith is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -1706,19 +1959,44 @@ function RuntimeTerminal({
   useEffect(() => {
     if (!formsmithAgent) return;
     if (
-      browserAgent || agentBrowserAgent || openPlanterAgent || agentReachAgent ||
-      getDocAgent || meetingNotesAgent || deepTutorAgent || careerOpsAgent || tradingAgentsAgent ||
-      vibeTradingAgent || deerFlowAgent || shortsAgent || deepResearch.agent ||
-      codex.agent || openCode.agent || ruflo.agent
+      browserAgent ||
+      agentBrowserAgent ||
+      openPlanterAgent ||
+      agentReachAgent ||
+      getDocAgent ||
+      meetingNotesAgent ||
+      deepTutorAgent ||
+      careerOpsAgent ||
+      tradingAgentsAgent ||
+      vibeTradingAgent ||
+      deerFlowAgent ||
+      shortsAgent ||
+      deepResearch.agent ||
+      codex.agent ||
+      openCode.agent ||
+      ruflo.agent
     ) {
       // This synchronizes a newly added selector with the older selector states.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setFormsmithAgent(null);
     }
   }, [
-    agentBrowserAgent, agentReachAgent, browserAgent, careerOpsAgent, codex.agent,
-    deepResearch.agent, deepTutorAgent, deerFlowAgent, formsmithAgent, getDocAgent, meetingNotesAgent,
-    openCode.agent, openPlanterAgent, ruflo.agent, shortsAgent, tradingAgentsAgent,
+    agentBrowserAgent,
+    agentReachAgent,
+    browserAgent,
+    careerOpsAgent,
+    codex.agent,
+    deepResearch.agent,
+    deepTutorAgent,
+    deerFlowAgent,
+    formsmithAgent,
+    getDocAgent,
+    meetingNotesAgent,
+    openCode.agent,
+    openPlanterAgent,
+    ruflo.agent,
+    shortsAgent,
+    tradingAgentsAgent,
     vibeTradingAgent,
   ]);
 
@@ -1742,7 +2020,10 @@ function RuntimeTerminal({
               : "Vibe Trading is unavailable.",
         );
       }
-      const selected = { id: VIBE_TRADING_AGENT_ID, name: VIBE_TRADING_AGENT_NAME };
+      const selected = {
+        id: VIBE_TRADING_AGENT_ID,
+        name: VIBE_TRADING_AGENT_NAME,
+      };
       setBrowserAgent(null);
       setAgentBrowserAgent(null);
       setOpenPlanterAgent(null);
@@ -1769,7 +2050,9 @@ function RuntimeTerminal({
       }
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "Vibe Trading is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : "Vibe Trading is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -1792,7 +2075,10 @@ function RuntimeTerminal({
               : "Stock Analyst is unavailable.",
         );
       }
-      const selected = { id: STOCK_ANALYST_AGENT_ID, name: STOCK_ANALYST_AGENT_NAME };
+      const selected = {
+        id: STOCK_ANALYST_AGENT_ID,
+        name: STOCK_ANALYST_AGENT_NAME,
+      };
       setBrowserAgent(null);
       setAgentBrowserAgent(null);
       setOpenPlanterAgent(null);
@@ -1820,7 +2106,11 @@ function RuntimeTerminal({
       }
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "Stock Analyst is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error
+          ? cause.message
+          : "Stock Analyst is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -1841,7 +2131,10 @@ function RuntimeTerminal({
     // changes what selecting *means*, so the check runs behind the selection and
     // reports into the same status line. An unusable desk still refuses at the
     // point it would actually matter, when the run is started.
-    const selected = { id: PAPER_TRADER_AGENT_ID, name: PAPER_TRADER_AGENT_NAME };
+    const selected = {
+      id: PAPER_TRADER_AGENT_ID,
+      name: PAPER_TRADER_AGENT_NAME,
+    };
     setBrowserAgent(null);
     setAgentBrowserAgent(null);
     setOpenPlanterAgent(null);
@@ -1882,7 +2175,9 @@ function RuntimeTerminal({
         if (data.available !== true && typeof data.reason === "string") {
           setAttachmentStatus(data.reason);
         } else if (data?.desk?.running === true) {
-          setAttachmentStatus("The trading desk is already running. Send to see it, or say stop.");
+          setAttachmentStatus(
+            "The trading desk is already running. Send to see it, or say stop.",
+          );
         }
       } catch {
         // The run route reports the real reason if it comes to that.
@@ -1897,19 +2192,48 @@ function RuntimeTerminal({
   useEffect(() => {
     if (!paperTraderAgent) return;
     if (
-      browserAgent || agentBrowserAgent || openPlanterAgent || agentReachAgent ||
-      getDocAgent || meetingNotesAgent || deepTutorAgent || careerOpsAgent || tradingAgentsAgent ||
-      vibeTradingAgent || stockAnalystAgent || deerFlowAgent || shortsAgent ||
-      formsmithAgent || deepResearch.agent || codex.agent || openCode.agent || ruflo.agent
+      browserAgent ||
+      agentBrowserAgent ||
+      openPlanterAgent ||
+      agentReachAgent ||
+      getDocAgent ||
+      meetingNotesAgent ||
+      deepTutorAgent ||
+      careerOpsAgent ||
+      tradingAgentsAgent ||
+      vibeTradingAgent ||
+      stockAnalystAgent ||
+      deerFlowAgent ||
+      shortsAgent ||
+      formsmithAgent ||
+      deepResearch.agent ||
+      codex.agent ||
+      openCode.agent ||
+      ruflo.agent
     ) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setPaperTraderAgent(null);
     }
   }, [
-    agentBrowserAgent, agentReachAgent, browserAgent, careerOpsAgent, codex.agent,
-    deepResearch.agent, deepTutorAgent, deerFlowAgent, formsmithAgent, getDocAgent, meetingNotesAgent,
-    openCode.agent, openPlanterAgent, paperTraderAgent, ruflo.agent, shortsAgent,
-    stockAnalystAgent, tradingAgentsAgent, vibeTradingAgent,
+    agentBrowserAgent,
+    agentReachAgent,
+    browserAgent,
+    careerOpsAgent,
+    codex.agent,
+    deepResearch.agent,
+    deepTutorAgent,
+    deerFlowAgent,
+    formsmithAgent,
+    getDocAgent,
+    meetingNotesAgent,
+    openCode.agent,
+    openPlanterAgent,
+    paperTraderAgent,
+    ruflo.agent,
+    shortsAgent,
+    stockAnalystAgent,
+    tradingAgentsAgent,
+    vibeTradingAgent,
   ]);
 
   // Selectors added before Stock Analyst do not know its state, so fold it into
@@ -1917,19 +2241,46 @@ function RuntimeTerminal({
   useEffect(() => {
     if (!stockAnalystAgent) return;
     if (
-      browserAgent || agentBrowserAgent || openPlanterAgent || agentReachAgent ||
-      getDocAgent || meetingNotesAgent || deepTutorAgent || careerOpsAgent || tradingAgentsAgent ||
-      vibeTradingAgent || deerFlowAgent || shortsAgent || formsmithAgent ||
-      deepResearch.agent || codex.agent || openCode.agent || ruflo.agent
+      browserAgent ||
+      agentBrowserAgent ||
+      openPlanterAgent ||
+      agentReachAgent ||
+      getDocAgent ||
+      meetingNotesAgent ||
+      deepTutorAgent ||
+      careerOpsAgent ||
+      tradingAgentsAgent ||
+      vibeTradingAgent ||
+      deerFlowAgent ||
+      shortsAgent ||
+      formsmithAgent ||
+      deepResearch.agent ||
+      codex.agent ||
+      openCode.agent ||
+      ruflo.agent
     ) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setStockAnalystAgent(null);
     }
   }, [
-    agentBrowserAgent, agentReachAgent, browserAgent, careerOpsAgent, codex.agent,
-    deepResearch.agent, deepTutorAgent, deerFlowAgent, formsmithAgent, getDocAgent, meetingNotesAgent,
-    openCode.agent, openPlanterAgent, ruflo.agent, shortsAgent,
-    stockAnalystAgent, tradingAgentsAgent, vibeTradingAgent,
+    agentBrowserAgent,
+    agentReachAgent,
+    browserAgent,
+    careerOpsAgent,
+    codex.agent,
+    deepResearch.agent,
+    deepTutorAgent,
+    deerFlowAgent,
+    formsmithAgent,
+    getDocAgent,
+    meetingNotesAgent,
+    openCode.agent,
+    openPlanterAgent,
+    ruflo.agent,
+    shortsAgent,
+    stockAnalystAgent,
+    tradingAgentsAgent,
+    vibeTradingAgent,
   ]);
 
   /**
@@ -1978,7 +2329,9 @@ function RuntimeTerminal({
       }
       return selected;
     } catch (cause) {
-      setAttachmentStatus(cause instanceof Error ? cause.message : "DeerFlow is unavailable.");
+      setAttachmentStatus(
+        cause instanceof Error ? cause.message : "DeerFlow is unavailable.",
+      );
       return null;
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
@@ -2047,13 +2400,17 @@ function RuntimeTerminal({
       setLaunchingOpenPlanterRun(true);
       let clientMessageId = crypto.randomUUID();
       const userContent = openPlanterUserMessage(task);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
         // The run reads the chat it was launched from, so the conversation is
         // materialized before it starts. The call is idempotent and the turn
         // binds to the same conversation either way.
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/openplanter/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -2068,7 +2425,9 @@ function RuntimeTerminal({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The OpenPlanter run could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The OpenPlanter run could not start.",
           );
         }
         runStarted = true;
@@ -2111,7 +2470,13 @@ function RuntimeTerminal({
         setLaunchingOpenPlanterRun(false);
       }
     },
-    [launchingOpenPlanterRun, model, openPlanterAgent, reasoningEffort, session],
+    [
+      launchingOpenPlanterRun,
+      model,
+      openPlanterAgent,
+      reasoningEffort,
+      session,
+    ],
   );
 
   const launchAgentReachRun = useCallback(
@@ -2121,13 +2486,17 @@ function RuntimeTerminal({
       setLaunchingAgentReachRun(true);
       let clientMessageId = crypto.randomUUID();
       const userContent = agentReachUserMessage(task);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
         // The run reads the chat it was launched from, so the conversation is
         // materialized before it starts. The call is idempotent and the turn
         // binds to the same conversation either way.
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/agent-reach/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -2142,7 +2511,9 @@ function RuntimeTerminal({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The Agent Reach run could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The Agent Reach run could not start.",
           );
         }
         runStarted = true;
@@ -2219,7 +2590,8 @@ function RuntimeTerminal({
       });
       let runStarted = false;
       try {
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/meeting-notes/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -2237,7 +2609,9 @@ function RuntimeTerminal({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The meeting notes could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The meeting notes could not start.",
           );
         }
         runStarted = true;
@@ -2256,7 +2630,8 @@ function RuntimeTerminal({
           );
           return;
         }
-        const assistantContent = "The meeting notes could not start: " +
+        const assistantContent =
+          "The meeting notes could not start: " +
           (cause instanceof Error ? cause.message : "unknown error");
         try {
           await session.appendExternalAgentTurn({
@@ -2276,7 +2651,14 @@ function RuntimeTerminal({
         setLaunchingMeetingNotesRun(false);
       }
     },
-    [chatAttachments, launchingMeetingNotesRun, meetingNotesAgent, model, reasoningEffort, session],
+    [
+      chatAttachments,
+      launchingMeetingNotesRun,
+      meetingNotesAgent,
+      model,
+      reasoningEffort,
+      session,
+    ],
   );
 
   const launchGetDocRun = useCallback(
@@ -2286,13 +2668,17 @@ function RuntimeTerminal({
       setLaunchingGetDocRun(true);
       let clientMessageId = crypto.randomUUID();
       const userContent = getDocUserMessage(task);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
         // The run reads the chat it was launched from, so the conversation is
         // materialized before it starts. The call is idempotent and the turn
         // binds to the same conversation either way.
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/get-doc/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -2307,7 +2693,9 @@ function RuntimeTerminal({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The document search could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The document search could not start.",
           );
         }
         runStarted = true;
@@ -2361,13 +2749,17 @@ function RuntimeTerminal({
       setLaunchingDeepTutorRun(true);
       let clientMessageId = crypto.randomUUID();
       const userContent = deepTutorUserMessage(task);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
         // The run reads the chat it was launched from, so the conversation is
         // materialized before it starts. The call is idempotent and the turn
         // binds to the same conversation either way.
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/deep-tutor/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -2382,7 +2774,9 @@ function RuntimeTerminal({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The tutoring turn could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The tutoring turn could not start.",
           );
         }
         runStarted = true;
@@ -2436,13 +2830,17 @@ function RuntimeTerminal({
       setLaunchingCareerOpsRun(true);
       let clientMessageId = crypto.randomUUID();
       const userContent = careerOpsUserMessage(task);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
         // The run reads the chat it was launched from, so the conversation is
         // materialized before it starts. The call is idempotent and the turn
         // binds to the same conversation either way.
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/career-ops/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -2457,7 +2855,9 @@ function RuntimeTerminal({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The Career Ops run could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The Career Ops run could not start.",
           );
         }
         runStarted = true;
@@ -2506,13 +2906,17 @@ function RuntimeTerminal({
       setLaunchingVibeTradingRun(true);
       let clientMessageId = crypto.randomUUID();
       const userContent = vibeTradingUserMessage(task);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
         // The run reads the chat it was launched from, so the conversation is
         // materialized before it starts. The call is idempotent and the turn
         // binds to the same conversation either way.
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/vibe-trading/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -2527,7 +2931,9 @@ function RuntimeTerminal({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The Vibe Trading run could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The Vibe Trading run could not start.",
           );
         }
         runStarted = true;
@@ -2566,7 +2972,13 @@ function RuntimeTerminal({
         setLaunchingVibeTradingRun(false);
       }
     },
-    [launchingVibeTradingRun, model, reasoningEffort, session, vibeTradingAgent],
+    [
+      launchingVibeTradingRun,
+      model,
+      reasoningEffort,
+      session,
+      vibeTradingAgent,
+    ],
   );
 
   const launchStockAnalystRun = useCallback(
@@ -2576,23 +2988,34 @@ function RuntimeTerminal({
       setLaunchingStockAnalystRun(true);
       let clientMessageId = crypto.randomUUID();
       const userContent = stockAnalystUserMessage(task);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
         // The launching chat decides whether this run may be given memory, so
         // the conversation is materialized before the run starts rather than
         // when its turn is saved. The call is idempotent and the turn binds to
         // the same conversation either way.
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/stock-analyst/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, model, conversationPublicId, clientMessageId }),
+          body: JSON.stringify({
+            task,
+            model,
+            conversationPublicId,
+            clientMessageId,
+          }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The Stock Analyst run could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The Stock Analyst run could not start.",
           );
         }
         runStarted = true;
@@ -2646,7 +3069,10 @@ function RuntimeTerminal({
       setLaunchingPaperTraderRun(true);
       let clientMessageId = crypto.randomUUID();
       const userContent = paperTraderUserMessage(task);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
         const response = await fetch("/api/paper-trader/runs", {
@@ -2657,7 +3083,9 @@ function RuntimeTerminal({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The trading desk could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The trading desk could not start.",
           );
         }
         runStarted = true;
@@ -2711,14 +3139,23 @@ function RuntimeTerminal({
       setLaunchingDeerFlowRun(true);
       let clientMessageId = crypto.randomUUID();
       const userContent = deerFlowUserMessage(task);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/deer-flow/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, model, reasoningEffort, conversationPublicId }),
+          body: JSON.stringify({
+            task,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+          }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
@@ -2781,7 +3218,10 @@ function RuntimeTerminal({
       let clientMessageId = crypto.randomUUID();
       const userContent = tradingAgentsUserMessage(request);
       const label = tradingAgentsRunLabel(request);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
         const response = await fetch("/api/tradingagents/runs", {
@@ -2792,14 +3232,20 @@ function RuntimeTerminal({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The analysis could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The analysis could not start.",
           );
         }
         runStarted = true;
         await session.appendExternalAgentTurn({
           clientMessageId,
           userContent,
-          run: { kind: "trading_agents", runId: String(data.run.runId), task: label },
+          run: {
+            kind: "trading_agents",
+            runId: String(data.run.runId),
+            task: label,
+          },
         });
       } catch (cause) {
         if (runStarted) {
@@ -2875,7 +3321,8 @@ function RuntimeTerminal({
       });
       let runStarted = false;
       try {
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         // Bounded: the run card — and with it the only Stop button — does not
         // exist until this resolves, so a request that never answers would
         // leave the composer inert with nothing to press. Starting a run is
@@ -2886,7 +3333,9 @@ function RuntimeTerminal({
           signal: AbortSignal.timeout(60_000),
           body: JSON.stringify({
             request: {
-              ...("blobId" in video ? { blobId: video.blobId } : { url: video.url }),
+              ...("blobId" in video
+                ? { blobId: video.blobId }
+                : { url: video.url }),
               filename: video.name,
               prompt,
             },
@@ -2897,7 +3346,9 @@ function RuntimeTerminal({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The edit could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The edit could not start.",
           );
         }
         runStarted = true;
@@ -2981,12 +3432,12 @@ function RuntimeTerminal({
       text: string,
       attachments: readonly ChatAttachment[],
     ): VideoUseLaunchSource | null => {
-      if (!text || launchingVideoUseRun || !videoEditIntent(text).edit) return null;
+      if (!text || launchingVideoUseRun || !videoEditIntent(text).edit)
+        return null;
       return videoUseSource(text, attachments);
     },
     [launchingVideoUseRun, videoUseSource],
   );
-
 
   /**
    * Start one cutting run. Like Trading Agent the request is a typed object,
@@ -3002,10 +3453,14 @@ function RuntimeTerminal({
       let clientMessageId = crypto.randomUUID();
       const userContent = shortsUserMessage(request);
       const label = shortsRunLabel(request);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/shorts/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -3014,7 +3469,9 @@ function RuntimeTerminal({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The clips could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The clips could not start.",
           );
         }
         runStarted = true;
@@ -3064,10 +3521,14 @@ function RuntimeTerminal({
       let clientMessageId = crypto.randomUUID();
       const userContent = formsmithUserMessage(request);
       const label = formsmithRunLabel(request);
-      clientMessageId = session.previewExternalAgentTurn({ clientMessageId, userContent });
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+      });
       let runStarted = false;
       try {
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/shaper/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -3075,17 +3536,29 @@ function RuntimeTerminal({
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
-          throw new Error(typeof data?.error === "string" ? data.error : "The reconstruction could not start.");
+          throw new Error(
+            typeof data?.error === "string"
+              ? data.error
+              : "The reconstruction could not start.",
+          );
         }
         runStarted = true;
         await session.appendExternalAgentTurn({
           clientMessageId,
           userContent,
-          run: { kind: "formsmith", runId: String(data.run.runId), task: label },
+          run: {
+            kind: "formsmith",
+            runId: String(data.run.runId),
+            task: label,
+          },
         });
       } catch (cause) {
         if (runStarted) {
-          setAttachmentStatus(cause instanceof Error ? cause.message : "The run started, but its chat turn could not be saved.");
+          setAttachmentStatus(
+            cause instanceof Error
+              ? cause.message
+              : "The run started, but its chat turn could not be saved.",
+          );
           return;
         }
         const assistantContent = `The reconstruction could not start: ${cause instanceof Error ? cause.message : "unknown error"}`;
@@ -3097,7 +3570,11 @@ function RuntimeTerminal({
             outcome: "failed",
           });
         } catch (persistenceError) {
-          setAttachmentStatus(persistenceError instanceof Error ? persistenceError.message : "The Formsmith turn could not be saved.");
+          setAttachmentStatus(
+            persistenceError instanceof Error
+              ? persistenceError.message
+              : "The Formsmith turn could not be saved.",
+          );
         }
       } finally {
         setLaunchingFormsmithRun(false);
@@ -3113,10 +3590,7 @@ function RuntimeTerminal({
    * the run so first-turn artifacts are just as durable as later ones.
    */
   const launchSocialsManagerRun = useCallback(
-    async (
-      brief: string,
-      options: { branchGroupId?: string } = {},
-    ) => {
+    async (brief: string, options: { branchGroupId?: string } = {}) => {
       if (socialsManagerDispatchingRef.current) return;
       socialsManagerDispatchingRef.current = true;
       setLaunchingSocialsManagerRun(true);
@@ -3129,7 +3603,8 @@ function RuntimeTerminal({
       });
       let runStarted = false;
       try {
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/socials-manager/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -3142,7 +3617,9 @@ function RuntimeTerminal({
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
           throw new Error(
-            typeof data?.error === "string" ? data.error : "The Socials Manager run could not start.",
+            typeof data?.error === "string"
+              ? data.error
+              : "The Socials Manager run could not start.",
           );
         }
         runStarted = true;
@@ -3197,10 +3674,7 @@ function RuntimeTerminal({
    * be stored as an artifact that belongs to this chat.
    */
   const launchHardwareBlueprintRun = useCallback(
-    async (
-      brief: string,
-      options: { branchGroupId?: string } = {},
-    ) => {
+    async (brief: string, options: { branchGroupId?: string } = {}) => {
       if (hardwareDispatchingRef.current) return;
       hardwareDispatchingRef.current = true;
       setLaunchingHardwareRun(true);
@@ -3216,7 +3690,8 @@ function RuntimeTerminal({
       const attachToExistingTurn = clientMessageId !== requestedClientMessageId;
       let runStarted = false;
       try {
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/hardware-blueprint/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -3303,10 +3778,7 @@ function RuntimeTerminal({
    * stored as an artifact that belongs to this chat.
    */
   const launchParametricCadRun = useCallback(
-    async (
-      brief: string,
-      options: { branchGroupId?: string } = {},
-    ) => {
+    async (brief: string, options: { branchGroupId?: string } = {}) => {
       if (cadDispatchingRef.current) return;
       cadDispatchingRef.current = true;
       setLaunchingCadRun(true);
@@ -3322,7 +3794,8 @@ function RuntimeTerminal({
       const attachToExistingTurn = clientMessageId !== requestedClientMessageId;
       let runStarted = false;
       try {
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/cad/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -3536,14 +4009,28 @@ function RuntimeTerminal({
         });
       } catch (cause) {
         if (runStarted) {
-          setAttachmentStatus(cause instanceof Error ? cause.message : "The run started, but its chat turn could not be saved.");
+          setAttachmentStatus(
+            cause instanceof Error
+              ? cause.message
+              : "The run started, but its chat turn could not be saved.",
+          );
           return;
         }
         const assistantContent = `The Resource2Skill run could not start: ${cause instanceof Error ? cause.message : "unknown error"}`;
         try {
-          await session.appendExternalAgentTurn({ clientMessageId, userContent, assistantContent, outcome: "failed", branchGroupId: options.branchGroupId });
+          await session.appendExternalAgentTurn({
+            clientMessageId,
+            userContent,
+            assistantContent,
+            outcome: "failed",
+            branchGroupId: options.branchGroupId,
+          });
         } catch (persistenceError) {
-          setAttachmentStatus(persistenceError instanceof Error ? persistenceError.message : "The Resource2Skill turn could not be saved.");
+          setAttachmentStatus(
+            persistenceError instanceof Error
+              ? persistenceError.message
+              : "The Resource2Skill turn could not be saved.",
+          );
         }
       } finally {
         resource2SkillDispatchingRef.current = false;
@@ -3558,7 +4045,8 @@ function RuntimeTerminal({
       const brief = briefFromResource2SkillCommand(text);
       if (brief === null) return false;
       setAttachmentStatus("");
-      if (brief && !resource2SkillDispatchingRef.current) void launchResource2SkillRun(brief, options);
+      if (brief && !resource2SkillDispatchingRef.current)
+        void launchResource2SkillRun(brief, options);
       return true;
     },
     [launchResource2SkillRun],
@@ -3849,7 +4337,6 @@ function RuntimeTerminal({
     [launchOpenscienceRun],
   );
 
-
   /**
    * Inbox Zero carries its whole instruction in the command. A cold run pays for
    * starting the mail app's containers — the first one pulls images and migrates
@@ -3966,11 +4453,17 @@ function RuntimeTerminal({
       });
       let runStarted = false;
       try {
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/vimax/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ brief, model, reasoningEffort, conversationPublicId }),
+          body: JSON.stringify({
+            brief,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+          }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data?.run?.runId) {
@@ -4037,6 +4530,104 @@ function RuntimeTerminal({
     [launchVimaxRun],
   );
 
+  /**
+   * Vox Director carries its whole topic in the command too. The production
+   * plans a beat map, draws a poster per beat, animates each one locally and
+   * narrates it, so the turn is recorded before the first event arrives and the
+   * card streams into it. The conversation must exist first: the film — and
+   * every poster drawn for it — is an artifact that belongs to this chat.
+   */
+  const launchVoxDirectorRun = useCallback(
+    async (brief: string, options: { branchGroupId?: string } = {}) => {
+      if (voxDirectorDispatchingRef.current) return;
+      voxDirectorDispatchingRef.current = true;
+      setLaunchingVoxDirectorRun(true);
+      let clientMessageId = crypto.randomUUID();
+      const userContent = voxDirectorUserMessage(brief);
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+        branchGroupId: options.branchGroupId,
+      });
+      let runStarted = false;
+      try {
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const response = await fetch("/api/vox-director/runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            brief,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+            clientMessageId,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.run?.runId) {
+          throw new Error(
+            typeof data?.message === "string"
+              ? data.message
+              : typeof data?.error === "string"
+                ? data.error
+                : "The explainer could not start.",
+          );
+        }
+        runStarted = true;
+        await session.appendExternalAgentTurn({
+          clientMessageId,
+          userContent,
+          run: { kind: "vox_director", runId: String(data.run.runId), brief },
+          branchGroupId: options.branchGroupId,
+        });
+      } catch (cause) {
+        if (runStarted) {
+          setAttachmentStatus(
+            cause instanceof Error
+              ? cause.message
+              : "The explainer started, but its chat turn could not be saved.",
+          );
+          return;
+        }
+        const assistantContent = `The explainer could not start: ${
+          cause instanceof Error ? cause.message : "unknown error"
+        }`;
+        try {
+          await session.appendExternalAgentTurn({
+            clientMessageId,
+            userContent,
+            assistantContent,
+            outcome: "failed",
+            branchGroupId: options.branchGroupId,
+          });
+        } catch (persistenceError) {
+          setAttachmentStatus(
+            persistenceError instanceof Error
+              ? persistenceError.message
+              : "The Vox Director turn could not be saved.",
+          );
+        }
+      } finally {
+        voxDirectorDispatchingRef.current = false;
+        setLaunchingVoxDirectorRun(false);
+      }
+    },
+    [model, reasoningEffort, session],
+  );
+
+  const routeVoxDirectorCommand = useCallback(
+    (text: string, options: { branchGroupId?: string } = {}): boolean => {
+      const brief = briefFromVoxDirectorCommand(text);
+      if (brief === null) return false;
+      setAttachmentStatus("");
+      if (brief && !voxDirectorDispatchingRef.current) {
+        void launchVoxDirectorRun(brief, options);
+      }
+      return true;
+    },
+    [launchVoxDirectorRun],
+  );
+
   const launchMoneyPrinterRun = useCallback(
     async (brief: string, options: { branchGroupId?: string } = {}) => {
       if (moneyPrinterDispatchingRef.current) return;
@@ -4053,7 +4644,8 @@ function RuntimeTerminal({
       try {
         // The video is an artifact of this conversation, so the conversation has
         // to exist before the run that produces it.
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/money-printer/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -4141,7 +4733,8 @@ function RuntimeTerminal({
       try {
         // The deliverables are artifacts of this conversation, so the
         // conversation has to exist before the run that writes them.
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/legal/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -4262,7 +4855,8 @@ function RuntimeTerminal({
       try {
         // The cutouts and modeled photos are artifacts of this conversation, so
         // the conversation has to exist before the run that makes them.
-        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const conversationPublicId =
+          await session.ensureConversation(clientMessageId);
         const response = await fetch("/api/wardrobe/runs", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -4292,7 +4886,8 @@ function RuntimeTerminal({
             kind: "wardrobe",
             runId: String(data.run.runId),
             task: wardrobeRunLabel({
-              photos: attachments.filter((item) => item.type === "image").length,
+              photos: attachments.filter((item) => item.type === "image")
+                .length,
               direction,
             }),
           },
@@ -4389,9 +4984,21 @@ function RuntimeTerminal({
         branchGroupId?: string;
       } = {},
     ): boolean => {
-      const task = taskFromDeepResearchCommand(text);
-      if (task === null) return false;
-      if (deepResearch.launching || deepResearchDispatchingRef.current) return true;
+      const invocation = directDeepResearchInvocation(
+        text,
+        isSuperAgentEnabled(),
+      );
+      if (!invocation) {
+        if (
+          isSuperAgentEnabled() &&
+          taskFromDeepResearchIntent(text) !== null
+        ) {
+          deepResearch.clear();
+        }
+        return false;
+      }
+      if (deepResearch.launching || deepResearchDispatchingRef.current)
+        return true;
       deepResearchDispatchingRef.current = true;
       setBrowserAgent(null);
       setAgentBrowserAgent(null);
@@ -4411,8 +5018,13 @@ function RuntimeTerminal({
       setAttachmentStatus("");
       void (async () => {
         try {
-          if (!deepResearch.agent) await deepResearch.select();
-          await deepResearch.launch(task, options);
+          if (invocation.selectAgent && !deepResearch.agent) {
+            await deepResearch.select();
+          }
+          await deepResearch.launch(invocation.task, {
+            ...options,
+            ...(invocation.selectAgent ? {} : { userContent: text }),
+          });
         } finally {
           deepResearchDispatchingRef.current = false;
         }
@@ -4460,583 +5072,634 @@ function RuntimeTerminal({
     string | null
   >(null);
 
-  const submit = useCallback((
-    textOverride?: string,
-  ) => {
-    // Nothing may be dispatched into a chat that is still arriving -- not a
-    // Hermes turn and not one of the runtime-agent launches below, which bind
-    // their run to whichever conversation is selected when they start.
-    if (session.loadingSession) return;
-    const text = (textOverride ?? input).trim();
-    // Only the composer calls this with no override, so this is the one place
-    // that knows a human is speaking: it ends whatever hand-off chain was
-    // running.
-    if (textOverride === undefined) {
-      launchHopsRef.current = 0;
-      awaitedLaunchRef.current = null;
-    }
-    // Refuse an impossible combination before anything is dispatched. The
-    // branches below are a priority cascade, so without this a second runtime
-    // agent or a stacked skill would be silently swallowed into the winner's
-    // task string instead of being reported.
-    const conflict = findCapabilityConflict({
-      text,
-      surface: "dashboard_terminal",
-      attachmentCount: chatAttachments.length,
+  const submit = useCallback(
+    (textOverride?: string) => {
+      // Nothing may be dispatched into a chat that is still arriving -- not a
+      // Hermes turn and not one of the runtime-agent launches below, which bind
+      // their run to whichever conversation is selected when they start.
+      if (session.loadingSession) return;
+      const text = (textOverride ?? input).trim();
+      // Only the composer calls this with no override, so this is the one place
+      // that knows a human is speaking: it ends whatever hand-off chain was
+      // running.
+      if (textOverride === undefined) {
+        launchHopsRef.current = 0;
+        awaitedLaunchRef.current = null;
+      }
+      // Refuse an impossible combination before anything is dispatched. The
+      // branches below are a priority cascade, so without this a second runtime
+      // agent or a stacked skill would be silently swallowed into the winner's
+      // task string instead of being reported.
+      const conflict = findCapabilityConflict({
+        text,
+        surface: "dashboard_terminal",
+        attachmentCount: chatAttachments.length,
+        activeRuntimeAgentId,
+      });
+      if (conflict) {
+        setAttachmentStatus(conflict.message);
+        return;
+      }
+      const codexTask = taskFromCodexCommand(text);
+      if (codexTask !== null) {
+        if (codex.launching) return;
+        const pendingAttachments = chatAttachments;
+        setInput("");
+        setChatAttachments([]);
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = codex.agent ?? (await selectCodex());
+          if (selected && (codexTask || pendingAttachments.length)) {
+            await launchCodexRun(
+              codexTask ||
+                "Review the attached screenshot and implement the requested fix.",
+              pendingAttachments,
+            );
+          }
+        })();
+        return;
+      }
+      const rufloTask = taskFromRufloCommand(text);
+      if (rufloTask !== null) {
+        if (ruflo.launching) return;
+        const pendingAttachments = chatAttachments;
+        setInput("");
+        setChatAttachments([]);
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = ruflo.agent ?? (await selectRuflo());
+          if (selected && (rufloTask || pendingAttachments.length)) {
+            await launchRufloRun(
+              rufloTask ||
+                "Review the attached screenshot and implement the requested fix.",
+              pendingAttachments,
+            );
+          }
+        })();
+        return;
+      }
+      const openCodeTask = taskFromOpenCodeCommand(text);
+      if (openCodeTask !== null) {
+        if (openCode.launching) return;
+        const pendingAttachments = chatAttachments;
+        setInput("");
+        setChatAttachments([]);
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = openCode.agent ?? (await selectOpenCode());
+          if (selected && (openCodeTask || pendingAttachments.length)) {
+            await launchOpenCodeRun(
+              openCodeTask ||
+                "Review the attached screenshot and implement the requested fix.",
+              pendingAttachments,
+            );
+          }
+        })();
+        return;
+      }
+      const openPlanterTask = taskFromOpenPlanterCommand(text);
+      if (openPlanterTask !== null) {
+        if (launchingOpenPlanterRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = openPlanterAgent ?? (await selectOpenPlanter());
+          if (selected && openPlanterTask)
+            await launchOpenPlanterRun(openPlanterTask, selected);
+        })();
+        return;
+      }
+      const agentReachTask = taskFromAgentReachCommand(text);
+      if (agentReachTask !== null) {
+        if (launchingAgentReachRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = agentReachAgent ?? (await selectAgentReach());
+          if (selected && agentReachTask)
+            await launchAgentReachRun(agentReachTask, selected);
+        })();
+        return;
+      }
+      const deepTutorTask = taskFromDeepTutorCommand(text);
+      if (deepTutorTask !== null) {
+        if (launchingDeepTutorRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = deepTutorAgent ?? (await selectDeepTutor());
+          if (selected && deepTutorTask)
+            await launchDeepTutorRun(deepTutorTask, selected);
+        })();
+        return;
+      }
+      const meetingNotesTask = taskFromMeetingNotesCommand(text);
+      if (meetingNotesTask !== null) {
+        if (launchingMeetingNotesRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        const attachedRecording = chatAttachments.find(
+          (item) => item.type === "video",
+        );
+        void (async () => {
+          const selected = meetingNotesAgent ?? (await selectMeetingNotes());
+          // Unlike the other agents, a bare token is already a complete request:
+          // it means "the recording in this chat". So this launches either way
+          // rather than leaving the chip up waiting for a sentence.
+          if (!selected) return;
+          if (attachedRecording) setChatAttachments([]);
+          await launchMeetingNotesRun(
+            meetingNotesTask,
+            selected,
+            attachedRecording
+              ? {
+                  blobId: attachedRecording.blobId,
+                  filename: attachedRecording.name,
+                }
+              : undefined,
+          );
+        })();
+        return;
+      }
+      const getDocTask = taskFromGetDocCommand(text);
+      if (getDocTask !== null) {
+        if (launchingGetDocRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = getDocAgent ?? (await selectGetDoc());
+          // A bare token selects the agent and leaves the chip up; the next
+          // message is the description of the paper.
+          if (selected && getDocTask)
+            await launchGetDocRun(getDocTask, selected);
+        })();
+        return;
+      }
+      const careerOpsTask = taskFromCareerOpsCommand(text);
+      if (careerOpsTask !== null) {
+        if (launchingCareerOpsRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = careerOpsAgent ?? (await selectCareerOps());
+          // A bare token selects the agent and leaves the chip up, the same as
+          // every other runtime agent; the next message carries the request.
+          if (selected && careerOpsTask)
+            await launchCareerOpsRun(careerOpsTask, selected);
+        })();
+        return;
+      }
+      const vibeTradingTask = taskFromVibeTradingCommand(text);
+      if (vibeTradingTask !== null) {
+        if (launchingVibeTradingRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = vibeTradingAgent ?? (await selectVibeTrading());
+          // A bare token selects the agent and leaves the chip up; the next
+          // message carries the research question.
+          if (selected && vibeTradingTask)
+            await launchVibeTradingRun(vibeTradingTask, selected);
+        })();
+        return;
+      }
+      const stockAnalystTask = taskFromStockAnalystCommand(text);
+      if (stockAnalystTask !== null) {
+        if (launchingStockAnalystRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = stockAnalystAgent ?? (await selectStockAnalyst());
+          // A bare token selects the agent and leaves the chip up; the next
+          // message carries the question.
+          if (selected && stockAnalystTask)
+            await launchStockAnalystRun(stockAnalystTask, selected);
+        })();
+        return;
+      }
+      const paperTraderTask = taskFromPaperTraderCommand(text);
+      if (paperTraderTask !== null) {
+        if (launchingPaperTraderRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = paperTraderAgent ?? selectPaperTrader();
+          // A bare token selects the agent and leaves the chip up, the same as
+          // every other agent. The composer then locks — the desk takes no
+          // instructions — and the send button is what opens it.
+          if (selected) await launchPaperTraderRun(paperTraderTask, selected);
+        })();
+        return;
+      }
+      const deerFlowTask = taskFromDeerFlowCommand(text);
+      if (deerFlowTask !== null) {
+        if (launchingDeerFlowRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = deerFlowAgent ?? (await selectDeerFlow());
+          // A bare token selects the agent and leaves the chip up; the next
+          // message carries the task.
+          if (selected && deerFlowTask)
+            await launchDeerFlowRun(deerFlowTask, selected);
+        })();
+        return;
+      }
+      const tradingAgents = parseTradingAgentsCommand(text);
+      if (tradingAgents) {
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = tradingAgentsAgent ?? (await selectTradingAgents());
+          // The command never starts a run on its own: the form is the input, and
+          // a half-specified request has to be completed before it can go.
+          if (selected) setTradingAgentsSeed(tradingAgents.partial);
+        })();
+        return;
+      }
+      // Typed explicitly rather than detected. The agent still needs a video, so
+      // the command runs when one is attached and explains itself when not.
+      const videoUseTask = taskFromVideoUseCommand(text);
+      if (videoUseTask !== null) {
+        setInput("");
+        // Typing the command *is* the instruction, so this asks only which video
+        // — attached, or linked in what was typed. Requiring an attachment here
+        // was the bug: a pasted link read as "no video at all".
+        const commandVideo = videoUseSource(videoUseTask, chatAttachments);
+        if (!commandVideo) {
+          setAttachmentStatus(
+            "Video Use edits a video you already have. Attach one, paste its link, or open a video artifact and use its studio.",
+          );
+          return;
+        }
+        if (!videoUseTask.trim()) {
+          setAttachmentStatus("Say what should change about the video.");
+          return;
+        }
+        if (launchingVideoUseRun) return;
+        setChatAttachments([]);
+        setAttachmentStatus("");
+        void launchVideoUseRun(videoUseTask, commandVideo, {
+          userContent: text,
+        });
+        return;
+      }
+      const shorts = parseShortsCommand(text);
+      if (shorts) {
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = shortsAgent ?? (await selectShorts());
+          // The command never starts a run on its own either: a video has to be
+          // chosen, and a link typed into chat is only a starting point.
+          if (selected) setShortsSeed(shorts.partial);
+        })();
+        return;
+      }
+      if (isFormsmithCommand(text)) {
+        setInput("");
+        setAttachmentStatus("");
+        void selectFormsmith();
+        return;
+      }
+      // The Legal Agent is routed here rather than in the block below because it
+      // is the one agent whose input is the attachment tray: the documents have
+      // to be taken and cleared in the same step that starts the run, exactly as
+      // an ordinary send does.
+      if (taskFromLegalCommand(text) !== null) {
+        const pendingAttachments = chatAttachments;
+        setInput("");
+        setChatAttachments([]);
+        routeLegalCommand(text, pendingAttachments);
+        return;
+      }
+      // Wardrobe is routed here for the same reason: the photographs are its
+      // input, so they have to be taken and cleared in the step that starts the
+      // run rather than left in the tray for the next message.
+      if (taskFromWardrobeCommand(text) !== null) {
+        const pendingAttachments = chatAttachments;
+        setInput("");
+        setChatAttachments([]);
+        routeWardrobeCommand(text, pendingAttachments);
+        return;
+      }
+      if (
+        routeSocialsManagerCommand(text) ||
+        routeHardwareBlueprintCommand(text) ||
+        routeParametricCadCommand(text) ||
+        routeHyperframesCommand(text) ||
+        routeResource2SkillCommand(text) ||
+        routeOpenMontageCommand(text) ||
+        routeOpenworkCommand(text) ||
+        routeOpenscienceCommand(text) ||
+        routeInboxZeroCommand(text) ||
+        routeVimaxCommand(text) ||
+      routeVoxDirectorCommand(text) ||
+        routeMoneyPrinterCommand(text)
+      ) {
+        setInput("");
+        return;
+      }
+      if (routeDeepResearchCommand(text)) {
+        setInput("");
+        return;
+      }
+      if (deepResearch.agent) {
+        if (!text || deepResearch.launching) return;
+        setInput("");
+        setAttachmentStatus("");
+        void deepResearch.launch(text);
+        return;
+      }
+      if (codex.agent) {
+        if ((!text && chatAttachments.length === 0) || codex.launching) return;
+        const pendingAttachments = chatAttachments;
+        setInput("");
+        setChatAttachments([]);
+        setAttachmentStatus("");
+        void launchCodexRun(
+          text ||
+            "Review the attached screenshot and implement the requested fix.",
+          pendingAttachments,
+        );
+        return;
+      }
+      if (ruflo.agent) {
+        if ((!text && chatAttachments.length === 0) || ruflo.launching) return;
+        const pendingAttachments = chatAttachments;
+        setInput("");
+        setChatAttachments([]);
+        setAttachmentStatus("");
+        void launchRufloRun(
+          text ||
+            "Review the attached screenshot and implement the requested fix.",
+          pendingAttachments,
+        );
+        return;
+      }
+      if (openCode.agent) {
+        if ((!text && chatAttachments.length === 0) || openCode.launching)
+          return;
+        const pendingAttachments = chatAttachments;
+        setInput("");
+        setChatAttachments([]);
+        setAttachmentStatus("");
+        void launchOpenCodeRun(
+          text ||
+            "Review the attached screenshot and implement the requested fix.",
+          pendingAttachments,
+        );
+        return;
+      }
+      const agentBrowserTask = taskFromAgentBrowserCommand(text);
+      if (agentBrowserTask !== null) {
+        if (launchingBrowserRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = agentBrowserAgent ?? (await selectAgentBrowser());
+          if (selected && agentBrowserTask)
+            await launchAgentBrowserRun(agentBrowserTask, selected);
+        })();
+        return;
+      }
+      const agentTarsTask = taskFromAgentTarsCommand(text);
+      if (agentTarsTask !== null) {
+        if (launchingBrowserRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void (async () => {
+          const selected = browserAgent ?? (await selectBrowserAgent());
+          if (selected && agentTarsTask)
+            await launchBrowserRun(agentTarsTask, selected);
+        })();
+        return;
+      }
+      if (openPlanterAgent) {
+        if (!text || launchingOpenPlanterRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchOpenPlanterRun(text);
+        return;
+      }
+      if (agentReachAgent) {
+        if (!text || launchingAgentReachRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchAgentReachRun(text);
+        return;
+      }
+      if (getDocAgent) {
+        if (!text || launchingGetDocRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchGetDocRun(text);
+        return;
+      }
+      if (deepTutorAgent) {
+        if (!text || launchingDeepTutorRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchDeepTutorRun(text);
+        return;
+      }
+      if (careerOpsAgent) {
+        if (!text || launchingCareerOpsRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchCareerOpsRun(text);
+        return;
+      }
+      if (vibeTradingAgent) {
+        if (!text || launchingVibeTradingRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchVibeTradingRun(text);
+        return;
+      }
+      if (stockAnalystAgent) {
+        if (!text || launchingStockAnalystRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchStockAnalystRun(text);
+        return;
+      }
+      if (paperTraderAgent) {
+        // No `!text` guard: an empty send is "start the desk".
+        if (launchingPaperTraderRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchPaperTraderRun(text);
+        return;
+      }
+      if (deerFlowAgent) {
+        if (!text || launchingDeerFlowRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchDeerFlowRun(text);
+        return;
+      }
+      if (agentBrowserAgent) {
+        if (!text || launchingBrowserRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchAgentBrowserRun(text);
+        return;
+      }
+      if (browserAgent) {
+        if (!text || launchingBrowserRun) return;
+        setInput("");
+        setAttachmentStatus("");
+        void launchBrowserRun(text);
+        return;
+      }
+      // A video attached to — or linked in — an instruction to change it is an
+      // edit, not a message, and this is where that turn is rerouted. Narrow on
+      // purpose: `videoEditIntent` says no to anything that reads as a question
+      // about the video, because a render nobody asked for costs minutes and
+      // replaces the answer they wanted.
+      //
+      // A link is handed over as a link. Fetching it is work, and work belongs in
+      // the run — where it has a progress line and a stop button — rather than in
+      // front of the send button.
+      const editableVideo = videoUseTarget(text, chatAttachments);
+      if (editableVideo) {
+        setInput("");
+        setChatAttachments([]);
+        setAttachmentStatus("");
+        void launchVideoUseRun(text, editableVideo, { userContent: text });
+        return;
+      }
+      if ((!text && chatAttachments.length === 0) || runtimeUnavailable || busy)
+        return;
+      const pendingAttachments = chatAttachments;
+      const displayText = text || "Please review the attached document(s).";
+      const draftSessionId = session.sessionId;
+      const draftSubmission = submittedDraftSequence.current + 1;
+      submittedDraftSequence.current = draftSubmission;
+      if (!temporaryChat) setSubmittedDraft(displayText);
+      setInput("");
+      setChatAttachments([]);
+      setAttachmentStatus("");
+      void session.send(displayText, {
+        model,
+        reasoningEffort,
+        attachments: pendingAttachments,
+        onTurnPersisted: (persistedSessionId) => {
+          setSubmittedDraft((current) =>
+            submittedDraftSequence.current === draftSubmission &&
+            current === displayText
+              ? null
+              : current,
+          );
+          if (temporaryChat) return;
+          // React may batch the new session id with this acknowledgement. Clear
+          // both possible keys explicitly so the sent text cannot be restored
+          // into either the unstarted composer or its newly-created chat.
+          clearChatDraft(
+            window.localStorage,
+            chatDraftKey("dashboard_terminal", draftSessionId),
+          );
+          clearChatDraft(
+            window.localStorage,
+            chatDraftKey("dashboard_terminal", persistedSessionId),
+          );
+        },
+      });
+    },
+    [
       activeRuntimeAgentId,
-    });
-    if (conflict) {
-      setAttachmentStatus(conflict.message);
-      return;
-    }
-    const codexTask = taskFromCodexCommand(text);
-    if (codexTask !== null) {
-      if (codex.launching) return;
-      const pendingAttachments = chatAttachments;
-      setInput("");
-      setChatAttachments([]);
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = codex.agent ?? (await selectCodex());
-        if (selected && (codexTask || pendingAttachments.length)) {
-          await launchCodexRun(
-            codexTask || "Review the attached screenshot and implement the requested fix.",
-            pendingAttachments,
-          );
-        }
-      })();
-      return;
-    }
-    const rufloTask = taskFromRufloCommand(text);
-    if (rufloTask !== null) {
-      if (ruflo.launching) return;
-      const pendingAttachments = chatAttachments;
-      setInput("");
-      setChatAttachments([]);
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = ruflo.agent ?? (await selectRuflo());
-        if (selected && (rufloTask || pendingAttachments.length)) {
-          await launchRufloRun(
-            rufloTask || "Review the attached screenshot and implement the requested fix.",
-            pendingAttachments,
-          );
-        }
-      })();
-      return;
-    }
-    const openCodeTask = taskFromOpenCodeCommand(text);
-    if (openCodeTask !== null) {
-      if (openCode.launching) return;
-      const pendingAttachments = chatAttachments;
-      setInput("");
-      setChatAttachments([]);
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = openCode.agent ?? (await selectOpenCode());
-        if (selected && (openCodeTask || pendingAttachments.length)) {
-          await launchOpenCodeRun(
-            openCodeTask || "Review the attached screenshot and implement the requested fix.",
-            pendingAttachments,
-          );
-        }
-      })();
-      return;
-    }
-    const openPlanterTask = taskFromOpenPlanterCommand(text);
-    if (openPlanterTask !== null) {
-      if (launchingOpenPlanterRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = openPlanterAgent ?? await selectOpenPlanter();
-        if (selected && openPlanterTask) await launchOpenPlanterRun(openPlanterTask, selected);
-      })();
-      return;
-    }
-    const agentReachTask = taskFromAgentReachCommand(text);
-    if (agentReachTask !== null) {
-      if (launchingAgentReachRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = agentReachAgent ?? (await selectAgentReach());
-        if (selected && agentReachTask) await launchAgentReachRun(agentReachTask, selected);
-      })();
-      return;
-    }
-    const deepTutorTask = taskFromDeepTutorCommand(text);
-    if (deepTutorTask !== null) {
-      if (launchingDeepTutorRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = deepTutorAgent ?? (await selectDeepTutor());
-        if (selected && deepTutorTask) await launchDeepTutorRun(deepTutorTask, selected);
-      })();
-      return;
-    }
-    const meetingNotesTask = taskFromMeetingNotesCommand(text);
-    if (meetingNotesTask !== null) {
-      if (launchingMeetingNotesRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      const attachedRecording = chatAttachments.find((item) => item.type === "video");
-      void (async () => {
-        const selected = meetingNotesAgent ?? (await selectMeetingNotes());
-        // Unlike the other agents, a bare token is already a complete request:
-        // it means "the recording in this chat". So this launches either way
-        // rather than leaving the chip up waiting for a sentence.
-        if (!selected) return;
-        if (attachedRecording) setChatAttachments([]);
-        await launchMeetingNotesRun(
-          meetingNotesTask,
-          selected,
-          attachedRecording
-            ? { blobId: attachedRecording.blobId, filename: attachedRecording.name }
-            : undefined,
-        );
-      })();
-      return;
-    }
-    const getDocTask = taskFromGetDocCommand(text);
-    if (getDocTask !== null) {
-      if (launchingGetDocRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = getDocAgent ?? (await selectGetDoc());
-        // A bare token selects the agent and leaves the chip up; the next
-        // message is the description of the paper.
-        if (selected && getDocTask) await launchGetDocRun(getDocTask, selected);
-      })();
-      return;
-    }
-    const careerOpsTask = taskFromCareerOpsCommand(text);
-    if (careerOpsTask !== null) {
-      if (launchingCareerOpsRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = careerOpsAgent ?? (await selectCareerOps());
-        // A bare token selects the agent and leaves the chip up, the same as
-        // every other runtime agent; the next message carries the request.
-        if (selected && careerOpsTask) await launchCareerOpsRun(careerOpsTask, selected);
-      })();
-      return;
-    }
-    const vibeTradingTask = taskFromVibeTradingCommand(text);
-    if (vibeTradingTask !== null) {
-      if (launchingVibeTradingRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = vibeTradingAgent ?? (await selectVibeTrading());
-        // A bare token selects the agent and leaves the chip up; the next
-        // message carries the research question.
-        if (selected && vibeTradingTask) await launchVibeTradingRun(vibeTradingTask, selected);
-      })();
-      return;
-    }
-    const stockAnalystTask = taskFromStockAnalystCommand(text);
-    if (stockAnalystTask !== null) {
-      if (launchingStockAnalystRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = stockAnalystAgent ?? (await selectStockAnalyst());
-        // A bare token selects the agent and leaves the chip up; the next
-        // message carries the question.
-        if (selected && stockAnalystTask) await launchStockAnalystRun(stockAnalystTask, selected);
-      })();
-      return;
-    }
-    const paperTraderTask = taskFromPaperTraderCommand(text);
-    if (paperTraderTask !== null) {
-      if (launchingPaperTraderRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = paperTraderAgent ?? selectPaperTrader();
-        // A bare token selects the agent and leaves the chip up, the same as
-        // every other agent. The composer then locks — the desk takes no
-        // instructions — and the send button is what opens it.
-        if (selected) await launchPaperTraderRun(paperTraderTask, selected);
-      })();
-      return;
-    }
-    const deerFlowTask = taskFromDeerFlowCommand(text);
-    if (deerFlowTask !== null) {
-      if (launchingDeerFlowRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = deerFlowAgent ?? (await selectDeerFlow());
-        // A bare token selects the agent and leaves the chip up; the next
-        // message carries the task.
-        if (selected && deerFlowTask) await launchDeerFlowRun(deerFlowTask, selected);
-      })();
-      return;
-    }
-    const tradingAgents = parseTradingAgentsCommand(text);
-    if (tradingAgents) {
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = tradingAgentsAgent ?? (await selectTradingAgents());
-        // The command never starts a run on its own: the form is the input, and
-        // a half-specified request has to be completed before it can go.
-        if (selected) setTradingAgentsSeed(tradingAgents.partial);
-      })();
-      return;
-    }
-    // Typed explicitly rather than detected. The agent still needs a video, so
-    // the command runs when one is attached and explains itself when not.
-    const videoUseTask = taskFromVideoUseCommand(text);
-    if (videoUseTask !== null) {
-      setInput("");
-      // Typing the command *is* the instruction, so this asks only which video
-      // — attached, or linked in what was typed. Requiring an attachment here
-      // was the bug: a pasted link read as "no video at all".
-      const commandVideo = videoUseSource(videoUseTask, chatAttachments);
-      if (!commandVideo) {
-        setAttachmentStatus(
-          "Video Use edits a video you already have. Attach one, paste its link, or open a video artifact and use its studio.",
-        );
-        return;
-      }
-      if (!videoUseTask.trim()) {
-        setAttachmentStatus("Say what should change about the video.");
-        return;
-      }
-      if (launchingVideoUseRun) return;
-      setChatAttachments([]);
-      setAttachmentStatus("");
-      void launchVideoUseRun(videoUseTask, commandVideo, { userContent: text });
-      return;
-    }
-    const shorts = parseShortsCommand(text);
-    if (shorts) {
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = shortsAgent ?? (await selectShorts());
-        // The command never starts a run on its own either: a video has to be
-        // chosen, and a link typed into chat is only a starting point.
-        if (selected) setShortsSeed(shorts.partial);
-      })();
-      return;
-    }
-    if (isFormsmithCommand(text)) {
-      setInput("");
-      setAttachmentStatus("");
-      void selectFormsmith();
-      return;
-    }
-    // The Legal Agent is routed here rather than in the block below because it
-    // is the one agent whose input is the attachment tray: the documents have
-    // to be taken and cleared in the same step that starts the run, exactly as
-    // an ordinary send does.
-    if (taskFromLegalCommand(text) !== null) {
-      const pendingAttachments = chatAttachments;
-      setInput("");
-      setChatAttachments([]);
-      routeLegalCommand(text, pendingAttachments);
-      return;
-    }
-    // Wardrobe is routed here for the same reason: the photographs are its
-    // input, so they have to be taken and cleared in the step that starts the
-    // run rather than left in the tray for the next message.
-    if (taskFromWardrobeCommand(text) !== null) {
-      const pendingAttachments = chatAttachments;
-      setInput("");
-      setChatAttachments([]);
-      routeWardrobeCommand(text, pendingAttachments);
-      return;
-    }
-    if (
-      routeSocialsManagerCommand(text) ||
-      routeHardwareBlueprintCommand(text) ||
-      routeParametricCadCommand(text) ||
-      routeHyperframesCommand(text) ||
-      routeResource2SkillCommand(text) ||
-      routeOpenMontageCommand(text) ||
-      routeOpenworkCommand(text) ||
-      routeOpenscienceCommand(text) ||
-      routeInboxZeroCommand(text) ||
-      routeVimaxCommand(text) ||
-      routeMoneyPrinterCommand(text)
-    ) {
-      setInput("");
-      return;
-    }
-    if (
-      routeDeepResearchCommand(text)
-    ) {
-      setInput("");
-      return;
-    }
-    if (deepResearch.agent) {
-      if (!text || deepResearch.launching) return;
-      setInput("");
-      setAttachmentStatus("");
-      void deepResearch.launch(text);
-      return;
-    }
-    if (codex.agent) {
-      if ((!text && chatAttachments.length === 0) || codex.launching) return;
-      const pendingAttachments = chatAttachments;
-      setInput("");
-      setChatAttachments([]);
-      setAttachmentStatus("");
-      void launchCodexRun(
-        text || "Review the attached screenshot and implement the requested fix.",
-        pendingAttachments,
-      );
-      return;
-    }
-    if (ruflo.agent) {
-      if ((!text && chatAttachments.length === 0) || ruflo.launching) return;
-      const pendingAttachments = chatAttachments;
-      setInput("");
-      setChatAttachments([]);
-      setAttachmentStatus("");
-      void launchRufloRun(
-        text || "Review the attached screenshot and implement the requested fix.",
-        pendingAttachments,
-      );
-      return;
-    }
-    if (openCode.agent) {
-      if ((!text && chatAttachments.length === 0) || openCode.launching) return;
-      const pendingAttachments = chatAttachments;
-      setInput("");
-      setChatAttachments([]);
-      setAttachmentStatus("");
-      void launchOpenCodeRun(
-        text || "Review the attached screenshot and implement the requested fix.",
-        pendingAttachments,
-      );
-      return;
-    }
-    const agentBrowserTask = taskFromAgentBrowserCommand(text);
-    if (agentBrowserTask !== null) {
-      if (launchingBrowserRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = agentBrowserAgent ?? await selectAgentBrowser();
-        if (selected && agentBrowserTask) await launchAgentBrowserRun(agentBrowserTask, selected);
-      })();
-      return;
-    }
-    const agentTarsTask = taskFromAgentTarsCommand(text);
-    if (agentTarsTask !== null) {
-      if (launchingBrowserRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void (async () => {
-        const selected = browserAgent ?? await selectBrowserAgent();
-        if (selected && agentTarsTask) await launchBrowserRun(agentTarsTask, selected);
-      })();
-      return;
-    }
-    if (openPlanterAgent) {
-      if (!text || launchingOpenPlanterRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void launchOpenPlanterRun(text);
-      return;
-    }
-    if (agentReachAgent) {
-      if (!text || launchingAgentReachRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void launchAgentReachRun(text);
-      return;
-    }
-    if (getDocAgent) {
-      if (!text || launchingGetDocRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void launchGetDocRun(text);
-      return;
-    }
-    if (deepTutorAgent) {
-      if (!text || launchingDeepTutorRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void launchDeepTutorRun(text);
-      return;
-    }
-    if (careerOpsAgent) {
-      if (!text || launchingCareerOpsRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void launchCareerOpsRun(text);
-      return;
-    }
-    if (vibeTradingAgent) {
-      if (!text || launchingVibeTradingRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void launchVibeTradingRun(text);
-      return;
-    }
-    if (stockAnalystAgent) {
-      if (!text || launchingStockAnalystRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void launchStockAnalystRun(text);
-      return;
-    }
-    if (paperTraderAgent) {
-      // No `!text` guard: an empty send is "start the desk".
-      if (launchingPaperTraderRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void launchPaperTraderRun(text);
-      return;
-    }
-    if (deerFlowAgent) {
-      if (!text || launchingDeerFlowRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void launchDeerFlowRun(text);
-      return;
-    }
-    if (agentBrowserAgent) {
-      if (!text || launchingBrowserRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void launchAgentBrowserRun(text);
-      return;
-    }
-    if (browserAgent) {
-      if (!text || launchingBrowserRun) return;
-      setInput("");
-      setAttachmentStatus("");
-      void launchBrowserRun(text);
-      return;
-    }
-    // A video attached to — or linked in — an instruction to change it is an
-    // edit, not a message, and this is where that turn is rerouted. Narrow on
-    // purpose: `videoEditIntent` says no to anything that reads as a question
-    // about the video, because a render nobody asked for costs minutes and
-    // replaces the answer they wanted.
-    //
-    // A link is handed over as a link. Fetching it is work, and work belongs in
-    // the run — where it has a progress line and a stop button — rather than in
-    // front of the send button.
-    const editableVideo = videoUseTarget(text, chatAttachments);
-    if (editableVideo) {
-      setInput("");
-      setChatAttachments([]);
-      setAttachmentStatus("");
-      void launchVideoUseRun(text, editableVideo, { userContent: text });
-      return;
-    }
-    if ((!text && chatAttachments.length === 0) || runtimeUnavailable || busy) return;
-    const pendingAttachments = chatAttachments;
-    const displayText = text || "Please review the attached document(s).";
-    setInput("");
-    setChatAttachments([]);
-    setAttachmentStatus("");
-    void session.send(displayText, {
+      browserAgent,
+      agentBrowserAgent,
+      launchVideoUseRun,
+      launchingVideoUseRun,
+      videoUseSource,
+      videoUseTarget,
+      deepResearch,
+      codex,
+      openCode,
+      ruflo,
+      openPlanterAgent,
+      agentReachAgent,
+      getDocAgent,
+      meetingNotesAgent,
+      tradingAgentsAgent,
+      selectTradingAgents,
+      careerOpsAgent,
+      vibeTradingAgent,
+      selectVibeTrading,
+      launchVibeTradingRun,
+      launchingVibeTradingRun,
+      stockAnalystAgent,
+      selectStockAnalyst,
+      launchStockAnalystRun,
+      launchingStockAnalystRun,
+      paperTraderAgent,
+      selectPaperTrader,
+      launchPaperTraderRun,
+      launchingPaperTraderRun,
+      deerFlowAgent,
+      selectDeerFlow,
+      launchDeerFlowRun,
+      launchingDeerFlowRun,
+      launchAgentBrowserRun,
+      launchOpenPlanterRun,
+      launchAgentReachRun,
+      launchGetDocRun,
+      launchMeetingNotesRun,
+      launchCareerOpsRun,
+      launchCodexRun,
+      launchOpenCodeRun,
+      launchRufloRun,
+      launchingBrowserRun,
+      launchingOpenPlanterRun,
+      launchingAgentReachRun,
+      launchingGetDocRun,
+      launchingMeetingNotesRun,
+      launchingDeepTutorRun,
+      deepTutorAgent,
+      selectDeepTutor,
+      launchDeepTutorRun,
+      launchingCareerOpsRun,
+      launchBrowserRun,
+      selectBrowserAgent,
+      selectAgentBrowser,
+      selectOpenPlanter,
+      selectAgentReach,
+      selectGetDoc,
+      selectMeetingNotes,
+      selectCareerOps,
+      selectShorts,
+      shortsAgent,
+      selectFormsmith,
+      selectCodex,
+      selectOpenCode,
+      selectRuflo,
+      busy,
+      chatAttachments,
+      input,
       model,
       reasoningEffort,
-      attachments: pendingAttachments,
-    });
-  }, [
-    activeRuntimeAgentId,
-    browserAgent,
-    agentBrowserAgent,
-    launchVideoUseRun,
-    launchingVideoUseRun,
-    videoUseSource,
-    videoUseTarget,
-    deepResearch,
-    codex,
-    openCode,
-    ruflo,
-    openPlanterAgent,
-    agentReachAgent,
-    getDocAgent,
-    meetingNotesAgent,
-    tradingAgentsAgent,
-    selectTradingAgents,
-    careerOpsAgent,
-    vibeTradingAgent,
-    selectVibeTrading,
-    launchVibeTradingRun,
-    launchingVibeTradingRun,
-    stockAnalystAgent,
-    selectStockAnalyst,
-    launchStockAnalystRun,
-    launchingStockAnalystRun,
-    paperTraderAgent,
-    selectPaperTrader,
-    launchPaperTraderRun,
-    launchingPaperTraderRun,
-    deerFlowAgent,
-    selectDeerFlow,
-    launchDeerFlowRun,
-    launchingDeerFlowRun,
-    launchAgentBrowserRun,
-    launchOpenPlanterRun,
-    launchAgentReachRun,
-    launchGetDocRun,
-    launchMeetingNotesRun,
-    launchCareerOpsRun,
-    launchCodexRun,
-    launchOpenCodeRun,
-    launchRufloRun,
-    launchingBrowserRun,
-    launchingOpenPlanterRun,
-    launchingAgentReachRun,
-    launchingGetDocRun,
-    launchingMeetingNotesRun,
-    launchingDeepTutorRun,
-    deepTutorAgent,
-    selectDeepTutor,
-    launchDeepTutorRun,
-    launchingCareerOpsRun,
-    launchBrowserRun,
-    selectBrowserAgent,
-    selectAgentBrowser,
-    selectOpenPlanter,
-    selectAgentReach,
-    selectGetDoc,
-    selectMeetingNotes,
-    selectCareerOps,
-    selectShorts,
-    shortsAgent,
-    selectFormsmith,
-    selectCodex,
-    selectOpenCode,
-    selectRuflo,
-    busy,
-    chatAttachments,
-    input,
-    model,
-    reasoningEffort,
-    routeDeepResearchCommand,
-    routeSocialsManagerCommand,
-    routeHardwareBlueprintCommand,
-    routeParametricCadCommand,
-    routeHyperframesCommand,
-    routeResource2SkillCommand,
-    routeOpenMontageCommand,
-    routeOpenworkCommand,
-    routeOpenscienceCommand,
-    routeInboxZeroCommand,
-    routeVimaxCommand,
-    routeMoneyPrinterCommand,
-    routeLegalCommand,
-    routeWardrobeCommand,
-    runtimeUnavailable,
-    session,
-  ]);
+      routeDeepResearchCommand,
+      routeSocialsManagerCommand,
+      routeHardwareBlueprintCommand,
+      routeParametricCadCommand,
+      routeHyperframesCommand,
+      routeResource2SkillCommand,
+      routeOpenMontageCommand,
+      routeOpenworkCommand,
+      routeOpenscienceCommand,
+      routeInboxZeroCommand,
+      routeVimaxCommand,
+    routeVoxDirectorCommand,
+      routeMoneyPrinterCommand,
+      routeLegalCommand,
+      routeWardrobeCommand,
+      runtimeUnavailable,
+      session,
+      temporaryChat,
+    ],
+  );
 
   /**
    * The composer's agent chip is the person's own choice — it is set when they
@@ -5147,7 +5810,11 @@ function RuntimeTerminal({
           return;
         }
         case "deep-research":
-          if (!deepResearch.agent) await deepResearch.select();
+          // Deliberately not selected. `launch` needs nothing from the chip,
+          // so selecting would only put `/agents:deep-research` in the
+          // composer — and the snapshot below cannot take it back until the
+          // whole launch settles, which is long enough for the person to type
+          // into it and have their next message routed into Deep Research.
           await deepResearch.launch(request.brief);
           return;
         case "agent-browser": {
@@ -5242,16 +5909,22 @@ function RuntimeTerminal({
         case "vimax":
           await launchVimaxRun(request.brief);
           return;
+        case "vox-director":
+          await launchVoxDirectorRun(request.brief);
+          return;
         case "money-printer":
           await launchMoneyPrinterRun(request.brief);
           return;
         default:
-          setAttachmentStatus(`${request.agentName} cannot be launched from this chat.`);
+          setAttachmentStatus(
+            `${request.agentName} cannot be launched from this chat.`,
+          );
       }
     } finally {
       restoreComposerAgentSelection(composerSelection);
-      const neverReachedLauncher =
-        session.cancelDelegatedExternalAgentTurn(originClientMessageId);
+      const neverReachedLauncher = session.cancelDelegatedExternalAgentTurn(
+        originClientMessageId,
+      );
       if (neverReachedLauncher) {
         try {
           await session.appendExternalAgentTurn({
@@ -5294,6 +5967,18 @@ function RuntimeTerminal({
       awaitedLaunchRef.current = null;
     },
   });
+  // A delegated worker has no visible card and no chat connection of its own,
+  // so nothing in `session` says the conversation is still working while one
+  // runs. This flag is that missing signal, and it deliberately spans the whole
+  // hand-off rather than any single step of it: queued behind the turn that
+  // asked for it, being started, and finished but not yet handed back. Each of
+  // those gaps used to settle the turn's status row into its past tense, freeze
+  // its timer and free the composer — an answer that had visibly stopped
+  // mid-sentence while the work it promised was still going on.
+  const delegationInFlight =
+    agentLaunchQueue.queued ||
+    delegatedAgentLaunching ||
+    pendingLaunchContinuation !== null;
   const agentLaunchScopeRef = useRef(session.sessionId ?? null);
   useEffect(() => {
     const scope = session.sessionId ?? null;
@@ -5310,10 +5995,7 @@ function RuntimeTerminal({
   // continuation. Any later transcript row proves that continuation was
   // already consumed (or the user moved on), so it is never replayed.
   useEffect(() => {
-    if (
-      session.loadingSession ||
-      pendingLaunchContinuation
-    ) {
+    if (session.loadingSession || pendingLaunchContinuation) {
       return;
     }
     for (let index = session.messages.length - 1; index >= 0; index -= 1) {
@@ -5326,6 +6008,15 @@ function RuntimeTerminal({
         message.clientMessageId ?? message.id ?? `delegated-${index}`;
       if (continuedDelegatedTurnsRef.current.has(continuationKey)) return;
       const agentName = message.externalAgentName ?? "The delegated agent";
+      if (message.externalAgentOutcome === "aborted") {
+        continuedDelegatedTurnsRef.current.add(continuationKey);
+        if (
+          awaitedLaunchRef.current?.clientMessageId === message.clientMessageId
+        ) {
+          awaitedLaunchRef.current = null;
+        }
+        return;
+      }
       if ((message.externalAgentOutcome ?? "running") === "running") {
         if (awaitedLaunchRef.current) return;
         if (!message.clientMessageId) return;
@@ -5405,69 +6096,93 @@ function RuntimeTerminal({
     ],
   );
 
-  const steer = useCallback(async (text: string): Promise<boolean> => {
-    const trimmed = text.trim();
-    if (!trimmed || runtimeUnavailable) return false;
-    return session.steer(trimmed);
-  }, [runtimeUnavailable, session]);
+  const steer = useCallback(
+    async (text: string): Promise<boolean> => {
+      const trimmed = text.trim();
+      if (!trimmed || runtimeUnavailable) return false;
+      return session.steer(trimmed);
+    },
+    [runtimeUnavailable, session],
+  );
 
-  const sendQueued = useCallback(async (text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed || runtimeUnavailable) return;
-    if (
-      routeSocialsManagerCommand(trimmed) ||
-      routeHardwareBlueprintCommand(trimmed) ||
-      routeParametricCadCommand(trimmed) ||
-      routeHyperframesCommand(trimmed) ||
-      routeResource2SkillCommand(trimmed) ||
-      routeOpenMontageCommand(trimmed) ||
-      routeOpenworkCommand(trimmed) ||
-      routeOpenscienceCommand(trimmed) ||
-      routeInboxZeroCommand(trimmed) ||
-      routeVimaxCommand(trimmed) ||
-      routeMoneyPrinterCommand(trimmed) ||
-      routeLegalCommand(trimmed) ||
-      routeWardrobeCommand(trimmed)
-    ) {
-      return;
-    }
-    if (routeDeepResearchCommand(trimmed)) return;
-    if (deepResearch.agent) {
-      await deepResearch.launch(trimmed);
-      return;
-    }
-    await session.send(trimmed, { model, reasoningEffort });
-  }, [
-    deepResearch,
-    model,
-    reasoningEffort,
-    routeDeepResearchCommand,
-    routeSocialsManagerCommand,
-    routeHardwareBlueprintCommand,
-    routeParametricCadCommand,
-    routeHyperframesCommand,
-    routeResource2SkillCommand,
-    routeOpenMontageCommand,
-    routeOpenworkCommand,
-    routeOpenscienceCommand,
-    routeInboxZeroCommand,
-    routeVimaxCommand,
-    routeMoneyPrinterCommand,
-    routeLegalCommand,
-    routeWardrobeCommand,
-    runtimeUnavailable,
-    session,
-  ]);
+  const sendQueued = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || runtimeUnavailable) return;
+      if (
+        routeSocialsManagerCommand(trimmed) ||
+        routeHardwareBlueprintCommand(trimmed) ||
+        routeParametricCadCommand(trimmed) ||
+        routeHyperframesCommand(trimmed) ||
+        routeResource2SkillCommand(trimmed) ||
+        routeOpenMontageCommand(trimmed) ||
+        routeOpenworkCommand(trimmed) ||
+        routeOpenscienceCommand(trimmed) ||
+        routeInboxZeroCommand(trimmed) ||
+        routeVimaxCommand(trimmed) ||
+      routeVoxDirectorCommand(trimmed) ||
+        routeMoneyPrinterCommand(trimmed) ||
+        routeLegalCommand(trimmed) ||
+        routeWardrobeCommand(trimmed)
+      ) {
+        return;
+      }
+      if (routeDeepResearchCommand(trimmed)) return;
+      if (deepResearch.agent) {
+        await deepResearch.launch(trimmed);
+        return;
+      }
+      await session.send(trimmed, { model, reasoningEffort });
+    },
+    [
+      deepResearch,
+      model,
+      reasoningEffort,
+      routeDeepResearchCommand,
+      routeSocialsManagerCommand,
+      routeHardwareBlueprintCommand,
+      routeParametricCadCommand,
+      routeHyperframesCommand,
+      routeResource2SkillCommand,
+      routeOpenMontageCommand,
+      routeOpenworkCommand,
+      routeOpenscienceCommand,
+      routeInboxZeroCommand,
+      routeVimaxCommand,
+    routeVoxDirectorCommand,
+      routeMoneyPrinterCommand,
+      routeLegalCommand,
+      routeWardrobeCommand,
+      runtimeUnavailable,
+      session,
+    ],
+  );
 
   const handleExternalAgentTerminal = useCallback(
-    (clientMessageId: string, result: Omit<ExternalAgentTurnResult, "clientMessageId">) => {
-      void finishExternalAgentTurn({ clientMessageId, ...result }).catch((cause) => {
-        setAttachmentStatus(
-          cause instanceof Error
-            ? cause.message
-            : "The external agent result could not be saved.",
-        );
-      });
+    (
+      clientMessageId: string,
+      result: Omit<ExternalAgentTurnResult, "clientMessageId">,
+    ) => {
+      void finishExternalAgentTurn({ clientMessageId, ...result }).catch(
+        (cause) => {
+          setAttachmentStatus(
+            cause instanceof Error
+              ? cause.message
+              : "The external agent result could not be saved.",
+          );
+        },
+      );
+      if (result.outcome === "aborted") {
+        continuedDelegatedTurnsRef.current.add(clientMessageId);
+        if (
+          awaitedLaunchRef.current?.clientMessageId === clientMessageId
+        ) {
+          awaitedLaunchRef.current = null;
+        }
+        setPendingLaunchContinuation(null);
+        launchHopsRef.current = 0;
+        return;
+      }
       // If the assistant started this run and asked to hear how it went, hand
       // the outcome back as a new turn. The turn is identified by not having
       // existed when the launch was submitted, so a run the user started
@@ -5478,7 +6193,8 @@ function RuntimeTerminal({
         (awaited.clientMessageId
           ? awaited.clientMessageId !== clientMessageId
           : awaited.knownMessageIds.has(clientMessageId))
-      ) return;
+      )
+        return;
       awaitedLaunchRef.current = null;
       continuedDelegatedTurnsRef.current.add(clientMessageId);
       if (launchHopsRef.current >= MAX_AGENT_LAUNCH_HOPS) {
@@ -5498,6 +6214,18 @@ function RuntimeTerminal({
     [finishExternalAgentTurn],
   );
 
+  const handleStopRequested = useCallback(
+    (externalClientMessageIds: string[]) => {
+      for (const clientMessageId of externalClientMessageIds) {
+        continuedDelegatedTurnsRef.current.add(clientMessageId);
+      }
+      awaitedLaunchRef.current = null;
+      setPendingLaunchContinuation(null);
+      launchHopsRef.current = 0;
+    },
+    [],
+  );
+
   const editMessage = useCallback(
     (messageIndex: number, text: string, branchGroupId: string) => {
       if (runtimeUnavailable) return;
@@ -5512,6 +6240,7 @@ function RuntimeTerminal({
         routeOpenscienceCommand(text, { branchGroupId }) ||
         routeInboxZeroCommand(text, { branchGroupId }) ||
         routeVimaxCommand(text, { branchGroupId }) ||
+        routeVoxDirectorCommand(text, { branchGroupId }) ||
         routeMoneyPrinterCommand(text, { branchGroupId }) ||
         routeLegalCommand(text, [], { branchGroupId }) ||
         routeWardrobeCommand(text, [], { branchGroupId })
@@ -5536,18 +6265,19 @@ function RuntimeTerminal({
       reasoningEffort,
       routeDeepResearchCommand,
       routeSocialsManagerCommand,
-    routeHardwareBlueprintCommand,
-    routeParametricCadCommand,
-    routeHyperframesCommand,
-    routeResource2SkillCommand,
-    routeOpenMontageCommand,
-    routeOpenworkCommand,
-    routeOpenscienceCommand,
-    routeInboxZeroCommand,
-    routeVimaxCommand,
-    routeMoneyPrinterCommand,
-    routeLegalCommand,
-    routeWardrobeCommand,
+      routeHardwareBlueprintCommand,
+      routeParametricCadCommand,
+      routeHyperframesCommand,
+      routeResource2SkillCommand,
+      routeOpenMontageCommand,
+      routeOpenworkCommand,
+      routeOpenscienceCommand,
+      routeInboxZeroCommand,
+      routeVimaxCommand,
+    routeVoxDirectorCommand,
+      routeMoneyPrinterCommand,
+      routeLegalCommand,
+      routeWardrobeCommand,
       runtimeUnavailable,
       session,
     ],
@@ -5558,34 +6288,32 @@ function RuntimeTerminal({
     [session],
   );
 
-  const addAttachmentFiles = useCallback(
-    async (files: File[]) => {
-      if (files.length === 0) return;
-      setExtractingAttachments(true);
-      // The add-documents button spins while the read runs, so a status line
-      // saying the same thing only adds noise under the composer. Clear it so a
-      // message from an earlier attachment does not sit there stale.
-      setAttachmentStatus("");
-      try {
-        const result = await extractChatAttachments(files, {
-          allowVideo: true,
-          onStatus: setAttachmentStatus,
-        });
-        setChatAttachments((current) => [...current, ...result.attachments]);
-        setAttachmentStatus([...result.errors, ...result.warnings].join(" · "));
-        // A document too large to paste into every turn is distilled into a
-        // book-to-skill skill now, while the user is still typing, rather than
-        // after they hit send.
-        const distillErrors = await distillAttachments(result.attachments, {
-          onStatus: setAttachmentStatus,
-        });
-        if (distillErrors.length > 0) setAttachmentStatus(distillErrors.join(" · "));
-      } finally {
-        setExtractingAttachments(false);
-      }
-    },
-    [],
-  );
+  const addAttachmentFiles = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
+    setExtractingAttachments(true);
+    // The add-documents button spins while the read runs, so a status line
+    // saying the same thing only adds noise under the composer. Clear it so a
+    // message from an earlier attachment does not sit there stale.
+    setAttachmentStatus("");
+    try {
+      const result = await extractChatAttachments(files, {
+        allowVideo: true,
+        onStatus: setAttachmentStatus,
+      });
+      setChatAttachments((current) => [...current, ...result.attachments]);
+      setAttachmentStatus([...result.errors, ...result.warnings].join(" · "));
+      // A document too large to paste into every turn is distilled into a
+      // book-to-skill skill now, while the user is still typing, rather than
+      // after they hit send.
+      const distillErrors = await distillAttachments(result.attachments, {
+        onStatus: setAttachmentStatus,
+      });
+      if (distillErrors.length > 0)
+        setAttachmentStatus(distillErrors.join(" · "));
+    } finally {
+      setExtractingAttachments(false);
+    }
+  }, []);
 
   const handleAttachmentInput = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -5601,18 +6329,15 @@ function RuntimeTerminal({
   // rather than to undo a turn that has already left. Every routing decision
   // the openers used to make for themselves now happens on the ordinary submit
   // path, which is the only place that has to be right about it.
-  const fillComposerWithPrompt = useCallback(
-    (text: string) => {
-      setInput(text);
-      window.setTimeout(() => {
-        const composer = composerTextareaRef.current;
-        if (!composer) return;
-        composer.focus();
-        composer.setSelectionRange(composer.value.length, composer.value.length);
-      }, 0);
-    },
-    [],
-  );
+  const fillComposerWithPrompt = useCallback((text: string) => {
+    setInput(text);
+    window.setTimeout(() => {
+      const composer = composerTextareaRef.current;
+      if (!composer) return;
+      composer.focus();
+      composer.setSelectionRange(composer.value.length, composer.value.length);
+    }, 0);
+  }, []);
 
   const retryMessage = useCallback(
     (userMessageIndex: number, branchGroupId: string) => {
@@ -5621,7 +6346,9 @@ function RuntimeTerminal({
       if (previousUser) {
         if (
           routeSocialsManagerCommand(previousUser.content, { branchGroupId }) ||
-          routeHardwareBlueprintCommand(previousUser.content, { branchGroupId }) ||
+          routeHardwareBlueprintCommand(previousUser.content, {
+            branchGroupId,
+          }) ||
           routeParametricCadCommand(previousUser.content, { branchGroupId }) ||
           routeHyperframesCommand(previousUser.content, { branchGroupId }) ||
           routeResource2SkillCommand(previousUser.content, { branchGroupId }) ||
@@ -5630,15 +6357,14 @@ function RuntimeTerminal({
           routeOpenscienceCommand(previousUser.content, { branchGroupId }) ||
           routeInboxZeroCommand(previousUser.content, { branchGroupId }) ||
           routeVimaxCommand(previousUser.content, { branchGroupId }) ||
+          routeVoxDirectorCommand(previousUser.content, { branchGroupId }) ||
           routeMoneyPrinterCommand(previousUser.content, { branchGroupId }) ||
           routeLegalCommand(previousUser.content, [], { branchGroupId }) ||
           routeWardrobeCommand(previousUser.content, [], { branchGroupId })
         ) {
           return;
         }
-        if (
-          routeDeepResearchCommand(previousUser.content, { branchGroupId })
-        ) {
+        if (routeDeepResearchCommand(previousUser.content, { branchGroupId })) {
           return;
         }
         const retryVideo = videoUseTarget(
@@ -5671,18 +6397,19 @@ function RuntimeTerminal({
       reasoningEffort,
       routeDeepResearchCommand,
       routeSocialsManagerCommand,
-    routeHardwareBlueprintCommand,
-    routeParametricCadCommand,
+      routeHardwareBlueprintCommand,
+      routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
-    routeOpenMontageCommand,
-    routeOpenworkCommand,
-    routeOpenscienceCommand,
-    routeInboxZeroCommand,
-    routeVimaxCommand,
-    routeMoneyPrinterCommand,
-    routeLegalCommand,
-    routeWardrobeCommand,
+      routeOpenMontageCommand,
+      routeOpenworkCommand,
+      routeOpenscienceCommand,
+      routeInboxZeroCommand,
+      routeVimaxCommand,
+    routeVoxDirectorCommand,
+      routeMoneyPrinterCommand,
+      routeLegalCommand,
+      routeWardrobeCommand,
       runtimeUnavailable,
       session,
     ],
@@ -5708,11 +6435,19 @@ function RuntimeTerminal({
     setFormsmithAgent(null);
     setStockAnalystAgent(null);
     setPaperTraderAgent(null);
+    // The retained text has already been written under the outgoing chat's
+    // draft key. Release its in-memory shadow before changing keys so a late
+    // acknowledgement cannot clear a newer submission with identical text.
+    submittedDraftSequence.current += 1;
+    setSubmittedDraft(null);
     session.reset();
     setInput("");
     // Asking for a new chat means an empty box, so the draft left in the
     // unstarted-chat bucket goes with it rather than reappearing here.
-    clearChatDraft(window.localStorage, chatDraftKey("dashboard_terminal", null));
+    clearChatDraft(
+      window.localStorage,
+      chatDraftKey("dashboard_terminal", null),
+    );
     setChatAttachments([]);
     setAttachmentStatus("");
   }
@@ -5736,6 +6471,13 @@ function RuntimeTerminal({
     setFormsmithAgent(null);
     setStockAnalystAgent(null);
     setPaperTraderAgent(null);
+    if (sessionId !== session.sessionId) {
+      // Let useChatDraft restore this text if the original request never became
+      // durable. Keeping the shadow across chats would make the outgoing words
+      // look like the incoming chat's current draft instead.
+      submittedDraftSequence.current += 1;
+      setSubmittedDraft(null);
+    }
     // Only chats that are on the record can be reopened at all, so arriving at
     // one always ends temporary mode.
     setTemporaryChat(false);
@@ -5752,6 +6494,12 @@ function RuntimeTerminal({
    * and cannot be added to or taken from one that has already spoken.
    */
   function toggleTemporaryChat() {
+    // Switching modes resets the selected session. During the first beat of a
+    // turn, the optimistic transcript can already say "Thinking" while its
+    // conversation is still being created; resetting then would leave those
+    // rows with nowhere durable to land. A temporary chat is also intentionally
+    // absent from history, so leaving one mid-turn would make it unreachable.
+    if (currentChatActive) return;
     if (temporaryChat) {
       const previous = chatBeforeTemporary.current;
       chatBeforeTemporary.current = null;
@@ -5782,13 +6530,13 @@ function RuntimeTerminal({
   // longer refuses while a response is streaming — that was a rule about our
   // bookkeeping, and the confirmation says what will happen instead.
   async function deleteHistorySession(item: TerminalSidebarChat) {
-    if (
-      !window.confirm(
-        `Delete "${item.title}"? Anything it is still running is stopped, and its messages and any artifacts it produced are removed for good.`,
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: "Delete this chat?",
+      subject: `“${item.title}”`,
+      body: "Anything it is still running is stopped, and its messages and any artifacts it produced are removed for good.",
+      confirmLabel: "Delete chat",
+    });
+    if (!confirmed) return;
     setHistoryError(null);
     const result = await deleteChatSession(item.id);
     if (!result.deleted) {
@@ -5812,15 +6560,16 @@ function RuntimeTerminal({
   // and has to be reported rather than assumed away.
   async function deleteHistorySessions(items: TerminalSidebarChat[]) {
     if (items.length === 0) return;
-    const subject =
-      items.length === 1 ? `"${items[0].title}"` : `${items.length} chats`;
-    if (
-      !window.confirm(
-        `Delete ${subject}? Anything they are still running is stopped, and their messages and any artifacts they produced are removed for good.`,
-      )
-    ) {
-      return;
-    }
+    const single = items.length === 1;
+    const confirmed = await confirm({
+      title: single ? "Delete this chat?" : `Delete ${items.length} chats?`,
+      subject: single ? `“${items[0].title}”` : null,
+      body: single
+        ? "Anything it is still running is stopped, and its messages and any artifacts it produced are removed for good."
+        : "Anything they are still running is stopped, and their messages and any artifacts they produced are removed for good.",
+      confirmLabel: single ? "Delete chat" : `Delete ${items.length} chats`,
+    });
+    if (!confirmed) return;
     setHistoryError(null);
     const deleted = new Set<string>();
     let firstError: string | null = null;
@@ -5834,7 +6583,9 @@ function RuntimeTerminal({
       // carry the deleted chats and would ghost them back for a tick.
       historyEpoch.current += 1;
       invalidateHermesSessionSummaries("dashboard_terminal");
-      setHistory((current) => current.filter((entry) => !deleted.has(entry.id)));
+      setHistory((current) =>
+        current.filter((entry) => !deleted.has(entry.id)),
+      );
       forgetUnreadChats(deleted);
       forgetChatDrafts(window.localStorage, "dashboard_terminal", deleted);
       // The open chat may have been one of them; fall back to an empty one.
@@ -5862,7 +6613,9 @@ function RuntimeTerminal({
   }));
   // The rollup the dock bar carries. A chat still running is not counted: the
   // dot says something is waiting to be read, not that something is happening.
-  const unreadCount = sidebarChats.filter((chat) => chat.unread && !chat.active).length;
+  const unreadCount = sidebarChats.filter(
+    (chat) => chat.unread && !chat.active,
+  ).length;
   const unreadLabel =
     unreadCount === 1
       ? "1 chat finished and has not been read"
@@ -5894,17 +6647,22 @@ function RuntimeTerminal({
               ...entry,
               ...(body.title === undefined ? {} : { title: body.title }),
               ...(body.pinned === undefined ? {} : { pinned: body.pinned }),
-              ...(body.highlight === undefined ? {} : { highlight: body.highlight }),
+              ...(body.highlight === undefined
+                ? {}
+                : { highlight: body.highlight }),
             }
           : entry,
       ),
     );
     try {
-      const response = await fetch(`/api/hermes/sessions/${encodeURIComponent(item.id)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const response = await fetch(
+        `/api/hermes/sessions/${encodeURIComponent(item.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
       if (!response.ok) throw new Error(failure);
       invalidateHermesSessionSummaries("dashboard_terminal");
       if (body.title !== undefined) {
@@ -5932,9 +6690,14 @@ function RuntimeTerminal({
         current.map((entry) => {
           if (entry.id !== item.id) return entry;
           const next = { ...entry };
-          if (body.title !== undefined && entry.title === body.title) next.title = item.title;
-          if (body.pinned !== undefined && entry.pinned === body.pinned) next.pinned = item.pinned;
-          if (body.highlight !== undefined && entry.highlight === body.highlight) {
+          if (body.title !== undefined && entry.title === body.title)
+            next.title = item.title;
+          if (body.pinned !== undefined && entry.pinned === body.pinned)
+            next.pinned = item.pinned;
+          if (
+            body.highlight !== undefined &&
+            entry.highlight === body.highlight
+          ) {
             next.highlight = item.highlight;
           }
           return next;
@@ -5995,7 +6758,10 @@ function RuntimeTerminal({
   // and that wait is the lag between the click and the dock answering it.
   function prewarmOpen() {
     if (isOpen || glide || prefersReducedMotion()) return;
-    const box = Math.max(openHeight(preferredOpenHeightRef.current), MIN_HEIGHT);
+    const box = Math.max(
+      openHeight(preferredOpenHeightRef.current),
+      MIN_HEIGHT,
+    );
     prewarmRef.current = true;
     setGlide("opening");
     setGlideBox(box);
@@ -6033,6 +6799,7 @@ function RuntimeTerminal({
     prewarmRef.current = false;
     const reduced = prefersReducedMotion();
     if (open) {
+      focusComposerAfterOpenRef.current = true;
       // Fully open, the dock is the page: everything the reader had scrolled
       // past is behind it, and the strip left showing above it should be the
       // top of the dashboard rather than whichever row of gardens happened to
@@ -6040,7 +6807,9 @@ function RuntimeTerminal({
       // this brings back, so the two movements arrive together.
       window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
     }
-    const target = open ? openHeight(preferredOpenHeightRef.current) : COLLAPSED_HEIGHT;
+    const target = open
+      ? openHeight(preferredOpenHeightRef.current)
+      : COLLAPSED_HEIGHT;
     setHeight(target);
     if (reduced) {
       cancelGlide();
@@ -6125,7 +6894,11 @@ function RuntimeTerminal({
     // running has to let go of it. Below the threshold this is the jitter of a
     // click being held, and cancelling there would snap a dock mid-travel.
     if (glide && Math.abs(start.startY - event.clientY) >= 4) cancelGlide();
-    setHeight(settleHeight(clampHeight(start.startHeight + (start.startY - event.clientY))));
+    setHeight(
+      settleHeight(
+        clampHeight(start.startHeight + (start.startY - event.clientY)),
+      ),
+    );
   }
 
   function handleResizeEnd(event: ReactPointerEvent<HTMLElement>) {
@@ -6219,7 +6992,11 @@ function RuntimeTerminal({
           {/* Page-background floor, the live page blitted from a cached raster
               on every scroll, and a warm sheen — all in one canvas, so nothing
               here depends on a rasterisation succeeding. */}
-          <canvas ref={glassSceneRef} aria-hidden className="bb-terminal-glass-scene" />
+          <canvas
+            ref={glassSceneRef}
+            aria-hidden
+            className="bb-terminal-glass-scene"
+          />
         </>
       ) : null}
 
@@ -6232,7 +7009,9 @@ function RuntimeTerminal({
       >
         <span
           className={`h-1.5 w-14 rounded-full border border-[rgba(169,193,177,0.7)] shadow-[0_1px_4px_rgba(74,91,70,0.10)] transition-colors ${
-            isResizing ? "bg-[#8faf9a]" : "bg-[#A9C1B1] group-hover:bg-[#8faf9a]"
+            isResizing
+              ? "bg-[#8faf9a]"
+              : "bg-[#A9C1B1] group-hover:bg-[#8faf9a]"
           }`}
         />
       </div>
@@ -6252,16 +7031,15 @@ function RuntimeTerminal({
             : `Click to fully open, or drag up to resize the terminal${unreadSuffix}`
         }
         onKeyDown={(event) => {
-          if (
-            !isOpen &&
-            (event.key === "Enter" || event.key === " ")
-          ) {
+          if (!isOpen && (event.key === "Enter" || event.key === " ")) {
             event.preventDefault();
             toggleDock(true);
           }
         }}
         ref={barRef}
-        style={{ background: glassActive ? "transparent" : "var(--terminal-bar)" }}
+        style={{
+          background: glassActive ? "transparent" : "var(--terminal-bar)",
+        }}
         className={`bb-neu-toolbar flex shrink-0 cursor-row-resize touch-none select-none items-center gap-3 border-b border-[rgba(169,193,177,0.55)] px-4 ${
           // The collapsed bar is the dock's own height — except while a press
           // has prewarmed the box to its open size, where `h-full` would
@@ -6293,19 +7071,19 @@ function RuntimeTerminal({
                 />
               ) : (
                 <UnreadChatDot
-                  label={unreadCount > 0 ? unreadLabel : "Agent runtime is available"}
+                  label={
+                    unreadCount > 0 ? unreadLabel : "Agent runtime is available"
+                  }
                 />
               )}
-              <p
-                className="truncate text-sm font-semibold text-[#172A22]"
-              >
+              <p className="truncate text-sm font-semibold text-[var(--terminal-bar-ink)]">
                 Terminal
               </p>
               {unreadCount > 1 ? (
                 <span
                   aria-hidden
                   title={unreadLabel}
-                  className="shrink-0 text-[11px] font-medium text-[#3d5147]"
+                  className="shrink-0 text-[11px] font-medium text-[var(--terminal-bar-ink-muted)]"
                 >
                   {unreadCount}
                 </span>
@@ -6357,7 +7135,7 @@ function RuntimeTerminal({
           // header's own label, so the mark itself stays out of the reading.
           <span
             aria-hidden
-            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#3d5147]"
+            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[var(--terminal-bar-ink-muted)]"
           >
             <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--signal-live)] shadow-[0_0_0_1px_var(--signal-live-ring)]" />
             {unreadCount > 1 ? unreadCount : null}
@@ -6379,110 +7157,94 @@ function RuntimeTerminal({
               transcript's own cards and the Artifacts archive both file into
               it, so an artifact never leaves the dock it was made in. */}
           <ArtifactDockHostProvider host={artifactLane}>
-          {/* The rail is always mounted. Closed, it keeps a narrow column of
+            {/* The rail is always mounted. Closed, it keeps a narrow column of
               actions and its divider; there is no toolbar button to bring it
               back, so it must never leave the layout entirely. */}
-          <TerminalSidebar
-            collapsed={rail.collapsed}
-            onToggleCollapsed={rail.toggle}
-            resize={rail}
-            chats={sidebarChats}
-            loading={historyLoading}
-            error={historyError}
-            activeChatId={session.sessionId}
-            openPanel={sidePanel}
-            onNewChat={startNewSavedChat}
-            onTogglePanel={togglePanel}
-            onOpenSearch={() => setSearchOpen(true)}
-            onOpenChat={(chat) => openHistorySession(chat.id)}
-            onRenameChat={(chat, title) =>
-              void patchHistorySession(chat, { title }, "This chat could not be renamed.")
-            }
-            onTogglePin={(chat) =>
-              void patchHistorySession(
-                chat,
-                { pinned: !chat.pinned },
-                chat.pinned ? "This chat could not be unpinned." : "This chat could not be pinned.",
-              )
-            }
-            onDeleteChat={(chat) => void deleteHistorySession(chat)}
-            onDeleteChats={(selected) => void deleteHistorySessions(selected)}
-            onHighlightChat={(chat, highlight) =>
-              void patchHistorySession(
-                chat,
-                { highlight },
-                "This chat could not be highlighted.",
-              )
-            }
-          />
-
-          <div className="relative flex min-w-0 flex-1 flex-col">
-            <input
-              ref={attachmentInputRef}
-              type="file"
-              accept={TERMINAL_ATTACHMENT_ACCEPT}
-              multiple
-              onChange={handleAttachmentInput}
-              className="hidden"
+            <TerminalSidebar
+              collapsed={rail.collapsed}
+              onToggleCollapsed={rail.toggle}
+              resize={rail}
+              chats={sidebarChats}
+              loading={historyLoading}
+              error={historyError}
+              activeChatId={session.sessionId}
+              openPanel={sidePanel}
+              onNewChat={startNewSavedChat}
+              onTogglePanel={togglePanel}
+              onOpenSearch={() => setSearchOpen(true)}
+              onOpenChat={(chat) => openHistorySession(chat.id)}
+              onRenameChat={(chat, title) =>
+                void patchHistorySession(
+                  chat,
+                  { title },
+                  "This chat could not be renamed.",
+                )
+              }
+              onTogglePin={(chat) =>
+                void patchHistorySession(
+                  chat,
+                  { pinned: !chat.pinned },
+                  chat.pinned
+                    ? "This chat could not be unpinned."
+                    : "This chat could not be pinned.",
+                )
+              }
+              onDeleteChat={(chat) => void deleteHistorySession(chat)}
+              onDeleteChats={(selected) => void deleteHistorySessions(selected)}
+              onHighlightChat={(chat, highlight) =>
+                void patchHistorySession(
+                  chat,
+                  { highlight },
+                  "This chat could not be highlighted.",
+                )
+              }
             />
-            {/* Temporary chat lives in the corner of the chat itself rather than
+
+            <div className="relative flex min-w-0 flex-1 flex-col">
+              <input
+                ref={attachmentInputRef}
+                type="file"
+                accept={TERMINAL_ATTACHMENT_ACCEPT}
+                multiple
+                onChange={handleAttachmentInput}
+                className="hidden"
+              />
+              {/* Temporary chat lives in the corner of the chat itself rather than
                 in the toolbar, because it is about this conversation and not
                 about the terminal. Floated, so an ordinary chat pays no vertical
                 space for a switch it is not using. */}
-            <button
-              type="button"
-              onClick={toggleTemporaryChat}
-              aria-pressed={temporaryChat}
-              className={`absolute right-3 top-2 z-20 flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
-                temporaryChat
-                  ? "text-[#2F5C41]"
-                  : "text-[#9AAAA1] hover:text-[#172A22]"
-              }`}
-              title={
-                temporaryChat
-                  ? "Temporary chat is on — click to leave it. This chat is not in your history and is not used or saved as memory."
-                  : "Temporary chat: start a chat that is kept out of your history and out of memory, both ways"
-              }
-              aria-label={
-                temporaryChat ? "Turn off temporary chat" : "Turn on temporary chat"
-              }
-            >
-              {/* A message bubble drawn as a broken line: the shape of a chat,
+              <button
+                type="button"
+                onClick={toggleTemporaryChat}
+                disabled={currentChatActive}
+                aria-pressed={temporaryChat}
+                className={`absolute right-3 top-2 z-20 flex h-10 w-10 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+                  temporaryChat
+                    ? "text-[#2F5C41]"
+                    : "text-[#9AAAA1] hover:text-[#172A22]"
+                }`}
+                title={
+                  currentChatActive
+                    ? "Temporary chat can be changed after the current response finishes"
+                    : temporaryChat
+                    ? "Temporary chat is on — click to leave it. This chat is not in your history and is not used or saved as memory."
+                    : "Temporary chat: start a chat that is kept out of your history and out of memory, both ways"
+                }
+                aria-label={
+                  temporaryChat
+                    ? "Turn off temporary chat"
+                    : "Turn on temporary chat"
+                }
+              >
+                {/* A message bubble drawn as a broken line: the shape of a chat,
                   without the part that lasts. While the mode is on it carries a
                   tick, so "this is on" is legible without comparing shades. */}
-              <svg
-                className="h-[26px] w-[26px]"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={1.7}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path
-                  strokeDasharray="3.6 3"
-                  d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
-                />
-                {temporaryChat ? (
-                  <path strokeWidth={2} d="M8.6 12.1l2.4 2.4 4.6-5" />
-                ) : null}
-              </svg>
-            </button>
-            {/* The mode is a promise about what happens to what you type, so it
-                says so in words rather than only through a lit-up icon. The
-                right padding is the seat the floating switch occupies. */}
-            {temporaryChat ? (
-              <div
-                role="status"
-                className="flex shrink-0 items-center gap-2 border-b border-[rgba(169,193,177,0.45)] bg-[rgba(169,193,177,0.14)] py-2 pl-4 pr-12 text-[11px] text-[#2F5C41]"
-              >
                 <svg
-                  className="h-3.5 w-3.5 shrink-0"
+                  className="h-[26px] w-[26px]"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth={1.8}
+                  strokeWidth={1.7}
                   strokeLinecap="round"
                   strokeLinejoin="round"
                   aria-hidden="true"
@@ -6491,24 +7253,56 @@ function RuntimeTerminal({
                     strokeDasharray="3.6 3"
                     d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
                   />
+                  {temporaryChat ? (
+                    <path strokeWidth={2} d="M8.6 12.1l2.4 2.4 4.6-5" />
+                  ) : null}
                 </svg>
-                <span>
-                  <strong className="font-semibold">Temporary chat enabled</strong>
-                </span>
-              </div>
-            ) : null}
-            <AgentRuntimePanel
+              </button>
+              {/* The mode is a promise about what happens to what you type, so it
+                says so in words rather than only through a lit-up icon. The
+                right padding is the seat the floating switch occupies. */}
+              {temporaryChat ? (
+                <div
+                  role="status"
+                  className="flex shrink-0 items-center gap-2 border-b border-[rgba(169,193,177,0.45)] bg-[rgba(169,193,177,0.14)] py-2 pl-4 pr-12 text-[11px] text-[#2F5C41]"
+                >
+                  <svg
+                    className="h-3.5 w-3.5 shrink-0"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.8}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeDasharray="3.6 3"
+                      d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
+                    />
+                  </svg>
+                  <span>
+                    <strong className="font-semibold">
+                      Temporary chat enabled
+                    </strong>
+                  </span>
+                </div>
+              ) : null}
+              <AgentRuntimePanel
                 sessionId={session.sessionId}
                 surface="dashboard_terminal"
                 messages={session.messages}
                 connection={session.connection}
                 runState={session.runState}
-                externalRunLaunching={
-                  externalRunLaunching || agentLaunchQueue.queued
-                }
+                externalRunLaunching={externalRunLaunching || delegationInFlight}
+                delegationInFlight={delegationInFlight}
                 temporaryChat={temporaryChat}
                 steerError={session.steerError}
-                error={runtimeUnavailable ? RUNTIME_UNAVAILABLE_MESSAGE : session.error}
+                error={
+                  runtimeUnavailable
+                    ? RUNTIME_UNAVAILABLE_MESSAGE
+                    : session.error
+                }
                 pendingPermission={session.pendingPermission}
                 activities={session.activities}
                 input={input}
@@ -6534,19 +7328,26 @@ function RuntimeTerminal({
                 onSelectBranch={selectBranch}
                 disabled={runtimeUnavailable}
                 onAbort={() => void session.abort()}
-                onPermissionDecision={(decision) => void session.respondToPermission(decision)}
+                onStopRequested={handleStopRequested}
+                onPermissionDecision={(decision) =>
+                  void session.respondToPermission(decision)
+                }
                 onRetryMessage={retryMessage}
                 onExternalAgentTerminal={handleExternalAgentTerminal}
                 onExternalAgentSourceReady={() => {
                   void session.refreshSession();
                 }}
-                placeholder={isPublic ? "Ask anything across all public gardens…" : "Ask anything."}
-                model={model}
+                placeholder={
+                  isPublic
+                    ? "Ask anything across all public gardens…"
+                    : "Ask anything."
+                }
+                model={selectedModel}
                 models={models}
-                onModelChange={setModel}
-                reasoningEffort={reasoningEffort}
+                onModelChange={changeModel}
+                reasoningEffort={selectedReasoningEffort}
                 onReasoningEffortChange={setReasoningEffort}
-                intelligenceModes={intelligenceModes}
+                intelligenceModes={selectedIntelligenceModes}
                 modelFailover={modelFailover}
                 browserAgent={browserAgent}
                 onSelectBrowserAgent={() => void selectBrowserAgent()}
@@ -6596,6 +7397,7 @@ function RuntimeTerminal({
                 onSelectOpenscience={() => {}}
                 onSelectInboxZero={() => {}}
                 onSelectVimax={() => {}}
+                onSelectVoxDirector={() => {}}
                 onSelectMoneyPrinter={() => {}}
                 onSelectLegal={() => {}}
                 onSelectWardrobe={() => {}}
@@ -6615,10 +7417,14 @@ function RuntimeTerminal({
                   // The capture is the request. Waiting for a sentence after a
                   // two-hour call would be one more thing to do at the moment
                   // somebody most wants to close the laptop.
-                  void launchMeetingNotesRun(input.trim(), meetingNotesAgent ?? undefined, {
-                    uploadId: recording.uploadId,
-                    filename: recording.filename,
-                  });
+                  void launchMeetingNotesRun(
+                    input.trim(),
+                    meetingNotesAgent ?? undefined,
+                    {
+                      uploadId: recording.uploadId,
+                      filename: recording.filename,
+                    },
+                  );
                   setInput("");
                 }}
                 onClearMeetingNotes={() => {
@@ -6677,7 +7483,9 @@ function RuntimeTerminal({
                   setTradingAgentsSeed(null);
                   setAttachmentStatus("");
                 }}
-                onSubmitTradingAgents={(request) => void launchTradingAgentsRun(request)}
+                onSubmitTradingAgents={(request) =>
+                  void launchTradingAgentsRun(request)
+                }
                 shortsAgent={shortsAgent}
                 shortsSeed={shortsSeed}
                 onSelectShorts={() => void selectShorts()}
@@ -6693,7 +7501,9 @@ function RuntimeTerminal({
                   setFormsmithAgent(null);
                   setAttachmentStatus("");
                 }}
-                onSubmitFormsmith={(request) => void launchFormsmithRun(request)}
+                onSubmitFormsmith={(request) =>
+                  void launchFormsmithRun(request)
+                }
                 openCodeAgent={openCode.agent}
                 onSelectOpenCode={() => void selectOpenCode()}
                 onClearOpenCode={() => {
@@ -6737,51 +7547,57 @@ function RuntimeTerminal({
                   />
                 }
               />
-          </div>
-          {sidePanel ? (
-            <SidePanelDock
-              label={
-                sidePanel === "artifacts"
-                  ? "Artifacts"
-                  : sidePanel === "uploads"
-                    ? "Uploads"
-                    : sidePanel === "scheduled"
-                      ? "Scheduled chats"
-                      : sidePanel === "hooks"
-                        ? "Hooks"
-                        : "Processes"
-              }
-              defaultWidth={520}
-              storageKey="breadboard:terminal:panel-width"
-            >
-              {sidePanel === "artifacts" ? (
-                <ArtifactPanel
-                  compact
-                  sourceSurface="dashboard_terminal"
-                  creationConversationId={session.sessionId}
-                  ensureCreationConversation={session.ensureConversation}
-                />
-              ) : sidePanel === "uploads" ? (
-                <UploadsPanel onOpenChat={(conversationId) => openHistorySession(conversationId)} />
-              ) : sidePanel === "scheduled" ? (
-                <TerminalScheduledPanel surface="dashboard_terminal" />
-              ) : sidePanel === "hooks" ? (
-                <HooksPanel />
-              ) : (
-                <ProcessesPanel
-                  onOpenChat={(conversationId) => openHistorySession(conversationId)}
-                  onOpenPanel={(panel) => setSidePanel(panel)}
-                />
-              )}
-            </SidePanelDock>
-          ) : null}
-          {/* Empty until an artifact is opened, and then an even half of what
+            </div>
+            {sidePanel ? (
+              <SidePanelDock
+                label={
+                  sidePanel === "artifacts"
+                    ? "Artifacts"
+                    : sidePanel === "uploads"
+                      ? "Uploads"
+                      : sidePanel === "scheduled"
+                        ? "Scheduled chats"
+                        : sidePanel === "hooks"
+                          ? "Hooks"
+                          : "Processes"
+                }
+                defaultWidth={520}
+                storageKey="breadboard:terminal:panel-width"
+              >
+                {sidePanel === "artifacts" ? (
+                  <ArtifactPanel
+                    compact
+                    sourceSurface="dashboard_terminal"
+                    creationConversationId={session.sessionId}
+                    ensureCreationConversation={session.ensureConversation}
+                  />
+                ) : sidePanel === "uploads" ? (
+                  <UploadsPanel
+                    onOpenChat={(conversationId) =>
+                      openHistorySession(conversationId)
+                    }
+                  />
+                ) : sidePanel === "scheduled" ? (
+                  <TerminalScheduledPanel surface="dashboard_terminal" />
+                ) : sidePanel === "hooks" ? (
+                  <HooksPanel />
+                ) : (
+                  <ProcessesPanel
+                    onOpenChat={(conversationId) =>
+                      openHistorySession(conversationId)
+                    }
+                    onOpenPanel={(panel) => setSidePanel(panel)}
+                  />
+                )}
+              </SidePanelDock>
+            ) : null}
+            {/* Empty until an artifact is opened, and then an even half of what
               is left beside the transcript — the chat keeps the other half. */}
-          <div
-            ref={setArtifactLane}
-            className="bb-artifact-lane"
-            data-artifact-lane
-          />
+            <div
+              ref={setArtifactLane}
+              className="bb-artifact-lane"
+              data-artifact-lane
+            />
           </ArtifactDockHostProvider>
         </div>
       ) : null}
@@ -6794,6 +7610,8 @@ function RuntimeTerminal({
           onSelect={(chatId) => openHistorySession(chatId)}
         />
       ) : null}
+
+      {confirmDialog}
     </section>
   );
 }

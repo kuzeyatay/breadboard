@@ -78,7 +78,7 @@ export class ConversationStoreError extends Error {
   }
 }
 
-export function createConversation(input: {
+export interface CreateConversationInput {
   userId: number;
   title?: string;
   surface?: HermesSurface;
@@ -86,7 +86,12 @@ export function createConversation(input: {
   defaultGardenId?: number | null;
   /** Off the record: hidden from history and invisible to memory, for good. */
   temporary?: boolean;
-}, database: Database.Database = db): ConversationRow {
+}
+
+export function createConversation(
+  input: CreateConversationInput,
+  database: Database.Database = db,
+): ConversationRow {
   const publicId = `conv_${crypto.randomBytes(18).toString("base64url")}`;
   const result = database.prepare(`
     INSERT INTO conversations(public_id, user_id, title, surface, scope_kind, default_garden_id, temporary)
@@ -451,6 +456,57 @@ export interface ReservedConversationTurn {
 }
 
 /**
+ * Create a conversation and reserve its first user/assistant pair in one
+ * commit. The assistant is deliberately left aborted: the caller still has to
+ * open the event stream before the ordinary turn endpoint claims and dispatches
+ * it. If the process disappears between those requests, the prompt is already
+ * in history and the aborted row supplies the normal Retry action.
+ */
+export function createConversationWithInitialTurn(input: {
+  conversation: CreateConversationInput;
+  turn: {
+    clientMessageId: string;
+    surface: HermesSurface;
+    content: string;
+    metadata?: Record<string, unknown>;
+  };
+}, database: Database.Database = db): {
+  conversation: ConversationRow;
+  turn: ReservedConversationTurn;
+} {
+  const create = database.transaction(() => {
+    const conversation = createConversation(input.conversation, database);
+    const turn = reserveConversationTurn({
+      conversation,
+      ...input.turn,
+    }, database);
+    const assistantMessage = failAssistantMessage({
+      conversationId: conversation.id,
+      clientMessageId: input.turn.clientMessageId,
+      status: "aborted",
+      error: "turn_dispatch_pending",
+      metadata: { preDispatchReserved: true },
+    }, database);
+    return {
+      conversation: turn.conversation,
+      turn: { ...turn, assistantMessage },
+    };
+  });
+  return create.immediate();
+}
+
+/** True only for the recoverable placeholder made with a new conversation. */
+export function isPreDispatchReservedAssistant(
+  message: ConversationMessageRow,
+): boolean {
+  return (
+    message.role === "assistant" &&
+    message.status === "aborted" &&
+    parseObject(message.metadata).preDispatchReserved === true
+  );
+}
+
+/**
  * Reserve deterministic adjacent transcript slots under an IMMEDIATE SQLite
  * transaction. A retry returns the original rows; a different simultaneous
  * turn receives 409 until the pending assistant row reaches a terminal state.
@@ -579,6 +635,13 @@ export function failAssistantMessage(input: {
   content?: string;
   error?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * A turn that ended badly still spent what it spent. Dropping the usage here
+   * left every failed and aborted answer with a null count: the live meter ran
+   * during the answer and the row it was written to reported nothing after a
+   * reload, so the tokens vanished from cost accounting entirely.
+   */
+  tokenUsage?: unknown;
 }, database: Database.Database = db): ConversationMessageRow {
   return finishAssistantMessage({
     conversationId: input.conversationId,
@@ -586,6 +649,7 @@ export function failAssistantMessage(input: {
     status: input.status,
     content: input.content ?? "",
     metadata: { ...input.metadata, ...(input.error ? { error: input.error } : {}) },
+    ...(input.tokenUsage === undefined ? {} : { tokenUsage: input.tokenUsage }),
   }, database);
 }
 
@@ -686,6 +750,83 @@ export function appendConversationSteerMessage(input: {
     return getConversationMessageById(Number(result.lastInsertRowid), database)!;
   });
   return append.immediate();
+}
+
+/**
+ * Persist a model selection on the answer it follows. Presentation derives
+ * boundaries after that row, so no fake message can enter runtime context,
+ * search, memory windows, or history counts.
+ */
+export function setConversationModelChange(input: {
+  conversationId: number;
+  afterClientMessageId: string;
+  modelId: string;
+  modelLabel: string;
+}, database: Database.Database = db): ConversationMessageRow {
+  const afterClientMessageId = normalizeClientMessageId(
+    input.afterClientMessageId,
+  );
+  const modelId = input.modelId.trim();
+  const modelLabel = input.modelLabel.trim();
+  if (!modelId || modelId.length > 128 || !modelLabel || modelLabel.length > 160) {
+    throw new ConversationStoreError(
+      400,
+      "invalid_model_change",
+      "The model change is invalid.",
+    );
+  }
+  const persist = database.transaction(() => {
+    const conversation = getConversationById(input.conversationId, database);
+    if (!conversation) {
+      throw new ConversationStoreError(
+        404,
+        "conversation_not_found",
+        "Conversation not found.",
+      );
+    }
+    const answer = getMessageByClientRole(
+      conversation.id,
+      afterClientMessageId,
+      "assistant",
+      database,
+    );
+    if (!answer) {
+      throw new ConversationStoreError(
+        404,
+        "turn_not_found",
+        "Conversation turn not found.",
+      );
+    }
+
+    const previousMetadata = parseObject(answer.metadata);
+    const previousModelChangeLabels = Array.isArray(
+      previousMetadata.modelChangeLabels,
+    )
+      ? previousMetadata.modelChangeLabels.filter(
+          (value): value is string =>
+            typeof value === "string" && Boolean(value.trim()),
+        )
+      : typeof previousMetadata.modelChangeLabel === "string" &&
+          previousMetadata.modelChangeLabel.trim()
+        ? [previousMetadata.modelChangeLabel]
+        : [];
+    const metadata = JSON.stringify({
+      ...previousMetadata,
+      modelChangeModelId: modelId,
+      modelChangeLabel: modelLabel,
+      modelChangeLabels: [...previousModelChangeLabels, modelLabel].slice(-50),
+    });
+    database.prepare(`
+      UPDATE conversation_messages
+      SET metadata = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(metadata, answer.id);
+    database.prepare(`
+      UPDATE conversations SET updated_at = datetime('now') WHERE id = ?
+    `).run(conversation.id);
+    return getConversationMessageById(answer.id, database)!;
+  });
+  return persist.immediate();
 }
 
 export function annotateConversationTurn(input: {

@@ -402,6 +402,16 @@ This starts:
 > runs on ChatMock — no image or video API key needed. See
 > [docs/VIMAX_INTEGRATION.md](docs/VIMAX_INTEGRATION.md).
 >
+> **Vox Director** explains things. `/agents:vox-director <topic>` writes a
+> beat map, picks a paper-collage look to fit the subject, renders a poster for
+> each beat, cuts each poster into pieces and flies them into place with the
+> clone's own keyframe engine, narrates it with the local speech service and
+> assembles an MP4 — all on this machine, with no API key and no call to the
+> upstream skill's hosted backend. Posters come from Breadboard's ComfyUI when
+> one is running and from deterministic paper title cards when it is not. The
+> skill is vendored at `./vox-director`. See
+> [docs/VOX_DIRECTOR_INTEGRATION.md](docs/VOX_DIRECTOR_INTEGRATION.md).
+>
 > **Video Use** edits videos you already have. Attach one — or paste a YouTube
 > link, which is downloaded once and reused for every later mention — to a chat
 > message that asks for it to be changed ("cut the dead air", "trim it to 60
