@@ -334,17 +334,17 @@ test("credential filenames yield the account they belong to", () => {
   assert.equal(claude.label, "Claude");
 });
 
-test("each vendor is offered once, by the account list's picker", () => {
+test("each vendor is offered once, by the account list's rows", () => {
   const settings = source("src/app/components/settings-providers.tsx");
-  // ChatGPT and the proxy are offered in the picker above, so a provider card
+  // ChatGPT and the proxy are offered in the account list, so a provider card
   // for either would be the same entry twice under two names.
   assert.match(settings, /provider\.kind !== "chatgpt_oauth"/);
   assert.match(settings, /provider\.id !== "cliproxy"/);
   assert.doesNotMatch(settings, /isChatgpt/);
 
-  // The proxy card kept a second copy of that vendor list, whose ChatGPT row
-  // could only scroll back up to the account list. The card is gone entirely
-  // now: one list, where the buttons actually sign in.
+  // The proxy card kept a second copy of that vendor list. It is gone entirely
+  // now: one list, where connected rows can switch or add and disconnected
+  // providers can connect directly.
   assert.doesNotMatch(settings, /SettingsSubscriptions/);
   assert.equal(
     fs.existsSync(new URL("../src/app/components/settings-subscriptions.tsx", import.meta.url)),
@@ -352,13 +352,16 @@ test("each vendor is offered once, by the account list's picker", () => {
   );
 
   const accounts = source("src/app/components/settings-accounts.tsx");
-  assert.match(accounts, /providers\.map/);
+  assert.match(accounts, /\.filter\(\(provider\) => !provider\.connected\)/);
   assert.match(accounts, /Add another/);
+  assert.doesNotMatch(accounts, /Add an account/);
+  assert.doesNotMatch(accounts, />\s*Refresh\s*</);
 });
 
-test("a vendor that can only hold one account is not offered a second", () => {
+test("a single-account vendor shows but disables the second-account action", () => {
   // Claude's credential belongs to the Claude Code CLI, which keeps a single
-  // login: "Add another" there would replace the account it claims to add to.
+  // login. The row keeps the same action layout as every provider, but does not
+  // pretend that clicking Add another can create a sibling credential.
   assert.equal(config.cliproxyProvider("claude").singleAccount, true);
   for (const id of ["antigravity", "kimi", "xai"]) {
     assert.notEqual(config.cliproxyProvider(id).singleAccount, true, id);
@@ -368,8 +371,9 @@ test("a vendor that can only hold one account is not offered a second", () => {
   assert.match(management, /singleAccount: provider\.singleAccount === true/);
 
   const accounts = source("src/app/components/settings-accounts.tsx");
-  assert.match(accounts, /provider\.singleAccount && provider\.connected/);
-  assert.match(accounts, /disabled=\{!proxyRunning \|\| capped/);
+  assert.match(accounts, /provider\?\.singleAccount !== true/);
+  assert.match(accounts, /disabled=\{!supportsMultiple \|\| busy !== null \|\| pendingSignIn\}/);
+  assert.match(accounts, /supports one account at a time/);
 });
 
 test("connectedness is stated once per page, by the account list's dots", () => {

@@ -19,7 +19,7 @@ function createDatabase() {
   db.exec(`
     CREATE TABLE users (
       id INTEGER PRIMARY KEY, username TEXT, email TEXT, created_at TEXT,
-      first_name TEXT, last_name TEXT
+      first_name TEXT, last_name TEXT, nickname TEXT, occupation TEXT, about_you TEXT
     );
     CREATE TABLE clusters (
       id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, slug TEXT

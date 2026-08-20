@@ -45,6 +45,7 @@ const skip = jsdom ? false : "jsdom is not installed in this checkout";
 let R;
 let dom;
 let outDirectory;
+let resizeObservers;
 
 before(async () => {
   if (skip) return;
@@ -90,6 +91,18 @@ before(async () => {
     addEventListener() {},
     removeEventListener() {},
   });
+  resizeObservers = [];
+  globalThis.window.ResizeObserver = class ResizeObserver {
+    constructor(callback) {
+      this.callback = callback;
+      resizeObservers.push(this);
+    }
+    observe() {}
+    disconnect() {}
+    trigger() {
+      this.callback([], this);
+    }
+  };
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
   ({ R } = require(path.join(outDirectory, "bundle.cjs")));
@@ -330,6 +343,77 @@ test("at the bottom, two close questions light the newer one", { skip }, async (
 
   await scrollTo(scroller, state, total - VIEWPORT);
   assert.equal(litTick(), 2, "the newest question is lit at the foot of the transcript");
+
+  await act(async () => { root.unmount(); });
+  scroller.remove();
+});
+
+test("late terminal layout corrections do not leave the first tick stuck", { skip }, async () => {
+  // Restored Terminal rows first appear at virtual estimates. A short chat can
+  // then settle without changing scrollTop at all, which means there is no
+  // scroll event to correct the rail's first measurement.
+  const React = require("react");
+  const { act } = require("react");
+  const { createRoot } = require("react-dom/client");
+
+  const geometry = {
+    scrollHeight: 2_600,
+    starts: [20, 2_000],
+    listHeight: 2_500,
+  };
+  const scroller = document.createElement("div");
+  Object.defineProperty(scroller, "clientHeight", { value: VIEWPORT });
+  Object.defineProperty(scroller, "scrollHeight", {
+    get: () => geometry.scrollHeight,
+  });
+  Object.defineProperty(scroller, "scrollTop", { value: 0, writable: true });
+  scroller.getBoundingClientRect = () => ({
+    top: 0, height: VIEWPORT, bottom: VIEWPORT,
+    left: 0, right: 900, width: 900,
+  });
+  const list = document.createElement("div");
+  list.setAttribute("data-chat-virtual-list", "hermes-chat");
+  list.getBoundingClientRect = () => ({
+    top: 0, height: geometry.listHeight, bottom: geometry.listHeight,
+    left: 0, right: 900, width: 900,
+  });
+  geometry.starts.forEach((_, index) => {
+    const row = document.createElement("div");
+    row.setAttribute("data-index", String(index));
+    row.getBoundingClientRect = () => ({
+      top: geometry.starts[index], height: 60, bottom: geometry.starts[index] + 60,
+      left: 0, right: 900, width: 900,
+    });
+    list.appendChild(row);
+  });
+  scroller.appendChild(list);
+  document.body.appendChild(scroller);
+
+  const observerStart = resizeObservers.length;
+  const root = createRoot(document.getElementById("root"));
+  await act(async () => {
+    root.render(
+      React.createElement(R, {
+        items: [
+          { rowIndex: 0, label: "first question" },
+          { rowIndex: 1, label: "newest question" },
+        ],
+        scrollRef: { current: scroller },
+        bridge: BRIDGE,
+        surface: "t",
+      }),
+    );
+  });
+  assert.equal(litTick(), 0, "the initial virtual estimates choose the first turn");
+
+  geometry.scrollHeight = VIEWPORT;
+  geometry.listHeight = 500;
+  geometry.starts[1] = 300;
+  await act(async () => {
+    for (const observer of resizeObservers.slice(observerStart)) observer.trigger();
+    await new Promise((resolve) => dom.window.requestAnimationFrame(resolve));
+  });
+  assert.equal(litTick(), 1, "settled geometry moves the highlight to the newest turn");
 
   await act(async () => { root.unmount(); });
   scroller.remove();

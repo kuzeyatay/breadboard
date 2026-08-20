@@ -407,6 +407,14 @@ export default function KnowledgeTerminal({ scope }: Props) {
     [messages],
   );
 
+  // What the composer's arrow keys recall — the same messages the rail ticks,
+  // as text rather than as landmarks.
+  const sentMessages = useMemo(
+    () =>
+      messages.flatMap((message) => (message.role === 'user' ? [message.content] : [])),
+    [messages],
+  );
+
   function updateSessionMessages(sessionId: number, nextMessages: ChatMessage[], title?: string) {
     setSessions((previous) => {
       const next = previous
@@ -1003,6 +1011,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
               value={input}
               onChange={setInput}
               textareaRef={composerTextareaRef}
+              history={sentMessages}
               onSubmit={() => void sendMessage()}
               placeholder={isPublic ? 'Ask anything across all public gardens...' : 'Ask anything.'}
               isSending={isStreaming}

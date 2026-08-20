@@ -127,6 +127,11 @@ test("the remembered theme initializes before paint and is configurable from the
   assert.match(runtime, /setTheme\?\.\(theme\)/);
   assert.match(runtime, /document\.querySelectorAll\("iframe"\)/);
   assert.match(runtime, /nextAppThemeTransition/);
+  // A timer armed for the exact sunrise instant is a monotonic-clock deadline
+  // that a sleeping machine never reaches, so automatic mode re-reads the wall
+  // clock at least once a minute instead of trusting one long countdown.
+  assert.match(runtime, /const THEME_RECHECK_INTERVAL_MS = 60_000;/);
+  assert.match(runtime, /Math\.min\(\s*THEME_RECHECK_INTERVAL_MS,/);
   assert.match(runtime, /window\.addEventListener\("focus", handleModeChange\)/);
   assert.match(profile, /title="Theme"/);
   assert.match(profile, /Sunrise to sunset/);

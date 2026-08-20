@@ -33,13 +33,18 @@ export function readChatGreetingSignals(
 ): ChatGreetingSignals {
   const user = database
     .prepare(
-      `SELECT username, first_name,
+      `SELECT username, first_name, nickname,
               CAST(julianday('now') - julianday(created_at) AS INTEGER) AS days
          FROM users
         WHERE id = ?`,
     )
     .get(userId) as
-    | { username: string | null; first_name: string | null; days: number | null }
+    | {
+        username: string | null;
+        first_name: string | null;
+        nickname: string | null;
+        days: number | null;
+      }
     | undefined;
   if (!user) return EMPTY_CHAT_GREETING_SIGNALS;
 
@@ -95,10 +100,12 @@ export function readChatGreetingSignals(
     .get(userId) as { today: number | null; minutes: number | null };
 
   return {
-    // Their own first name if they have given one, and only then the handle
-    // they sign in with. Greeting someone by their username is the tell that
-    // the product knows an account rather than a person.
-    name: user.first_name?.trim() || user.username?.trim() || null,
+    // The nickname they asked to be called, else their own first name, and
+    // only then the handle they sign in with. Greeting someone by their
+    // username is the tell that the product knows an account rather than a
+    // person. Same order as `displayName` in the identity store, deliberately:
+    // the greeting and the assistant must not call them different things.
+    name: user.nickname?.trim() || user.first_name?.trim() || user.username?.trim() || null,
     gardenCount: Number(gardenCount),
     recentGardens,
     recentChats,

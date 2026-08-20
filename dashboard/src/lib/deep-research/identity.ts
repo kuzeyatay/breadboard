@@ -6,10 +6,10 @@
 
 export const DEEP_RESEARCH_SLASH_COMMAND = "/agents:deep-research";
 
-/** Chat defaults. Deliberately smaller than the engine's own: every search is a
- * full model call with web search, so breadth × depth is minutes of waiting. */
-export const DEFAULT_BREADTH = 3;
-export const DEFAULT_DEPTH = 1;
+/** Match the upstream deep-research defaults. A report is expected to branch
+ * once and then investigate the important gaps it discovers. */
+export const DEFAULT_BREADTH = 4;
+export const DEFAULT_DEPTH = 2;
 
 export interface ResearchRequest {
   query: string;
@@ -26,9 +26,61 @@ export function deepResearchUserMessage(task: string): string {
 }
 
 export function taskFromDeepResearchCommand(value: string): string | null {
-  const match = value.trimStart().match(/^\/agents:deep-research(?:\s+|$)/i);
-  if (!match) return null;
-  return value.trimStart().slice(match[0].length).trim();
+  const source = value.trimStart();
+  const command = source.match(/^\/agents:deep-research(?:\s+|$)/i);
+  if (!command) return null;
+  return source.slice(command[0].length).trim();
+}
+
+/**
+ * Recognize a deliberate plain-language request without treating a mention of
+ * the feature ("what is deep research?") as an invocation.
+ *
+ * This stays separate from the slash-command parser because the command is a
+ * persistent composer selection, while natural language is a one-turn intent.
+ */
+export function taskFromDeepResearchIntent(value: string): string | null {
+  const source = value.trim();
+  // An explicit natural-language instruction is just as intentional as the
+  // slash command in a normal agent turn. Keep mentions in ordinary chat by
+  // requiring an action verb and accepting the directive only at either edge.
+  const prefix = source.match(
+    /^(?:please\s+)?(?:(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)|(?:i\s+(?:want|need|would\s+like)\s+you\s+to\s+))?(?:do|perform|conduct|run|use)\s+(?:a\s+)?deep(?:-|\s+)research\b(?:\s+(?:on|into|about|for|to))?\s*[:;,\u2014-]?\s*/i,
+  );
+  if (prefix) return source.slice(prefix[0].length).trim();
+
+  const suffix = source.match(
+    /(?:\s*[,;:\u2014-]\s*|\s+)(?:please\s+)?(?:do|perform|conduct|run|use)\s+(?:a\s+)?deep(?:-|\s+)research(?:\s+(?:on|into|about|for)\s+this)?\s*[.!?]*$/i,
+  );
+  if (!suffix) return null;
+  return source
+    .slice(0, suffix.index)
+    .replace(/[\s,;:\u2014-]+$/u, "")
+    .trim();
+}
+
+export interface DirectDeepResearchInvocation {
+  task: string;
+  /** Only a canonical slash command selects the persistent composer agent. */
+  selectAgent: boolean;
+}
+
+/**
+ * Decide whether the chat host should launch a visible Deep Research run.
+ *
+ * Super Agent owns natural-language requests itself so it can delegate the run
+ * privately and synthesize the result. A canonical slash command remains an
+ * explicit request for the visible, persistent runtime agent in either mode.
+ */
+export function directDeepResearchInvocation(
+  value: string,
+  superAgent: boolean,
+): DirectDeepResearchInvocation | null {
+  const commandTask = taskFromDeepResearchCommand(value);
+  if (commandTask !== null) return { task: commandTask, selectAgent: true };
+  if (superAgent) return null;
+  const intentTask = taskFromDeepResearchIntent(value);
+  return intentTask === null ? null : { task: intentTask, selectAgent: false };
 }
 
 function clamp(value: number, low: number, high: number): number {
@@ -51,21 +103,28 @@ export function parseResearchRequest(
 ): ResearchRequest {
   let breadth = clamp(defaults?.breadth ?? DEFAULT_BREADTH, 1, 10);
   let depth = clamp(defaults?.depth ?? DEFAULT_DEPTH, 1, 5);
-  let output: ResearchRequest["output"] = defaults?.output === "answer" ? "answer" : "report";
+  let output: ResearchRequest["output"] =
+    defaults?.output === "answer" ? "answer" : "report";
 
   const query = task
     .replace(/(?:^|\s)--(answer|report)\b/gi, (_match, mode: string) => {
       output = mode.toLowerCase() === "answer" ? "answer" : "report";
       return " ";
     })
-    .replace(/(?:^|\s)(?:--breadth|-b)[= ](\d{1,2})\b/gi, (_match, value: string) => {
-      breadth = clamp(Number(value), 1, 10);
-      return " ";
-    })
-    .replace(/(?:^|\s)(?:--depth|-d)[= ](\d{1,2})\b/gi, (_match, value: string) => {
-      depth = clamp(Number(value), 1, 5);
-      return " ";
-    })
+    .replace(
+      /(?:^|\s)(?:--breadth|-b)[= ](\d{1,2})\b/gi,
+      (_match, value: string) => {
+        breadth = clamp(Number(value), 1, 10);
+        return " ";
+      },
+    )
+    .replace(
+      /(?:^|\s)(?:--depth|-d)[= ](\d{1,2})\b/gi,
+      (_match, value: string) => {
+        depth = clamp(Number(value), 1, 5);
+        return " ";
+      },
+    )
     .replace(/\s+/g, " ")
     .trim();
 

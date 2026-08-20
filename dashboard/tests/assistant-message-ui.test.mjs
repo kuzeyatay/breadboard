@@ -97,7 +97,7 @@ test("thinking remains visible with response metadata and shimmers while active"
   );
 });
 
-test("a finished turn says Thought, and only the default label changes tense", () => {
+test("live turns hold Thinking for five seconds, then settle on Thought", () => {
   // The row stays on the message for good, so once the turn is over it should
   // say what the assistant did rather than what it is doing.
   assert.match(
@@ -107,7 +107,15 @@ test("a finished turn says Thought, and only the default label changes tense", (
   assert.match(responseMeta, /\{displayLabel\}<\/span>/);
   // A caller's own label already describes a state ("Interrupted", an
   // artifact's) and must be shown exactly as given.
-  assert.match(activity, /stateLabel \?\? artifactState\?\.label \?\? "Thinking"/);
+  assert.match(activity, /const liveActivity = activities\.findLast/);
+  assert.match(activity, /assistantLiveActivityReady\(elapsedMs\)/);
+  assert.match(activity, /liveActivity\?\.label \?\? "Thinking"/);
+  assert.match(activity, /pendingPermission[\s\S]*?"Waiting for permission"/);
+  assert.match(
+    activity,
+    /const effectiveLabel = responseActive[\s\S]*?showLiveActivity[\s\S]*?liveLabel[\s\S]*?: "Thinking"/,
+  );
+  assert.match(timing, /ASSISTANT_LIVE_ACTIVITY_DELAY_MS = 5_000/);
   assert.match(runtime, /stateLabel=\{\s*responseInterrupted\s*\?\s*"Interrupted"/);
   // The accessible name follows the visible one instead of saying "thinking"
   // under a row that reads Thought.
@@ -381,4 +389,18 @@ test("interrupted assistant turns retain their message actions and retry control
   assert.match(runtime, /!activeRun/);
   assert.match(runtime, /\(\) => retryAssistantAsBranch\(index\)/);
   assert.match(actions, /aria-label="Regenerate response"/);
+});
+
+test("response branch navigation remains visible on external-agent cards", () => {
+  assert.match(actions, /export function AssistantResponseBranchNavigation/);
+  assert.match(actions, /Previous response branch/);
+  assert.match(actions, /Next response branch/);
+  assert.match(
+    runtime,
+    /isExternalAgentRunMessage\(message\)[\s\S]*?<AssistantResponseBranchNavigation/,
+  );
+  assert.match(
+    runtime,
+    /branch=\{branchNavigationForAssistant\(message, index\)\}/,
+  );
 });

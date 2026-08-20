@@ -112,6 +112,39 @@ test("selection context and anchors persist through the canonical turn API", () 
   assert.match(hook, /textSelection: options\?\.textSelection/);
 });
 
+test("an inline answer is stopped, retried and edited where it lives", () => {
+  const ui = source("src/app/components/chat-text-selection-ui.tsx");
+  const panel = source("src/app/components/hermes/agent-runtime-panel.tsx");
+  const popover = ui.slice(
+    ui.indexOf("export function InlineSelectionAnswerPopover"),
+    ui.indexOf("function SelectionArrowIcon"),
+  );
+  // The corner that used to close the popover carries the run instead: a stop
+  // while the answer is being written, a retry once it is not.
+  assert.doesNotMatch(popover, /aria-label="Close answer"/);
+  assert.match(popover, /aria-label=\{stopRequested \? "Stopping this answer" : "Stop this answer"\}/);
+  assert.match(popover, /aria-label="Ask this question again"/);
+  assert.match(popover, /onStop\?\.\(\)/);
+  // Escape and an outside click still close it, so removing the button leaves
+  // no dead end.
+  assert.match(popover, /closeOnOutsidePointer/);
+  assert.match(popover, /if \(editing\) \{\s*setDraft\(null\);/);
+  // The question itself is the edit affordance, and sending the edit is the
+  // same path as a retry: ask again against the same highlight.
+  assert.match(popover, /onClick=\{\(\) => setDraft\(question\)\}/);
+  assert.match(popover, /aria-label="Edit question about highlighted text"/);
+  assert.match(popover, /onAskAgain\?\.\(next\)/);
+  assert.match(panel, /function askInlineSelectionAgain\(/);
+  assert.match(panel, /void onAskSelection\(trimmed, selection\)/);
+  // The composer's square is withheld for the whole "Ask here" turn, including
+  // the frames before its answer row exists.
+  assert.match(panel, /onStop=\{canStop && !respondingToInlineSelection \? stopEverything : undefined\}/);
+  assert.match(
+    panel,
+    /if \(activeRun && messageIndex === messages\.length - 1\) \{\s*current\.pending = true;/,
+  );
+});
+
 test("inline answers use Breadboard's pastel-yellow theme token", () => {
   const css = source("src/app/globals.css");
   const ui = source("src/app/components/chat-text-selection-ui.tsx");

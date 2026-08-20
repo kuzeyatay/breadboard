@@ -66,9 +66,12 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.doesNotMatch(composer, /aria-disabled=\{activeRun\}/);
   assert.match(
     composer,
-    /const sessionActionsDisabled = disabled \|\| runState === 'stopping'/,
+    /const sessionActionsDisabled = disabled \|\| stopping/,
   );
-  assert.match(composer, /runInFlight &&\s*!disabled &&\s*canSubmit/);
+  assert.match(
+    composer,
+    /queueHeld &&\s*!queueDisabled &&\s*Boolean\(value\.trim\(\)\)/,
+  );
   const textarea = composer.slice(
     composer.indexOf("<textarea"),
     composer.indexOf("<textarea") + 2_000,
@@ -78,7 +81,7 @@ test("the shared composer keeps its controls stable during an active run", () =>
   // Nothing can be sent without something to send. `canSend` is `canSubmit` for
   // every agent that takes a message, and the request's validity for the one
   // that takes a form instead.
-  assert.match(composer, /disabled=\{loading \|\| !canSend \|\| isSending \|\| disabled/);
+  assert.match(composer, /queueHeld\s*\? !canQueueFollowUp\s*:\s*disabled \|\| isSending/);
   // Two agents take a form instead of a message — Trading Agent and Shorts —
   // so the rule is written once, against whichever of them is selected.
   assert.match(composer, /const canSend = formAgent \? formRequestReady : canSubmit/);
@@ -111,7 +114,15 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.doesNotMatch(composer, /Run status:/);
   assert.doesNotMatch(sessionHook, /Course correction applied/);
   assert.doesNotMatch(sessionHook, /steerFeedback/);
-  assert.match(composer, /aria-label=\{runState === 'stopping' \? 'Stopping active run' : 'Stop active run'\}/);
+  assert.match(
+    composer,
+    /const stopping = runState === 'stopping' \|\| stopPending/,
+  );
+  assert.match(
+    composer,
+    /aria-label=\{stopping \? 'Stopping active run' : 'Stop active run'\}/,
+  );
+  assert.match(composer, /aria-busy=\{stopping\}/);
   assert.match(composer, /h-11 w-11/);
   assert.match(runtimePanel, /disabled=\{conversationLocked\}/);
 });
@@ -139,9 +150,11 @@ test("a working external agent holds the composer and the queue", () => {
   }
   assert.match(sessionHook, /export function externalAgentRunInFlight/);
   assert.match(sessionHook, /externalAgentOutcome \?\? "running"\) === "running"/);
+  // A delegation occupies the conversation for far longer than its run row
+  // exists, so the panel counts it alongside the runs it can actually see.
   assert.match(
     runtimePanel,
-    /externalRunLaunching \|\| messages\.some\(externalAgentRunInFlight\)/,
+    /externalRunLaunching \|\|\s*delegationInFlight \|\|\s*messages\.some\(externalAgentRunInFlight\)/,
   );
   assert.match(runtimePanel, /!\(runInFlight && index === lastAssistantIndex\)/);
   assert.match(
@@ -156,7 +169,7 @@ test("a working external agent holds the composer and the queue", () => {
   assert.match(garden, /externalRunLaunching=\{externalRunLaunching\}/);
   assert.match(
     terminal,
-    /externalRunLaunching \|\| agentLaunchQueue\.queued/,
+    /externalRunLaunching \|\| delegationInFlight/,
   );
   // Steering stays a chat-turn affordance: an agent card owns its own run, so
   // the queued message waits for it rather than trying to redirect it.
@@ -169,17 +182,49 @@ test("a working external agent holds the composer and the queue", () => {
   // Stopping, though, is not a chat-turn affordance. A run card can be
   // suppressed (a quiet run) or never arrive, and then nothing on screen could
   // stop a working conversation — so the composer's square covers both.
-  assert.match(composer, /runInFlight && onStop \? \(/);
-  assert.match(runtimePanel, /onStop=\{canStop \? stopEverything : undefined\}/);
+  assert.match(composer, /runInFlight && onStop && !canQueueFollowUp \? \(/);
+  assert.match(
+    runtimePanel,
+    /onStop=\{canStop && !respondingToInlineSelection \? stopEverything : undefined\}/,
+  );
+  // An "Ask here" turn is the exception: it never enters the transcript, so the
+  // composer's square would be stopping something it is not showing. That run
+  // is stopped from the popover it belongs to.
+  assert.match(runtimePanel, /onStop=\{openThread\.pending \? stopInlineAnswer : undefined\}/);
+  assert.match(runtimePanel, /stopPending=\{stopRequestPending\}/);
+  assert.match(runtimePanel, /if \(stopRequestPendingRef\.current\) return/);
+  assert.match(runtimePanel, /stopRequestPendingRef\.current = true/);
+  assert.match(runtimePanel, /setStopRequestPending\(true\)/);
+  assert.match(
+    runtimePanel,
+    /stopRequestPendingRef\.current = false;[\s\S]*?setStopRequestPending\(false\);[\s\S]*?\}, \[sessionId\]\)/,
+  );
   assert.match(runtimePanel, /if \(activeRun\) onAbort\(\)/);
-  assert.match(runtimePanel, /for \(const url of externalStops\)/);
-  assert.match(runtimePanel, /externalAgentAbortUrls\(messages\)/);
+  assert.match(runtimePanel, /onStopRequested\?\.\([\s\S]*?externalStops\.flatMap/);
+  assert.match(runtimePanel, /externalStops\.map\(async \(\{ url, clientMessageId \}\)/);
+  assert.match(runtimePanel, /externalAgentAbortUrls\(\[message\]\)/);
+  assert.match(runtimePanel, /deepResearchAbortTerminalResult\(payload\)/);
+  assert.match(
+    runtimePanel,
+    /onExternalAgentTerminal\?\.\(clientMessageId, terminal\)/,
+  );
   // Nothing to stop during the dispatch window, so the composer keeps its send
   // button and the draft queues rather than meeting a square that does nothing.
   assert.match(
     runtimePanel,
     /const canStop = activeRun \|\| externalStops\.length > 0/,
   );
+  // A stop is the end of an awaited delegation, not a signal to send the
+  // worker's terminal snapshot back through Hermes as another hidden turn.
+  assert.match(terminal, /const handleStopRequested = useCallback/);
+  assert.match(
+    terminal,
+    /continuedDelegatedTurnsRef\.current\.add\(clientMessageId\)/,
+  );
+  assert.match(terminal, /setPendingLaunchContinuation\(null\)/);
+  assert.match(terminal, /onStopRequested=\{handleStopRequested\}/);
+  assert.match(terminal, /message\.externalAgentOutcome === "aborted"/);
+  assert.match(terminal, /result\.outcome === "aborted"/);
   // Every kind reaches a real endpoint, so the square is never a dead control.
   const kinds = source("../src/lib/conversations/external-agent-runs.ts");
   const slugs = kinds.slice(
@@ -232,7 +277,7 @@ test("the garden workspace stays editable and steers its active Hermes run", () 
   // or in-flight launch — holds the queue rather than dropping the message.
   assert.match(
     workspace,
-    /const externalRunHoldsQueue =\s*hasRunningExternalAgentInActiveChat \|\|\s*agentLaunchQueue\.queued \|\|\s*delegatedAgentLaunching \|\|\s*launchingExternalAgent !== null/,
+    /const externalRunHoldsQueue =\s*hasRunningExternalAgentInActiveChat \|\|\s*delegationInFlight \|\|\s*launchingExternalAgent !== null/,
   );
   assert.match(workspace, /onSteer: steerActiveResponse/);
   assert.match(gardenAdapter, /sessionId: session\.row\.id,\s*runId,/);
@@ -364,7 +409,10 @@ test("runtime problems render as recoverable in-chat errors", () => {
   const fallbackBlock = runtimePanel.slice(fallback, fallback + 2_000);
   assert.match(fallbackBlock, /role="alert"/);
   assert.match(fallbackBlock, /<AssistantResponseMeta/);
-  assert.match(fallbackBlock, /label="Interrupted"/);
+  assert.match(
+    fallbackBlock,
+    /label=\{messages\.length === 0 \? "Couldn’t run that turn" : "Interrupted"\}/,
+  );
   assert.match(fallbackBlock, /action=/);
   assert.match(fallbackBlock, /aria-label="Regenerate response"/);
   assert.doesNotMatch(fallbackBlock, /Try again/);
@@ -419,12 +467,12 @@ test("an active turn reconnects after a transient event-stream network drop", ()
 });
 
 test("send and stop use one stable responsive button shell", () => {
-  const sendLabel = composer.indexOf("'Queue message' : 'Send'");
+  const sendLabel = composer.indexOf("'Queue until the conversation is ready'");
   assert.ok(sendLabel >= 0);
-  const sendButton = composer.slice(sendLabel - 1_000, sendLabel + 500);
+  const sendButton = composer.slice(sendLabel - 2_000, sendLabel + 500);
   const stopButton = composer.slice(
-    composer.indexOf("aria-label={runState === 'stopping'") - 1_000,
-    composer.indexOf("aria-label={runState === 'stopping'") + 500,
+    composer.indexOf("aria-label={stopping") - 1_000,
+    composer.indexOf("aria-label={stopping") + 500,
   );
   for (const button of [sendButton, stopButton]) {
     assert.match(button, /neu-button-accent/);

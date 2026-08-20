@@ -828,6 +828,45 @@ test("visualization intent selects the reviewed skill automatically without wide
     authenticated: true,
     priorMessages: [{ role: "assistant", content: "The PDF export failed." }],
   }).automatic, false);
+  // A Deep Research report handed back for synthesis is not a request. Its own
+  // vocabulary used to select the skill — and the selection made a visualizer
+  // mandatory for a turn that was only ever asked to summarise.
+  const handback = [
+    "Deep Research finished. This is its result, handed back to you:",
+    "",
+    "The highest return comes from software infrastructure layers such as fleet",
+    "orchestration, simulation tooling and managed teleoperation, where control",
+    "software rather than hardware carries the margin.",
+  ].join("\n");
+  assert.equal(shouldAutoSelectInteractiveVisualizer({
+    text: handback,
+    surface: "dashboard_terminal",
+    authenticated: true,
+  }), true);
+  assert.equal(shouldAutoSelectInteractiveVisualizer({
+    text: handback,
+    surface: "dashboard_terminal",
+    authenticated: true,
+    internalContinuation: true,
+  }), false);
+  const continuation = visualizerCommandText({
+    text: handback,
+    surface: "dashboard_terminal",
+    authenticated: true,
+    internalContinuation: true,
+  });
+  assert.equal(continuation.automatic, false);
+  assert.equal(continuation.text, handback);
+  assert.equal(visualizerCommandText({
+    text: "can you retry?",
+    surface: "dashboard_terminal",
+    authenticated: true,
+    internalContinuation: true,
+    priorMessages: [{
+      role: "assistant",
+      content: "The interactive visualizer renderer rejected the diagram schema.",
+    }],
+  }).automatic, false);
   const resolved = await resolveCommandMessage(1, command.text, process.cwd(), {
     mode: "knowledge",
     surface: "dashboard_terminal",

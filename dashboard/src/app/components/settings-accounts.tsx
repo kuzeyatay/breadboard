@@ -20,12 +20,9 @@ import {
  * model picker uses, so "Claude" and "Anthropic" cannot look like two entries.
  *
  * Adding one used to be somewhere else again: this list had a button that
- * scrolled down to a vendor card, and that card had a ChatGPT button that
- * scrolled back up to this list. Neither actually signed anything in, and a
- * second ChatGPT account was impossible to reach even though ChatMock has
- * carried several for a long time. The picker below replaces both: it starts
- * the real flow for whichever vendor you press, in place, and it offers "Add
- * another" only where a second account is genuinely possible.
+ * opened a second vendor picker. The account row now owns that action instead,
+ * so Switch and Add another sit together at the point where their distinction
+ * matters: replace this account, or keep it and sign in beside it.
  *
  * ChatGPT authenticates through ChatMock's own OAuth (this panel drives it, and
  * preserves the current credential first so a sign-in adds rather than
@@ -147,8 +144,6 @@ export default function SettingsAccounts() {
     | `drop:${string}`
     | null
   >(null);
-  /** Whether the vendor picker is open. Closed by default: it is an action. */
-  const [adding, setAdding] = useState(false);
   /**
    * A subscription sign-in opened in another tab.
    *
@@ -279,7 +274,6 @@ export default function SettingsAccounts() {
           invalidateSettingsCache("/api/chatmock/account", "/api/chatmock/accounts");
           const before = chatgptCountRef.current;
           const after = await refreshChatgptAccounts(true);
-          setAdding(false);
           setNotice(
             after.length > before
               ? "Account added. Requests use one account until its quota runs out, then step to the next."
@@ -359,7 +353,6 @@ export default function SettingsAccounts() {
 
           const { label, provider, replacing, before } = subscriptionLogin;
           setSubscriptionLogin(null);
-          setAdding(false);
 
           const fresh = await refreshSubscriptions(true);
           const landed = (fresh?.accounts ?? []).some(
@@ -665,11 +658,9 @@ export default function SettingsAccounts() {
                   </>
                 ) : (
                   <>
-                    {/* Switch only on the primary: the login flow writes
-                        `auth.json`, so it can replace that account and no
-                        other. Beside "Add another" in the picker below, the
-                        pair is the whole distinction — replace this one, or
-                        keep it and sign in beside it. */}
+                    {/* The login flow writes `auth.json`, so only the primary
+                        account can be replaced. Preserving it first makes the
+                        adjacent action an add instead of a switch. */}
                     {row.primary ? (
                       <button
                         type="button"
@@ -678,6 +669,16 @@ export default function SettingsAccounts() {
                         className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
                       >
                         {busy === "login" ? "Starting…" : "Switch"}
+                      </button>
+                    ) : null}
+                    {row.primary ? (
+                      <button
+                        type="button"
+                        onClick={() => void addChatgptAccount()}
+                        disabled={busy !== null || pendingSignIn}
+                        className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+                      >
+                        {busy === "add" ? "Starting…" : "Add another"}
                       </button>
                     ) : null}
                     <button
@@ -729,6 +730,8 @@ export default function SettingsAccounts() {
           const switching = busy === `switch:${subscription.file}`;
           const dropping = busy === `drop:${subscription.file}`;
           const confirming = confirmingSignOut === `cliproxy:${subscription.file}`;
+          const provider = providers.find((entry) => entry.id === subscription.provider);
+          const supportsMultiple = provider?.singleAccount !== true;
           return (
             <li
               key={subscription.file}
@@ -784,6 +787,25 @@ export default function SettingsAccounts() {
                     </button>
                     <button
                       type="button"
+                      onClick={() =>
+                        void startSubscriptionLogin(
+                          subscription.provider,
+                          subscription.vendorLabel,
+                          null,
+                        )
+                      }
+                      disabled={!supportsMultiple || busy !== null || pendingSignIn}
+                      title={
+                        supportsMultiple
+                          ? undefined
+                          : `${subscription.vendorLabel} supports one account at a time.`
+                      }
+                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busy === "login" ? "Starting…" : "Add another"}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setConfirmingSignOut(`cliproxy:${subscription.file}`)}
                       disabled={busy !== null || pendingSignIn}
                       className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
@@ -796,7 +818,48 @@ export default function SettingsAccounts() {
             </li>
           );
         })}
+
+        {/* Providers without an account stay in this list so removing the
+            separate add-account picker does not remove their connection path. */}
+        {providers
+          .filter((provider) => !provider.connected)
+          .map((provider) => (
+            <li
+              key={`provider:${provider.id}`}
+              className="neu-surface-subtle flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4"
+            >
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-[var(--ink-heading)]">
+                  {provider.vendorLabel}
+                </p>
+                <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">
+                  {provider.description}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <ConnectionDot connected={false} />
+                <button
+                  type="button"
+                  onClick={() =>
+                    void startSubscriptionLogin(provider.id, provider.vendorLabel, null)
+                  }
+                  disabled={!proxyRunning || busy !== null || pendingSignIn}
+                  className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {busy === "login" ? "Starting…" : "Connect"}
+                </button>
+              </div>
+            </li>
+          ))}
       </ul>
+
+      {!proxyRunning && providers.some((provider) => !provider.connected) ? (
+        <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
+          The subscription proxy is {subscriptions?.installed ? "not running" : "not installed"},
+          so disconnected providers cannot be signed in. Restarting Breadboard usually starts it;
+          from a repository checkout, run <span className="font-mono">npm run cliproxy</span>.
+        </p>
+      ) : null}
 
       {awaiting ? (
         <div className="neu-inset rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3">
@@ -868,118 +931,6 @@ export default function SettingsAccounts() {
               Cancel
             </button>
           </div>
-        </div>
-      ) : null}
-
-      <div className="flex flex-wrap items-center gap-2">
-        {/* The picker opens here, under the list it adds to. It used to be a
-            button that scrolled to another card, which is a jump the reader has
-            to undo and which signed nothing in when they got there. */}
-        <button
-          type="button"
-          onClick={() => setAdding((current) => !current)}
-          aria-expanded={adding}
-          // Not disabled while a sign-in is pending: the rows inside are, but
-          // closing a panel is never the thing to block.
-          disabled={busy !== null}
-          className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3.5 py-2 text-sm text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
-        >
-          {adding ? "Done adding" : "Add an account"}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            void refresh(true);
-            void refreshSubscriptions(true);
-            void refreshChatgptAccounts(true);
-          }}
-          disabled={busy !== null}
-          className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3.5 py-2 text-sm text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
-        >
-          Refresh
-        </button>
-      </div>
-
-      {adding ? (
-        <div className="neu-inset space-y-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3">
-          <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
-            Sign in to a plan you already pay for. Nothing is billed per token, and no key is
-            stored by Breadboard. A vendor can hold several accounts: requests use one until its
-            quota runs out, then step to the next.
-          </p>
-
-          {/* ChatGPT, whose OAuth is ChatMock's rather than the proxy's. */}
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-3 py-2">
-            <div className="min-w-0">
-              <p className="text-sm text-[var(--ink-heading)]">ChatGPT</p>
-              <p className="mt-0.5 text-[11px] leading-5 text-[var(--ink-muted)]">
-                Your ChatGPT plan.
-                {chatgptRows.length
-                  ? " The sign-in page reuses your browser's ChatGPT session, so sign out of chatgpt.com or use a private window to reach a different account."
-                  : ""}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => void (chatgptRows.length ? addChatgptAccount() : startLogin())}
-              disabled={busy !== null || pendingSignIn}
-              className="neu-button shrink-0 rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
-            >
-              {busy === "add" || busy === "login"
-                ? "Starting…"
-                : chatgptRows.length
-                  ? "Add another"
-                  : "Connect"}
-            </button>
-          </div>
-
-          {/* How to start it is said here, where the disabled buttons are.
-              It used to point at a card further down the page, which is gone —
-              and a pointer to a section is worse than the one sentence it was
-              pointing at. */}
-          {!proxyRunning ? (
-            <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
-              The subscription proxy is{" "}
-              {subscriptions?.installed ? "not running" : "not installed yet"}, so the vendors
-              below cannot be signed in to. It starts with the rest of Breadboard and the first
-              launch downloads it automatically, so restarting the app is usually enough; from a
-              repository checkout you can also start it on its own with{" "}
-              <span className="font-mono">npm run cliproxy</span>.
-            </p>
-          ) : null}
-
-          {providers.map((provider) => {
-            // Claude's credential belongs to the Claude Code CLI, which keeps
-            // one login. Offering "Add another" there would be a button that
-            // replaces the account it claims to add to.
-            const capped = provider.singleAccount && provider.connected;
-            return (
-              <div
-                key={provider.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <p className="text-sm text-[var(--ink-heading)]">{provider.label}</p>
-                  <p className="mt-0.5 text-[11px] leading-5 text-[var(--ink-muted)]">
-                    {provider.description}
-                    {capped
-                      ? " Claude Code holds one login at a time — use Switch on the row above to change it."
-                      : ""}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    void startSubscriptionLogin(provider.id, provider.label, null)
-                  }
-                  disabled={!proxyRunning || capped || busy !== null || pendingSignIn}
-                  className="neu-button shrink-0 rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {capped ? "Signed in" : provider.connected ? "Add another" : "Connect"}
-                </button>
-              </div>
-            );
-          })}
         </div>
       ) : null}
 

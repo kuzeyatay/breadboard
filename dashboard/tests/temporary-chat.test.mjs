@@ -347,7 +347,7 @@ test("the blank temporary chat asks for different things, and says so without a 
 test("toggling temporary chat starts or restores a chat rather than relabelling one", () => {
   assert.match(
     terminal,
-    /const sessionCreateOptions = useMemo\(\s*\(\) => \(\{ title: "Assistant conversation", temporary: temporaryChat \}\),/,
+    /const sessionCreateOptions = useMemo\(\s*\(\) => \(\{ title: "New chat", temporary: temporaryChat \}\),/,
   );
   // On: remember where we were, then start a fresh off-record chat.
   assert.match(
@@ -359,6 +359,24 @@ test("toggling temporary chat starts or restores a chat rather than relabelling 
   // Both other ways out of the mode: the rail's New chat and opening history.
   assert.match(terminal, /function startNewSavedChat\(\)/);
   assert.match(terminal, /onNewChat=\{startNewSavedChat\}/);
+});
+
+test("temporary mode cannot reset a chat while its response is still active", () => {
+  // The guard covers the optimistic Thinking window as well as established
+  // streams and external-agent runs. Keeping it in the handler protects the
+  // transition itself; disabled makes the constraint visible and accessible.
+  assert.match(
+    terminal,
+    /function toggleTemporaryChat\(\) \{[\s\S]{0,600}if \(currentChatActive\) return;/,
+  );
+  assert.match(
+    terminal,
+    /onClick=\{toggleTemporaryChat\}\s*disabled=\{currentChatActive\}/,
+  );
+  assert.match(
+    terminal,
+    /currentChatActive\s*\? "Temporary chat can be changed after the current response finishes"/,
+  );
 });
 
 test("the browser does not keep a pointer to a temporary chat", () => {

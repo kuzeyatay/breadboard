@@ -8,7 +8,11 @@
 // nothing", never "what should this field be".
 
 import type { AgentSettingValues, Dimensions } from "./catalog.ts";
-import type { ResearchRequest } from "../deep-research/identity.ts";
+import {
+  DEFAULT_BREADTH,
+  DEFAULT_DEPTH,
+  type ResearchRequest,
+} from "../deep-research/identity.ts";
 import {
   DOCUMENT_SOURCE_IDS,
   type DocumentSearchRequest,
@@ -28,6 +32,12 @@ import type {
   VimaxImageGenerator,
   VimaxMode,
 } from "../vimax/identity.ts";
+import type {
+  VoxAspectRatio,
+  VoxDirectorRequest,
+  VoxMotionBackend,
+} from "../vox-director/identity.ts";
+import { clampVoxDuration, VOX_MAX_SEED } from "../vox-director/identity.ts";
 import type { HardwareBlueprintRequest } from "../hardware/identity.ts";
 
 function text(values: AgentSettingValues, key: string): string {
@@ -57,8 +67,8 @@ export type DeepResearchDefaults = Pick<ResearchRequest, "breadth" | "depth" | "
 
 export function deepResearchDefaults(values: AgentSettingValues): DeepResearchDefaults {
   return {
-    breadth: count(values, "breadth", 3),
-    depth: count(values, "depth", 1),
+    breadth: count(values, "breadth", DEFAULT_BREADTH),
+    depth: count(values, "depth", DEFAULT_DEPTH),
     output: choice(values, "output", ["report", "answer"] as const) ?? "report",
   };
 }
@@ -221,6 +231,36 @@ export function vimaxDefaults(values: AgentSettingValues): VimaxDefaults {
     imageGenerator:
       choice(values, "generator", ["auto", "gemini", "chatgpt"] as const) ?? "auto",
   };
+}
+
+// ---- Vox Director -----------------------------------------------------------
+
+export type VoxDirectorDefaults = Omit<VoxDirectorRequest, "brief">;
+
+/**
+ * A Vox Director run's starting shape.
+ *
+ * `seed` is the one field here that is not a taste: 0 means "a fresh seed each
+ * time", which is what a person expects from a picture generator, and any other
+ * value pins every poster in every future run to the same noise.
+ */
+export function voxDirectorDefaults(values: AgentSettingValues): VoxDirectorDefaults {
+  const seed = count(values, "seed", 0);
+  return {
+    duration: clampVoxDuration(count(values, "duration", 30)),
+    aspectRatio: choice(values, "aspectRatio", ["16:9", "9:16", "1:1"] as const) ?? "16:9",
+    style: text(values, "style") || null,
+    motion:
+      choice(values, "motion", ["auto", "local", "kenburns", "scrapbook"] as const) ?? "local",
+    images: flag(values, "images", true),
+    music: flag(values, "music", true),
+    seed: seed > 0 ? Math.min(seed, VOX_MAX_SEED) : null,
+  } satisfies { duration: number; aspectRatio: VoxAspectRatio; style: string | null; motion: VoxMotionBackend; images: boolean; music: boolean; seed: number | null };
+}
+
+/** The ComfyUI checkpoint a Vox run draws with, when the user named one. */
+export function voxDirectorCheckpoint(values: AgentSettingValues): string | null {
+  return text(values, "checkpoint") || null;
 }
 
 // ---- Socials Manager --------------------------------------------------------

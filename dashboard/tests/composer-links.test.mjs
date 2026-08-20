@@ -89,5 +89,6 @@ test("the composer paints links in the mirror, above the textarea", () => {
   assert.match(composer, /rel="noreferrer noopener"/);
   // Whenever the mirror paints, the real text is hidden behind it — otherwise
   // both layers show and the text renders twice.
-  assert.match(composer, /\$\{mirrored \? 'text-transparent caret-\[var\(--ink\)\]'/);
+  assert.match(composer, /caret-\[var\(--composer-caret\)\]/);
+  assert.match(composer, /\$\{mirrored \? 'text-transparent'/);
 });

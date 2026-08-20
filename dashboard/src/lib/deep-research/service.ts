@@ -65,6 +65,13 @@ function client(): DeepResearchClient {
   return new DeepResearchClient(resolveDeepResearchConfig());
 }
 
+function isRecoverableConnectionFailure(error: unknown): boolean {
+  return (
+    error instanceof ClientError &&
+    (error.code === "unavailable" || error.code === "timeout")
+  );
+}
+
 /** Map a client-side failure code onto an HTTP-shaped service error. */
 function translate(error: unknown): DeepResearchError {
   if (error instanceof DeepResearchError) return error;
@@ -196,7 +203,18 @@ export async function listEvents(
   try {
     return await client().eventsSince(runId, userId, since);
   } catch (error) {
-    throw translate(error);
+    if (!isRecoverableConnectionFailure(error)) throw translate(error);
+
+    // A run can outlive the Next.js worker that launched the bundled sidecar.
+    // Restart it while the event stream is still polling. Its durable snapshot
+    // then becomes an explicit service_restarted failure, which lets the chat
+    // persist a truthful terminal state instead of counting forever.
+    if (!(await ensureDeepResearchService())) throw translate(error);
+    try {
+      return await client().eventsSince(runId, userId, since);
+    } catch (retryError) {
+      throw translate(retryError);
+    }
   }
 }
 

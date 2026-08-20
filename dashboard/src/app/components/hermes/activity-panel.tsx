@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
-import { assistantResponseElapsedMs } from "@/lib/assistant-activity-timing";
+import {
+  assistantLiveActivityReady,
+  assistantResponseElapsedMs,
+} from "@/lib/assistant-activity-timing";
 import type { ChatTokenUsage } from "@/lib/chat-token-usage";
 import type {
   ActivityItem,
@@ -16,9 +19,19 @@ interface Props {
   pendingPermission: PermissionPrompt | null;
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
+  /** Start of an ongoing phase that runs outside the main chat connection. */
+  activePhaseStartedAt?: string;
+  /**
+   * Time this row inherits from a phase that is no longer on screen. A delegated
+   * worker's turn is hidden behind the hand-back that reports it, so without
+   * this the answer's clock described only its last few seconds.
+   */
+  carriedDurationMs?: number;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   /** Overrides Thinking for terminal states such as an interrupted turn. */
   stateLabel?: string;
+  /** Replaces the default Thought label after a successful special outcome. */
+  completedLabel?: string;
   stateFailed?: boolean;
   stateAction?: ReactNode;
 }
@@ -29,12 +42,16 @@ export default function ActivityPanel({
   pendingPermission,
   usage,
   responseDurationMs,
+  activePhaseStartedAt,
+  carriedDurationMs,
   onPermissionDecision,
   stateLabel,
+  completedLabel,
   stateFailed = false,
   stateAction,
 }: Props) {
   const [now, setNow] = useState(() => Date.now());
+  const [activeFallbackStartedAtMs] = useState(() => Date.now());
   const active =
     connection === "connecting" ||
     connection === "streaming" ||
@@ -44,9 +61,12 @@ export default function ActivityPanel({
       item.kind === "artifact" &&
       (item.status === "running" || item.status === "failed"),
   );
-  const effectiveLabel = stateLabel ?? artifactState?.label ?? "Thinking";
   const effectiveFailed = stateFailed || artifactState?.status === "failed";
   const responseActive = (active || artifactState?.status === "running") && !effectiveFailed;
+  const liveActivity = activities.findLast((item) => item.status === "running");
+  const completedActivityLabel = activities.findLast(
+    (item) => item.status === "completed" && item.completedLabel,
+  )?.completedLabel;
   const elapsedMs = useMemo(
     () =>
       assistantResponseElapsedMs({
@@ -54,9 +74,42 @@ export default function ActivityPanel({
         active: responseActive,
         now,
         reportedDurationMs: responseDurationMs ?? usage?.responseDurationMs,
+        activePhaseStartedAt,
+        activeFallbackStartedAtMs,
+        carriedDurationMs,
       }),
-    [activities, now, responseActive, responseDurationMs, usage?.responseDurationMs],
+    [
+      activities,
+      now,
+      responseActive,
+      responseDurationMs,
+      activeFallbackStartedAtMs,
+      activePhaseStartedAt,
+      carriedDurationMs,
+      usage?.responseDurationMs,
+    ],
   );
+  const showLiveActivity =
+    responseActive && assistantLiveActivityReady(elapsedMs);
+  const liveLabel =
+    stateLabel ??
+    artifactState?.label ??
+    (pendingPermission
+      ? "Waiting for permission"
+      : liveActivity?.label ?? "Thinking");
+  // Every turn opens with the same stable Thinking beat. Tool, orchestration,
+  // answer-writing, and artifact labels can take over only after five seconds.
+  // A settled default returns to Thinking so AssistantResponseMeta renders the
+  // permanent, past-tense Thought label.
+  const effectiveLabel = responseActive
+    ? showLiveActivity
+      ? liveLabel
+      : "Thinking"
+    : stateLabel ??
+      artifactState?.label ??
+      completedLabel ??
+      completedActivityLabel ??
+      "Thinking";
 
   useEffect(() => {
     const transitionTick = window.setTimeout(() => setNow(Date.now()), 0);
@@ -72,7 +125,7 @@ export default function ActivityPanel({
     <section className="text-[var(--ink)]">
       <AssistantResponseMeta
         active={responseActive}
-        shimmer={responseActive && !pendingPermission}
+        shimmer={responseActive}
         failed={effectiveFailed}
         label={effectiveLabel}
         usage={usage}

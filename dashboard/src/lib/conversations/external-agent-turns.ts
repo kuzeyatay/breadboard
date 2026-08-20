@@ -17,6 +17,8 @@ import {
   parseExternalAgentState,
   parseExternalAgentRun,
   parseExternalAgentOutcome,
+  parseExternalAgentStartedAt,
+  externalAgentResponseDurationMs,
   type ExternalAgentActivityEntry,
   type ExternalAgentEdits,
   type ExternalAgentOutcome,
@@ -217,11 +219,15 @@ export function attachExternalAgentRun(input: {
         : undefined;
     const delegatedAgentPreamble =
       storedDelegatedPreamble ?? (row.content.trim() ? row.content : undefined);
+    const externalAgentStartedAt =
+      parseExternalAgentStartedAt(metadata.externalAgentStartedAt) ??
+      new Date().toISOString();
     const mergedMetadata = {
       ...metadata,
       externalAgent: EXTERNAL_AGENT_MARKER,
       ...(input.run ? { externalAgentRun: input.run } : {}),
       externalAgentOutcome: outcome,
+      externalAgentStartedAt,
       delegatedAgentRun: true,
       ...(delegatedAgentPreamble ? { delegatedAgentPreamble } : {}),
       ...(outcome !== "running" && input.assistantContent !== undefined
@@ -433,9 +439,19 @@ export function finishExternalAgentTurn(input: {
     const state = parseExternalAgentState(
       input.state ?? metadata.externalAgentState,
     );
+    const completedAtMs = Date.now();
+    const responseDurationMs = externalAgentResponseDurationMs({
+      baseDurationMs:
+        typeof metadata.responseDurationMs === "number"
+          ? metadata.responseDurationMs
+          : Number(metadata.responseDurationMs),
+      startedAt: parseExternalAgentStartedAt(metadata.externalAgentStartedAt),
+      endedAtMs: completedAtMs,
+    });
     const mergedMetadata = {
       ...metadata,
       externalAgentOutcome: input.outcome,
+      ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(metadata.delegatedAgentRun === true
         ? { externalAgentResult: input.content }
         : {}),

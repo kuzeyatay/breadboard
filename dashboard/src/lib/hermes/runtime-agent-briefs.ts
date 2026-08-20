@@ -223,7 +223,7 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
     group: "video",
     does: "Builds video by writing and rendering code inside a scaffolded project, which is how it produces exact motion graphics and explanatory animation.",
     choose:
-      "Choose it when the content has to be precise — data, diagrams, text, timed motion. It draws; it does not film.",
+      "Choose it when the content has to be precise — data, diagrams, text, timed motion. It draws; it does not film. Vox Director covers the explainer whose look matters more than its precision.",
   },
   openmontage: {
     group: "video",
@@ -235,7 +235,13 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
     group: "video",
     does: "Generates a film that does not exist yet: script, shots, and generated imagery assembled into a finished video.",
     choose:
-      "Choose it when the footage has to be invented. MoneyPrinter is the opposite end of the same job.",
+      "Choose it when the footage has to be invented and the piece is a story — characters, scenes, a screenplay. MoneyPrinter is the opposite end of the same job; Vox Director is the narrated explainer with no story in it.",
+  },
+  "vox-director": {
+    group: "video",
+    does: "Turns one topic into a narrated editorial explainer: a beat map, a torn-paper collage poster per beat, cut-out pieces animated locally, a spoken narration, and a finished MP4. Everything renders on this machine.",
+    choose:
+      "Choose it for a fast, narrator-led explainer with a graphic collage look — the Vox house style. ViMax is for invented cinematic footage with characters; HyperFrames is for exact, code-authored motion graphics.",
   },
   "money-printer": {
     group: "video",

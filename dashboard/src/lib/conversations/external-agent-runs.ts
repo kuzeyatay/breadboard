@@ -26,6 +26,7 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "resource2skill",
   "openmontage",
   "vimax",
+  "vox_director",
   "shorts",
   "formsmith",
   "money_printer",
@@ -66,6 +67,7 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   resource2skill: "Resource2Skill",
   openmontage: "OpenMontage",
   vimax: "ViMax",
+  vox_director: "Vox Director",
   shorts: "Shorts",
   formsmith: "Formsmith",
   money_printer: "MoneyPrinter",
@@ -112,6 +114,7 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   resource2skill: "resource2skill",
   openmontage: "openmontage",
   vimax: "vimax",
+  vox_director: "vox-director",
   shorts: "shorts",
   formsmith: "shaper",
   money_printer: "money-printer",
@@ -470,6 +473,12 @@ export type ExternalAgentRun =
       brief: string;
     }
   | {
+      kind: "vox_director";
+      runId: string;
+      /** The topic the explainer was made from, minus the slash token. */
+      brief: string;
+    }
+  | {
       kind: "shorts";
       runId: string;
       /** The run's label — "youtube.com/… · 3 × 9:16" — not a prompt. */
@@ -712,6 +721,12 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     return { kind: "vimax", runId, brief };
   }
 
+  if (candidate.kind === "vox_director") {
+    const brief = boundedString(candidate.brief, MAX_TASK_LENGTH);
+    if (!brief) return null;
+    return { kind: "vox_director", runId, brief };
+  }
+
   if (candidate.kind === "hyperframes") {
     const brief = boundedString(candidate.brief, MAX_TASK_LENGTH);
     if (!brief) return null;
@@ -818,6 +833,7 @@ interface ExternalAgentRunFields {
   resource2SkillRun?: { runId: string } | null;
   openMontageRun?: { runId: string } | null;
   vimaxRun?: { runId: string } | null;
+  voxDirectorRun?: { runId: string } | null;
   shortsRun?: { runId: string } | null;
   formsmithRun?: { runId: string } | null;
   moneyPrinterRun?: { runId: string } | null;
@@ -870,6 +886,7 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   resource2skill: "resource2SkillRun",
   openmontage: "openMontageRun",
   vimax: "vimaxRun",
+  vox_director: "voxDirectorRun",
   shorts: "shortsRun",
   formsmith: "formsmithRun",
   money_printer: "moneyPrinterRun",
@@ -907,6 +924,32 @@ export function parseExternalAgentOutcome(value: unknown): ExternalAgentOutcome 
     : null;
 }
 
+export function parseExternalAgentStartedAt(value: unknown): string | undefined {
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) {
+    return undefined;
+  }
+  return value;
+}
+
+export function externalAgentResponseDurationMs(input: {
+  baseDurationMs?: number;
+  startedAt?: string;
+  endedAtMs: number;
+}): number | undefined {
+  const baseDurationMs =
+    typeof input.baseDurationMs === "number" &&
+    Number.isFinite(input.baseDurationMs)
+      ? Math.max(0, input.baseDurationMs)
+      : 0;
+  const startedAtMs = input.startedAt
+    ? Date.parse(input.startedAt)
+    : Number.NaN;
+  if (!Number.isFinite(startedAtMs)) {
+    return input.baseDurationMs === undefined ? undefined : baseDurationMs;
+  }
+  return baseDurationMs + Math.max(0, input.endedAtMs - startedAtMs);
+}
+
 export function externalAgentMessageFields(
   metadata: Record<string, unknown>,
 ): {
@@ -934,6 +977,7 @@ export function externalAgentMessageFields(
   resource2SkillRun?: { runId: string; brief: string };
   openMontageRun?: { runId: string; brief: string };
   vimaxRun?: { runId: string; brief: string };
+  voxDirectorRun?: { runId: string; brief: string };
   shortsRun?: { runId: string; task: string };
   formsmithRun?: { runId: string; task: string };
   moneyPrinterRun?: { runId: string; brief: string };
@@ -959,6 +1003,8 @@ export function externalAgentMessageFields(
     repository: string;
   };
   externalAgentOutcome?: ExternalAgentOutcome;
+  /** Durable start of the worker phase, used to resume elapsed time exactly. */
+  externalAgentStartedAt?: string;
   externalAgentActivity?: ExternalAgentActivityEntry[];
   externalAgentEdits?: ExternalAgentEdits;
   externalAgentState?: Record<string, unknown>;
@@ -972,6 +1018,9 @@ export function externalAgentMessageFields(
   if (metadata.externalAgent !== true) return {};
   const run = parseExternalAgentRun(metadata.externalAgentRun);
   const outcome = parseExternalAgentOutcome(metadata.externalAgentOutcome);
+  const externalAgentStartedAt = parseExternalAgentStartedAt(
+    metadata.externalAgentStartedAt,
+  );
   const activity = parseExternalAgentActivity(metadata.externalAgentActivity);
   const edits = parseExternalAgentEdits(metadata.externalAgentEdits);
   const state = parseExternalAgentState(metadata.externalAgentState);
@@ -988,6 +1037,7 @@ export function externalAgentMessageFields(
       : undefined;
   const outcomeField = {
     ...(outcome ? { externalAgentOutcome: outcome } : {}),
+    ...(externalAgentStartedAt ? { externalAgentStartedAt } : {}),
     ...(activity.length ? { externalAgentActivity: activity } : {}),
     ...(edits ? { externalAgentEdits: edits } : {}),
     ...(state ? { externalAgentState: state } : {}),
@@ -1154,6 +1204,12 @@ export function externalAgentMessageFields(
   if (run.kind === "vimax") {
     return {
       vimaxRun: { runId: run.runId, brief: run.brief },
+      ...outcomeField,
+    };
+  }
+  if (run.kind === "vox_director") {
+    return {
+      voxDirectorRun: { runId: run.runId, brief: run.brief },
       ...outcomeField,
     };
   }

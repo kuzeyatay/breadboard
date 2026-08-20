@@ -400,8 +400,64 @@ test("an automatically selected skill is named, with the reason it fired", () =>
   assert.match(markup, /The message linked a video\./);
   assert.match(markup, /\/watch/);
   assert.match(markup, /1 call/);
-  // What was on the table has to stay visibly separate from what came off it.
-  assert.match(markup, /118 skills, 12 connections and 4 automations were available/);
+  // What was merely on the table is not reported at all. A super-agent turn is
+  // handed the whole catalogue, so the inventory line described the mode the
+  // user switched on rather than this answer, on every single turn.
+  assert.doesNotMatch(markup, /118 skills/);
+  assert.doesNotMatch(markup, /Super agent/);
+});
+
+// Super agent alone no longer opens the section: with the inventory line gone
+// there is nothing left to say about a turn that used none of what it was
+// offered, and a bare heading reads as a claim that something is missing.
+test("super agent with nothing used shows no capabilities section", () => {
+  const markup = render(
+    summary({
+      capabilities: {
+        superAgent: true,
+        inventory: { skills: 24, connections: 0, workflows: 2 },
+        used: [],
+      },
+    }),
+  );
+  assert.doesNotMatch(markup, /Capabilities used/);
+  assert.doesNotMatch(markup, /Super agent/);
+  assert.doesNotMatch(markup, /24 skills/);
+});
+
+// The turn a person actually reads after a delegation is the hand-back, and it
+// makes no calls of its own. Denying evidence on it hid the fact that its whole
+// content came out of a worker's run.
+test("a carried delegation names the agent the answer came from", () => {
+  const markup = render(
+    summary({
+      // The hand-back turn's own verdict: it asserted nothing it had to prove.
+      state: "not_applicable",
+      externalAgents: [
+        {
+          agentId: "deep-research",
+          agentName: "Deep Research",
+          command: "/agents:deep-research",
+          requiresApproval: false,
+          requestedAt: "2026-08-20T10:00:00.000Z",
+          carried: true,
+        },
+      ],
+    }),
+  );
+  assert.match(markup, /External agents/);
+  assert.match(markup, /Deep Research/);
+  assert.match(markup, /answered by/);
+  // The verdict header describes this turn's own evidence, and it has none.
+  // Saying it needed no verification would deny the run the answer came from.
+  assert.match(markup, /Answered by Deep Research/);
+  assert.doesNotMatch(markup, /No external verification needed/);
+  assert.doesNotMatch(markup, /delegated/);
+  assert.match(markup, /the work was done by the runtime agent below/);
+  assert.doesNotMatch(
+    markup,
+    /No external tool evidence was recorded for this answer/,
+  );
 });
 
 test("connections and automations are reported beside skills", () => {

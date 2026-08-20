@@ -31,6 +31,7 @@ import {
   evidenceKindForTool,
   evidenceTitleForTool,
   type EvidenceRecord,
+  type ExternalAgentCall,
   type ResearchExhaustion,
   type VerificationSummary,
 } from "./evidence.ts";
@@ -139,6 +140,9 @@ function persistAssistantOnce(
         content,
         metadata,
         error: runtimeStatus,
+        // The turn burned these tokens whether or not it ended well, and the
+        // response meta reads them back off the row after a reload.
+        tokenUsage: persistedTokenUsage,
       });
     }
     return;
@@ -283,6 +287,19 @@ function driveSessionEventPump(
         : undefined,
       toolCalls,
     });
+  };
+  // Every runtime agent this answer stands on: the ones this turn queued, plus
+  // the one an earlier turn launched whose finished result this turn was
+  // dispatched to report. The second kind is recorded on the run at dispatch
+  // (see `delegatedAgents` in turn-service) precisely because nothing in this
+  // stream would otherwise witness it — a hand-back turn queues no launch and
+  // calls no tool.
+  const externalAgentsForTurn = (): ExternalAgentCall[] => {
+    streamRun ??= getActiveRuntimeRun(session.row.id);
+    const carried = streamRun
+      ? (parseRuntimeRunDispatch(streamRun).delegatedAgents ?? [])
+      : [];
+    return [...carried, ...externalAgentCallsForRun(streamRun?.id)];
   };
   const researchExhaustionForTurn = (): ResearchExhaustion => {
     const conversationId = session.row.conversation_id;
@@ -662,7 +679,7 @@ function driveSessionEventPump(
         const verification = assessVerification(assistantText, evidence, {
           geographicGroundingRequired: geographicGroundingRequired(),
           webGroundingRequired: webGroundingAppliesToCompletion(),
-          externalAgents: externalAgentCallsForRun(streamRun?.id),
+          externalAgents: externalAgentsForTurn(),
           researchExhaustion: researchExhaustionForTurn(),
           researchCoverage: researchCoverageForTurn(),
           capabilities: capabilitiesForTurn(),
@@ -1041,7 +1058,7 @@ function driveSessionEventPump(
                 payload: assessVerification(assistantText, evidence, {
                   geographicGroundingRequired: geographicGroundingRequired(),
                   webGroundingRequired: webGroundingAppliesToCompletion(),
-                  externalAgents: externalAgentCallsForRun(streamRun?.id),
+                  externalAgents: externalAgentsForTurn(),
                   researchExhaustion: researchExhaustionForTurn(),
                   researchCoverage: researchCoverageForTurn(),
                   capabilities: capabilitiesForTurn(),

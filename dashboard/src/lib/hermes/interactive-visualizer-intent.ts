@@ -34,8 +34,19 @@ export function shouldAutoSelectInteractiveVisualizer(input: {
   text: string;
   surface: HermesSurface;
   authenticated: boolean;
+  /**
+   * The text is another agent's report handed back for synthesis, not a person
+   * asking for anything. Reports carry this vocabulary on their own — a
+   * robotics brief says "simulation", an economics one says "control" — and
+   * reading that as a request for an interactive model selects the skill on
+   * words nobody typed, then holds the synthesis to a visualizer the turn was
+   * never asked to build. Map grounding, web grounding and the research
+   * pipeline take the same exemption.
+   */
+  internalContinuation?: boolean;
   env?: NodeJS.ProcessEnv;
 }): boolean {
+  if (input.internalContinuation) return false;
   if (!interactiveVisualizerAvailable(
     input.surface,
     input.authenticated,
@@ -54,11 +65,13 @@ export function visualizerCommandText(input: {
   surface: HermesSurface;
   authenticated: boolean;
   priorMessages?: ReadonlyArray<{ role: string; content: string }>;
+  internalContinuation?: boolean;
   env?: NodeJS.ProcessEnv;
 }): { text: string; automatic: boolean } {
   const automatic =
     shouldAutoSelectInteractiveVisualizer(input) ||
     (
+      !input.internalContinuation &&
       interactiveVisualizerAvailable(
         input.surface,
         input.authenticated,

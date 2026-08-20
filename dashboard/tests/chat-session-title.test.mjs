@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import {
   CONVERSATION_TITLE_INSTRUCTION,
   applyGeneratedConversationTitle,
+  fallbackConversationTitle,
   generateConversationTitle,
   normalizeGeneratedConversationTitle,
 } from '../src/lib/conversations/title-service.ts';
@@ -56,6 +57,22 @@ test('generated titles are cleaned and capped at four words', () => {
   assert.equal(
     normalizeGeneratedConversationTitle('<think>hidden</think>\nGarden Memory Privacy Rules'),
     'Garden Memory Privacy Rules',
+  );
+});
+
+test('a local title keeps chats named when the title model is unavailable', async () => {
+  const prompt =
+    '/agents:deep-research why is robotic considered the future, what would its consequences be to the world economy';
+  assert.equal(
+    fallbackConversationTitle(prompt),
+    'Robotic Future World Economy',
+  );
+  assert.equal(
+    await generateConversationTitle({
+      firstPrompt: prompt,
+      fetcher: async () => new Response('unavailable', { status: 502 }),
+    }),
+    'Robotic Future World Economy',
   );
 });
 

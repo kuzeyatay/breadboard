@@ -20,10 +20,12 @@ import ChatMarkdown from "@/app/components/chat-markdown";
 import { parseStoredDesign } from "@/lib/hardware/schemas.ts";
 import { parseStoredCadArtifact } from "@/lib/cad/schemas.ts";
 import { parseStoredProduction } from "@/lib/vimax/schemas.ts";
+import { parseStoredProduction as parseStoredVoxProduction } from "@/lib/vox-director/schemas.ts";
 import { parseStoredSocialsPost } from "@/lib/socials-manager/post-artifact.ts";
 import type { HardwareDesign } from "@/lib/hardware/types";
 import type { ParametricCADArtifact } from "@/lib/cad/types";
 import type { VimaxProduction } from "@/lib/vimax/types";
+import type { VoxProduction } from "@/lib/vox-director/types";
 import type { SocialsPostDocument } from "@/lib/socials-manager/post-artifact";
 import type { ArtifactKind, PresentedArtifact } from "@/lib/hermes/artifact-types";
 
@@ -54,6 +56,18 @@ const ModelViewer = dynamic(
 const VimaxFilmArtifact = dynamic(
   () => import("@/app/components/vimax/vimax-film-artifact"),
   { ssr: false, loading: () => <p className="text-sm text-[var(--ink-muted)]">Loading the film…</p> },
+);
+
+// A Vox production carries a video, every poster and the whole beat map, so it
+// is loaded on demand for the same reason the film player is.
+const VoxProductionArtifact = dynamic(
+  () => import("@/app/components/vox-director/vox-production-artifact"),
+  {
+    ssr: false,
+    loading: () => (
+      <p className="text-sm text-[var(--ink-muted)]">Opening the production…</p>
+    ),
+  },
 );
 
 // A post artifact opens as the post studio, which brings the image picker and
@@ -167,6 +181,17 @@ export function artifactDescription(artifact: PresentedArtifact): string {
     return [
       "ViMax film",
       typeof shots === "number" ? `${shots} shot${shots === 1 ? "" : "s"}` : "",
+      typeof seconds === "number" ? `${seconds}s` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (artifact.renderer === "vox-director-production") {
+    const beats = artifact.metadata?.voxDirectorBeats;
+    const seconds = artifact.metadata?.voxDirectorRuntimeSeconds;
+    return [
+      "Vox Director explainer",
+      typeof beats === "number" ? `${beats} beat${beats === 1 ? "" : "s"}` : "",
       typeof seconds === "number" ? `${seconds}s` : "",
     ]
       .filter(Boolean)
@@ -383,6 +408,7 @@ export default function ArtifactViewer({
   const parametricCad = artifact?.renderer === "parametric-cad";
   const modelFile = artifact?.renderer === "model-file";
   const vimaxFilm = artifact?.renderer === "vimax-production";
+  const voxProduction = artifact?.renderer === "vox-director-production";
   const socialsPost = artifact?.renderer === "socials-manager-post";
   const isGadget = artifact?.renderer === "gadget";
   const isRaster = artifact?.kind === "image" || artifact?.kind === "diagram";
@@ -462,6 +488,18 @@ export default function ArtifactViewer({
       return { error: "This film's stored data could not be read." };
     }
   }, [vimaxFilm, text]);
+
+  // And for a Vox production, for the same reason: a document this viewer
+  // cannot vouch for must not open as a film that looks finished.
+  const voxFilm = useMemo((): { production: VoxProduction } | { error: string } | null => {
+    if (!voxProduction || text === null) return null;
+    try {
+      const parsed = parseStoredVoxProduction(JSON.parse(text) as unknown);
+      return parsed.ok ? { production: parsed.value } : { error: parsed.error };
+    } catch {
+      return { error: "This production's stored data could not be read." };
+    }
+  }, [voxProduction, text]);
 
   // And for a post: the studio is opened over what the artifact stored, so a
   // document it cannot vouch for must not become an editor.
@@ -673,6 +711,20 @@ export default function ArtifactViewer({
       return (
         <VimaxFilmArtifact
           production={film.production}
+          conversationId={artifact.conversationId}
+        />
+      );
+    }
+    if (voxProduction) {
+      if (loading || voxFilm === null) {
+        return <p className="text-sm text-[var(--ink-muted)]">Opening the production…</p>;
+      }
+      if ("error" in voxFilm) {
+        return <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{voxFilm.error}</p>;
+      }
+      return (
+        <VoxProductionArtifact
+          production={voxFilm.production}
           conversationId={artifact.conversationId}
         />
       );

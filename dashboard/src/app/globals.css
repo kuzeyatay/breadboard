@@ -8,9 +8,17 @@
   --paper-raised: #fffefb; /* raised surface */
   --paper-strong: #ece3d2; /* strong surface */
   --terminal-bar: #e8d7bd; /* persistent terminal dock (lighter brown) */
+  /* The dock bar is the one plane that does not follow the paper ramp — it is
+     its own material in both themes — so it carries its own ink rather than
+     borrowing --ink-heading. Without that, the bar's label was written once in
+     light mode's near-black and stayed near-black on dark mode's near-black
+     bar. */
+  --terminal-bar-ink: #172a22; /* the bar's label */
+  --terminal-bar-ink-muted: #3d5147; /* the unread count beside it */
   --ink: #13201b; /* primary text */
   --ink-heading: #0f1a16; /* heading text */
   --ink-muted: #50615a; /* muted text */
+  --composer-caret: #000000; /* native typing caret */
   --line: #bccfc2; /* border (clear but subtle) */
   --line-strong: #9cb7a7; /* strong border */
   --botanical: #4f6f68; /* primary accent */
@@ -786,6 +794,37 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
   animation: bb-chat-marquee-shift var(--bb-marquee-duration, 6s) ease-in-out infinite;
 }
 
+/* A first-message title replaces the temporary "New chat" in place. Reveal
+   it in character-sized steps so the asynchronous rename reads as work being
+   completed, not as a row silently changing underneath the reader. */
+.bb-chat-marquee-text[data-title-renaming="true"] {
+  width: max-content;
+  overflow: visible;
+  text-overflow: clip;
+  animation: bb-chat-title-type 260ms
+    steps(var(--bb-title-character-count, 1), end) both;
+}
+
+@keyframes bb-chat-title-type {
+  from {
+    clip-path: inset(0 100% 0 0);
+    opacity: 0.55;
+  }
+  to {
+    clip-path: inset(0);
+    opacity: 1;
+  }
+}
+
+@keyframes bb-chat-title-fade {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 @keyframes bb-chat-marquee-shift {
   0%,
   8% {
@@ -1208,6 +1247,39 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
     0 5px 12px color-mix(in srgb, var(--ink) 14%, transparent),
     inset 0 1px 0 color-mix(in srgb, white 88%, transparent),
     inset 0 -1px 0 color-mix(in srgb, var(--line) 58%, transparent) !important;
+}
+
+/* The confirmation sheet. It interrupts, so it arrives quickly and from
+   slightly below and behind, the way a card is laid on the page — not from
+   nowhere, and not slowly enough to be waited on. */
+@media (prefers-reduced-motion: no-preference) {
+  .bb-confirm-backdrop {
+    animation: bb-confirm-scrim-in 140ms ease-out;
+  }
+
+  .bb-confirm-panel {
+    animation: bb-confirm-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+@keyframes bb-confirm-scrim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes bb-confirm-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 /* The artifact dock. An artifact opens as a panel beside the chat that made it
@@ -1831,6 +1903,24 @@ b {
   animation: thinking-shimmer 1.65s linear infinite;
 }
 
+@keyframes thinking-token-arrow-down {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(8%);
+  }
+}
+
+/* The same glyph, color, size, and spacing; only its active-state position
+   moves, in step with the existing Thinking shimmer. */
+.thinking-token-arrow {
+  display: inline-block;
+  animation: thinking-token-arrow-down 1.65s
+    cubic-bezier(0.77, 0, 0.175, 1) infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .neu-button,
   .neu-button-primary,
@@ -1874,11 +1964,23 @@ b {
     animation: none;
   }
 
+  /* The rename still gets a gentle state-change cue, without the travelling
+     clipping edge that creates the typing motion. */
+  .bb-chat-marquee-text[data-title-renaming="true"] {
+    clip-path: none;
+    animation: bb-chat-title-fade var(--neu-duration) var(--neu-easing) both;
+  }
+
   .thinking-shimmer {
     color: var(--ink-muted);
     background: none;
     -webkit-text-fill-color: currentColor;
     animation: none;
+  }
+
+  .thinking-token-arrow {
+    animation: none;
+    transform: none;
   }
 
   .markdown-editor-close:active,
@@ -2830,6 +2932,11 @@ b {
      bottom of the ramp would read as a seam in the page rather than as a bar
      you can pull up, so it lifts above the surface and keeps the warm cast. */
   --terminal-bar: #221f19;
+  /* And because the bar keeps that warm cast rather than joining the charcoal
+     ramp, its ink is restated here too — read from the other end, the same way
+     --ink is. */
+  --terminal-bar-ink: #e7ece3;
+  --terminal-bar-ink-muted: #9aa79d;
   /* Ink comes down off the warm cream it was. #f4f1e8 is a paper colour, and
      at 96% lightness on a near-black ground it glares and casts the whole UI
      yellow — the "night mode filter" look. These are the same green-greys as
@@ -2837,6 +2944,7 @@ b {
   --ink: #ccd2c9;
   --ink-heading: #e2e7de;
   --ink-muted: #8d968b;
+  --composer-caret: #ffffff;
   /* Lines can be quieter here than they were on the pale canvas: on black, the
      value step between planes already separates them, and a bright hairline on
      top of that step reads as an outline drawn around the panel. */
@@ -4689,7 +4797,7 @@ html[data-breadboard-desktop="true"] body > .bb-wm-shell {
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
-  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar: hsl(var(--sidebar-background));
   --color-sidebar-foreground: hsl(var(--sidebar-foreground));
   --color-sidebar-primary: hsl(var(--sidebar-primary));
   --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
@@ -4711,6 +4819,15 @@ html[data-breadboard-desktop="true"] body > .bb-wm-shell {
   --text-badge: calc(var(--buzz-type-rem, 1rem) * 0.625);
   --text-message: var(--conversation-message-font-size, 0.9375rem);
   --text-message-timestamp: var(--conversation-timestamp-font-size, 0.6875rem);
+
+  /* The conversation metrics Buzz's message rows are built on. Its rows are
+     padded by a variable, not a fixed step, so the whole transcript retunes
+     with the type scale. */
+  --spacing-conversation-row: var(--conversation-row-padding-block, 0.25rem);
+  --spacing-conversation-body: var(--conversation-body-gap, 0.25rem);
+  --spacing-conversation-paragraph: var(--conversation-paragraph-gap, 0.5rem);
+  --spacing-conversation-list: var(--conversation-list-item-gap, 0.25rem);
+  --leading-message-author: var(--conversation-author-line-height, 1rem);
 
   --shadow-content-edge: -1px -1px 0 0 hsl(var(--sidebar-border) / 0.45);
   --shadow-panel-left:

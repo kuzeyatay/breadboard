@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  applyBranchVariant,
+  branchTurnBounds,
   createConversationBranch,
   previousUserMessageIndex,
   retryTargetUserMessageIndex,
@@ -155,4 +157,94 @@ test("a transcript with no delegation is unaffected by the retry walk-back", () 
   assert.equal(retryTargetUserMessageIndex(original, 3), 2);
   assert.equal(retryTargetUserMessageIndex(original, 1), 0);
   assert.equal(retryTargetUserMessageIndex(original, 0), -1);
+});
+
+test("switching variants replaces only the branched turn, not what followed it", () => {
+  const branch = createConversationBranch({
+    messages: original,
+    branchGroups: {},
+    userMessageIndex: 2,
+    content: original[2].content,
+    createId: ids("resent-user", "resent-assistant"),
+  });
+
+  // The conversation carried on after the branch was made: the new answer
+  // filled in, and the person replied to it.
+  const live = [
+    ...branch.variant.slice(0, 3),
+    { ...branch.variant[3], content: "Second answer" },
+    { id: "user-3", clientMessageId: "user-3", role: "user", content: "okay" },
+    {
+      id: "assistant-3",
+      clientMessageId: "user-3",
+      role: "assistant",
+      content: "Follow-up answer",
+    },
+  ];
+
+  const back = applyBranchVariant({
+    messages: live,
+    variant: branch.group.variants[0],
+    groupId: branch.groupId,
+  });
+
+  assert.deepEqual(
+    back.map((message) => [message.role, message.content]),
+    [
+      ["user", "First question"],
+      ["assistant", "First answer"],
+      ["user", "Question to resend"],
+      ["assistant", "Original answer"],
+      ["user", "okay"],
+      ["assistant", "Follow-up answer"],
+    ],
+  );
+
+  // And forward again, from the transcript the switch back produced.
+  const forward = applyBranchVariant({
+    messages: back,
+    variant: live,
+    groupId: branch.groupId,
+  });
+  assert.deepEqual(
+    forward.map((message) => [message.role, message.content]),
+    [
+      ["user", "First question"],
+      ["assistant", "First answer"],
+      ["user", "Question to resend"],
+      ["assistant", "Second answer"],
+      ["user", "okay"],
+      ["assistant", "Follow-up answer"],
+    ],
+  );
+});
+
+test("a delegation result stays inside the turn it belongs to", () => {
+  const messages = [
+    { id: "user-1", clientMessageId: "user-1", role: "user", content: "Go" },
+    {
+      id: "assistant-1",
+      clientMessageId: "user-1",
+      role: "assistant",
+      content: "Delegating",
+    },
+    {
+      id: "worker-1",
+      clientMessageId: "worker-1",
+      role: "user",
+      content: "Worker result",
+      internalAgentContinuation: true,
+    },
+    {
+      id: "assistant-2",
+      clientMessageId: "worker-1",
+      role: "assistant",
+      content: "Done",
+    },
+    { id: "user-2", clientMessageId: "user-2", role: "user", content: "Next" },
+  ];
+
+  assert.deepEqual(branchTurnBounds(messages, "user-1"), { start: 0, end: 4 });
+  assert.deepEqual(branchTurnBounds(messages, "user-2"), { start: 4, end: 5 });
+  assert.equal(branchTurnBounds(messages, "missing"), null);
 });

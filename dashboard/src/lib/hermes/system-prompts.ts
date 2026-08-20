@@ -29,6 +29,15 @@ export function responseStylePrompt(): string {
   return readSystemPrompt("response-style");
 }
 
+/**
+ * Last-mile comprehension gate for human-facing answers. Unlike the baseline
+ * style, this is deliberately appended after task context and personas so a
+ * jargon-heavy source or specialist role cannot raise the knowledge level.
+ */
+export function readerComprehensionPrompt(): string {
+  return readSystemPrompt("reader-comprehension");
+}
+
 function surfacePrompt(surface: HermesSurface): string {
   if (surface === "garden_chat") return readSystemPrompt("garden-assistant");
   if (surface === "quartz_ai") return readSystemPrompt("quartz-assistant");
@@ -155,5 +164,9 @@ export function composeHermesSystemPrompt(input: {
   // Persona overlays are deliberately last and explicitly subordinate. They
   // can shape voice and approach, but never the server-authored sections above.
   if (input.persona?.trim()) sections.push(input.persona.trim());
+  // Final on purpose: this governs how already-decided content is explained.
+  // Direct mode, retrieved evidence and a specialist persona may shape the
+  // answer, but none may turn it back into unexplained analyst shorthand.
+  sections.push(readerComprehensionPrompt());
   return sections.join("\n\n");
 }

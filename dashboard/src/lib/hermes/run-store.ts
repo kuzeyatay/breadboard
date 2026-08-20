@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import db from "../db.ts";
 import { isRuntimeRunAbandoned } from "./run-liveness.ts";
 import type { TurnCapabilitySelection } from "./capability-usage.ts";
+import type { ExternalAgentCall } from "./evidence.ts";
 
 export type RuntimeRunStatus = "active" | "completed" | "cancelled" | "error";
 
@@ -101,6 +102,14 @@ export interface RuntimeRunDispatch {
    * rather than reconstructing it from whatever the answer implies.
    */
   capabilities?: TurnCapabilitySelection;
+  /**
+   * Runtime agents an earlier turn delegated to, whose finished result this
+   * turn was dispatched to speak for. Recorded here for the same reason the
+   * grounding blocks are: the delegation is a fact about the turn fixed before
+   * the model said anything, and the evidence panel reports it rather than
+   * inferring it from an answer that never mentions who produced it.
+   */
+  delegatedAgents?: ExternalAgentCall[];
 }
 
 export interface ActiveRuntimeRunSummary {

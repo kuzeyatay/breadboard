@@ -94,7 +94,7 @@ test("numbers are clamped, and 'let the run decide' survives clamping", () => {
   assert.equal(normalizeAgentSettings(research, { breadth: 99 }).breadth, 10);
   assert.equal(normalizeAgentSettings(research, { breadth: -4 }).breadth, 1);
   assert.equal(normalizeAgentSettings(research, { breadth: "4" }).breadth, 4);
-  assert.equal(normalizeAgentSettings(research, { breadth: "abc" }).breadth, 3);
+  assert.equal(normalizeAgentSettings(research, { breadth: "abc" }).breadth, 4);
 
   const vimax = agent("vimax");
   // 0 is outside the 1–12 range on purpose: it is the "unset" value.
@@ -143,10 +143,10 @@ test("Deep Research: settings set the starting point, flags still win", () => {
   assert.equal(flagged.output, "report");
   assert.equal(flagged.query, "same question");
 
-  // No settings at all is exactly the old behaviour.
+  // No settings at all uses the full report defaults.
   const untouched = parseResearchRequest("a question");
-  assert.equal(untouched.breadth, 3);
-  assert.equal(untouched.depth, 1);
+  assert.equal(untouched.breadth, 4);
+  assert.equal(untouched.depth, 2);
   assert.equal(untouched.output, "report");
 });
 

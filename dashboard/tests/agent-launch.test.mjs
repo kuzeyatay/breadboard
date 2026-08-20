@@ -34,6 +34,8 @@ const sessionHook = source(
 const runtimePanel = source(
   "../src/app/components/hermes/agent-runtime-panel.tsx",
 );
+const superAgentActivity = source("../src/lib/hermes/super-agent-activity.ts");
+const timing = source("../src/lib/assistant-activity-timing.ts");
 const conversationTurns = source(
   "../src/lib/conversations/turn-service.ts",
 );
@@ -296,15 +298,33 @@ test("agent-result continuations stay in context without impersonating the user"
   );
 });
 
-test("a delegated research hand-back renders as one coherent turn", () => {
-  // A delegated turn whose continuation has landed used to render as a
-  // `display: none` row. In a virtualized transcript a zero-height row still
-  // claims the spacing on both sides of itself, so it is dropped from the row
-  // list instead — the same nothing, drawn in the same place.
-  assert.match(
-    runtimePanel,
-    /storedMessage\.delegatedAgentRun === true &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
-  );
+test("a delegated research hand-back remains one populated assistant field", () => {
+  // The owning row folds into the continuation so there is never a duplicate
+  // assistant field. The continuation carries the old preamble until its first
+  // synthesized text arrives, so the single field never goes blank either.
+  for (const [surface, sourceText, messageName] of [
+    ["panel", runtimePanel, "message"],
+    ["garden", garden, "msg"],
+  ]) {
+    assert.match(
+      sourceText,
+      /storedMessage\.delegatedAgentRun === true &&\s*messages\[index \+ 1\]\?\.internalAgentContinuation === true/,
+      `${surface} must fold the delegated owner into its continuation`,
+    );
+    assert.match(
+      sourceText,
+      new RegExp(
+        `${messageName}\\.delegatedAgentPreamble \\? \\([\\s\\S]{0,900}<ActivityPanel`,
+      ),
+      `${surface} must keep Thought metadata above the delegated preamble`,
+    );
+    assert.match(sourceText, /const continuationPreamble =/);
+    assert.match(
+      sourceText,
+      /revealedAssistantContent \|\| continuationPreamble/,
+      `${surface} must keep the existing text until synthesis starts`,
+    );
+  }
   assert.match(runtimePanel, /"Synthesizing research"/);
   assert.match(runtimePanel, /"Research synthesized"/);
   assert.match(
@@ -379,7 +399,7 @@ test("every model-launchable agent uses structured same-message delegation", asy
   assert.doesNotMatch(queue, /submitRef\.current\(`\$\{request\.command\}/);
   assert.match(terminal, /beginDelegatedExternalAgentTurn\(originClientMessageId\)/);
   assert.match(terminal, /attachToExistingTurn: true/);
-  assert.match(terminal, /externalRunLaunching \|\| agentLaunchQueue\.queued/);
+  assert.match(terminal, /externalRunLaunching \|\| delegationInFlight/);
   assert.match(terminal, /delegatedAgentLaunching \|\|/);
   assert.match(terminal, /setDelegatedAgentLaunching\(true\)/);
   assert.match(terminal, /setDelegatedAgentLaunching\(false\)/);
@@ -387,7 +407,9 @@ test("every model-launchable agent uses structured same-message delegation", asy
   assert.match(garden, /delegatedAgentLaunchRef\.current = request/);
   assert.match(garden, /setDelegatedAgentLaunching\(true\)/);
   assert.match(garden, /setDelegatedAgentLaunching\(false\)/);
-  assert.match(garden, /agentLaunchQueue\.queued \|\| delegatedAgentLaunching/);
+  // Whitespace-tolerant: the busy state is one expression whether or not the
+  // formatter wrapped it across lines.
+  assert.match(garden, /agentLaunchQueue\.queued \|\|\s+delegatedAgentLaunching/);
   assert.match(garden, /scopeKey: activeChatId/);
   assert.match(garden, /index === assistantIndex[\s\S]*persistChatSession\(session\.id, nextMessages\)/);
   assert.match(runtimePanel, /message\.delegatedAgentRun \? "hidden" : "contents"/);
@@ -561,4 +583,127 @@ test("a human message ends the chain on both surfaces", () => {
   ]) {
     assert.match(text, /launchHopsRef\.current >= MAX_AGENT_LAUNCH_HOPS/, name);
   }
+});
+
+// The turn a person actually reads after a delegation is the hand-back, and it
+// belongs to a run that queued no launch and called no tool. Without carrying
+// the delegation across that seam, the one turn anybody opens the evidence
+// panel on showed no trace of the agent whose work the whole answer is.
+test("the hand-back turn carries the delegation into its own evidence", () => {
+  for (const [name, text] of [
+    ["terminal", conversationTurns],
+    ["garden", gardenAdapter],
+  ]) {
+    // Read before the new run begins, or the latest run is the hand-back
+    // itself and there is nothing to carry.
+    assert.match(text, /getLatestRuntimeRun\(session\.row\.id\)\?\.id/, name);
+    assert.match(text, /externalAgentCallsForRun\(/, name);
+    assert.match(text, /carried: true/, name);
+    assert.match(text, /delegatedAgents: carriedDelegations/, name);
+  }
+  // Only a hand-back carries one. An ordinary turn that happens to follow a
+  // delegated run must not claim the worker as its own provenance.
+  assert.match(
+    conversationTurns,
+    /input\.internalAgentContinuation[\s\S]{0,8}\?[\s\S]{0,8}externalAgentCallsForRun/,
+  );
+  assert.match(
+    gardenAdapter,
+    /payload\.internalAgentContinuation === true[\s\S]{0,8}\?[\s\S]{0,8}externalAgentCallsForRun/,
+  );
+  // Both streams read the carried delegations back off the run they are
+  // finishing, beside the launches this turn queued itself.
+  for (const [name, text] of [
+    ["terminal", eventStream],
+    ["garden", gardenAdapter],
+  ]) {
+    assert.match(text, /delegatedAgents \?\? \[\]/, name);
+  }
+  // The Garden's hand-back has to say so in the request body; nothing on that
+  // surface can infer it from the message, which is deliberately hidden.
+  assert.match(garden, /internalAgentContinuation: true \}/);
+});
+
+// A delegated worker has no card, no chat connection and, for most of the
+// hand-off, no run row either. Every one of those gaps used to settle the
+// turn's status row into its past tense, stop its timer and free the composer,
+// so an answer that had promised to keep working looked like it had stopped
+// mid-sentence.
+test("a delegation never lets its turn look finished", () => {
+  for (const [name, text] of [
+    ["terminal", terminal],
+    ["garden", garden],
+  ]) {
+    // Queued behind the turn that asked for it, being started, and finished
+    // but not yet handed back — the three moments with nothing to observe.
+    assert.match(text, /const delegationInFlight =/, name);
+    assert.match(text, /agentLaunchQueue\.queued \|\|/, name);
+    assert.match(text, /delegatedAgentLaunching \|\|/, name);
+    assert.match(text, /pendingLaunchContinuation !== null/, name);
+  }
+  // The composer keeps queueing for the whole span rather than accepting a
+  // message that would overtake the worker.
+  assert.match(terminal, /externalRunLaunching \|\| delegationInFlight/);
+  assert.match(terminal, /delegationInFlight=\{delegationInFlight\}/);
+  assert.match(garden, /delegationInFlight \|\|/);
+  assert.match(garden, /delegationInFlight=\{delegationInFlight\}/);
+  // And the status row stays live: present tense, shimmering, timer running.
+  assert.match(
+    runtimePanel,
+    /externalAgentRunInFlight\(message\) \|\|\s*\(index === lastAssistantIndex && delegationInFlight\)/,
+  );
+  assert.match(
+    garden,
+    /\(i === lastAssistantIndex && delegationInFlight\)/,
+  );
+  for (const [name, text] of [
+    ["runtimePanel", runtimePanel],
+    ["garden", garden],
+  ]) {
+    // An idle chat connection must not be what decides the row is done.
+    assert.match(
+      text,
+      /delegatedAgentActive[\s\S]{0,80}\?[\s\S]{0,8}"streaming"/,
+      name,
+    );
+    // The worker phase continues the turn's clock instead of restarting it.
+    assert.match(text, /activePhaseStartedAt=\{delegatedAgentStartedAt\}/, name);
+  }
+});
+
+// A delegation leaves one visible row where two turns happened. The hand-back
+// reports the result, the turn that delegated is hidden behind it, and only the
+// hand-back's own seconds were ever shown — the tail of an operation, presented
+// as the whole of it.
+test("the visible answer reports the whole delegated operation's duration", () => {
+  assert.match(
+    superAgentActivity,
+    /export function delegatedTurnCarriedDurationMs/,
+  );
+  assert.match(superAgentActivity, /export function delegatedTurnTotalUsage/);
+  // Only ever from the delegating turn, never from an ordinary preceding one.
+  assert.match(superAgentActivity, /owner\?\.delegatedAgentRun !== true/);
+  assert.match(superAgentActivity, /owner\?\.delegatedAgentRun === true/);
+  for (const [name, text] of [
+    ["runtimePanel", runtimePanel],
+    ["garden", garden],
+  ]) {
+    assert.match(
+      text,
+      /delegatedTurnCarriedDurationMs\(continuationOwner\)/,
+      name,
+    );
+    assert.match(text, /carriedDurationMs=\{carriedDurationMs\}/, name);
+    // The cost is inherited the same way the clock is, and the row shows the
+    // total rather than its own half of it.
+    assert.match(text, /delegatedTurnTotalUsage\(/, name);
+    assert.match(text, /usage=\{totalUsage\}/, name);
+  }
+  // Added in every branch of the clock, so the number climbs across the seam
+  // rather than restarting at zero and jumping when the row settles.
+  assert.match(timing, /carriedDurationMs\?: number;/);
+  assert.ok(
+    (timing.match(/carried \+/g) ?? []).length >= 4,
+    "every elapsed-time branch carries the preceding phase",
+  );
 });

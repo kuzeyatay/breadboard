@@ -29,6 +29,20 @@ import { notifyTaskCompleted } from "@/lib/task-completion-notification";
 
 const ChatMarkdown = dynamic(() => import("@/app/components/chat-markdown"), { ssr: false });
 
+function StopSpinner() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-3 w-3 animate-spin motion-reduce:animate-none"
+      viewBox="0 0 24 24"
+      fill="none"
+    >
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z" />
+    </svg>
+  );
+}
+
 interface RunEvent {
   sequenceNumber: number;
   type: string;
@@ -120,12 +134,14 @@ export default function InlineDeepResearchRun({
   const [usage, setUsage] = useState<ChatTokenUsage | undefined>(persistedUsage);
   const [showLearnings, setShowLearnings] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [stopPending, setStopPending] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const resultRef = useRef(result);
   const failureRef = useRef(failure);
   const usageRef = useRef(usage);
   const onTerminalRef = useRef(onTerminal);
   const reportedTerminalRef = useRef(false);
+  const stopPendingRef = useRef(false);
 
   const base = `/api/deep-research/runs/${runId}`;
 
@@ -282,15 +298,39 @@ export default function InlineDeepResearchRun({
       void (async () => {
         try {
           const response = await fetch(`${base}/events?since=0`);
-          if (response.ok) return; // transient drop; the stream reconnects itself
+          if (response.ok) {
+            const data = (await response.json().catch(() => null)) as {
+              events?: RunEvent[];
+            } | null;
+            // The fallback is also a real event read. A terminal frame can land
+            // here while EventSource is reconnecting, so consume it instead of
+            // leaving the transcript marked as running.
+            for (const event of data?.events ?? []) applyEvent(event);
+            return;
+          }
           const data = (await response.json().catch(() => ({}))) as { error?: string };
           eventSource.close();
-          setStatus("failed");
-          setFailure(
+          const message =
             data.error === "run_not_found"
               ? "This run is no longer available — the research service restarted or the run expired."
-              : ERROR_TEXT[data.error ?? ""] ?? "The research service is not reachable.",
-          );
+              : ERROR_TEXT[data.error ?? ""] ?? "The research service is not reachable.";
+          failureRef.current = message;
+          setStatus("failed");
+          setFailure(message);
+          // Giving up locally is not enough. The durable turn still says
+          // "running", which keeps the conversation locked and — for a
+          // delegated run, whose card is hidden — leaves the person looking at
+          // an answer that simply never continues. Report the terminal outcome
+          // the same way a `run.failed` frame would, so the turn is written as
+          // failed and a delegation hands back to the Super Agent.
+          if (!reportedTerminalRef.current) {
+            reportedTerminalRef.current = true;
+            onTerminalRef.current?.({
+              outcome: "failed",
+              content: message,
+              ...(usageRef.current ? { usage: usageRef.current } : {}),
+            });
+          }
         } catch {
           /* offline: leave the stream retrying */
         }
@@ -315,15 +355,54 @@ export default function InlineDeepResearchRun({
   }, [status]);
 
   const stop = async () => {
+    if (stopPendingRef.current) return;
+    stopPendingRef.current = true;
+    setStopPending(true);
+    setError(null);
     try {
       const response = await fetch(`${base}/abort`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: "{}",
       });
-      if (!response.ok) throw new Error(String(response.status));
-      setNote("Stopping after the current step…");
+      const data = (await response.json().catch(() => null)) as {
+        run?: {
+          status?: "running" | "completed" | "failed" | "aborted";
+          lastSequence?: number;
+          completedAt?: string;
+          result?: string;
+          failure?: { code?: string; message?: string };
+          usage?: Record<string, unknown>;
+        };
+      } | null;
+      if (!response.ok || !data?.run) throw new Error(String(response.status));
+      const run = data.run;
+      if (run.result) {
+        applyEvent({
+          sequenceNumber: run.lastSequence ?? 0,
+          type: "run.result",
+          at: run.completedAt ?? new Date().toISOString(),
+          payload: { result: run.result },
+        });
+      }
+      if (run.status && run.status !== "running") {
+        applyEvent({
+          sequenceNumber: run.lastSequence ?? 0,
+          type: `run.${run.status}`,
+          at: run.completedAt ?? new Date().toISOString(),
+          payload: {
+            ...(run.failure?.code ? { error: run.failure.code } : {}),
+            ...(run.failure?.message ? { message: run.failure.message } : {}),
+            ...(run.usage ? { usage: run.usage } : {}),
+          },
+        });
+      }
+      if (run.status === "running") {
+        setNote("Stopping after the current step…");
+      }
     } catch (cause) {
+      stopPendingRef.current = false;
+      setStopPending(false);
       setError((cause as Error).message);
     }
   };
@@ -365,8 +444,15 @@ export default function InlineDeepResearchRun({
             {terminal ? status : `researching · ${formatDuration(elapsedSeconds)}`}
           </span>
           {!terminal && (
-            <button type="button" onClick={stop} className="bb-agent-run-action">
-              Stop
+            <button
+              type="button"
+              onClick={stop}
+              disabled={stopPending}
+              aria-busy={stopPending}
+              className="bb-agent-run-action inline-flex items-center gap-1.5 disabled:cursor-wait disabled:opacity-55"
+            >
+              {stopPending ? <StopSpinner /> : null}
+              {stopPending ? "Stopping" : "Stop"}
             </button>
           )}
         </div>

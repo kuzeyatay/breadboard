@@ -27,7 +27,15 @@ export const metadata: Metadata = {
  * page changes while you are looking at it. Inviting is the exception, and the
  * client owns that on its own.
  */
-export default async function ProfilePage() {
+export default async function ProfilePage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    tab?: string | string[];
+    scope?: string | string[];
+    organization?: string | string[];
+  }>;
+}) {
   const session = await getServerSession(authOptions);
   if (!session?.user) redirect("/auth/login?callbackUrl=/profile");
 
@@ -43,6 +51,21 @@ export default async function ProfilePage() {
   const calendars = getCalendarStore()
     .listCalendars(userId)
     .filter((calendar) => calendar.caldavUrl);
+  const requested = await searchParams;
+  const rawTab = Array.isArray(requested.tab) ? requested.tab[0] : requested.tab;
+  // `brain` remains a backwards-compatible deep link; the user-facing surface
+  // and all new URLs use the clearer Knowledge name.
+  const initialTab = rawTab === "knowledge" || rawTab === "brain" ? "knowledge" : "profile";
+  const rawScope = Array.isArray(requested.scope) ? requested.scope[0] : requested.scope;
+  const rawOrganization = Array.isArray(requested.organization)
+    ? requested.organization[0]
+    : requested.organization;
+  const initialBrainScope =
+    rawScope === "all"
+      ? "all"
+      : rawScope === "organization" && rawOrganization
+        ? rawOrganization.slice(0, 320)
+        : "personal";
 
   return (
     <ProfileClient
@@ -53,6 +76,8 @@ export default async function ProfilePage() {
       contactTotal={contacts.countContacts(userId)}
       syncedCalendars={calendars}
       calendarVaultConfigured={caldavVaultConfigured()}
+      initialTab={initialTab}
+      initialBrainScope={initialBrainScope}
     />
   );
 }

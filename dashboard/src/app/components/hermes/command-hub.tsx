@@ -59,6 +59,7 @@ import { OPENWORK_COMMAND } from "@/lib/openwork/identity.ts";
 import { OPENSCIENCE_COMMAND } from "@/lib/openscience/identity.ts";
 import { INBOX_ZERO_COMMAND } from "@/lib/inbox-zero/identity.ts";
 import { VIMAX_COMMAND } from "@/lib/vimax/identity.ts";
+import { VOX_DIRECTOR_COMMAND } from "@/lib/vox-director/identity.ts";
 import { MONEY_PRINTER_COMMAND } from "@/lib/money-printer/identity.ts";
 import { LEGAL_COMMAND } from "@/lib/legal/identity.ts";
 import { WARDROBE_COMMAND } from "@/lib/wardrobe/identity.ts";
@@ -270,6 +271,7 @@ interface Props {
   /** When provided, selecting Inbox Zero inserts its canonical command. */
   onSelectInboxZero?: () => void;
   onSelectVimax?: () => void;
+  onSelectVoxDirector?: () => void;
   /** When provided, selecting MoneyPrinter inserts its canonical command. */
   onSelectMoneyPrinter?: () => void;
   /** When provided, selecting the Legal Agent inserts its canonical command. */
@@ -459,6 +461,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onSelectOpenscience,
       onSelectInboxZero,
       onSelectVimax,
+      onSelectVoxDirector,
       onSelectMoneyPrinter,
       onSelectLegal,
       onSelectWardrobe,
@@ -904,6 +907,14 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         VIMAX_COMMAND,
         "film movie story screenplay script storyboard shots scenes characters animatic cinematic director screenwriter video",
       );
+    const showVoxDirector =
+      surface !== "quartz_ai" &&
+      Boolean(onSelectVoxDirector) &&
+      matchesAgentSearch(
+        "Vox Director",
+        VOX_DIRECTOR_COMMAND,
+        "explainer explain vox collage paper torn cutout poster narrated narration voiceover editorial motion graphics short video beats headline scrapbook",
+      );
     const showMoneyPrinter =
       surface !== "quartz_ai" &&
       Boolean(onSelectMoneyPrinter) &&
@@ -993,6 +1004,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       showOpenscience ||
       showInboxZero ||
       showVimax ||
+      showVoxDirector ||
       showMoneyPrinter ||
       showLegal ||
       showCodex ||
@@ -2328,6 +2340,41 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                           color={highlightColorForId("agent:vimax")}
                           onColorChange={(color) => setHighlightId("agent:vimax", color)}
                           label="Choose ViMax highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
+                    ...(showVoxDirector
+                      ? [{ name: "Vox Director", node: (
+                      <li key="vox-director"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForId("agent:vox-director"))}
+                      >
+                        <button
+                          id="vox-director-entry"
+                          type="button"
+                          onClick={() => {
+                            onSelectVoxDirector?.();
+                            onOpenChange(false);
+                          }}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{VOX_DIRECTOR_COMMAND}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Explains a topic in a short narrated video — a torn-paper collage poster for each beat, its pieces flying into place, read aloud and rendered on this machine.
+                          </span>
+                        </button>
+                        <AgentSettingsButton
+                          name="Vox Director"
+                          onOpen={() => {
+                            setAgentSettingsFor("vox-director");
+                            onOpenChange(false);
+                          }}
+                        />
+                        <FavoriteBox
+                          color={highlightColorForId("agent:vox-director")}
+                          onColorChange={(color) => setHighlightId("agent:vox-director", color)}
+                          label="Choose Vox Director highlight color"
                         />
                       </li>
                       ) }]

@@ -27,6 +27,8 @@ const FILES = [
   ["shared/ui/popoverSurface.ts", "ui/popoverSurface.ts"],
   ["shared/ui/modalBackdrop.ts", "ui/modalBackdrop.ts"],
   ["shared/ui/smoothCorners.ts", "ui/smoothCorners.ts"],
+  ["shared/ui/modalMotion.ts", "ui/modalMotion.ts"],
+  ["shared/ui/DrawerPanelIcon.tsx", "ui/DrawerPanelIcon.tsx"],
   ["shared/ui/button.tsx", "ui/button.tsx"],
   ["shared/ui/input.tsx", "ui/input.tsx"],
   ["shared/ui/textarea.tsx", "ui/textarea.tsx"],
@@ -43,6 +45,11 @@ const FILES = [
   ["shared/ui/sheet.tsx", "ui/sheet.tsx"],
   ["shared/ui/sidebar.tsx", "ui/sidebar.tsx"],
   ["shared/ui/spinner.tsx", "ui/spinner.tsx"],
+  ["shared/ui/sidebar-menu-label.tsx", "ui/sidebar-menu-label.tsx"],
+  ["shared/ui/mentionChip.ts", "ui/mentionChip.ts"],
+  ["shared/lib/initials.ts", "lib/initials.ts"],
+  ["shared/ui/UserAvatar.tsx", "ui/UserAvatar.tsx"],
+  ["features/messages/ui/MessageHeader.tsx", "ui/MessageHeader.tsx"],
   ["shared/ui/card-texture.css", "ui/card-texture.css"],
 ];
 
@@ -63,6 +70,8 @@ const IMPORT_REWRITES = [
   [/@\/shared\/ui\//g, "@/app/buzz/ui/"],
   [/@\/shared\/layout\/AuxiliaryPanel/g, "@/app/buzz/lib/auxiliaryPanelLayout"],
   [/@\/shared\/layout\//g, "@/app/buzz/lib/"],
+  [/@\/features\/messages\/ui\//g, "@/app/buzz/ui/"],
+  [/@\/features\/[a-z-]+\/lib\//g, "@/app/buzz/lib/"],
 ];
 
 function port(source, destination) {
@@ -81,6 +90,35 @@ function port(source, destination) {
 // Haptics are a Tauri command on the desktop app. In a browser there is
 // nothing to call, and the sidebar reads better silently than it does throwing
 // on every click, so the module is replaced rather than ported.
+const AVATAR_SHIMS = [
+  [
+    "lib/animatedAvatar.ts",
+    `"use client";
+
+// Buzz serves animated avatars as a poster/animation pair from its own relay.
+// Nothing here produces that shape, so every avatar is a still image.
+
+export function parseAnimatedAvatarUrl(
+  _url: string | null,
+): { posterUrl: string; animationUrl: string } | null {
+  return null;
+}
+`,
+  ],
+  [
+    "lib/mediaUrl.ts",
+    `"use client";
+
+// Buzz rewrites media URLs onto whichever relay the client is connected to.
+// Member avatars here are already local or absolute, so the URL stands as-is.
+
+export function rewriteRelayUrl(url: string): string {
+  return url;
+}
+`,
+  ],
+];
+
 const HAPTICS_SHIM = `"use client";
 
 // Buzz calls into a Tauri command for sidebar haptics. There is no such host
@@ -91,10 +129,39 @@ export function performDefaultHaptic(): void {}
 export function performSidebarDefaultHaptic(): void {}
 `;
 
+/*
+ * Buzz gives its avatar fallback a 200 ms delay so a member with a real picture
+ * does not flash their initials while it loads. Nobody in this port has an
+ * uploaded picture — every avatar is initials — so that delay only ever buys a
+ * blank disc, and Radix skips the fallback during server rendering unless the
+ * delay is `undefined` (not `0`). Dropping the default lets a caller omit it
+ * and get initials in the first paint, while an explicit value still behaves
+ * exactly as upstream.
+ */
+const AVATAR_DELAY_PATCH = [
+  "  fallbackDelayMs = 200,",
+  "  fallbackDelayMs,",
+];
+
+function patchAvatarDelay(text) {
+  if (!text.includes(AVATAR_DELAY_PATCH[0])) {
+    throw new Error("UserAvatar no longer defaults fallbackDelayMs — re-check the patch");
+  }
+  return text.replace(AVATAR_DELAY_PATCH[0], AVATAR_DELAY_PATCH[1]);
+}
+
 for (const [source, destination] of FILES) port(source, destination);
+
+{
+  const target = join(OUT, "ui/UserAvatar.tsx");
+  writeFileSync(target, patchAvatarDelay(readFileSync(target, "utf8")), "utf8");
+}
 
 mkdirSync(join(OUT, "lib"), { recursive: true });
 writeFileSync(join(OUT, "lib/haptics.ts"), HAPTICS_SHIM, "utf8");
+for (const [destination, body] of AVATAR_SHIMS) {
+  writeFileSync(join(OUT, destination), body, "utf8");
+}
 for (const [source, destination] of ASSETS) {
   const target = join(OUT, destination);
   mkdirSync(dirname(target), { recursive: true });

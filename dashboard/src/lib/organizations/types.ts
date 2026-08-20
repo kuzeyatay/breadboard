@@ -21,6 +21,8 @@ export interface OrganizationPendingInvite {
 
 export interface Organization {
   id: number;
+  /** Opaque identifier used by private Knowledge Map deep links. */
+  brainScopeId?: string;
   name: string;
   createdAt: string;
   role: OrganizationRole;

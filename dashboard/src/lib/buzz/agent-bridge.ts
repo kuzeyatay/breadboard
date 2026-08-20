@@ -34,40 +34,13 @@ import {
 } from "./instance.ts";
 import type { BuzzMember, BuzzMessage, BuzzRoom } from "./store.ts";
 
+// The room's routing rule lives in `mentions.ts`, which touches neither the
+// database nor a model so it can be exercised directly. Re-exported here so
+// callers have one import for "post a message and wake whoever it names".
+export { mentionedHandles, resolveResponders } from "./mentions.ts";
+
 /** How much of the room a member is shown before it answers. */
 const TRANSCRIPT_DEPTH = 40;
-
-/**
- * Who answers a message.
- *
- * `always` members speak on every human message; everyone else waits to be
- * named. A room with four always-on agents answers every line four times, which
- * is why `mention` is the default a member joins with.
- */
-export function resolveResponders(
-  members: readonly BuzzMember[],
-  body: string,
-): BuzzMember[] {
-  const mentioned = new Set(mentionedHandles(body));
-  return members.filter((member) => {
-    if (member.kind !== "agent" || member.muted) return false;
-    if (member.respondTo === "never") return false;
-    if (member.respondTo === "always") return true;
-    return mentioned.has(member.handle);
-  });
-}
-
-/** The `@handle` tokens in a message body. */
-export function mentionedHandles(body: string): string[] {
-  const handles: string[] = [];
-  const pattern = /(^|[^\w@])@([a-z0-9][a-z0-9-]{0,39})/gi;
-  let match = pattern.exec(body);
-  while (match) {
-    handles.push(match[2].toLowerCase());
-    match = pattern.exec(body);
-  }
-  return handles;
-}
 
 /**
  * The private conversation an agent member thinks in for one room, created on
@@ -76,6 +49,7 @@ export function mentionedHandles(body: string): string[] {
 export function ensureMemberConversation(
   room: BuzzRoom,
   member: BuzzMember,
+  fallbackUserId: number,
 ): ConversationRow {
   if (member.conversationId) {
     const existing = db
@@ -84,8 +58,12 @@ export function ensureMemberConversation(
     if (existing) return existing;
   }
 
+  // The room's creator owns the agent's private conversation, not whoever
+  // happened to speak: the member is the room's, and several people share it.
+  // Were it owned by the asker, the same agent would keep one memory per
+  // colleague and answer each of them from a different history.
   const conversation = createConversation({
-    userId: room.userId,
+    userId: room.createdByUserId ?? fallbackUserId,
     title: `${member.displayName} in #${room.slug}`,
     surface: "dashboard_terminal",
     scopeKind: "global",
@@ -152,11 +130,15 @@ export function buildRoomPrompt(input: {
 
   return [
     `You are ${member.displayName}, a member of the Buzz room #${room.slug}.`,
+    "This room can hold several people as well as several agents.",
     room.topic ? `The room's topic is: ${room.topic}` : "",
     instructions ? `\nYour brief:\n${instructions}` : "",
-    roster ? `\nAlso in this room:\n${roster}` : "\nYou are alone in this room with the person you are talking to.",
+    roster
+      ? `\nAlso in this room:\n${roster}`
+      : "\nYou are alone in this room with the person you are talking to.",
     "\nHow this room works:",
-    "- Everything you write is posted into the shared transcript. Every member reads it.",
+    "- Everything you write is posted into the shared transcript. Every member reads it — the other people as well as the other agents.",
+    "- More than one person may be talking. Answer the message you were given, and address people by name when it is not obvious who you mean.",
     "- Write one message, as yourself, in your own voice. Do not narrate other members or write their lines.",
     `- To bring in another member, mention them by handle — writing @handle notifies them and they will answer next.`,
     "- Keep it to what a person would actually post in a chat room. No sign-off, no restating the question.",
@@ -189,6 +171,8 @@ export async function startMemberReply(input: {
   memberId: number;
   trigger: BuzzMessage;
   clientMessageId: string;
+  /** Used only if the room has outlived the account that created it. */
+  actingUserId: number;
 }): Promise<StartMemberReplyResult> {
   const { room, trigger, clientMessageId } = input;
   const member = getMember(input.memberId);
@@ -202,7 +186,7 @@ export async function startMemberReply(input: {
     ? listThreadMessages(room.id, trigger.parentId as number)
     : listSpineMessages(room.id, TRANSCRIPT_DEPTH);
 
-  const conversation = ensureMemberConversation(room, member);
+  const conversation = ensureMemberConversation(room, member, input.actingUserId);
   const prompt = buildRoomPrompt({
     room,
     member,

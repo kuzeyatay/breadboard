@@ -14,7 +14,7 @@ import { signOut } from "next-auth/react";
 
 import BackLink from "@/app/components/back-link";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
-import OrganizationPanel from "./organization-panel";
+import BrainMapPanel from "./brain-map-panel";
 import BrowserProfilePanel from "./browser-profile-panel";
 import ContactsPanel from "./contacts-panel";
 import CalendarSyncPanel from "./calendar-sync-panel";
@@ -1194,7 +1194,11 @@ function ReviewDeliveryPanel() {
  * name set here is what the greeting uses, and it travels into every turn's
  * memory context, so the assistant addresses a person rather than a login.
  */
-function NamePanel({ initial }: { initial: { firstName: string; lastName: string; username: string } }) {
+function NamePanel({
+  initial,
+}: {
+  initial: { firstName: string; lastName: string; nickname: string; username: string };
+}) {
   const router = useRouter();
   const [firstName, setFirstName] = useState(initial.firstName);
   const [lastName, setLastName] = useState(initial.lastName);
@@ -1207,7 +1211,10 @@ function NamePanel({ initial }: { initial: { firstName: string; lastName: string
   // What the greeting will actually say once this is saved, worked out here
   // rather than described in prose: the fallback to the username is the part
   // people need to see, and a sentence about it is not the same as seeing it.
-  const greetingName = firstName.trim() || initial.username;
+  // The nickname is read from the prop rather than held here, because the panel
+  // below owns it — saving it refreshes the page and this sentence follows.
+  const nickname = initial.nickname.trim();
+  const greetingName = nickname || firstName.trim() || initial.username;
 
   async function save() {
     setBusy(true);
@@ -1242,7 +1249,11 @@ function NamePanel({ initial }: { initial: { firstName: string; lastName: string
     <Card
       title="Your name"
       hint={`Breadboard will call you ${greetingName}${
-        firstName.trim() ? "" : " — your username, until you give it something better"
+        nickname
+          ? " — the nickname below wins over a first name"
+          : firstName.trim()
+            ? ""
+            : " — your username, until you give it something better"
       }.`}
     >
       <form
@@ -1301,6 +1312,147 @@ function NamePanel({ initial }: { initial: { firstName: string; lastName: string
         {!error && confirmed && !dirty && (
           <p className="text-xs text-gray-500">Saved.</p>
         )}
+      </form>
+    </Card>
+  );
+}
+
+/** The cap the store enforces on the free-text note, shown as a counter. */
+const ABOUT_MAX_LENGTH = 1_500;
+
+/**
+ * The rest of what the assistant knows about you before a word is typed.
+ *
+ * The name answers "who is this"; these three answer "what should I already
+ * know". A nickname outranks the first name when addressing someone — it is
+ * the more deliberate answer, given by someone looking at both fields at once —
+ * and the occupation and the note ride into the same `# user_identity` block on
+ * every turn, temporary chats included. Nothing here is inferred, so nothing
+ * here needs confirming: it is what they typed about themselves.
+ */
+function AboutYouPanel({
+  initial,
+}: {
+  initial: { nickname: string; occupation: string; about: string };
+}) {
+  const router = useRouter();
+  const [nickname, setNickname] = useState(initial.nickname);
+  const [occupation, setOccupation] = useState(initial.occupation);
+  const [about, setAbout] = useState(initial.about);
+  const [saved, setSaved] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+
+  const dirty =
+    nickname !== saved.nickname || occupation !== saved.occupation || about !== saved.about;
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    setConfirmed(false);
+    try {
+      const response = await fetch("/api/profile/identity", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nickname, occupation, about }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        identity?: { nickname: string; occupation: string; about: string };
+        error?: string;
+      };
+      if (!response.ok || !data.identity) throw new Error(data.error || "Could not save this");
+      // The stored values are the normalized ones, so the fields show what the
+      // assistant will actually be told rather than what was typed.
+      setNickname(data.identity.nickname);
+      setOccupation(data.identity.occupation);
+      setAbout(data.identity.about);
+      setSaved({
+        nickname: data.identity.nickname,
+        occupation: data.identity.occupation,
+        about: data.identity.about,
+      });
+      setConfirmed(true);
+      // The name card above says what you will be called, and a nickname
+      // changes that answer, so it has to re-read the row.
+      router.refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not save this");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function touch(apply: () => void) {
+    apply();
+    setConfirmed(false);
+  }
+
+  return (
+    <Card
+      title="About you"
+      hint="Given to the assistant at the start of every chat, this one included. Leave a field empty and it is not mentioned at all."
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (dirty && !busy) void save();
+        }}
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500">Nickname</span>
+            <input
+              type="text"
+              value={nickname}
+              maxLength={60}
+              autoComplete="nickname"
+              placeholder="What should breadboard call you?"
+              onChange={(event) => touch(() => setNickname(event.target.value))}
+              className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500">Occupation</span>
+            <input
+              type="text"
+              value={occupation}
+              maxLength={120}
+              autoComplete="organization-title"
+              placeholder="Small-batch home sourdough baker"
+              onChange={(event) => touch(() => setOccupation(event.target.value))}
+              className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
+            />
+          </label>
+        </div>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-gray-500">More about you</span>
+          <textarea
+            value={about}
+            rows={4}
+            maxLength={ABOUT_MAX_LENGTH}
+            placeholder="Interests, values, or preferences to keep in mind"
+            onChange={(event) => touch(() => setAbout(event.target.value))}
+            className="w-full resize-y rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm leading-relaxed text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
+          />
+        </label>
+        <div className="flex items-center justify-between gap-3">
+          <p className="min-w-0 text-xs text-gray-600">
+            A nickname is what you are called, ahead of your first name.{" "}
+            {about.length > 0 && `${about.length} of ${ABOUT_MAX_LENGTH} characters. `}
+            None of this is memory the assistant learned — it is what you told it.
+          </p>
+          <button
+            type="submit"
+            disabled={!dirty || busy}
+            className="neu-button shrink-0 rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy ? "Saving…" : "Save"}
+          </button>
+        </div>
+        {error && <p className="text-xs text-red-400">{error}</p>}
+        {!error && confirmed && !dirty && <p className="text-xs text-gray-500">Saved.</p>}
       </form>
     </Card>
   );
@@ -1952,6 +2104,8 @@ export default function ProfileClient({
   contactTotal,
   syncedCalendars,
   calendarVaultConfigured,
+  initialTab,
+  initialBrainScope,
 }: {
   stats: ProfileStats;
   initialShortcuts: NavbarShortcuts;
@@ -1960,9 +2114,13 @@ export default function ProfileClient({
   contactTotal: number;
   syncedCalendars: CalendarCollection[];
   calendarVaultConfigured: boolean;
+  initialTab: "profile" | "knowledge";
+  initialBrainScope: string;
 }) {
+  const router = useRouter();
   const { account, totals, streaks, habit, surfaces, gardens, artifactKinds, agents } = stats;
-  const [tab, setTab] = useState<"profile" | "organization">("profile");
+  const [tab, setTab] = useState<"profile" | "knowledge">(initialTab);
+  const [brainScope, setBrainScope] = useState(initialBrainScope);
   // The heading is the name when there is one, because that is the thing this
   // page is about. The username does not disappear — it moves down a line, to
   // sit with the email as the other piece of account plumbing.
@@ -1973,6 +2131,23 @@ export default function ProfileClient({
   const artifactMax = artifactKinds.reduce((best, entry) => Math.max(best, entry.count), 0);
   const agentMax = agents.reduce((best, entry) => Math.max(best, entry.runs), 0);
 
+  const selectTab = useCallback((nextTab: "profile" | "knowledge") => {
+    setTab(nextTab);
+    const params = new URLSearchParams(window.location.search);
+    if (nextTab === "knowledge") {
+      params.set("tab", nextTab);
+    } else {
+      // `scope` and `organization` are the Knowledge tab's own state — an
+      // organization-scoped map is still reachable by link, but leaving the
+      // tab takes its scope with it rather than stranding it in the URL.
+      params.delete("tab");
+      params.delete("scope");
+      params.delete("organization");
+    }
+    const query = params.toString();
+    router.replace(query ? `/profile?${query}` : "/profile", { scroll: false });
+  }, [router]);
+
   return (
     <div className="flex min-h-screen flex-col bg-gray-950 text-white">
       <header className="breadboard-flower-navbar relative flex shrink-0 items-center justify-between gap-4 border-b border-gray-800 px-6 py-3.5">
@@ -1981,15 +2156,15 @@ export default function ProfileClient({
           <BackLink fallbackHref="/dashboard" fallbackLabel="Back to dashboard" fixed />
           <span className="text-gray-700">/</span>
           <h1 className="truncate text-sm font-semibold text-white">
-            {tab === "organization" ? "Organization" : "Profile"}
+            {tab === "knowledge" ? "Knowledge" : "Profile"}
           </h1>
         </div>
         <nav className="relative z-10 inline-flex shrink-0 items-center rounded-md border border-gray-800 bg-gray-900/80 p-1 shadow-inner">
-          {(["profile", "organization"] as const).map((name) => (
+          {(["profile", "knowledge"] as const).map((name) => (
             <button
               key={name}
               type="button"
-              onClick={() => setTab(name)}
+              onClick={() => selectTab(name)}
               aria-current={tab === name ? "page" : undefined}
               className={
                 tab === name
@@ -1997,15 +2172,15 @@ export default function ProfileClient({
                   : "rounded-md px-3 py-1.5 text-xs font-medium text-gray-400 transition hover:text-white"
               }
             >
-              {name === "profile" ? "Profile" : "Organization"}
+              {name === "profile" ? "Profile" : "Knowledge"}
             </button>
           ))}
         </nav>
       </header>
 
-      {tab === "organization" ? (
-        <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-8">
-          <OrganizationPanel username={account.username} />
+      {tab === "knowledge" ? (
+        <main className="mx-auto w-full max-w-[1600px] flex-1 px-3 py-4 sm:px-5 sm:py-6">
+          <BrainMapPanel initialScope={brainScope} onScopeChange={setBrainScope} />
         </main>
       ) : (
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
@@ -2053,13 +2228,21 @@ export default function ProfileClient({
           </div>
         </section>
 
-        {/* ---------------------------------------------------------- name */}
-        <div className="mt-4">
+        {/* ------------------------------------------------ name, about you */}
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <NamePanel
             initial={{
               firstName: account.firstName,
               lastName: account.lastName,
+              nickname: account.nickname,
               username: account.username,
+            }}
+          />
+          <AboutYouPanel
+            initial={{
+              nickname: account.nickname,
+              occupation: account.occupation,
+              about: account.about,
             }}
           />
         </div>

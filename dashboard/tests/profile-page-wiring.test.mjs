@@ -70,12 +70,10 @@ test("the optional navbar entries obey their settings", () => {
   assert.doesNotMatch(navbar, /href="\/pomodoro"/, "the navbar itself no longer links out");
   assert.match(workTimer, /href="\/pomodoro"/, "the panel still reaches the full page");
 
-  // World monitor is still a guarded link, rendered exactly once.
-  const guardIndex = navbar.indexOf("{shortcuts.worldMonitor && (");
-  const linkIndex = navbar.indexOf('href="/worldmonitor"');
-  assert.ok(guardIndex > 0, "the world monitor is guarded");
-  assert.ok(linkIndex > guardIndex, "and sits inside its guard");
-  assert.equal(navbar.indexOf('href="/worldmonitor"', linkIndex + 1), -1, "and appears once");
+  // The world monitor seat was withdrawn: the page is still there, but the
+  // navbar no longer carries it and the profile no longer offers the switch.
+  assert.doesNotMatch(navbar, /worldMonitor/, "the withdrawn seat left the navbar");
+  assert.doesNotMatch(navbar, /href="\/worldmonitor"/, "link and all");
 
   const planGuardIndex = navbar.indexOf("{shortcuts.plan && (");
   const planLinkIndex = navbar.indexOf('href="/plan"');

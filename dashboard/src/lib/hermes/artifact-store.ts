@@ -516,6 +516,7 @@ function sourceExtension(rendererId: string): string {
   return rendererId === "interactive-visualizer" ||
     rendererId === "hardware-blueprint" ||
     rendererId === "vimax-production" ||
+    rendererId === "vox-director-production" ||
     rendererId === "gadget"
     ? ".json"
     : rendererId === "html" || rendererId === "presentation-html"

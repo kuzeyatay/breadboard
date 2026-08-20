@@ -61,6 +61,16 @@ test("the composer centers one line and grows longer drafts up to its cap", () =
   assert.doesNotMatch(composer, /pb-\[9px\] pt-\[11px\]/);
 });
 
+test("the composer uses the native blinking caret with a theme-safe color", () => {
+  assert.match(composer, /caret-\[var\(--composer-caret\)\]/);
+  assert.match(globalStyles, /--composer-caret: #000000; \/\* native typing caret \*\//);
+  assert.match(
+    globalStyles,
+    /:root\[data-theme="dark"\] \{[^}]*--composer-caret: #ffffff;/,
+  );
+  assert.doesNotMatch(globalStyles, /@keyframes composer-caret/);
+});
+
 test("the Terminal composer uses the same full-size field as the main Garden chat", () => {
   const terminalRuntime = dashboardTerminal.match(/<AgentRuntimePanel[\s\S]*?\/>/)?.[0] ?? "";
   assert.doesNotMatch(terminalRuntime, /\bcompact\b/);

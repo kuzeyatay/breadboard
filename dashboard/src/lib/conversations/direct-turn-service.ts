@@ -53,7 +53,10 @@ import {
 import { getActiveRuntimeRun } from "../hermes/run-store.ts";
 import { cogniviaSection } from "../cognivia/index.ts";
 import { directModeSection } from "../hermes/direct-mode.ts";
-import { responseStylePrompt } from "../hermes/system-prompts.ts";
+import {
+  readerComprehensionPrompt,
+  responseStylePrompt,
+} from "../hermes/system-prompts.ts";
 import {
   evidenceCalibrationSection,
   suppliedEvidenceText,
@@ -64,6 +67,7 @@ import {
   listRecentConversationMessages,
   reserveConversationTurn,
   retryAssistantMessage,
+  isPreDispatchReservedAssistant,
   ConversationStoreError,
   type ConversationRow,
 } from "./store.ts";
@@ -143,6 +147,9 @@ function directSystemPrompt(
       "Never claim to have read, written, run, saved, sent, or remembered anything.",
     ].join("\n"),
     currentLocationContext,
+    // This stays last even in Direct mode. Brevity may remove irrelevant
+    // detail, never the explanation that makes the remaining answer usable.
+    readerComprehensionPrompt(),
   ].filter(Boolean).join("\n\n");
 }
 
@@ -297,7 +304,13 @@ export async function startDirectProviderTurn(
       ? new ApiError(error.status, error.code, error.message)
       : error;
   }
-  if (reservation.isNew && reservation.userMessage.order_index === 0) {
+  const preDispatchReserved =
+    !reservation.isNew &&
+    isPreDispatchReservedAssistant(reservation.assistantMessage);
+  if (
+    (reservation.isNew || preDispatchReserved) &&
+    reservation.userMessage.order_index === 0
+  ) {
     const { baseURL } = resolveChatmockBaseUrl(input.request);
     const titledConversation = await generateAndApplyConversationTitle({
       conversation: reservation.conversation,

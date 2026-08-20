@@ -54,6 +54,7 @@ interface ChatMessage {
   verification?: VerificationSummary;
   externalAgentRun?: ExternalAgentRun;
   externalAgentOutcome?: ExternalAgentOutcome;
+  externalAgentStartedAt?: string;
   externalAgentActivity?: ExternalAgentActivityEntry[];
   externalAgentEdits?: ExternalAgentEdits;
   externalAgentState?: Record<string, unknown>;
@@ -112,6 +113,12 @@ function mergeRuntimeMetadata(
     metadata.externalAgentOutcome =
       message.externalAgentOutcome ?? "running";
   }
+  if (
+    typeof message.externalAgentStartedAt === "string" &&
+    Number.isFinite(Date.parse(message.externalAgentStartedAt))
+  ) {
+    metadata.externalAgentStartedAt = message.externalAgentStartedAt;
+  }
   if (message.delegatedAgentRun === true) {
     metadata.delegatedAgentRun = true;
     if (message.delegatedAgentPreamble?.trim()) {
@@ -145,6 +152,7 @@ function normalizeExternalAgent(
   ChatMessage,
   | "externalAgentRun"
   | "externalAgentOutcome"
+  | "externalAgentStartedAt"
   | "externalAgentActivity"
   | "externalAgentEdits"
   | "externalAgentState"
@@ -167,10 +175,16 @@ function normalizeExternalAgent(
   const activity = parseExternalAgentActivity(record.externalAgentActivity);
   const edits = parseExternalAgentEdits(record.externalAgentEdits);
   const state = parseExternalAgentState(record.externalAgentState);
+  const externalAgentStartedAt =
+    typeof record.externalAgentStartedAt === "string" &&
+    Number.isFinite(Date.parse(record.externalAgentStartedAt))
+      ? record.externalAgentStartedAt
+      : undefined;
   const runRecord = {
     ...(activity.length ? { externalAgentActivity: activity } : {}),
     ...(edits ? { externalAgentEdits: edits } : {}),
     ...(state ? { externalAgentState: state } : {}),
+    ...(externalAgentStartedAt ? { externalAgentStartedAt } : {}),
     ...(record.delegatedAgentRun === true ? { delegatedAgentRun: true } : {}),
     ...(typeof record.delegatedAgentPreamble === "string" &&
     record.delegatedAgentPreamble.trim()

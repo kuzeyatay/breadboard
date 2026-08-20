@@ -121,6 +121,18 @@ test("the brown terminal header toggles fully open and fully closed", () => {
   );
 });
 
+test("opening the terminal puts the native caret in the chat field", () => {
+  assert.match(terminal, /const focusComposerAfterOpenRef = useRef\(false\)/);
+  assert.match(
+    terminal,
+    /if \(open\) \{\s*focusComposerAfterOpenRef\.current = true;/,
+  );
+  assert.match(
+    terminal,
+    /if \(!isOpen \|\| !focusComposerAfterOpenRef\.current\) return;[\s\S]*?composerTextareaRef\.current\?\.focus\(\)/,
+  );
+});
+
 test("the terminal always starts collapsed and uses saved height only after opening", () => {
   for (const source of [terminal, legacyTerminal]) {
     assert.match(source, /useState\(COLLAPSED_HEIGHT\)/);
@@ -136,8 +148,8 @@ test("the restored shell retains Hermes runtime capabilities", () => {
   assert.match(terminal, /pendingPermission=\{session\.pendingPermission\}/);
   assert.match(terminal, /onPermissionDecision=/);
   assert.match(terminal, /onAbort=/);
-  assert.match(terminal, /model=\{model\}/);
-  assert.match(terminal, /reasoningEffort=\{reasoningEffort\}/);
+  assert.match(terminal, /model=\{selectedModel\}/);
+  assert.match(terminal, /reasoningEffort=\{selectedReasoningEffort\}/);
   assert.doesNotMatch(terminal, /<SkillReviewPanel/);
   assert.doesNotMatch(terminal, /Review skills/);
   assert.match(terminal, /loadHermesSessionSummaries\("dashboard_terminal"/);
@@ -269,7 +281,7 @@ test("a fully open terminal stops the page behind it from scrolling", () => {
   assert.match(effectTail, /\}, \[height\]\);/);
 });
 
-test("a message cannot be sent into a chat that is still loading", () => {
+test("a message queues while its chat is still loading", () => {
   // The hook is the backstop: `send` reads a ref, because the handlers that
   // call it run outside the render that produced the flag.
   assert.match(agentSession, /const loadingSessionRef = useRef\(true\);/);
@@ -281,27 +293,30 @@ test("a message cannot be sent into a chat that is still loading", () => {
   assert.doesNotMatch(agentSession, /(?<!set)\bsetLoadingSession\(true\)/);
   assert.match(agentSession, /if \(loadingSessionRef\.current\) return;/);
 
-  // The composer is locked for the same window, so the block is visible
-  // rather than a send button that silently does nothing.
+  // Direct conversation mutations stay locked for the same window. The shared
+  // queue, however, holds the typed follow-up until this lock clears.
   assert.match(
     runtime,
     /const conversationLocked = Boolean\(disabled\) \|\| loadingTranscript;/,
   );
   assert.match(runtime, /disabled=\{conversationLocked\}/);
+  assert.match(runtime, /const queueHeld = loadingTranscript \|\| runInFlight/);
+  assert.match(runtime, /runInFlight: queueHeld/);
+  assert.match(runtime, /queueDisabled=\{Boolean\(disabled\)\}/);
 
   // The wait is shown on the send button, not in the box: the placeholder is
   // the ordinary invitation and the field takes typing throughout.
   assert.match(runtime, /placeholder=\{placeholder \?\? "Ask the agent…"\}/);
   assert.doesNotMatch(runtime, /loadingTranscript \? "Loading this chat…"/);
   assert.match(runtime, /loading=\{loadingTranscript\}/);
-  assert.match(composer, /\{isSending \|\| loading \? \(\s*<Spinner \/>/);
-  assert.match(
-    composer,
-    /disabled=\{loading \|\| !canSend \|\| isSending \|\| disabled/,
-  );
-  // Loading keeps the accent colour; every other block still greys out.
+  assert.match(composer, /\(isSending \|\| loading\) && !canQueueFollowUp/);
+  assert.match(composer, /const queueHeld = loading \|\| runInFlight/);
+  assert.match(composer, /if \(queueHeld\) \{\s*queueSteer\(\)/);
+  assert.match(composer, /canQueueFollowUp\s*\? 'Queue message'/);
+  assert.match(composer, /runInFlight && onStop && !canQueueFollowUp/);
+  // Loading keeps the accent colour when empty; typing restores the arrow.
   assert.match(composer, /\$\{loading \? 'disabled:cursor-wait/);
-  assert.match(composer, /if \(loading\) return;/);
+  assert.doesNotMatch(composer, /if \(loading\) return;/);
   // Voice mode submits without touching the send button.
   assert.match(
     runtime,

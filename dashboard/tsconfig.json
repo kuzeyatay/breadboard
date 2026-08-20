@@ -35,16 +35,18 @@
     "**/*.tsx",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
-    "**/*.mts",
-    ".next-dev/types/**/*.ts",
-    ".next-dev/dev/types/**/*.ts",
-    ".next-desktop/types/**/*.ts",
-    ".next-desktop/dev/types/**/*.ts",
-    ".next-schedcheck/types/**/*.ts",
-    ".next-schedcheck/dev/types/**/*.ts"
+    "**/*.mts"
   ],
   "exclude": [
     "node_modules",
-    "scripts"
+    "scripts",
+    ".next-dev",
+    ".next-desktop",
+    ".next-production",
+    ".next-production-final",
+    ".next-schedcheck",
+    "openwork-runtime",
+    "openwork-state",
+    "openwork-workspace"
   ]
 }

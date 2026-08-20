@@ -220,6 +220,36 @@ export default function ChatMessageRail({
     return () => document.removeEventListener("scroll", onScroll, true);
   }, [enabled, scheduleMeasure, scrollRef]);
 
+  // Scrolling is not the only thing that changes which question is nearest.
+  // The Terminal restores a conversation into a virtual list whose estimated
+  // heights are replaced by real row heights after the first paint. Short
+  // conversations often stay at scrollTop 0 throughout that work, so no scroll
+  // event is emitted: without observing the geometry, the rail keeps the tick
+  // it chose from the stale estimates (usually the first question) even though
+  // the newest turn is plainly in view.
+  //
+  // The scroller covers viewport changes, the virtual list covers row
+  // measurement corrections, and the tail covers content outside that list
+  // (the disclaimer, proposal cards, and the measured composer clearance).
+  useEffect(() => {
+    if (
+      !enabled ||
+      typeof window === "undefined" ||
+      typeof window.ResizeObserver !== "function"
+    ) {
+      return;
+    }
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const observer = new window.ResizeObserver(scheduleMeasure);
+    observer.observe(scroller);
+    const list = scroller.querySelector("[data-chat-virtual-list]");
+    if (list) observer.observe(list);
+    const tail = scroller.querySelector(".bb-chat-scroll-tail");
+    if (tail) observer.observe(tail);
+    return () => observer.disconnect();
+  }, [enabled, items, scheduleMeasure, scrollRef]);
+
   // The scroller the rail was pointed at is not the one it last measured, so the
   // transcript underneath it has been replaced. Runs after every render, which
   // costs one reference comparison; acting on it costs a measurement only on the

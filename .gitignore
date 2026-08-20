@@ -171,6 +171,7 @@ hermes-skills/approved/
 /video-use/
 /vimax/
 /voicebox/
+/vox-director/
 /watch/
 /watermarks-remover/
 
@@ -194,6 +195,10 @@ dashboard/resource2skill-runs/
 
 # OpenMontage productions are deliverables and are never pruned.
 dashboard/openmontage-runs/
+
+# Vox Director: one project directory per production, laid out the way the
+# clone lays its own out. The MP4 is the deliverable, so these are never pruned.
+dashboard/vox-director-runs/
 
 # OpenWork: the server Breadboard prepares out of the clone (source copy plus
 # its npm install), the durable workspace the agent works inside, and the

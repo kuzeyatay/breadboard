@@ -399,6 +399,12 @@ ensureColumn("users", "username", "username TEXT");
 // context prefer these when they are set.
 ensureColumn("users", "first_name", "first_name TEXT");
 ensureColumn("users", "last_name", "last_name TEXT");
+// The rest of "about you", from the same page: what they would rather be
+// called, what they do, and anything else they want the assistant to keep in
+// mind. All three ride into the memory context beside the name.
+ensureColumn("users", "nickname", "nickname TEXT");
+ensureColumn("users", "occupation", "occupation TEXT");
+ensureColumn("users", "about_you", "about_you TEXT");
 
 // --- Hermes runtime integration ---------------------------------------
 // The interactive surfaces (dashboard terminal, garden chat, Quartz page AI)

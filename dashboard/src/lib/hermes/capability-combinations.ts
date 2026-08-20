@@ -52,6 +52,7 @@ import { VIBE_TRADING_COMMAND } from "../vibe-trading/identity.ts";
 import { STOCK_ANALYST_COMMAND } from "../stock-analyst/identity.ts";
 import { PAPER_TRADER_COMMAND } from "../paper-trader/identity.ts";
 import { VIMAX_COMMAND } from "../vimax/identity.ts";
+import { VOX_DIRECTOR_COMMAND } from "../vox-director/identity.ts";
 
 /** Structurally identical to `HermesSurface`, redeclared to keep this module
  * out of the server-only config module's import graph. */
@@ -242,6 +243,10 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   // pipeline's own director skills are what the agent already reads.
   profile("openmontage", OPENMONTAGE_COMMAND, "OpenMontage"),
   profile("vimax", VIMAX_COMMAND, "ViMax"),
+  // Vox Director carries its whole topic in the command and renders locally.
+  // Like ViMax it takes no attachment and stacks nothing: the collage method it
+  // works from is the clone's own skill, which the run already reads.
+  profile("vox-director", VOX_DIRECTOR_COMMAND, "Vox Director"),
   // Shorts takes a video and a typed request rather than a message, so a skill
   // or an attachment stacked onto it has nowhere to go — the defaults are right.
   // The video is chosen in the form, so only the user can start one.

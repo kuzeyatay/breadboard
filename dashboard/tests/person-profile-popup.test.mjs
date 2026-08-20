@@ -87,11 +87,8 @@ test("the shape crosses into the browser but the database does not", () => {
   assert.doesNotMatch(fs.readFileSync(bundle, "utf8"), /better-sqlite3/);
 });
 
-test("both places that name a person open the popup instead of navigating", () => {
-  for (const relativePath of [
-    "src/app/dashboard/dashboard-client.tsx",
-    "src/app/profile/organization-panel.tsx",
-  ]) {
+test("naming a person opens the popup instead of navigating", () => {
+  for (const relativePath of ["src/app/dashboard/dashboard-client.tsx"]) {
     const source = read(relativePath);
     assert.doesNotMatch(
       source,

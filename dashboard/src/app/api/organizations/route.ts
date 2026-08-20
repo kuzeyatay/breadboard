@@ -5,6 +5,7 @@ import {
   listOrganizations,
   listReceivedInvites,
 } from "@/lib/organizations/store";
+import { organizationPublicId } from "@/lib/profile/brain-graph-ids.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,10 @@ export async function GET() {
   try {
     const userId = await requireUserId();
     return NextResponse.json({
-      organizations: listOrganizations(userId),
+      organizations: listOrganizations(userId).map((organization) => ({
+        ...organization,
+        brainScopeId: organizationPublicId(organization.id),
+      })),
       invites: listReceivedInvites(userId),
     });
   } catch (error) {

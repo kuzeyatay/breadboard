@@ -18,9 +18,11 @@ import {
   beginRuntimeRun,
   finishRuntimeRun,
   getActiveRuntimeRun,
+  getLatestRuntimeRun,
   markRuntimeRunSubmitted,
   type RuntimeRunRow,
 } from "../hermes/run-store.ts";
+import { externalAgentCallsForRun } from "../hermes/agent-launch-store.ts";
 import { reclaimAbandonedRunForSession } from "../hermes/run-recovery.ts";
 import {
   listAuthorizedGardens,
@@ -41,6 +43,7 @@ import type { HermesSurface } from "../hermes/config.ts";
 import {
   reserveConversationTurn,
   retryAssistantMessage,
+  isPreDispatchReservedAssistant,
   annotateConversationTurn,
   completeAssistantMessage,
   failAssistantMessage,
@@ -311,7 +314,13 @@ export async function startConversationTurn(
     throw asApiError(error);
   }
 
-  if (reservation.isNew && reservation.userMessage.order_index === 0) {
+  const preDispatchReserved =
+    !reservation.isNew &&
+    isPreDispatchReservedAssistant(reservation.assistantMessage);
+  if (
+    (reservation.isNew || preDispatchReserved) &&
+    reservation.userMessage.order_index === 0
+  ) {
     const titledConversation = await generateAndApplyConversationTitle({
       conversation: reservation.conversation,
       firstPrompt: input.text,
@@ -587,11 +596,17 @@ export async function startConversationTurn(
     authenticated: true,
     priorMessages: currentConversationMessages,
   });
+  // A model-to-model continuation is exempt: the text is the last agent's
+  // report handed back for synthesis, and a report that happens to say
+  // "simulation" is not the person asking for an interactive one. Left
+  // unexempt, the selection armed the required-artifact gate on a Deep
+  // Research handback and the synthesis was replaced by the gate's refusal.
   const visualizerSelection = visualizerCommandText({
     text: factcheckSelection.text,
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
+    internalContinuation: input.internalAgentContinuation === true,
   });
   const agentLoopSelection = agentLoopCommandText({
     text: visualizerSelection.text,
@@ -1281,6 +1296,18 @@ export async function startConversationTurn(
         }
       : {}),
   });
+  // A delegated worker is launched on one turn and reported on the next, and
+  // only the second one is visible: the hand-back arrives as a hidden internal
+  // message, so the answer the user reads belongs to a run that queued nothing
+  // and called no tool. Its provenance therefore has to be carried across the
+  // seam, or the one turn anybody opens the evidence panel on shows no trace of
+  // the agent whose work it is entirely built from. Read before the new run
+  // begins, so `getLatestRuntimeRun` is still the turn that did the delegating.
+  const carriedDelegations = input.internalAgentContinuation
+    ? externalAgentCallsForRun(
+        getLatestRuntimeRun(session.row.id)?.id,
+      ).map((call) => ({ ...call, carried: true }))
+    : [];
   const run = beginRuntimeRun({
     runtimeSessionId: session.row.id,
     instruction: resolved.userText || input.text,
@@ -1358,6 +1385,9 @@ export async function startConversationTurn(
           }
         : {}),
       capabilities: capabilitySelection,
+      ...(carriedDelegations.length
+        ? { delegatedAgents: carriedDelegations }
+        : {}),
     },
   });
   markStatus(session, "busy");

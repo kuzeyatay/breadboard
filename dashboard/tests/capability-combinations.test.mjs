@@ -53,6 +53,7 @@ const RUN_ROUTES = {
   resource2skill: ["resource2skill", "runs"],
   openmontage: ["openmontage", "runs"],
   vimax: ["vimax", "runs"],
+  "vox-director": ["vox-director", "runs"],
   shorts: ["shorts", "runs"],
   formsmith: ["shaper", "runs"],
   "money-printer": ["money-printer", "runs"],

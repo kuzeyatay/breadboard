@@ -243,7 +243,10 @@ test("direct-provider turns render relevant location into their non-persisted pr
     direct,
     /instructions: directSystemPrompt\([\s\S]{0,900}?renderCurrentLocationContext\(\{[\s\S]{0,350}?request: input\.text[\s\S]{0,350}?location: input\.currentLocation/,
   );
-  assert.match(direct, /currentLocationContext,[\s\S]{0,80}?\.filter\(Boolean\)/);
+  assert.match(
+    direct,
+    /currentLocationContext,[\s\S]{0,240}?readerComprehensionPrompt\(\),[\s\S]{0,80}?\.filter\(Boolean\)/,
+  );
   assert.match(direct, /store: false/);
   assert.match(
     direct,

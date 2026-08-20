@@ -86,6 +86,66 @@ export function retryTargetUserMessageIndex(
 }
 
 /**
+ * Where one branched turn starts and ends inside a transcript.
+ *
+ * A turn is the anchored user message plus everything it produced, which runs
+ * until the next thing the person actually typed. Delegation results come back
+ * as user-role messages nobody wrote, so they stay inside the turn they belong
+ * to rather than closing it early.
+ */
+export function branchTurnBounds(
+  messages: BranchableMessage[],
+  groupId: string,
+): { start: number; end: number } | null {
+  let start = -1;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message?.role !== "user") continue;
+    if (messageBranchId(message, index) !== groupId) continue;
+    start = index;
+    break;
+  }
+  if (start < 0) return null;
+  let end = start + 1;
+  while (end < messages.length) {
+    const message = messages[end];
+    if (message?.role === "user" && message.internalAgentContinuation !== true) {
+      break;
+    }
+    end += 1;
+  }
+  return { start, end };
+}
+
+/**
+ * Switch which variant of one turn is on screen without disturbing the rest of
+ * the conversation.
+ *
+ * A variant is stored as a whole-transcript snapshot, but only the branched
+ * turn inside it is the thing being chosen. Swapping the entire transcript made
+ * the arrows destructive: everything said after the branch point — turns that
+ * belong to no variant, because they happened after the branch was made —
+ * vanished on every press and came back on the way back. So splice: keep the
+ * live transcript on both sides and replace only the anchored turn. When the
+ * anchor cannot be located in either list, fall back to the old whole-snapshot
+ * swap rather than guessing at a boundary.
+ */
+export function applyBranchVariant<T extends BranchableMessage>(input: {
+  messages: T[];
+  variant: T[];
+  groupId: string;
+}): T[] {
+  const current = branchTurnBounds(input.messages, input.groupId);
+  const incoming = branchTurnBounds(input.variant, input.groupId);
+  if (!current || !incoming) return cloneMessages(input.variant);
+  return cloneMessages([
+    ...input.messages.slice(0, current.start),
+    ...input.variant.slice(incoming.start, incoming.end),
+    ...input.messages.slice(current.end),
+  ]);
+}
+
+/**
  * Create a response variant at one user-message boundary. The old transcript
  * remains one variant; the new variant contains only the selected branch's
  * history before that user message, followed by the resent/edited prompt.

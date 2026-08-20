@@ -117,6 +117,32 @@ test("the run route neither resolves capability tokens nor takes attachments", (
   assert.match(source, /activeRuntimeAgentId: "openwork"/);
 });
 
+test("dashboard typechecking does not compile the prepared Bun runtime", () => {
+  const dashboardConfig = JSON.parse(
+    fs.readFileSync(path.join(path.resolve("."), "tsconfig.json"), "utf8"),
+  );
+  for (const generated of [
+    "openwork-runtime",
+    "openwork-state",
+    "openwork-workspace",
+    ".next-desktop",
+  ]) {
+    assert.ok(
+      dashboardConfig.exclude.includes(generated),
+      `${generated} must stay outside the dashboard TypeScript program`,
+    );
+  }
+  assert.doesNotMatch(JSON.stringify(dashboardConfig.include), /\.next-desktop/);
+
+  // Desktop route validators still have their own project. A desktop build
+  // regenerates this directory before checking it, independently of the IDE's
+  // normal `.next` route types.
+  const desktopConfig = JSON.parse(
+    fs.readFileSync(path.join(path.resolve("."), "tsconfig.desktop.json"), "utf8"),
+  );
+  assert.ok(desktopConfig.include.includes(".next-desktop/types/**/*.ts"));
+});
+
 test("the engine config declares the model the run asked for", async () => {
   // The generated config is the only place the model becomes reachable: OpenCode
   // reads it once at boot and refuses a model it does not declare, which is why

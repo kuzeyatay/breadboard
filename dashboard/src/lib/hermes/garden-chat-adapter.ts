@@ -28,6 +28,7 @@ import {
   evidenceKindForTool,
   evidenceTitleForTool,
   type EvidenceRecord,
+  type ExternalAgentCall,
 } from "./evidence.ts";
 import { composeHermesSystemPrompt } from "./system-prompts.ts";
 import { suppliedEvidenceText } from "./evidence-calibration.ts";
@@ -43,6 +44,7 @@ import { connectedAppRegistryForTurn } from "./unified-tool-registry.ts";
 import {
   beginRuntimeRun,
   finishRuntimeRun,
+  getLatestRuntimeRun,
   getRuntimeRun,
   markRuntimeRunSubmitted,
   parseRuntimeRunDispatch,
@@ -115,6 +117,8 @@ type GardenChatPayload = {
   activeMarkdown?: unknown;
   attachments?: unknown;
   adhdMode?: unknown;
+  /** This turn exists to report a delegated worker's finished run. */
+  internalAgentContinuation?: unknown;
 };
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -527,6 +531,18 @@ export async function openGardenAgentChat(
         : []),
     ],
   });
+  // A delegated worker is launched on one turn and reported on the next, and
+  // only the second is visible: the hand-back arrives as a hidden message, so
+  // the answer the user reads belongs to a run that queued nothing and called
+  // no tool. Carry the delegation across that seam, or the one turn anybody
+  // opens the evidence panel on shows no trace of whose work it is. Read before
+  // the new run begins, so this is still the turn that did the delegating.
+  const carriedDelegations =
+    payload.internalAgentContinuation === true
+      ? externalAgentCallsForRun(getLatestRuntimeRun(session.row.id)?.id).map(
+          (call) => ({ ...call, carried: true }),
+        )
+      : [];
   const run = beginRuntimeRun({
     runtimeSessionId: session.row.id,
     instruction: text,
@@ -538,6 +554,9 @@ export async function openGardenAgentChat(
       tools: runTools,
       system: runSystem,
       capabilities: capabilitySelection,
+      ...(carriedDelegations.length
+        ? { delegatedAgents: carriedDelegations }
+        : {}),
     },
   });
   const runtimeText =
@@ -694,6 +713,19 @@ function gardenTurnContext(
 function capabilitySelectionForRun(runId: string) {
   const run = getRuntimeRun(runId);
   return run ? parseRuntimeRunDispatch(run).capabilities : undefined;
+}
+
+/**
+ * Every runtime agent this answer stands on: the ones this turn queued, plus
+ * the one an earlier turn launched whose finished result this turn was
+ * dispatched to report. The second kind is recorded on the run at dispatch,
+ * because nothing in this stream would otherwise witness it — a hand-back turn
+ * queues no launch and calls no tool.
+ */
+function externalAgentsForRun(runId: string): ExternalAgentCall[] {
+  const run = getRuntimeRun(runId);
+  const carried = run ? (parseRuntimeRunDispatch(run).delegatedAgents ?? []) : [];
+  return [...carried, ...externalAgentCallsForRun(runId)];
 }
 
 function legacyGardenEventStream(
@@ -990,7 +1022,7 @@ function legacyGardenEventStream(
             }
             const verification = assessVerification(assistantText, evidence, {
               webGroundingRequired,
-              externalAgents: externalAgentCallsForRun(runId),
+              externalAgents: externalAgentsForRun(runId),
               // Selections were fixed before dispatch — read back off the run
               // rather than closed over, so this stream describes the turn it
               // is finishing. Usage comes from the calls that completed.

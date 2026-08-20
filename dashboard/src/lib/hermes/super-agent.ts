@@ -268,6 +268,11 @@ function researchRoutingRule(inventory: SuperAgentInventory): string {
   return [
     "## Web research: read pages, and use more than one instrument",
     "`web_search` and `web_extract` are yours to run in this turn. Search finds candidates; extract opens them. A narrow lookup — one fact, one page — is finished here, and needs nobody else.",
+    ...(available.has("deep-research")
+      ? [
+          "When the user explicitly says to do, conduct, run, perform, or use deep research, that is an instruction to launch `deep-research` with `agent_launch`, not permission to substitute your own `web_search`. Use `--answer` unless they explicitly requested a report, review, survey, or write-up. The worker stays private; wait for its result and synthesize that result in your own response.",
+        ]
+      : []),
     "",
     "Anything wider is not. A request to survey, enumerate, or investigate a topic — every X, which are active, how many members, what changed over time — is answered by reading the authoritative pages, never by quoting search-result snippets. Open the official page with `web_extract` first: it is the spine every other finding hangs on.",
     ...(instruments.length
@@ -331,9 +336,13 @@ function researchRoutingRule(inventory: SuperAgentInventory): string {
  * distinctions only when they sit next to each other.
  */
 function runtimeAgentCatalogue(inventory: SuperAgentInventory): string {
-  const launchable = inventory.runtimeAgents.filter((agent) => agent.launchable);
+  const launchable = inventory.runtimeAgents.filter(
+    (agent) => agent.launchable,
+  );
   const userOnly = inventory.runtimeAgents.filter((agent) => !agent.launchable);
-  const describe = (agent: (typeof inventory.runtimeAgents)[number]): string => {
+  const describe = (
+    agent: (typeof inventory.runtimeAgents)[number],
+  ): string => {
     const brief = runtimeAgentBrief(agent.id);
     const head = `- ${agent.id} — ${agent.name} (\`${agent.command}\`).`;
     if (!brief) return head.replace(/\.$/, "");

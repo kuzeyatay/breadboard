@@ -29,8 +29,13 @@ export async function POST(request: Request) {
       new Uint8Array(await spoken.arrayBuffer()),
       request.signal,
     );
+    // `speechAsMp3` may return a view backed by SharedArrayBuffer. Fetch's
+    // BodyInit deliberately accepts only ArrayBuffer-backed views, so copy it
+    // into an owned ArrayBuffer before constructing the response.
+    const responseBody = new Uint8Array(mp3.byteLength);
+    responseBody.set(mp3);
 
-    return new Response(mp3, {
+    return new Response(responseBody.buffer, {
       status: 200,
       headers: {
         "Content-Type": SPEECH_DOWNLOAD_MIME,

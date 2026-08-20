@@ -114,6 +114,7 @@ interface Props {
 }
 
 const SECTION_STATE_KEY = "breadboard:terminal-sidebar:sections";
+const PLACEHOLDER_CHAT_TITLES = new Set(["New chat", "Assistant conversation"]);
 
 export function formatChatTime(value: string): string {
   const date = new Date(value.includes("T") ? value : `${value}Z`);
@@ -435,6 +436,21 @@ function ChatRow({
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(chat.title);
+  const [titleTransition, setTitleTransition] = useState({
+    seenTitle: chat.title,
+    typing: false,
+  });
+  // Prop-derived state is adjusted during render so the generated title's
+  // first painted frame is already clipped; an effect would briefly flash the
+  // complete name before beginning the typing reveal.
+  if (titleTransition.seenTitle !== chat.title) {
+    setTitleTransition({
+      seenTitle: chat.title,
+      typing:
+        PLACEHOLDER_CHAT_TITLES.has(titleTransition.seenTitle) &&
+        !PLACEHOLDER_CHAT_TITLES.has(chat.title),
+    });
+  }
   // Measured when the menu is opened: the rail scrolls, so the menu is placed
   // against the viewport rather than inside the row.
   const [menuPosition, setMenuPosition] = useState<MenuPosition>({ top: 0, left: 0 });
@@ -541,7 +557,24 @@ function ChatRow({
             ref={titleRef}
             className="bb-chat-marquee-text"
             data-marquee={marquee.running ? "run" : undefined}
-            style={marquee.style}
+            data-title-renaming={titleTransition.typing ? "true" : undefined}
+            onAnimationEnd={(event) => {
+              if (
+                event.animationName === "bb-chat-title-type" ||
+                event.animationName === "bb-chat-title-fade"
+              ) {
+                setTitleTransition((current) => ({
+                  ...current,
+                  typing: false,
+                }));
+              }
+            }}
+            style={
+              {
+                ...marquee.style,
+                "--bb-title-character-count": Math.max(1, chat.title.length),
+              } as CSSProperties
+            }
           >
             {chat.title}
           </span>
