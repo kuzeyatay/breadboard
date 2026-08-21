@@ -17,6 +17,11 @@ import os from "node:os";
 import path from "node:path";
 import { chatmockApiKeyValue } from "../agent-browser/provider.ts";
 import { confinePath, parseCommand } from "./commands.ts";
+import {
+  closeBridgeWindow,
+  ensureBridgeWindow,
+} from "../agent-browser/browser-profile.ts";
+import { openCliProfileEnv } from "../agent-browser/opencli-profile.ts";
 import { planSpawn, type SpawnPlanResult } from "./spawn-plan.ts";
 import { buildSystemPrompt } from "./skill-prompt.ts";
 import {
@@ -50,6 +55,16 @@ interface RunState {
   aborted: boolean;
   finalText: string;
   createdAt: number;
+  /** Whether this run opened the background browser and therefore owes a close. */
+  openedBridgeWindow?: boolean;
+  /**
+   * Which browser profile OpenCLI should drive, resolved once per run.
+   *
+   * Undefined until the first command needs it. Resolved per run rather than
+   * per command because it costs a loopback round trip and cannot change while
+   * a run is in flight.
+   */
+  openCliEnv?: Record<string, string>;
 }
 
 const globalRuns = globalThis as typeof globalThis & {
@@ -63,6 +78,8 @@ const MAX_TOOL_RESULT_CHARS = 24_000;
 const MAX_FILE_CHARS = 40_000;
 const COMMAND_TIMEOUT_MS = 180_000;
 const MODEL_TIMEOUT_MS = 180_000;
+/** Attempts per step, so one slow upstream call does not end a sixteen-step run. */
+const MODEL_ATTEMPTS = 3;
 const RUN_ROOT = path.join(os.tmpdir(), "breadboard-agent-reach");
 const RETENTION_MS = 10 * 60 * 1000;
 
@@ -175,13 +192,18 @@ function spawnTarget(
   );
 }
 
-function execute(
+async function execute(
   run: RunState,
   runtime: AgentReachRuntime,
   executable: string,
   args: string[],
 ): Promise<string> {
-  const env = agentReachEnv(runtime);
+  // OpenCLI refuses to act when several browser profiles are connected and
+  // none is named, which takes out every login-backed channel at once. This
+  // names Breadboard's own, and resolves to nothing when there is no choice
+  // to make.
+  run.openCliEnv ??= await openCliProfileEnv();
+  const env = { ...agentReachEnv(runtime), ...run.openCliEnv };
   const target = spawnTarget(runtime, executable, args, env);
   if ("error" in target) return Promise.resolve(target.error);
   return new Promise((resolve) => {
@@ -282,6 +304,42 @@ async function complete(
   reasoningEffort: string,
   messages: ChatMessage[],
 ): Promise<{ message: ChatMessage; usage: ChatUsage }> {
+  // Retried rather than fatal.
+  //
+  // One model call that times out or hits a transient upstream error used to
+  // end the whole run — and this agent runs up to sixteen steps, so that threw
+  // away every step before it. It showed up under concurrency: with two other
+  // research agents calling the same ChatMock at once, a call ran past the
+  // three-minute abort and the run failed at 192 seconds having found nothing.
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= MODEL_ATTEMPTS; attempt += 1) {
+    try {
+      return await completeOnce(baseUrl, model, reasoningEffort, messages);
+    } catch (error) {
+      const failure =
+        error instanceof Error ? error : new Error("The model call failed.");
+      if (!isRetryableModelFailure(failure) || attempt === MODEL_ATTEMPTS) {
+        throw failure;
+      }
+      lastError = failure;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 5_000));
+    }
+  }
+  throw lastError ?? new Error("The model call failed.");
+}
+
+/** Transient by nature: worth another attempt, not worth ending a run over. */
+function isRetryableModelFailure(error: Error): boolean {
+  if (error.name === "AbortError" || /timed? out/i.test(error.message)) return true;
+  return /ChatMock returned (408|429|5\d\d)/.test(error.message);
+}
+
+async function completeOnce(
+  baseUrl: string,
+  model: string,
+  reasoningEffort: string,
+  messages: ChatMessage[],
+): Promise<{ message: ChatMessage; usage: ChatUsage }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
   try {
@@ -353,13 +411,20 @@ export function startRun(input: StartRunInput): { runId: string; status: RunStat
     createdAt: Date.now(),
   };
   runs.set(runId, run);
-  void drive(run, input).catch((error: unknown) => {
-    if (run.aborted) return;
-    run.status = "failed";
-    emit(run, "run.failed", {
-      error: error instanceof Error ? error.message : "The Agent Reach run failed.",
+  void drive(run, input)
+    .catch((error: unknown) => {
+      if (run.aborted) return;
+      run.status = "failed";
+      emit(run, "run.failed", {
+        error: error instanceof Error ? error.message : "The Agent Reach run failed.",
+      });
+    })
+    // Every way out, including an abort: a browser left running off-screen
+    // would hold the profile against the next Agent Browser run and against
+    // anyone trying to sign in.
+    .finally(() => {
+      if (run.openedBridgeWindow) closeBridgeWindow();
     });
-  });
   return { runId, status: "queued" };
 }
 
@@ -369,6 +434,12 @@ async function drive(run: RunState, input: StartRunInput): Promise<void> {
 
   const runtime = resolveAgentReachRuntime();
   if (!runtime) throw new Error("The Agent Reach runtime disappeared before the run started.");
+
+  // OpenCLI drives a browser; it does not start one. Without this, the six
+  // login-backed channels worked only while somebody happened to have the
+  // sign-in window open. Opened off-screen, and put away afterwards — but only
+  // if this run is what opened it.
+  run.openedBridgeWindow = ensureBridgeWindow().opened;
 
   emit(run, "run.started", { task: run.task, model: input.model });
   run.status = "running";

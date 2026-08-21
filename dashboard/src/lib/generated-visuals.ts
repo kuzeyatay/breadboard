@@ -9,6 +9,8 @@ import { withCouncil } from "./council.ts";
 import {
   GENERATED_VISUAL_CAPABILITY_MANIFEST,
   GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
+  GENERATED_VISUAL_CONTROL_ID_PATTERN,
+  GENERATED_VISUAL_RESERVED_CONTROL_IDS,
 } from "./generated-visual-capabilities.ts";
 import {
   VISUAL_SDK_VERSION,
@@ -43,6 +45,12 @@ export const GENERATED_VISUAL_REPAIR_HISTORY_MAX_ENTRIES =
 /** Preview every reachable select state only while the matrix remains small
  * enough to be useful as model evidence rather than an unbounded image burst. */
 export const GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES = 4;
+/** A screenshot is transport evidence, not a new semantic attempt. Edge can
+ * intermittently finish a headless capture without producing its target file,
+ * so retry the exact same labelled cell a small, fixed number of times. */
+export const GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS = 3;
+const GENERATED_VISUAL_PREVIEW_CAPTURE_RETRY_BASE_DELAY_MS = 125;
+const GENERATED_VISUAL_PREVIEW_CAPTURE_DIAGNOSTIC_MAX_LENGTH = 512;
 /** Complex declarative visual generation can legitimately take longer than a
  * general chat request. Keep one explicit, bounded per-request deadline while
  * preserving the separate three-replay transport ladder. */
@@ -51,6 +59,10 @@ export const GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS = 180_000;
 const SDK_IMPORT = GENERATED_VISUAL_CAPABILITY_MANIFEST.sourceForm.importModule;
 const IMPORT_ALLOWLIST = new Set([SDK_IMPORT, "react"]);
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{1,79}$/;
+const CONTROL_ID_PATTERN = GENERATED_VISUAL_CONTROL_ID_PATTERN;
+const RESERVED_CONTROL_IDS = new Set<string>(
+  GENERATED_VISUAL_RESERVED_CONTROL_IDS,
+);
 const FORBIDDEN_IDENTIFIERS = new Set([
   "fetch",
   "XMLHttpRequest",
@@ -225,6 +237,36 @@ export interface GeneratedVisualPreviewArtifact
   path: string;
 }
 
+/** One isolated browser attempt for a labelled preview cell. This stays
+ * deliberately infrastructure-only: no model-authored candidate data is
+ * synthesized or changed while retrying a capture. */
+export interface GeneratedVisualPreviewCaptureAttempt {
+  attempt: number;
+  status: number | null;
+  signal: string | null;
+  screenshotCreated: boolean;
+  screenshotBytes?: number;
+  /** Bounded process diagnostic, retained only when the capture failed. */
+  detail?: string;
+  /** The bounded delay inserted before the next fresh-profile attempt. */
+  retryDelayMs?: number;
+}
+
+/** Durable receipt for one labelled viewport/select-state preview cell. */
+export interface GeneratedVisualPreviewCaptureReceipt
+  extends GeneratedVisualPreviewIdentity {
+  captured: boolean;
+  attempts: GeneratedVisualPreviewCaptureAttempt[];
+}
+
+/** Complete-or-fail preview evidence ledger. A partial receipt is diagnostic
+ * evidence only and can never be treated as critic input or publication proof. */
+export interface GeneratedVisualPreviewMatrixReceipt {
+  expectedCount: number;
+  capturedCount: number;
+  cells: GeneratedVisualPreviewCaptureReceipt[];
+}
+
 export type GeneratedVisualizationStatus =
   | "draft"
   | "validated"
@@ -286,6 +328,7 @@ export interface GeneratedVisualTestsRecord {
     selectStateCount?: number;
     selectStateCoverageTruncated?: boolean;
     previewMatrixComplete?: boolean;
+    previewMatrixReceipt?: GeneratedVisualPreviewMatrixReceipt;
   };
 }
 
@@ -821,7 +864,13 @@ function validateControl(
   const id = typeof value.id === "string" ? value.id : "";
   const label = typeof value.label === "string" ? value.label.trim() : "";
   const type = typeof value.type === "string" ? value.type : "";
-  if (!ID_PATTERN.test(id)) errors.push(`controls[${index}].id is invalid`);
+  if (!CONTROL_ID_PATTERN.test(id)) {
+    errors.push(`controls[${index}].id is invalid`);
+  } else if (RESERVED_CONTROL_IDS.has(id)) {
+    errors.push(
+      `controls[${index}].id is reserved by the generated visual runtime: ${id}`,
+    );
+  }
   if (!label) errors.push(`controls[${index}] needs an accessible label`);
   if (!GENERATED_CONTROL_TYPES.has(type)) {
     errors.push(`controls[${index}].type is invalid`);
@@ -3105,16 +3154,110 @@ function browserRuntimeFailureDetail(output: string): string {
   return output.match(/<body[^>]*>/i)?.[0] ?? output.slice(-500);
 }
 
+/** Narrow test seam for the otherwise isolated browser process. Production
+ * callers leave this unset and always use the configured Chromium/Edge binary. */
+export interface GeneratedVisualBrowserInvocation {
+  executable: string;
+  args: string[];
+  slug: string;
+  profilePath: string;
+}
+
+export interface GeneratedVisualBrowserRunResult {
+  status?: number | null;
+  signal?: string | null;
+  stdout?: string | Buffer | null;
+  stderr?: string | Buffer | null;
+  error?: { message?: string } | null;
+}
+
+export type GeneratedVisualBrowserRunner = (
+  invocation: GeneratedVisualBrowserInvocation,
+) => GeneratedVisualBrowserRunResult;
+
+function generatedVisualPreviewCaptureRetryDelay(attempt: number): number {
+  return GENERATED_VISUAL_PREVIEW_CAPTURE_RETRY_BASE_DELAY_MS *
+    2 ** Math.max(0, attempt - 1);
+}
+
+/** Browser capture is already synchronous. A very small bounded pause gives a
+ * transient Edge teardown/write race time to settle before using a brand-new
+ * disposable profile, without turning the retry into a semantic model action. */
+function waitForGeneratedVisualPreviewCaptureRetry(delayMs: number): void {
+  if (delayMs <= 0) return;
+  const sleeper = new Int32Array(
+    new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
+  );
+  Atomics.wait(sleeper, 0, 0, delayMs);
+}
+
+function boundedGeneratedVisualBrowserCaptureText(value: unknown): string {
+  const raw = Buffer.isBuffer(value)
+    ? value.toString("utf-8")
+    : typeof value === "string"
+      ? value
+      : "";
+  // Browser failures frequently include an ephemeral user-data profile or a
+  // file:// preview URL. Capture diagnostics must survive into the durable
+  // event ledger, but those machine-local paths are neither useful model
+  // feedback nor safe run evidence. Keep the failure class/message while
+  // replacing path-shaped tokens generically.
+  const redacted = raw
+    .replace(/file:\/\/\/[^\s"'<>]+/gi, "<file-path>")
+    .replace(
+      /(^|[\s("'=])(?:[A-Za-z]:[\\/]|\/)[^\s"'<>]*/g,
+      (_match, prefix: string) => `${prefix}<path>`,
+    );
+  const normalized = redacted
+    .replace(/\s+/g, " ")
+    .trim();
+  if (normalized.length <= GENERATED_VISUAL_PREVIEW_CAPTURE_DIAGNOSTIC_MAX_LENGTH) {
+    return normalized;
+  }
+  return `...[truncated] ${normalized.slice(
+    -(GENERATED_VISUAL_PREVIEW_CAPTURE_DIAGNOSTIC_MAX_LENGTH - 15),
+  )}`;
+}
+
+function generatedVisualPreviewCaptureFailureDetail(
+  result: GeneratedVisualBrowserRunResult,
+): string | undefined {
+  const parts = [
+    result.error?.message ? `error: ${result.error.message}` : "",
+    result.stderr ? `stderr: ${boundedGeneratedVisualBrowserCaptureText(result.stderr)}` : "",
+    result.stdout ? `stdout: ${boundedGeneratedVisualBrowserCaptureText(result.stdout)}` : "",
+  ].filter(Boolean);
+  const detail = parts.join("; ");
+  return detail
+    ? boundedGeneratedVisualBrowserCaptureText(detail)
+    : undefined;
+}
+
+function generatedVisualPreviewScreenshotBytes(filePath: string): number | undefined {
+  try {
+    const stats = fs.statSync(filePath);
+    return stats.isFile() && stats.size > 0 ? stats.size : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function runGeneratedVisualBrowserTests(input: {
   definition: GeneratedVisualizationDefinition;
   outputDir: string;
   timeoutMs?: number;
+  /** Test-only override for deterministic capture-failure simulation. */
+  browserExecutable?: string;
+  /** Test-only override for the isolated browser process. */
+  browserRunner?: GeneratedVisualBrowserRunner;
+  /** Test-only override for bounded retry sleeps. */
+  previewCaptureRetryBackoff?: (delayMs: number) => void;
 }): {
   tests: GeneratedVisualTestsRecord["runtimeTests"];
   browser?: GeneratedVisualTestsRecord["browser"];
   previews?: GeneratedVisualPreviewArtifact[];
 } {
-  const executable = browserExecutable();
+  const executable = input.browserExecutable?.trim() || browserExecutable();
   if (!executable) {
     return {
       tests: [
@@ -3167,6 +3310,12 @@ export function runGeneratedVisualBrowserTests(input: {
   const tests: GeneratedVisualTestsRecord["runtimeTests"] = [];
   const htmlPaths: string[] = [];
   const browserProfileRoot = path.resolve(input.outputDir);
+  const browserRunner: GeneratedVisualBrowserRunner = input.browserRunner ??
+    ((invocation) => spawnSync(
+      invocation.executable,
+      invocation.args,
+      { encoding: "utf-8", timeout, windowsHide: true },
+    ));
   let browserProfileCounter = 0;
   const spawnIsolatedBrowser = (slug: string, args: string[]) => {
     browserProfileCounter += 1;
@@ -3181,11 +3330,24 @@ export function runGeneratedVisualBrowserTests(input: {
     }
     fs.mkdirSync(profilePath, { recursive: true });
     try {
-      return spawnSync(
-        executable,
-        [`--user-data-dir=${profilePath}`, ...args],
-        { encoding: "utf-8", timeout, windowsHide: true },
-      );
+      try {
+        return browserRunner({
+          executable,
+          args: [`--user-data-dir=${profilePath}`, ...args],
+          slug,
+          profilePath,
+        });
+      } catch (error) {
+        return {
+          status: null,
+          signal: null,
+          error: {
+            message: error instanceof Error
+              ? error.message
+              : "Generated visual browser runner threw an unknown error",
+          },
+        };
+      }
     } finally {
       try {
         fs.rmSync(profilePath, { recursive: true, force: true });
@@ -3250,6 +3412,10 @@ export function runGeneratedVisualBrowserTests(input: {
   ];
   const previewStates = planGeneratedVisualSelectPreviewStates(input.definition);
   const previews: GeneratedVisualPreviewArtifact[] = [];
+  const previewCaptureReceipts: GeneratedVisualPreviewCaptureReceipt[] = [];
+  const retryPreviewCapture =
+    input.previewCaptureRetryBackoff ??
+    waitForGeneratedVisualPreviewCaptureRetry;
   let screenshotCreated = false;
   let screenshotFailureDetail = "Screenshot was not created";
   for (const previewState of previewStates) {
@@ -3287,40 +3453,112 @@ export function runGeneratedVisualBrowserTests(input: {
           `--screenshot=${screenshotPath}`,
           screenshotUrl,
         ]);
-      let screenshot = captureScreenshot();
-      let created =
-        screenshot.status === 0 &&
-        isReadableGeneratedVisualPreviewFile(screenshotPath);
-      // Headless Edge can intermittently fail to create a screenshot while
-      // other browser checks are finishing. Retry only the capture once; this
-      // changes neither the model candidate nor its semantic attempt count.
-      if (!created) {
-        fs.rmSync(screenshotPath, { force: true });
-        screenshot = captureScreenshot();
-        created =
+      const receipt: GeneratedVisualPreviewCaptureReceipt = {
+        id: `${previewViewport.id}--${previewState.id}`,
+        viewport: {
+          width: previewViewport.width,
+          height: previewViewport.height,
+        },
+        theme: previewViewport.theme,
+        selectState: previewState.selectState.map((entry) => ({ ...entry })),
+        defaultState: previewState.defaultState,
+        selectStateCoverageTruncated:
+          previewState.selectStateCoverageTruncated,
+        captured: false,
+        attempts: [],
+      };
+      for (
+        let captureAttempt = 1;
+        captureAttempt <= GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS;
+        captureAttempt += 1
+      ) {
+        // Never let a prior partial/stale file turn a fresh capture into a
+        // false pass. A fresh isolated profile is created for every invocation
+        // below, including each retry.
+        try {
+          fs.rmSync(screenshotPath, { force: true });
+        } catch (error) {
+          const retryDelayMs =
+            captureAttempt < GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS
+              ? generatedVisualPreviewCaptureRetryDelay(captureAttempt)
+              : undefined;
+          receipt.attempts.push({
+            attempt: captureAttempt,
+            status: null,
+            signal: null,
+            screenshotCreated: false,
+            detail: boundedGeneratedVisualBrowserCaptureText(
+              `error: could not clear prior screenshot: ${
+                error instanceof Error ? error.message : "unknown error"
+              }`,
+            ),
+            ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
+          });
+          if (retryDelayMs !== undefined) retryPreviewCapture(retryDelayMs);
+          continue;
+        }
+        let screenshot: GeneratedVisualBrowserRunResult;
+        try {
+          screenshot = captureScreenshot();
+        } catch (error) {
+          screenshot = {
+            status: null,
+            signal: null,
+            error: {
+              message: error instanceof Error
+                ? error.message
+                : "Generated visual screenshot capture threw an unknown error",
+            },
+          };
+        }
+        const created =
           screenshot.status === 0 &&
           isReadableGeneratedVisualPreviewFile(screenshotPath);
+        const retryDelayMs =
+          !created &&
+          captureAttempt < GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS
+            ? generatedVisualPreviewCaptureRetryDelay(captureAttempt)
+            : undefined;
+        const screenshotBytes = created
+          ? generatedVisualPreviewScreenshotBytes(screenshotPath)
+          : undefined;
+        receipt.attempts.push({
+          attempt: captureAttempt,
+          status: screenshot.status ?? null,
+          signal: screenshot.signal ?? null,
+          screenshotCreated: created,
+          ...(screenshotBytes === undefined ? {} : { screenshotBytes }),
+          ...(!created
+            ? {
+                detail:
+                  generatedVisualPreviewCaptureFailureDetail(screenshot) ??
+                  "screenshot file was not created",
+              }
+            : {}),
+          ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
+        });
+        if (created) {
+          receipt.captured = true;
+          break;
+        }
+        if (retryDelayMs !== undefined) retryPreviewCapture(retryDelayMs);
       }
-      if (created) {
+      previewCaptureReceipts.push(receipt);
+      if (receipt.captured) {
         previews.push({
-          id: `${previewViewport.id}--${previewState.id}`,
-          viewport: {
-            width: previewViewport.width,
-            height: previewViewport.height,
-          },
-          theme: previewViewport.theme,
-          selectState: previewState.selectState.map((entry) => ({ ...entry })),
-          defaultState: previewState.defaultState,
-          selectStateCoverageTruncated:
-            previewState.selectStateCoverageTruncated,
+          id: receipt.id,
+          viewport: { ...receipt.viewport },
+          theme: receipt.theme,
+          selectState: receipt.selectState.map((entry) => ({ ...entry })),
+          defaultState: receipt.defaultState,
+          selectStateCoverageTruncated: receipt.selectStateCoverageTruncated,
           path: screenshotPath,
         });
       }
       if (isDefaultDesktop) {
-        screenshotCreated = created;
+        screenshotCreated = receipt.captured;
         screenshotFailureDetail =
-          screenshot.error?.message ||
-          String(screenshot.stderr || "Screenshot was not created").slice(-500);
+          receipt.attempts.at(-1)?.detail ?? "Screenshot was not created";
       }
     }
   }
@@ -3333,6 +3571,11 @@ export function runGeneratedVisualBrowserTests(input: {
   });
   const expectedPreviewCount = previewStates.length * previewViewports.length;
   const previewMatrixComplete = previews.length === expectedPreviewCount;
+  const previewMatrixReceipt: GeneratedVisualPreviewMatrixReceipt = {
+    expectedCount: expectedPreviewCount,
+    capturedCount: previews.length,
+    cells: previewCaptureReceipts,
+  };
   tests.push({
     name: "repair preview matrix",
     passed: previewMatrixComplete,
@@ -3357,6 +3600,7 @@ export function runGeneratedVisualBrowserTests(input: {
         (preview) => preview.selectStateCoverageTruncated,
       ),
       previewMatrixComplete,
+      previewMatrixReceipt,
     },
     previews,
   };
@@ -3482,6 +3726,7 @@ function copyArtifactFiles(sourceDir: string, targetDir: string): void {
     "validation.json",
     "critic.json",
     "preview.png",
+    "preview-matrix.json",
     "tests.json",
     "lifecycle.json",
   ]) {
@@ -3628,6 +3873,12 @@ export function saveGeneratedVisualArtifact(input: {
   writeJson(path.join(versionDir, "validation.json"), input.validation);
   writeJson(path.join(versionDir, "critic.json"), input.critic);
   writeJson(path.join(versionDir, "tests.json"), input.tests);
+  if (input.tests.browser?.previewMatrixReceipt) {
+    writeJson(
+      path.join(versionDir, "preview-matrix.json"),
+      input.tests.browser.previewMatrixReceipt,
+    );
+  }
   writeJson(path.join(versionDir, "lifecycle.json"), input.lifecycle);
   if (input.previewPath && fs.existsSync(input.previewPath)) {
     fs.copyFileSync(input.previewPath, path.join(versionDir, "preview.png"));
@@ -4025,6 +4276,7 @@ export default defineVisualization({
     "A plot may include markers:[{id,label,x,y,color?}] with expression-valued x/y; use a marker for the selected point and never fake a point as a sparse line series. " +
     "Diagram node coordinates must remain within x=40-600 and y=40-320 and labels must be concise. " +
     "Each testCases item represents inputs and expected as arrays of {id,value} pairs and includes tolerance (number or null). " +
+    `Every control id must match ${CONTROL_ID_PATTERN.source}; ${[...RESERVED_CONTROL_IDS].join(", ")} are reserved runtime expression variables and cannot be learner controls. ` +
     "Implement opportunity.interactionGoal and opportunity.learnerAction as the artifact's actual interaction sequence, not merely as labels or explanatory prose. For test_prediction, require the learner to commit a prediction before the artifact reveals or evaluates the outcome; use the exact protocolRole fields from the reviewed controls and author the required outcome expression or scene visibleWhen so it is unchanged initially, after prediction input, after unauthorized reveal/evaluate without commitment, and after commit alone; it must change only after valid commit_prediction then reveal_outcome/evaluate_prediction. Gate that observable with both authored action controls, not commit alone or reveal alone. The trusted runtime derives sequencing only from protocolRole: prediction_input stays editable until commit, commitment locks it, reveal/evaluate stays disabled and mutation-guarded until commit, and Reset clears and unlocks the sequence. Every decisive condition named by the reviewed interaction contract must be directly manipulable or evaluated by the artifact. " +
     "Copy the opportunity.requiredInputs array exactly and in order: same control count, id, kind, label, type, protocolRole, unit, min, max, step, options, and defaultValue. Do not add a control or a field the reviewed contract omits. Copy opportunity.requiredOutputs exactly and in order: same output count, id, label, and representation; never add or reorder learner-visible outputs. Keep any runtime-internal derived values inside scene or output expressions rather than declaring extra outputs. Use only source-backed relationships. Label illustrative or normalized values clearly. Every required control must materially change a numeric output or scene expression. " +
     "Before returning, perform a complete model-authored consistency check against the supplied evidence and the literal definition. Independently recompute every evaluable numeric or geometric relationship you authored: scalar values, signed directions, units and conversions, vector endpoint deltas and magnitudes, component-wise sums, resultants, and other aggregates. Make every coordinate, label, annotation, explanation, and accessibility statement agree at the authored precision. If a total is claimed to be the sum of displayed contributions, its components must equal that displayed sum; do not hide a discrepancy behind rounding or prose. If displayed elements are representative samples of a larger or continuous domain, do not construct or imply the whole-domain aggregate as their exact finite subtotal unless the supplied evidence explicitly establishes that equality; distinguish the sample contribution and whole-domain result in the geometry as well as the labels and non-visual explanation. When the evidence does not supply enough information to evaluate a sign, magnitude, scale, or aggregate, use explicitly qualitative or normalized encoding and do not invent or claim an evaluated value. The compiler and renderer will not infer or repair any of these relationships for you. " +
@@ -4093,6 +4345,11 @@ export default defineVisualization({
       version: GENERATED_VISUAL_CAPABILITY_MANIFEST.sdkVersion,
       controlTypes: [
         ...GENERATED_VISUAL_CAPABILITY_MANIFEST.runtimeControls.types,
+      ],
+      controlIdGrammar:
+        GENERATED_VISUAL_CAPABILITY_MANIFEST.runtimeControls.controlIds.grammar,
+      reservedControlIds: [
+        ...GENERATED_VISUAL_CAPABILITY_MANIFEST.runtimeControls.controlIds.reserved,
       ],
       controlKinds: [
         ...GENERATED_VISUAL_CAPABILITY_MANIFEST.requiredContractControls.kinds,
@@ -5068,7 +5325,15 @@ function writeRejectedAttempt(
   }
   if (evidence?.validation)
     writeJson(path.join(dir, "validation.json"), evidence.validation);
-  if (evidence?.tests) writeJson(path.join(dir, "tests.json"), evidence.tests);
+  if (evidence?.tests) {
+    writeJson(path.join(dir, "tests.json"), evidence.tests);
+    if (evidence.tests.browser?.previewMatrixReceipt) {
+      writeJson(
+        path.join(dir, "preview-matrix.json"),
+        evidence.tests.browser.previewMatrixReceipt,
+      );
+    }
+  }
   if (evidence?.critic)
     writeJson(path.join(dir, "critic.json"), evidence.critic);
   writeJson(path.join(dir, "rejection.json"), {
@@ -5099,6 +5364,8 @@ export type CreateGeneratedVisualizationInput = {
   maxAttempts?: number;
   criticMaxAttempts?: number;
   runBrowserTests?: boolean;
+  /** Test-only override for deterministic runtime-gate simulations. */
+  browserTestRunner?: typeof runGeneratedVisualBrowserTests;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
   checkCancelled?: () => void;
@@ -5444,9 +5711,11 @@ async function createGeneratedVisualizationWithSlot(
       input.runBrowserTests ??
       String(process.env.LEARN_GENERATED_VISUAL_BROWSER_TESTS ?? "true") !==
         "false";
+    const browserTestRunner =
+      input.browserTestRunner ?? runGeneratedVisualBrowserTests;
     const browserStartedAt = Date.now();
     const browser = shouldRunBrowser
-      ? runGeneratedVisualBrowserTests({ definition, outputDir: stagingDir })
+      ? browserTestRunner({ definition, outputDir: stagingDir })
       : {
           tests: [
             {
@@ -5469,6 +5738,9 @@ async function createGeneratedVisualizationWithSlot(
       attempt,
       enabled: shouldRunBrowser,
       passed: browser.tests.every((test) => test.passed),
+      ...(browser.browser?.previewMatrixReceipt
+        ? { previewMatrixReceipt: browser.browser.previewMatrixReceipt }
+        : {}),
       durationMs: Date.now() - browserStartedAt,
     });
     input.checkCancelled?.();

@@ -35,6 +35,7 @@ import { RESOURCE2SKILL_COMMAND } from "../resource2skill/identity.ts";
 import { INBOX_ZERO_COMMAND } from "../inbox-zero/identity.ts";
 import { LEGAL_COMMAND } from "../legal/identity.ts";
 import { WARDROBE_COMMAND } from "../wardrobe/identity.ts";
+import { MATRAIX_COMMAND } from "../matraix/identity.ts";
 import { MEETING_NOTES_COMMAND } from "../meeting-notes/identity.ts";
 import { MONEY_PRINTER_COMMAND } from "../money-printer/identity.ts";
 import { OPENCODE_COMMAND } from "../opencode/identity.ts";
@@ -42,6 +43,7 @@ import { OPENMONTAGE_COMMAND } from "../openmontage/identity.ts";
 import { OPENPLANTER_COMMAND } from "../openplanter/identity.ts";
 import { OPENWORK_COMMAND } from "../openwork/identity.ts";
 import { OPENSCIENCE_COMMAND } from "../openscience/identity.ts";
+import { MAX_RESEARCH_COMMAND } from "../max-research/identity.ts";
 import { SOCIALS_MANAGER_COMMAND } from "../socials-manager/identity.ts";
 import { RUFLO_COMMAND } from "../ruflo/identity.ts";
 import { SHORTS_COMMAND } from "../shorts/identity.ts";
@@ -225,6 +227,14 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   // ~290 skills and scientific-database tools, so a stacked Breadboard skill
   // has nowhere to land — the message is the goal.
   profile("openscience", OPENSCIENCE_COMMAND, "OpenScience"),
+  // Max Research is the five research agents run against one question and
+  // reconciled into one answer, so it stacks nothing: a Breadboard skill has
+  // nowhere to land on a run whose whole body of work happens inside the
+  // agents it commissions. It stays launchable by the model — it is the right
+  // instrument for a question that genuinely needs the whole record — but it
+  // asks first, because it is the most expensive thing here and it runs for
+  // tens of minutes once started.
+  profile("max-research", MAX_RESEARCH_COMMAND, "Max Research"),
   profile("socials-manager", SOCIALS_MANAGER_COMMAND, "Socials Manager"),
   // Inbox Zero hands the instruction to the mail app's own assistant, which
   // owns the mailbox tools, so a stacked Breadboard skill has nowhere to land.
@@ -293,6 +303,13 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
     acceptsAttachments: true,
     launchableByModel: false,
   }),
+  // MatrAIx answers by simulating a population rather than by reasoning about
+  // one, so the message is the whole brief: the questionnaire and the cohort
+  // are derived from it, and a stacked skill would only arrive as prose inside
+  // the subject being surveyed. A delegated launch is safe — it spends model
+  // calls and writes files under its own run, and touches nothing else — so it
+  // asks for approval like every other agent that produces a deliverable.
+  profile("matraix", MATRAIX_COMMAND, "MatrAIx"),
   // Agent TARS drives a real browser or desktop from the Terminal only; Garden
   // Chat offers the same palette entry as a setup dialog, with no chat runner.
   profile("agent-tars", AGENT_TARS_SLASH_COMMAND, "Agent TARS", {

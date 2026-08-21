@@ -29,8 +29,13 @@ test("the branch switcher reaches the Garden transcript's assistant actions", ()
   assert.match(workspace, /branchGroups: Record<string, ConversationBranchGroup<Message>>/);
   assert.match(workspace, /onSwitchBranch: \(groupId: string, direction: -1 \| 1\) => void/);
   assert.match(workspace, /function branchForAssistant\(/);
-  assert.match(workspace, /onPrevious: \(\) => onSwitchBranch\(branch\.id, -1\)/);
-  assert.match(workspace, /onNext: \(\) => onSwitchBranch\(branch\.id, 1\)/);
+  // Tolerant of formatting: the wiring is what matters, not whether the
+  // arrow body happens to fit on one line.
+  assert.match(
+    workspace,
+    /onPrevious: \(\) =>\s*onSwitchBranch\(branch\.id, -1\)/,
+  );
+  assert.match(workspace, /onNext: \(\) =>\s*onSwitchBranch\(branch\.id, 1\)/);
   assert.match(workspace, /onSwitchBranch=\{switchBranch\}/);
   // Switching has to write the chosen variant back, since a Garden chat row
   // stores exactly the transcript on screen.

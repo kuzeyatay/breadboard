@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "target": "ES2017",
+    "target": "ES2018",
     "lib": [
       "dom",
       "dom.iterable",
@@ -26,6 +26,12 @@
     "paths": {
       "@/*": [
         "./src/*"
+      ],
+      "@genoffice/*": [
+        "./src/vendor/genoffice/*/src"
+      ],
+      "@genoffice/pptx-engine/*": [
+        "./src/vendor/genoffice/pptx-engine/src/*"
       ]
     }
   },
@@ -45,6 +51,7 @@
     ".next-production",
     ".next-production-final",
     ".next-schedcheck",
+    "src/vendor/genoffice/pptx-render/src/bidi-js.d.ts",
     "openwork-runtime",
     "openwork-state",
     "openwork-workspace"

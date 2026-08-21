@@ -12,15 +12,29 @@
 // resolver separates the two cases explicitly — value changed over time, versus
 // sources disagreeing about the same period — and only the second is a conflict.
 
-import { evidenceAuthority, isExplicit } from "./authority.ts";
+import {
+  evidenceAuthority,
+  independentSourceCount,
+  isExplicit,
+} from "./authority.ts";
 import type {
   ConflictObservation,
+  Corroboration,
   ResearchConflict,
   ResearchEvidence,
 } from "./types.ts";
 
 /** Observations further apart than this describe different periods. */
 const TEMPORAL_SEPARATION_DAYS = 180;
+
+/**
+ * How old a value may be before a volatile field should say so.
+ *
+ * Roughly a reporting cycle. The point is not that an eighteen-month-old
+ * figure is wrong — it is that quoting it without its date makes it a claim
+ * about today, which is a different and usually false statement.
+ */
+const STALE_AFTER_DAYS = 540;
 
 export interface EvidenceInput {
   entityId?: string;
@@ -32,6 +46,7 @@ export interface EvidenceInput {
   publishedAt?: string;
   evidenceKind?: ResearchEvidence["evidenceKind"];
   confidence?: ResearchEvidence["confidence"];
+  selfInterested?: boolean;
   note?: string;
 }
 
@@ -66,6 +81,12 @@ export function normalizeEvidence(
     observedAt: options.now ?? new Date().toISOString(),
     evidenceKind: input.evidenceKind ?? "explicit",
     confidence: input.confidence ?? (input.evidenceKind === "inference" ? "low" : "medium"),
+    // A vendor's marketing page is interested in its own claims by
+    // construction, so the class implies the flag and the caller does not have
+    // to remember to set both.
+    ...(input.selfInterested === true || input.sourceClass === "vendor_marketing"
+      ? { selfInterested: true }
+      : {}),
     ...(input.note ? { note: input.note } : {}),
   };
 }
@@ -97,6 +118,10 @@ function toObservation(evidence: ResearchEvidence): ConflictObservation {
   };
 }
 
+function daysSince(iso: string, now: string): number {
+  return (new Date(now).getTime() - new Date(iso).getTime()) / 86_400_000;
+}
+
 export interface FieldResolution {
   /** The value a synthesis may state, when one can be stated at all. */
   value?: unknown;
@@ -104,6 +129,23 @@ export interface FieldResolution {
   /** Present whenever the observations do not agree. */
   conflict?: ResearchConflict;
   supportingEvidenceIds: string[];
+  /**
+   * How well the stated value is actually supported — computed from the
+   * observations that survived, not from the ones that were recorded.
+   *
+   * These three exist so the answer can qualify a figure instead of stating it
+   * flatly. None of them blocks a value from being used: a single interested
+   * source is worth reporting as long as the report says that is what it is,
+   * and silently suppressing it would leave the user with nothing and no idea
+   * why.
+   */
+  corroboration?: Corroboration;
+  /** Every surviving source for the value has a stake in it. */
+  selfInterestedOnly?: boolean;
+  /** Volatile, and the newest supporting source is older than the horizon. */
+  stale?: boolean;
+  /** The date the stated value actually describes, when one is known. */
+  asOf?: string;
 }
 
 /**
@@ -114,11 +156,10 @@ export interface FieldResolution {
  * number, and reporting last year's figure as current because a better site
  * published it is the exact error the volatility flag exists to prevent.
  */
-export function resolveField(input: {
+function resolveFieldCore(input: {
   field: string;
   entityId?: string;
   evidence: readonly ResearchEvidence[];
-  /** True when the field's value legitimately changes over time. */
   volatile: boolean;
   conflictId: string;
 }): FieldResolution {
@@ -216,5 +257,71 @@ export function resolveField(input: {
       ? [best.evidenceId]
       : observations.map((item) => item.evidenceId),
     conflict,
+  };
+}
+
+/**
+ * Resolve one cell, then say how well the result is actually supported.
+ *
+ * The support judgement is kept out of `resolveFieldCore` on purpose. That
+ * function answers "which value survives", which is a question about the
+ * observations; this one answers "how firmly may it be stated", which is a
+ * question about the sources behind the surviving value — and conflating them
+ * is how a number backed by one interested page ends up indistinguishable in
+ * the answer from one three independent sources agree on.
+ */
+export function resolveField(input: {
+  field: string;
+  entityId?: string;
+  evidence: readonly ResearchEvidence[];
+  /** True when the field's value legitimately changes over time. */
+  volatile: boolean;
+  conflictId: string;
+  now?: string;
+}): FieldResolution {
+  const resolution = resolveFieldCore(input);
+  if (!resolution.supportingEvidenceIds.length) return resolution;
+
+  const supporting = input.evidence.filter((item) =>
+    resolution.supportingEvidenceIds.includes(item.id),
+  );
+  if (!supporting.length) return resolution;
+
+  // A disagreement that authority settled is still a disagreement. Reporting
+  // it as `single_source` would be true — one observation does back the stated
+  // value — and would hide the thing the reader most needs, which is that
+  // another source said something else. A temporal change is exempt: those
+  // sources never disagreed, they described different years.
+  const disputed =
+    resolution.conflict !== undefined &&
+    resolution.conflict.resolution.status !== "temporal_change";
+  const corroboration: Corroboration =
+    resolution.status === "conflicting" || disputed
+      ? "contested"
+      : independentSourceCount(supporting) > 1
+        ? "corroborated"
+        : "single_source";
+
+  // Undated evidence is not treated as stale. `observedAt` says when Breadboard
+  // read the page, which is today by construction, and letting that stand in
+  // for the publication date would mark every source fresh — the opposite of
+  // the mistake this is here to catch.
+  const dated = supporting
+    .map((item) => item.publishedAt)
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  const asOf = dated.at(-1);
+  const now = input.now ?? new Date().toISOString();
+  const stale =
+    input.volatile && asOf !== undefined && daysSince(asOf, now) > STALE_AFTER_DAYS;
+
+  return {
+    ...resolution,
+    corroboration,
+    ...(supporting.every((item) => item.selfInterested === true)
+      ? { selfInterestedOnly: true }
+      : {}),
+    ...(stale ? { stale: true } : {}),
+    ...(asOf ? { asOf } : {}),
   };
 }

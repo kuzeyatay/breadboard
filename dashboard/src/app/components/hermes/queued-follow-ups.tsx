@@ -11,7 +11,13 @@
 // garden assistant, and the knowledge terminal queue and steer exactly the way
 // the dashboard terminal does.
 
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 
 export interface QueuedFollowUp {
   id: string;
@@ -42,6 +48,21 @@ export function reorderQueuedFollowUps(
   return next;
 }
 
+/** Put a queued message back where it was originally composed. */
+export function restoreQueuedFollowUpDraft(
+  text: string,
+  onChange: (value: string) => void,
+  textareaRef: RefObject<HTMLTextAreaElement | null>,
+): void {
+  onChange(text);
+  window.requestAnimationFrame(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(text.length, text.length);
+  });
+}
+
 interface Options {
   /** The active conversation; null while the chat is an unsaved draft. */
   conversationKey: string | null;
@@ -63,6 +84,8 @@ interface Options {
    * sends when the queue drains. Omitted on surfaces that cannot steer.
    */
   onSteer?: (text: string) => Promise<boolean>;
+  /** Remove a queued message and restore it to this surface's composer. */
+  onRestoreDraft: (text: string) => void;
   /** Send one queued message as an ordinary follow-up once the run settles. */
   onSendQueued: (text: string) => Promise<void>;
 }
@@ -74,6 +97,7 @@ export function useQueuedFollowUps({
   stopping = false,
   externalRunActive = false,
   onSteer,
+  onRestoreDraft,
   onSendQueued,
 }: Options): {
   queueFollowUp: (text: string) => void;
@@ -82,10 +106,38 @@ export function useQueuedFollowUps({
   const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([]);
   const [applyingSteerId, setApplyingSteerId] = useState<string | null>(null);
   const [sendingQueuedId, setSendingQueuedId] = useState<string | null>(null);
-  const [editingQueuedId, setEditingQueuedId] = useState<string | null>(null);
-  const [queuedEditText, setQueuedEditText] = useState("");
   const [draggedQueuedId, setDraggedQueuedId] = useState<string | null>(null);
   const [dragOverQueuedId, setDragOverQueuedId] = useState<string | null>(null);
+  // Why the last press of Steer did not steer anything, shown on the row it
+  // was pressed on. Steering can be refused for reasons the person cannot see
+  // — an agent card owns the run, the turn is not one the runtime can
+  // redirect, the answer finished between the press and the request — and a
+  // control that answers a click with nothing at all reads as broken.
+  const [steerNote, setSteerNote] = useState<{
+    id: string;
+    text: string;
+  } | null>(null);
+  const steerNoteTimerRef = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (steerNoteTimerRef.current !== null) {
+        window.clearTimeout(steerNoteTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  function showSteerNote(id: string, text: string) {
+    if (steerNoteTimerRef.current !== null) {
+      window.clearTimeout(steerNoteTimerRef.current);
+    }
+    setSteerNote({ id, text });
+    steerNoteTimerRef.current = window.setTimeout(() => {
+      steerNoteTimerRef.current = null;
+      setSteerNote(null);
+    }, 8_000);
+  }
 
   const visibleQueued = queuedFollowUps.filter(
     (item) =>
@@ -124,36 +176,74 @@ export function useQueuedFollowUps({
     ]);
   }
 
+  /**
+   * Why the working conversation cannot take a course correction right now.
+   * Doubles as the Steer control's tooltip and as the note shown when it is
+   * pressed anyway.
+   */
+  function steerUnavailableReason(): string {
+    if (externalRunActive && !steerableRunActive) {
+      // Only a chat turn can take a mid-run correction; an agent run is
+      // steered by its own card, so this message waits its turn.
+      return "This agent run cannot be steered — the message sends when it finishes.";
+    }
+    if (stopping) {
+      return "This run is stopping — the message sends as soon as it settles.";
+    }
+    if (!onSteer) {
+      return "This conversation cannot steer a working answer — the message sends when it finishes.";
+    }
+    if (!runInFlight) {
+      return "Nothing is running to steer — the message sends in a moment.";
+    }
+    // Agent mode off, or a turn the runtime has not dispatched yet: there is
+    // no run behind the answer for a correction to reach.
+    return "This answer cannot take a course correction — the message sends when the turn finishes.";
+  }
+
   async function applyQueuedSteer(item: QueuedFollowUp) {
-    if (!onSteer || !steerableRunActive || applyingSteerId) return;
+    if (applyingSteerId) return;
+    if (!onSteer || !steerableRunActive || stopping) {
+      showSteerNote(item.id, steerUnavailableReason());
+      return;
+    }
     setApplyingSteerId(item.id);
+    setSteerNote(null);
     try {
       if (await onSteer(item.text)) {
         setQueuedFollowUps((current) =>
           current.filter((candidate) => candidate.id !== item.id),
         );
+      } else {
+        // The surface refused it — most often the answer settled between the
+        // press and the request. The message stays queued and sends when the
+        // queue drains, which is worth saying rather than leaving the row
+        // looking untouched.
+        showSteerNote(
+          item.id,
+          "The answer moved on before the correction landed — the message sends as a follow-up instead.",
+        );
       }
-    } catch {
+    } catch (steerError) {
       // The run may have ended first, or the steer request failed; either way
       // the message stays queued and sends when the queue drains.
+      showSteerNote(
+        item.id,
+        steerError instanceof Error && steerError.message
+          ? steerError.message
+          : "The course correction could not be applied — the message sends as a follow-up instead.",
+      );
     } finally {
       setApplyingSteerId(null);
     }
   }
 
-  function beginQueuedEdit(item: QueuedFollowUp) {
-    setEditingQueuedId(item.id);
-    setQueuedEditText(item.text);
-  }
-
-  function saveQueuedEdit(itemId: string) {
-    const text = queuedEditText.trim();
-    if (!text) return;
+  function editQueuedFollowUp(item: QueuedFollowUp) {
     setQueuedFollowUps((current) =>
-      current.map((item) => (item.id === itemId ? { ...item, text } : item)),
+      current.filter((candidate) => candidate.id !== item.id),
     );
-    setEditingQueuedId(null);
-    setQueuedEditText("");
+    setSteerNote((current) => (current?.id === item.id ? null : current));
+    onRestoreDraft(item.text);
   }
 
   function moveQueuedFollowUp(itemId: string, offset: -1 | 1) {
@@ -181,159 +271,139 @@ export function useQueuedFollowUps({
     visibleQueued.length > 0 ? (
       <div className="space-y-0.5 py-0.5">
         {visibleQueued.map((item, index) => (
-          <div
-            key={item.id}
-            onDragOver={(event) => {
-              if (!draggedQueuedId || draggedQueuedId === item.id) return;
-              event.preventDefault();
-              event.dataTransfer.dropEffect = "move";
-              setDragOverQueuedId(item.id);
-            }}
-            onDragLeave={() =>
-              setDragOverQueuedId((current) =>
-                current === item.id ? null : current,
-              )
-            }
-            onDrop={(event) => {
-              event.preventDefault();
-              finishQueuedDrop(item.id);
-            }}
-            className={`flex min-h-9 items-center gap-2 rounded-xl px-2 text-sm text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] ${
-              dragOverQueuedId === item.id
-                ? "bg-[var(--paper-strong)] ring-1 ring-inset ring-[var(--line-strong)]"
-                : ""
-            }`}
-          >
-            <button
-              type="button"
-              draggable={editingQueuedId !== item.id}
-              onDragStart={(event) => {
-                setDraggedQueuedId(item.id);
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData("text/plain", item.id);
+          <div key={item.id} className="space-y-0.5">
+            <div
+              onDragOver={(event) => {
+                if (!draggedQueuedId || draggedQueuedId === item.id) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDragOverQueuedId(item.id);
               }}
-              onDragEnd={() => {
-                setDraggedQueuedId(null);
-                setDragOverQueuedId(null);
+              onDragLeave={() =>
+                setDragOverQueuedId((current) =>
+                  current === item.id ? null : current,
+                )
+              }
+              onDrop={(event) => {
+                event.preventDefault();
+                finishQueuedDrop(item.id);
               }}
-              onKeyDown={(event) => {
-                if (event.key === "ArrowUp" && index > 0) {
-                  event.preventDefault();
-                  moveQueuedFollowUp(item.id, -1);
-                } else if (
-                  event.key === "ArrowDown" &&
-                  index < visibleQueued.length - 1
-                ) {
-                  event.preventDefault();
-                  moveQueuedFollowUp(item.id, 1);
-                }
-              }}
-              className="grid h-7 w-7 shrink-0 cursor-grab place-items-center rounded-lg opacity-70 transition hover:bg-[var(--paper-surface)] hover:opacity-100 active:cursor-grabbing"
-              aria-label={`Reorder queued message ${index + 1} of ${visibleQueued.length}: ${item.text}. Drag, or use the Up and Down arrow keys.`}
-              title="Drag to change steering order"
+              className={`flex min-h-9 items-center gap-2 rounded-xl px-2 text-sm text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] ${
+                dragOverQueuedId === item.id
+                  ? "bg-[var(--paper-strong)] ring-1 ring-inset ring-[var(--line-strong)]"
+                  : ""
+              }`}
             >
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h8.5a2 2 0 0 1 2 2v.75m0 0-2.25-2.25m2.25 2.25L15 12.5" />
-              </svg>
-            </button>
-            {editingQueuedId === item.id ? (
-              <form
-                className="flex min-w-0 flex-1 items-center gap-1.5"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  saveQueuedEdit(item.id);
+              <button
+                type="button"
+                draggable
+                onDragStart={(event) => {
+                  setDraggedQueuedId(item.id);
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/plain", item.id);
                 }}
+                onDragEnd={() => {
+                  setDraggedQueuedId(null);
+                  setDragOverQueuedId(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowUp" && index > 0) {
+                    event.preventDefault();
+                    moveQueuedFollowUp(item.id, -1);
+                  } else if (
+                    event.key === "ArrowDown" &&
+                    index < visibleQueued.length - 1
+                  ) {
+                    event.preventDefault();
+                    moveQueuedFollowUp(item.id, 1);
+                  }
+                }}
+                className="grid h-7 w-7 shrink-0 cursor-grab place-items-center rounded-lg opacity-70 transition hover:bg-[var(--paper-surface)] hover:opacity-100 active:cursor-grabbing"
+                aria-label={`Reorder queued message ${index + 1} of ${visibleQueued.length}: ${item.text}. Drag, or use the Up and Down arrow keys.`}
+                title="Drag to change steering order"
               >
-                <input
-                  value={queuedEditText}
-                  onChange={(event) => setQueuedEditText(event.target.value)}
-                  className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-1 text-sm text-[var(--ink)] outline-none focus:border-[var(--line-strong)]"
-                  aria-label="Edit queued message"
-                  autoFocus
-                />
-                <button type="submit" className="rounded-lg px-2 py-1 text-xs text-[var(--botanical)] hover:bg-[var(--paper-surface)]">
-                  Save
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEditingQueuedId(null)}
-                  className="rounded-lg px-2 py-1 text-xs hover:bg-[var(--paper-surface)]"
-                >
-                  Cancel
-                </button>
-              </form>
-            ) : (
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h8.5a2 2 0 0 1 2 2v.75m0 0-2.25-2.25m2.25 2.25L15 12.5" />
+                </svg>
+              </button>
               <>
-                <span className="min-w-0 flex-1 truncate" title={item.text}>
-                  {item.text}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void applyQueuedSteer(item)}
-                  disabled={Boolean(applyingSteerId) || !canSteerNow}
-                  className="flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-sm transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40"
-                  aria-label={`Steer the active response with: ${item.text}`}
-                  title={
-                    canSteerNow
-                      ? "Steer the active response"
-                      : externalRunActive
-                        // Only a chat turn can take a mid-run correction; an
-                        // agent run is steered by its own card, so this
-                        // message waits its turn.
-                        ? "This agent run cannot be steered — the message sends when it finishes"
-                        : !onSteer
-                          ? "This conversation cannot steer a working answer — the message sends when it finishes"
-                          : "Nothing is running to steer"
-                  }
-                >
-                  <svg
-                    className="h-4 w-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={1.7}
-                    aria-hidden
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M19.5 8.25H9.75a4.5 4.5 0 0 0-4.5 4.5v.75m0 0 3-3m-3 3 3 3"
-                    />
-                  </svg>
-                  <span>
-                    {applyingSteerId === item.id ? "Steering..." : "Steer"}
+                  <span className="min-w-0 flex-1 truncate" title={item.text}>
+                    {item.text}
                   </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setQueuedFollowUps((current) =>
-                      current.filter((candidate) => candidate.id !== item.id),
-                    )
-                  }
-                  disabled={applyingSteerId === item.id}
-                  className="rounded-lg p-1.5 transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:opacity-40"
-                  aria-label={`Delete queued message: ${item.text}`}
-                  title="Delete queued message"
-                >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 7.5h15m-9-3h3m-7.5 3 .75 12h10.5l.75-12M9.75 10.5v6m4.5-6v6" />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => beginQueuedEdit(item)}
-                  disabled={applyingSteerId === item.id}
-                  className="rounded-lg p-1.5 transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:opacity-40"
-                  aria-label={`Edit queued message: ${item.text}`}
-                  title="Edit queued message"
-                >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z" />
-                  </svg>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => void applyQueuedSteer(item)}
+                    // Unavailable, but never inert: pressing it says why rather
+                    // than swallowing the click. Only a steer already in flight
+                    // takes the control away.
+                    disabled={Boolean(applyingSteerId)}
+                    aria-disabled={!canSteerNow}
+                    className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-sm transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40 ${
+                      canSteerNow ? "" : "opacity-45"
+                    }`}
+                    aria-label={`Steer the active response with: ${item.text}`}
+                    title={
+                      canSteerNow
+                        ? "Steer the active response"
+                        : steerUnavailableReason()
+                    }
+                  >
+                    <svg
+                      className="h-4 w-4"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={1.7}
+                      aria-hidden
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M19.5 8.25H9.75a4.5 4.5 0 0 0-4.5 4.5v.75m0 0 3-3m-3 3 3 3"
+                      />
+                    </svg>
+                    <span>
+                      {applyingSteerId === item.id ? "Steering..." : "Steer"}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setQueuedFollowUps((current) =>
+                        current.filter((candidate) => candidate.id !== item.id),
+                      )
+                    }
+                    disabled={applyingSteerId === item.id}
+                    className="rounded-lg p-1.5 transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:opacity-40"
+                    aria-label={`Delete queued message: ${item.text}`}
+                    title="Delete queued message"
+                  >
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 7.5h15m-9-3h3m-7.5 3 .75 12h10.5l.75-12M9.75 10.5v6m4.5-6v6" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => editQueuedFollowUp(item)}
+                    disabled={applyingSteerId === item.id}
+                    className="rounded-lg p-1.5 transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:opacity-40"
+                    aria-label={`Edit queued message: ${item.text}`}
+                    title="Edit queued message"
+                  >
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z" />
+                    </svg>
+                  </button>
               </>
-            )}
+            </div>
+            {steerNote?.id === item.id ? (
+              <p
+                role="status"
+                className="px-2 pb-1 pl-11 text-xs text-[var(--ink-muted)]"
+              >
+                {steerNote.text}
+              </p>
+            ) : null}
           </div>
         ))}
       </div>

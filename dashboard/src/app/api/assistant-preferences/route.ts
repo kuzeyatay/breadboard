@@ -32,6 +32,7 @@ function defaults() {
     reasoningEffort: DEFAULT_ASSISTANT_REASONING_EFFORT,
     reasoningEffortByModel: {} as Record<string, string>,
     userPreference: false,
+    humanizerAuto: false,
   };
 }
 
@@ -45,6 +46,10 @@ function payload(userId: number | null) {
     // model can restore its own effort without a round trip.
     reasoningEffortByModel: settings.reasoningEffortByModel,
     userPreference: settings.intelligencePreferenceSet,
+    // "Rewrite naturally" as a standing preference. The browser switch is the
+    // control, but the server needs it too: an artifact and a garden note are
+    // written server-side, where no localStorage exists.
+    humanizerAuto: settings.humanizerAuto,
   };
 }
 
@@ -85,12 +90,21 @@ export async function PATCH(request: Request) {
     ) {
       throw new ApiError(400, "invalid_reasoning_effort", "Choose a supported intelligence level.");
     }
-    if (model === undefined && reasoningEffort === undefined) {
+    const humanizerAuto =
+      body.humanizerAuto === undefined ? undefined : body.humanizerAuto === true;
+    if (
+      model === undefined &&
+      reasoningEffort === undefined &&
+      humanizerAuto === undefined
+    ) {
       throw new ApiError(400, "preference_required", "A model or intelligence level is required.");
     }
     setHermesUserSettings(userId, {
       ...(model !== undefined ? { defaultModel: model } : {}),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      // Sent on its own by the "Rewrite naturally" switch, which is not an
+      // intelligence preference and must not mark one as set.
+      ...(humanizerAuto !== undefined ? { humanizerAuto } : {}),
     });
     return NextResponse.json(payload(userId), { headers: cors });
   } catch (error) {

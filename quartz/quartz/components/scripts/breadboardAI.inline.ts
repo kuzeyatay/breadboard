@@ -31,6 +31,10 @@ interface QuartzCommandItem {
   unavailableReason?: string
 }
 
+interface QuartzTextSelection {
+  text: string
+}
+
 // Mirrors the dashboard's slash-command token grammar: one or more leading
 // "/token" selectors, each followed by whitespace or end of text.
 const LEADING_COMMAND_RUN = /^(?:\/[a-z0-9][a-z0-9_.:-]*(?:\s+|$))+/i
@@ -78,6 +82,9 @@ function setupPanel(root: HTMLElement) {
   const intelligence = root.querySelector<HTMLElement>(".breadboard-ai-intelligence")
   const modelSelect = root.querySelector<HTMLSelectElement>(".breadboard-ai-model")
   const effortSelect = root.querySelector<HTMLSelectElement>(".breadboard-ai-effort")
+  const selectionContext = root.querySelector<HTMLElement>(".breadboard-ai-selection-context")
+  const selectionQuote = root.querySelector<HTMLElement>(".breadboard-ai-selection-quote")
+  const selectionCancel = root.querySelector<HTMLButtonElement>(".breadboard-ai-selection-cancel")
   if (!toggle || !panel || !messages || !form || !input || !sendBtn || !stopBtn || !errorBox) return
 
   if (pageName) pageName.textContent = pageTitle
@@ -89,6 +96,7 @@ function setupPanel(root: HTMLElement) {
   let activeCommandIndex = 0
   let activeCommandTab: QuartzCommandItem["kind"] = "skill"
   let intelligenceLoaded = false
+  let activeTextSelection: QuartzTextSelection | null = null
   const activityEntries = new Map<string, { label: string; detail?: string; status: string }>()
 
   function loadState(): SessionState {
@@ -134,6 +142,36 @@ function setupPanel(root: HTMLElement) {
   }
   toggle.addEventListener("click", () => (panel.hidden ? openPanel() : closePanel()))
   closeBtn?.addEventListener("click", closePanel)
+
+  // â”€â”€ Selected-text questions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  //
+  // The shared Quartz highlighter owns selection capture and the durable mark.
+  // This panel keeps its own copy of the excerpt because focusing a textarea
+  // collapses the browser selection before Send is clicked.
+  function clearSelectionQuestion() {
+    activeTextSelection = null
+    if (selectionContext) selectionContext.hidden = true
+    if (selectionQuote) selectionQuote.textContent = ""
+    input!.placeholder = "Ask about this pageâ€¦"
+  }
+
+  const onAskHere = (event: Event) => {
+    const detail = (event as CustomEvent<{ text?: unknown }>).detail
+    const text = typeof detail?.text === "string" ? detail.text.trim().slice(0, 2_000) : ""
+    if (!text) return
+    activeTextSelection = { text }
+    if (selectionQuote) selectionQuote.textContent = text
+    if (selectionContext) selectionContext.hidden = false
+    if (panel!.hidden) openPanel()
+    input!.placeholder = "Ask about selected textâ€¦"
+    input!.focus()
+  }
+  window.addEventListener("breadboard:assistant-ask-here", onAskHere)
+  window.addCleanup(() => window.removeEventListener("breadboard:assistant-ask-here", onAskHere))
+  selectionCancel?.addEventListener("click", () => {
+    clearSelectionQuestion()
+    input!.focus()
+  })
 
   function formatModelName(modelId: string): string {
     if (modelId === "gpt-5.6-sol" || modelId === "gpt-5.6") return "GPT-5.6 Sol"
@@ -276,9 +314,7 @@ function setupPanel(root: HTMLElement) {
     const start = input!.selectionStart
     const token = `/${item.token} `
     const replaceInitialSlash = input!.value === "/"
-    input!.value = replaceInitialSlash
-      ? token
-      : `${token}${input!.value}`
+    input!.value = replaceInitialSlash ? token : `${token}${input!.value}`
     const cursor = replaceInitialSlash ? token.length : token.length + start
     closeCommands()
     input!.focus()
@@ -291,7 +327,10 @@ function setupPanel(root: HTMLElement) {
     // follow, the single-color input goes back to normal ink (the transcript
     // still tints the full submitted invocation).
     const run = input!.value.match(LEADING_COMMAND_RUN)?.[0]
-    input!.classList.toggle("breadboard-ai-input-command", Boolean(run) && run!.length === input!.value.length)
+    input!.classList.toggle(
+      "breadboard-ai-input-command",
+      Boolean(run) && run!.length === input!.value.length,
+    )
   }
 
   function renderCommands() {
@@ -541,8 +580,7 @@ function setupPanel(root: HTMLElement) {
     const remaining = Math.max(0, messages!.scrollHeight - messages!.clientHeight - top)
     const runway = Math.max(messages!.clientHeight, 1)
     const closing = 1 - Math.min(1, remaining / runway)
-    const line =
-      top + RAIL_ACTIVE_TOLERANCE + Math.max(runway - RAIL_ACTIVE_TOLERANCE, 0) * closing
+    const line = top + RAIL_ACTIVE_TOLERANCE + Math.max(runway - RAIL_ACTIVE_TOLERANCE, 0) * closing
     // One read of the container for the whole sweep, rather than one per tick.
     const containerTop = messages!.getBoundingClientRect().top
 
@@ -682,6 +720,7 @@ function setupPanel(root: HTMLElement) {
   }
 
   function renderTranscript(entries: Array<{ role?: unknown; content?: unknown }>) {
+    clearSelectionQuestion()
     messages!.replaceChildren()
     // One rail build for the whole transcript rather than one per message.
     railSuspended = true
@@ -715,7 +754,8 @@ function setupPanel(root: HTMLElement) {
     const data = (await response.json()) as { sessions?: unknown }
     return (Array.isArray(data.sessions) ? data.sessions : []).flatMap((item) => {
       const record = (item ?? {}) as Record<string, unknown>
-      return Number.isInteger(record.id) || (typeof record.id === "string" && record.id.startsWith("conv_"))
+      return Number.isInteger(record.id) ||
+        (typeof record.id === "string" && record.id.startsWith("conv_"))
         ? [
             {
               id: record.id as string | number,
@@ -737,7 +777,17 @@ function setupPanel(root: HTMLElement) {
     try {
       const sessions = await fetchSessions()
       const current = sessions.find((item) => item.id === state.sessionId)
-      if (current && current.messages.length) renderTranscript(current.messages)
+      if (!current) {
+        // Older builds could persist an unrelated Terminal/Garden id here
+        // because the Quartz history endpoint returned every conversation.
+        // Drop that stale pointer instead of sending the next page question
+        // into a conversation the server now correctly refuses.
+        state.sessionId = null
+        state.clientToken = null
+        saveState()
+        return
+      }
+      if (current.messages.length) renderTranscript(current.messages)
     } catch {
       /* keep the empty view */
     }
@@ -793,6 +843,7 @@ function setupPanel(root: HTMLElement) {
     state.sessionId = null
     state.clientToken = null
     saveState()
+    clearSelectionQuestion()
     messages!.replaceChildren()
     refreshRail()
     clearError()
@@ -1102,9 +1153,16 @@ function setupPanel(root: HTMLElement) {
     }
   }
 
-  async function send(promptText: string, clientMessageId = crypto.randomUUID(), retry = false) {
+  async function send(
+    promptText: string,
+    clientMessageId = crypto.randomUUID(),
+    retry = false,
+    selectedTextOverride?: string,
+  ) {
     const trimmed = promptText.trim()
     if (!trimmed) return
+    const selectedText = selectedTextOverride ?? activeTextSelection?.text
+    if (activeTextSelection) clearSelectionQuestion()
     clearError()
     addMessage("user", trimmed)
     const assistantEl = addMessage("assistant", "…")
@@ -1126,7 +1184,7 @@ function setupPanel(root: HTMLElement) {
             0,
             12000,
           ),
-          selectedText: (window.getSelection()?.toString() || "").slice(0, 2000),
+          selectedText,
           graph: (window as Window & { __breadboardGraphContext?: unknown })
             .__breadboardGraphContext,
         },
@@ -1165,7 +1223,7 @@ function setupPanel(root: HTMLElement) {
       } else {
         showError(
           error instanceof Error ? error.message : "The assistant is unavailable.",
-          () => void send(trimmed, clientMessageId, true),
+          () => void send(trimmed, clientMessageId, true, selectedText),
         )
         assistantEl.remove()
       }

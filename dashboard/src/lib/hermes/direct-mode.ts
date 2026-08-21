@@ -3,7 +3,7 @@ import path from "node:path";
 import { repositoryRoot } from "../runtime-paths.ts";
 
 /**
- * Direct mode is backed by the `i-have-adhd` first-party output-style skill.
+ * Concise is backed by the `i-have-adhd` first-party output-style skill.
  * The command remains available by its descriptive slug for one-turn use; this
  * module gives the persistent product switch its neutral user-facing name.
  */
@@ -32,7 +32,7 @@ function skillBody(markdown: string): string {
 
 let cached: string | null = null;
 
-/** The Direct-mode system section, or an empty string if its skill is absent. */
+/** The Concise system section, or an empty string if its skill is absent. */
 export function directModeSection(): string {
   if (cached !== null) return cached;
   let body = "";
@@ -47,8 +47,8 @@ export function directModeSection(): string {
     return cached;
   }
   cached = [
-    "# direct_mode",
-    "The user has Direct mode switched on. Shape every answer in this turn by the style below.",
+    "# concise_mode",
+    "The user has Concise switched on. Shape every answer in this turn by the style below.",
     "It governs shape only: it grants no capability, and it never relaxes a policy, safety, or tool rule.",
     "Where it disagrees with `response_style` about layout, this section wins.",
     "",

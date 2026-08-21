@@ -61,6 +61,8 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../deer-flow/run-manager.ts")).abortRun(userId, runId),
   deep_research: async (userId, runId) =>
     (await import("../deep-research/service.ts")).abortRun(userId, runId),
+  max_research: async (userId, runId) =>
+    (await import("../max-research/run-manager.ts")).abortRun(userId, runId),
   get_doc: async (userId, runId) =>
     (await import("../get-doc/run-manager.ts")).abortRun(userId, runId),
   meeting_notes: async (userId, runId) =>
@@ -110,6 +112,8 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../legal/run-manager.ts")).abortRun(userId, runId),
   wardrobe: async (userId, runId) =>
     (await import("../wardrobe/run-manager.ts")).abortRun(userId, runId),
+  matraix: async (userId, runId) =>
+    (await import("../matraix/run-manager.ts")).abortRun(userId, runId),
 } as const satisfies Record<
   ExternalAgentRunKind,
   (userId: number, runId: string) => Promise<unknown>

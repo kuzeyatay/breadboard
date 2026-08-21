@@ -502,7 +502,7 @@ test("a second ChatGPT account can be added, listed, and removed", () => {
   // it the flow overwrites `auth.json`.
   assert.match(accountPanel, /fetch\("\/api\/chatmock\/accounts", \{ method: "POST" \}\)/);
   assert.match(accountPanel, /\/api\/chatmock\/accounts\?key=\$\{encodeURIComponent\(key\)\}/);
-  assert.match(accountPanel, /chatgptRows\.map/);
+  assert.match(accountPanel, /chronologicalChatgptRows\.map/);
   assert.match(accountPanel, /"Add another"/);
   // An account on cooldown is signed in but not answering; saying so is the
   // difference between a useful sibling and an apparently idle duplicate.
@@ -510,9 +510,17 @@ test("a second ChatGPT account can be added, listed, and removed", () => {
   assert.match(accountPanel, /row\.cooldownReason/);
 });
 
-test("adding an account happens in the account list, not somewhere else", () => {
-  // The old page-level picker and refresh controls are gone. Each account row
-  // owns Add another beside Switch and starts the real flow for that provider.
+test("accounts from the same provider share one chronological group", () => {
+  assert.match(accountPanel, /function chronological/);
+  assert.match(accountPanel, /const subscriptionGroups = providers/);
+  assert.match(accountPanel, /subscriptionGroups\.map\(\(\{ provider, accounts \}\)/);
+  assert.match(accountPanel, /accounts\.map\(\(subscription\)/);
+  assert.match(accountPanel, /chronologicalChatgptRows\.map/);
+});
+
+test("provider actions live in the provider header, not on an account row", () => {
+  // The old page-level picker and refresh controls are gone. Switch and Add
+  // another share the provider's row; only Sign out belongs to an account.
   assert.doesNotMatch(accountPanel, /onOpenProviders/);
   assert.doesNotMatch(accountPanel, /aria-expanded=\{adding\}/);
   assert.doesNotMatch(accountPanel, /Add an account/);
@@ -520,9 +528,21 @@ test("adding an account happens in the account list, not somewhere else", () => 
   assert.match(accountPanel, /onClick=\{\(\) => void addChatgptAccount\(\)\}/);
   assert.match(
     accountPanel,
-    /startSubscriptionLogin\(\s*subscription\.provider,\s*subscription\.vendorLabel,\s*null,/,
+    /startSubscriptionLogin\(provider\.id, provider\.vendorLabel, null\)/,
   );
-  assert.match(accountPanel, /"Switch"[\s\S]*"Add another"[\s\S]*Sign out/);
+  assert.match(accountPanel, /const switchAccount = accounts\[accounts\.length - 1\]/);
+
+  const openai = accountPanel.indexOf(">OpenAI</p>");
+  const openaiSwitch = accountPanel.indexOf(': "Switch"', openai);
+  const openaiAdd = accountPanel.indexOf(': "Add another"', openaiSwitch);
+  const openaiAccounts = accountPanel.indexOf('<ul className="divide-y', openaiAdd);
+  assert.ok(openai < openaiSwitch && openaiSwitch < openaiAdd && openaiAdd < openaiAccounts);
+
+  const provider = accountPanel.indexOf("const switchAccount = accounts[accounts.length - 1]");
+  const providerSwitch = accountPanel.indexOf(': "Switch"', provider);
+  const providerAdd = accountPanel.indexOf(': "Add another"', providerSwitch);
+  const providerAccounts = accountPanel.indexOf('<ul className="divide-y', providerAdd);
+  assert.ok(provider < providerSwitch && providerSwitch < providerAdd && providerAdd < providerAccounts);
 });
 
 test("the memory panel shows the summary and per-chat memory, and nothing else", () => {

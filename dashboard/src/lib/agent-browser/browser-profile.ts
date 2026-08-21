@@ -18,6 +18,10 @@
 
 import { spawn } from "node:child_process";
 import {
+  installedOpenCliExtension,
+  openCliExtensionArgs,
+} from "./opencli-extension.ts";
+import {
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -204,6 +208,18 @@ export interface SignInWindow {
   pid: number;
   startedAt: string;
   executable: string;
+  /**
+   * Opened for the agents rather than for a person, and positioned off-screen.
+   *
+   * OpenCLI can only drive a browser that is actually running, so a run needs a
+   * window whether or not anybody wants to look at one. Headless is not an
+   * option: the extension connects in `--headless=new`, but Reddit answers a
+   * headless browser with a challenge page instead of JSON — which is the whole
+   * reason OpenCLI drives a real browser in the first place. A real window
+   * parked at -32000,-32000 is indistinguishable to the site and invisible to
+   * the person.
+   */
+  background?: boolean;
 }
 
 // The open window is recorded on disk rather than in module memory. Whoever
@@ -258,6 +274,7 @@ export function signInWindow(env: NodeJS.ProcessEnv = process.env): SignInWindow
   return {
     pid: marker.pid,
     startedAt: marker.startedAt,
+    background: marker.background === true,
     executable: typeof marker.executable === "string" ? marker.executable : "",
   };
 }
@@ -291,7 +308,11 @@ function normalizeStartUrl(url: unknown): string | null {
  * Idempotent: if the window is already up, that window is handed back rather
  * than a second process that would only forward its arguments and exit.
  */
-export function openSignInWindow(url?: unknown, env: NodeJS.ProcessEnv = process.env): SignInWindow {
+export function openSignInWindow(
+  url?: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+  options: { background?: boolean } = {},
+): SignInWindow {
   // Bad input is rejected before anything is looked up or launched.
   const startUrl = normalizeStartUrl(url);
   const existing = signInWindow(env);
@@ -306,6 +327,14 @@ export function openSignInWindow(url?: unknown, env: NodeJS.ProcessEnv = process
     throw new BrowserProfileError(500, "profile_not_writable");
   }
 
+  // OpenCLI's extension, if it has been fetched. Loaded here rather than
+  // installed into the profile because a command-line extension lives for the
+  // life of the window: it is present in the browser Breadboard drives and
+  // exists nowhere else, which is the containment this capability needs.
+  // Absent is a normal state — the window still opens, and the six
+  // login-backed Agent Reach channels stay closed as they were before.
+  const extension = installedOpenCliExtension(env);
+
   const child = spawn(
     executable,
     [
@@ -314,6 +343,12 @@ export function openSignInWindow(url?: unknown, env: NodeJS.ProcessEnv = process
       // which browser the machine defaults to.
       "--no-first-run",
       "--no-default-browser-check",
+      ...(extension ? openCliExtensionArgs(extension.path) : []),
+      // Off the edge of every display rather than headless: sites treat it as
+      // the ordinary browser it is, and nobody has to watch it work.
+      ...(options.background
+        ? ["--window-position=-32000,-32000", "--window-size=1280,900"]
+        : []),
       ...(startUrl ? [startUrl] : []),
     ],
     // Detached and unreferenced: this window outlives the request that opened
@@ -327,6 +362,7 @@ export function openSignInWindow(url?: unknown, env: NodeJS.ProcessEnv = process
     pid: child.pid,
     startedAt: new Date().toISOString(),
     executable,
+    ...(options.background ? { background: true } : {}),
   };
   try {
     writeFileSync(markerPath(env), JSON.stringify(state), "utf8");
@@ -444,4 +480,52 @@ export function browserProfileSummary(env: NodeJS.ProcessEnv = process.env): Bro
     windowOpen: Boolean(window),
     windowStartedAt: window?.startedAt ?? null,
   };
+}
+
+// ---- the background bridge window --------------------------------------------
+
+/**
+ * Make sure some browser is running on the profile, opening an invisible one if
+ * not, and say whether we opened it.
+ *
+ * OpenCLI drives a browser; it does not start one. Before this, the six
+ * login-backed Agent Reach channels worked only while somebody happened to have
+ * the sign-in window open, which is not a thing anyone would think to do.
+ *
+ * A window already open is always reused, visible or not. Two processes cannot
+ * share one `--user-data-dir`, and a person signing in is doing something more
+ * important than a run is.
+ */
+export function ensureBridgeWindow(env: NodeJS.ProcessEnv = process.env): {
+  window: SignInWindow | null;
+  opened: boolean;
+} {
+  const existing = signInWindow(env);
+  if (existing) return { window: existing, opened: false };
+  // Nothing to bridge to without the extension: the browser would come up and
+  // the daemon would never hear from it.
+  if (!installedOpenCliExtension(env)) return { window: null, opened: false };
+  try {
+    return {
+      window: openSignInWindow("https://example.com/", env, { background: true }),
+      opened: true,
+    };
+  } catch {
+    // A run that cannot get a browser still runs; those channels stay closed,
+    // which is exactly where they were before any of this.
+    return { window: null, opened: false };
+  }
+}
+
+/**
+ * Close a window this process opened for a run.
+ *
+ * Only ever closes a background one. A person's sign-in window is theirs, and a
+ * run that happened to borrow it must not take it away when it finishes.
+ * Cookies live in the profile directory, so closing costs no logins.
+ */
+export function closeBridgeWindow(env: NodeJS.ProcessEnv = process.env): void {
+  const current = signInWindow(env);
+  if (!current?.background) return;
+  closeSignInWindow(env);
 }

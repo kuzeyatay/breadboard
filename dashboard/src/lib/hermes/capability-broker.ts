@@ -33,7 +33,9 @@ import {
   MAP_TOOLS,
   IMAGE_SEARCH_TOOLS,
   OFFICE_TOOLS,
+  DOCUMENT_TOOLS,
   WATERMARK_TOOLS,
+  HUMANIZER_TOOLS,
   OMH_TOOLS,
   PLAN_TOOLS,
   IMAGE_TO_3D_TOOLS,
@@ -41,6 +43,7 @@ import {
   PREMORTEM_TOOLS,
   FACTCHECK_TOOLS,
   RECALL_TOOLS,
+  RESEARCH_TOOLS,
   SUPER_AGENT_TOOLS,
   WATCH_TOOLS,
   WORKSPACE_TOOLS,
@@ -233,7 +236,10 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...CALENDAR_TOOLS,
       ...PLAN_TOOLS,
       ...OFFICE_TOOLS,
+      ...DOCUMENT_TOOLS,
       ...WATERMARK_TOOLS,
+    ...HUMANIZER_TOOLS,
+      ...HUMANIZER_TOOLS,
       ...WORKSPACE_TOOLS,
       ...SUPER_AGENT_TOOLS,
       "shell",
@@ -319,6 +325,12 @@ export interface BrokerInput {
    * performs under the user's confirmation.
    */
   superAgent?: boolean;
+  /**
+   * The request warrants the tracked research pipeline. Opens `research_*` on
+   * the conversational surfaces without Super agent, because covering a broad
+   * question properly is a property of the question, not of a switch.
+   */
+  researchPipeline?: boolean;
 }
 
 function portable(value: string): string {
@@ -426,6 +438,7 @@ export function brokerCapabilities(input: BrokerInput): CapabilityGrant {
     input.userId !== null,
     {
       superAgent: input.superAgent === true && !isolated,
+      researchPipeline: input.researchPipeline === true && !isolated,
       interactiveApprovals: input.interactiveApprovals !== false,
     },
   );
@@ -622,7 +635,11 @@ function buildToolMap(
   granted: ReadonlySet<TaskCapability>,
   surface: HermesSurface,
   authenticated: boolean,
-  options: { superAgent?: boolean; interactiveApprovals?: boolean } = {},
+  options: {
+    superAgent?: boolean;
+    researchPipeline?: boolean;
+    interactiveApprovals?: boolean;
+  } = {},
 ): Record<string, boolean> {
   // Start from an explicit deny for every brokered tool: the runtime must never
   // inherit an ambient default.
@@ -777,12 +794,25 @@ function buildToolMap(
   for (const tool of OFFICE_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  // Existing-document edits and local PDF conversion share OfficeCLI's
+  // workspace/artifact boundary but run in-process. Keeping the family
+  // separate lets OfficeCLI remain the authoring path for brand-new files.
+  for (const tool of DOCUMENT_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   // "What metadata does this photo carry?" and "strip the Content Credentials
   // from it" are hygiene over the user's own files, so like document authoring
   // they do not depend on the turn's capability class. The scripts only ever
   // see the turn's workspace or a file the user attached to this very
   // conversation, and cleaning writes a new copy rather than overwriting.
   for (const tool of WATERMARK_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
+  // "Humanize this paragraph" is the person's own prose being reworded on the
+  // person's own machine, so like the marks tools it does not depend on the
+  // turn's capability class. Nothing leaves the loopback interface and nothing
+  // is written: the tools hand back text for the answer to carry.
+  for (const tool of HUMANIZER_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
   // The build loop works the same directory OfficeCLI and the loop kit already
@@ -802,6 +832,18 @@ function buildToolMap(
       options.superAgent === true &&
       authenticated &&
       (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
+  // The research pipeline is the one part of that set a broad question opens on
+  // its own. It reaches nothing outside its own conversation-scoped ledger, and
+  // a protocol whose entire purpose is to stop the model deciding it has
+  // searched enough is not something to make conditional on a switch. It still
+  // needs the web: a coverage ledger with no way to fill a gap is a loop.
+  if (options.researchPipeline === true && map.websearch === true) {
+    for (const tool of RESEARCH_TOOLS) {
+      map[tool] =
+        authenticated &&
+        (surface === "dashboard_terminal" || surface === "garden_chat");
+    }
   }
   // Garden and Quartz are always grounded in their current authorized Garden,
   // even when the user's wording does not repeat the word "garden".
@@ -839,9 +881,14 @@ function buildToolMap(
     for (const tool of PLAN_TOOLS) map[tool] = false;
     // Office documents live in one person's workspace, and these tools write.
     for (const tool of OFFICE_TOOLS) map[tool] = false;
+    for (const tool of DOCUMENT_TOOLS) map[tool] = false;
     // The files these read are one person's uploads and one person's workspace,
     // and this surface is the anonymous public one.
     for (const tool of WATERMARK_TOOLS) map[tool] = false;
+    // The prose is one person's writing and this surface is the anonymous
+    // public one; the rewriter is also a local service nobody anonymous should
+    // be able to occupy.
+    for (const tool of HUMANIZER_TOOLS) map[tool] = false;
   }
   return map;
 }

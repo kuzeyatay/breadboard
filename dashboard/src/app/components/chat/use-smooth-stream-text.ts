@@ -3,15 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 
 /** The reveal never types slower than this, so short answers stay snappy. */
-const MIN_CHARS_PER_SECOND = 220;
+const MIN_CHARS_PER_SECOND = 90;
 /**
  * Time constant of the catch-up: each frame reveals backlog/horizon chars per
- * second, so the pace eases out as it closes in — fast through a burst,
+ * second, so the pace eases out as it closes in — quicker through a burst,
  * settling to the floor rate for the tail.
  */
-const CATCH_UP_SECONDS = 0.9;
+const CATCH_UP_SECONDS = 1.6;
 /** A tighter horizon once the turn is over, so the tail never sits unfinished. */
-const SETTLE_SECONDS = 0.35;
+const SETTLE_SECONDS = 0.6;
 
 /**
  * One pacing step: how much of `target` should be shown `dtSeconds` after
@@ -47,6 +47,63 @@ export function advanceReveal(
 }
 
 /**
+ * What the reveal is doing right now: the text on screen, whether it is being
+ * paced, and the streaming flag it last saw (so a turn starting can be spotted
+ * as an edge rather than a level).
+ */
+export type RevealState = {
+  shown: string;
+  pacing: boolean;
+  streaming: boolean;
+  /** Transcript currently owning `shown`. */
+  revealKey?: string;
+};
+
+/**
+ * Decides, before anything is drawn, whether the text arriving is being
+ * *written* or merely *fetched* — and snaps the fetched kind straight onto the
+ * screen.
+ *
+ * Pacing belongs to a live turn, not to text. It is armed the moment a turn
+ * starts streaming into the newest row, and disarmed whenever a different
+ * answer arrives with no turn behind it: opening a saved chat, switching
+ * chats, a branch switch. Text that grows while unarmed — a transcript loading
+ * in after mount — appears whole, so a chat you open does not retype answers
+ * that were written minutes ago. Pure, so the gate is testable without a
+ * renderer, and idempotent, so applying it during render settles in one pass.
+ */
+export function armReveal(
+  state: RevealState,
+  target: string,
+  streaming: boolean,
+  revealKey = state.revealKey,
+): RevealState {
+  if (revealKey !== state.revealKey) {
+    // A different transcript is already text, even when it is still live.
+    // Draw the snapshot we fetched in full, then leave `streaming` false for
+    // one render so the same turn can arm pacing for deltas that arrive after
+    // this snapshot. Without the turn identity, reopening a working chat made
+    // its cached prefix type through the newer text all over again.
+    return {
+      shown: target,
+      pacing: false,
+      streaming: false,
+      revealKey,
+    };
+  }
+  let pacing = state.pacing;
+  if (streaming && !state.streaming) pacing = true;
+  let shown = state.shown;
+  if (!target.startsWith(shown)) {
+    shown = target;
+    if (!streaming) pacing = false;
+  } else if (!pacing && shown !== target) {
+    shown = target;
+  }
+  return { shown, pacing, streaming, revealKey };
+}
+
+/**
  * Paces a streaming assistant reply onto the screen.
  *
  * Providers and the agent pipeline deliver text in uneven bursts — sometimes a
@@ -56,26 +113,40 @@ export function advanceReveal(
  * `advanceReveal`. A burst that lands together with turn completion still
  * types out (at the quicker settle rate) rather than snapping.
  *
- * The pacing is skipped when the viewer prefers reduced motion, and whenever
- * the target stops being an extension of what is shown.
+ * Only a live turn is paced — `armReveal` holds that gate — and the pacing is
+ * skipped entirely when the viewer prefers reduced motion.
  */
 export function useSmoothStreamText(
   target: string,
   streaming: boolean,
+  revealKey?: string,
 ): string {
-  const [shown, setShown] = useState(target);
+  const [state, setState] = useState<RevealState>(() => ({
+    shown: target,
+    pacing: false,
+    // Treat a live mount as an edge. Its existing snapshot is already shown,
+    // but output arriving after the mount should still be paced.
+    streaming: false,
+    revealKey,
+  }));
   const lastTickRef = useRef<number | null>(null);
 
-  // A target that is not an extension of what is shown (chat switch, branch
-  // switch, completion rewrite) snaps whole. Adjusted during render — the
-  // stale text is discarded before it is ever committed — instead of one
-  // frame late in an effect.
-  if (!target.startsWith(shown)) {
-    setShown(target);
+  // Adjusted during render — React's adjust-on-prop pattern — so text that
+  // must not animate is discarded before it is ever committed, instead of
+  // being retyped for a frame first.
+  const next = armReveal(state, target, streaming, revealKey);
+  if (
+    next.shown !== state.shown ||
+    next.pacing !== state.pacing ||
+    next.streaming !== state.streaming ||
+    next.revealKey !== state.revealKey
+  ) {
+    setState(next);
   }
 
+  const { shown, pacing } = next;
   useEffect(() => {
-    if (shown === target || !target.startsWith(shown)) {
+    if (!pacing || shown === target || !target.startsWith(shown)) {
       lastTickRef.current = null;
       return;
     }
@@ -84,13 +155,14 @@ export function useSmoothStreamText(
     const frame = window.requestAnimationFrame((now) => {
       const last = lastTickRef.current ?? now;
       lastTickRef.current = now;
-      const next = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      const revealed = window.matchMedia("(prefers-reduced-motion: reduce)")
+        .matches
         ? target
         : advanceReveal(shown, target, (now - last) / 1000, streaming);
-      setShown(next);
+      setState((current) => ({ ...current, shown: revealed }));
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [shown, target, streaming]);
+  }, [pacing, shown, target, streaming]);
 
   return shown;
 }

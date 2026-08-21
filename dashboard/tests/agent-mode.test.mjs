@@ -335,6 +335,23 @@ test("super agent staffs web research across every instrument it has", () => {
     /not permission to substitute your own `web_search`/,
   );
   assert.match(superAgentDirective, /worker stays private/);
+  // The same rule for Max Research, which needed writing down for the same
+  // reason. A live turn that said "do max research" in as many words produced
+  // five `web_search` calls and an answer written by the Super Agent itself:
+  // the audit log for that turn records no `agent_launch` at all, only a
+  // `tool_search` looking one up. Naming Deep Research and not this one left
+  // the model to infer that "max research" meant the agent it had a rule for.
+  assert.match(
+    superAgentDirective,
+    /when the user says to do, run, or use max research, launch `max-research` with `agent_launch`/,
+  );
+  assert.match(
+    superAgentDirective,
+    /not interchangeable with `deep-research` and never with your own `web_search`/,
+  );
+  // Tens of minutes is the expected shape of this agent, not a reason to
+  // quietly pick a cheaper one.
+  assert.match(superAgentDirective, /It runs for tens of minutes; that is expected/);
   assert.match(
     superAgentDirective,
     /A broad request earns more than one worker/,

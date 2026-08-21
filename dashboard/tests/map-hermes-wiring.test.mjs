@@ -27,6 +27,12 @@ const toolRoute = read(
   "dashboard", "src", "app", "api", "hermes", "tools", "map", "route.ts",
 );
 const mapClient = read("dashboard", "src", "app", "map", "map-client.tsx");
+const inlineMap = read(
+  "dashboard", "src", "app", "components", "hermes", "inline-conversation-map.tsx",
+);
+const runtimePanel = read(
+  "dashboard", "src", "app", "components", "hermes", "agent-runtime-panel.tsx",
+);
 const systemPrompts = read("dashboard", "src", "lib", "hermes", "system-prompts.ts");
 const turnService = read("dashboard", "src", "lib", "conversations", "turn-service.ts");
 const eventStream = read("dashboard", "src", "lib", "hermes", "event-stream.ts");
@@ -141,6 +147,8 @@ test("the geographic grounding prompt ships with the tools it names", () => {
   assert.match(prompt, /Never invent/);
   assert.match(prompt, /could not be verified/);
   assert.match(prompt, /ask the user/i);
+  assert.match(prompt, /mode: "auto"/);
+  assert.match(plugin, /"enum": \["auto", "walking", "driving", "cycling"\]/);
 
   // Composed only when the tools are actually on the turn, and added to the
   // existing prompt rather than replacing any of it.
@@ -197,6 +205,41 @@ test("the map is drawn from state, never parsed out of assistant text", () => {
   assert.match(mapClient, /formatDuration\(route\.durationSeconds\)/);
   // And nowhere does it compute a duration itself.
   assert.ok(!/durationSeconds\s*=\s*[^;]*distanceMeters/.test(mapClient));
+});
+
+test("directions and place recommendations render the native map in chat", () => {
+  assert.match(runtimePanel, /inlineMapKindForAssistant/);
+  assert.match(runtimePanel, /"route", "distance", "travel_time"/);
+  assert.match(runtimePanel, /"recommendation", "proximity"/);
+  assert.match(runtimePanel, /<InlineConversationMap/);
+  assert.match(inlineMap, /\/api\/map\/context/);
+  assert.match(inlineMap, /geometry: route\.geometry/);
+  assert.match(inlineMap, /formatDistance\(route\.distanceMeters\)/);
+  assert.match(inlineMap, /formatDuration\(route\.durationSeconds\)/);
+  assert.match(inlineMap, /Turn-by-turn directions/);
+  assert.match(inlineMap, /step\.instruction/);
+  assert.match(inlineMap, /context\.nearbyPlaceIds/);
+  assert.match(inlineMap, /retrievedForRequest/);
+  assert.match(runtimePanel, /requestedAt=\{inlineMapRequestStartedAt\}/);
+  assert.match(mapClient, /useState<RouteModePreference>\("auto"\)/);
+  assert.match(mapClient, /automaticTravelMode\(context\.currentLocation, selectedPlace\)/);
+  assert.match(inlineMap, /attributionControl: \{ compact: false \}/);
+  assert.match(mapClient, /attributionControl: \{ compact: false \}/);
+  assert.doesNotMatch(inlineMap, /attributionControl: \{ compact: true \}/);
+  assert.match(inlineMap, /route\.origin\.name\} to \{route\.destination\.name/);
+  assert.match(mapClient, /route\.origin\.name\} to \{route\.destination\.name/);
+  assert.match(
+    mapClient,
+    /status === DEVICE_LOCATION_ERROR && context\?\.currentLocation/,
+  );
+  for (const forbidden of [
+    "assistantText",
+    "message.content",
+    "parseCoordinates",
+    "extractRoute",
+  ]) {
+    assert.ok(!inlineMap.includes(forbidden), `inline map must not use ${forbidden}`);
+  }
 });
 
 test("autocomplete is debounced and never aimed at public Nominatim", () => {

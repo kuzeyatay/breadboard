@@ -105,7 +105,14 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.match(queuedFollowUpsModule, /Steer the active response with:/);
   assert.match(queuedFollowUpsModule, /Delete queued message:/);
   assert.match(queuedFollowUpsModule, /Edit queued message:/);
-  assert.match(queuedFollowUpsModule, /draggable=\{editingQueuedId !== item\.id\}/);
+  assert.match(queuedFollowUpsModule, /onRestoreDraft\(item\.text\)/);
+  assert.match(queuedFollowUpsModule, /textarea\.focus\(\)/);
+  assert.match(
+    queuedFollowUpsModule,
+    /textarea\.setSelectionRange\(text\.length, text\.length\)/,
+  );
+  assert.doesNotMatch(queuedFollowUpsModule, /editingQueuedId|queuedEditText/);
+  assert.match(queuedFollowUpsModule, /\sdraggable\s/);
   assert.match(queuedFollowUpsModule, /Drag to change steering order/);
   assert.match(queuedFollowUpsModule, /event\.key === "ArrowUp"/);
   assert.match(queuedFollowUpsModule, /event\.key === "ArrowDown"/);
@@ -201,19 +208,27 @@ test("a working external agent holds the composer and the queue", () => {
   );
   assert.match(runtimePanel, /if \(activeRun\) onAbort\(\)/);
   assert.match(runtimePanel, /onStopRequested\?\.\([\s\S]*?externalStops\.flatMap/);
-  assert.match(runtimePanel, /externalStops\.map\(async \(\{ url, clientMessageId \}\)/);
+  // The cancellations themselves, wherever the loop lives. It was extracted
+  // into `abortExternalRuns` so a stop asked for during the dispatch window can
+  // send exactly the same requests once the run registers.
+  assert.match(runtimePanel, /stops\.map\(async \(\{ url, clientMessageId \}\)/);
+  assert.match(runtimePanel, /const abortExternalRuns = useCallback\(/);
   assert.match(runtimePanel, /externalAgentAbortUrls\(\[message\]\)/);
   assert.match(runtimePanel, /deepResearchAbortTerminalResult\(payload\)/);
   assert.match(
     runtimePanel,
     /onExternalAgentTerminal\?\.\(clientMessageId, terminal\)/,
   );
-  // Nothing to stop during the dispatch window, so the composer keeps its send
-  // button and the draft queues rather than meeting a square that does nothing.
+  // Stop is offered from the moment a run is asked for, including the seconds
+  // a long research launch spends dispatching. The square used to be withheld
+  // there on the grounds that it could cancel nothing yet; in practice someone
+  // who has decided to stop wants to say so once rather than watch for a button
+  // to appear, so the request is now held and spent when the run registers.
   assert.match(
     runtimePanel,
-    /const canStop = activeRun \|\| externalStops\.length > 0/,
+    /const canStop = activeRun \|\| externalStops\.length > 0 \|\| externalRunActive/,
   );
+  assert.match(runtimePanel, /awaitingStopRef\.current = true;/);
   // A stop is the end of an awaited delegation, not a signal to send the
   // worker's terminal snapshot back through Hermes as another hidden turn.
   assert.match(terminal, /const handleStopRequested = useCallback/);

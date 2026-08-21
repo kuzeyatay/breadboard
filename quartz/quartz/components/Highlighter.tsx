@@ -39,6 +39,14 @@ const CopyIcon = () => (
   </svg>
 )
 
+const AskIcon = () => (
+  <svg {...iconProps}>
+    <path d="M12 3a7 7 0 0 0-7 7v1a7 7 0 0 0 7 7h1l4 3v-4.2A7 7 0 0 0 19 12v-2a7 7 0 0 0-7-7Z" />
+    <path d="M12 7v6" />
+    <path d="M9 10h6" />
+  </svg>
+)
+
 const CheckIcon = () => (
   <svg {...iconProps}>
     <path d="m20 6-11 11-5-5" />
@@ -84,6 +92,16 @@ const Highlighter: QuartzComponent = () => (
         <span class="bb-highlight-icon-done">
           <CheckIcon />
         </span>
+      </button>
+      <button
+        type="button"
+        class="bb-highlight-ask"
+        data-highlight-action="ask"
+        title="Ask Assistant about this selection"
+        aria-label="Ask Assistant about this selection"
+      >
+        <AskIcon />
+        <span>Ask here</span>
       </button>
       <button
         type="button"

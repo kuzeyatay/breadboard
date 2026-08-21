@@ -389,6 +389,11 @@ export default function ArtifactViewer({
   } | null>(null);
   const interactiveFrameRef = useRef<HTMLIFrameElement | null>(null);
   const [interactiveHeight, setInteractiveHeight] = useState(620);
+  // Expanded is a property of the dock, not of any one renderer: whatever the
+  // body happens to be — a document, an image, a gadget's frame — it is the
+  // panel around it that grows to the whole window, so every kind gets the
+  // same button and the same result.
+  const [expanded, setExpanded] = useState(false);
 
   // A parametric CAD manifest is JSON, which the textual branch would otherwise
   // dump as raw text; its own renderer needs that same text, so it is fetched
@@ -428,7 +433,29 @@ export default function ArtifactViewer({
   // the lane to open in; one that does not (a full-page Garden) gets the dock
   // pinned to the viewport instead, and gives up the width for it.
   const dockHost = useArtifactDockHost();
-  useReservedDockWidth(Boolean(artifact) && !dockHost, DOCK_WIDTH);
+  // An expanded dock covers the app outright, so there is no width beside it to
+  // reserve — the shell takes its own back until the panel shrinks again.
+  useReservedDockWidth(Boolean(artifact) && !dockHost && !expanded, DOCK_WIDTH);
+
+  // Opening a different artifact starts it at the size the surface intended.
+  useEffect(() => {
+    setExpanded(false);
+  }, [artifactId]);
+
+  // While expanded the panel is the window, so Escape shrinks it rather than
+  // closing the artifact outright. The listener captures so a surface that
+  // closes its own overlays on Escape does not act on the same keystroke.
+  useEffect(() => {
+    if (!expanded) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setExpanded(false);
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [expanded]);
 
   useEffect(() => {
     if (!artifact || !isTextual || !artifact.previewAvailable) return;
@@ -850,22 +877,28 @@ export default function ArtifactViewer({
     );
   }
 
+  const panelSurface =
+    "flex min-h-0 flex-col overflow-hidden border-l border-[var(--line)] bg-[var(--paper-surface)] text-[var(--ink)]";
+  const panelClass = expanded
+    ? // Expanded, the panel stops being a dock beside the app and becomes the
+      // window: same header, same body, the whole viewport.
+      `bb-artifact-dock bb-artifact-dock-floating bb-artifact-dock-expanded fixed inset-0 z-[80] w-full ${panelSurface}`
+    : dockHost
+      ? // In a surface's own lane the split is the lane's business: the
+        // panel simply fills it.
+        `bb-artifact-dock h-full w-full ${panelSurface}`
+      : `bb-artifact-dock bb-artifact-dock-floating fixed inset-y-0 right-0 z-[70] w-full lg:w-[var(--bb-artifact-dock-width)] ${panelSurface}`;
+
   const panel = (
       <aside
         style={
-          dockHost
+          dockHost || expanded
             ? undefined
             : ({ "--bb-artifact-dock-width": DOCK_WIDTH } as CSSProperties)
         }
-        className={
-          dockHost
-            ? // In a surface's own lane the split is the lane's business: the
-              // panel simply fills it.
-              "bb-artifact-dock flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-[var(--line)] bg-[var(--paper-surface)] text-[var(--ink)]"
-            : "bb-artifact-dock bb-artifact-dock-floating fixed inset-y-0 right-0 z-[70] flex w-full flex-col overflow-hidden border-l border-[var(--line)] bg-[var(--paper-surface)] text-[var(--ink)] lg:w-[var(--bb-artifact-dock-width)]"
-        }
+        className={panelClass}
         // In a lane the panel is part of the surface, not a window over it.
-        role={dockHost ? undefined : "dialog"}
+        role={dockHost && !expanded ? undefined : "dialog"}
         aria-label={artifact.title}
       >
         {/* The dock is narrower than the dialog it replaces, so the actions
@@ -942,6 +975,38 @@ export default function ArtifactViewer({
           ) : null}
           <button
             type="button"
+            onClick={() => setExpanded((current) => !current)}
+            aria-label={expanded ? "Collapse artifact" : "Expand artifact"}
+            aria-pressed={expanded}
+            title={expanded ? "Collapse (Esc)" : "Expand"}
+            className="neu-button-icon shrink-0 rounded-lg px-2 py-1.5 text-sm text-[var(--ink-muted)] hover:bg-[var(--paper-strong)]"
+          >
+            <svg
+              viewBox="0 0 16 16"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              {expanded ? (
+                <>
+                  <path d="M9.5 6.5h4M9.5 6.5v-4M9.5 6.5 14 2" />
+                  <path d="M6.5 9.5h-4M6.5 9.5v4M6.5 9.5 2 14" />
+                </>
+              ) : (
+                <>
+                  <path d="M10 2h4v4M14 2l-4.5 4.5" />
+                  <path d="M6 14H2v-4M2 14l4.5-4.5" />
+                </>
+              )}
+            </svg>
+          </button>
+          <button
+            type="button"
             onClick={onClose}
             aria-label="Close artifact"
             className="neu-button-icon shrink-0 rounded-lg px-2 py-1.5 text-sm text-[var(--ink-muted)] hover:bg-[var(--paper-strong)]"
@@ -963,6 +1028,13 @@ export default function ArtifactViewer({
         </div>
       </aside>
   );
+
+  // Expanded, the panel has to leave whatever lane it was living in: a surface
+  // that hosts the dock in its own flex row cannot give it the whole window, so
+  // it moves to the body for as long as it is expanded.
+  if (expanded && typeof document !== "undefined") {
+    return createPortal(panel, document.body);
+  }
 
   if (dockHost) return createPortal(panel, dockHost);
 

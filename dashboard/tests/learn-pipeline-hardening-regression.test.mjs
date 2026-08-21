@@ -21,8 +21,10 @@ import {
 
 const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const learnPath = path.join(dashboardRoot, "src", "lib", "learn.ts");
+const gardenFinalizePath = path.join(dashboardRoot, "src", "lib", "garden-finalize.ts");
 const instrumentationPath = path.join(dashboardRoot, "src", "instrumentation-node.ts");
 const learnSource = fs.readFileSync(learnPath, "utf8");
+const gardenFinalizeSource = fs.readFileSync(gardenFinalizePath, "utf8");
 const instrumentationSource = fs.readFileSync(instrumentationPath, "utf8");
 const learnAst = ts.createSourceFile(
   learnPath,
@@ -241,7 +243,7 @@ describe("Learn rollback and garden isolation contracts", () => {
     );
   });
 
-  test("generation requires and re-verifies the exact authoritative source-anchor ledger", () => {
+  test("generation requires and re-verifies the exact authoritative source-anchor ledger before route-bundle rehydration", () => {
     const generationSource = sourceOf(namedFunction("runTextbookGeneration"));
     const workspaceIndex = generationSource.indexOf("createLearnBuildWorkspace");
     const firstLedgerVerificationIndex = generationSource.indexOf(
@@ -274,7 +276,100 @@ describe("Learn rollback and garden isolation contracts", () => {
     assert.ok(
       secondLedgerVerificationIndex > visualReviewIndex &&
         secondLedgerVerificationIndex < contractWriteIndex,
-      "the exact ledger must be re-verified after model review and before contract persistence",
+        "the exact ledger must be re-verified after route-bundle rehydration and before contract persistence",
+    );
+  });
+
+  test("visual routing is persisted with the confirmed map and generation rehydrates it without a second model allocation", () => {
+    const tables = sourceOf(namedFunction("ensureLearnTables"));
+    for (const column of [
+      "visual_necessity_review_json",
+      "visualization_plan_json",
+      "visual_contract_executability_ledger_json",
+      "visual_route_binding_json",
+    ]) {
+      assert.match(tables, new RegExp(`${column}\\s+TEXT`));
+      assert.match(tables, new RegExp(`ADD COLUMN ${column} TEXT`));
+    }
+
+    const planning = sourceOf(namedFunction("runLearnPlanning"));
+    assert.match(planning, /const confirmedVisualRouteBundle = createConfirmedVisualRouteBundle\(/);
+    assert.match(
+      planning,
+      /visual_necessity_review_json = \?, visualization_plan_json = \?,[\s\S]*?visual_contract_executability_ledger_json = \?, visual_route_binding_json = \?/,
+    );
+    assert.match(planning, /visualRouteBindingHash:/);
+
+    const confirmation = sourceOf(namedFunction("confirmLearningMap"));
+    const bundleGate = confirmation.indexOf("const confirmedVisualRouteProblems = confirmedVisualRouteBundleProblems");
+    const confirmationReturn = confirmation.indexOf("if (alreadyConfirmed) return");
+    assert.ok(bundleGate >= 0 && confirmationReturn > bundleGate);
+
+    const generation = namedFunction("runTextbookGeneration");
+    const generationSource = sourceOf(generation);
+    const rehydrate = generationSource.indexOf("confirmedVisualRouteBundleForGeneration");
+    const contractWrite = generationSource.indexOf("const contractWrite = writeLearningUnitContractArtifacts");
+    assert.ok(rehydrate >= 0 && contractWrite > rehydrate);
+    assert.match(generationSource, /visual_route_plan_rehydrated/);
+    assert.match(
+      generationSource,
+      /generationExecutabilityContext:[\s\S]*?generationExecutabilityLedger\.context/,
+    );
+    for (const forbiddenSecondAllocation of [
+      "planAndReviewVisualNecessity",
+      "buildVisualizationPlanWithContractRepair",
+      "reviewVisualizationPlanExecutability",
+      "buildFinalVisualizationPlanFromRoutedContracts",
+      "buildVisualContractExecutabilityLedger",
+    ]) {
+      assert.equal(
+        callsNamed(generation, forbiddenSecondAllocation).length,
+        0,
+        `${forbiddenSecondAllocation} must not silently replace a confirmed visual allocation`,
+      );
+    }
+
+    const binding = sourceOf(namedFunction("confirmedVisualRouteBundleProblems"));
+    assert.match(binding, /sourceFormulaReviewSetHash/);
+    assert.match(binding, /learningUnitContractSha256/);
+    assert.match(binding, /visualContractExecutabilityLinkageProblems/);
+    assert.match(binding, /context\.phase !== "planning"/);
+
+    const snapshotRestore = sourceOf(namedFunction("restoreLearnDatabaseSnapshot"));
+    assert.match(snapshotRestore, /visual_necessity_review_json/);
+    assert.match(snapshotRestore, /visual_contract_executability_ledger_json/);
+    assert.match(snapshotRestore, /row\.visual_route_binding_json \?\? null/);
+
+    assert.match(
+      gardenFinalizeSource,
+      /requireGenerationPhase:\s*expectedVisualContractExecutabilityContext\?\.phase !== "planning"/,
+      "a verified map-bound planning ledger must retain its truthful review context through finalization",
+    );
+  });
+
+  test("failed staged visual preview matrices retain bounded root-ledger evidence without publishing the candidate", () => {
+    const reconciliation = sourceOf(namedFunction("reconcileInteractiveVisuals"));
+    assert.match(reconciliation, /durableEventContentPath\?: string/);
+    assert.match(reconciliation, /event\.type === "visual_browser_tests_completed"/);
+    assert.match(reconciliation, /event\.data\.previewMatrixReceipt/);
+    assert.match(reconciliation, /"learn_visual_preview_matrix_observed"/);
+    assert.match(reconciliation, /stage: "staging_unpublished"/);
+    assert.match(
+      reconciliation,
+      /appendLearnEvent\(contentPath, gardenId, event\.type, eventData\)[\s\S]*?appendLearnEvent\([\s\S]*?durableEventContentPath/,
+      "the normal staging ledger must remain separate from the diagnostic-only durable event mirror",
+    );
+
+    const generation = sourceOf(namedFunction("runTextbookGeneration"));
+    assert.match(
+      generation,
+      /contentPath: artifactContentPath,\s*durableEventContentPath: contentPath,/,
+      "normal generation must send visual artifacts to staging but preview receipts to the root ledger",
+    );
+    assert.doesNotMatch(
+      reconciliation,
+      /gardenDir: path\.join\(durableEventContentPath, gardenId\)/,
+      "durable preview diagnostics must never redirect generated artifacts out of staging",
     );
   });
 });
@@ -509,27 +604,53 @@ describe("Learn validation, reads, and publication contracts", () => {
     );
   });
 
-  test("late non-formula inventory drift reauthors Source Map once and cannot reach scope after a second drift", () => {
+  test("late source-set or inventory drift rebinds coverage before each bounded Source Map reauthor and fails closed at its cap", () => {
     const planningSource = sourceOf(namedFunction("runLearnPlanning"));
 
     assert.match(
       planningSource,
-      /const requestSourceMap = async \(\) => \{[\s\S]*?const artifactInventory = refreshSelectedSourceArtifactInventory\([\s\S]*?const call = await callValidatedPlanningJson\([\s\S]*?return \{ call, artifactInventory \}/,
-      "the full selected artifact inventory must be captured immediately before every Source Map call",
+      /const requestSourceMap = async \(\) => \{[\s\S]*?const artifactInventory = refreshSelectedSourceArtifactInventory\([\s\S]*?const sourceSetHash = context\.sourceSetHash[\s\S]*?const call = await callValidatedPlanningJson\([\s\S]*?return \{ call, artifactInventory, sourceSetHash \}/,
+      "the full selected planning evidence must be captured immediately before every Source Map call",
     );
     assert.match(
       planningSource,
-      /for \(;;\) \{[\s\S]*?ensureReferencedSourceArtifactsExtracted\([\s\S]*?const postSelectedPageArtifactInventory = refreshSelectedSourceArtifactInventory\([\s\S]*?const inventoryTransition = sourceMapArtifactInventoryTransition\([\s\S]*?sourceMapReplanAttempted[\s\S]*?sourceMapRequest = await requestSourceMap\(\)/,
-      "any first registry drift must re-author and revalidate the complete Source Map",
+      /for \(;;\) \{[\s\S]*?ensureReferencedSourceArtifactsExtracted\([\s\S]*?const refreshedPlanningContext = collectLearnSourceContext\([\s\S]*?syllabusCoverageRebindSourceBindingProblems\([\s\S]*?context = refreshedPlanningContext[\s\S]*?const postSelectedPageArtifactInventory = refreshSelectedSourceArtifactInventory\([\s\S]*?const evidenceTransition = sourceMapPlanningEvidenceTransition\([\s\S]*?await rebindSyllabusCoverage\(\);[\s\S]*?sourceMapRequest = await requestSourceMap\(\)/,
+      "every allowed formula-review or registry drift must refresh source context, rebind coverage, and re-author the complete Source Map",
     );
     assert.match(
       planningSource,
-      /if \(inventoryTransition === "fail"\) \{[\s\S]*?Selected source-artifact inventory changed again after the bounded Source Map replan/,
-      "the bounded second selected-page scan must fail closed on any further inventory drift, including a map call that selected no pages",
+      /let sourceMapReauthorAttempts = 0;[\s\S]*?reauthorAttempts: sourceMapReauthorAttempts[\s\S]*?if \(evidenceTransition === "fail"\) \{[\s\S]*?MAX_SOURCE_MAP_EVIDENCE_REAUTHORS/,
+      "the numeric Source Map reauthor counter must fail closed at its fixed cap",
     );
     assert.match(
       planningSource,
-      /Selected source-artifact inventory changed again after the bounded Source Map replan/,
+      /sourceMapAttempt: sourceMapReauthorAttempts \+ 1[\s\S]*?sourceMapReauthorAttempts \+= 1/,
+      "each complete model reauthor must have a truthful 1-based attempt receipt",
+    );
+    assert.match(
+      planningSource,
+      /const rebindSyllabusCoverage = async \(\): Promise<void> => \{[\s\S]*?callValidatedPlanningJson\([\s\S]*?taskType:\s*"source_map"[\s\S]*?runSyllabusCoverageEvidenceRecovery\([\s\S]*?syllabusCoverageRecoveryReceiptProblems\([\s\S]*?syllabusCoverage = reboundCoverage/,
+      "the rebind must obtain a new model-authored coverage decision and strictly validate any new recovery receipt before replacing state",
+    );
+    const rebindStart = planningSource.indexOf("const rebindSyllabusCoverage = async");
+    const rebindEnd = planningSource.indexOf("const requestSourceMap = async", rebindStart);
+    assert.ok(rebindStart >= 0 && rebindEnd > rebindStart);
+    const rebindSource = planningSource.slice(rebindStart, rebindEnd);
+    assert.match(planningSource, /const syllabusCoveragePayload = \(\) =>/);
+    assert.match(planningSource, /syllabusCoverage:\s*syllabusCoveragePayload\(\)/);
+    assert.doesNotMatch(
+      rebindSource,
+      /evidenceRecovery\s*=/,
+      "a rebind must never mechanically rewrite a prior recovery receipt",
+    );
+    const mapCommit = planningSource.indexOf("const storedMap = db.transaction");
+    const recoveryCommitGate = planningSource.lastIndexOf(
+      "assertSyllabusCoverageRecoveryBinding",
+      mapCommit,
+    );
+    assert.ok(
+      recoveryCommitGate > rebindStart && mapCommit > recoveryCommitGate,
+      "a stale recovery receipt must be rejected before a proposed map can commit",
     );
     assert.match(
       planningSource,
@@ -1273,6 +1394,21 @@ describe("cross-process mutation fences", () => {
     const recoverySource = sourceOf(namedFunction("recoverAbandonedLearnJobs"));
     assert.match(recoverySource, /rowid AS job_rowid/);
     assert.match(recoverySource, /learn_abandoned_job_superseded/);
+    const supersededEventIndex = recoverySource.indexOf("learn_abandoned_job_superseded");
+    const supersededCleanupIndex = recoverySource.indexOf(
+      "disposeAbandonedLearnWorkspaces(current.garden_id, current.id)",
+      supersededEventIndex,
+    );
+    const supersededContinueIndex = recoverySource.indexOf("continue;", supersededEventIndex);
+    assert.ok(
+      supersededCleanupIndex > supersededEventIndex &&
+        supersededContinueIndex > supersededCleanupIndex,
+      "a superseded abandoned job must clean both possible staging roots before continuing",
+    );
+    assert.match(
+      learnSource,
+      /function disposeAbandonedLearnWorkspaces\(gardenId: string, jobId: string\)[\s\S]*?learnWorkspaceRootCandidates\(gardenId, jobId\)/,
+    );
     const rollbackIndex = recoverySource.indexOf("await rollbackLearnRun");
     const retryIndex = recoverySource.lastIndexOf(
       "await recoverPendingLearnPublications(contentPath)",

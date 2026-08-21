@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { dashboardDataDir } from "../runtime-paths.ts";
 import type { ArtifactKind } from "../hermes/artifact-types.ts";
+import { renderImportedArtifactFallbackPreview } from "../hermes/artifact-renderers.ts";
 import {
   OfficeCliError,
   OFFICE_RUN_TIMEOUT_MS,
@@ -172,6 +173,9 @@ export async function prepareOfficeExport(
       }
     } catch {
       // The snapshot is an enhancement; the export itself must not fail on it.
+    }
+    if (!previewFilePath && extension === ".pptx") {
+      previewFilePath = await renderImportedArtifactFallbackPreview(filePath, candidate);
     }
     if (!previewFilePath) {
       try {

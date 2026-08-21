@@ -83,9 +83,13 @@ export async function POST(
       // Super agent is a per-message flag, never a stored session property: the
       // switch the user had on when they pressed send governs that turn only.
       superAgent: body.superAgent === true,
-      // Direct mode travels the same way and for the same reason: it is a switch
+      // Concise travels the same way and for the same reason: it is a switch
       // the user can flip between two sends, not a property of the session.
       adhdMode: body.adhdMode === true,
+      // Personalize travels the same way, and defaults to on when the field is
+      // absent so a client compiled before the switch existed keeps behaving
+      // as it did.
+      personalize: body.personalize !== false,
       // Goal Mode is likewise a per-message choice. Its durable state is
       // conversation-scoped on the server, never a browser-supplied goal body.
       goalMode: body.goalMode === true,

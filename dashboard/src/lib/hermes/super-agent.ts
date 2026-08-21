@@ -273,6 +273,15 @@ function researchRoutingRule(inventory: SuperAgentInventory): string {
           "When the user explicitly says to do, conduct, run, perform, or use deep research, that is an instruction to launch `deep-research` with `agent_launch`, not permission to substitute your own `web_search`. Use `--answer` unless they explicitly requested a report, review, survey, or write-up. The worker stays private; wait for its result and synthesize that result in your own response.",
         ]
       : []),
+    ...(available.has("max-research")
+      ? [
+          // The same rule, and it had to be written down for the same reason.
+          // Without it a request that said "do max research" in as many words
+          // drew five `web_search` calls and an answer written here — the exact
+          // substitution the sentence above exists to prevent, one agent over.
+          "The same is true of max research, which is a different agent: when the user says to do, run, or use max research, launch `max-research` with `agent_launch`. It commissions every research agent at once and reconciles them, so it is not interchangeable with `deep-research` and never with your own `web_search`. It runs for tens of minutes; that is expected, and it is what the user asked for. Wait for its result and synthesize that result.",
+        ]
+      : []),
     "",
     "Anything wider is not. A request to survey, enumerate, or investigate a topic — every X, which are active, how many members, what changed over time — is answered by reading the authoritative pages, never by quoting search-result snippets. Open the official page with `web_extract` first: it is the spine every other finding hangs on.",
     ...(instruments.length

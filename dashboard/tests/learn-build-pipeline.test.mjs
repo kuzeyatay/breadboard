@@ -9,7 +9,9 @@ import test from "node:test";
 import {
   createLearnBuildWorkspace,
   fingerprintDurableGardenState,
+  prepareLearnWorkspaceRoot,
   seedDurableInputs,
+  temporaryWorkspaceRoot,
   verifyAuthoritativeSourceAnchorLedger,
 } from "../src/lib/learn-build-workspace.ts";
 import { buildCanonicalSourceAnchors } from "../src/lib/final-garden-state.ts";
@@ -188,6 +190,205 @@ test("1/2. workspace seeds durable inputs and never copies the old learning tree
       `${name} must not seed a fresh staging run`,
     );
   }
+});
+
+test("1a. default workspace falls back to OS temp when LOCALAPPDATA staging is unavailable", () => {
+  const repo = tmp("repo-workspace-fallback");
+  fs.writeFileSync(path.join(repo, "durable.md"), "durable input\n");
+  const blockedLocalAppData = path.join(tmp("blocked-local-appdata"), "not-a-directory");
+  fs.writeFileSync(blockedLocalAppData, "file blocks workspace descendants\n");
+  const originalLocalAppData = process.env.LOCALAPPDATA;
+  const gardenSlug = `g-fallback-${crypto.randomUUID()}`;
+  const jobId = `job-fallback-${crypto.randomUUID()}`;
+
+  try {
+    process.env.LOCALAPPDATA = blockedLocalAppData;
+    const ws = createLearnBuildWorkspace({
+      gardenSlug,
+      jobId,
+      mode: "generate",
+      repositoryGardenDir: repo,
+      contractFingerprint: "cf-fallback",
+      sourceSetFingerprint: "sf-fallback",
+    });
+    roots.push(ws.workspaceRoot);
+
+    assert.equal(ws.workspaceRoot, temporaryWorkspaceRoot(gardenSlug, jobId));
+    assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, "durable.md")));
+    assert.equal(
+      path.resolve(ws.workspaceRoot).startsWith(path.resolve(repo)),
+      false,
+      "the fallback must remain outside the authoritative repository garden",
+    );
+  } finally {
+    if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = originalLocalAppData;
+  }
+});
+
+test("1aa. workspace setup retries EPERM, cleans the default root, and only then uses safe temp fallback", () => {
+  const repo = tmp("repo-workspace-root-preparation");
+  const primaryRoot = path.join(tmp("workspace-primary-unavailable"), "workspace");
+  const fallbackRoot = path.join(tmp("workspace-fallback-available"), "workspace");
+  let primaryRemoveAttempts = 0;
+  const created = [];
+  const fileSystem = {
+    rmSync(directoryPath) {
+      if (directoryPath === primaryRoot) {
+        primaryRemoveAttempts += 1;
+        throw Object.assign(new Error("temporary Windows scanner lock"), { code: "EPERM" });
+      }
+    },
+    mkdirSync(directoryPath) {
+      created.push(directoryPath);
+      return directoryPath;
+    },
+  };
+
+  const prepared = prepareLearnWorkspaceRoot({
+    workspaceRoot: primaryRoot,
+    fallbackWorkspaceRoot: fallbackRoot,
+    repositoryGardenDir: repo,
+    stagingDirectoryName: "staging",
+    allowFallback: true,
+    retryDelaysMs: [0, 0, 0, 0, 0],
+    sleep() {},
+    fileSystem,
+  });
+
+  assert.equal(prepared.workspaceRoot, fallbackRoot);
+  assert.equal(prepared.usedFallback, true);
+  // Six bounded setup attempts plus one best-effort cleanup before fallback.
+  assert.equal(primaryRemoveAttempts, 7);
+  assert.deepEqual(created, [path.join(fallbackRoot, "staging")]);
+
+  assert.throws(
+    () => prepareLearnWorkspaceRoot({
+      workspaceRoot: primaryRoot,
+      fallbackWorkspaceRoot: fallbackRoot,
+      repositoryGardenDir: repo,
+      stagingDirectoryName: "staging",
+      allowFallback: false,
+      retryDelaysMs: [],
+      sleep() {},
+      fileSystem,
+    }),
+    (error) => error?.code === "EPERM",
+  );
+
+  assert.throws(
+    () => prepareLearnWorkspaceRoot({
+      workspaceRoot: primaryRoot,
+      fallbackWorkspaceRoot: path.join(repo, "unsafe-temp-workspace"),
+      repositoryGardenDir: repo,
+      stagingDirectoryName: "staging",
+      allowFallback: true,
+      retryDelaysMs: [],
+      sleep() {},
+      fileSystem,
+    }),
+    /outside the authoritative repository garden/,
+  );
+});
+
+test("1ab. failed fallback setup and failed descriptor writes clean their disposable roots", () => {
+  const repo = tmp("repo-workspace-cleanup");
+  const primaryRoot = path.join(tmp("workspace-primary-cleanup"), "workspace");
+  const failedFallbackRoot = path.join(tmp("workspace-fallback-cleanup"), "workspace");
+  let fallbackRemoveAttempts = 0;
+  const fileSystem = {
+    rmSync(directoryPath) {
+      if (directoryPath === primaryRoot) {
+        throw Object.assign(new Error("primary root remains unavailable"), { code: "EPERM" });
+      }
+      if (directoryPath === failedFallbackRoot) fallbackRemoveAttempts += 1;
+    },
+    mkdirSync(directoryPath) {
+      if (directoryPath === path.join(failedFallbackRoot, "staging")) {
+        throw Object.assign(new Error("fallback setup stopped"), { code: "EPERM" });
+      }
+      return directoryPath;
+    },
+  };
+
+  assert.throws(
+    () => prepareLearnWorkspaceRoot({
+      workspaceRoot: primaryRoot,
+      fallbackWorkspaceRoot: failedFallbackRoot,
+      repositoryGardenDir: repo,
+      stagingDirectoryName: "staging",
+      allowFallback: true,
+      retryDelaysMs: [],
+      sleep() {},
+      fileSystem,
+    }),
+    (error) => error?.code === "EPERM",
+  );
+  assert.equal(
+    fallbackRemoveAttempts,
+    2,
+    "the partial fallback is reset once and removed again when setup fails",
+  );
+
+  const terminalPrimaryRoot = path.join(tmp("workspace-terminal-primary-cleanup"), "workspace");
+  let terminalPrimaryRemoveAttempts = 0;
+  assert.throws(
+    () => prepareLearnWorkspaceRoot({
+      workspaceRoot: terminalPrimaryRoot,
+      repositoryGardenDir: repo,
+      stagingDirectoryName: "staging",
+      allowFallback: false,
+      retryDelaysMs: [],
+      sleep() {},
+      fileSystem: {
+        rmSync(directoryPath) {
+          if (directoryPath === terminalPrimaryRoot) terminalPrimaryRemoveAttempts += 1;
+        },
+        mkdirSync() {
+          throw Object.assign(new Error("disk full during primary setup"), { code: "ENOSPC" });
+        },
+      },
+    }),
+    (error) => error?.code === "ENOSPC",
+  );
+  assert.equal(
+    terminalPrimaryRemoveAttempts,
+    2,
+    "a terminal primary setup failure is cleaned even when fallback is ineligible",
+  );
+
+  const descriptorRepo = tmp("repo-workspace-descriptor-cleanup");
+  fs.writeFileSync(path.join(descriptorRepo, "durable.md"), "durable input\n");
+  const descriptorWorkspaceRoot = path.join(tmp("workspace-descriptor-cleanup"), "workspace");
+  const descriptorPath = path.join(descriptorWorkspaceRoot, "build-workspace.json");
+  const originalWriteFileSync = fs.writeFileSync;
+  try {
+    fs.writeFileSync = (filePath, ...args) => {
+      if (path.resolve(String(filePath)) === path.resolve(descriptorPath)) {
+        throw Object.assign(new Error("descriptor write denied"), { code: "EPERM" });
+      }
+      return originalWriteFileSync(filePath, ...args);
+    };
+    assert.throws(
+      () => createLearnBuildWorkspace({
+        gardenSlug: "g-descriptor-cleanup",
+        jobId: "job-descriptor-cleanup",
+        mode: "generate",
+        repositoryGardenDir: descriptorRepo,
+        contractFingerprint: "cf-descriptor-cleanup",
+        sourceSetFingerprint: "sf-descriptor-cleanup",
+        workspaceRoot: descriptorWorkspaceRoot,
+      }),
+      (error) => error?.code === "EPERM",
+    );
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
+  }
+  assert.equal(
+    fs.existsSync(descriptorWorkspaceRoot),
+    false,
+    "a descriptor failure must not strand a workspace that was never returned",
+  );
 });
 
 test("1c. generation workspace preserves the authoritative source-anchor ledger byte-for-byte", () => {

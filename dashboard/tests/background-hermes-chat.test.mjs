@@ -72,6 +72,30 @@ test("opening an active conversation reloads it and reattaches its run", () => {
   assert.match(sessionHook, /abortRef\.current\?\.abort\(\)/);
 });
 
+test("the terminal opens on a blank chat and a boot restore cannot reclaim it", () => {
+  // Opting out is what makes New chat the terminal's resting state; the run of
+  // whatever chat it was left in stays server-side and is reattached by opening
+  // that chat from history.
+  assert.match(terminal, /restoreLastConversation: false/);
+  assert.match(
+    sessionHook,
+    /if \(!restoreLastConversation\) \{\s*markLoadingSession\(false\);\s*return;\s*\}/,
+  );
+
+  // The boot restore may only fill a view nobody has chosen anything in. An
+  // empty sessionRef is not that test -- starting a new chat empties it too --
+  // so the restore is superseded by the epoch reset() bumps, and never adopts a
+  // conversation after the reader has asked for a blank one.
+  const restore = sessionHook.slice(
+    sessionHook.indexOf("const bootEpoch = viewEpochRef.current"),
+    sessionHook.indexOf("// Component teardown detaches this page's viewer"),
+  );
+  assert.ok(restore.length > 0, "boot restore effect not found");
+  assert.match(restore, /viewEpochRef\.current !== bootEpoch/);
+  assert.doesNotMatch(restore, /if \(cancelled \|\| sessionRef\.current\) return;/);
+  assert.equal(restore.match(/if \(superseded\(\)\) return;/g)?.length, 2);
+});
+
 test("a detached event pump is shared and replays events to a new viewer", async () => {
   const { acquireDetachedEventPump } = await import(
     new URL(

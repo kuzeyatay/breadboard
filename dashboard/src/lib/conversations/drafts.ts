@@ -116,6 +116,15 @@ export function clearChatDraft(
  * first message was sent, so anything typed since belongs to it. Every other
  * move between chats empties the box — the outgoing text was already filed
  * under the chat it was written in.
+ *
+ * That one case has to be recognised by the surface rather than guessed at
+ * here. "The composer was on the unstarted chat and now has an id" also
+ * describes two moves that are not it: the id arriving from the restore that
+ * reopens the newest chat after a reload, and the reader clicking an existing
+ * chat in the rail while the blank one still had text in it. Carrying then
+ * files an unsent message under a conversation it was never written for — so
+ * the id has to be one the surface itself just created, which is what
+ * `createdSessionId` names.
  */
 export function resolveDraftRestore({
   stored,
@@ -123,6 +132,7 @@ export function resolveDraftRestore({
   previousKey,
   newChatKey,
   sessionId,
+  createdSessionId,
 }: {
   /** The draft kept for the incoming chat, or null. */
   stored: string | null;
@@ -134,9 +144,18 @@ export function resolveDraftRestore({
   newChatKey: string;
   /** The incoming chat, or null when it has not been created yet. */
   sessionId: string | null;
+  /**
+   * The chat this composer created out of its own unstarted chat, if it has
+   * one. Anything else arriving in `sessionId` is a chat that already existed.
+   */
+  createdSessionId: string | null;
 }): { next: string; carried: boolean } {
   if (stored !== null) return { next: stored, carried: false };
-  const carried = sessionId !== null && previousKey === newChatKey && value !== "";
+  const carried =
+    sessionId !== null &&
+    sessionId === createdSessionId &&
+    previousKey === newChatKey &&
+    value !== "";
   return { next: carried ? value : "", carried };
 }
 

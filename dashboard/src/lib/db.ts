@@ -85,6 +85,7 @@ if (!globalWithDb.db) {
       cluster_id  INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
       user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       title       TEXT    NOT NULL,
+      history_surface TEXT NOT NULL DEFAULT 'garden_chat',
       created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
       updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     );
@@ -157,6 +158,7 @@ db.exec(`
     cluster_id  INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     title       TEXT    NOT NULL,
+    history_surface TEXT NOT NULL DEFAULT 'garden_chat',
     created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
   );
@@ -390,6 +392,14 @@ ensureColumn(
   "memory_scope TEXT NOT NULL DEFAULT 'default'",
 );
 ensureColumn("chat_messages", "token_usage", "token_usage TEXT");
+// The garden workspace and its floating Assistant use the same legacy message
+// transport, but their recents are separate products. Existing rows remain
+// Garden Chat history; new Assistant rows opt into their own rail explicitly.
+ensureColumn(
+  "chat_sessions",
+  "history_surface",
+  "history_surface TEXT NOT NULL DEFAULT 'garden_chat'",
+);
 // Virtual grouping of clusters into folders on the dashboard / garden overview.
 ensureColumn("clusters", "folder", "folder TEXT");
 ensureColumn("users", "username", "username TEXT");
@@ -743,6 +753,17 @@ ensureColumn(
   "hermes_user_settings",
   "reasoning_effort_by_model",
   "reasoning_effort_by_model TEXT NOT NULL DEFAULT '{}'",
+);
+// "Rewrite naturally" as a standing preference rather than a per-message
+// toggle. It lives on the server because the browser switch alone cannot reach
+// the surfaces the user asked it to cover: an artifact and a garden note are
+// written by the server, often while the agent is working and nobody is
+// looking at a composer. Default 0 - this rewrites what Breadboard says, so it
+// stays off until somebody turns it on.
+ensureColumn(
+  "hermes_user_settings",
+  "humanizer_auto",
+  "humanizer_auto INTEGER NOT NULL DEFAULT 0",
 );
 
 // Additional per-message runtime metadata. These are nullable so historical

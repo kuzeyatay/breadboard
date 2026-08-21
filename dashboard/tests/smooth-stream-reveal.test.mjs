@@ -3,8 +3,9 @@
 // in one chunk — so every chat surface reveals the newest assistant message
 // through the paced `useSmoothStreamText` hook instead of drawing the raw
 // buffer. The first half of this suite proves the pacing contract on the pure
-// step function; the second half pins the hook into each transcript so a
-// surface cannot quietly go back to popping blocks in.
+// step function and the gate that decides whether a reveal is paced at all;
+// the second half pins the hook into each transcript so a surface cannot
+// quietly go back to popping blocks in.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -12,7 +13,10 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { advanceReveal } from "../src/app/components/chat/use-smooth-stream-text.ts";
+import {
+  advanceReveal,
+  armReveal,
+} from "../src/app/components/chat/use-smooth-stream-text.ts";
 
 const dashboard = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -35,8 +39,10 @@ test("a burst types out over frames instead of appearing whole", () => {
     frames += 1;
   }
   assert.equal(shown, target, "the reveal must eventually catch up");
-  assert.ok(frames > 10, `a 1000-char burst must take many frames, got ${frames}`);
-  assert.ok(frames < 180, `catch-up must stay under ~3s at 60fps, got ${frames}`);
+  // Readable, not instant: the burst must occupy roughly a second at minimum
+  // and still be finished within a few seconds.
+  assert.ok(frames > 60, `a 1000-char burst must take many frames, got ${frames}`);
+  assert.ok(frames < 420, `catch-up must stay under ~7s at 60fps, got ${frames}`);
 });
 
 test("shown text is always a prefix of the target and never moves backwards", () => {
@@ -86,6 +92,109 @@ test("the settle rate clears a completion-time backlog faster than the live rate
   );
 });
 
+// ── the gate: only a live turn is paced ─────────────────────────────────────
+
+const idle = { shown: "", pacing: false, streaming: false };
+
+test("a chat loading its transcript prints answers whole, not retyped", () => {
+  // No turn ever ran in this tab: the answers arriving are history.
+  const loaded = armReveal(idle, "An answer written yesterday.", false);
+  assert.equal(loaded.shown, "An answer written yesterday.");
+  assert.equal(loaded.pacing, false);
+});
+
+test("a turn starting arms the pacing and holds the reveal behind the buffer", () => {
+  const started = armReveal({ ...idle, shown: "" }, "", true);
+  assert.equal(started.pacing, true);
+  const typing = armReveal(started, "Hello, wor", true);
+  assert.equal(typing.shown, "", "paced text is left to the frame loop");
+  assert.equal(typing.pacing, true);
+});
+
+test("the tail of a finished turn stays paced", () => {
+  // Streaming has stopped but the answer it wrote is still catching up.
+  const settling = armReveal(
+    { shown: "Hello", pacing: true, streaming: true },
+    "Hello, world",
+    false,
+  );
+  assert.equal(settling.shown, "Hello");
+  assert.equal(settling.pacing, true);
+});
+
+test("switching to another chat disarms the pacing", () => {
+  const switched = armReveal(
+    { shown: "The answer to the last turn", pacing: true, streaming: false },
+    "An older answer from another chat",
+    false,
+  );
+  assert.equal(switched.shown, "An older answer from another chat");
+  assert.equal(switched.pacing, false);
+});
+
+test("reopening a live turn shows its fetched snapshot once, then paces new deltas", () => {
+  const restored = armReveal(
+    {
+      shown: "Partial answer from chat A",
+      pacing: true,
+      streaming: true,
+      revealKey: "assistant-a",
+    },
+    "Answer text already produced while chat B was open",
+    true,
+    "assistant-b",
+  );
+  assert.equal(
+    restored.shown,
+    "Answer text already produced while chat B was open",
+    "saved text must not be typed again",
+  );
+  assert.equal(restored.pacing, false);
+
+  const rearmed = armReveal(
+    restored,
+    "Answer text already produced while chat B was open",
+    true,
+    "assistant-b",
+  );
+  assert.equal(rearmed.pacing, true, "the resumed live turn should pace future output");
+
+  const nextDelta = armReveal(
+    rearmed,
+    "Answer text already produced while chat B was open, followed by a new delta",
+    true,
+    "assistant-b",
+  );
+  assert.equal(
+    nextDelta.shown,
+    restored.shown,
+    "only output received after the restore belongs to the typing animation",
+  );
+});
+
+test("a fresh turn replacing what is on screen stays paced", () => {
+  // New user message: the newest assistant row resets to empty mid-stream.
+  const reset = armReveal(
+    { shown: "The previous answer", pacing: true, streaming: true },
+    "",
+    true,
+  );
+  assert.equal(reset.shown, "");
+  assert.equal(reset.pacing, true);
+});
+
+test("the gate settles in one pass", () => {
+  // It runs during render, so a second application must change nothing.
+  for (const [state, target, streaming] of [
+    [idle, "loaded history", false],
+    [idle, "live text", true],
+    [{ shown: "He", pacing: true, streaming: true }, "Hello", true],
+  ]) {
+    const once = armReveal(state, target, streaming);
+    assert.deepEqual(armReveal(once, target, streaming), once);
+  }
+});
+
 // ── the surfaces ────────────────────────────────────────────────────────────
 
 const surfaces = [
@@ -129,6 +238,34 @@ for (const surface of surfaces) {
       source,
       surface.applied,
       "the newest assistant row must render the revealed text, not the raw buffer",
+    );
+  });
+}
+
+for (const transcript of [
+  {
+    name: "Hermes transcript",
+    source: read("app", "components", "hermes", "agent-runtime-panel.tsx"),
+    messageName: "message",
+  },
+  {
+    name: "garden workspace transcript",
+    source: read("app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
+    messageName: "msg",
+  },
+]) {
+  test(`${transcript.name} scopes pacing and timing to the assistant turn`, () => {
+    assert.match(
+      transcript.source,
+      /useSmoothStreamText\([\s\S]{0,180}transcriptRevealKey/,
+      "chat navigation must not reuse one turn's reveal state for another",
+    );
+    assert.match(
+      transcript.source,
+      new RegExp(
+        `responseStartedAt=\\{[\\s\\S]{0,320}${transcript.messageName}\\.createdAt`,
+      ),
+      "a restored live row must retain the turn's durable clock",
     );
   });
 }

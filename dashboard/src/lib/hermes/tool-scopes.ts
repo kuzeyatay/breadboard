@@ -293,6 +293,15 @@ export const OFFICE_WRITE_TOOLS: readonly string[] = [
   "office_export",
 ];
 
+// In-process editing of existing OOXML files plus local PDF → DOCX. Unlike
+// OfficeCLI, this surface never authors a new document from commands: it opens
+// bytes already in the workspace, applies anchored patches, and publishes the
+// resulting file through the artifact importer.
+export const DOCUMENT_TOOLS = ["document_edit", "pdf_to_docx"] as const;
+
+/** Inspection is a mode of document_edit, but both tool families may write. */
+export const DOCUMENT_WRITE_TOOLS: readonly string[] = ["document_edit", "pdf_to_docx"];
+
 // watermarks-remover: report and strip AI provenance marks — invisible Unicode
 // carriers, C2PA/Content Credentials, EXIF/XMP, document container properties.
 // The vendored scripts are stdlib Python, and every path they are handed is
@@ -306,6 +315,13 @@ export const WATERMARK_TOOLS = [
 
 /** The one that writes a file, for auditing and the UI's copy. */
 export const WATERMARK_WRITE_TOOLS: readonly string[] = ["watermark_clean"];
+
+// The local humanizer: rewrite prose through the loopback BART service behind
+// its preservation gates. Read-only in every sense that matters — the tools
+// return text and never touch a message, a note or a file, so there is no write
+// list here. The response action regenerates a normal conversation branch; it
+// does not grant the tool a write capability.
+export const HUMANIZER_TOOLS = ["humanize_text", "humanize_status"] as const;
 
 // The build loop: read a file, change it, look for the next thing to change.
 // Hermes ships its own `file` toolset and it stays off — those tools take
@@ -395,7 +411,10 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...CALENDAR_TOOLS,
       ...PLAN_TOOLS,
       ...OFFICE_TOOLS,
+      ...DOCUMENT_TOOLS,
       ...WATERMARK_TOOLS,
+    ...HUMANIZER_TOOLS,
+      ...HUMANIZER_TOOLS,
       ...WORKSPACE_TOOLS,
       ...SUPER_AGENT_TOOLS,
       ...gbrain,
@@ -427,7 +446,9 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...CALENDAR_TOOLS,
     ...PLAN_TOOLS,
     ...OFFICE_TOOLS,
+    ...DOCUMENT_TOOLS,
     ...WATERMARK_TOOLS,
+    ...HUMANIZER_TOOLS,
     ...WORKSPACE_TOOLS,
     ...SUPER_AGENT_TOOLS,
     ...gbrain,

@@ -8,6 +8,8 @@ import { metaPromptSection, metaPromptingEnabled } from "./meta-prompting.ts";
 import { cogniviaSection } from "../cognivia/index.ts";
 import { loopStateSection } from "../loopx/governance.ts";
 import { goalModeSection, type GoalModeState } from "../goal-mode.ts";
+import { classifyResearch } from "../research/classify.ts";
+import { researchAnswerContract } from "../research/directive.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
 
 function readSystemPrompt(name: string): string {
@@ -44,6 +46,18 @@ function surfacePrompt(surface: HermesSurface): string {
   return readSystemPrompt("main-assistant");
 }
 
+/**
+ * Whether the material on this turn arrived already cited.
+ *
+ * A delegated research run hands its report back with `[S1]`-style markers and
+ * a source registry. That turn calls no web tool, so nothing about its
+ * capabilities says it is answering from sources — the citations in front of it
+ * are the only signal, and they are a sufficient one.
+ */
+function carriesCitations(text: string): boolean {
+  return /\[S\d+\]/.test(text);
+}
+
 export function composeHermesSystemPrompt(input: {
   surface: HermesSurface;
   decision: CapabilityDecision;
@@ -62,7 +76,7 @@ export function composeHermesSystemPrompt(input: {
    */
   conversationPublicId?: string | null;
   /**
-   * Direct mode when the message was sent. `adhdMode` remains the transport
+   * Concise when the message was sent. `adhdMode` remains the transport
    * key for compatibility with clients that were already open during rename.
    */
   adhdMode?: boolean;
@@ -107,6 +121,30 @@ export function composeHermesSystemPrompt(input: {
   }
   if (decision.allowedTools.includes("websearch")) {
     sections.push(readSystemPrompt("web-grounding"));
+  }
+  // Web grounding governs whether the turn may claim something at all. This
+  // governs how a claim it is entitled to make has to be written down.
+  //
+  // Deliberately not gated on the web tools. A turn reporting a delegated
+  // research run holds a cited report and no search tool at all, and gating on
+  // `websearch` withheld the standard from the one kind of answer built
+  // entirely out of sources — which is how a fully cited report came back to
+  // the reader as confident, unattributed prose. Owing the standard is a
+  // property of the material on the turn, not of how it was obtained.
+  // Cheap: a pure function over the request text. See lib/research/.
+  //
+  // No request text means nothing to classify, and classifying "" would land on
+  // the generic research intent, shipping the contract on a turn that is not
+  // answering a question at all.
+  const question = input.userText?.trim() ?? "";
+  if (
+    question &&
+    (decision.allowedTools.includes("websearch") || carriesCitations(question))
+  ) {
+    const researchPlan = classifyResearch({ question });
+    if (researchPlan.intent !== "simple_lookup") {
+      sections.push(researchAnswerContract(researchPlan));
+    }
   }
   // The image-results display contract ships whenever image_search is on the
   // turn: the fenced-block shape is Breadboard's own convention, so without
@@ -165,7 +203,7 @@ export function composeHermesSystemPrompt(input: {
   // can shape voice and approach, but never the server-authored sections above.
   if (input.persona?.trim()) sections.push(input.persona.trim());
   // Final on purpose: this governs how already-decided content is explained.
-  // Direct mode, retrieved evidence and a specialist persona may shape the
+  // Concise, retrieved evidence and a specialist persona may shape the
   // answer, but none may turn it back into unexplained analyst shorthand.
   sections.push(readerComprehensionPrompt());
   return sections.join("\n\n");

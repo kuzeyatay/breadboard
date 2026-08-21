@@ -542,6 +542,22 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
     inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 56%, transparent);
 }
 
+/* The cut a long message the person sent is folded at. Faded out rather than
+   guillotined, so the edge reads as "there is more" on its own and the Show
+   more toggle beneath it only names what the bubble already showed. A mask
+   rather than a gradient overlay: the bubble's own surface differs between
+   themes, temporary chats, and the four transcripts, and a mask needs to know
+   none of them. */
+.bb-chat-message-fold {
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - 2.75rem),
+    transparent
+  );
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.75rem), transparent);
+}
+
 /* Temporary chat. What the user says here is not going to be kept, so its
    outline is drawn as a broken one — the same dashed line the switch itself
    uses. The raised shadow is dropped with it: a bubble that is about to
@@ -794,15 +810,30 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
   animation: bb-chat-marquee-shift var(--bb-marquee-duration, 6s) ease-in-out infinite;
 }
 
-/* A first-message title replaces the temporary "New chat" in place. Reveal
-   it in character-sized steps so the asynchronous rename reads as work being
-   completed, not as a row silently changing underneath the reader. */
-.bb-chat-marquee-text[data-title-renaming="true"] {
+/* A first-message title replaces the temporary "New chat" in place, and it does
+   it the way a person would: the placeholder is backspaced away, there is a
+   beat of empty line, then the generated name is written. Both halves move in
+   character-sized steps, at a pace meant to be read rather than caught, so the
+   asynchronous rename reads as work being completed instead of a row silently
+   changing underneath the reader. The row measures the step count and the two
+   durations and hands them down as custom properties. */
+.bb-chat-marquee-text[data-title-renaming="erase"],
+.bb-chat-marquee-text[data-title-renaming="type"] {
   width: max-content;
   overflow: visible;
   text-overflow: clip;
-  animation: bb-chat-title-type 260ms
+}
+
+.bb-chat-marquee-text[data-title-renaming="erase"] {
+  animation: bb-chat-title-erase var(--bb-title-erase-duration, 360ms)
     steps(var(--bb-title-character-count, 1), end) both;
+}
+
+/* `both` holds the first frame through the delay, so the pause between the two
+   halves is an empty line rather than a flash of the finished name. */
+.bb-chat-marquee-text[data-title-renaming="type"] {
+  animation: bb-chat-title-type var(--bb-title-type-duration, 900ms)
+    steps(var(--bb-title-character-count, 1), end) var(--bb-title-type-delay, 120ms) both;
 }
 
 @keyframes bb-chat-title-type {
@@ -813,6 +844,19 @@ html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
   to {
     clip-path: inset(0);
     opacity: 1;
+  }
+}
+
+/* The same travelling edge, walked back the other way: the tail of the name
+   goes first, one character at a time. */
+@keyframes bb-chat-title-erase {
+  from {
+    clip-path: inset(0);
+    opacity: 1;
+  }
+  to {
+    clip-path: inset(0 100% 0 0);
+    opacity: 0.55;
   }
 }
 
@@ -1364,6 +1408,36 @@ html[data-breadboard-desktop="true"] .bb-artifact-dock-floating {
   }
 }
 
+/* Expanded, the panel is the window: it has no edge to sit against, so the
+   left border and the shadow that sold it as a layer over the app both go. */
+.bb-artifact-dock-expanded {
+  border-left: 0;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .bb-artifact-dock-expanded {
+  box-shadow: none;
+}
+
+/* It arrives by growing, not by sliding in from a right edge it no longer
+   has — the slide is what a dock does, and this is no longer one. */
+@media (prefers-reduced-motion: no-preference) {
+  .bb-artifact-dock-expanded {
+    animation: bb-artifact-dock-expand-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+@keyframes bb-artifact-dock-expand-in {
+  from {
+    opacity: 0.6;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 h1,
 h2,
 h3,
@@ -1435,6 +1509,7 @@ b {
 }
 
 .chat-markdown .chat-code-block {
+  position: relative;
   overflow: hidden;
   border-radius: 16px;
   border: 1px solid var(--border);
@@ -1477,6 +1552,7 @@ b {
   display: inline-flex;
   width: 2rem;
   height: 2rem;
+  margin-left: auto;
   flex: 0 0 auto;
   cursor: pointer;
   align-items: center;
@@ -1510,6 +1586,18 @@ b {
   border-radius: 0;
   background: transparent;
   padding: 0.55rem 0.9rem 1rem;
+}
+
+.chat-markdown .chat-code-block-unlabelled > .chat-code-copy {
+  position: absolute;
+  z-index: 1;
+  top: 0.45rem;
+  right: 0.55rem;
+}
+
+.chat-markdown .chat-code-block-unlabelled pre {
+  padding-top: 1rem;
+  padding-right: 3.2rem;
 }
 
 .chat-markdown pre code {
@@ -1965,8 +2053,13 @@ b {
   }
 
   /* The rename still gets a gentle state-change cue, without the travelling
-     clipping edge that creates the typing motion. */
-  .bb-chat-marquee-text[data-title-renaming="true"] {
+     clipping edge that creates the typing motion. The row skips the erase half
+     outright here, so only the settled name is ever painted. */
+  .bb-chat-marquee-text[data-title-renaming="erase"],
+  .bb-chat-marquee-text[data-title-renaming="type"] {
+    width: auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
     clip-path: none;
     animation: bb-chat-title-fade var(--neu-duration) var(--neu-easing) both;
   }

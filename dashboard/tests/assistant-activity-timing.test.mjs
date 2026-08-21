@@ -75,6 +75,31 @@ test("an active phase falls back to time since mount instead of stale message ti
   );
 });
 
+test("a reopened live response keeps counting from its durable message start", () => {
+  assert.equal(
+    assistantResponseElapsedMs({
+      activities: [],
+      active: true,
+      now: Date.parse("2026-01-01T00:00:12.000Z"),
+      responseStartedAt: "2026-01-01T00:00:02.000Z",
+      activeFallbackStartedAtMs: Date.parse("2026-01-01T00:00:11.000Z"),
+    }),
+    10_000,
+  );
+});
+
+test("the durable response start outranks activity rebuilt after navigation", () => {
+  assert.equal(
+    assistantResponseElapsedMs({
+      activities: [{ startedAt: "2026-01-01T00:00:11.000Z" }],
+      active: true,
+      now: Date.parse("2026-01-01T00:00:12.000Z"),
+      responseStartedAt: "2026-01-01T00:00:02.000Z",
+    }),
+    10_000,
+  );
+});
+
 // A delegation ends with two turns and one visible row: the turn that delegated
 // is hidden, and the hand-back that reports its result is what the person sees.
 // Its own duration is only the synthesis, so the row has to carry the rest or

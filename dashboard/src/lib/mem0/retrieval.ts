@@ -159,11 +159,17 @@ export async function loadConversationMemoryBundleHybrid(input: {
   query: string;
   activeGardenId?: number | null;
   projectScopeId?: string | null;
+  /** Personalize, as it stood when the message was sent. Absent means on. */
+  personalize?: boolean;
 }, database: Database.Database = db): Promise<ConversationMemoryBundle> {
   const bundle = loadConversationMemoryBundle(input, database);
   // A temporary chat gets no cross-chat memory through either channel. The
   // lexical half already returned nothing; the semantic half is not asked.
   if (conversationIsTemporary(input.conversation)) return bundle;
+  // Same rule for a depersonalized turn, and for the same reason: withholding
+  // the lexical half while the semantic half still reached for the user's
+  // memories would make the switch a suggestion rather than a gate.
+  if (bundle.depersonalized) return bundle;
   const hybrid = await hybridDurableMemories({
     userId: input.conversation.user_id,
     currentConversationId: input.conversation.id,

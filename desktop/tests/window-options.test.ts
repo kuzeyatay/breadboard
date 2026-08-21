@@ -50,6 +50,8 @@ function fakeWindow(url: string) {
     files,
     isDestroyed: () => false,
     destroy: () => {},
+    isVisible: () => true,
+    show: () => {},
     // A navigation that answers nothing: no events, and a promise that never
     // settles. This is the shape a restarting dev server can leave behind.
     loadURL: (target: string) => {
@@ -107,13 +109,17 @@ test("non-Windows windows retain native title bars", () => {
 test("dark window chrome meshes with the charcoal application palette", () => {
   assert.deepEqual(titleBarForTheme("light"), BREADBOARD_TITLE_BAR);
   assert.deepEqual(titleBarForTheme("dark"), BREADBOARD_DARK_TITLE_BAR);
+  // The caption is the application's own surface colour — `--paper-surface` in
+  // the dark theme — because the strip the page draws below it is that colour
+  // too. A caption a shade off is the one rectangle on screen that reads as
+  // belonging to a different program.
   assert.deepEqual(BREADBOARD_DARK_TITLE_BAR, {
-    color: "#20211f",
-    symbolColor: "#e6ebe5",
+    color: "#171916",
+    symbolColor: "#ccd2c9",
     height: 32,
   });
   assert.equal(backgroundColorForTheme("light"), "#e6f0e6");
-  assert.equal(backgroundColorForTheme("dark"), "#18181a");
+  assert.equal(backgroundColorForTheme("dark"), "#0b0c0a");
 
   const darkOptions = mainWindowOptions(
     "C:\\app\\preload.js",
@@ -121,7 +127,7 @@ test("dark window chrome meshes with the charcoal application palette", () => {
     "win32",
     "dark",
   );
-  assert.equal(darkOptions.backgroundColor, "#18181a");
+  assert.equal(darkOptions.backgroundColor, "#0b0c0a");
   assert.deepEqual(darkOptions.titleBarOverlay, BREADBOARD_DARK_TITLE_BAR);
 });
 
@@ -448,4 +454,57 @@ test("a full-screen surface takes the window chrome with it", () => {
   assert.equal(isWindowSurface("light"), true);
   assert.equal(isWindowSurface("sepia"), false);
   assert.equal(isWindowSurface(undefined), false);
+});
+
+test("a popped-out window waits in the loading scene rather than in a flat sheet", async () => {
+  // Opening a local page can take seconds the first time it is asked for, and
+  // there is no document in that gap for a route's own loading state to live
+  // in — which is how a click used to land on a window painted one flat colour.
+  const manager = new WindowManager({
+    allowed: { origins: new Set(["http://127.0.0.1:3000"]) },
+    startupHtmlPath: "C:\\app\\startup\\index.html",
+    preloadPath: "C:\\app\\preload.js",
+  });
+  const window = fakeWindow("about:blank");
+  let sheet: string | undefined;
+  (
+    manager as unknown as { buildWindow: (backgroundColor?: string) => unknown }
+  ).buildWindow = (backgroundColor?: string) => {
+    sheet = backgroundColor;
+    return window;
+  };
+
+  const target = "http://127.0.0.1:3000/buzz";
+  manager.openPopupWindow(target);
+  await flush();
+
+  assert.deepEqual(
+    window.files,
+    ["C:\\app\\startup\\loading.html"],
+    "the window should be given the loading scene to paint first",
+  );
+  assert.deepEqual(window.loaded, [target], "and then be sent to its real page");
+  // The sheet Chromium paints between the two documents is the only thing the
+  // scene cannot cover, so it stays the destination's own colour.
+  assert.equal(sheet, "#e6e6b6");
+
+  window.emit("closed");
+});
+
+test("the loading scene is never somewhere a window can be recovered to", async () => {
+  const manager = new WindowManager({
+    allowed: {
+      origins: new Set(["http://127.0.0.1:3000"]),
+      localFiles: new Set(["file:///C:/app/startup/loading.html"]),
+    },
+    startupHtmlPath: "C:\\app\\startup\\index.html",
+    preloadPath: "C:\\app\\preload.js",
+  });
+  const recoverable = (
+    manager as unknown as { isRecoverableLocalPage: (url: string) => boolean }
+  ).isRecoverableLocalPage.bind(manager);
+  // Remembering it would send a window that lost its page back to the picture
+  // of a window waiting for one.
+  assert.equal(recoverable("file:///C:/app/startup/loading.html"), false);
+  assert.equal(recoverable("http://127.0.0.1:3000/buzz"), true);
 });

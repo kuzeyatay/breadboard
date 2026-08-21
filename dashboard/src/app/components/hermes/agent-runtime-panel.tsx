@@ -24,6 +24,8 @@ import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import AssistantComposer, {
   type ComposerAttachment,
 } from "@/app/components/assistant-composer";
+import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
+import { autoHumanizeMessage } from "@/app/components/humanizer/auto-humanize";
 import AssistantMessageActions, {
   MessageActionsSlot,
   AssistantResponseBranchNavigation,
@@ -57,7 +59,11 @@ import InlineArtifactCards, {
 } from "./inline-artifact-cards";
 import { ARTIFACT_BROWSER_EVENT } from "./artifact-viewer";
 import InlineProposalCards from "./inline-proposal-cards";
+import InlineConversationMap, {
+  type InlineConversationMapKind,
+} from "./inline-conversation-map";
 import InlineDeepResearchRun from "./inline-deep-research-run";
+import InlineMaxResearchRun from "./inline-max-research-run";
 import InlineAgentReachRun from "./inline-agent-reach-run";
 import InlineGetDocRun from "./inline-get-doc-run";
 import InlineMeetingNotesRun from "./inline-meeting-notes-run";
@@ -76,6 +82,7 @@ import InlineHardwareBlueprintRun from "./inline-hardware-blueprint-run";
 import InlineParametricCadRun from "./inline-parametric-cad-run";
 import InlineHyperframesRun from "./inline-hyperframes-run";
 import InlineResource2SkillRun from "./inline-resource2skill-run";
+import InlineMatraixRun from "./inline-matraix-run";
 import InlineOpenMontageRun from "./inline-openmontage-run";
 import InlineOpenworkRun from "./inline-openwork-run";
 import InlineOpenscienceRun from "./inline-openscience-run";
@@ -93,8 +100,12 @@ import type { FormsmithRequest } from "@/lib/shaper/identity.ts";
 import InlineOpenCodeRun from "./inline-opencode-run";
 import InlineRufloRun from "./inline-ruflo-run";
 import { UserMessageText } from "./command-text";
+import CollapsibleUserMessage from "@/app/components/chat/collapsible-user-message";
 import SavePromptDialog from "./save-prompt-dialog";
-import { useQueuedFollowUps } from "./queued-follow-ups";
+import {
+  restoreQueuedFollowUpDraft,
+  useQueuedFollowUps,
+} from "./queued-follow-ups";
 import {
   DEFAULT_ASSISTANT_REASONING_EFFORT,
   type AssistantReasoningEffort,
@@ -112,6 +123,7 @@ import {
   type PermissionPrompt,
 } from "./use-agent-session";
 import type { HermesSurface } from "@/lib/hermes/config.ts";
+import { requiresGeographicGrounding } from "@/lib/map/grounding.ts";
 import type { LocalWorkflowSummary } from "@/lib/workflows/types";
 import {
   externalAgentCardContent,
@@ -199,6 +211,15 @@ interface Props {
     selection: ChatTextSelectionReference,
   ) => Promise<void>;
   onSteer: (text: string) => Promise<boolean>;
+  /**
+   * Whether a run that can actually take a course correction is behind the
+   * working answer. `runState` alone is not enough: a provider-direct turn
+   * (agent mode off) and a turn still being dispatched both look active while
+   * having no runtime run for `onSteer` to reach, and offering Steer there
+   * gives a control that can only fail. Defaults to true so a surface that
+   * does not know keeps the old behaviour.
+   */
+  steerableRun?: boolean;
   onSendQueued: (text: string) => Promise<void>;
   onEditMessage?: (
     messageIndex: number,
@@ -308,9 +329,11 @@ interface Props {
   onSelectParametricCad?: () => void;
   onSelectHyperframes?: () => void;
   onSelectResource2Skill?: () => void;
+  onSelectMatraix?: () => void;
   onSelectOpenMontage?: () => void;
   onSelectOpenwork?: () => void;
   onSelectOpenscience?: () => void;
+  onSelectMaxResearch?: () => void;
   onSelectInboxZero?: () => void;
   onSelectVimax?: () => void;
   onSelectVoxDirector?: () => void;
@@ -356,7 +379,9 @@ function SteeredAssistantResponse({
           <div key={segment.key} className="group flex justify-end py-1">
             <div className="w-fit max-w-[75%]">
               <div className="neu-chat-message neu-chat-message-user rounded-[22px] px-4 py-2.5 text-sm leading-6">
-                <UserMessageText content={segment.content} />
+                <CollapsibleUserMessage messageKey={`steer:${segment.key}`}>
+                  <UserMessageText content={segment.content} />
+                </CollapsibleUserMessage>
               </div>
             </div>
           </div>
@@ -505,6 +530,44 @@ const transcriptRowHeight = (row: TranscriptRow) =>
     ? 40
     : estimateChatRowHeight(row.message, { minimum: 88 });
 
+/**
+ * Decide whether this answer owes an inline native map from the request that
+ * produced it. The map itself still reads only structured provider state; this
+ * function decides presentation, never coordinates or route geometry.
+ */
+function inlineMapKindForAssistant(
+  messages: AgentMessage[],
+  assistantIndex: number,
+): InlineConversationMapKind | null {
+  const userIndex = previousUserMessageIndex(messages, assistantIndex);
+  if (userIndex < 0) return null;
+  const request = messages[userIndex];
+  if (!request || request.role !== "user") return null;
+  const priorRequests = messages
+    .slice(0, userIndex)
+    .filter((message) => message.role === "user")
+    .slice(-8)
+    .map((message) => message.content);
+  const assessment = requiresGeographicGrounding(request.content, {
+    priorRequests,
+  });
+  if (
+    assessment.asks.some((ask) =>
+      ["route", "distance", "travel_time"].includes(ask),
+    )
+  ) {
+    return "route";
+  }
+  if (
+    assessment.asks.some((ask) =>
+      ["recommendation", "proximity"].includes(ask),
+    )
+  ) {
+    return "places";
+  }
+  return null;
+}
+
 export default function AgentRuntimePanel({
   messages,
   connection,
@@ -523,6 +586,7 @@ export default function AgentRuntimePanel({
   onRunWorkflow,
   onAskSelection,
   onSteer,
+  steerableRun = true,
   onSendQueued,
   onEditMessage,
   onSelectBranch,
@@ -610,9 +674,11 @@ export default function AgentRuntimePanel({
   onSelectParametricCad,
   onSelectHyperframes,
   onSelectResource2Skill,
+  onSelectMatraix,
   onSelectOpenMontage,
   onSelectOpenwork,
   onSelectOpenscience,
+  onSelectMaxResearch,
   onSelectInboxZero,
   onSelectVimax,
   onSelectVoxDirector,
@@ -702,10 +768,12 @@ export default function AgentRuntimePanel({
     useQueuedFollowUps({
       conversationKey: sessionId ?? null,
       runInFlight: queueHeld,
-      steerableRunActive: activeRun,
+      steerableRunActive: activeRun && steerableRun,
       stopping: runState === "stopping",
       externalRunActive,
       onSteer,
+      onRestoreDraft: (text) =>
+        restoreQueuedFollowUpDraft(text, onInputChange, composerTextareaRef),
       onSendQueued,
     });
   // Until the transcript has landed there is no history to answer against, and
@@ -732,20 +800,15 @@ export default function AgentRuntimePanel({
     }
     return [...stops.values()];
   }, [messages]);
-  const stopEverything = useCallback(async () => {
-    // State updates land on the next render; the ref makes the click lock
-    // synchronous so a double-click cannot dispatch a second cancellation.
-    if (stopRequestPendingRef.current) return;
-    stopRequestPendingRef.current = true;
-    setStopRequestPending(true);
-    onStopRequested?.(
-      externalStops.flatMap(({ clientMessageId }) =>
-        clientMessageId ? [clientMessageId] : [],
-      ),
-    );
-    if (activeRun) onAbort();
-    const accepted = await Promise.all(
-      externalStops.map(async ({ url, clientMessageId }) => {
+  /**
+   * Fire the cancellations. Extracted because a stop can be asked for before
+   * anything exists to cancel, and the deferred sweep below has to send exactly
+   * the same requests the click would have sent.
+   */
+  const abortExternalRuns = useCallback(
+    async (stops: ReadonlyArray<{ url: string; clientMessageId?: string }>) =>
+      Promise.all(
+        stops.map(async ({ url, clientMessageId }) => {
         try {
           const response = await fetch(url, { method: "POST" });
           const payload = await response.json().catch(() => null);
@@ -769,7 +832,40 @@ export default function AgentRuntimePanel({
           return false;
         }
       }),
+      ),
+    [onExternalAgentTerminal],
+  );
+
+  /**
+   * A stop asked for before the run exists.
+   *
+   * The composer used to keep its send button through the dispatch window, on
+   * the reasoning that a square which cancels nothing is worse than no square.
+   * In practice a long research launch takes seconds, and a person who has
+   * decided to stop wants to say so once, not watch for the button to appear.
+   * So the square is offered immediately and the request is held here until
+   * there is a run to spend it on.
+   */
+  const awaitingStopRef = useRef(false);
+
+  const stopEverything = useCallback(async () => {
+    // State updates land on the next render; the ref makes the click lock
+    // synchronous so a double-click cannot dispatch a second cancellation.
+    if (stopRequestPendingRef.current) return;
+    stopRequestPendingRef.current = true;
+    setStopRequestPending(true);
+    onStopRequested?.(
+      externalStops.flatMap(({ clientMessageId }) =>
+        clientMessageId ? [clientMessageId] : [],
+      ),
     );
+    if (activeRun) onAbort();
+    if (!activeRun && externalStops.length === 0) {
+      // Still dispatching. Keep the request standing rather than dropping it.
+      awaitingStopRef.current = true;
+      return;
+    }
+    const accepted = await abortExternalRuns(externalStops);
     // A refused/unreachable cancellation is retryable. Accepted requests stay
     // locked until their terminal transcript update removes runInFlight.
     if (!activeRun && !accepted.some(Boolean)) {
@@ -796,7 +892,42 @@ export default function AgentRuntimePanel({
   // yet, so there is genuinely nothing to stop. Withholding the handler leaves
   // the composer on its send button, which queues — a square that did nothing
   // would be worse than no square.
-  const canStop = activeRun || externalStops.length > 0;
+  // The moment a run is asked for, not the moment it exists. `externalRunActive`
+  // covers the dispatch window, which is where the Stop square used to be
+  // missing for the seconds a long research launch takes.
+  const canStop = activeRun || externalStops.length > 0 || externalRunActive;
+
+  // Spend a stop that was asked for while the launch was still in flight, as
+  // soon as there is something to spend it on.
+  useEffect(() => {
+    if (!awaitingStopRef.current || externalStops.length === 0) return;
+    awaitingStopRef.current = false;
+    void abortExternalRuns(externalStops).then((accepted) => {
+      if (accepted.some(Boolean)) return;
+      stopRequestPendingRef.current = false;
+      setStopRequestPending(false);
+    });
+  }, [abortExternalRuns, externalStops]);
+
+  // A launch that failed before producing a run leaves the request stranded;
+  // clear it so the composer is usable again rather than stuck on a dead square.
+  useEffect(() => {
+    if (!externalRunActive && externalStops.length === 0) {
+      awaitingStopRef.current = false;
+    }
+  }, [externalRunActive, externalStops.length]);
+  const [humanizerEnabled] = useHumanizerMode();
+  // Whether this panel has watched a run finish. Auto-rewriting an answer
+  // it merely found on screen would rewrite history on page load.
+  const sawRunRef = useRef(false);
+  const attemptedRef = useRef<Set<string>>(new Set());
+  const autoHumanizeAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (runInFlight) sawRunRef.current = true;
+  }, [runInFlight]);
+  // The one place an automatic rewrite is torn down: the panel going away.
+  useEffect(() => () => autoHumanizeAbortRef.current?.abort(), []);
+
   const lastAssistantIndex = messages.reduce(
     (lastIndex, message, index) =>
       message.role === "assistant" &&
@@ -806,12 +937,16 @@ export default function AgentRuntimePanel({
         : lastIndex,
     -1,
   );
+  const newestAssistant =
+    lastAssistantIndex >= 0 ? messages[lastAssistantIndex] : undefined;
+  const transcriptRevealKey = sessionId ?? "new";
   // The newest answer's text is revealed at a readable pace rather than drawn
   // straight from the buffer, so a reply that arrives in bursts (or whole)
   // still reads as a stream. Older messages render their content directly.
   const revealedAssistantContent = useSmoothStreamText(
-    lastAssistantIndex >= 0 ? messages[lastAssistantIndex].content : "",
+    newestAssistant?.content ?? "",
     streaming,
+    transcriptRevealKey,
   );
   // A turn failure reads as part of the answer it broke, so when the
   // transcript ends with a plain assistant message the error text renders
@@ -1339,15 +1474,178 @@ export default function AgentRuntimePanel({
     messageIndex: number,
   ): AssistantResponseBranch | undefined {
     const branch = branchForAssistant(message, messageIndex);
-    return branch
-      ? {
-          current: branch.activeIndex + 1,
-          total: branch.variants.length,
-          onPrevious: () => switchBranch(branch, -1),
-          onNext: () => switchBranch(branch, 1),
-        }
-      : undefined;
+    if (branch) {
+      return {
+        current: branch.activeIndex + 1,
+        total: branch.variants.length,
+        onPrevious: () => switchBranch(branch, -1),
+        onNext: () => switchBranch(branch, 1),
+      };
+    }
+    // A rewritten answer is versioned rather than branched: same question, same
+    // turn, different wording. The arrows are the same arrows, but they move
+    // between stored versions of this one message and the original is always
+    // version 1.
+    const versions = message.contentVersions;
+    if (!versions || versions.total <= 1) return undefined;
+    return {
+      current: versions.activeIndex + 1,
+      total: versions.total,
+      onPrevious: () => void selectContentVersion(messageIndex, versions.activeIndex - 1),
+      onNext: () => void selectContentVersion(messageIndex, versions.activeIndex + 1),
+    };
   }
+
+  /**
+   * Replace one message in place, without disturbing the rest of the
+   * transcript.
+   *
+   * `onSelectBranch` is the surface's existing "here is the transcript now"
+   * seam, and reusing it keeps this component free of any opinion about how
+   * the transcript is stored.
+   */
+  const replaceMessage = useCallback(
+    (messageIndex: number, patch: Partial<AgentMessage>): void => {
+      if (!onSelectBranch) return;
+      const next = cloneMessages(messages);
+      const current = next[messageIndex];
+      if (!current) return;
+      next[messageIndex] = { ...current, ...patch };
+      onSelectBranch(next);
+    },
+    [messages, onSelectBranch],
+  );
+
+  /** Move between stored versions of one answer. The server owns which is active. */
+  async function selectContentVersion(messageIndex: number, index: number): Promise<void> {
+    const message = messages[messageIndex];
+    const versions = message?.contentVersions;
+    if (!sessionId || !message?.id || !versions) return;
+    if (index < 0 || index >= versions.total || index === versions.activeIndex) return;
+    try {
+      const response = await fetch("/api/humanizer/versions", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: sessionId,
+          messageId: message.id,
+          index,
+        }),
+      });
+      if (!response.ok) return;
+      const body = (await response.json()) as {
+        content?: string;
+        versions?: AgentMessage["contentVersions"];
+      };
+      if (typeof body.content !== "string" || !body.versions) return;
+      replaceMessage(messageIndex, {
+        content: body.content,
+        contentVersions: body.versions,
+        humanizerReview: body.versions.review
+          ? {
+              ...body.versions.review,
+              adopted: true,
+              disposition: "adopted",
+            }
+          : undefined,
+        // Evidence describes the original wording. Selecting a derived version
+        // takes it off the row; selecting the original is the only thing that
+        // could put it back, and a reload does exactly that.
+        ...(body.versions.derived ? { verification: undefined } : {}),
+      });
+    } catch {
+      // A failed switch leaves the version that is already on screen in place.
+    }
+  }
+
+  /**
+   * With the switch on, rewrite each finished answer without being asked.
+   *
+   * Three guards, and each one exists for a reason worth keeping:
+   *
+   *   * Only after a run this panel actually watched. Without that, opening an
+   *     old chat would rewrite its last answer on sight, months after it was
+   *     written and with no run to attribute it to.
+   *   * Only once per message. `attemptedRef` survives re-renders, so a
+   *     transcript update mid-rewrite cannot start a second one - and the
+   *     service takes one job at a time, so a second would only be told it is
+   *     busy.
+   *   * Never an agent run card. Those carry cited findings whose wording the
+   *     citations refer to, and rewording them would quietly decouple the two.
+   *
+   * The answer is on screen throughout. An improved intact rewrite replaces it,
+   * with the model's own words kept behind the version arrows. A tied, worse,
+   * or damaged candidate leaves it in place. The review result stays internal.
+   */
+  useEffect(() => {
+    if (!humanizerEnabled || runInFlight || !sessionId || !onSelectBranch) return;
+    if (!sawRunRef.current) return;
+    const index = lastAssistantIndex;
+    const message = messages[index];
+    if (
+      !message ||
+      message.role !== "assistant" ||
+      !message.id ||
+      !message.content?.trim() ||
+      message.interrupted ||
+      message.contentVersions ||
+      isExternalAgentRunMessage(message) ||
+      conversationLocked
+    ) {
+      return;
+    }
+    const key = `${sessionId}:${message.id}`;
+    if (attemptedRef.current.has(key)) return;
+    attemptedRef.current.add(key);
+
+    // Deliberately not aborted by this effect's cleanup. `messages` is in the
+    // dependency list, so the effect re-runs on every transcript tick - an
+    // inline card settling, an artifact arriving - and cleanup-on-rerun would
+    // cancel the rewrite a few milliseconds after starting it, every time. The
+    // request is tied to the panel's lifetime instead, and `attemptedRef` is
+    // what stops a second one.
+    const controller = new AbortController();
+    autoHumanizeAbortRef.current?.abort();
+    autoHumanizeAbortRef.current = controller;
+    const content = message.content;
+    void autoHumanizeMessage({
+      conversationId: sessionId,
+      // A live answer keeps its browser UUID until the transcript is restored.
+      // The apply route accepts that durable turn identity as well as msg_N.
+      messageId: message.clientMessageId ?? message.id,
+      content,
+      signal: controller.signal,
+    }).then((outcome) => {
+      if (!outcome || controller.signal.aborted) return;
+      // Re-find the row: the transcript may have moved on while the rewrite ran,
+      // and replacing by stale index would rewrite the wrong answer.
+      const current = messages.findIndex(
+        (candidate) => candidate.id === message.id && candidate.content === content,
+      );
+      if (current < 0) return;
+      replaceMessage(current, {
+        content: outcome.content,
+        humanizerReview: outcome.review,
+        ...(outcome.adopted && outcome.versions
+          ? {
+              contentVersions: outcome.versions,
+              // Evidence describes the wording the model produced, not a
+              // later rewrite of it. Selecting version 1 brings it back.
+              verification: undefined,
+            }
+          : {}),
+      });
+    });
+  }, [
+    conversationLocked,
+    humanizerEnabled,
+    lastAssistantIndex,
+    messages,
+    onSelectBranch,
+    replaceMessage,
+    runInFlight,
+    sessionId,
+  ]);
 
   function switchBranch(
     group: ConversationBranchGroup,
@@ -1608,6 +1906,16 @@ export default function AgentRuntimePanel({
                   index === lastAssistantIndex
                     ? revealedAssistantContent || continuationPreamble
                     : message.content || continuationPreamble;
+                const inlineMapKind =
+                  message.role === "assistant" &&
+                  index === lastAssistantIndex &&
+                  !runInFlight &&
+                  !isExternalAgentRunMessage(message)
+                    ? inlineMapKindForAssistant(messages, index)
+                    : null;
+                const inlineMapRequestStartedAt = inlineMapKind
+                  ? messages[previousUserMessageIndex(messages, index)]?.createdAt
+                  : undefined;
                 const delegatedAgentCompleted =
                   delegatedAgentCompletedLabelForMessage(message);
                 const delegatedAgentStartedAt =
@@ -1742,7 +2050,11 @@ export default function AgentRuntimePanel({
                             <QuotedChatSelection selection={message.textSelection} />
                           ) : null}
                           <div className="neu-chat-message neu-chat-message-user rounded-[22px] px-4 py-2.5 text-sm leading-6">
-                            <UserMessageText content={message.content} />
+                            <CollapsibleUserMessage
+                              messageKey={messageBranchId(message, index)}
+                            >
+                              <UserMessageText content={message.content} />
+                            </CollapsibleUserMessage>
                           </div>
                           <div className="mt-1 flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                             <button
@@ -1863,6 +2175,29 @@ export default function AgentRuntimePanel({
                           task={message.agentBrowserRun.task}
                           persistedContent={message.content}
                           persistedOutcome={message.externalAgentOutcome}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted ||
+                              index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
+                    ) : message.maxResearchRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlineMaxResearchRun
+                          runId={message.maxResearchRun.runId}
+                          query={message.maxResearchRun.query}
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          persistedUsage={message.usage}
                           onRetry={
                             onRetryMessage &&
                             !activeRun &&
@@ -2285,6 +2620,28 @@ export default function AgentRuntimePanel({
                           }}
                         />
                       </div>
+                    ) : message.matraixRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlineMatraixRun
+                          runId={message.matraixRun.runId}
+                          brief={message.matraixRun.brief}
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          persistedUsage={message.usage}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted || index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
                     ) : message.openworkRun ? (
                       <div className="text-sm leading-7 text-gray-200">
                         <InlineOpenworkRun
@@ -2624,6 +2981,14 @@ export default function AgentRuntimePanel({
                           }
                           usage={totalUsage}
                           responseDurationMs={message.responseDurationMs}
+                          // The row survives navigation even though this
+                          // component's activity state does not. Its timestamp
+                          // keeps a restored live timer on the original turn.
+                          responseStartedAt={
+                            delegatedAgentActive || isAgentContinuationResponse
+                              ? undefined
+                              : message.createdAt
+                          }
                           // The delegation's own clock. Without it the timer
                           // restarts from zero when the worker phase begins,
                           // losing the time the turn had already spent.
@@ -2649,6 +3014,13 @@ export default function AgentRuntimePanel({
                             <span aria-hidden>📖</span>
                             <span>Memory updated</span>
                           </div>
+                        ) : null}
+                        {inlineMapKind && sessionId && surface !== "quartz_ai" ? (
+                          <InlineConversationMap
+                            conversationPublicId={sessionId}
+                            kind={inlineMapKind}
+                            requestedAt={inlineMapRequestStartedAt}
+                          />
                         ) : null}
                         {visibleAssistantContent ||
                         inlinedCourseCorrections.byAssistantIndex.has(index) ? (
@@ -2729,6 +3101,15 @@ export default function AgentRuntimePanel({
                         }
                         verification={message.verification}
                         branch={branchNavigationForAssistant(message, index)}
+                        onRewrite={
+                          onRetryMessage &&
+                          message.content?.trim() &&
+                          !activeRun &&
+                          !conversationLocked &&
+                          (message.interrupted || index === lastAssistantIndex)
+                            ? () => retryAssistantAsBranch(index)
+                            : undefined
+                        }
                         onRetry={
                           (!responseInterrupted || !disabled) &&
                           onRetryMessage &&
@@ -2959,9 +3340,11 @@ export default function AgentRuntimePanel({
           onSelectParametricCad={onSelectParametricCad}
           onSelectHyperframes={onSelectHyperframes}
           onSelectResource2Skill={onSelectResource2Skill}
+          onSelectMatraix={onSelectMatraix}
           onSelectOpenMontage={onSelectOpenMontage}
           onSelectOpenwork={onSelectOpenwork}
           onSelectOpenscience={onSelectOpenscience}
+          onSelectMaxResearch={onSelectMaxResearch}
           onSelectInboxZero={onSelectInboxZero}
           onSelectVimax={onSelectVimax}
           onSelectVoxDirector={onSelectVoxDirector}

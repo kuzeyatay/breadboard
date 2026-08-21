@@ -174,3 +174,34 @@ test("critical QA can reference an external ChatMock session read-only", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("QA never loads, downloads or reads a real humanizer model", () => {
+  // The humanizer is a multi-gigabyte opt-in with a user-downloaded checkpoint.
+  // A QA run must be able to exercise the "Rewrite naturally" surface without
+  // any of that existing, and must never read a developer's installed copy.
+  const paths = {
+    qaMode: true,
+    dataRoot: path.resolve("C:/qa-user-data/Data"),
+    runtimeDir: path.resolve("C:/qa-user-data/Data/runtime"),
+  } as ResolvedPaths;
+  const prepared = prepareQaServiceDefinitions(
+    [definition("dashboard"), definition("humanizer")],
+    paths,
+    "critical",
+  );
+
+  // Not in the critical profile at all: no Python sidecar is started.
+  assert.equal(prepared.find((entry) => entry.id === "humanizer"), undefined);
+
+  const dashboard = prepared.find((entry) => entry.id === "dashboard");
+  assert.ok(dashboard);
+  assert.equal(dashboard.env["HUMANIZER_MODE"], "disabled");
+  // Its home is disposable, so `/api/humanizer/status` answers deterministically
+  // rather than from whatever the host machine happens to have installed.
+  assert.equal(
+    dashboard.env["BREADBOARD_HUMANIZER_HOME"],
+    path.join(paths.dataRoot, "runtime", "qa-optional-state", "humanizer"),
+  );
+  assert.equal(dashboard.env["HF_HOME"], path.join(paths.dataRoot, "runtime", "qa-optional-state", "huggingface"));
+  assert.equal(dashboard.env["HF_HUB_OFFLINE"], "1");
+});

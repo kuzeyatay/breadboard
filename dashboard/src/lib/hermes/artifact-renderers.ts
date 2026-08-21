@@ -526,3 +526,22 @@ export function artifactRenderer(id: string): ArtifactRenderer | null {
 export function availableArtifactRenderers(): Array<{ id: ArtifactRendererId; kind: ArtifactKind; mimeType: string }> {
   return [...registry.values()].map(({ id, kind, mimeType }) => ({ id, kind, mimeType }));
 }
+
+/**
+ * Binary artifacts normally arrive with an OfficeCLI snapshot. When that
+ * optional binary is not provisioned, PPTX alone has a local in-process
+ * RenderTree fallback. Other imported formats keep their existing behavior.
+ */
+export async function renderImportedArtifactFallbackPreview(
+  filePath: string,
+  previewPath: string,
+): Promise<string | null> {
+  if (path.extname(filePath).toLowerCase() !== ".pptx") return null;
+  try {
+    const { renderPptxPreviewHtml } = await import("../genoffice/pptx-preview.ts");
+    atomicWrite(previewPath, await renderPptxPreviewHtml(fs.readFileSync(filePath)));
+    return previewPath;
+  } catch {
+    return null;
+  }
+}

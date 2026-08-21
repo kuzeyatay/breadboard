@@ -40,6 +40,9 @@ const AUTHORITY: Record<ClaimShape, Partial<Record<SourceClass, number>>> = {
     partner: 0.5,
     reputable_secondary: 0.45,
     social: 0.3,
+    // The seller names its own product correctly; that much it has no
+    // reason to get wrong.
+    vendor_marketing: 0.8,
     other: 0.2,
   },
   // Whether the entity belongs to a programme or body. The body decides.
@@ -52,6 +55,7 @@ const AUTHORITY: Record<ClaimShape, Partial<Record<SourceClass, number>>> = {
     reputable_secondary: 0.4,
     archive: 0.4,
     social: 0.25,
+    vendor_marketing: 0.3,
     other: 0.2,
   },
   // How many. Only the entity knows its own current size.
@@ -64,6 +68,9 @@ const AUTHORITY: Record<ClaimShape, Partial<Record<SourceClass, number>>> = {
     reputable_secondary: 0.4,
     social: 0.3,
     archive: 0.25,
+    // A number a seller publishes about the market it sells into is
+    // marketing before it is measurement.
+    vendor_marketing: 0.22,
     other: 0.2,
   },
   // Alive, dormant, dissolved. The entity first, then the body that lists it.
@@ -76,6 +83,7 @@ const AUTHORITY: Record<ClaimShape, Partial<Record<SourceClass, number>>> = {
     reputable_secondary: 0.45,
     partner: 0.4,
     social: 0.3,
+    vendor_marketing: 0.3,
     other: 0.2,
   },
   // Who placed where. The organiser keeps the score.
@@ -88,6 +96,7 @@ const AUTHORITY: Record<ClaimShape, Partial<Record<SourceClass, number>>> = {
     archive: 0.45,
     partner: 0.35,
     social: 0.25,
+    vendor_marketing: 0.25,
     other: 0.2,
   },
   // When something happened. Contemporaneous records beat later retellings.
@@ -100,6 +109,7 @@ const AUTHORITY: Record<ClaimShape, Partial<Record<SourceClass, number>>> = {
     reputable_secondary: 0.5,
     partner: 0.35,
     social: 0.25,
+    vendor_marketing: 0.3,
     other: 0.2,
   },
   general: {
@@ -111,6 +121,7 @@ const AUTHORITY: Record<ClaimShape, Partial<Record<SourceClass, number>>> = {
     reputable_secondary: 0.5,
     partner: 0.4,
     social: 0.25,
+    vendor_marketing: 0.25,
     other: 0.2,
   },
 };
@@ -131,6 +142,17 @@ const KIND_WEIGHT: Record<EvidenceKind, number> = {
   estimate: 0.45,
   inference: 0.35,
 };
+
+/**
+ * How much a stake in the answer discounts an observation.
+ *
+ * Halving rather than excluding, deliberately. An interested source is still a
+ * source — often the only one that publishes the number at all — and dropping
+ * it would trade a disclosed weak figure for no figure. What the discount buys
+ * is that a disinterested source of even middling quality outranks it, which is
+ * the ordering that stops a lead-generation page from setting the benchmark.
+ */
+const INTEREST_WEIGHT = 0.5;
 
 const SHAPE_PATTERNS: ReadonlyArray<{ shape: ClaimShape; pattern: RegExp }> = [
   { shape: "headcount", pattern: /count|members|size|headcount|staff|employees|population/i },
@@ -160,15 +182,40 @@ export function evidenceAuthority(evidence: {
   field: string;
   sourceClass: SourceClass;
   evidenceKind: EvidenceKind;
+  selfInterested?: boolean;
 }): number {
   const shape = claimShapeForField(evidence.field);
   const base = AUTHORITY[shape][evidence.sourceClass] ?? AUTHORITY.general[evidence.sourceClass] ?? 0.2;
-  return Number((base * KIND_WEIGHT[evidence.evidenceKind]).toFixed(4));
+  const interest = evidence.selfInterested ? INTEREST_WEIGHT : 1;
+  return Number((base * KIND_WEIGHT[evidence.evidenceKind] * interest).toFixed(4));
 }
 
 /** Whether an observation states the fact rather than reconstructing it. */
 export function isExplicit(kind: EvidenceKind): boolean {
   return kind === "explicit" || kind === "roster_count";
+}
+
+/**
+ * The publisher behind a URL, for counting sources rather than pages.
+ *
+ * Host-level and lenient about the `www.` prefix, which is enough to stop the
+ * common inflation — the same site's landing page, blog post and PDF quoted as
+ * three agreeing sources. It will not see through a company republishing its
+ * own number under a different domain, and nothing here can.
+ */
+export function sourceIdentity(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return url.trim().toLowerCase();
+  }
+}
+
+/** How many distinct publishers stand behind a set of observations. */
+export function independentSourceCount(
+  evidence: ReadonlyArray<{ sourceUrl: string }>,
+): number {
+  return new Set(evidence.map((item) => sourceIdentity(item.sourceUrl))).size;
 }
 
 /**

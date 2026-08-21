@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
+  GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS,
   GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES,
   compileGeneratedVisualization,
   generateVisualizationCandidate,
@@ -467,6 +468,142 @@ test("spatial runtime mounts accessibly at browser viewports and captures every 
       path.join(outputDir, "preview.png"),
     );
     assert.ok(fs.statSync(path.join(outputDir, "preview.png")).size > 0);
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("preview capture retries transient Edge-style failures with fresh profiles and a bounded backoff", () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-preview-retry-"));
+  const captureProfiles = new Map();
+  const captureAttempts = new Map();
+  const retryDelays = [];
+  try {
+    const result = runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir,
+      browserExecutable: "fake-edge",
+      previewCaptureRetryBackoff: (delayMs) => retryDelays.push(delayMs),
+      browserRunner: ({ args, profilePath }) => {
+        if (args.includes("--dump-dom")) {
+          return {
+            status: 0,
+            stdout: '<body data-breadboard-runtime-tests="passed"></body>',
+          };
+        }
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        assert.ok(screenshotArg, JSON.stringify(args));
+        const screenshotPath = screenshotArg.slice("--screenshot=".length);
+        const attempts = (captureAttempts.get(screenshotPath) ?? 0) + 1;
+        captureAttempts.set(screenshotPath, attempts);
+        const profiles = captureProfiles.get(screenshotPath) ?? [];
+        profiles.push(profilePath);
+        captureProfiles.set(screenshotPath, profiles);
+        assert.ok(profilePath.startsWith(`${path.resolve(outputDir)}${path.sep}`));
+        if (attempts === 1) {
+          fs.writeFileSync(screenshotPath, "");
+          return { status: 1, stderr: "simulated Edge EBUSY" };
+        }
+        fs.writeFileSync(screenshotPath, "fake png");
+        return { status: 0 };
+      },
+    });
+
+    assert.ok(result.tests.every((entry) => entry.passed), JSON.stringify(result.tests));
+    assert.equal(result.browser?.previewMatrixComplete, true);
+    assert.equal(result.browser?.previewCount, 6);
+    assert.equal(result.browser?.previewMatrixReceipt?.expectedCount, 6);
+    assert.equal(result.browser?.previewMatrixReceipt?.capturedCount, 6);
+    assert.equal(result.browser?.previewMatrixReceipt?.cells.length, 6);
+    assert.deepEqual(retryDelays, Array(6).fill(125));
+    assert.equal(captureProfiles.size, 6);
+    for (const receipt of result.browser?.previewMatrixReceipt?.cells ?? []) {
+      assert.equal(receipt.captured, true, receipt.id);
+      assert.equal(receipt.attempts.length, 2, receipt.id);
+      assert.equal(receipt.attempts[0].status, 1);
+      assert.match(receipt.attempts[0].detail ?? "", /simulated Edge EBUSY/);
+      assert.equal(receipt.attempts[0].retryDelayMs, 125);
+      assert.equal(receipt.attempts[1].status, 0);
+      assert.equal(receipt.attempts[1].screenshotCreated, true);
+      assert.ok(receipt.attempts[1].screenshotBytes > 0);
+    }
+    for (const profiles of captureProfiles.values()) {
+      assert.equal(profiles?.length, 2);
+      assert.notEqual(profiles?.[0], profiles?.[1]);
+    }
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("a permanently failed labelled preview remains a complete-or-fail matrix rejection with a bounded receipt", () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-preview-receipt-"));
+  const failedCellProfiles = [];
+  const retryDelays = [];
+  try {
+    const result = runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir,
+      browserExecutable: "fake-edge",
+      previewCaptureRetryBackoff: (delayMs) => retryDelays.push(delayMs),
+      browserRunner: ({ args, profilePath }) => {
+        if (args.includes("--dump-dom")) {
+          return {
+            status: 0,
+            stdout: '<body data-breadboard-runtime-tests="passed"></body>',
+          };
+        }
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        assert.ok(screenshotArg, JSON.stringify(args));
+        const screenshotPath = screenshotArg.slice("--screenshot=".length);
+        if (screenshotPath.endsWith("preview-mobile-375x667-light-case_mode-1.png")) {
+          failedCellProfiles.push(profilePath);
+          return {
+            status: 1,
+            stderr:
+              "simulated persistent Edge EBUSY at C:\\Users\\agent\\AppData\\Local\\Temp\\profile; file:///C:/Users/agent/preview.html",
+          };
+        }
+        fs.writeFileSync(screenshotPath, "fake png");
+        return { status: 0 };
+      },
+    });
+
+    assert.equal(result.browser?.screenshotCreated, true, "the default desktop preview still succeeds");
+    assert.equal(result.browser?.previewCount, 5);
+    assert.equal(result.browser?.previewMatrixComplete, false);
+    assert.equal(
+      result.tests.find((entry) => entry.name === "preview screenshot")?.passed,
+      true,
+    );
+    const matrixGate = result.tests.find((entry) => entry.name === "repair preview matrix");
+    assert.equal(matrixGate?.passed, false);
+    assert.equal(matrixGate?.detail, "captured 5/6 required labelled previews");
+    const receipt = result.browser?.previewMatrixReceipt?.cells.find(
+      (entry) => entry.id === "mobile-375x667-light--case_mode-1",
+    );
+    assert.ok(receipt, JSON.stringify(result.browser?.previewMatrixReceipt));
+    assert.equal(receipt.captured, false);
+    assert.equal(receipt.attempts.length, GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS);
+    assert.ok(receipt.attempts.every((attempt) => attempt.status === 1));
+    assert.ok(
+      receipt.attempts.every((attempt) =>
+        /simulated persistent Edge EBUSY/.test(attempt.detail ?? ""),
+      ),
+    );
+    assert.ok(
+      receipt.attempts.every((attempt) =>
+        !/C:\\Users\\agent|file:\/\/\/C:\/Users/i.test(attempt.detail ?? ""),
+      ),
+      JSON.stringify(receipt),
+    );
+    assert.ok(
+      receipt.attempts.every((attempt) => /<path>|<file-path>/.test(attempt.detail ?? "")),
+      JSON.stringify(receipt),
+    );
+    assert.deepEqual(retryDelays, [125, 250]);
+    assert.equal(failedCellProfiles.length, GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS);
+    assert.equal(new Set(failedCellProfiles).size, GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS);
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
   }

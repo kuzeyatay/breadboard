@@ -97,6 +97,44 @@ if (colpaliMode !== "disabled" && !colpaliEnabled) {
   );
 }
 
+// Local text humanizer ("Rewrite naturally" and the /humanize skill). Optional
+// and never blocking: without it the action and the skill both report that the
+// rewriter is unavailable, and nothing else changes. Its Python environment
+// carries PyTorch and is provisioned separately by `npm run setup:humanizer`,
+// so a checkout that has not run that step simply does not start it.
+const humanizerMode = process.env.HUMANIZER_MODE?.trim().toLowerCase() || "local";
+const humanizerPort = /^\d+$/.test(process.env.BREADBOARD_HUMANIZER_PORT ?? "")
+  ? process.env.BREADBOARD_HUMANIZER_PORT
+  : "7735";
+const humanizerServiceUrl =
+  process.env.HUMANIZER_SERVICE_URL || `http://127.0.0.1:${humanizerPort}`;
+const humanizerPythonBinary = path.join(
+  repoRoot,
+  ".runtime",
+  "humanizer-venv",
+  process.platform === "win32" ? "Scripts" : "bin",
+  process.platform === "win32" ? "python.exe" : "python",
+);
+const humanizerProvisioned =
+  humanizerMode !== "disabled" && existsSync(humanizerPythonBinary);
+const humanizerSecret = humanizerProvisioned
+  ? (
+      await import(
+        pathToFileURL(
+          path.join(repoRoot, "dashboard", "src", "lib", "humanizer", "config.ts"),
+        ).href
+      )
+    ).humanizerServiceSecret(process.env)
+  : null;
+const humanizerEnabled = humanizerProvisioned && humanizerSecret !== null;
+if (humanizerMode !== "disabled" && !humanizerEnabled) {
+  process.stdout.write(
+    humanizerProvisioned
+      ? '[stack] Humanizer cannot create its local service secret; "Rewrite naturally" and /humanize will report it as unavailable.\n'
+      : '[stack] Humanizer not provisioned (run `npm run setup:humanizer`); "Rewrite naturally" and /humanize will report it as unavailable.\n',
+  );
+}
+
 // CLIProxyAPI (subscription OAuth: Claude, Gemini, Kimi, Grok). Required by
 // default — it is how Breadboard reaches subscription models, so starting the
 // stack without it would silently drop every model the user actually pays for.
@@ -198,6 +236,13 @@ const runtimeEnv = {
   COLPALI_MODE: colpaliEnabled ? "auto" : "disabled",
   BREADBOARD_COLPALI_PORT: colpaliPort,
   COLPALI_SERVICE_URL: colpaliServiceUrl,
+  // Local rewriting. `disabled` when the environment was never provisioned, so
+  // the status route answers immediately instead of waiting on a connection
+  // refusal. No secret here either: dashboard/src/lib/humanizer/config.ts
+  // resolves the same file-backed one the service launcher reads.
+  HUMANIZER_MODE: humanizerEnabled ? "local" : "disabled",
+  BREADBOARD_HUMANIZER_PORT: humanizerPort,
+  HUMANIZER_SERVICE_URL: humanizerServiceUrl,
   // Subscription proxy. ChatMock reads CLIPROXY_* as the `cliproxy` provider's
   // endpoint and bearer, so subscription models are reachable as cliproxy/<model>.
   CLIPROXY_MODE: cliproxyMode,
@@ -303,6 +348,28 @@ async function main() {
     startService("colpali", process.execPath, [
       path.join(repoRoot, "scripts", "start-colpali.mjs"),
     ]);
+  }
+
+  // The humanizer preloads an installed checkpoint before opening its socket.
+  // Waiting for that socket makes model warming part of the stack startup
+  // sequence. Missing weights remain an optional health state and do not stop
+  // Breadboard from starting.
+  if (humanizerEnabled) {
+    startService("humanizer", process.execPath, [
+      path.join(repoRoot, "scripts", "start-humanizer.mjs"),
+    ]);
+    try {
+      await waitFor(
+        `${humanizerServiceUrl}/health`,
+        { headers: { Authorization: `Bearer ${humanizerSecret}` } },
+        180_000,
+      );
+      process.stdout.write("[stack] Humanizer startup preload complete\n");
+    } catch (error) {
+      process.stderr.write(
+        `[stack] Humanizer did not finish startup; rewriting stays unavailable while the rest of Breadboard starts: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
   }
 
   // GBrain adapter starts before Hermes so knowledge tools are ready when a

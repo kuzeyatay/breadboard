@@ -46,6 +46,7 @@ export type GeographicAsk =
   | "distance"
   | "travel_time"
   | "route"
+  | "recommendation"
   | "proximity"
   | "hours"
   | "existence"
@@ -75,6 +76,11 @@ const ASK_PATTERNS: { ask: GeographicAsk; pattern: RegExp }[] = [
     ask: "route",
     pattern:
       /\b(directions?|route|how do i get|how can i get|take me to|navigate|get me to|drive to|walk to|cycle to|yol tarifi|nasil giderim|goturur musun)\b/,
+  },
+  {
+    ask: "recommendation",
+    pattern:
+      /\b(?:(?:recommend|suggest|find)\w*|best|top|good|great|interesting|unusual|where should (?:i|we)|what should (?:i|we)|things? to do|places? to (?:visit|eat|stay|go)|what to do|worth (?:visiting|trying)|oner\w*|tavsiye\w*|en iyi|ilginc|degisik|guzel|gezilecek|ne yap\w*|nereye)\b.{0,70}\b(?:places?|venues?|restaurants?|cafes?|coffee shops?|bars?|museums?|galleries|exhibitions?|events?|concerts?|shows?|activities|experiences?|attractions?|hotels?|shops?|stores?|mekan\w*|yer\w*|restoran\w*|kafe\w*|kahveci\w*|bar\w*|muze\w*|sergi\w*|etkinlik\w*|konser\w*|aktivite\w*|deneyim\w*|otel\w*|magaza\w*)\b|\b(?:places?|venues?|restaurants?|cafes?|bars?|museums?|activities|attractions|hotels?|mekan\w*|yer\w*|restoran\w*|kafe\w*|bar\w*|muze\w*|aktivite\w*|otel\w*)\b.{0,70}\b(?:recommend|suggest|best|top|oner\w*|tavsiye\w*|en iyi|guzel|ilginc|degisik)\b/,
   },
   {
     ask: "proximity",
@@ -116,6 +122,14 @@ const DEICTIC =
  * answered from POI data rather than from a chain the model happens to know.
  */
 const IMPLICIT_ANCHOR = /\b(nearest|closest|near me|near us|around here|nearby)\b/;
+
+/**
+ * A short refinement of the previous geographic request. These phrases do not
+ * name the venue category again, but abandoning the map here is exactly how
+ * "not too far, no farther than Galataport" turns into an invented shortlist.
+ */
+const GEOGRAPHIC_FOLLOW_UP =
+  /\b(?:another|something else|closer|farther|further|not too far|no farther than|no further than|within|up to|at most|by car|on foot|walking|driving|cycling|baska|daha yakin|cok uzak olmasin|uzak olmasin|en fazla|kadar|yuruyerek|arabayla|bisikletle)\b/;
 
 /** Two or more capitalised words in a row, or one capitalised non-sentence-initial word. */
 const PROPER_NOUN = /(?:^|[^.!?]\s)([\p{Lu}][\p{L}\p{M}'’-]+(?:\s+[\p{Lu}][\p{L}\p{M}'’-]+)+)/u;
@@ -186,9 +200,16 @@ export function requiresGeographicGrounding(
     return { required: false, asks: [], reason: "fictional or hypothetical framing" };
   }
 
-  const asks = ASK_PATTERNS.filter(({ pattern }) => pattern.test(folded)).map(
+  let asks = ASK_PATTERNS.filter(({ pattern }) => pattern.test(folded)).map(
     ({ ask }) => ask,
   );
+  if (!asks.length && GEOGRAPHIC_FOLLOW_UP.test(folded)) {
+    const inherited = [...(options.priorRequests ?? [])]
+      .reverse()
+      .map((prior) => requiresGeographicGrounding(prior))
+      .find((assessment) => assessment.required);
+    if (inherited) asks = inherited.asks;
+  }
   if (!asks.length) {
     return { required: false, asks: [], reason: "no geographic intent" };
   }
@@ -200,6 +221,7 @@ export function requiresGeographicGrounding(
     hasDeictic ||
     hasProperNoun ||
     hasSpatialPhrase ||
+    asks.includes("recommendation") ||
     options.structuredPlaceAvailable === true;
 
   // A question about software that happens to use spatial words is not a
@@ -230,9 +252,11 @@ export function requiresGeographicGrounding(
     ? "a deictic reference"
     : hasProperNoun
       ? "a named place"
-      : hasSpatialPhrase
+    : hasSpatialPhrase
         ? "a spatial phrase"
-        : "a place in Breadboard's geographic state";
+        : asks.includes("recommendation")
+          ? "a requested real-world place recommendation"
+          : "a place in Breadboard's geographic state";
   return {
     required: true,
     asks,
@@ -266,7 +290,16 @@ export function requiresGeographicGroundingInContext(
 const GEOGRAPHIC_CLAIMS: { pattern: RegExp; claim: string }[] = [
   {
     pattern:
-      /\b\d+(?:[.,]\d+)?\s?(?:km|kilometres?|kilometers?|miles?|metres?|meters?|m)\b[^.\n]{0,60}\b(?:away|from|to|walk\w*|driv\w*|cycl\w*|apart|on foot|by car|by bike|journey|trip)\b/i,
+      /\b\d+(?:[.,]\d+)?\s?(?:km|kilometres?|kilometers?|miles?|metres?|meters?)\b[^.\n]{0,60}\b(?:away|from|to|walk\w*|driv\w*|cycl\w*|apart|on foot|by car|by bike|journey|trip)\b/i,
+    claim: "Distance claim has no successful map-service result behind it.",
+  },
+  {
+    // A bare "m" is only a metre in lowercase and only when it is not a
+    // magnitude suffix on money. Case-insensitively, this alternative used to
+    // read "$403M to $935M" as four hundred and three metres, and flagged a
+    // report about robotics funding for making an unsourced distance claim.
+    pattern:
+      /(?<![$€£¥])\b\d+(?:[.,]\d+)?\s?m\b[^.\n]{0,60}\b(?:away|from|to|walk\w*|driv\w*|cycl\w*|apart|on foot|by car|by bike|journey|trip)\b/,
     claim: "Distance claim has no successful map-service result behind it.",
   },
   {
@@ -351,6 +384,12 @@ export function renderGeographicGroundingDirective(
     `Breadboard classified this request as needing verified map data (${assessment.reason}).`,
     "Use the map tools before making any factual geographic claim in your answer.",
     "Resolve every named place with map_search and carry its placeId; do not pass names or coordinates to map_route or map_nearby.",
+    ...(assessment.asks.includes("recommendation")
+      ? ["For place recommendations, resolve the requested area and call map_nearby; a prose shortlist or map_search alone is not a recommendation result."]
+      : []),
+    ...(assessment.asks.includes("route")
+      ? ["For directions, call map_route with includeSteps: true so the native map can show the requested route and its instructions."]
+      : []),
     "Quote the distance, duration, address and opening hours exactly as the tools returned them. Do not convert, round further, or estimate.",
     "If a tool fails or returns nothing, say the information could not be verified from the available map data. Do not answer from memory.",
     "If several places match and Breadboard's geographic state does not resolve the ambiguity, ask the user which one they mean.",

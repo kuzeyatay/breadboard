@@ -11,6 +11,14 @@ const script = fs.readFileSync(path.join(startupRoot, "startup.ts"), "utf8");
 const themeScript = fs.readFileSync(path.join(startupRoot, "theme.js"), "utf8");
 const recoveryHtml = fs.readFileSync(path.join(startupRoot, "recovery.html"), "utf8");
 const recoveryCss = fs.readFileSync(path.join(startupRoot, "recovery.css"), "utf8");
+// The field itself: one stylesheet, shared by every screen that has to wait.
+const sceneCss = fs.readFileSync(path.join(startupRoot, "loading-scene.css"), "utf8");
+const loadingHtml = fs.readFileSync(path.join(startupRoot, "loading.html"), "utf8");
+const loadingCss = fs.readFileSync(path.join(startupRoot, "loading.css"), "utf8");
+const windowManager = fs.readFileSync(
+  path.join(desktopRoot, "src", "main", "window-manager.ts"),
+  "utf8",
+);
 
 test("desktop loading is a text-free kinetic scale field", () => {
   assert.match(html, /id="kinetic-field" class="kinetic-field"/);
@@ -20,9 +28,15 @@ test("desktop loading is a text-free kinetic scale field", () => {
   assert.match(html, /id="service-list" class="visually-hidden"/);
 
   assert.match(css, /--background: #faf7ef;/);
-  assert.match(css, /@keyframes scale-lift/);
-  assert.match(css, /\.kinetic-scale::after/);
-  assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(sceneCss, /@keyframes scale-lift/);
+  assert.match(sceneCss, /\.kinetic-scale::after/);
+  assert.match(sceneCss, /@media \(prefers-reduced-motion: reduce\)/);
+  // The scene is linked ahead of the page's own sheet: a page dresses the frame
+  // around the field, never the field itself.
+  assert.ok(
+    html.indexOf('<link rel="stylesheet" href="./loading-scene.css" />') <
+      html.indexOf('<link rel="stylesheet" href="./startup.css" />'),
+  );
 
   assert.match(script, /const rowSizes = \[5, 7, 8, 7, 5\]/);
   assert.match(script, /scale\.className = "kinetic-scale"/);
@@ -39,9 +53,9 @@ test("startup paints in the last dashboard theme before its stylesheet loads", (
   assert.match(themeScript, /theme === "dark" \|\| theme === "light"/);
   assert.match(themeScript, /document\.documentElement\.dataset\.theme = theme/);
   assert.match(css, /:root\[data-theme="dark"\]\s*\{/);
-  assert.match(css, /--background:\s*#18181a/);
-  assert.match(css, /--app-background:\s*#18181a/);
-  assert.match(css, /:root\[data-theme="dark"\] \.loader::before/);
+  assert.match(css, /--background:\s*#171916/);
+  assert.match(css, /--app-background:\s*#0b0c0a/);
+  assert.match(sceneCss, /:root\[data-theme="dark"\] \.loading-scene::before/);
   assert.match(css, /:root\[data-theme="dark"\] \.dissolve-bloom/);
 });
 
@@ -53,14 +67,25 @@ test("dashboard restarts show a themed recovery scene instead of a blank window"
     recoveryHtml.indexOf('<script src=".\/theme.js"><\/script>') <
       recoveryHtml.indexOf('<link rel="stylesheet" href=".\/recovery.css" \/>'),
   );
-  // The scene stands in the window frame rather than inside the app, so its
-  // field is paper — the same colour as the caption strip above it, in both
-  // themes. Painting it the app's own background puts a seam across the top.
+  // The strip the scene draws under the native window buttons is the caption's
+  // own colour (`BREADBOARD_TITLE_BAR`), so the corner Electron paints is not a
+  // second colour sitting on the scene. In light that is the paper the whole
+  // scene is painted in; in dark it is the caption strip's own black, carried
+  // down over the whole field so the strip leaves no seam across the top.
   assert.match(recoveryCss, /--background: #faf7ef;\s+--chrome: #faf7ef;/);
-  assert.match(recoveryCss, /--background: #20211f;\s+--chrome: #20211f;/);
+  assert.match(recoveryCss, /--background: #171916;\s+--chrome: #171916;/);
   assert.doesNotMatch(recoveryCss, /#e6f0e6/);
   assert.match(recoveryCss, /:root\[data-theme="dark"\]/);
-  assert.match(recoveryCss, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(sceneCss, /@media \(prefers-reduced-motion: reduce\)/);
+
+  // Reconnecting is a wait like any other, so it waits in the same field the
+  // app starts in — nothing of the old five-bar mark is left to drift from it.
+  assert.match(recoveryHtml, /<link rel="stylesheet" href="\.\/loading-scene\.css" \/>/);
+  assert.match(recoveryHtml, /class="kinetic-stage is-compact"/);
+  assert.equal(recoveryHtml.match(/class="kinetic-row"/g)?.length, 5);
+  assert.equal(recoveryHtml.match(/class="kinetic-scale"/g)?.length, 32);
+  assert.doesNotMatch(recoveryHtml, /class="mark"/);
+  assert.doesNotMatch(recoveryCss, /@keyframes leaf-rise/);
 
   const copyStatic = fs.readFileSync(
     path.join(desktopRoot, "scripts", "copy-static.mjs"),
@@ -68,6 +93,9 @@ test("dashboard restarts show a themed recovery scene instead of a blank window"
   );
   assert.match(copyStatic, /"recovery\.html"/);
   assert.match(copyStatic, /"recovery\.css"/);
+  assert.match(copyStatic, /"loading\.html"/);
+  assert.match(copyStatic, /"loading\.css"/);
+  assert.match(copyStatic, /"loading-scene\.css"/);
 });
 
 test("a healthy startup ends on a welcome that is dismissed by hand", () => {
@@ -182,4 +210,43 @@ test("the chime can be muted, and a muted screen waits on nothing to hear", () =
   // A shell that cannot answer leaves the chime on: muting is a choice somebody
   // made, and a failed lookup is not one.
   assert.match(script, /let introEnabled = true;/);
+});
+
+test("a window opening onto a page waits in the field the app starts in", () => {
+  // A local page can take seconds to answer the first time it is asked for, and
+  // until it does there is no document for a route's own loading state to be
+  // part of — the window is a flat sheet of its background colour. So the shell
+  // gives it a document: the same field, from a file that loads instantly.
+  assert.match(
+    windowManager,
+    /this\.installLocalPageRecovery\(window, targetUrl\);[\s\S]{0,200}loadThroughLoadingScene\(window, targetUrl\)/,
+  );
+  assert.match(
+    windowManager,
+    /await window\.loadFile\(this\.loadingHtmlPath\(\), \{[\s\S]{0,120}\}\);[\s\S]{0,240}await window\.loadURL\(targetUrl\)/,
+  );
+  // The scene is a courtesy, never a gate: a window whose scene will not load
+  // still goes on to the page it was opened for.
+  assert.match(
+    windowManager,
+    /catch \{[\s\S]{0,200}\}\s*if \(window\.isDestroyed\(\)\) return;/,
+  );
+  // ...and it is not a page anyone can be sent back to when a reload fails.
+  assert.match(windowManager, /excludedPaths = \[[\s\S]{0,160}this\.loadingHtmlPath\(\),/);
+
+  // The page itself is a picture and nothing else: no state, and no script
+  // beyond the one line that reads the theme out of the query.
+  assert.equal(loadingHtml.match(/<script/g)?.length, 1);
+  assert.match(loadingHtml, /<script src="\.\/theme\.js"><\/script>/);
+  assert.match(loadingHtml, /<link rel="stylesheet" href="\.\/loading-scene\.css" \/>/);
+  // The rows are written out, because there is nothing here to build them.
+  assert.equal(loadingHtml.match(/class="kinetic-row"/g)?.length, 5);
+  assert.equal(loadingHtml.match(/class="kinetic-scale"/g)?.length, 32);
+  assert.match(loadingHtml, /role="status" aria-live="polite"/);
+
+  // It stands on the same ground as the startup screen and the reconnect scene,
+  // caption strip included, so the three of them are one continuous surface.
+  assert.match(loadingCss, /--background: #faf7ef;\s+--chrome: #faf7ef;/);
+  assert.match(loadingCss, /--background: #171916;\s+--chrome: #171916;/);
+  assert.doesNotMatch(loadingCss, /@keyframes/);
 });

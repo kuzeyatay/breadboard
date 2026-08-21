@@ -4,6 +4,10 @@ import type { LearningUnitContract } from "./learning-unit-contract.ts";
 import type { ProposedLearningMap } from "./learn-utils.ts";
 import type { GardenVisualBudget, VisualDecisionOverride } from "./visual-necessity-types.ts";
 import {
+  GENERATED_VISUAL_CONTROL_ID_PATTERN,
+  GENERATED_VISUAL_RESERVED_CONTROL_IDS,
+} from "./generated-visual-capabilities.ts";
+import {
   analyzeVisualizationOpportunities,
   buildVisualizationPlan,
   canonicalVisualizationEvidenceProblems,
@@ -65,6 +69,7 @@ export function visualizationContractRepairSystemPrompt(): string {
     `Return STRICT JSON: ${VISUALIZATION_CONTRACT_REPAIR_RESPONSE_SCHEMA}.`,
     "Use only the evidence entries supplied for that same unit. Every non-empty quote must be an exact substring of the entry with that anchor.",
     "Author the complete non-empty learnerAction sequence plus every control id, input type, protocolRole, domain, and default; code will validate and project them verbatim. Source-semantic slider/number/select controls require exact evidence; numeric controls require finite min, max, step, and an in-range numeric default, while select controls require at least two source-named options and an exact declared default.",
+    `Every learner control id must match ${GENERATED_VISUAL_CONTROL_ID_PATTERN.source}; ${GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")} are runtime expression variables and are forbidden control ids.`,
     "Pure protocol controls must use kind protocol_action and type button or toggle, carry protocolRole commit_prediction, reveal_outcome, evaluate_prediction, or reset, use exactly empty evidence, omit unit/min/max/step/options, and default to 0 for button or false for toggle. Their model-authored UI labels never substantiate subject claims, observables, or insights.",
     "For test_prediction, author an evidence-grounded slider/number/select with protocolRole prediction_input, then a distinct commit_prediction protocol control, then a distinct reveal_outcome or evaluate_prediction protocol control in that exact array order. The outcome must not be revealed by default.",
     "visualIntent.id must be non-empty, visualIntent.visualType must be a lowercase identifier, visualIntent.learnerManipulates must exactly equal every control label in order, visualIntent.expectedInsight must exactly equal expectedInsight, and visualIntent.sourceAnchors must include every cited subject-evidence anchor and only supplied canonical anchors. The observable label and expected insight must each be directly supported by their cited quotes. Never invent subject variables, cases, claims, or units.",

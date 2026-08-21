@@ -49,6 +49,19 @@ export interface PersistentDesktopConfig {
   /** Per-install secret for the loopback ColPali service (never logged). */
   colpaliServiceSecret: string;
   /**
+   * Local text-humanization service mode. Additive; default local.
+   *
+   * `local` still does nothing on a machine that never ran
+   * `npm run setup:humanizer` — there is no interpreter to launch, and no
+   * checkpoint to load even if there were. There is deliberately no remote
+   * value: the feature is local rewriting or it is unavailable.
+   */
+  humanizerMode: "disabled" | "local";
+  /** Which device the humanizer asks for. `cuda` fails loudly when absent. */
+  humanizerDevice: "auto" | "cuda" | "cpu";
+  /** Per-install secret for the loopback humanizer service (never logged). */
+  humanizerServiceSecret: string;
+  /**
    * Subscription-OAuth proxy (CLIProxyAPI) mode. Additive; default optional.
    *
    * No secret fields here on purpose: the proxy's loopback bearer and
@@ -90,6 +103,8 @@ export interface LaunchPorts {
   /** CAD service loopback port. Only allocated when the CAD service is enabled. */
   cad?: number;
   colpali?: number;
+  /** Humanizer service loopback port. Only allocated when it is enabled. */
+  humanizer?: number;
   /** Subscription proxy loopback port. Only allocated when it is enabled. */
   cliproxy?: number;
   /** Voicebox local speech service. Optional so older test/runtime configs remain valid. */
@@ -129,6 +144,9 @@ export function defaultPersistentConfig(): PersistentDesktopConfig {
     cadServiceSecret: randomSecret(24),
     colpaliMode: "optional",
     colpaliServiceSecret: randomSecret(24),
+    humanizerMode: "local",
+    humanizerDevice: "auto",
+    humanizerServiceSecret: randomSecret(24),
     cliproxyMode: "optional",
     initialInviteCode: `BREAD${crypto.randomBytes(5).toString("hex").toUpperCase()}`,
     scriberrEnabled: true,
@@ -216,6 +234,18 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
       record["colpaliServiceSecret"].length > 0
         ? (record["colpaliServiceSecret"] as string)
         : randomSecret(24),
+    // Humanizer fields backfilled for configs written before the service
+    // existed. An install that explicitly turned it off keeps it off.
+    humanizerMode: record["humanizerMode"] === "disabled" ? "disabled" : "local",
+    humanizerDevice:
+      record["humanizerDevice"] === "cuda" || record["humanizerDevice"] === "cpu"
+        ? (record["humanizerDevice"] as "cuda" | "cpu")
+        : "auto",
+    humanizerServiceSecret:
+      typeof record["humanizerServiceSecret"] === "string" &&
+      record["humanizerServiceSecret"].length > 0
+        ? (record["humanizerServiceSecret"] as string)
+        : randomSecret(24),
     // Backfilled for configs written before the subscription proxy was
     // supervised. Existing installs gain it as `optional`, which is what makes
     // already-connected subscriptions start working without any user action.
@@ -292,6 +322,8 @@ export function redactedConfigSummary(config: DesktopRuntimeConfig): Record<stri
     uiTarsMode: config.persistent.uiTarsMode,
     cadMode: config.persistent.cadMode,
     colpaliMode: config.persistent.colpaliMode,
+    humanizerMode: config.persistent.humanizerMode,
+    humanizerDevice: config.persistent.humanizerDevice,
     cliproxyMode: config.persistent.cliproxyMode,
     scriberrEnabled: config.persistent.scriberrEnabled,
     migratedFrom: config.persistent.migratedFrom,
@@ -322,6 +354,7 @@ export function redactSecrets(line: string, config: PersistentDesktopConfig): st
     config.gbrainAdapterSecret,
     config.uiTarsAdapterSecret,
     config.cadServiceSecret,
+    config.humanizerServiceSecret,
     config.scriberrPassword,
   ]) {
     if (secret.length >= 8) out = out.split(secret).join("[redacted]");

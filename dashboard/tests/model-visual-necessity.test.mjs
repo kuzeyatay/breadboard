@@ -443,6 +443,33 @@ describe("model-authored visual necessity batch", () => {
     );
   });
 
+  test("planner control IDs allow z but reserve runtime x and t", () => {
+    const accepted = fixture();
+    accepted.response.decisions[0].interaction.controls[0].id = "z";
+    const acceptedResult = validateModelVisualNecessityBatch(accepted);
+    assert.equal(
+      acceptedResult.ok,
+      true,
+      acceptedResult.ok ? "" : JSON.stringify(acceptedResult.problems),
+    );
+    assert.equal(acceptedResult.plan.interactionDrafts.U24.controls[0].id, "z");
+    const prompt = buildModelVisualNecessityPrompt(accepted.packet);
+    assert.match(prompt.system, /control id must match \^\[a-z\]\[a-z0-9_\]\{0,79\}\$/i);
+    assert.match(prompt.system, /x, t are runtime expression variables and are forbidden control ids/i);
+
+    for (const reservedId of ["x", "t"]) {
+      const rejected = fixture();
+      rejected.response.decisions[0].interaction.controls[0].id = reservedId;
+      const rejectedResult = validateModelVisualNecessityBatch(rejected);
+      assert.equal(rejectedResult.ok, false, `${reservedId} planner control was accepted`);
+      assert.equal(
+        rejectedResult.problems.some((problem) =>
+          /reserved by the generated visual runtime/i.test(problem.message)),
+        true,
+      );
+    }
+  });
+
   test("fails closed when the model omits any learning unit", () => {
     const { packet, learningUnits, response } = fixture();
     response.decisions.pop();

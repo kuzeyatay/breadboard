@@ -107,6 +107,35 @@ mark.bb-hl {
   }
 }
 
+.bb-highlight-ask {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 1.9rem;
+  padding: 0 0.5rem;
+  border: 0;
+  border-radius: 0.45rem;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 0.82rem;
+  line-height: 1;
+  cursor: pointer;
+
+  &[hidden] {
+    display: none;
+  }
+
+  &:hover,
+  &:focus-visible {
+    background: var(--bb-menu-hover);
+  }
+
+  svg {
+    display: block;
+  }
+}
+
 .bb-highlight-copy {
   .bb-highlight-icon-done {
     display: none;

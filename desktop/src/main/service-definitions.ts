@@ -204,6 +204,56 @@ export function resolveColpaliPython(paths: ResolvedPaths): string | null {
     : null;
 }
 
+/** Server-only humanizer endpoint. Never published to the renderer. */
+export function humanizerServiceUrl(config: DesktopRuntimeConfig): string {
+  return `http://127.0.0.1:${config.ports.humanizer ?? 7735}`;
+}
+
+/**
+ * Resolve the humanizer service's interpreter.
+ *
+ * Its own environment for the same reasons ColPali's is: torch publishes no
+ * wheels for this repository's default Python, so `npm run setup:humanizer`
+ * pins 3.13. Returning null is the ordinary case — the environment is a
+ * multi-gigabyte opt-in, and without it "Rewrite naturally" reports that it is
+ * unavailable rather than reaching for a model somewhere else.
+ */
+export function resolveHumanizerPython(paths: ResolvedPaths): string | null {
+  const executable = process.platform === "win32" ? "python.exe" : "python";
+  const scripts = process.platform === "win32" ? "Scripts" : "bin";
+  const override = process.env["HUMANIZER_PYTHON"]?.trim();
+  const candidates = [
+    override,
+    path.join(paths.runtimesDir, "humanizer-python", scripts, executable),
+    path.join(paths.runtimesDir, "humanizer-python", executable),
+    path.join(paths.appRoot, ".runtime", "humanizer-venv", scripts, executable),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const python = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!python) return null;
+  return fs.existsSync(
+    path.join(paths.appRoot, "humanizer-service", "breadboard_humanizer", "__main__.py"),
+  )
+    ? python
+    : null;
+}
+
+/**
+ * Resolve the humanizer's mutable state so setup and every dev launcher use
+ * the same downloaded checkpoint. Installed builds keep it in Electron's
+ * persistent user-data tree; development uses the documented ~/.breadboard
+ * location shared by setup-humanizer.mjs and start-humanizer.mjs.
+ */
+export function resolveHumanizerHome(
+  paths: ResolvedPaths,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configured = env["BREADBOARD_HUMANIZER_HOME"]?.trim();
+  if (configured) return path.resolve(configured);
+  return paths.mode === "dev"
+    ? path.join(os.homedir(), ".breadboard", "humanizer")
+    : path.join(paths.runtimeDir, "humanizer");
+}
+
 export function resolveCadPython(paths: ResolvedPaths): string | null {
   const executable = process.platform === "win32" ? "python.exe" : "python";
   const scripts = process.platform === "win32" ? "Scripts" : "bin";
@@ -465,6 +515,14 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   // The vectors are Breadboard's state, not the user's documents, so they live
   // under the desktop data dir rather than beside the checkout.
   const colpaliHome = path.join(paths.runtimeDir, "colpali");
+  const humanizerPython = resolveHumanizerPython(paths);
+  const humanizerEnabled = persistent.humanizerMode !== "disabled" && humanizerPython !== null;
+  const humanizerUrl = humanizerServiceUrl(config);
+  // Under mutable user data, never resources. In dev this is the same home the
+  // setup and standalone launch scripts use; installed builds use Electron's
+  // persistent data tree.
+  const humanizerHome = resolveHumanizerHome(paths);
+  const humanizerModelCache = path.join(humanizerHome, "models");
 
   const chatmock: DesktopServiceDefinition = {
     id: "chatmock",
@@ -919,6 +977,19 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
             BREADBOARD_COLPALI_HOME: colpaliHome,
           }
         : {}),
+      // --- Local text humanizer (loopback service; only when present) ---
+      // `disabled` when there is no interpreter, so the dashboard reports
+      // "unavailable" immediately instead of timing out once per rewrite.
+      HUMANIZER_MODE: humanizerEnabled ? "local" : "disabled",
+      ...(humanizerEnabled
+        ? {
+            HUMANIZER_SERVICE_URL: humanizerUrl,
+            HUMANIZER_SERVICE_SECRET: persistent.humanizerServiceSecret,
+            BREADBOARD_HUMANIZER_PORT: String(config.ports.humanizer ?? 7735),
+            BREADBOARD_HUMANIZER_HOME: humanizerHome,
+            BREADBOARD_HUMANIZER_DEVICE: persistent.humanizerDevice,
+          }
+        : {}),
       ...(cadEnabled
         ? {
             CAD_SERVICE_URL: cadUrl,
@@ -1096,6 +1167,61 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       }
     : null;
 
+  const humanizer: DesktopServiceDefinition | null = humanizerEnabled
+    ? {
+        id: "humanizer",
+        displayName: "Local rewriting (humanizer)",
+        // Optional means a failed or absent model cannot fail Breadboard. When
+        // installed, however, it participates in the startup sequence so the
+        // first rewrite does not discover a cold checkpoint.
+        required: false,
+        command: humanizerPython!,
+        args: [
+          "-m",
+          "breadboard_humanizer",
+          "serve",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          String(config.ports.humanizer ?? 7735),
+          "--preload",
+        ],
+        cwd: path.join(paths.appRoot, "humanizer-service"),
+        env: {
+          ...shared,
+          PYTHONUNBUFFERED: "1",
+          PYTHONDONTWRITEBYTECODE: "1",
+          // Secret injected via env (never argv) so it cannot leak in process
+          // listings.
+          BREADBOARD_HUMANIZER_SECRET: persistent.humanizerServiceSecret,
+          BREADBOARD_HUMANIZER_PORT: String(config.ports.humanizer ?? 7735),
+          BREADBOARD_HUMANIZER_HOME: humanizerHome,
+          BREADBOARD_HUMANIZER_DEVICE: persistent.humanizerDevice,
+          // The checkpoint is a user download. HF_HOME points the cache at
+          // Breadboard's mutable data directory so it is never written into
+          // application resources and survives an update.
+          HF_HOME: humanizerModelCache,
+          HF_HUB_DISABLE_TELEMETRY: "1",
+          DISABLE_TELEMETRY: "1",
+          TRANSFORMERS_NO_ADVISORY_WARNINGS: "1",
+        },
+        // --preload opens the socket only after it has attempted to load the
+        // installed checkpoint. TCP readiness therefore means startup warming
+        // is complete, while a missing checkpoint still binds and reports its
+        // precise state through authenticated /health.
+        healthCheck: {
+          type: "tcp",
+          host: "127.0.0.1",
+          port: config.ports.humanizer ?? 7735,
+          timeoutMs: 2_000,
+          intervalMs: 500,
+        },
+        startupTimeoutMs: 180_000,
+        gracefulShutdownMs: 8_000,
+        restartPolicy: "on-failure",
+      }
+    : null;
+
   const cliproxy: DesktopServiceDefinition = {
     id: "cliproxy",
     displayName: "Subscriptions (model proxy)",
@@ -1139,6 +1265,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   if (uiTarsEnabled) definitions.push(uiTars);
   if (cad) definitions.push(cad);
   if (colpali) definitions.push(colpali);
+  if (humanizer) definitions.push(humanizer);
   if (voicebox) definitions.push(voicebox);
   definitions.push(quartz, dashboard);
 

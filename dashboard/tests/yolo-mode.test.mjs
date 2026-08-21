@@ -36,9 +36,13 @@ const hermesAdapter = source(
 );
 
 test("the Intelligence menu contains an accessible YOLO mode switch", () => {
-  const start = composer.indexOf('role="switch"');
-  const block = composer.slice(start, start + 2_000);
+  // Anchored on the YOLO switch rather than on the first switch in the menu:
+  // switches keep being added above it, and a fixed window from the top of the
+  // stack measures how many neighbours it has rather than whether it is right.
+  const start = composer.indexOf("aria-checked={yoloMode}");
   assert.ok(start >= 0);
+  const block = composer.slice(Math.max(0, start - 200), start + 2_000);
+  assert.match(block, /role="switch"/);
   assert.match(block, /aria-checked=\{yoloMode\}/);
   assert.match(block, /YOLO mode/);
   assert.match(block, /Bypass permission prompts/);

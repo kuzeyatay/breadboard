@@ -252,6 +252,8 @@ export interface CliproxyAccount {
   file: string;
   /** Who the credential belongs to — usually the email CLIProxyAPI named it after. */
   account: string;
+  /** Credential-file time, used only to keep siblings in connection order. */
+  connectedAt: string | null;
 }
 
 /**
@@ -278,13 +280,30 @@ export function readCliproxyAccounts(): CliproxyAccount[] {
 
     const prefix = spec.filePrefixes.find((candidate) => file.startsWith(candidate)) ?? "";
     const identity = file.slice(prefix.length).replace(/\.json$/i, "").trim();
+    let connectedAt: string | null = null;
+    try {
+      const stat = fs.statSync(path.join(cliproxyAuthDir(), file));
+      const timestamps = [stat.birthtimeMs, stat.mtimeMs].filter(
+        (timestamp) => Number.isFinite(timestamp) && timestamp > 0,
+      );
+      connectedAt = timestamps.length ? new Date(Math.min(...timestamps)).toISOString() : null;
+    } catch {
+      // The proxy may rotate a credential between readdir and stat. It remains
+      // visible in this response and sorts after siblings with known times.
+    }
     accounts.push({
       provider: spec.id,
       label: spec.label,
       vendorLabel: spec.vendorLabel,
       file,
       account: identity || "Signed in",
+      connectedAt,
     });
   }
-  return accounts;
+  return accounts.sort((left, right) => {
+    if (left.connectedAt === right.connectedAt) return left.file.localeCompare(right.file);
+    if (left.connectedAt === null) return 1;
+    if (right.connectedAt === null) return -1;
+    return left.connectedAt.localeCompare(right.connectedAt);
+  });
 }

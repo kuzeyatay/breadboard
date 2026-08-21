@@ -9,6 +9,7 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "paper_trader",
   "deer_flow",
   "deep_research",
+  "max_research",
   "get_doc",
   "meeting_notes",
   "deep_tutor",
@@ -33,6 +34,7 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "video_use",
   "legal_agent",
   "wardrobe",
+  "matraix",
 ] as const;
 
 export type ExternalAgentRunKind = (typeof EXTERNAL_AGENT_RUN_KINDS)[number];
@@ -50,6 +52,7 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   paper_trader: "Paper Trader",
   deer_flow: "DeerFlow",
   deep_research: "Deep Research",
+  max_research: "Max Research",
   get_doc: "Get Doc",
   meeting_notes: "Meeting Notes",
   deep_tutor: "DeepTutor",
@@ -74,6 +77,7 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   video_use: "Video Use",
   legal_agent: "Legal Agent",
   wardrobe: "Wardrobe",
+  matraix: "MatrAIx",
 } as const satisfies Record<ExternalAgentRunKind, string>;
 
 export function externalAgentDisplayName(kind: ExternalAgentRunKind): string {
@@ -97,6 +101,7 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   paper_trader: "paper-trader",
   deer_flow: "deer-flow",
   deep_research: "deep-research",
+  max_research: "max-research",
   get_doc: "get-doc",
   meeting_notes: "meeting-notes",
   deep_tutor: "deep-tutor",
@@ -121,6 +126,7 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   video_use: "video-use",
   legal_agent: "legal",
   wardrobe: "wardrobe",
+  matraix: "matraix",
 } as const satisfies Record<ExternalAgentRunKind, string>;
 
 /**
@@ -379,6 +385,12 @@ export type ExternalAgentRun =
       task: string;
     }
   | {
+      kind: "max_research";
+      runId: string;
+      /** The one question the five participants were commissioned against. */
+      query: string;
+    }
+  | {
       kind: "deep_research";
       runId: string;
       query: string;
@@ -528,6 +540,12 @@ export type ExternalAgentRun =
       task: string;
     }
   | {
+      kind: "matraix";
+      runId: string;
+      /** The study brief, including any cohort flags typed with it. */
+      brief: string;
+    }
+  | {
       kind: "codex";
       runId: string;
       task: string;
@@ -630,6 +648,12 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     const task = boundedString(candidate.task, MAX_TASK_LENGTH);
     if (!task) return null;
     return { kind: "deer_flow", runId, task };
+  }
+
+  if (candidate.kind === "max_research") {
+    const query = boundedString(candidate.query, MAX_TASK_LENGTH);
+    if (!query) return null;
+    return { kind: "max_research", runId, query };
   }
 
   if (candidate.kind === "deep_research") {
@@ -786,6 +810,12 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     return { kind: "wardrobe", runId, task };
   }
 
+  if (candidate.kind === "matraix") {
+    const brief = boundedString(candidate.brief, MAX_TASK_LENGTH);
+    if (!brief) return null;
+    return { kind: "matraix", runId, brief };
+  }
+
   if (
     candidate.kind === "codex" ||
     candidate.kind === "opencode" ||
@@ -819,6 +849,7 @@ interface ExternalAgentRunFields {
   paperTraderRun?: { runId: string } | null;
   deerFlowRun?: { runId: string } | null;
   deepResearchRun?: { runId: string } | null;
+  maxResearchRun?: { runId: string } | null;
   getDocRun?: { runId: string } | null;
   meetingNotesRun?: { runId: string } | null;
   deepTutorRun?: { runId: string } | null;
@@ -840,6 +871,7 @@ interface ExternalAgentRunFields {
   videoUseRun?: { runId: string } | null;
   legalRun?: { runId: string } | null;
   wardrobeRun?: { runId: string } | null;
+  matraixRun?: { runId: string } | null;
   openCodeRun?: { runId: string } | null;
   codexRun?: { runId: string } | null;
   rufloRun?: { runId: string } | null;
@@ -869,6 +901,7 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   paper_trader: "paperTraderRun",
   deer_flow: "deerFlowRun",
   deep_research: "deepResearchRun",
+  max_research: "maxResearchRun",
   get_doc: "getDocRun",
   meeting_notes: "meetingNotesRun",
   deep_tutor: "deepTutorRun",
@@ -893,6 +926,7 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   video_use: "videoUseRun",
   legal_agent: "legalRun",
   wardrobe: "wardrobeRun",
+  matraix: "matraixRun",
 } as const satisfies Record<ExternalAgentRunKind, keyof ExternalAgentRunFields>;
 
 const EXTERNAL_AGENT_RUN_FIELDS = EXTERNAL_AGENT_RUN_KINDS.map(
@@ -963,6 +997,7 @@ export function externalAgentMessageFields(
   paperTraderRun?: { runId: string; task: string };
   deerFlowRun?: { runId: string; task: string };
   deepResearchRun?: { runId: string; query: string; output: "report" | "answer" };
+  maxResearchRun?: { runId: string; query: string };
   getDocRun?: { runId: string; query: string };
   meetingNotesRun?: { runId: string; task: string };
   deepTutorRun?: { runId: string; task: string; capability: string };
@@ -984,6 +1019,7 @@ export function externalAgentMessageFields(
   videoUseRun?: { runId: string; task: string; quiet?: boolean };
   legalRun?: { runId: string; task: string };
   wardrobeRun?: { runId: string; task: string };
+  matraixRun?: { runId: string; brief: string };
   openCodeRun?: {
     runId: string;
     task: string;
@@ -1107,6 +1143,12 @@ export function externalAgentMessageFields(
   if (run.kind === "deer_flow") {
     return {
       deerFlowRun: { runId: run.runId, task: run.task },
+      ...outcomeField,
+    };
+  }
+  if (run.kind === "max_research") {
+    return {
+      maxResearchRun: { runId: run.runId, query: run.query },
       ...outcomeField,
     };
   }
@@ -1250,6 +1292,12 @@ export function externalAgentMessageFields(
   if (run.kind === "wardrobe") {
     return {
       wardrobeRun: { runId: run.runId, task: run.task },
+      ...outcomeField,
+    };
+  }
+  if (run.kind === "matraix") {
+    return {
+      matraixRun: { runId: run.runId, brief: run.brief },
       ...outcomeField,
     };
   }

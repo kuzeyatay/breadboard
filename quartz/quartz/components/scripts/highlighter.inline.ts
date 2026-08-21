@@ -433,6 +433,7 @@ document.addEventListener("nav", () => {
   const trigger = container.querySelector<HTMLElement>('[data-highlight-action="palette"]')!
   const triggerSwatch = trigger.querySelector<HTMLElement>(".bb-highlight-swatch")!
   const copyButton = container.querySelector<HTMLElement>('[data-highlight-action="copy"]')!
+  const askButton = container.querySelector<HTMLButtonElement>('[data-highlight-action="ask"]')!
   const eraseButton = container.querySelector<HTMLElement>(
     '.bb-highlight-menu [data-highlight-action="erase"]',
   )!
@@ -443,6 +444,11 @@ document.addEventListener("nav", () => {
   // Escape means "leave me alone with this selection": without it the next
   // keyup would put the menu straight back.
   let dismissed = false
+
+  // The Garden dashboard owns the one visible Assistant. A directly opened
+  // standalone Quartz page has no receiving composer, so do not offer an action
+  // that cannot complete there.
+  askButton.hidden = window.parent === window
 
   const syncColorUi = () => {
     triggerSwatch.dataset.hlColor = activeColor
@@ -528,6 +534,36 @@ document.addEventListener("nav", () => {
     finish()
   }
 
+  const askHere = () => {
+    const current = currentSpan()
+    if (!current) return
+    const text = current.map.text.slice(current.span.start, current.span.end).trim().slice(0, 2_000)
+    if (!text) return
+
+    // Asking is also a highlighting action. Keep the selected passage visibly
+    // anchored while focus moves into Assistant's composer.
+    highlights = addSpan(highlights, current.map.text, current.span, DEFAULT_HIGHLIGHT_COLOR)
+    writeStored(highlights)
+    finish()
+    if (window.parent !== window) {
+      window.parent.postMessage(
+        {
+          type: "second-brain:assistant-ask-here",
+          requestId: newId(),
+          text,
+          pageSlug: document.body.dataset.slug ?? window.location.pathname,
+        },
+        "*",
+      )
+    } else {
+      window.dispatchEvent(
+        new CustomEvent("breadboard:assistant-ask-here", {
+          detail: { text },
+        }),
+      )
+    }
+  }
+
   const eraseSelection = () => {
     const current = currentSpan()
     if (!current) return
@@ -569,6 +605,9 @@ document.addEventListener("nav", () => {
     }
 
     switch (target.dataset.highlightAction) {
+      case "ask":
+        askHere()
+        break
       case "apply":
         applyColor(activeColor)
         break

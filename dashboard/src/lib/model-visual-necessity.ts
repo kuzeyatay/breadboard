@@ -14,6 +14,10 @@ import type {
 } from "./visual-necessity-types.ts";
 import type { VisualizationInteractionGoal } from "./visualization-registry.ts";
 import {
+  GENERATED_VISUAL_CONTROL_ID_PATTERN,
+  GENERATED_VISUAL_RESERVED_CONTROL_IDS,
+} from "./generated-visual-capabilities.ts";
+import {
   parseVisualizationContractRepairResponse,
   VISUALIZATION_CONTRACT_CONTROL_SCHEMA,
   validateVisualizationContractUnitRepair,
@@ -388,6 +392,7 @@ export function modelVisualNecessitySystemPrompt(): string {
     "The request budget contains safety maximums, not quotas. Author visualBudget as your whole-garden plan, keep it within those maximums, and make its required/recommended/optional counts exactly match your decisions. Do not add interaction merely to fill a budget and do not omit a necessary interaction merely to create variety.",
     "For every required, recommended, or optional interaction, author the interactionGoal, uniqueConcept, whyStaticSourceFigureIsNotEnough, concrete learnerAction, at least one typed learner control, a learner-visible observable and its representation, an expected insight, and a garden-unique duplicateSignature.",
     "Every source-semantic slider, number, or select control must author its stable id, exact input type, complete domain/default, and exact source evidence. Select controls require at least two unique source-grounded options and an exact declared default. Pure UI protocol controls use kind protocol_action and type button or toggle, must carry exactly one protocolRole and empty evidence, and must not declare subject domains. Button defaults are 0 and toggle defaults are false.",
+    `Every learner control id must match ${GENERATED_VISUAL_CONTROL_ID_PATTERN.source}; ${GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")} are runtime expression variables and are forbidden control ids.`,
     "For test_prediction, author three ordered, distinct controls: an evidence-grounded slider/number/select with protocolRole prediction_input, then a protocol_action button/toggle with protocolRole commit_prediction, then a protocol_action button/toggle with protocolRole reveal_outcome or evaluate_prediction. The result must not be revealed by default. Never invent subject variables, cases, claims, or units; protocol labels are model-authored UI mechanics and never support subject claims.",
     "Grounding is literal for source-semantic controls: every meaningful normalized token in each slider/number/select label, each select option, the observable label, and the expected insight must occur in the exact quote text cited for that field. Exact source symbols and formulas are valid with identifier boundaries. Pure protocol_action button/toggle controls instead require exactly empty evidence; their model-authored UI labels express only interaction mechanics and never substantiate a subject claim, observable, or insight. Every non-empty quote must be an exact substring of canonical evidence at its anchor, and evidence.sourceAnchorIds must include every cited anchor.",
     "Use a non-interactive preferredMedium when a source figure, derivation, worked example, table, timeline, static diagram, or prose teaches the goal adequately.",
@@ -449,7 +454,7 @@ export const MODEL_VISUAL_NECESSITY_RESPONSE_CONTRACT = Object.freeze({
       whyStaticSourceFigureIsNotEnough: "source-grounded explanation",
       learnerAction: "specific learner action",
       controls: [{
-        id: "stable snake_case model-authored input id",
+        id: `stable lowercase snake_case model-authored input id matching ${GENERATED_VISUAL_CONTROL_ID_PATTERN.source}; never ${GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(" or ")}`,
         kind: "variable | select_case | process_position | protocol_action",
         label: "specific source-grounded input, or model-authored protocol action label",
         type: "slider | number | select | toggle | button",
@@ -1373,6 +1378,7 @@ export function buildModelVisualNecessityTargetedRepairPrompt(input: {
       "Copy unitId, pageId, learningGoal, evidence.unitRole, evidence.learningQuestion, evidence.concepts, and evidence.sourceAnchorIds only from that unit packet. Honor every supplied override and the whole-garden budget. When the reported defects are limited to interaction grounding, preserve the prior necessity and preferredMedium so the accepted whole-garden allocation remains coherent.",
       "Use only that unit's supplied canonical source evidence. Every non-empty evidence quote must be an exact substring of the text at the same anchor.",
       "Grounding is literal for source-semantic controls: every meaningful normalized token in each slider/number/select label and option, plus the observable and expected insight, must occur in its exact cited quote. Exact source symbols and formulas are valid with identifier boundaries. Pure protocol_action button/toggle controls require exactly empty evidence; their model-authored UI labels express only mechanics and cannot substantiate subject claims, observables, or insights. evidence.sourceAnchorIds must include every actually cited subject anchor.",
+      `Every learner control id must match ${GENERATED_VISUAL_CONTROL_ID_PATTERN.source}; ${GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")} are runtime expression variables and are forbidden control ids.`,
       "For every active interaction, author the complete interactionGoal, uniqueConcept, whyStaticSourceFigureIsNotEnough, learnerAction, controls, observable, expectedInsight, expectedInsightEvidence, and a duplicateSignature that does not reuse a reserved signature. Protocol actions must omit unit/min/max/step/options and default to button 0 or toggle false. For test_prediction, order distinct roles prediction_input, commit_prediction, then reveal_outcome or evaluate_prediction.",
       "For a non-interactive decision, use a non-interactive preferredMedium and omit interaction entirely. Never emit a partial patch, prose, renderer code, or a deterministic fallback.",
     ].join(" "),

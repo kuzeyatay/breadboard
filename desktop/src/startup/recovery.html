@@ -9,17 +9,62 @@
     <meta name="color-scheme" content="light dark" />
     <title>Reconnecting to Breadboard</title>
     <script src="./theme.js"></script>
+    <link rel="stylesheet" href="./loading-scene.css" />
     <link rel="stylesheet" href="./recovery.css" />
   </head>
   <body>
     <header class="desktop-titlebar" aria-label="Window controls"></header>
     <main class="recovery" aria-labelledby="recovery-title">
-      <div class="mark" aria-hidden="true">
-        <span></span>
-        <span></span>
-        <span></span>
-        <span></span>
-        <span></span>
+      <!-- The same field the app starts on, so a window coming back reads as
+           the same app it left. -->
+      <div class="recovery-field loading-scene" aria-hidden="true">
+        <div class="kinetic-stage is-compact">
+          <div class="stage-halo"></div>
+          <div class="kinetic-field">
+            <div class="kinetic-row">
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+            </div>
+            <div class="kinetic-row">
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+            </div>
+            <div class="kinetic-row">
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+            </div>
+            <div class="kinetic-row">
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+            </div>
+            <div class="kinetic-row">
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+            </div>
+          </div>
+        </div>
       </div>
       <section class="message">
         <h1 id="recovery-title">Reconnecting to your workspace</h1>

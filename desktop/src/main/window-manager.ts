@@ -6,13 +6,21 @@ import {
   isNavigationAllowed,
   type AllowedOrigins,
 } from "./security";
-import { mainWindowOptions, popupBackgroundColor } from "./window-options";
-import type { BreadboardWindowTheme } from "./window-options";
+import {
+  mainWindowOptions,
+  popupBackgroundColor,
+  titleBarForSurface,
+} from "./window-options";
+import type {
+  BreadboardWindowSurface,
+  BreadboardWindowTheme,
+} from "./window-options";
 
 export interface WindowManagerOptions {
   allowed: AllowedOrigins;
   startupHtmlPath: string;
   recoveryHtmlPath?: string;
+  loadingHtmlPath?: string;
   preloadPath: string;
   iconPath?: string;
   minimumStartupVisibleMs?: number;
@@ -216,6 +224,10 @@ export class WindowManager {
     BrowserWindow,
     LocalPageRecoveryState
   >();
+  private readonly windowSurfaces = new WeakMap<
+    BrowserWindow,
+    BreadboardWindowSurface
+  >();
 
   constructor(options: WindowManagerOptions) {
     this.options = options;
@@ -270,6 +282,7 @@ export class WindowManager {
     );
     hardenWindow(window, this.options.allowed, (url) => this.openPopupWindow(url));
     this.installWindowShortcuts(window);
+    this.installTitleBarOverlayUpkeep(window);
     return window;
   }
 
@@ -314,6 +327,57 @@ export class WindowManager {
     window.setIgnoreMouseEvents(false);
     window.setSkipTaskbar(false);
     window.setOpacity(1);
+    // Opacity is the last thing done to a parked window and the first thing
+    // that costs it its caption colour, so the strip is re-stated here.
+    this.applyTitleBarOverlay(window);
+  }
+
+  /**
+   * State Breadboard's colours on a window's native caption strip again.
+   *
+   * The Windows controls overlay is themed per window, and Windows drops that
+   * theme back to its own default on the transitions that rebuild the window
+   * frame — being shown, restored, leaving maximized or full screen, and being
+   * made transparent and opaque again, which is how a preloaded dashboard is
+   * revealed. Nothing reports that it happened. What is left is a pale grey
+   * rectangle in the corner the buttons sit in, over a page that has agreed on
+   * its colours everywhere else. The overlay cannot be read back, so this
+   * writes rather than compares; the call is cheap and idempotent.
+   */
+  private applyTitleBarOverlay(window: BrowserWindow): void {
+    if (process.platform !== "win32" || window.isDestroyed()) return;
+    // The surface a window last reported, so a full-screen one (voice mode) is
+    // repainted in its own chrome rather than dragged back to the app theme.
+    const surface = this.windowSurfaces.get(window) ?? this.currentTheme;
+    try {
+      window.setTitleBarOverlay(titleBarForSurface(surface));
+    } catch {
+      // A window built without an overlay throws rather than ignoring this —
+      // its chrome belongs to the system, and is not Breadboard's to paint.
+    }
+  }
+
+  /** The surface a window is showing, as its renderer last reported it. */
+  rememberWindowSurface(window: BrowserWindow, surface: BreadboardWindowSurface): void {
+    this.windowSurfaces.set(window, surface);
+  }
+
+  private installTitleBarOverlayUpkeep(window: BrowserWindow): void {
+    if (process.platform !== "win32") return;
+    const restated = () => this.applyTitleBarOverlay(window);
+    window.on("show", restated);
+    window.on("restore", restated);
+    window.on("maximize", restated);
+    window.on("unmaximize", restated);
+    window.on("leave-full-screen", restated);
+  }
+
+  /** The scene a window waits in while the page it was opened for is built. */
+  private loadingHtmlPath(): string {
+    return (
+      this.options.loadingHtmlPath ??
+      path.join(path.dirname(this.options.startupHtmlPath), "loading.html")
+    );
   }
 
   private recoveryHtmlPath(): string {
@@ -337,6 +401,7 @@ export class WindowManager {
       const excludedPaths = [
         this.options.startupHtmlPath,
         this.recoveryHtmlPath(),
+        this.loadingHtmlPath(),
       ].map((file) => pathToFileURL(file).pathname);
       return !excludedPaths.includes(parsed.pathname);
     } catch {
@@ -724,14 +789,41 @@ export class WindowManager {
    */
   openPopupWindow(targetUrl: string): BrowserWindow {
     // A window opened for a page that paints its own palette should wait in
-    // that palette, not in Breadboard's — the wait is the first thing seen.
+    // that palette, not in Breadboard's — the sheet Chromium paints between two
+    // documents is the one thing the loading scene below cannot cover.
     const window = this.buildWindow(
       popupBackgroundColor(targetUrl, this.currentTheme),
     );
     this.installLocalPageRecovery(window, targetUrl);
     this.revealWhenReady(window);
-    void window.loadURL(targetUrl);
+    void this.loadThroughLoadingScene(window, targetUrl);
     return window;
+  }
+
+  /**
+   * Open a page behind the app's own loading scene.
+   *
+   * A local page can take seconds to answer the first time it is asked for —
+   * long enough that a window showing nothing but its background colour is what
+   * a person sees when they click. Nothing can be drawn into that gap from the
+   * page's side, because there is no document yet. So the window is given one:
+   * the same field the app starts on, painted from a local file that loads
+   * instantly, and Chromium holds it on screen until the real page has a frame
+   * of its own to replace it with.
+   */
+  private async loadThroughLoadingScene(
+    window: BrowserWindow,
+    targetUrl: string,
+  ): Promise<void> {
+    try {
+      await window.loadFile(this.loadingHtmlPath(), {
+        query: { theme: this.currentTheme },
+      });
+    } catch {
+      // The scene is a courtesy. A window that cannot show it still opens.
+    }
+    if (window.isDestroyed()) return;
+    await window.loadURL(targetUrl).catch(() => undefined);
   }
 
   async showStartupScreen(): Promise<void> {
@@ -916,6 +1008,16 @@ export class WindowManager {
       this.discardDashboardPreload();
     }
     this.installLocalPageRecovery(window, dashboardUrl);
+    // A window that already has a page on screen — the startup screen, almost
+    // always — keeps showing it until the dashboard has painted. One that has
+    // nothing in it yet (the app reopened after its last window was closed)
+    // would be a flat sheet for the whole load, so it waits in the scene first.
+    if (!window.webContents.getURL()) {
+      await window
+        .loadFile(this.loadingHtmlPath(), { query: { theme: this.currentTheme } })
+        .catch(() => undefined);
+      if (window.isDestroyed()) return;
+    }
     await window.loadURL(dashboardUrl);
     this.startupShownAt = null;
   }

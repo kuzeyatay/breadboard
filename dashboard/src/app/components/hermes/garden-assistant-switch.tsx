@@ -5,6 +5,7 @@
 // launcher with a different identity.
 
 import GardenAssistant from "@/app/garden/garden-assistant";
+import type { QuartzAssistantSelectionRequest } from "@/lib/quartz-assistant-selection";
 
 interface ActiveMarkdown {
   cluster: string;
@@ -18,10 +19,11 @@ interface Props {
   activeClusterSlug: string | null;
   activeClusterName?: string;
   activeMarkdown?: ActiveMarkdown | null;
+  selectedTextRequest?: QuartzAssistantSelectionRequest | null;
   initialOpen?: boolean;
 }
 
 export default function GardenAssistantSwitch(props: Props) {
-  // Keep one stable Quartz AI entry point regardless of runtime-health changes.
+  // Keep one stable Assistant entry point regardless of runtime-health changes.
   return <GardenAssistant {...props} />;
 }

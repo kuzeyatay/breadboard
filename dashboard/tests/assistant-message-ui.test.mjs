@@ -185,6 +185,11 @@ test("evidence opens from the overflow menu without a standalone disclosure", ()
   const menuEnd = actions.indexOf("{evidenceOpen", menuStart);
   const overflowMenu = actions.slice(menuStart, menuEnd);
   assert.match(overflowMenu, /View evidence/);
+  assert.doesNotMatch(
+    overflowMenu,
+    /\{verification\s*\?\s*\(/,
+    "View evidence must be present even when no verification ledger was recorded",
+  );
   assert.match(overflowMenu, /Download Markdown/);
   assert.doesNotMatch(overflowMenu, /Copy response/);
   assert.doesNotMatch(overflowMenu, /Regenerate response/);

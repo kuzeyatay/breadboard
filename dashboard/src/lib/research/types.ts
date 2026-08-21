@@ -23,8 +23,8 @@ export type ResearchIntent =
   | "ambiguity_resolution";
 
 /**
- * The six factors the budget is derived from, each normalized to 0..1 so a
- * change to one of them cannot silently dominate the others.
+ * The factors the budget is derived from, each normalized to 0..1 so a change
+ * to one of them cannot silently dominate the others.
  */
 export interface ResearchFactors {
   /** How many distinct entities the answer is likely to be about. */
@@ -39,6 +39,17 @@ export interface ResearchFactors {
   completenessRequirement: number;
   /** How likely published sources are to disagree. */
   conflictLikelihood: number;
+  /**
+   * How much the question asks for a judgement without saying what the
+   * judgement is against.
+   *
+   * "Which framework is best", "is it worth it", "what has the highest return"
+   * are all answerable — but only once you say best *for whom*, worth it
+   * *against what alternative*, return *on whose money and over what horizon*.
+   * The reading is usually not stated, and an answer that silently picks one is
+   * right about a question nobody asked.
+   */
+  criterionAmbiguity: number;
 }
 
 /**
@@ -97,6 +108,12 @@ export interface ResearchPlan {
   highPriorityFields: string[];
   /** Enumerate first, or go straight to depth on a known subject. */
   requiresEnumeration: boolean;
+  /**
+   * The request asks which option is better without naming the basis. The
+   * answer owes the reader the reading it chose, and any other reading that
+   * would have changed the ranking.
+   */
+  criterionUnstated: boolean;
 }
 
 /** Where an observation came from, which decides how much it counts for. */
@@ -109,6 +126,17 @@ export type SourceClass =
   | "reputable_secondary"
   | "archive"
   | "social"
+  /**
+   * A commercial supplier's own marketing: product pages, ROI calculators,
+   * "buyer's guides" published by someone who sells the thing being bought.
+   *
+   * Kept separate from `official_entity` because the two are opposites
+   * depending on the claim. A seller is the best source for its own list price
+   * and the worst for what the market pays, and collapsing them is how a
+   * figure from a lead-generation page ends up quoted as an industry
+   * benchmark.
+   */
+  | "vendor_marketing"
   | "other";
 
 /**
@@ -176,6 +204,17 @@ export interface ResearchEvidence {
   observedAt: string;
   evidenceKind: EvidenceKind;
   confidence: Confidence;
+  /**
+   * The source stands to gain if this particular claim is believed: a seller
+   * quoting the payback period of what it sells, a company publishing its own
+   * case study, an organisation reporting its own impact.
+   *
+   * Orthogonal to source class on purpose. A reputable newspaper is
+   * disinterested about a merger and self-interested about its own
+   * circulation, and the discount has to follow the claim rather than the
+   * publisher.
+   */
+  selfInterested?: boolean;
   note?: string;
 }
 
@@ -194,6 +233,21 @@ export interface EntityRelationship {
   kind: EntityRelationKind;
   evidenceIds: string[];
 }
+
+/**
+ * How many independent sources stand behind a value.
+ *
+ * "Independent" means distinct hosts, not distinct URLs: three pages of the
+ * same site restating one number is one source, and counting it as three is
+ * the arithmetic that makes a press release look like a consensus.
+ */
+export type Corroboration =
+  /** One source said it and nothing else was found saying it. */
+  | "single_source"
+  /** Two or more independent sources agree. */
+  | "corroborated"
+  /** Sources disagree; the disagreement is reported rather than resolved. */
+  | "contested";
 
 export interface ConflictObservation {
   evidenceId: string;
@@ -281,6 +335,12 @@ export interface CoverageCell {
   field: string;
   status: CoverageCellStatus;
   evidenceCount: number;
+  /** How many independent sources back the value, when there is one. */
+  corroboration?: Corroboration;
+  /** Every source behind this value has a stake in it being believed. */
+  selfInterestedOnly?: boolean;
+  /** A volatile value whose newest source predates the staleness horizon. */
+  stale?: boolean;
 }
 
 export interface CoverageReport {
@@ -296,6 +356,17 @@ export interface CoverageReport {
   /** Cells on a high-priority field that are neither settled nor conflicting. */
   highPriorityOpen: number;
   conflictingCells: number;
+  /**
+   * Settled cells resting on one source, or on interested sources only, or on
+   * a figure older than the field's volatility allows.
+   *
+   * Reported rather than enforced. Chasing a second source for every cell
+   * would burn the budget on things nobody disputes; what the answer owes is
+   * disclosure, and it cannot disclose what nothing counted.
+   */
+  singleSourceCells: number;
+  selfInterestedCells: number;
+  staleCells: number;
   /** True when the ledger, not the model, says there is enough. */
   sufficient: boolean;
 }

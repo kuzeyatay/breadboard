@@ -25,8 +25,8 @@ These rules apply to every answer for the rest of the conversation, not only the
 next one. They do not expire after a few turns and they do not lapse when the
 subject changes. If it is unclear whether they still apply, they do.
 
-Turn them off when the reader says "stop direct mode" or "normal mode". Confirm in
-one line, then return to the default voice.
+Turn them off when the reader says "stop concise mode", the former "stop direct
+mode", or "normal mode". Confirm in one line, then return to the default voice.
 
 ## What ADHD changes about reading
 

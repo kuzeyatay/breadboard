@@ -7,6 +7,8 @@
   /* Command-token blue; kept lighter than the dashboard's #1e40af because this
      panel is a fixed dark theme and true dark blue is illegible on #1f2937. */
   --bb-ai-command: #6c9ef8;
+  --bb-ai-selection: #f4e7ad;
+  --bb-ai-selection-line: #d8c275;
 
   .breadboard-ai-toggle {
     position: fixed;
@@ -523,6 +525,54 @@
     gap: 0.55rem;
     padding: 0.75rem 0.9rem 0.9rem;
     border-top: 0;
+
+    .breadboard-ai-selection-context {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 0.55rem;
+      border: 1px solid var(--bb-ai-selection-line);
+      border-radius: 0.7rem;
+      background: var(--bb-ai-selection);
+      color: #25271f;
+      padding: 0.55rem 0.65rem;
+      font-size: 0.72rem;
+
+      &[hidden] {
+        display: none;
+      }
+
+      .breadboard-ai-selection-icon {
+        color: #596b4d;
+        font-size: 1rem;
+        line-height: 1;
+      }
+
+      strong {
+        display: block;
+        font-size: 0.72rem;
+      }
+
+      p {
+        display: -webkit-box;
+        margin: 0.15rem 0 0;
+        overflow: hidden;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-height: 1.4;
+      }
+
+      .breadboard-ai-selection-cancel {
+        padding: 0.05rem 0.25rem;
+        color: #5f604f;
+        font-size: 1rem;
+        line-height: 1;
+
+        &:hover {
+          background: rgba(37, 39, 31, 0.08);
+        }
+      }
+    }
 
     .breadboard-ai-composer-shell {
       display: flex;

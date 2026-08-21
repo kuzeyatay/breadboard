@@ -508,6 +508,49 @@ test("strict AST compiler emits only the fixed JSON envelope and deterministic t
   assert.equal(tests.passed, true, JSON.stringify(tests));
 });
 
+test("generated controls use the planner identifier grammar while runtime x and t stay reserved", () => {
+  const sourceWithOneCharacterControl = validSource.replaceAll(
+    'id: "gain"',
+    'id: "z"',
+  );
+  const opportunityFor = (id) => ({
+    requiredInputs: [{
+      id,
+      kind: "variable",
+      label: "gain",
+      type: "slider",
+      min: 0,
+      max: 3,
+      step: 0.1,
+      defaultValue: 1,
+    }],
+    requiredOutputs: [{
+      id: "coupled_state_propagation_under_intervention",
+      label: "coupled-state propagation under intervention",
+      representation: "chart",
+    }],
+  });
+
+  const accepted = compileGeneratedVisualization(
+    sourceWithOneCharacterControl,
+    opportunityFor("z"),
+  );
+  assert.equal(accepted.validation.valid, true, accepted.validation.errors.join("; "));
+  assert.deepEqual(accepted.definition.controls, opportunityFor("z").requiredInputs);
+
+  for (const reservedId of ["x", "t"]) {
+    const rejected = compileGeneratedVisualization(
+      sourceWithOneCharacterControl.replaceAll('id: "z"', `id: "${reservedId}"`),
+      opportunityFor(reservedId),
+    );
+    assert.equal(rejected.validation.valid, false, `${reservedId} control was accepted`);
+    assert.match(
+      rejected.validation.errors.join("; "),
+      new RegExp(`controls\\[0\\]\\.id is reserved by the generated visual runtime: ${reservedId}`, "i"),
+    );
+  }
+});
+
 test("generated numeric controls must preserve every model-authored contract field", () => {
   const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap([unit()]), learningUnits: [unit()] });
   const opportunity = plan.opportunities[0];
@@ -1014,6 +1057,111 @@ test("a deterministic runtime-test failure is recorded and repaired on the next 
     const attemptsRoot = path.join(gardenDir, ".breadboard", "visuals", opportunity.id, "attempts");
     const rejectionFiles = fs.readdirSync(attemptsRoot, { recursive: true }).filter((entry) => String(entry).endsWith("rejection.json"));
     assert.equal(rejectionFiles.length, 1);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("a rejected preview matrix retains its labelled capture receipt in both attempt evidence and durable events", async () => {
+  const plan = buildVisualizationPlan({ gardenId: "preview-receipt", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = {
+    ...plan.opportunities[0],
+    gardenId: "preview-receipt",
+    targetPage: "learning/preview-receipt.md",
+    targetHeading: "Preview receipt",
+  };
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-preview-receipt-pipeline-"));
+  const events = [];
+  let criticCalls = 0;
+  const previewMatrixReceipt = {
+    expectedCount: 6,
+    capturedCount: 5,
+    cells: [{
+      id: "mobile-375x667-light--case_mode-1",
+      viewport: { width: 375, height: 667 },
+      theme: "light",
+      selectState: [{ controlId: "case_mode", optionIndex: 1, optionLabel: "Axial" }],
+      defaultState: false,
+      selectStateCoverageTruncated: false,
+      captured: false,
+      attempts: [{
+        attempt: 1,
+        status: 1,
+        signal: null,
+        screenshotCreated: false,
+        detail: "stderr: simulated Edge EBUSY",
+        retryDelayMs: 125,
+      }, {
+        attempt: 2,
+        status: 1,
+        signal: null,
+        screenshotCreated: false,
+        detail: "stderr: simulated Edge EBUSY",
+      }],
+    }],
+  };
+  try {
+    const result = await createGeneratedVisualization({
+      client: {},
+      model: "test-model",
+      gardenDir,
+      opportunity,
+      pageMarkdown: "An anchored explanation.",
+      availableSourceAnchorIds: new Set(["S1.P2.F1"]),
+      maxAttempts: 1,
+      runBrowserTests: true,
+      onEvent: (event) => events.push(event),
+      browserTestRunner: () => ({
+        tests: [{
+          name: "repair preview matrix",
+          passed: false,
+          detail: "captured 5/6 required labelled previews",
+        }],
+        browser: {
+          executable: "fake-edge",
+          viewports: ["375x667 light", "1280x800 dark"],
+          screenshotCreated: true,
+          previewCount: 5,
+          selectStateCount: 3,
+          selectStateCoverageTruncated: false,
+          previewMatrixComplete: false,
+          previewMatrixReceipt,
+        },
+        previews: [],
+      }),
+      candidateProvider: async () => ({
+        title: "Coupled state intervention",
+        explanation: "A source-grounded intervention explorer.",
+        sourceCode: validSource,
+        testCases: [{
+          name: "gain doubles state",
+          inputs: { gain: 2, x: 2 },
+          expected: { coupled_state_propagation_under_intervention: 4 },
+        }],
+        accessibilityDescription: "A gain slider changes both a numeric output and the plotted response.",
+        pedagogicalClaims: ["The propagated state changes with gain."],
+      }),
+      criticProvider: async () => {
+        criticCalls += 1;
+        throw new Error("critic must not receive partial preview evidence");
+      },
+    });
+
+    assert.equal(result.manifest, null);
+    assert.equal(result.failureCategory, "runtime");
+    assert.equal(criticCalls, 0);
+    const attemptsRoot = path.join(gardenDir, ".breadboard", "visuals", opportunity.id, "attempts");
+    const runId = fs.readdirSync(attemptsRoot)[0];
+    const attemptDir = path.join(attemptsRoot, runId, "attempt-1");
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(path.join(attemptDir, "preview-matrix.json"), "utf8")),
+      previewMatrixReceipt,
+    );
+    const tests = JSON.parse(fs.readFileSync(path.join(attemptDir, "tests.json"), "utf8"));
+    assert.deepEqual(tests.browser.previewMatrixReceipt, previewMatrixReceipt);
+    const browserEvent = events.find((event) => event.type === "visual_browser_tests_completed");
+    assert.deepEqual(browserEvent?.data.previewMatrixReceipt, previewMatrixReceipt);
+    assert.doesNotMatch(JSON.stringify(browserEvent?.data.previewMatrixReceipt), /breadboard-preview-receipt-pipeline/i);
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });
   }

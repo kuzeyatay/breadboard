@@ -12,7 +12,7 @@ import {
 } from "../src/app/components/use-direct-mode.ts";
 import { composeHermesSystemPrompt } from "../src/lib/hermes/system-prompts.ts";
 
-// Direct mode is one skill wearing two hats: `/i-have-adhd` for a single turn, and
+// Concise is one skill wearing two hats: `/i-have-adhd` for a single turn, and
 // the composer switch that shapes every send while it is on. Both read the same
 // manifest, so these tests pin the manifest, the classification that keeps it
 // off the OpenCode-conditional path, and the switch's reach.
@@ -81,7 +81,7 @@ test("the guidance carries no implementation vocabulary", () => {
   }
 });
 
-test("the five Direct-mode rules that make it more than brevity survive", () => {
+test("the five Concise rules that make it more than brevity survive", () => {
   const manifest = source(MANIFEST);
   assert.match(manifest, /Lead with the answer or necessary next action/);
   assert.match(manifest, /Number multi-step work/);
@@ -90,10 +90,10 @@ test("the five Direct-mode rules that make it more than brevity survive", () => 
   assert.match(manifest, /Give specific time estimates/);
   // Persistence is the point of a switch rather than a one-shot instruction.
   assert.match(manifest, /for the rest of the conversation/);
-  assert.match(manifest, /stop direct mode/);
+  assert.match(manifest, /stop concise mode/);
 });
 
-test("Direct mode does not manufacture a next action for a complete answer", () => {
+test("Concise does not manufacture a next action for a complete answer", () => {
   const manifest = source(MANIFEST);
   assert.match(manifest, /Do not invent an action for a factual/);
   assert.match(
@@ -105,10 +105,10 @@ test("Direct mode does not manufacture a next action for a complete answer", () 
   assert.match(manifest, /There is no required closing line and no "Next:" label/);
   assert.match(manifest, /Never manufacture a task to close on/);
   assert.doesNotMatch(manifest, /name ONE concrete next action/);
-  assert.match(composer, /Direct answers; next actions only when useful/);
+  assert.match(composer, /Concise answers; next actions only when useful/);
 });
 
-test("Direct mode preserves the former saved toggle during the rename", () => {
+test("Concise preserves the former saved toggle during the rename", () => {
   const previousWindow = globalThis.window;
   const values = new Map([["breadboard:adhd-mode", "true"]]);
   globalThis.window = {
@@ -140,7 +140,7 @@ test("structure is chosen for the reader, not suppressed", () => {
 test("the section is the skill body, without its catalog machinery", () => {
   resetDirectModeCache();
   const section = directModeSection();
-  assert.match(section, /^# direct_mode\n/);
+  assert.match(section, /^# concise_mode\n/);
   assert.match(section, /Where it disagrees with `response_style` about layout, this section wins/);
   assert.match(section, /Lead with the answer or necessary next action/);
   // Frontmatter and the capability contract are catalog plumbing: they cost
@@ -156,7 +156,7 @@ test("the switch reaches every Hermes surface, and only when it is on", () => {
   for (const surface of ["dashboard_terminal", "garden_chat", "quartz_ai"]) {
     assert.doesNotMatch(
       composeHermesSystemPrompt({ surface, decision: KNOWLEDGE_DECISION }),
-      /# direct_mode/,
+      /# concise_mode/,
       `${surface} injected the style with the switch off`,
     );
     assert.match(
@@ -165,7 +165,7 @@ test("the switch reaches every Hermes surface, and only when it is on", () => {
         decision: KNOWLEDGE_DECISION,
         adhdMode: true,
       }),
-      /# direct_mode/,
+      /# concise_mode/,
       `${surface} lost the style with the switch on`,
     );
   }
@@ -178,7 +178,7 @@ test("the style is composed after the default it overrides", () => {
     adhdMode: true,
   });
   assert.ok(
-    prompt.indexOf("# response_style") < prompt.indexOf("# direct_mode"),
+    prompt.indexOf("# response_style") < prompt.indexOf("# concise_mode"),
     "the exception must be read after the rule it amends",
   );
 });
@@ -208,10 +208,10 @@ test("both turn pipelines and both legacy chat routes carry the switch", () => {
 test("the composer offers the switch above YOLO mode", () => {
   const composer = source("src/app/components/assistant-composer.tsx");
   assert.match(composer, /useDirectMode/);
-  assert.match(composer, /<span className="block">Direct mode<\/span>/);
+  assert.match(composer, /<span className="block">Concise<\/span>/);
   assert.ok(
-    composer.indexOf(">Direct mode<") < composer.indexOf(">YOLO mode<"),
-    "Direct mode must sit above YOLO mode in the Intelligence popover",
+    composer.indexOf(">Concise<") < composer.indexOf(">YOLO mode<"),
+    "Concise must sit above YOLO mode in the Intelligence popover",
   );
 
   // Read at send time on both pipelines, so flipping the switch governs every

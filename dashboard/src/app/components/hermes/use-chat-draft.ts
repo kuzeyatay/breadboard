@@ -28,6 +28,17 @@ export interface UseChatDraftOptions {
   surface: string;
   /** The open chat, or null for one that has not been created yet. */
   sessionId: string | null;
+  /**
+   * The chat this surface created out of its own unstarted chat, when it has
+   * one — the id minted by sending the first message from a blank composer,
+   * dropped again as soon as another chat is opened. It is the only thing that
+   * distinguishes that move from the two other ways an id turns up under a
+   * composer that was blank: the reload restore reopening the newest chat, and
+   * the reader picking an existing chat out of the rail. Left unset, text typed
+   * into an unstarted chat is never carried anywhere — it stays filed under the
+   * unstarted chat it was written in.
+   */
+  createdSessionId?: string | null;
   /** What is in the box right now. */
   value: string;
   /** Called with the text to put back, when a chat with a draft is opened. */
@@ -43,6 +54,7 @@ export interface UseChatDraftOptions {
 export function useChatDraft({
   surface,
   sessionId,
+  createdSessionId = null,
   value,
   onRestore,
   enabled = true,
@@ -78,6 +90,7 @@ export function useChatDraft({
       previousKey,
       newChatKey,
       sessionId,
+      createdSessionId,
     });
     // The text moved to the chat that was just created, so the unstarted-chat
     // bucket it came from is no longer holding it.
@@ -85,6 +98,11 @@ export function useChatDraft({
     if (next === valueRef.current) return;
     pending.current = { text: next, before: valueRef.current };
     onRestore(next);
+    // `createdSessionId` is deliberately not a dependency. It is read for the
+    // commit that changes the key — the surface sets it alongside the id, so
+    // React has both in one commit — and re-running on a later change would
+    // find the restore for this key already done.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, key, onRestore, sessionId, surface]);
 
   useEffect(() => {

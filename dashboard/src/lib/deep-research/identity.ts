@@ -6,6 +6,13 @@
 
 export const DEEP_RESEARCH_SLASH_COMMAND = "/agents:deep-research";
 
+/**
+ * The agent id every ledger keys this agent by: its memory scope, its launch
+ * record, and the evidence entry the panel renders. One author, because the
+ * three only line up if they agree on the spelling.
+ */
+export const DEEP_RESEARCH_AGENT_ID = "deep_research";
+
 /** Match the upstream deep-research defaults. A report is expected to branch
  * once and then investigate the important gaps it discovers. */
 export const DEFAULT_BREADTH = 4;

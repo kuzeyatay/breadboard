@@ -1,6 +1,67 @@
 # Handoff: Electromagnetism 1 Learn Pipeline
 
-> Last refreshed: 2026-08-16 at the selected provider's post-reset pre-launch check, immediately before the next fresh Learn plan launch.
+## Confirmation-and-generation pre-launch record -- August 21, current
+
+This record was refreshed immediately before the normal confirmation-and-isolated-generation continuation of the fresh Learn plan.
+
+Fresh plan `learn_job_mt3a92ot_nkimqvf` completed normally and is `awaiting_confirmation` at 100% with proposed map `learn_map_mt3askwi_oc793o2`. Two independent read-only audits and direct checks are GO. The map uses only `engineering-electromagnetics-9th-ed-9nbsped-compress` and syllabus `studyguide-5epf0`; map, coverage, live source context, and visual binding agree on source-set `8e468f...3ed6`, selected artifact inventory `f9f524...5116`, and formula-review manifest `ac1bcf...2ee2e` (202 reviewed formulas, zero strict validation problems).
+
+The new Learning Unit Contract has 18 units (U1--U18) with 12 teachable syllabus units. Its model-authored artifact partition is exact: 241 assignments plus 8 justified omissions equals all 249 selected artifacts exactly once; 194 formulas are used. There is no version, published learner content, or current Learn lock.
+
+Most importantly, this map contains the new durable visual route bundle: all four persisted fields are non-null and parseable; the source/inventory/formula, normalized LUC, necessity-review, visualization-plan, and executability-ledger hashes recompute exactly. Canonical executability linkage reports zero problems. It has eight approved executable generated-module routes for U2, U3, U7, U9, U11, U14, U16, and U18. U16 is now an explicit, model-approved, hash-bound route rather than a generation-time reallocation. Generation must rehydrate this bundle and make no second visual-allocation model call.
+
+Use the standard direct continuation from `C:\\Users\\20252082\\breadboard\\dashboard` only:
+
+```powershell
+node --experimental-strip-types --import ./tmp-alias-hook.mjs ./tmp-learn-confirm-runner.mjs electromagnetism-1 learn_map_mt3askwi_oc793o2
+```
+
+The runner dynamically resolves the owner's selected model and has the audited headless lifecycle keepalive around the normal generation call. Never bypass confirmation, mutate the map/DB/locks/content, replace the selected model, or make deterministic semantic/source/visual changes. Monitor the isolated generation; only treat the garden as complete after a committed version plus publication and finalization evidence. If a new plan is ever needed after a failure, refresh this top handoff record immediately before that new launch.
+
+## Latest pre-launch record -- August 21, superseding all below
+
+This record was refreshed immediately before the next normal fresh Learn plan launch, as the user explicitly requested.
+
+The immediately prior fresh plan, `learn_job_mt395wi8_0euehsl`, reached 65% and began the model-authored Learning Spine call, then its direct Node worker disappeared without reporting a model, semantic, source, or transport error. The standard fenced abandoned-worker recovery ran automatically: its first rollback-publication attempt hit transient Windows `EPERM`, and its next fenced attempt recovered successfully at `2026-08-21T18:19:17.522Z`. The job is terminal `failed` with the durable message that the garden was restored and is safe to retry. Recovery verified zero maps and versions for that job, no learner content in content/public, no workspace/snapshot, no active job, and no Learn locks. Do not cancel, resume, alter, or manually clean that historical job or its nonauthoritative failed-recovery sibling.
+
+To protect the headless direct route from an event-loop exit while a long model request is pending, the plan and confirmation launchers now hold one referenced, no-op 60-second interval only around their awaited normal pipeline calls and clear it in `finally`. An independent audit and `node --check` passed. This is a launcher-lifecycle safeguard only: it does not alter model selection, sources, prompts, map/visual decisions, confirmation, locks, rollback, or publication behavior.
+
+The earlier generation failure also remains generically hardened: the next map will persist the complete hash-bound model-authored visual route bundle, and generation will rehydrate it rather than re-plan it. Browser preview capture makes at most three same-cell fresh-profile attempts; incomplete preview matrices still fail closed while their bounded, path-redacted diagnostic receipts survive only in rejected/root event evidence. The old confirmed map `learn_map_mt2x9ujv_zbednnz` lacks those persisted bundle fields and must never be reused or amended. A fresh plan must supersede it.
+
+Authority is unchanged: syllabus `studyguide-5epf0`; only teaching source `engineering-electromagnetics-9th-ed-9nbsped-compress`; dynamically resolve the owner's model at launch (currently observed healthy as `cliproxy/gemini-3.7-flash-high`, never pin or substitute it). ChatMock health is serving. The local dashboard Next-dev sidecar was found runaway and restarted; its health route has been intermittent afterward, but the direct normal runner does not proxy through that HTTP service and retains the normal Learn pipeline, database, locks, source-only mode, no snapshots, and manual confirmation gate.
+
+Launch from `C:\\Users\\20252082\\breadboard\\dashboard` only:
+
+```powershell
+node --experimental-strip-types --import ./tmp-alias-hook.mjs ./tmp-learn-plan-runner.mjs electromagnetism-1 studyguide-5epf0 engineering-electromagnetics-9th-ed-9nbsped-compress
+```
+
+Do not auto-confirm. At `awaiting_confirmation`, independently audit the freshly persisted source/formula/artifact/coverage/visual-route bindings before the normal confirmation-and-generation runner. If a later new plan is required, repeat clean-state checks and refresh this top record immediately before that launch; never use direct DB, map, lock, content, or semantic mutations as a retry shortcut.
+
+## Current pre-launch record -- August 21
+
+This supersedes every earlier run-state and launch directive below. It was updated immediately before starting the next normal Learn planning run, per the user's request.
+
+The immediately preceding isolated generation job, `learn_job_mt2z40yy_rx4m5t1`, failed safely at 57% while producing the model-approved U16 visual `visual-u16-f71cd555`. Its strict browser-preview matrix captured only 2 of the required 6 labelled previews, so generation stopped before any version or learner content could publish. Preflight immediately before this new plan confirmed: no active Learn job, no Learn locks, no staging workspace, no `learn_versions` row, no `learning/` directory in content or public, and the garden index still reports zero lessons.
+
+Two generic, non-semantic safeguards were added and independently audited after that failure:
+
+- A confirmed map now stores the complete model-authored visual necessity review, visualization plan, executability ledger, and hash-bound visual-route binding. Generation rehydrates that exact bundle instead of re-planning or reallocating visuals.
+- Browser preview capture now makes at most three fresh-profile attempts for the same labelled cell, with bounded backoff. An incomplete matrix still fails closed. Its bounded, path-redacted receipt is persisted in rejected staging evidence and mirrored as diagnostic-only `learn_visual_preview_matrix_observed` in the root event ledger, marked `staging_unpublished`; no candidate visual can publish from that path.
+
+The historic confirmed map `learn_map_mt2x9ujv_zbednnz` predates those durable visual-route columns and has null bundle fields after rollback. Do **not** retry, reconfirm, or manually amend it. This fresh model-authored plan must supersede it, then wait at `awaiting_confirmation` for the normal map/receipt audit before starting isolated generation.
+
+Current source authority is unchanged: syllabus `studyguide-5epf0`; only teaching source `engineering-electromagnetics-9th-ed-9nbsped-compress`. Preflight found the dashboard and ChatMock healthy. The owner's model presently resolves dynamically to `cliproxy/gemini-3.7-flash-high` with available accounts and no cooldown/failover. This is evidence only: the runner must resolve the owner selection dynamically at launch and must not pin, substitute, or alter it.
+
+The authorized normal fresh-plan launcher is run from `C:\\Users\\20252082\\breadboard\\dashboard`:
+
+```powershell
+node --experimental-strip-types --import ./tmp-alias-hook.mjs ./tmp-learn-plan-runner.mjs electromagnetism-1 studyguide-5epf0 engineering-electromagnetics-9th-ed-9nbsped-compress
+```
+
+It uses source-only planning, no snapshots, and no automatic confirmation. Preserve normal locks, rollback, confirmation, and publication gates. If this or a later run fails, diagnose only generic infrastructure/protocol/transport behavior; do not apply deterministic content, source, formula, coverage, visual, or map repairs. Refresh this section immediately before every subsequent new Learn launch.
+
+> Last refreshed: 2026-08-21 immediately before the next fresh, user-authorized Learn plan launch.
 
 ## Objective and authority
 
@@ -12,7 +73,35 @@ Finish the fully source-grounded Learn pipeline for garden `electromagnetism-1`,
 
 The user explicitly authorized continuing autonomously while they sleep. Do not ask for routine confirmation. Do **not** make deterministic academic, coverage, formula, visual, source-map, or lesson-content fixes. All semantic repairs must remain bounded and model-authored. Never mutate the DB, locks, maps, or published content directly.
 
-## Current state
+## Current launch directive — August 21
+
+The earlier August 16 cancellation is historical. The current governing goal explicitly authorizes autonomous continuation to a fully generated `electromagnetism-1` garden using `studyguide-5epf0` as syllabus and `engineering-electromagnetics-9th-ed-9nbsped-compress` as the only teaching source.
+
+Current pre-launch evidence: the latest Learn job is cancelled, there are no active Learn jobs, all four Learn locks are absent, `learn_versions` has no row for this garden, and both dashboard and ChatMock health endpoints return `ok`. The owner currently resolves dynamically to `cliproxy/gemini-3.7-flash-high`, which is serving with no cooldown or failover; this is recorded evidence, not a pinned selection. Never substitute a model and never make a deterministic academic/content/source decision.
+
+This handoff was refreshed immediately before the planned fresh run, as requested. If a new run is ever needed after this one, repeat the clean-state check and refresh this section immediately before that launch.
+
+Any older "do not launch" wording below records the August 16 user cancellation only and is superseded by this August 21 directive.
+
+The immediately preceding plan, `learn_job_mt2t8s4m_eatyu68`, failed safely at 10:49:37Z with no map/version/publication because its selected source-artifact inventory changed a second time after the one permitted Source Map replan. The first scan cached three new artifacts and the reauthored scan cached one more; all four scans were successful and no source corruption or concurrent mutation was found. A normal fresh run is the required convergence path, not a deterministic data repair. Its rollback is clean: no active job, lock, staged workspace, generated `learning/` directory, or version row. The dynamically resolved Gemini model remains healthy and unchanged.
+
+The next normal plan, `learn_job_mt2u26p6_nqxz860`, also failed safely at 11:15:46Z before persistence for the same deliberate second-drift guard. Its first scan expanded the inventory from 204 to 222, then its reauthored follow-up scan found ten more artifacts and formula review rose to 188 formulas. The source scans and reviews completed without corruption; their cached evidence is retained for convergence, while the job workspace was rolled back (zero maps, versions, locks, or generated learning output). This handoff is refreshed immediately before the next normal full plan, which must again resolve the model dynamically and make no manual source or curriculum change.
+
+The subsequent plan, `learn_job_mt2uybwp_ewmuux6`, reached stable Source Map evidence (201 formulas; re-scan found no further artifacts) but failed safely at final planning commit because its earlier model-authored syllabus coverage evidence-recovery receipt still bound the pre-scan source/artifact hashes. This exposed a generic sequencing gap, not a semantic failure. The tested fix preserves strict receipt validation: on the one allowed combined source-set/artifact-inventory replan, it recollects immutable source/syllabus identity, reruns the model coverage decision and bounded evidence recovery if required, refreshes the coverage payload, and then reauthors the Source Map. It never rewrites receipt hashes; base source/syllabus changes, a zero-teachable re-review, or any later drift still fail closed. Focused tests (65), ESLint, full dashboard TypeScript, and diff-check passed independent review. Rollback again left no map, version, lock, staged workspace, or generated learning output. This handoff is refreshed immediately before the next normal plan.
+
+The post-fix plan, `learn_job_mt2wii51_lk4ul3c`, exercised the new rebind live when scan/review changed the inventory from 201 to 202 formulas. It produced fresh model-authored coverage bound to source-set `8e468f...3ed6` and artifact inventory `f9f524...5116`; its re-scan then found no further artifacts. Proposed map `learn_map_mt2x9ujv_zbednnz` passed final audit at `awaiting_confirmation`: 22 units, 202 reviewed formulas, and all 249 registered artifacts partitioned exactly once (241 assignments + 8 model omissions), with current schema-v2 visual executability ledger. There is still no version or published learning content. This handoff is refreshed immediately before normal confirmation and isolated generation through the same production entry points.
+
+Normal generation from that confirmed map failed safely on its first staged page before any file/version/publication because an immutable, model-approved control ID `z` exposed a generic validator mismatch: planning permits standard one-letter coordinate controls, while the generated-visual compiler incorrectly required two characters. Eight model repairs were correctly unable to alter it because the contract requires exact control IDs. The generic fix introduces a shared v3 control-ID policy: lowercase `^[a-z][a-z0-9_]{0,79}$` IDs such as `z` are accepted, while runtime-reserved `x` and `t` are rejected consistently in planning, repair, executability, compiler, and prompts. Broader generated artifact/scene/output IDs remain unchanged. Focused visual/contract tests passed 89/89 and independent audit passed; one separate browser mount test timed out in Edge but had no identifier failure. The confirmed map remains intact and no `learn_versions` row or `learning/` output exists. This handoff is refreshed immediately before the next normal isolated generation attempt; it must reuse the audited confirmed map rather than mutate it.
+
+The approved local launch path is the normal plan entry point from `dashboard` (the relative `QUARTZ_CONTENT_PATH` requires that working directory):
+
+```powershell
+node --experimental-strip-types --import ./tmp-alias-hook.mjs ./tmp-learn-plan-runner.mjs electromagnetism-1 studyguide-5epf0 engineering-electromagnetics-9th-ed-9nbsped-compress
+```
+
+The runner rechecks that the garden has no published learner content, dynamically resolves the owner model, requests manual confirmation, and must be detached only to preserve the normal long-running pipeline after the launching shell returns.
+
+## Current state — historical August 16 snapshot
 
 No Learn job is active. **Do not launch another one until the user explicitly says so** — they cancelled the last run themselves and asked for a full stop.
 

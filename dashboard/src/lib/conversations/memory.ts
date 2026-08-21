@@ -73,12 +73,24 @@ export interface ConversationMemoryBundle {
    */
   temporary: boolean;
   /**
+   * The user switched Personalize off for this message, so the turn is answered
+   * for anyone: no name, no durable memories, no synthesized profile.
+   *
+   * Read-side only, and that is the whole distinction from `temporary` above.
+   * A temporary chat may not be *written* to memory; a depersonalized turn
+   * simply does not *read* from it, and everything it says is still saved.
+   */
+  depersonalized: boolean;
+  /**
    * What the account holder is called. Not memory at all in the cross-chat
    * sense — nothing inferred it and no chat produced it — but it belongs in
    * this bundle because it is the same question every turn needs answered
    * before it can address anyone, and a temporary chat needs it too.
+   *
+   * Null only when Personalize is off, which is the one case where the turn is
+   * deliberately not being answered for this particular person.
    */
-  identity: UserIdentity;
+  identity: UserIdentity | null;
   summary: string;
   workingState: ConversationWorkingState;
   recentMessages: ConversationMessageRow[];
@@ -164,8 +176,14 @@ export function loadConversationMemoryBundle(input: {
   query: string;
   activeGardenId?: number | null;
   projectScopeId?: string | null;
+  /**
+   * Personalize, as it stood when the message was sent. Absent means on, so an
+   * older client that does not send the field keeps today's behaviour.
+   */
+  personalize?: boolean;
 }, database: Database.Database = db): ConversationMemoryBundle {
   const state = loadConversationMemoryState(input.conversation.id, database);
+  const depersonalized = input.personalize === false;
   // A temporary chat keeps its own thread of context — its rolling summary,
   // working state and exact messages, all of which live and die with it — but
   // every source that reaches across chats is withheld. Nothing the user said
@@ -173,7 +191,10 @@ export function loadConversationMemoryBundle(input: {
   if (conversationIsTemporary(input.conversation)) {
     return {
       temporary: true,
-      identity: readUserIdentity(input.conversation.user_id, database),
+      depersonalized,
+      identity: depersonalized
+        ? null
+        : readUserIdentity(input.conversation.user_id, database),
       summary: state.summary,
       workingState: state.workingState,
       recentMessages: listRecentConversationMessages(input.conversation.id, 24, database),
@@ -182,8 +203,33 @@ export function loadConversationMemoryBundle(input: {
       crossConversation: null,
     };
   }
+  // Personalize off withholds every source that describes the *user*: their
+  // name, what prior chats learned about them, and the profile synthesized
+  // from those chats. This conversation's own thread survives — it is what the
+  // turn is a reply to, not a fact about who is asking — and so does an
+  // explicitly named other chat, because asking for it is a current
+  // instruction, which outranks this switch in the precedence order the
+  // context block itself states.
+  if (depersonalized) {
+    return {
+      temporary: false,
+      depersonalized: true,
+      identity: null,
+      summary: state.summary,
+      workingState: state.workingState,
+      recentMessages: listRecentConversationMessages(input.conversation.id, 24, database),
+      durableMemories: [],
+      profileSummary: "",
+      crossConversation: retrieveExplicitCrossConversationContext({
+        userId: input.conversation.user_id,
+        currentConversationId: input.conversation.id,
+        query: input.query,
+      }, database),
+    };
+  }
   return {
     temporary: false,
+    depersonalized: false,
     identity: readUserIdentity(input.conversation.user_id, database),
     summary: state.summary,
     workingState: state.workingState,
@@ -537,6 +583,12 @@ export function composeMemoryContext(
     // save it cannot make.
     bundle.temporary
       ? "This is a temporary chat. It carries no memory from other conversations, nothing said in it can be saved to memory, and it is not part of the user's chat history. Do not offer to remember anything here; say plainly that this chat is temporary if the user asks."
+      : "",
+    // Said explicitly, because the alternative is a model that reads an empty
+    // memory block as "this user is a stranger to me" and starts hedging about
+    // not knowing them. Nothing is missing here; personalization was declined.
+    bundle.depersonalized
+      ? "The user switched Personalize off for this message. Answer it as a general question, for anyone: their name, their prior chats, and their profile are deliberately withheld from this turn, so do not use, guess at, or apologize for not having them. This is a choice about this answer, not a gap in what you know and not a change to what may be saved."
       : "",
     includeConversationState && bundle.summary
       ? `# rolling_conversation_summary\n${bundle.summary}`

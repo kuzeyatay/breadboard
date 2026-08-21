@@ -136,14 +136,19 @@ test("the assistant is told the name, and told the handle is not one", () => {
 });
 
 test("the name reaches every turn, including a chat that keeps nothing", () => {
-  // Both branches of the bundle loader fill it: a temporary chat withholds
-  // everything learned in other chats, but the name is not something a chat
-  // learned, and addressing them as a stranger there would be a bug.
+  // A temporary chat withholds everything learned in other chats, but the name
+  // is not something a chat learned, and addressing them as a stranger there
+  // would be a bug. So both branches that personalize at all read it.
   const memory = source("src/lib/conversations/memory.ts");
   assert.equal(
-    memory.match(/identity: readUserIdentity\(input\.conversation\.user_id, database\)/g)?.length,
+    memory.match(/readUserIdentity\(input\.conversation\.user_id, database\)/g)?.length,
     2,
   );
+  // The one deliberate exception, and it has to be deliberate: Personalize off
+  // is a request for an answer written for anyone, so there is no one to
+  // address. Withheld explicitly rather than by an empty identity, because the
+  // model is told why the block is missing.
+  assert.match(memory, /if \(depersonalized\) \{[\s\S]*?identity: null,/);
   // The block sits with the policy, above every inferred source.
   const policy = memory.indexOf("# conversation_memory_policy");
   const identity = memory.indexOf("identity,", policy);

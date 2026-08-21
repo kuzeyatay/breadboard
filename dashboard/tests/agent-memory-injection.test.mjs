@@ -269,10 +269,14 @@ test("the sensitivity predicate backs the in-app redactor", () => {
 // the run still succeeds, it just knows nothing. These read the source because
 // the alternative is a Python venv, a Docker service and a search backend.
 
-const source = (relative) =>
-  fs.readFileSync(path.join(import.meta.dirname, "..", relative), "utf8");
-const repoSource = (relative) =>
-  fs.readFileSync(path.join(import.meta.dirname, "..", "..", relative), "utf8");
+// Newlines are normalized on the way in. Several assertions below pin a
+// multi-line shape with `\n`, and on a CRLF checkout every one of them fails
+// against source that is perfectly correct — a wiring test that reports the
+// checkout's line endings is worse than no test.
+const read = (...segments) =>
+  fs.readFileSync(path.join(...segments), "utf8").replace(/\r\n/g, "\n");
+const source = (relative) => read(import.meta.dirname, "..", relative);
+const repoSource = (relative) => read(import.meta.dirname, "..", "..", relative);
 
 test("the legal agent takes memory as a system-prompt section, never as the brief", () => {
   const route = source("src/app/api/legal/runs/route.ts");
@@ -322,7 +326,14 @@ test("the stock analyst prefixes at the wire, keeping the saved task the user's 
 
 test("deep research sends memory beside the question, never inside it", () => {
   const service = source("src/lib/deep-research/service.ts");
-  assert.match(service, /agentId: "deep_research"/);
+  // The id has one author now: the memory scope, the launch record and the
+  // evidence entry only line up if they agree on the spelling, so the literal
+  // lives in identity.ts and everything else imports it.
+  assert.match(service, /agentId: DEEP_RESEARCH_AGENT_ID/);
+  assert.match(
+    repoSource("dashboard/src/lib/deep-research/identity.ts"),
+    /export const DEEP_RESEARCH_AGENT_ID = "deep_research";/,
+  );
   // Memory keeps its own field; it now shares it with the chat the run was
   // launched from, which is background for the same reason memory is.
   assert.match(service, /userContext: \[\n\s+memory\?\.text \?\? "",/);
@@ -342,6 +353,10 @@ test("deep research sends memory beside the question, never inside it", () => {
     "context is not run metadata; it must not travel back to the browser",
   );
 
+  // The requester's background is the first parameter and stays in the system
+  // prompt. What follows it may grow — the writing standard is selected there
+  // too — but user context must never become part of the research question.
   const prompt = repoSource("deep-research/src/prompt.ts");
-  assert.match(prompt, /systemPrompt = \(userContext\?: string\)/);
+  assert.match(prompt, /systemPrompt = \(\n\s+userContext\?: string,/);
+  assert.match(prompt, /userContext\?\.trim\(\) \?\? ''/);
 });

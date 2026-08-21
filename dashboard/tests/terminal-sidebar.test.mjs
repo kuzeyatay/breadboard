@@ -25,6 +25,7 @@ const source = (relativePath) =>
 
 const sidebar = source("../src/app/components/hermes/terminal-sidebar.tsx");
 const terminal = source("../src/app/components/hermes/dashboard-agent-terminal.tsx");
+const gardenWorkspace = source("../src/app/gardens/[clusterSlug]/workspace-client.tsx");
 const agentSession = source("../src/app/components/hermes/use-agent-session.ts");
 const globalCss = source("../src/app/globals.css");
 const historyClient = source("../src/app/components/hermes/history-client.tsx");
@@ -56,6 +57,26 @@ test("the rail carries the seven fixed actions, in order, above the chat list", 
   assert.match(nav, /label="Uploads"[\s\S]{0,220}onClick=\{\(\) => onTogglePanel\("uploads"\)\}/);
   assert.match(nav, /label="Scheduled"[\s\S]{0,220}onClick=\{\(\) => onTogglePanel\("scheduled"\)\}/);
   assert.match(nav, /label="Search"[\s\S]{0,120}onClick=\{onOpenSearch\}/);
+});
+
+test("an untouched new chat cannot be selected twice", () => {
+  assert.match(sidebar, /newChatDisabled\?: boolean/);
+  assert.match(sidebar, /disabled=\{newChatDisabled\}/);
+  assert.match(
+    terminal,
+    /const blankSavedChatSelected =\s*!temporaryChat[\s\S]{0,180}!currentChatActive/,
+  );
+  assert.match(
+    terminal,
+    /function startNewSavedChat\(\) \{[\s\S]{0,320}if \(blankSavedChatSelected\) return;/,
+  );
+  assert.match(terminal, /newChatDisabled=\{blankSavedChatSelected\}/);
+});
+
+test("Recents stays in its loading state until the complete summary list arrives", () => {
+  assert.match(sidebar, /count=\{loading \? 0 : recents\.length\}/);
+  assert.match(sidebar, /\{sections\.recents \? \(\s*loading \? \(\s*<ChatHistoryLoading \/>/);
+  assert.doesNotMatch(sidebar, /loading && chats\.length === 0/);
 });
 
 test("Pinned and Recents are separate collapsible sections that remember their state", () => {
@@ -91,14 +112,34 @@ test("automatic titles replace New chat immediately and type into the rail", () 
   );
   assert.match(append, /notifyHermesSessionsChanged\(surface\)/);
   assert.match(sidebar, /PLACEHOLDER_CHAT_TITLES/);
-  assert.match(sidebar, /data-title-renaming=\{titleTransition\.typing \? "true" : undefined\}/);
-  assert.match(sidebar, /"--bb-title-character-count": Math\.max\(1, chat\.title\.length\)/);
+  // The rename plays as two moves: the placeholder is deleted, then the
+  // generated name is written into the emptied row.
+  assert.match(sidebar, /data-title-renaming=\{TITLE_PHASE_ATTRIBUTE\[titleTransition\.phase\]\}/);
+  assert.match(sidebar, /erasing: "erase",[\s\S]*?typing: "type",/);
+  assert.match(sidebar, /event\.animationName === "bb-chat-title-erase"/);
+  assert.match(sidebar, /"--bb-title-character-count": Math\.max\(1, transitionTitle\.length\)/);
   assert.match(globalCss, /@keyframes bb-chat-title-type/);
+  assert.match(globalCss, /@keyframes bb-chat-title-erase/);
   assert.match(globalCss, /steps\(var\(--bb-title-character-count, 1\), end\)/);
   assert.match(
     globalCss,
     /@media \(prefers-reduced-motion: reduce\)[\s\S]*?bb-chat-title-fade/,
   );
+});
+
+test("a typed draft appears in the rail before its first turn is saved", () => {
+  assert.match(
+    terminal,
+    /session\.sessionId === null &&\s*\(input \|\| submittedDraft \|\| ""\)\.trim\(\)\.length > 0\s*\? PENDING_CHAT_ROW_ID/,
+  );
+  assert.match(
+    gardenWorkspace,
+    /activeChatId === null && \(input\.trim\(\)\.length > 0 \|\| draftMessages !== null\)/,
+  );
+  assert.match(sidebar, /pending\?: boolean;/);
+  assert.match(sidebar, /!chat\.pending \? \(/);
+  assert.match(sidebar, /const workableRecents = recents\.filter\(\(chat\) => !chat\.pending\);/);
+  assert.match(terminal, /activeChatId=\{pendingChatId \?\? session\.sessionId\}/);
 });
 
 test("the Recents header hides a menu of its own behind the same hover", () => {
@@ -117,7 +158,7 @@ test("the Recents header hides a menu of its own behind the same hover", () => {
   assert.match(sidebar, /function useDismissOnOutside/);
   assert.match(sidebar, /useDismissOnOutside\(menuRef, onClose\)/);
   // Nothing to act on, or already acting: no dots.
-  assert.match(sidebar, /recents\.length > 0 && mode === "idle" \? \(/);
+  assert.match(sidebar, /workableRecents\.length > 0 && mode === "idle" \? \(/);
 });
 
 test("Recents can be picked over and deleted in one go; Pinned cannot", () => {
@@ -125,9 +166,12 @@ test("Recents can be picked over and deleted in one go; Pinned cannot", () => {
   // reach of both modes.
   assert.match(sidebar, /\{recents\.map\(\(chat\) => renderRow\(chat, true\)\)\}/);
   assert.match(sidebar, /\{pinned\.map\(\(chat\) => renderRow\(chat\)\)\}/);
-  assert.match(sidebar, /mode=\{workable \? mode : "idle"\}/);
+  assert.match(sidebar, /mode=\{workable && !chat\.pending \? mode : "idle"\}/);
   assert.match(sidebar, /onDelete=\{\(\) => onDeleteChats\(selectedChats\)\}/);
-  assert.match(sidebar, /onSelectAll=\{\(\) => setSelectedIds\(new Set\(recents\.map\(\(chat\) => chat\.id\)\)\)\}/);
+  assert.match(
+    sidebar,
+    /setSelectedIds\(new Set\(workableRecents\.map\(\(chat\) => chat\.id\)\)\)/,
+  );
 
   // While picking, the row checks instead of opening, and its own controls
   // step aside so the list reads as a set of choices.
@@ -146,7 +190,7 @@ test("Recents can be picked over and deleted in one go; Pinned cannot", () => {
   // second copy that could drift from it.
   assert.match(
     sidebar,
-    /const selectedChats = recents\.filter\(\(chat\) => selectedIds\.has\(chat\.id\)\)/,
+    /const selectedChats = workableRecents\.filter\(\(chat\) => selectedIds\.has\(chat\.id\)\)/,
   );
 });
 

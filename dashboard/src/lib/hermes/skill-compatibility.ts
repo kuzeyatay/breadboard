@@ -655,7 +655,7 @@ export function resolveSkillCompatibility(input: {
         input.surface === "garden_chat"
           ? "Garden Chat"
           : input.surface === "quartz_ai"
-            ? "Quartz AI"
+            ? "Assistant"
             : "Terminal",
       detail: surfaceAllowed
         ? "This skill is allowed on the current surface."

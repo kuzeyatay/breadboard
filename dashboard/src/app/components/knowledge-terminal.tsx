@@ -12,7 +12,10 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
-import { useQueuedFollowUps } from '@/app/components/hermes/queued-follow-ups';
+import {
+  restoreQueuedFollowUpDraft,
+  useQueuedFollowUps,
+} from '@/app/components/hermes/queued-follow-ups';
 import { useComposerInset } from '@/app/components/chat/use-composer-inset';
 import ChatDisclaimer from '@/app/components/chat/chat-disclaimer';
 import ChatGreetingEmptyState from '@/app/components/hermes/chat-greeting-empty-state';
@@ -20,6 +23,7 @@ import { useChatGreeting } from '@/app/components/hermes/use-chat-greeting';
 import AssistantMessageActions from '@/app/components/assistant-message-actions';
 import AssistantResponseMeta from '@/app/components/assistant-response-meta';
 import { isDirectModeEnabled } from '@/app/components/use-direct-mode';
+import { isPersonalizeEnabled } from '@/app/components/use-personalize';
 import {
   chatAutoScrollContentKey,
   chatAutoScrollResponseKey,
@@ -41,6 +45,7 @@ import ChatTimeSeparator from '@/app/components/chat-time-separator';
 import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
 import { useAssistantModels } from '@/app/components/use-assistant-models';
 import { UserMessageText } from '@/app/components/hermes/command-text';
+import CollapsibleUserMessage from '@/app/components/chat/collapsible-user-message';
 import {
   CHAT_ATTACHMENT_ACCEPT,
   extractChatAttachments,
@@ -168,6 +173,8 @@ const estimateTerminalRowHeight = (message: ChatMessage) =>
 
 type TranscriptRowProps = {
   message: ChatMessage;
+  /** Row identity, so a folded long message stays folded across remounts. */
+  messageKey: string;
   /** The separator that belongs above this message, if any. */
   separatorLabel: string | null;
   /** True only for the newest answer while it is still being written. */
@@ -181,6 +188,7 @@ type TranscriptRowProps = {
  */
 const TranscriptRow = memo(function TranscriptRow({
   message,
+  messageKey,
   separatorLabel,
   responding,
   onRetry,
@@ -197,7 +205,9 @@ const TranscriptRow = memo(function TranscriptRow({
         <div className={message.role === 'user' ? 'max-w-[80%]' : 'w-full'}>
         {message.role === 'user' ? (
           <div className="neu-chat-message neu-chat-message-user rounded-2xl rounded-br-sm px-4 py-2.5 text-sm leading-6">
-            <UserMessageText content={message.content} />
+            <CollapsibleUserMessage messageKey={messageKey}>
+              <UserMessageText content={message.content} />
+            </CollapsibleUserMessage>
             {message.attachmentNames?.length ? (
               <p className="mt-1.5 text-[11px] text-[var(--ink-muted)]">
                 {message.attachmentNames.join(' · ')}
@@ -298,6 +308,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
   );
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
+  // The chat this terminal minted out of its own blank state, so an unsent
+  // draft can follow it there and nowhere else. See useChatDraft.
+  const [createdId, setCreatedId] = useState<number | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   // The in-flight answer's request, so the composer's stop control can cancel
   // it instead of leaving a working turn unstoppable.
@@ -311,6 +324,8 @@ export default function KnowledgeTerminal({ scope }: Props) {
       conversationKey: activeId === null ? null : String(activeId),
       runInFlight: isStreaming,
       steerableRunActive: false,
+      onRestoreDraft: (text) =>
+        restoreQueuedFollowUpDraft(text, setInput, composerTextareaRef),
       onSendQueued: async (text) => {
         await sendMessage(text);
       },
@@ -330,6 +345,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
   useChatDraft({
     surface: draftSurface,
     sessionId: activeId === null ? null : String(activeId),
+    createdSessionId: createdId === null ? null : String(createdId),
     value: input,
     onRestore: setInput,
   });
@@ -368,6 +384,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
   useEffect(() => {
     setSessions(loadSessions(scope));
     setActiveId(null);
+    setCreatedId(null);
     setMessages([]);
     setConfirmDeleteId(null);
     setInput('');
@@ -459,6 +476,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
       return next;
     });
     setActiveId(session.id);
+    setCreatedId(session.id);
     setMessages([]);
     return session;
   }
@@ -475,6 +493,8 @@ export default function KnowledgeTerminal({ scope }: Props) {
     if (isStreaming) return;
     setConfirmDeleteId(null);
     setActiveId(session.id);
+    // An existing chat, so nothing typed in the blank composer belongs to it.
+    setCreatedId(null);
     setMessages(session.messages ?? []);
   }
 
@@ -487,6 +507,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
       persistSessions(scope, next);
       if (activeId === sessionId) {
         setActiveId(next[0]?.id ?? null);
+        setCreatedId(null);
         setMessages(next[0]?.messages ?? []);
       }
       return next;
@@ -554,6 +575,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
           attachments: pendingAttachments,
           scope,
           adhdMode: isDirectModeEnabled(),
+          personalize: isPersonalizeEnabled(),
         }),
         signal: controller.signal,
       });
@@ -686,6 +708,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
       return (
         <TranscriptRow
           message={paced ? { ...message, content: revealedAssistantContent } : message}
+          messageKey={chatRowKey(message, index)}
           separatorLabel={timeSeparators[index] ?? null}
           responding={isStreaming && isNewest}
           onRetry={isNewest ? () => retryAssistantMessage(index) : undefined}

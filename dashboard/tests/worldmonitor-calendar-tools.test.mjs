@@ -141,8 +141,8 @@ test("every tool is registered with the runtime, in all three places", () => {
     plugin,
     // Membership, not the exact set: other families join this branch over time,
     // and pinning the whole list makes an unrelated addition fail here.
-    /route_kind in \{[^}]*"worldmonitor"[^}]*"calendar"[^}]*\}/,
-    "both kinds must produce the {tool, args} payload their routes read",
+    /route_kind in \{[^}]*"worldmonitor"[^}]*"calendar"[^}]*"document"[^}]*\}/,
+    "all three kinds must produce the {tool, args} payload their routes read",
   );
 });
 
