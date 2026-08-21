@@ -1,6 +1,6 @@
 // Breadboard page-scoped AI panel for Quartz.
 //
-// This renders a floating "Ask AI" control and a drawer. All intelligence lives
+// This renders a floating Assistant control and a drawer. All intelligence lives
 // in the Breadboard dashboard: the browser talks ONLY to the dashboard API
 // (never Hermes directly). The panel is read-only by default; any write is
 // a typed proposal handled by Breadboard.
@@ -25,8 +25,16 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
   const gardenId = slug.split("/")[0] ?? ""
   const pageTitle = String(fileData.frontmatter?.title ?? "")
 
-  // Do not render on the top-level index (no garden context).
-  if (!gardenId || slug === "index") return null
+  // Do not render on generated pages that have no garden context.
+  if (
+    !gardenId ||
+    slug === "index" ||
+    slug === "404" ||
+    slug === "tags" ||
+    slug.startsWith("tags/")
+  ) {
+    return null
+  }
 
   return (
     <div
@@ -38,16 +46,16 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
     >
       <button
         class="breadboard-ai-toggle"
-        aria-label="Ask AI about this page"
-        title="Ask AI about this page"
+        aria-label="Open Assistant for this page"
+        title="Open Assistant for this page"
       >
         <span class="breadboard-ai-toggle-icon" aria-hidden="true">
           ✦
         </span>
-        <span class="breadboard-ai-toggle-label">Ask AI</span>
+        <span class="breadboard-ai-toggle-label">Assistant</span>
       </button>
 
-      <div class="breadboard-ai-panel" role="dialog" aria-label="Page AI assistant" hidden>
+      <div class="breadboard-ai-panel" role="dialog" aria-label="Assistant" hidden>
         <div class="breadboard-ai-header">
           <div class="breadboard-ai-context" aria-live="polite">
             <span class="breadboard-ai-dot" aria-hidden="true"></span>
@@ -64,7 +72,7 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
             >
               History
             </button>
-            <button class="breadboard-ai-close" aria-label="Close AI panel">
+            <button class="breadboard-ai-close" aria-label="Close Assistant">
               ✕
             </button>
           </div>
@@ -121,10 +129,33 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
         </section>
 
         <form class="breadboard-ai-composer">
+          <div class="breadboard-ai-selection-context" hidden>
+            <span class="breadboard-ai-selection-icon" aria-hidden="true">
+              &#x21B3;
+            </span>
+            <div>
+              <strong>Ask here</strong>
+              <p class="breadboard-ai-selection-quote"></p>
+            </div>
+            <button
+              type="button"
+              class="breadboard-ai-selection-cancel"
+              aria-label="Cancel selected-text question"
+              title="Cancel"
+            >
+              &times;
+            </button>
+          </div>
           <div class="breadboard-ai-command-hub" hidden>
             <div class="breadboard-ai-command-heading">
               <strong>Use a capability</strong>
-              <button type="button" class="breadboard-ai-command-close" aria-label="Close capabilities">×</button>
+              <button
+                type="button"
+                class="breadboard-ai-command-close"
+                aria-label="Close capabilities"
+              >
+                ×
+              </button>
             </div>
             <input
               class="breadboard-ai-command-search"
@@ -133,9 +164,15 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
               aria-label="Search capabilities"
             />
             <div class="breadboard-ai-command-tabs" role="tablist" aria-label="Capability types">
-              <button type="button" role="tab" data-command-tab="skill" aria-selected="true">Skills</button>
-              <button type="button" role="tab" data-command-tab="mcp" aria-selected="false">Connections</button>
-              <button type="button" role="tab" data-command-tab="prompt" aria-selected="false">Prompts</button>
+              <button type="button" role="tab" data-command-tab="skill" aria-selected="true">
+                Skills
+              </button>
+              <button type="button" role="tab" data-command-tab="mcp" aria-selected="false">
+                Connections
+              </button>
+              <button type="button" role="tab" data-command-tab="prompt" aria-selected="false">
+                Prompts
+              </button>
             </div>
             <div class="breadboard-ai-command-results"></div>
             <div class="breadboard-ai-command-status" aria-live="polite"></div>

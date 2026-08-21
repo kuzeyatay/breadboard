@@ -81,7 +81,7 @@ test("human-facing answers pass a final first-time-reader comprehension check", 
   assert.match(layer, /explain it in a short clause on first use/i);
   assert.match(layer, /what was measured, the time period/i);
   assert.match(layer, /What is this\? Why does it matter\?/);
-  assert.match(layer, /Direct mode may change the length and layout, but it never disables this layer/);
+  assert.match(layer, /Concise may change the length and layout, but it never disables this layer/);
 });
 
 test("every Hermes surface receives both rules", () => {
@@ -150,7 +150,7 @@ test("the standalone chat routes answer in the same voice", () => {
   }
 });
 
-test("the runtime-less Direct provider keeps comprehension after Direct mode", () => {
+test("the runtime-less Direct provider keeps comprehension after Concise", () => {
   const directTurn = source("src/lib/conversations/direct-turn-service.ts");
   const directMode = directTurn.indexOf("directMode ? directModeSection() : \"\"");
   const comprehension = directTurn.indexOf("readerComprehensionPrompt()", directMode);

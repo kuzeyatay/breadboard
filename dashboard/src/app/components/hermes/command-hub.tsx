@@ -54,9 +54,11 @@ import { HARDWARE_BLUEPRINT_COMMAND } from "@/lib/hardware/identity.ts";
 import { PARAMETRIC_CAD_COMMAND } from "@/lib/cad/identity.ts";
 import { HYPERFRAMES_COMMAND } from "@/lib/hyperframes/identity.ts";
 import { RESOURCE2SKILL_COMMAND } from "@/lib/resource2skill/identity.ts";
+import { MATRAIX_COMMAND } from "@/lib/matraix/identity.ts";
 import { OPENMONTAGE_COMMAND } from "@/lib/openmontage/identity.ts";
 import { OPENWORK_COMMAND } from "@/lib/openwork/identity.ts";
 import { OPENSCIENCE_COMMAND } from "@/lib/openscience/identity.ts";
+import { MAX_RESEARCH_COMMAND } from "@/lib/max-research/identity.ts";
 import { INBOX_ZERO_COMMAND } from "@/lib/inbox-zero/identity.ts";
 import { VIMAX_COMMAND } from "@/lib/vimax/identity.ts";
 import { VOX_DIRECTOR_COMMAND } from "@/lib/vox-director/identity.ts";
@@ -102,6 +104,10 @@ const Resource2SkillSettingsDialog = dynamic(
   () => import("./resource2skill-settings-dialog"),
   { ssr: false },
 );
+
+const MatraixSettingsDialog = dynamic(() => import("./matraix-settings-dialog"), {
+  ssr: false,
+});
 
 const OpenMontageSettingsDialog = dynamic(
   () => import("./openmontage-settings-dialog"),
@@ -262,12 +268,15 @@ interface Props {
   onSelectHyperframes?: () => void;
   /** When provided, selecting Resource2Skill inserts its canonical command. */
   onSelectResource2Skill?: () => void;
+  /** When provided, selecting MatrAIx inserts its canonical command. */
+  onSelectMatraix?: () => void;
   /** When provided, selecting OpenMontage inserts its canonical command. */
   onSelectOpenMontage?: () => void;
   /** When provided, selecting OpenWork inserts its canonical command. */
   onSelectOpenwork?: () => void;
   /** When provided, selecting OpenScience inserts its canonical command. */
   onSelectOpenscience?: () => void;
+  onSelectMaxResearch?: () => void;
   /** When provided, selecting Inbox Zero inserts its canonical command. */
   onSelectInboxZero?: () => void;
   onSelectVimax?: () => void;
@@ -416,9 +425,8 @@ function LoadingRows() {
   return (
     <div className="space-y-2 p-2" aria-label="Loading capabilities">
       {[0, 1, 2].map((item) => (
-        <div key={item} className="flex animate-pulse items-center gap-3 rounded-xl px-3 py-3 motion-reduce:animate-none">
-          <span className="h-9 w-9 rounded-xl bg-[var(--paper-strong)]" />
-          <span className="min-w-0 flex-1 space-y-2">
+        <div key={item} className="animate-pulse rounded-xl px-3 py-3 motion-reduce:animate-none">
+          <span className="block min-w-0 space-y-2">
             <span className="block h-3 w-2/5 rounded bg-[var(--paper-strong)]" />
             <span className="block h-2.5 w-4/5 rounded bg-[var(--paper-strong)]" />
           </span>
@@ -456,9 +464,11 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onSelectParametricCad,
       onSelectHyperframes,
       onSelectResource2Skill,
+      onSelectMatraix,
       onSelectOpenMontage,
       onSelectOpenwork,
       onSelectOpenscience,
+      onSelectMaxResearch,
       onSelectInboxZero,
       onSelectVimax,
       onSelectVoxDirector,
@@ -502,6 +512,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const [agentReachSettingsOpen, setAgentReachSettingsOpen] = useState(false);
     const [hyperframesSettingsOpen, setHyperframesSettingsOpen] = useState(false);
     const [resource2SkillSettingsOpen, setResource2SkillSettingsOpen] = useState(false);
+    const [matraixSettingsOpen, setMatraixSettingsOpen] = useState(false);
     const [openMontageSettingsOpen, setOpenMontageSettingsOpen] = useState(false);
     const [openworkSettingsOpen, setOpenworkSettingsOpen] = useState(false);
     const [openscienceSettingsOpen, setOpenscienceSettingsOpen] = useState(false);
@@ -891,6 +902,14 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         OPENSCIENCE_COMMAND,
         "research science experiment hypothesis literature paper arxiv pubmed uniprot pdb ensembl chembl pubchem openalex biology physics chemistry machine learning training dataset simulation analysis plot figure notebook python",
       );
+
+    const showMaxResearch =
+      Boolean(onSelectMaxResearch) &&
+      matchesAgentSearch(
+        "Max Research",
+        MAX_RESEARCH_COMMAND,
+        "research everything exhaustive all five agents deep web internet papers literature workspace experiment reconcile one answer long thorough max",
+      );
     const showInboxZero =
       surface !== "quartz_ai" &&
       Boolean(onSelectInboxZero) &&
@@ -981,6 +1000,14 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         RESOURCE2SKILL_COMMAND,
         "website web deck slides powerpoint excel workbook spreadsheet blender 3d music audio artifact distilled skills",
       );
+    const showMatraix =
+      surface !== "quartz_ai" &&
+      Boolean(onSelectMatraix) &&
+      matchesAgentSearch(
+        "MatrAIx",
+        MATRAIX_COMMAND,
+        "survey population personas simulated users respondents cohort market research focus group willingness to pay audience",
+      );
     const hasVisibleAgents =
       showAgentTars ||
       showAgentBrowser ||
@@ -999,6 +1026,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       showHardwareBlueprint ||
       showHyperframes ||
       showResource2Skill ||
+      showMatraix ||
       showOpenMontage ||
       showOpenwork ||
       showOpenscience ||
@@ -2169,6 +2197,41 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                       </li>
                       ) }]
                       : []),
+                    ...(showMatraix
+                      ? [{ name: "MatrAIx", node: (
+                      <li key="matraix"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForId("agent:matraix"))}
+                      >
+                        <button
+                          id="matraix-entry"
+                          type="button"
+                          onClick={() => {
+                            onSelectMatraix?.();
+                            onOpenChange(false);
+                          }}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{MATRAIX_COMMAND}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Puts your idea, wording, or price to a sampled population of simulated people and reports how they split, and why.
+                          </span>
+                        </button>
+                        <AgentSettingsButton
+                          name="MatrAIx"
+                          onOpen={() => {
+                            setMatraixSettingsOpen(true);
+                            onOpenChange(false);
+                          }}
+                        />
+                        <FavoriteBox
+                          color={highlightColorForId("agent:matraix")}
+                          onColorChange={(color) => setHighlightId("agent:matraix", color)}
+                          label="Choose MatrAIx highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
                     ...(showOpenMontage
                       ? [{ name: "OpenMontage", node: (
                       <li key="openmontage"
@@ -2270,6 +2333,34 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                           color={highlightColorForId("agent:inbox-zero")}
                           onColorChange={(color) => setHighlightId("agent:inbox-zero", color)}
                           label="Choose Inbox Zero highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
+                    ...(showMaxResearch
+                      ? [{ name: "Max Research", node: (
+                      <li key="max-research"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForId("agent:max-research"))}
+                      >
+                        <button
+                          id="max-research-entry"
+                          type="button"
+                          onClick={() => {
+                            onSelectMaxResearch?.();
+                            onOpenChange(false);
+                          }}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{MAX_RESEARCH_COMMAND}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Puts all five research agents on one question — the indexed web, the open internet, the papers, and a workspace that runs things — then reconciles what they found into one answer. Long.
+                          </span>
+                        </button>
+                        <FavoriteBox
+                          color={highlightColorForId("agent:max-research")}
+                          onColorChange={(color) => setHighlightId("agent:max-research", color)}
+                          label="Choose Max Research highlight color"
                         />
                       </li>
                       ) }]
@@ -2883,6 +2974,9 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         ) : null}
         {surface === "quartz_ai" ? null : resource2SkillSettingsOpen ? (
           <Resource2SkillSettingsDialog onClose={() => setResource2SkillSettingsOpen(false)} />
+        ) : null}
+        {surface === "quartz_ai" ? null : matraixSettingsOpen ? (
+          <MatraixSettingsDialog onClose={() => setMatraixSettingsOpen(false)} />
         ) : null}
         {surface === "quartz_ai" ? null : openMontageSettingsOpen ? (
           <OpenMontageSettingsDialog onClose={() => setOpenMontageSettingsOpen(false)} />

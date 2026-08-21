@@ -67,6 +67,12 @@ const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
   // and a manifest of API endpoints must not confine "is this repo any good?"
   // to scoped implementation mode.
   "github-explorer",
+  // Rewording a paragraph is writing, not repository coding. Its guidance
+  // carries `npm run setup:humanizer` because that is what the model has to
+  // relay when the local service is not installed, and a manifest of shell
+  // commands reads to the classifier as implementation work — which would
+  // confine "humanize this" to scoped implementation mode.
+  "humanize",
 ]);
 
 export type SkillEligibility =

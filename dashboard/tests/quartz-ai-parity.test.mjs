@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
-const read = (relative) => fs.readFileSync(new URL(relative, import.meta.url), "utf8");
+const read = (relative) =>
+  fs.readFileSync(new URL(relative, import.meta.url), "utf8");
 
 const chatRoute = read("../src/app/api/quartz-ai/chat/route.ts");
 const modelsRoute = read("../src/app/api/quartz-ai/models/route.ts");
@@ -15,18 +16,40 @@ const hermesSessionsRoute = read("../src/app/api/hermes/sessions/route.ts");
 const runtimeStore = read("../src/lib/hermes/runtime-store.ts");
 const conversationStore = read("../src/lib/conversations/store.ts");
 const component = read("../../quartz/quartz/components/BreadboardAI.tsx");
-const inline = read("../../quartz/quartz/components/scripts/breadboardAI.inline.ts");
+const layout = read("../../quartz/quartz.layout.ts");
+const highlighter = read("../../quartz/quartz/components/Highlighter.tsx");
+const highlighterInline = read(
+  "../../quartz/quartz/components/scripts/highlighter.inline.ts",
+);
+const inline = read(
+  "../../quartz/quartz/components/scripts/breadboardAI.inline.ts",
+);
 const styles = read("../../quartz/quartz/components/styles/breadboardAI.scss");
+const highlighterStyles = read(
+  "../../quartz/quartz/components/styles/highlighter.scss",
+);
 
 test("quartz chat route resolves the engine server-side like the terminal", () => {
-  assert.match(chatRoute, /resolveHermesEngine\(body\.model, body\.reasoningEffort\)/);
+  assert.match(
+    chatRoute,
+    /resolveHermesEngine\(body\.model, body\.reasoningEffort\)/,
+  );
   // Both the first-turn and continuation dispatches carry the resolved engine.
-  const modelSends = chatRoute.match(
-    /model: engine\.model,\s*\n\s*modelIdentity: \{ modelID: engine\.selectedModelID \},\s*\n\s*variant: engine\.variant,/g,
-  ) ?? [];
-  assert.equal(modelSends.length, 2, "both sendMessage branches must pass the engine");
+  const modelSends =
+    chatRoute.match(
+      /model: engine\.model,\s*\n\s*modelIdentity: \{ modelID: engine\.selectedModelID \},\s*\n\s*variant: engine\.variant,/g,
+    ) ?? [];
+  assert.equal(
+    modelSends.length,
+    2,
+    "both sendMessage branches must pass the engine",
+  );
   const auditFields = chatRoute.match(/modelId: engine\.model\.modelID/g) ?? [];
-  assert.equal(auditFields.length, 2, "both audit events must record the model");
+  assert.equal(
+    auditFields.length,
+    2,
+    "both audit events must record the model",
+  );
 });
 
 test("quartz models route serves the intelligence picker with CORS", () => {
@@ -44,9 +67,18 @@ test("quartz sessions route lists page history safely", () => {
   assert.match(sessionsRoute, /listConversationsForUser\(userId\)/);
   assert.match(sessionsRoute, /listConversationMessages\(conversation\.id\)/);
   // Anonymous readers only ever get the session bound to their client token.
-  assert.match(sessionsRoute, /authorizeQuartzRuntimeSession\(sessionId, \{\s*\n\s*userId: null,\s*\n\s*clientToken,/);
+  assert.match(
+    sessionsRoute,
+    /authorizeQuartzRuntimeSession\(sessionId, \{\s*\n\s*userId: null,\s*\n\s*clientToken,/,
+  );
   assert.match(sessionsRoute, /export async function OPTIONS/);
   assert.match(sessionsRoute, /presentRuntimeMessage/);
+  assert.match(sessionsRoute, /conversation\.surface !== "quartz_ai"/);
+  assert.match(
+    sessionsRoute,
+    /conversation\.default_garden_id !== cluster\.id/,
+  );
+  assert.match(sessionsRoute, /runtime\.page_slug !== pageSlug/);
 });
 
 test("session transcript presentation is shared, not duplicated", () => {
@@ -81,6 +113,9 @@ test("quartz panel markup gains terminal-style controls", () => {
   assert.match(component, /breadboard-ai-intelligence/);
   assert.match(component, /breadboard-ai-model/);
   assert.match(component, /breadboard-ai-effort/);
+  assert.match(component, />Assistant<\/span>/);
+  assert.doesNotMatch(component, /breadboard-ai-selection-menu/);
+  assert.match(layout, /afterBody: \[Component\.Highlighter\(\)\]/);
 });
 
 test("quartz inline script wires the terminal capability set", () => {
@@ -101,6 +136,19 @@ test("quartz inline script wires the terminal capability set", () => {
   assert.match(inline, /assistant\.completed/);
   assert.match(inline, /dataset\.usage/);
   assert.match(inline, /breadboard-ai-retry/);
+  // The existing Quartz highlighter adds Ask here, keeps a durable yellow mark,
+  // and hands the exact excerpt to Assistant before focus moves to its prompt.
+  assert.match(highlighter, /data-highlight-action="ask"/);
+  assert.match(highlighter, />Ask here<\/span>/);
+  assert.match(highlighterInline, /addSpan\([\s\S]*DEFAULT_HIGHLIGHT_COLOR\)/);
+  assert.match(
+    highlighterInline,
+    /new CustomEvent\("breadboard:assistant-ask-here"/,
+  );
+  assert.match(highlighterInline, /window\.parent\.postMessage/);
+  assert.match(inline, /addEventListener\("breadboard:assistant-ask-here"/);
+  assert.match(inline, /selectedTextOverride \?\? activeTextSelection\?\.text/);
+  assert.match(inline, /selectedText,/);
 });
 
 test("quartz styles cover the new controls", () => {
@@ -108,26 +156,43 @@ test("quartz styles cover the new controls", () => {
   assert.match(styles, /\.breadboard-ai-intelligence/);
   assert.match(styles, /\.breadboard-ai-markdown/);
   assert.match(styles, /\.breadboard-ai-retry/);
+  assert.match(styles, /\.breadboard-ai-selection-context/);
+  assert.match(highlighterStyles, /\.bb-highlight-ask/);
+  assert.match(highlighterStyles, /mark\.bb-hl/);
 });
 
 test("quartz carries the same rail of sent messages as the dashboard", () => {
   // The rail is a sibling of the scroller, not a child: it floats against the
   // right edge of the transcript rather than scrolling away with it.
   assert.match(component, /class="breadboard-ai-transcript"/);
-  const transcript = component.slice(component.indexOf("breadboard-ai-transcript"));
+  const transcript = component.slice(
+    component.indexOf("breadboard-ai-transcript"),
+  );
   const railAt = transcript.indexOf("breadboard-ai-rail");
   const messagesAt = transcript.indexOf("breadboard-ai-messages");
-  assert.ok(messagesAt > 0 && railAt > messagesAt, "the rail sits beside the scroller");
+  assert.ok(
+    messagesAt > 0 && railAt > messagesAt,
+    "the rail sits beside the scroller",
+  );
   assert.match(component, /aria-label="Messages you sent"/);
 
   // One tick per sent message, and the same wording the dashboard rail uses.
-  assert.match(inline, /querySelectorAll<HTMLElement>\("\.breadboard-ai-user"\)/);
-  assert.match(inline, /`Go to message \$\{index \+ 1\} of \$\{sent\.length\}: \$\{summary\}`/);
+  assert.match(
+    inline,
+    /querySelectorAll<HTMLElement>\("\.breadboard-ai-user"\)/,
+  );
+  assert.match(
+    inline,
+    /`Go to message \$\{index \+ 1\} of \$\{sent\.length\}: \$\{summary\}`/,
+  );
   // A lone question under a long answer still gets its tick; only an empty
   // transcript draws nothing. Kept in step with the dashboard rail's minimum.
   assert.match(inline, /rail\.hidden = sent\.length < 1/);
   // Clicking a tick takes the reader to that message.
-  assert.match(inline, /messages!\.scrollTo\(\{\s*\n\s*top: Math\.max\(start - 8, 0\),/);
+  assert.match(
+    inline,
+    /messages!\.scrollTo\(\{\s*\n\s*top: Math\.max\(start - 8, 0\),/,
+  );
   assert.match(inline, /prefers-reduced-motion: reduce/);
 
   // The rail has to be rebuilt everywhere the transcript changes shape, or it

@@ -218,6 +218,16 @@ export interface HermesUserSettings {
    */
   reasoningEffortByModel: Record<string, AssistantReasoningEffort>;
   intelligencePreferenceSet: boolean;
+  /**
+   * "Rewrite naturally" as a standing preference: every finished answer, every
+   * artifact and every garden note is offered to the local rewriter, and takes
+   * the rewrite when the preservation gates pass it.
+   *
+   * Server-side rather than browser-side because the browser switch cannot
+   * reach an artifact or a note - those are written by the server, often while
+   * nobody is looking at a composer.
+   */
+  humanizerAuto: boolean;
 }
 
 function parseEffortsByModel(raw: string | null | undefined): Record<string, AssistantReasoningEffort> {
@@ -244,7 +254,8 @@ export function getHermesUserSettings(
   const row = db
     .prepare(
       `SELECT filesystem_mode, last_active_directory, default_model,
-              reasoning_effort, reasoning_effort_by_model, intelligence_preference_set
+              reasoning_effort, reasoning_effort_by_model, intelligence_preference_set,
+              humanizer_auto
        FROM hermes_user_settings WHERE user_id = ?`,
     )
     .get(userId) as
@@ -255,6 +266,7 @@ export function getHermesUserSettings(
         reasoning_effort: string;
         reasoning_effort_by_model: string | null;
         intelligence_preference_set: number;
+        humanizer_auto: number;
       }
     | undefined;
   return {
@@ -267,6 +279,7 @@ export function getHermesUserSettings(
         : DEFAULT_ASSISTANT_REASONING_EFFORT,
     reasoningEffortByModel: parseEffortsByModel(row?.reasoning_effort_by_model),
     intelligencePreferenceSet: row?.intelligence_preference_set === 1,
+    humanizerAuto: row?.humanizer_auto === 1,
   };
 }
 
@@ -297,6 +310,7 @@ export function setHermesUserSettings(
       input.defaultModel !== undefined || input.reasoningEffort !== undefined
         ? true
         : current.intelligencePreferenceSet,
+    humanizerAuto: input.humanizerAuto ?? current.humanizerAuto,
   };
   if (input.defaultModel !== undefined || input.reasoningEffort !== undefined) {
     next.reasoningEffortByModel = {
@@ -308,8 +322,8 @@ export function setHermesUserSettings(
     `INSERT INTO hermes_user_settings
        (user_id, filesystem_mode, last_active_directory, default_model,
         reasoning_effort, reasoning_effort_by_model, intelligence_preference_set,
-        updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        humanizer_auto, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(user_id) DO UPDATE SET
        filesystem_mode = excluded.filesystem_mode,
        last_active_directory = excluded.last_active_directory,
@@ -317,6 +331,7 @@ export function setHermesUserSettings(
        reasoning_effort = excluded.reasoning_effort,
        reasoning_effort_by_model = excluded.reasoning_effort_by_model,
        intelligence_preference_set = excluded.intelligence_preference_set,
+       humanizer_auto = excluded.humanizer_auto,
        updated_at = datetime('now')`,
   ).run(
     userId,
@@ -326,6 +341,7 @@ export function setHermesUserSettings(
     next.reasoningEffort,
     JSON.stringify(next.reasoningEffortByModel),
     next.intelligencePreferenceSet ? 1 : 0,
+    next.humanizerAuto ? 1 : 0,
   );
   return next;
 }

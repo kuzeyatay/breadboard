@@ -1,7 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 
 import type { LearningUnitContract } from "./learning-unit-contract.ts";
-import { GENERATED_VISUAL_CAPABILITY_MANIFEST } from "./generated-visual-capabilities.ts";
+import {
+  GENERATED_VISUAL_CAPABILITY_MANIFEST,
+  GENERATED_VISUAL_CONTROL_ID_PATTERN,
+  GENERATED_VISUAL_RESERVED_CONTROL_IDS,
+} from "./generated-visual-capabilities.ts";
 import type {
   InteractiveVisualControlContract,
   InteractiveVisualControlInputType,
@@ -113,6 +117,10 @@ export const COMPLETE_VISUALIZATION_CONTRACT_REPAIR_SCHEMA =
 
 const GENERIC_CONTROL_RE =
   /^(?:control|exploration level|input|key variable|main output|output|parameter|process step|result|step|value|variable)$/i;
+const CONTROL_ID_PATTERN = GENERATED_VISUAL_CONTROL_ID_PATTERN;
+const RESERVED_CONTROL_IDS = new Set<string>(
+  GENERATED_VISUAL_RESERVED_CONTROL_IDS,
+);
 const GENERIC_INSIGHT_RE = /^(?:observe the response|see what happens|the output changes|result|insight)$/i;
 const INTERACTION_GOALS = new Set<VisualizationInteractionGoal>([
   "manipulate_variables",
@@ -482,6 +490,11 @@ function parseControls(
       ? record.protocolRole as InteractiveVisualControlProtocolRole
       : undefined;
     if (typeof record.id !== "string") problems.push(`${controlPath}.id must be a string`);
+    else if (!CONTROL_ID_PATTERN.test(id)) {
+      problems.push(`${controlPath}.id must match ${CONTROL_ID_PATTERN.source}`);
+    } else if (RESERVED_CONTROL_IDS.has(id)) {
+      problems.push(`${controlPath}.id is reserved by the generated visual runtime`);
+    }
     if (typeof record.kind !== "string") problems.push(`${controlPath}.kind must be a string`);
     if (typeof record.label !== "string") problems.push(`${controlPath}.label must be a string`);
     if (typeof record.type !== "string") problems.push(`${controlPath}.type must be a string`);
@@ -705,8 +718,12 @@ export function validateVisualizationContractUnitRepair(input: {
     if (!REQUIRED_CONTROL_KINDS.has(control.kind)) {
       problems.push(`${unit.id}: control "${control.label || control.id}" has invalid kind "${control.kind}"`);
     }
-    if (!/^[a-z][a-z0-9_]{0,79}$/.test(control.id)) {
+    if (!CONTROL_ID_PATTERN.test(control.id)) {
       problems.push(`${unit.id}: control id "${control.id || "(missing)"}" is invalid`);
+    } else if (RESERVED_CONTROL_IDS.has(control.id)) {
+      problems.push(
+        `${unit.id}: control id "${control.id}" is reserved by the generated visual runtime`,
+      );
     } else if (seenControlIds.has(control.id)) {
       problems.push(`${unit.id}: duplicate control id "${control.id}"`);
     }

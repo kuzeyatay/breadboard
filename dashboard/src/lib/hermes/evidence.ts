@@ -80,6 +80,16 @@ export interface ExternalAgentCall {
    * trace of the agent its whole content came from.
    */
   carried?: boolean;
+  /**
+   * The pages this agent read while it worked.
+   *
+   * A delegated run does its searching in its own process, so none of it
+   * reaches this turn's evidence rows: the visible answer is built entirely
+   * from a worker's report and the panel could only say "no sources". Recorded
+   * against the agent rather than merged into the turn's own list, because
+   * which of the two actually read a page is the thing a reader is checking.
+   */
+  websites?: EvidenceWebsite[];
 }
 
 export interface VerificationSummary {
@@ -630,7 +640,16 @@ function geographicClaimRules(): { pattern: RegExp; claim: string }[] {
   return [
     {
       pattern:
-        /\b\d+(?:[.,]\d+)?\s?(?:km|kilometres?|kilometers?|miles?|metres?|meters?|m)\b[^.\n]{0,60}\b(?:away|from|to|walk\w*|driv\w*|cycl\w*|apart|on foot|by car|by bike|journey|trip)\b/i,
+        /\b\d+(?:[.,]\d+)?\s?(?:km|kilometres?|kilometers?|miles?|metres?|meters?)\b[^.\n]{0,60}\b(?:away|from|to|walk\w*|driv\w*|cycl\w*|apart|on foot|by car|by bike|journey|trip)\b/i,
+      claim: "Distance claim has no successful map-service result.",
+    },
+    {
+      // A bare "m" is only a metre in lowercase and only when it is not a
+      // magnitude suffix on money. Case-insensitively, this alternative used to
+      // read "$403M to $935M" as four hundred and three metres, and flagged a
+      // report about robotics funding for making an unsourced distance claim.
+      pattern:
+        /(?<![$€£¥])\b\d+(?:[.,]\d+)?\s?m\b[^.\n]{0,60}\b(?:away|from|to|walk\w*|driv\w*|cycl\w*|apart|on foot|by car|by bike|journey|trip)\b/,
       claim: "Distance claim has no successful map-service result.",
     },
     {

@@ -49,6 +49,8 @@ test("questions about particular places require map data", () => {
     "Where is the nearest McDonald's?",
     "What's this place's address?",
     "Find bowling places near Metropol İstanbul.",
+    "Recommend good museums in Beyoğlu.",
+    "Galataport civarında güzel bir restoran öner.",
     "Is there a roundabout outside Metropol İstanbul?",
     "What time does the Pera Museum open?",
     "Which route is faster, via Bağdat Caddesi or the coast road?",
@@ -58,6 +60,15 @@ test("questions about particular places require map data", () => {
     assert.equal(verdict.required, true, `should require grounding: ${request}`);
     assert.ok(verdict.asks.length > 0, `should name an ask: ${request}`);
   }
+});
+
+test("place-recommendation refinements inherit the prior geographic request", () => {
+  const verdict = requiresGeographicGrounding(
+    "Bana çok uzak olmasın, max Galataport'a kadar.",
+    { priorRequests: ["Şişli civarında eğlenceli mekanlar öner."] },
+  );
+  assert.equal(verdict.required, true);
+  assert.ok(verdict.asks.includes("recommendation"));
 });
 
 test("geography as a subject, rather than a place, needs no map call", () => {
@@ -131,6 +142,18 @@ test("the directive names the obligation only when there is one", () => {
   assert.match(directive, /^# geographic_grounding_required/);
   assert.match(directive, /could not be verified/);
   assert.match(directive, /do not pass names or coordinates/);
+});
+
+test("the directive requires native-map-ready recommendation and route results", () => {
+  const recommendation = renderGeographicGroundingDirective(
+    requiresGeographicGrounding("Recommend cafes in Kadıköy."),
+  );
+  assert.match(recommendation, /call map_nearby/);
+
+  const route = renderGeographicGroundingDirective(
+    requiresGeographicGrounding("Give me directions to Galataport."),
+  );
+  assert.match(route, /map_route with includeSteps: true/);
 });
 
 /* ------------------------------------------------------------------ */
@@ -243,4 +266,38 @@ test("ordinary answers are untouched by the geographic rules", () => {
   );
   assert.deepEqual(summary.unsupportedClaims, []);
   assert.equal(summary.state, "not_applicable");
+});
+
+test("money is not a distance: a funding figure raises no geographic claim", () => {
+  // The screenshot this fixes. A robotics research report saying "Apptronik
+  // $403M to $935M" was flagged for making an unsourced distance claim,
+  // because the unit alternation accepted a bare `m` and the case-insensitive
+  // flag let it match the M in a magnitude suffix — so "403M to" read as four
+  // hundred and three metres.
+  const verdict = assessGeographicGrounding({
+    groundingRequired: true,
+    answer: [
+      "Substantial funding (Galaxy Bot $453M, Apptronik $403M to $935M).",
+      "Helsing at $18B, Hadrian at $7.87B.",
+      "Unit prices of RMB 9.5M to 10.3M per MicroPort system.",
+    ].join(" "),
+    successfulMapFactTools: [],
+  });
+  // The turn may still owe map data for other reasons; what it must not do
+  // is read a funding figure as a distance.
+  assert.ok(
+    !verdict.unsupportedClaims.some((claim) => /Distance/.test(claim)),
+    verdict.unsupportedClaims.join(" | "),
+  );
+});
+
+test("a real distance in metres is still caught", () => {
+  // Narrowing the pattern must not blind it: lowercase metres in a sentence
+  // about getting somewhere is exactly what it exists for.
+  const verdict = assessGeographicGrounding({
+    groundingRequired: true,
+    answer: "The station is 400 m from the entrance.",
+    successfulMapFactTools: [],
+  });
+  assert.ok(verdict.unsupportedClaims.some((claim) => /Distance/.test(claim)));
 });

@@ -57,7 +57,10 @@ export interface CoverageComputation {
  * matrix is bounded by the entity ceiling in the budget, so the cost is bounded
  * with it.
  */
-export function computeCoverage(state: ResearchState): CoverageComputation {
+export function computeCoverage(
+  state: ResearchState,
+  options: { now?: string } = {},
+): CoverageComputation {
   const fields = state.plan.requestedFields;
   const highPriorityKeys = new Set(state.plan.highPriorityFields);
   const cells: CoverageCell[] = [];
@@ -87,6 +90,7 @@ export function computeCoverage(state: ResearchState): CoverageComputation {
         evidence: state.evidence,
         volatile: field.volatile,
         conflictId: `c${++conflictSeq}`,
+        ...(options.now ? { now: options.now } : {}),
       });
       if (resolution.conflict) conflicts.push(resolution.conflict);
       if (resolution.value !== undefined) values[field.key] = resolution.value;
@@ -106,6 +110,11 @@ export function computeCoverage(state: ResearchState): CoverageComputation {
         field: field.key,
         status,
         evidenceCount: resolution.supportingEvidenceIds.length,
+        ...(resolution.corroboration
+          ? { corroboration: resolution.corroboration }
+          : {}),
+        ...(resolution.selfInterestedOnly ? { selfInterestedOnly: true } : {}),
+        ...(resolution.stale ? { stale: true } : {}),
       });
     }
     resolved.set(entity.id, values);
@@ -118,6 +127,16 @@ export function computeCoverage(state: ResearchState): CoverageComputation {
     (cell) => !cellIsSettled(cell.status),
   ).length;
   const conflictingCells = cells.filter((cell) => cell.status === "conflicting").length;
+  // Counted over settled cells only. An unresolved cell resting on one source
+  // is not a disclosure problem — it is an open gap, already counted as one.
+  const settled = cells.filter((cell) => cellIsSettled(cell.status));
+  const singleSourceCells = settled.filter(
+    (cell) => cell.corroboration === "single_source",
+  ).length;
+  const selfInterestedCells = settled.filter(
+    (cell) => cell.selfInterestedOnly === true,
+  ).length;
+  const staleCells = settled.filter((cell) => cell.stale === true).length;
   const totalCells = cells.length;
   const highPrioritySettled = highPriorityCells.length - highPriorityOpen;
 
@@ -142,6 +161,9 @@ export function computeCoverage(state: ResearchState): CoverageComputation {
       fillRate: totalCells ? Number((settledCells / totalCells).toFixed(4)) : 0,
       highPriorityOpen,
       conflictingCells,
+      singleSourceCells,
+      selfInterestedCells,
+      staleCells,
       sufficient,
     },
     conflicts,

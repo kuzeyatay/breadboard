@@ -603,13 +603,18 @@ test("the hand-back turn carries the delegation into its own evidence", () => {
   }
   // Only a hand-back carries one. An ordinary turn that happens to follow a
   // delegated run must not claim the worker as its own provenance.
+  // The guard is what matters, not how close it sits to the call. The window
+  // was eight characters and broke the moment the call was wrapped to resolve
+  // the delegated agent's sources — a change that left the guard exactly where
+  // it was. What is pinned now is that the continuation flag still governs
+  // whether the delegation is read at all.
   assert.match(
     conversationTurns,
-    /input\.internalAgentContinuation[\s\S]{0,8}\?[\s\S]{0,8}externalAgentCallsForRun/,
+    /const carriedDelegations = input\.internalAgentContinuation[\s\S]{0,240}externalAgentCallsForRun\(/,
   );
   assert.match(
     gardenAdapter,
-    /payload\.internalAgentContinuation === true[\s\S]{0,8}\?[\s\S]{0,8}externalAgentCallsForRun/,
+    /payload\.internalAgentContinuation === true[\s\S]{0,240}externalAgentCallsForRun\(/,
   );
   // Both streams read the carried delegations back off the run they are
   // finishing, beside the launches this turn queued itself.

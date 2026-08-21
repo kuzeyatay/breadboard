@@ -35,6 +35,8 @@ export function assistantResponseElapsedMs(input: {
   active: boolean;
   now: number;
   reportedDurationMs?: number;
+  /** Durable beginning of the whole response, retained across chat switches. */
+  responseStartedAt?: string;
   /** Start of a live phase, such as an external-agent hand-off. */
   activePhaseStartedAt?: string;
   /** Monotonic client fallback when restored phase metadata is unavailable. */
@@ -55,8 +57,13 @@ export function assistantResponseElapsedMs(input: {
     return carried + Math.max(0, input.reportedDurationMs);
   }
 
-  const starts = input.activities
-    .map((activity) => timestamp(activity.startedAt))
+  const starts = [
+    ...input.activities.map((activity) => timestamp(activity.startedAt)),
+    // Activities are rebuilt when a live chat is reopened. The assistant row
+    // is durable, so its timestamp prevents that remount from resetting the
+    // response clock to the time the reader came back.
+    input.active ? timestamp(input.responseStartedAt) : null,
+  ]
     .filter((value): value is number => value !== null);
   const startedAt = starts.length ? Math.min(...starts) : null;
 

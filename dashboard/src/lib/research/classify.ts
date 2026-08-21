@@ -51,6 +51,24 @@ const CONFLICT_TERMS =
 const AMBIGUITY_TERMS =
   /\b(?:something like|similar to|that kind of|whatever|any(?:thing)? (?:related|like)|i think it|not sure (?:what|which|if)|might be called|some sort of|roughly)\b/i;
 
+/**
+ * Asking which option wins, rather than what is the case.
+ *
+ * Generic on purpose: every domain has its own superlatives, but they all take
+ * the same shape — a comparative or a superlative applied to a choice.
+ */
+const EVALUATIVE_TERMS =
+  /\b(?:best|worst|better|worse|optimal|ideal|highest|lowest|greatest|top|worth (?:it|the)|should i|should we|which (?:one|option|way)|recommend(?:ed|ation)?|prefer(?:able|red)?|roi|return on investment|payback|value for money|(?:most|least)\b|(?:fast|slow|cheap|expensive|quick|large|small|big|strong|weak|safe|easy|hard|high|low|good|bad|simple|clean|light|short|long)(?:er|est)\b)/i;
+
+/**
+ * The question already says what the judgement is against, so it does not need
+ * to be asked for. Covers the beneficiary ("for a beginner"), the metric ("in
+ * terms of latency", "measured by revenue"), and the horizon ("over five
+ * years").
+ */
+const STATED_CRITERION =
+  /\b(?:for (?:a|an) (?:beginner|student|startup|small team|large team|hobbyist|professional)|in terms of|measured (?:by|in)|based on|by (?:cost|price|speed|latency|revenue|accuracy|throughput|margin|risk)\b|per (?:dollar|euro|hour|user|unit|month|year)\b|over (?:the )?(?:next )?\d+\s*(?:months?|years?)|on a budget of|with (?:a|an) budget|optimi[sz]ing for|prioriti[sz]ing)/i;
+
 /** A single fact about a single thing. */
 const SIMPLE_LOOKUP =
   /^\s*(?:who|what|when|where|which|how much|how many|how old|is|are|was|were|does|did|can)\b[^?]{0,120}\?*\s*$/i;
@@ -196,6 +214,14 @@ export function computeFactors(text: string, fieldCount: number): ResearchFactor
         (LIFECYCLE_TERMS.test(text) ? 0.25 : 0) +
         (HISTORICAL_TERMS.test(text) ? 0.25 : 0),
     ),
+    // A stated basis does not merely offset the superlative, it answers it —
+    // "which is fastest in terms of p99 latency" leaves nothing to disambiguate
+    // — so the two terms cancel rather than sum.
+    criterionAmbiguity: clamp(
+      EVALUATIVE_TERMS.test(text) && !STATED_CRITERION.test(text)
+        ? 0.5 + (COMPARATIVE_TERMS.test(text) ? 0.3 : 0)
+        : 0,
+    ),
   };
 }
 
@@ -209,10 +235,22 @@ function detectIntent(text: string, factors: ResearchFactors): ResearchIntent {
   if (factors.entityBreadth >= 0.4 && factors.fieldBreadth >= 0.4) {
     return "multi_entity_enrichment";
   }
-  if (COMPARATIVE_TERMS.test(text)) return "comparative_research";
+  // A judgement between options, including one where the basis was never
+  // stated. The unstated case is the harder of the two: it has to cover each
+  // reading that would change the ranking, which is more work than a comparison
+  // whose measure is given, not less.
+  if (COMPARATIVE_TERMS.test(text) || factors.criterionAmbiguity >= 0.5) {
+    return "comparative_research";
+  }
   if (factors.ambiguity >= 0.6) return "ambiguity_resolution";
   // A single interrogative with no set, no history and no extra fields is the
   // cheap case, and keeping it cheap is half the point of this module.
+  // "Which niche has the highest return?" is one interrogative with one subject
+  // and no history, which is everything this branch looks for — and it is not a
+  // fact anyone can look up. Treating it as one is how the question a person
+  // most needs research for got the cheapest possible turn: three searches, no
+  // writing standard, no pipeline. A superlative is a judgement, and the
+  // criterion test above has already caught it.
   if (
     SIMPLE_LOOKUP.test(text) &&
     factors.entityBreadth < 0.25 &&
@@ -249,7 +287,12 @@ export function computeBudget(
       factors.fieldBreadth * 0.2 +
       factors.historicalDepth * 0.15 +
       factors.conflictLikelihood * 0.05 +
-      factors.ambiguity * 0.05,
+      factors.ambiguity * 0.05 +
+      // An unstated criterion widens the work rather than deepening it: each
+      // reading that would change the answer has to be covered enough to say
+      // so, which is more searching than the same question with the basis
+      // spelled out.
+      factors.criterionAmbiguity * 0.05,
   );
   const scale = (base: number, top: number) =>
     Math.round(base + (top - base) * weight);
@@ -320,6 +363,7 @@ export function classifyResearch(input: ClassifyInput): ResearchPlan {
     // question about one named subject goes straight to depth.
     requiresEnumeration:
       budget.maxEnumerationRounds > 0 && factors.entityBreadth >= 0.35,
+    criterionUnstated: factors.criterionAmbiguity >= 0.5,
   };
 }
 
@@ -331,5 +375,16 @@ export function classifyResearch(input: ClassifyInput): ResearchPlan {
  * make an ordinary turn slower for nothing.
  */
 export function researchPipelineApplies(plan: ResearchPlan): boolean {
-  return plan.intent !== "simple_lookup" && plan.budget.maxSearches > 8;
+  if (plan.intent === "simple_lookup") return false;
+  if (plan.budget.maxSearches <= 8) return false;
+  // The ledger is a matrix of entities against fields, so it only earns its
+  // cost when there is a matrix. "What is the highest mountain" is a judgement
+  // rather than a lookup — it gets the writing standard — but tracking coverage
+  // for a single subject with a single field is a multi-round protocol drawn
+  // over one cell.
+  return (
+    plan.completenessRequired ||
+    plan.factors.entityBreadth >= 0.2 ||
+    plan.factors.fieldBreadth >= 0.2
+  );
 }

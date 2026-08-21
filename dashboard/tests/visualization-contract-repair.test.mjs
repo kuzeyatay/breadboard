@@ -282,6 +282,56 @@ test("U24 complete interaction contract is model-repaired, typed, and preserved 
   ]);
 });
 
+test("control IDs permit z, reserve runtime x/t, and keep the immutable projection exact", async () => {
+  const unit = requiredU24();
+  const acceptedRepair = validU24Repair();
+  acceptedRepair.repairs[0].controls[0].id = "z";
+
+  const acceptedProblems = validateVisualizationContractUnitRepair({
+    unit,
+    evidence: CANONICAL_EVIDENCE_BY_UNIT.U24,
+    repair: acceptedRepair.repairs[0],
+    requireCompleteContract: true,
+  });
+  assert.deepEqual(acceptedProblems, []);
+
+  const result = await buildVisualizationPlanWithContractRepair({
+    gardenId: "electromagnetism-1",
+    learningMap: mapFor(unit),
+    learningUnits: [unit],
+    visualBudget: VISUAL_BUDGET,
+    canonicalEvidenceByUnit: CANONICAL_EVIDENCE_BY_UNIT,
+    repairProvider: async () => acceptedRepair,
+  });
+  const repairedControls = result.learningUnits[0].interactiveVisualPlan.controlContract;
+  assert.deepEqual(repairedControls, acceptedRepair.repairs[0].controls);
+  assert.deepEqual(
+    result.learningUnits[0].interactiveVisualPlan.decision.interaction.controls,
+    acceptedRepair.repairs[0].controls,
+  );
+  const routed = applyVisualizationRoutesToLearningUnits(result.learningUnits, result.plan);
+  assert.deepEqual(routed[0].interactiveVisualPlan.controlContract, acceptedRepair.repairs[0].controls);
+
+  for (const reservedId of ["x", "t"]) {
+    const rejectedRepair = validU24Repair().repairs[0];
+    rejectedRepair.controls[0].id = reservedId;
+    const parsed = parseVisualizationContractRepairResponse({
+      repairs: [rejectedRepair],
+    }, {
+      requireCompleteContract: true,
+      expectedUnitIds: ["U24"],
+    });
+    assert.match(parsed.problems.join(" "), /reserved by the generated visual runtime/i);
+    const problems = validateVisualizationContractUnitRepair({
+      unit: requiredU24(),
+      evidence: CANONICAL_EVIDENCE_BY_UNIT.U24,
+      repair: rejectedRepair,
+      requireCompleteContract: true,
+    });
+    assert.match(problems.join(" "), new RegExp(`control id "${reservedId}" is reserved`, "i"));
+  }
+});
+
 test("a malformed recommended interaction receives the same bounded model repair without deterministic demotion", async () => {
   const unit = requiredU24();
   unit.interactiveVisualPlan.requirement = "recommended";

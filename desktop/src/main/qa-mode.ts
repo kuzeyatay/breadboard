@@ -111,6 +111,14 @@ export function prepareQaServiceDefinitions(
           "comfyui",
         );
         env["BREADBOARD_IFIXAI_MODE"] = "off";
+        // The humanizer is a multi-gigabyte opt-in with a user-downloaded
+        // checkpoint. QA must never load it, never download it, and never read
+        // a developer's installed copy — so it is turned off and its home is
+        // pointed at disposable state, which makes `/api/humanizer/status`
+        // answer "unavailable" deterministically.
+        env["HUMANIZER_MODE"] = "disabled";
+        env["BREADBOARD_HUMANIZER_HOME"] = state("humanizer");
+        env["HF_HUB_OFFLINE"] = "1";
 
         // Optional dashboard-launched integrations are not part of the
         // critical profile. Point both their program/setup targets and every

@@ -1,0 +1,20 @@
+[project]
+name = "breadboard-humanizer"
+version = "1.0.0"
+description = "Breadboard's local text-humanization service (constrained prose rewriting with preservation gates)."
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  "torch>=2.4",
+  # See requirements.txt: `dtype` vs `torch_dtype` on from_pretrained.
+  "transformers>=4.57,<5",
+  "safetensors>=0.4.3",
+  "sentencepiece>=0.2.0",
+  "pydantic==2.13.4",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["breadboard_humanizer*"]

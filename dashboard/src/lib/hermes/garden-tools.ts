@@ -347,11 +347,20 @@ async function executeSaveNote(
   if (!title) return { ok: false, tool, error: "A note title is required." };
   if (!content.trim()) return { ok: false, tool, error: "The note has no content to save." };
 
+  // "Rewrite naturally", when the user has it on as a standing preference. A
+  // note is written by the server into the garden, so the browser switch cannot
+  // reach it - this is the moment the text becomes a file. Failure is silent
+  // and keeps the original: a rewrite must never cost somebody their note.
+  const { humanizeStoredText } = await import("../humanizer/auto-server.ts");
+  const stored = (
+    await humanizeStoredText(cluster.user_id, content.slice(0, 100000), "garden_note")
+  ).text;
+
   const { createGardenDocument } = await import("../garden-documents.ts");
   const document = await createGardenDocument({
     clusterSlug: cluster.slug,
     title,
-    content: content.slice(0, 100000),
+    content: stored,
     folder: proposalFolder(args.folder),
     tags: Array.isArray(args.tags)
       ? args.tags

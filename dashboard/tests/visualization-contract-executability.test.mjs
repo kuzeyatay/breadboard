@@ -1297,6 +1297,8 @@ test("U3 surface prediction contract receives a bounded AI-only complete replace
       );
       assert.match(request.system, /commit a prediction before the outcome is revealed or evaluated/i);
       assert.match(request.system, /every condition or case that is decisive/i);
+      assert.match(request.system, /control id must match \^\[a-z\]\[a-z0-9_\]\{0,79\}\$/i);
+      assert.match(request.system, /x, t are runtime expression variables and are forbidden control ids/i);
       if (packets.length === 1) return response([]);
       if (packets.length === 2) {
         return response([{

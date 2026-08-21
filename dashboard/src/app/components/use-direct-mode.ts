@@ -1,8 +1,9 @@
 "use client";
 
-// Direct mode is the `i-have-adhd` first-party output style promoted to a
-// switch. The skill keeps its descriptive one-turn command; the persistent
-// product mode uses a neutral name that describes what it does.
+// Concise is the `i-have-adhd` first-party output style promoted to a switch.
+// The skill keeps its descriptive one-turn command. The storage and exported
+// names remain stable so the product rename does not reset existing preferences
+// or break extensions compiled against them.
 
 import { useCallback, useSyncExternalStore } from "react";
 

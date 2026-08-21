@@ -63,20 +63,29 @@ console.log(
   }),
 );
 
-const result = await runLearnPipeline({
-  gardenId: cluster.slug,
-  userId,
-  mode: "plan",
-  client,
-  contentPath,
-  includedSourceIds: sourcesArg
-    ? sourcesArg.split(",").map((id) => id.trim()).filter(Boolean)
-    : undefined,
-  syllabusSourceId: syllabusArg?.trim() || undefined,
-  model,
-  sourceOnly: true,
-  includeSourceSnapshots: false,
-  autoConfirmTopicMap: false,
-});
+// A headless direct runner has no HTTP server/request handle to keep Node's
+// event loop alive while a long council request is pending. Keep one harmless
+// referenced handle for the lifetime of the ordinary pipeline call; the Learn
+// lease's own timer is deliberately unref'ed and must not be used for that.
+const lifecycleKeepalive = setInterval(() => {}, 60_000);
+try {
+  const result = await runLearnPipeline({
+    gardenId: cluster.slug,
+    userId,
+    mode: "plan",
+    client,
+    contentPath,
+    includedSourceIds: sourcesArg
+      ? sourcesArg.split(",").map((id) => id.trim()).filter(Boolean)
+      : undefined,
+    syllabusSourceId: syllabusArg?.trim() || undefined,
+    model,
+    sourceOnly: true,
+    includeSourceSnapshots: false,
+    autoConfirmTopicMap: false,
+  });
 
-console.log(JSON.stringify({ event: "plan-finished", at: new Date().toISOString(), result }));
+  console.log(JSON.stringify({ event: "plan-finished", at: new Date().toISOString(), result }));
+} finally {
+  clearInterval(lifecycleKeepalive);
+}

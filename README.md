@@ -395,6 +395,16 @@ This starts:
 > `npm run setup:resource2skill`. See
 > [docs/RESOURCE2SKILL_INTEGRATION.md](docs/RESOURCE2SKILL_INTEGRATION.md).
 >
+> **MatrAIx** answers a question by simulating a population rather than
+> reasoning about one. `/agents:matraix <what you want to learn>` writes a
+> questionnaire from the brief, draws a cohort out of persona records built on a
+> 1,290-dimension schema, runs each persona as its own agent, and reports how
+> the answers split — with `--by <dimension>` for the subgroup cuts and every
+> respondent's stated reason. Simulated opinion, not evidence from real people,
+> and the report says so. Provision its Python 3.12 environment with
+> `npm run setup:matraix`. See
+> [docs/MATRAIX_INTEGRATION.md](docs/MATRAIX_INTEGRATION.md).
+>
 > **ViMax** makes films. `/agents:vimax <idea>` writes the story and screenplay,
 > casts and draws the characters, storyboards every shot, decomposes each shot
 > into first frame, motion and last frame, and ends in one artifact that plays

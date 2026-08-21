@@ -31,8 +31,87 @@ export interface AgentLaunchRequestPayload {
  */
 export const MAX_AGENT_LAUNCH_HOPS = 4;
 
-/** How much of a run's output the follow-up turn carries back. */
-const MAX_CONTINUATION_CONTENT = 6_000;
+/**
+ * The transport ceiling this message has to fit inside.
+ *
+ * `/api/hermes/sessions/[sessionId]/messages` rejects a `text` field over
+ * 100,000 characters with a 400 — it does not trim it. So a continuation that
+ * exceeds this does not arrive shortened, it does not arrive at all, and the
+ * user watches a finished run produce no answer. That is the only reason a
+ * limit exists here. It is not a judgement about how much detail is worth
+ * carrying.
+ */
+const MESSAGE_TEXT_LIMIT = 100_000;
+
+/**
+ * Room for the verdict line and the closing instruction wrapped around the
+ * result. Generous on purpose: overshooting costs a few hundred characters of
+ * a budget nothing legitimate comes close to spending, and undershooting costs
+ * the whole turn.
+ */
+const CONTINUATION_WRAPPER_ALLOWANCE = 2_000;
+
+/**
+ * How much of a run's output the follow-up turn carries back.
+ *
+ * Derived, not chosen. The old value was 6,000, which cut every research report
+ * in half and deleted the source registry that lives at the end of it — so the
+ * reader got an answer whose citations had been destroyed before the model ever
+ * saw them.
+ *
+ * Nothing legitimate reaches this ceiling. The engine caps its own report at
+ * `FinalReportMaxTokens` (8,000 tokens, roughly 36,000 characters) and its
+ * source registry at `maxSources`, so a full-length report with a hundred
+ * sources arrives whole with room to spare. What the limit is actually for is a
+ * worker that returns something pathological — a shell run that dumps a log, a
+ * browser agent that returns a page verbatim — where the choice is between a
+ * trimmed result and the route refusing the turn.
+ */
+const MAX_CONTINUATION_CONTENT =
+  MESSAGE_TEXT_LIMIT - CONTINUATION_WRAPPER_ALLOWANCE;
+
+/**
+ * A trailing source registry, which a cited report appends after its prose.
+ *
+ * Matched so it can be preserved separately: it is the last thing in the
+ * document and therefore the first thing a naive truncation destroys — and it
+ * is the part that makes every citation above it mean something.
+ */
+const SOURCE_REGISTRY =
+  /\n#{1,6}[ \t]*(?:Sources|References|Bibliography)[ \t]*\r?\n[\s\S]*$/i;
+
+/** Citation markers a worker's report may carry, e.g. `[S1]` or `[S1][S4]`. */
+const CITATION_MARKER = /\[S\d+\]/;
+
+/**
+ * Keep a worker's result inside the transport limit without destroying its
+ * evidence.
+ *
+ * The fast path is the only one that should ever run: anything under the
+ * ceiling is returned exactly as the worker wrote it, untouched. A research
+ * report is always in that case.
+ *
+ * Past it, cutting from the end is the obvious implementation and the wrong
+ * one for anything cited, because the registry the citations point at lives
+ * there. So the registry is lifted out, the prose is trimmed to what remains,
+ * and the registry is put back. This is damage control on output nothing
+ * should be producing, and the alternative is a 400 and no answer at all.
+ */
+function boundedResult(content: string): string {
+  const trimmed = content.trim();
+  if (trimmed.length <= MAX_CONTINUATION_CONTENT) return trimmed;
+
+  const registry = trimmed.match(SOURCE_REGISTRY)?.[0]?.trim() ?? "";
+  if (!registry || registry.length >= MAX_CONTINUATION_CONTENT) {
+    return trimmed.slice(0, MAX_CONTINUATION_CONTENT);
+  }
+  const marker =
+    "\n\n[... this result exceeded the message size limit; its middle was omitted ...]\n\n";
+  const prose = trimmed.slice(0, trimmed.length - registry.length);
+  const room = MAX_CONTINUATION_CONTENT - registry.length - marker.length;
+  if (room <= 0) return registry;
+  return `${prose.slice(0, room).trimEnd()}${marker}${registry}`;
+}
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -93,18 +172,26 @@ export function agentLaunchContinuationMessage(input: {
   outcome: string;
   content: string;
 }): string {
-  const body = input.content.trim().slice(0, MAX_CONTINUATION_CONTENT);
+  const body = boundedResult(input.content);
   const verdict =
     input.outcome === "completed"
       ? `${input.agentName} finished.`
       : `${input.agentName} did not finish — it ${input.outcome}.`;
+  // "In your own words" is right for a worker that edited a video and wrong for
+  // one that researched something. A cited report is evidence, and paraphrasing
+  // evidence is precisely how a figure the worker attributed to a named source
+  // reaches the reader as a bare assertion — which is the one thing the reader
+  // opened the answer to check.
+  const completedInstruction = CITATION_MARKER.test(body)
+    ? "Respond as the Super Agent. This result is cited: the [S1]-style markers point at the source list at its end, and they are the evidence rather than decoration. Compress it, reorder it, lead with the conclusion — but do not restate a sourced figure, date, or quantity without carrying its citation with it, and do not add a claim the result does not support. Keep the source list at the end. Where the result gave a number without a citation, say that it was uncited rather than lending it one. Keep the publisher too: where the result names who reported a figure, or where the source list makes it plain, say so in the sentence rather than leaving the reader a bare marker — and keep any scope the figure only holds inside, such as the country a salary band describes. Your own opening line is the riskiest sentence you will write here: it is the one part of the answer the worker did not write, so nothing has checked it. Any headline figure in it must be one the result actually states, with its citation and its scope, and must be consistent with every figure you carry below it — read it back against them before you send, and correct the opening rather than the evidence. If the result contains an artifact, file, download, URL, or artifact ID, present that exact output clearly and preserve its link. Launch another worker only if the plan genuinely requires it."
+    : "Respond as the Super Agent. Summarize the useful result in your own words. If the result contains an artifact, file, download, URL, or artifact ID, present that exact output clearly and preserve its link; do not merely say the worker finished. Launch another worker only if the plan genuinely requires it.";
   return [
     `${verdict} This is its result, handed back to you:`,
     "",
     body || "(it returned no output)",
     "",
     input.outcome === "completed"
-      ? "Respond as the Super Agent. Summarize the useful result in your own words. If the result contains an artifact, file, download, URL, or artifact ID, present that exact output clearly and preserve its link; do not merely say the worker finished. Launch another worker only if the plan genuinely requires it."
+      ? completedInstruction
       : "Say what failed and what you would do about it. Do not relaunch it without being asked.",
   ].join("\n");
 }

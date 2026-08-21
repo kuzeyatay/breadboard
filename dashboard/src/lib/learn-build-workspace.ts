@@ -18,6 +18,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import {
+  isTransientFileOpenError,
+  withTransientFileOpenRetry,
+} from "./resilient-fs.ts";
 
 export interface LearnBuildWorkspace {
   buildId: string;
@@ -142,17 +146,191 @@ function shortHash(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
+function temporaryBuildsBaseDir(): string {
+  return path.join(os.tmpdir(), "breadboard-learn");
+}
+
 function buildsBaseDir(): string {
   const localAppData = process.env.LOCALAPPDATA;
   if (localAppData && localAppData.trim()) {
     return path.join(localAppData, "Breadboard", "builds");
   }
-  return path.join(os.tmpdir(), "breadboard-learn");
+  return temporaryBuildsBaseDir();
 }
 
 /** Compute the default (non-synchronized) workspace root for a run. */
 export function defaultWorkspaceRoot(gardenSlug: string, jobId: string): string {
   return path.join(buildsBaseDir(), gardenSlug, jobId);
+}
+
+/**
+ * Fallback scratch root for a default LOCALAPPDATA workspace whose directory
+ * operations are temporarily denied. OS temp remains outside the published
+ * garden and is safe for fully isolated, disposable Learn staging.
+ */
+export function temporaryWorkspaceRoot(gardenSlug: string, jobId: string): string {
+  return path.join(temporaryBuildsBaseDir(), gardenSlug, jobId);
+}
+
+/** All known disposable roots for a job, in preference order. Recovery uses
+ * this only for best-effort cleanup; neither location is authoritative. */
+export function learnWorkspaceRootCandidates(
+  gardenSlug: string,
+  jobId: string,
+): string[] {
+  return [...new Set([
+    defaultWorkspaceRoot(gardenSlug, jobId),
+    temporaryWorkspaceRoot(gardenSlug, jobId),
+  ].map((candidate) => path.resolve(candidate)))];
+}
+
+function workspaceRootUnavailable(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code?.toUpperCase();
+  return isTransientFileOpenError(error) || code === "ENOTDIR" || code === "EROFS";
+}
+
+function pathIsWithinOrEqual(candidate: string, container: string): boolean {
+  const relative = path.relative(path.resolve(container), path.resolve(candidate));
+  return (
+    relative === "" ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+  );
+}
+
+function assertIsolatedWorkspaceRoot(
+  workspaceRoot: string,
+  repositoryGardenDir: string,
+): void {
+  if (
+    pathIsWithinOrEqual(workspaceRoot, repositoryGardenDir) ||
+    pathIsWithinOrEqual(repositoryGardenDir, workspaceRoot)
+  ) {
+    throw new Error(
+      "Learn workspace must be outside the authoritative repository garden.",
+    );
+  }
+}
+
+export interface LearnWorkspaceDirectoryFileSystem {
+  rmSync(directoryPath: string, options: { recursive: true; force: true }): void;
+  mkdirSync(directoryPath: string, options: { recursive: true }): string | undefined;
+}
+
+export interface PrepareLearnWorkspaceRootOptions {
+  workspaceRoot: string;
+  fallbackWorkspaceRoot?: string;
+  repositoryGardenDir: string;
+  stagingDirectoryName: string;
+  /** Explicit caller roots remain authoritative and are never relocated. */
+  allowFallback: boolean;
+  retryDelaysMs?: readonly number[];
+  sleep?: (milliseconds: number) => void;
+  fileSystem?: LearnWorkspaceDirectoryFileSystem;
+}
+
+export interface PreparedLearnWorkspaceRoot {
+  workspaceRoot: string;
+  stagingGardenDir: string;
+  stagingLearningDir: string;
+  usedFallback: boolean;
+}
+
+const NODE_WORKSPACE_DIRECTORY_FILE_SYSTEM: LearnWorkspaceDirectoryFileSystem = {
+  rmSync(directoryPath, options) {
+    fs.rmSync(directoryPath, options);
+  },
+  mkdirSync(directoryPath, options) {
+    return fs.mkdirSync(directoryPath, options);
+  },
+};
+
+/**
+ * Prepare a clean, isolated staging root. The only fallback is from the
+ * automatic LOCALAPPDATA location to OS temp after bounded, transient
+ * directory-operation retries. It never masks a caller-selected root or a
+ * durable source/seed failure.
+ */
+export function prepareLearnWorkspaceRoot(
+  options: PrepareLearnWorkspaceRootOptions,
+): PreparedLearnWorkspaceRoot {
+  const fileSystem = options.fileSystem ?? NODE_WORKSPACE_DIRECTORY_FILE_SYSTEM;
+  const removeRootBestEffort = (workspaceRoot: string): void => {
+    try {
+      fileSystem.rmSync(workspaceRoot, { recursive: true, force: true });
+    } catch {
+      // A locked disposable workspace is never publication authority. Preserve
+      // the original setup error and leave it for later OS cleanup.
+    }
+  };
+  const reset = (workspaceRoot: string): void => {
+    const stagingGardenDir = path.join(workspaceRoot, options.stagingDirectoryName);
+    assertIsolatedWorkspaceRoot(workspaceRoot, options.repositoryGardenDir);
+    // The workspace is entirely disposable. Retry only transient filesystem
+    // boundaries; durable source seeding below remains fail-closed.
+    withTransientFileOpenRetry(() => {
+      fileSystem.rmSync(workspaceRoot, { recursive: true, force: true });
+      fileSystem.mkdirSync(stagingGardenDir, { recursive: true });
+    }, {
+      retryDelaysMs: options.retryDelaysMs,
+      sleep: options.sleep,
+    });
+  };
+  const prepared = (workspaceRoot: string, usedFallback: boolean): PreparedLearnWorkspaceRoot => {
+    const stagingGardenDir = path.join(workspaceRoot, options.stagingDirectoryName);
+    return {
+      workspaceRoot,
+      stagingGardenDir,
+      stagingLearningDir: path.join(stagingGardenDir, "learning"),
+      usedFallback,
+    };
+  };
+
+  // This establishes that every later best-effort cleanup below targets an
+  // isolated, disposable location. Do it outside the try/catch so an unsafe
+  // caller root is rejected rather than ever becoming a delete target.
+  assertIsolatedWorkspaceRoot(options.workspaceRoot, options.repositoryGardenDir);
+  try {
+    reset(options.workspaceRoot);
+    return prepared(options.workspaceRoot, false);
+  } catch (error) {
+    const fallbackRoot = options.fallbackWorkspaceRoot;
+    if (
+      !options.allowFallback ||
+      !fallbackRoot ||
+      !workspaceRootUnavailable(error) ||
+      path.resolve(fallbackRoot) === path.resolve(options.workspaceRoot)
+    ) {
+      removeRootBestEffort(options.workspaceRoot);
+      throw error;
+    }
+    // A recursive mkdir can have made a partial job tree before an EPERM. It
+    // is disposable and gets one best-effort cleanup before this job moves to
+    // a distinct root; abandoned-job recovery also covers both roots later.
+    removeRootBestEffort(options.workspaceRoot);
+    // Validate before entering the cleanup guard: a rejected candidate must
+    // never become a recursive-delete target.
+    assertIsolatedWorkspaceRoot(fallbackRoot, options.repositoryGardenDir);
+    try {
+      reset(fallbackRoot);
+    } catch (fallbackError) {
+      // `mkdir -p` can leave a partial temp job tree before a later directory
+      // operation fails. This run is terminal if fallback setup fails, so
+      // remove that known-safe disposable root immediately rather than rely on
+      // abandoned-worker recovery (which only sweeps interrupted jobs).
+      removeRootBestEffort(fallbackRoot);
+      throw fallbackError;
+    }
+    return prepared(fallbackRoot, true);
+  }
+}
+
+function disposeWorkspaceRootBestEffort(workspaceRoot: string): void {
+  try {
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  } catch {
+    // A locked disposable workspace is never publication authority. Preserve
+    // the original validation/seed error and leave it for later OS cleanup.
+  }
 }
 
 function copyFileResilient(src: string, dest: string): void {
@@ -293,23 +471,25 @@ export function createLearnBuildWorkspace(input: {
   stagingDirectoryName?: string;
 }): LearnBuildWorkspace {
   const buildId = `build_${Date.now().toString(36)}_${shortHash(`${input.gardenSlug}:${input.jobId}:${input.sourceSetFingerprint}`)}`;
-  const workspaceRoot = input.workspaceRoot ?? defaultWorkspaceRoot(input.gardenSlug, input.jobId);
-  const stagingGardenDir = path.join(
-    workspaceRoot,
-    input.stagingDirectoryName?.trim() || "staging",
+  const stagingDirectoryName = input.stagingDirectoryName?.trim() || "staging";
+  const requestedWorkspaceRoot = input.workspaceRoot ?? defaultWorkspaceRoot(
+    input.gardenSlug,
+    input.jobId,
   );
-  const stagingLearningDir = path.join(stagingGardenDir, "learning");
   const durableInputFingerprint = fingerprintDurableGardenState(
     input.repositoryGardenDir,
   );
+  const preparedWorkspaceRoot = prepareLearnWorkspaceRoot({
+    workspaceRoot: requestedWorkspaceRoot,
+    fallbackWorkspaceRoot: temporaryWorkspaceRoot(input.gardenSlug, input.jobId),
+    repositoryGardenDir: input.repositoryGardenDir,
+    stagingDirectoryName,
+    allowFallback: input.workspaceRoot === undefined,
+  });
+  const { workspaceRoot, stagingGardenDir, stagingLearningDir } = preparedWorkspaceRoot;
   let authoritativeSourceAnchorLedger:
     | AuthoritativeSourceAnchorLedgerSnapshot
     | undefined;
-
-  // Start from a clean staging garden. A stale workspace directory from a
-  // previous crashed run of the same job id is removed first.
-  fs.rmSync(workspaceRoot, { recursive: true, force: true });
-  fs.mkdirSync(stagingGardenDir, { recursive: true });
 
   try {
     seedDurableInputs(input.repositoryGardenDir, stagingGardenDir);
@@ -332,7 +512,7 @@ export function createLearnBuildWorkspace(input: {
       );
     }
   } catch (error) {
-    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    disposeWorkspaceRootBestEffort(workspaceRoot);
     throw error;
   }
 
@@ -352,8 +532,16 @@ export function createLearnBuildWorkspace(input: {
     authoritativeSourceAnchorLedger,
     createdAt: new Date().toISOString(),
   };
-  writeWorkspaceDescriptor(workspace);
-  return workspace;
+  try {
+    writeWorkspaceDescriptor(workspace);
+    return workspace;
+  } catch (error) {
+    // The workspace has not been handed to the caller yet. If its local-only
+    // descriptor cannot be written, remove the isolated staging tree now so a
+    // terminal setup failure cannot strand disposable files.
+    disposeWorkspaceRootBestEffort(workspaceRoot);
+    throw error;
+  }
 }
 
 /** Copy durable inputs (sources, config, approved non-learning files, and the
@@ -490,9 +678,5 @@ function writeWorkspaceDescriptor(workspace: LearnBuildWorkspace): void {
 
 /** Best-effort cleanup of a finished/abandoned workspace. Never throws. */
 export function disposeLearnBuildWorkspace(workspace: LearnBuildWorkspace): void {
-  try {
-    fs.rmSync(workspace.workspaceRoot, { recursive: true, force: true });
-  } catch {
-    // A locked temp workspace is harmless; leave it for OS temp cleanup.
-  }
+  disposeWorkspaceRootBestEffort(workspace.workspaceRoot);
 }

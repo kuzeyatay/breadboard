@@ -585,3 +585,85 @@ test("renders extracted web pages with clickable link and title from details.res
   assert.match(markup, /tue.nl/);
   assert.doesNotMatch(markup, /No source links were recorded/);
 });
+
+test("a delegated agent's own sources render under its name", () => {
+  // The screenshot this fixes: "Deep Research · answered by", and directly
+  // above it "4 tool calls · no sources" — about an answer built entirely from
+  // pages that agent read. A delegated run searches in its own process, so none
+  // of it reaches the tool calls above.
+  const markup = render(
+    summary({
+      state: "partially_verified",
+      evidence: [evidence({ success: true, title: "Creating an artifact" })],
+      externalAgents: [
+        {
+          agentId: "deep_research",
+          agentName: "Deep Research",
+          command: "/agents:deep-research",
+          requiresApproval: false,
+          requestedAt: new Date(0).toISOString(),
+          carried: true,
+          websites: [
+            { url: "https://ifr.org/report", title: "World Robotics", domain: "ifr.org" },
+            { url: "https://www.nist.gov/assembly", domain: "nist.gov" },
+          ],
+        },
+      ],
+    }),
+  );
+
+  assert.match(markup, /Deep Research/);
+  assert.match(markup, /Deep Research read 2 pages/);
+  assert.match(markup, /https:\/\/ifr\.org\/report/);
+  assert.match(markup, /World Robotics/);
+  assert.match(markup, /https:\/\/www\.nist\.gov\/assembly/);
+  // And the header stops denying they exist.
+  assert.doesNotMatch(markup, /no sources/);
+  assert.match(markup, /2 sources/);
+});
+
+test("a page the turn and its agent both opened counts once", () => {
+  const shared = "https://ifr.org/report";
+  const markup = render(
+    summary({
+      evidence: [
+        evidence({
+          success: true,
+          websites: [{ url: shared, domain: "ifr.org" }],
+        }),
+      ],
+      externalAgents: [
+        {
+          agentId: "deep_research",
+          agentName: "Deep Research",
+          command: "/agents:deep-research",
+          requiresApproval: false,
+          requestedAt: new Date(0).toISOString(),
+          carried: true,
+          websites: [{ url: shared, domain: "ifr.org" }],
+        },
+      ],
+    }),
+  );
+  assert.match(markup, /1 source(?!s)/);
+});
+
+test("an agent that read nothing adds no empty heading", () => {
+  const markup = render(
+    summary({
+      evidence: [evidence({ success: true })],
+      externalAgents: [
+        {
+          agentId: "vimax",
+          agentName: "Vimax",
+          command: "/agents:vimax",
+          requiresApproval: false,
+          requestedAt: new Date(0).toISOString(),
+        },
+      ],
+    }),
+  );
+  assert.match(markup, /Vimax/);
+  assert.doesNotMatch(markup, /read 0 pages/);
+  assert.match(markup, /no sources/);
+});

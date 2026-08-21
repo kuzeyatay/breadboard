@@ -897,6 +897,21 @@ export function getConversationMessageById(
   return (database.prepare("SELECT * FROM conversation_messages WHERE id = ?").get(id) as ConversationMessageRow | undefined) ?? null;
 }
 
+/** Resolve the durable half of a turn while its browser UUID is still on screen. */
+export function getConversationMessageByClientId(
+  conversationId: number,
+  clientMessageId: string,
+  role: "user" | "assistant",
+  database: Database.Database = db,
+): ConversationMessageRow | null {
+  return getMessageByClientRole(
+    conversationId,
+    normalizeClientMessageId(clientMessageId),
+    role,
+    database,
+  );
+}
+
 export function presentConversationMessage(row: ConversationMessageRow): PresentedConversationMessage {
   return {
     id: `msg_${row.id}`,

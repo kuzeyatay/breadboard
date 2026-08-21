@@ -7,6 +7,7 @@ import type {
   CapabilityUse,
   EvidenceRecord,
   EvidenceWebsite,
+  ExternalAgentCall,
 } from "@/lib/hermes/evidence";
 import { extractWebsitesFromEvidence, isHttpUrl } from "@/lib/hermes/evidence";
 
@@ -103,6 +104,27 @@ function collectSources(evidence: EvidenceRecord[]): EvidenceWebsite[] {
       }
       if (!existing.title && site.title) existing.title = site.title;
       if (!existing.domain && site.domain) existing.domain = site.domain;
+    }
+  }
+  return [...byKey.values()];
+}
+
+/**
+ * Every page the turn's delegated agents read, listed once.
+ *
+ * Kept apart from the turn's own sources: which of the two actually opened a
+ * page is exactly what a reader checking an answer wants to know, and merging
+ * them would erase it.
+ */
+function collectDelegatedSources(
+  agents: ExternalAgentCall[] | undefined,
+): EvidenceWebsite[] {
+  const byKey = new Map<string, EvidenceWebsite>();
+  for (const agent of agents ?? []) {
+    for (const site of agent.websites ?? []) {
+      if (!site.url) continue;
+      const key = sourceKey(site.url);
+      if (!byKey.has(key)) byKey.set(key, site);
     }
   }
   return [...byKey.values()];
@@ -310,6 +332,15 @@ export default function EvidencePanel({
   maxHeight?: number;
 }) {
   const sources = collectSources(verification.evidence);
+  // A delegated agent searched in its own process, so none of it is in the rows
+  // above. Counting only those made the header say "no sources" about an answer
+  // built entirely from pages a worker read — the one turn where the count
+  // mattered most was the one where it was wrong. Deduped against the turn's
+  // own list so a page both of them opened is one source, not two.
+  const delegatedSources = collectDelegatedSources(verification.externalAgents);
+  const sourceCount = new Set(
+    [...sources, ...delegatedSources].map((site) => sourceKey(site.url)),
+  ).size;
   // A capability section with nothing in it is a heading plus a denial; the
   // absence of the section says the same thing without spending three lines.
   // Super agent alone no longer opens it: with the inventory line gone there is
@@ -351,8 +382,8 @@ export default function EvidencePanel({
             <p className="mt-0.5 text-[10px] text-[var(--ink-muted)]">
               {verification.evidence.length}{" "}
               {verification.evidence.length === 1 ? "tool call" : "tool calls"}
-              {sources.length
-                ? ` · ${sources.length} ${sources.length === 1 ? "source" : "sources"}`
+              {sourceCount
+                ? ` · ${sourceCount} ${sourceCount === 1 ? "source" : "sources"}`
                 : " · no sources"}
             </p>
           ) : null}
@@ -555,6 +586,28 @@ export default function EvidencePanel({
                 </li>
               ))}
             </ul>
+            {/*
+              What each agent read, under the agent that read it. A delegated
+              run searches in its own process, so these pages appear nowhere in
+              the tool calls above — without this the panel names the worker and
+              then shows nothing it looked at.
+            */}
+            {agents
+              .filter((agent) => agent.websites?.length)
+              .map((agent) => (
+                <div key={`${agent.agentId}-${agent.requestedAt}-sources`} className="mt-2">
+                  <SectionLabel>
+                    {`${agent.agentName} read ${agent.websites!.length} ${
+                      agent.websites!.length === 1 ? "page" : "pages"
+                    }`}
+                  </SectionLabel>
+                  <ul className="mt-1">
+                    {agent.websites!.map((site) => (
+                      <SourceItem key={site.url} site={site} />
+                    ))}
+                  </ul>
+                </div>
+              ))}
           </div>
         ) : null}
 

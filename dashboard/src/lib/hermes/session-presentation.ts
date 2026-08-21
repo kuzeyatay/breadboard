@@ -9,6 +9,14 @@ import {
   externalAgentMessageFields,
 } from "../conversations/external-agent-runs.ts";
 import { projectConversationBranchMessages } from "../conversations/branch-history.ts";
+import {
+  presentMessageVersions,
+  readMessageVersions,
+} from "../conversations/message-versions.ts";
+import {
+  scoreReview,
+  summarizeReviewScores,
+} from "../humanizer/review.ts";
 import { normalizeChatTextSelectionReference } from "../chat-text-selection.ts";
 import { memoryUpdatedClientMessageIdsForSession } from "./memory-evidence.ts";
 import { getRuntimeSessionByConversation } from "./runtime-store.ts";
@@ -125,10 +133,14 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
     listConversationMessages(conversation.id),
   ).map((message) => {
     const presented = presentConversationMessage(message);
-    const calls = Array.isArray(presented.metadata.toolCalls)
-      ? presented.metadata.toolCalls as Array<Record<string, unknown>>
+    // Metadata is the persistence envelope. Project the fields the client
+    // actually consumes below, but do not also ship that envelope wholesale:
+    // tool traces and attachments can make it several megabytes per chat.
+    const { metadata, ...presentedMessage } = presented;
+    const calls = Array.isArray(metadata.toolCalls)
+      ? metadata.toolCalls as Array<Record<string, unknown>>
       : [];
-    const metadataDuration = Number(presented.metadata.responseDurationMs);
+    const metadataDuration = Number(metadata.responseDurationMs);
     const timestampDuration = Math.max(
       0,
       Date.parse(presented.updatedAt) - Date.parse(presented.createdAt),
@@ -139,7 +151,7 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
         ? timestampDuration
         : undefined;
     const textSelection = normalizeChatTextSelectionReference(
-      presented.metadata.textSelection,
+      metadata.textSelection,
     );
     const normalizeModelChangeLabel = (value: unknown) =>
       typeof value === "string"
@@ -150,14 +162,14 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
             .slice(0, 160)
         : "";
     const persistedModelChanges = Array.isArray(
-      presented.metadata.modelChangeLabels,
+      metadata.modelChangeLabels,
     )
-      ? presented.metadata.modelChangeLabels
+      ? metadata.modelChangeLabels
           .map(normalizeModelChangeLabel)
           .filter(Boolean)
       : [];
     const legacyModelChange = normalizeModelChangeLabel(
-      presented.metadata.modelChangeLabel,
+      metadata.modelChangeLabel,
     );
     const modelChangesAfter = persistedModelChanges.length
       ? persistedModelChanges
@@ -165,7 +177,22 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
         ? [legacyModelChange]
         : [];
     const modelChangeAfter = modelChangesAfter.at(-1) ?? "";
-    let externalAgent = externalAgentMessageFields(presented.metadata);
+    // Always at least one version, so nothing downstream has to branch on
+    // "has this answer ever been rewritten".
+    const contentVersions = readMessageVersions(message);
+    const activeContentVersion = contentVersions.versions[contentVersions.activeIndex];
+    const humanizerScore =
+      contentVersions.derived && activeContentVersion
+        ? activeContentVersion.review ??
+          summarizeReviewScores(
+            scoreReview(
+              contentVersions.versions[activeContentVersion.derivedFrom ?? 0]?.content ??
+                contentVersions.versions[0].content,
+              activeContentVersion.content,
+            ),
+          )
+        : null;
+    let externalAgent = externalAgentMessageFields(metadata);
     if (
       presented.role === "assistant" &&
       externalAgent.hardwareBlueprintRun &&
@@ -188,13 +215,13 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       }
     }
     return {
-      ...presented,
+      ...presentedMessage,
       ...delegatedAgentPresentation(presented.content, externalAgent),
-      ...(Array.isArray(presented.metadata.attachmentNames)
-        ? { attachmentNames: presented.metadata.attachmentNames }
+      ...(Array.isArray(metadata.attachmentNames)
+        ? { attachmentNames: metadata.attachmentNames }
         : {}),
-      ...(Array.isArray(presented.metadata.attachments)
-        ? { attachments: presented.metadata.attachments }
+      ...(Array.isArray(metadata.attachments)
+        ? { attachments: metadata.attachments }
         : {}),
       tools: calls.map((call, index) => ({
         toolCallId: String(call.toolCallId ?? `tool-${index}`),
@@ -202,8 +229,24 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
         summary: typeof call.summary === "string" ? call.summary : undefined,
         status: call.success === false ? "failed" : "completed",
       })),
-      verification: presented.metadata.verification,
-      proposal: presented.metadata.proposal,
+      // Evidence was gathered about the wording the model produced. A version
+      // rewritten afterwards is a different set of sentences, and letting it
+      // inherit "verified" would be a claim nobody checked — so a derived
+      // version carries none, and switching back to the original restores it.
+      verification: contentVersions.derived ? undefined : metadata.verification,
+      ...(contentVersions.versions.length > 1
+        ? { contentVersions: presentMessageVersions(contentVersions) }
+        : {}),
+      ...(humanizerScore
+        ? {
+            humanizerReview: {
+              ...humanizerScore,
+              adopted: true,
+              disposition: "adopted" as const,
+            },
+          }
+        : {}),
+      proposal: metadata.proposal,
       interrupted: presented.status === "aborted",
       // A turn that paused for permission before dispatch is only actionable
       // while its approval card is on screen — client state that navigation
@@ -211,33 +254,33 @@ export function presentHermesSessionDetail(conversation: ConversationRow) {
       // restore rebuild the card instead of showing a dead blank turn.
       ...(presented.role === "assistant" &&
       presented.status === "failed" &&
-      presented.metadata.error === "awaiting_permission" &&
-      Array.isArray(presented.metadata.pendingPermissions) &&
-      presented.metadata.pendingPermissions.length > 0
-        ? { pendingPermissions: presented.metadata.pendingPermissions }
+      metadata.error === "awaiting_permission" &&
+      Array.isArray(metadata.pendingPermissions) &&
+      metadata.pendingPermissions.length > 0
+        ? { pendingPermissions: metadata.pendingPermissions }
         : {}),
       ...(presented.role === "assistant" &&
       memoryUpdatedClientMessageIds.has(presented.clientMessageId)
         ? { memoryUpdated: true }
         : {}),
-      ...(typeof presented.metadata.branchGroupId === "string"
-        ? { branchGroupId: presented.metadata.branchGroupId }
+      ...(typeof metadata.branchGroupId === "string"
+        ? { branchGroupId: metadata.branchGroupId }
         : {}),
       ...(textSelection ? { textSelection } : {}),
-      ...(presented.metadata.courseCorrection === true
+      ...(metadata.courseCorrection === true
         ? { courseCorrection: true }
         : {}),
-      ...(presented.metadata.internalAgentContinuation === true
+      ...(metadata.internalAgentContinuation === true
         ? { internalAgentContinuation: true }
         : {}),
-      ...(typeof presented.metadata.courseCorrectionTargetClientMessageId === "string"
+      ...(typeof metadata.courseCorrectionTargetClientMessageId === "string"
         ? {
             courseCorrectionTargetClientMessageId:
-              presented.metadata.courseCorrectionTargetClientMessageId,
+              metadata.courseCorrectionTargetClientMessageId,
           }
         : {}),
-      ...(typeof presented.metadata.courseCorrectionOffset === "number"
-        ? { courseCorrectionOffset: presented.metadata.courseCorrectionOffset }
+      ...(typeof metadata.courseCorrectionOffset === "number"
+        ? { courseCorrectionOffset: metadata.courseCorrectionOffset }
         : {}),
       ...(modelChangesAfter.length ? { modelChangesAfter } : {}),
       ...(modelChangeAfter ? { modelChangeAfter } : {}),

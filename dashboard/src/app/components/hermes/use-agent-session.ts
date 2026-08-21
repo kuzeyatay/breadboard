@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isDirectModeEnabled } from "@/app/components/use-direct-mode";
+import { isPersonalizeEnabled } from "@/app/components/use-personalize";
 import { isGoalModeEnabled } from "@/app/components/use-goal-mode";
 import { isYoloModeEnabled, useYoloMode } from "@/app/components/use-yolo-mode";
 import {
@@ -33,6 +34,11 @@ import {
   normalizeChatTokenUsage,
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
+import type {
+  HumanizerReviewDisposition,
+  HumanizerReviewPresentation,
+  HumanizerScoreSummary,
+} from "@/lib/humanizer/review-types.ts";
 import {
   activityLabelForTool,
   evidenceKindForTool,
@@ -172,6 +178,21 @@ export interface AgentMessage {
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   verification?: VerificationSummary;
+  /**
+   * Stored content versions of this answer, present only once it has more than
+   * one — today that means it was rewritten by the local humanizer. The
+   * original is always version 0 and is always still selectable.
+   */
+  contentVersions?: {
+    total: number;
+    activeIndex: number;
+    /** True when the version on screen is not the text the model produced. */
+    derived: boolean;
+    origins: Array<"original" | "humanizer">;
+    review?: HumanizerScoreSummary;
+  };
+  /** Result of the standing local rewrite, including candidates kept original. */
+  humanizerReview?: HumanizerReviewPresentation;
   interrupted?: boolean;
   courseCorrection?: boolean;
   /** Assistant turn this mid-run correction was inserted into. */
@@ -239,6 +260,7 @@ export interface AgentMessage {
    * markdown; the report itself arrives inside that card.
    */
   deepResearchRun?: { runId: string; query: string; output: "report" | "answer" };
+  maxResearchRun?: { runId: string; query: string };
   /**
    * Present when this assistant turn is a Get Doc search. The card lists the
    * documents it found with a Download button each, which saves the PDF into
@@ -287,6 +309,11 @@ export interface AgentMessage {
   hyperframesRun?: { runId: string; brief: string };
   /** Present when this assistant turn is a Resource2Skill artifact run. */
   resource2SkillRun?: { runId: string; brief: string };
+  /**
+   * Present when this assistant turn is a MatrAIx study. The card streams the
+   * cohort being drawn and each persona answering, then renders the report.
+   */
+  matraixRun?: { runId: string; brief: string };
   /**
    * Present when this assistant turn is an OpenMontage run. The card streams
    * the production and replays it from the workspace afterwards.
@@ -531,6 +558,61 @@ function permissionPromptFromPending(
   };
 }
 
+function normalizeHumanizerScore(value: unknown): HumanizerScoreSummary | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const score = value as Record<string, unknown>;
+  if (
+    typeof score.original !== "number" ||
+    !Number.isFinite(score.original) ||
+    typeof score.rewrite !== "number" ||
+    !Number.isFinite(score.rewrite) ||
+    typeof score.delta !== "number" ||
+    !Number.isFinite(score.delta) ||
+    typeof score.tied !== "boolean" ||
+    typeof score.worsened !== "boolean"
+  ) {
+    return undefined;
+  }
+  return {
+    original: score.original,
+    rewrite: score.rewrite,
+    delta: score.delta,
+    tied: score.tied,
+    worsened: score.worsened,
+  };
+}
+
+function normalizeHumanizerReview(value: unknown): HumanizerReviewPresentation | undefined {
+  const score = normalizeHumanizerScore(value);
+  if (!score || !value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const review = value as Record<string, unknown>;
+  const dispositions: HumanizerReviewDisposition[] = [
+    "adopted",
+    "kept_tied",
+    "kept_worse",
+    "kept_integrity",
+  ];
+  if (
+    typeof review.adopted !== "boolean" ||
+    typeof review.disposition !== "string" ||
+    !dispositions.includes(review.disposition as HumanizerReviewDisposition)
+  ) {
+    return undefined;
+  }
+  const integrityIssues = Array.isArray(review.integrityIssues)
+    ? review.integrityIssues
+        .filter((issue): issue is string => typeof issue === "string" && Boolean(issue.trim()))
+        .map((issue) => issue.trim().slice(0, 240))
+        .slice(0, 8)
+    : [];
+  return {
+    ...score,
+    adopted: review.adopted,
+    disposition: review.disposition as HumanizerReviewDisposition,
+    ...(integrityIssues.length ? { integrityIssues } : {}),
+  };
+}
+
 function normalizeRestoredMessages(value: unknown): AgentMessage[] {
   if (!Array.isArray(value)) return [];
 
@@ -647,6 +729,35 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
       } else {
         delete normalized.memoryUpdated;
       }
+      const versions = message.contentVersions;
+      if (
+        versions &&
+        typeof versions === "object" &&
+        Number.isInteger(versions.total) &&
+        versions.total > 1 &&
+        Number.isInteger(versions.activeIndex) &&
+        versions.activeIndex >= 0 &&
+        versions.activeIndex < versions.total
+      ) {
+        normalized.contentVersions = {
+          total: versions.total,
+          activeIndex: versions.activeIndex,
+          derived: versions.derived === true,
+          origins: Array.isArray(versions.origins)
+            ? versions.origins.map((origin) =>
+                origin === "humanizer" ? "humanizer" : "original",
+              )
+            : [],
+          ...(normalizeHumanizerScore(versions.review)
+            ? { review: normalizeHumanizerScore(versions.review) }
+            : {}),
+        };
+      } else {
+        delete normalized.contentVersions;
+      }
+      const humanizerReview = normalizeHumanizerReview(message.humanizerReview);
+      if (humanizerReview) normalized.humanizerReview = humanizerReview;
+      else delete normalized.humanizerReview;
       if (
         typeof message.createdAt !== "string" ||
         !Number.isFinite(Date.parse(message.createdAt))
@@ -703,6 +814,7 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["paperTraderRun", "paper_trader"],
   ["deerFlowRun", "deer_flow"],
   ["deepResearchRun", "deep_research"],
+  ["maxResearchRun", "max_research"],
   ["getDocRun", "get_doc"],
   ["meetingNotesRun", "meeting_notes"],
   ["deepTutorRun", "deep_tutor"],
@@ -721,6 +833,7 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["moneyPrinterRun", "money_printer"],
   ["legalRun", "legal_agent"],
   ["wardrobeRun", "wardrobe"],
+  ["matraixRun", "matraix"],
   ["openworkRun", "openwork"],
   ["openscienceRun", "openscience"],
   ["inboxZeroRun", "inbox_zero"],
@@ -730,6 +843,32 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
 ] as const satisfies ReadonlyArray<
   readonly [keyof AgentMessage, ExternalAgentRunKind]
 >;
+
+/**
+ * Every run kind must appear above, and this is what makes that true.
+ *
+ * `satisfies` checks the entries that are here; it cannot see the one that is
+ * missing. Max Research was added with its message field, its server-side
+ * persistence and its card, and omitted only from this list — so
+ * `isExternalAgentRunMessage` returned false, the turn rendered as the bare
+ * words "Delegated to Max Research agent", and the card a person watches five
+ * agents work in never appeared. Nothing failed; the run was fine and
+ * unreachable. The next agent should not be able to repeat it.
+ */
+type UnmappedRunKind = Exclude<
+  ExternalAgentRunKind,
+  (typeof EXTERNAL_AGENT_RUN_FIELDS)[number][1]
+>;
+// If a kind above has no field, `UnmappedRunKind` is that kind rather than
+// `never`, and this line stops compiling with the kind's name in the error.
+//
+// Written with plain type references on purpose. The obvious spelling —
+// annotating with `UnmappedRunKind extends never ? … : …` — type-checks under
+// tsc and parses under esbuild, and SWC, which is what Next actually builds
+// with, fails on it: "Expression expected", reported two thousand lines away
+// from the construct that caused it.
+const _everyRunKindIsMapped: readonly never[] = [] as readonly UnmappedRunKind[];
+void _everyRunKindIsMapped;
 
 /**
  * An assistant message that renders as an external agent's inline run card —
@@ -803,6 +942,13 @@ interface CreateOptions {
    * screen.
    */
   temporary?: boolean;
+  /**
+   * Whether mounting reopens the conversation this surface was last left in.
+   * Defaults to true. A surface that sets this to false always comes up on a
+   * blank chat; anything that was running is still running server-side and is
+   * reached — transcript, live run and all — by opening it from history.
+   */
+  restoreLastConversation?: boolean;
 }
 
 function activeConversationStorageKey(
@@ -815,6 +961,15 @@ function activeConversationStorageKey(
 
 export interface UseAgentSessionResult {
   sessionId: string | null;
+  /**
+   * The conversation this hook created out of its own blank chat, and only
+   * that one: set when a send from an unstarted chat mints an id, cleared the
+   * moment any other chat is opened or a new blank one is started. The
+   * composer's unsent-draft bookkeeping uses it to tell "the chat I was typing
+   * in just came into existence" apart from "a chat that already existed has
+   * been opened under me", which otherwise look identical from the outside.
+   */
+  createdSessionId: string | null;
   activeDirectory: string | null;
   filesystemMode: "restricted" | "full";
   messages: AgentMessage[];
@@ -927,6 +1082,7 @@ export function useAgentSession(
   createOptions?: CreateOptions,
 ): UseAgentSessionResult {
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [createdSessionId, setCreatedSessionId] = useState<string | null>(null);
   const [activeDirectory, setActiveDirectory] = useState<string | null>(null);
   const [filesystemMode, setFilesystemMode] = useState<"restricted" | "full">(
     "restricted",
@@ -988,6 +1144,21 @@ export function useAgentSession(
   const activeStreamRef = useRef<Promise<"completed" | "cancelled" | "failed"> | null>(null);
   const steeringRef = useRef(false);
   const stopRequestedRef = useRef(false);
+  /**
+   * A stop is a decision about the whole run, not about the one frame it lands
+   * on. Events that were already in flight when it was made -- a trailing
+   * `session.status: busy`, a permission prompt, a steer that settles late --
+   * used to walk the machine back into an active state, because they only
+   * guarded against `stopping` and by then the run had already reached its
+   * terminal `cancelled`. On screen that read as the composer's Stop square
+   * turning into a spinner and then, a beat later, back into a square. Once a
+   * stop has been asked for nothing may re-enter an active state; the next send
+   * (or a failed cancellation) clears the request.
+   */
+  const stopWasRequested = useCallback(
+    () => stopRequestedRef.current || runStateRef.current === "stopping",
+    [],
+  );
   const resumedRunIdRef = useRef<string | null>(null);
   const blockedTurnRef = useRef<BlockedTurn | null>(null);
   const pendingHistoryOverrideRef = useRef<AgentMessage[] | null>(null);
@@ -1014,6 +1185,8 @@ export function useAgentSession(
   const yoloDecidedPermissionsRef = useRef(new Set<string>());
   const storageKey = activeConversationStorageKey(surface, createOptions);
   const temporaryChats = createOptions?.temporary === true;
+  const restoreLastConversation =
+    createOptions?.restoreLastConversation !== false;
 
   /**
    * Remember where the reader was, so a reload comes back to it — unless this
@@ -1116,13 +1289,30 @@ export function useAgentSession(
   }, [messages, sessionId]);
 
   // Breadboard owns the durable transcript. Restore the newest matching
-  // runtime session after a refresh; Hermes ids remain server-side.
+  // runtime session after a refresh; Hermes ids remain server-side. Surfaces
+  // that are meant to open on a blank chat opt out of this entirely.
   useEffect(() => {
+    if (!restoreLastConversation) {
+      markLoadingSession(false);
+      return;
+    }
     let cancelled = false;
+    // This restore may only fill a view nobody has touched since it mounted.
+    // An empty `sessionRef` does not say that: starting a new chat empties it
+    // too, so a restore still in flight would read the blank chat as "nothing
+    // chosen yet" and reopen the previous one underneath the reader — the
+    // reason New chat sometimes landed back in the latest conversation. Both
+    // reset() and openSession() bump the view epoch, so an unchanged epoch is
+    // the honest test for "no one has chosen anything since boot".
+    const bootEpoch = viewEpochRef.current;
+    const superseded = () =>
+      cancelled ||
+      viewEpochRef.current !== bootEpoch ||
+      Boolean(sessionRef.current);
     markLoadingSession(true);
     void loadHermesSessionSummaries(surface)
       .then(async (sessions) => {
-        if (cancelled || sessionRef.current) return;
+        if (superseded()) return;
         const preferredId =
           window.localStorage.getItem(storageKey) ??
           window.localStorage.getItem("breadboard-active-conversation");
@@ -1137,10 +1327,13 @@ export function useAgentSession(
         if (!selected) return;
         primeInlineArtifacts({ conversationId: selected.id });
         const restored = await loadHermesSessionDetail(surface, selected.id);
-        if (cancelled || sessionRef.current) return;
+        if (superseded()) return;
         if (restored.id !== selected.id) return;
         sessionRef.current = selected.id;
         setSessionId(selected.id);
+        // Reopening the newest chat after a reload is not a creation, however
+        // blank the composer above it happens to be at this moment.
+        setCreatedSessionId(null);
         window.localStorage.setItem(storageKey, selected.id);
         window.localStorage.setItem("breadboard-active-conversation", selected.id);
         setActiveDirectory(
@@ -1187,7 +1380,11 @@ export function useAgentSession(
       })
       .catch(() => undefined)
       .finally(() => {
-        if (!cancelled) markLoadingSession(false);
+        // A chat opened while this was in flight owns the spinner now; clearing
+        // it here would hide that chat's own loading state.
+        if (!cancelled && viewEpochRef.current === bootEpoch) {
+          markLoadingSession(false);
+        }
       });
     return () => {
       cancelled = true;
@@ -1198,6 +1395,7 @@ export function useAgentSession(
     createOptions?.pageSlug,
     markLoadingSession,
     rehydrateAwaitingPermission,
+    restoreLastConversation,
     storageKey,
     transition,
   ]);
@@ -1639,7 +1837,7 @@ export function useAgentSession(
               };
               if (isYoloModeEnabled()) {
                 setPendingPermission(null);
-                if (runStateRef.current !== "stopping") transition("running");
+                if (!stopWasRequested()) transition("running");
                 try {
                   await submitPermissionDecision(
                     prompt.requestId,
@@ -1665,13 +1863,13 @@ export function useAgentSession(
                 status: "permission_required",
                 startedAt: new Date().toISOString(),
               });
-              if (runStateRef.current !== "stopping") {
+              if (!stopWasRequested()) {
                 transition("waiting_for_permission");
               }
               break;
             }
             case "session.status":
-              if (runStateRef.current !== "stopping") {
+              if (!stopWasRequested()) {
                 if (payload.status === "waiting") {
                   transition("waiting_for_permission");
                 } else if (
@@ -1810,7 +2008,13 @@ export function useAgentSession(
         throw streamError;
       }
     },
-    [createOptions?.gardenSlug, createOptions?.pageSlug, surface, transition],
+    [
+      createOptions?.gardenSlug,
+      createOptions?.pageSlug,
+      stopWasRequested,
+      surface,
+      transition,
+    ],
   );
 
   const adoptDispatchedRun = useCallback(
@@ -2011,6 +2215,9 @@ export function useAgentSession(
     ) {
       sessionRef.current = ensured.id;
       setSessionId(ensured.id);
+      // Same commit as the id itself, so a composer watching both sees the
+      // creation rather than an id that merely appeared.
+      if (!startingSessionId) setCreatedSessionId(ensured.id);
       rememberActiveConversation(ensured.id);
       setActiveDirectory(ensured.activeDirectory);
       setFilesystemMode(ensured.filesystemMode);
@@ -2277,6 +2484,14 @@ export function useAgentSession(
         // that would manufacture the exact `/agents:*` user bubble this path
         // exists to avoid if the person switched conversations mid-launch.
         if (delegated) return current;
+        // The replacement pair has to carry the group the removed turn belonged
+        // to. `withoutReplacedBranch` above has already taken the old turn off
+        // screen, so if these two rows arrive unlabelled the branch switcher
+        // cannot match them to the group holding the earlier answer: the arrows
+        // never appear and the answer that was just replaced becomes
+        // unreachable rather than being one press away. The ordinary send path
+        // stamps both rows for the same reason.
+        const branchGroupId = input.branchGroupId?.trim() || undefined;
         const preview: AgentMessage[] = [
           ...withoutReplacedBranch(current, input.branchGroupId),
           {
@@ -2285,6 +2500,7 @@ export function useAgentSession(
             role: "user",
             content: input.userContent,
             createdAt,
+            ...(branchGroupId ? { branchGroupId } : {}),
             ...(input.attachments?.length
               ? {
                   attachments: input.attachments,
@@ -2300,6 +2516,7 @@ export function useAgentSession(
             role: "assistant",
             content: "",
             createdAt,
+            ...(branchGroupId ? { branchGroupId } : {}),
           },
         ];
         return preview;
@@ -2484,6 +2701,7 @@ export function useAgentSession(
               input.options?.internalAgentContinuation === true,
             retry: input.retry,
             adhdMode: isDirectModeEnabled(),
+            personalize: isPersonalizeEnabled(),
             currentLocation: input.currentLocation,
           }),
         },
@@ -2787,6 +3005,7 @@ export function useAgentSession(
         if (stillViewing()) {
           sessionRef.current = activeSessionId;
           setSessionId(activeSessionId);
+          if (!startingSessionId) setCreatedSessionId(activeSessionId);
           rememberActiveConversation(activeSessionId);
           setActiveDirectory(ensured.activeDirectory);
           setFilesystemMode(ensured.filesystemMode);
@@ -2875,6 +3094,7 @@ export function useAgentSession(
                 // as it stood when this message was sent governs this turn only.
                 superAgent: superAgentEnabled,
                 adhdMode: isDirectModeEnabled(),
+            personalize: isPersonalizeEnabled(),
                 goalMode: isGoalModeEnabled(),
                 yoloMode: isYoloModeEnabled(),
                 currentLocation,
@@ -3064,7 +3284,7 @@ export function useAgentSession(
             `/api/hermes/sessions/${activeSessionId}/abort`,
             { method: "POST" },
           ).catch(() => undefined);
-        } else if (runStateRef.current !== "stopping") {
+        } else if (!stopWasRequested()) {
           transition("running");
         }
         const outcome = await streamPromise;
@@ -3108,6 +3328,7 @@ export function useAgentSession(
       filesystemMode,
       messages,
       rememberActiveConversation,
+      stopWasRequested,
       streamDirectTurn,
       streamEvents,
       surface,
@@ -3213,7 +3434,7 @@ export function useAgentSession(
         }
         if (
           activeRunIdRef.current === runId &&
-          runStateRef.current !== "stopping"
+          !stopWasRequested()
         ) {
           transition(
             pendingPermission ? "waiting_for_permission" : "running",
@@ -3228,7 +3449,7 @@ export function useAgentSession(
         );
         if (
           activeRunIdRef.current === runId &&
-          runStateRef.current !== "stopping"
+          !stopWasRequested()
         ) {
           transition(
             pendingPermission ? "waiting_for_permission" : "running",
@@ -3239,7 +3460,13 @@ export function useAgentSession(
         steeringRef.current = false;
       }
     },
-    [adoptDispatchedRun, pendingPermission, send, transition],
+    [
+      adoptDispatchedRun,
+      pendingPermission,
+      send,
+      stopWasRequested,
+      transition,
+    ],
   );
 
   /**
@@ -3515,6 +3742,10 @@ export function useAgentSession(
           ? stopError.message
           : "The active run could not be stopped.",
       );
+      // The run is genuinely still going, so the state says so -- and the stop
+      // request is released with it, or every later event would be held back
+      // waiting on a cancellation that never happened.
+      stopRequestedRef.current = false;
       transition(pendingPermission ? "waiting_for_permission" : "running");
       return;
     }
@@ -3604,6 +3835,7 @@ export function useAgentSession(
     abortRef.current?.abort();
     sessionRef.current = null;
     setSessionId(null);
+    setCreatedSessionId(null);
     window.localStorage.removeItem(storageKey);
     if (
       window.localStorage.getItem("breadboard-active-conversation") ===
@@ -3638,6 +3870,8 @@ export function useAgentSession(
   const setSessionIdExternal = useCallback((id: string | null) => {
     sessionRef.current = id;
     setSessionId(id);
+    // A chat handed in from outside is one that already exists.
+    setCreatedSessionId(null);
     if (id) {
       window.localStorage.setItem(storageKey, id);
       window.localStorage.setItem("breadboard-active-conversation", id);
@@ -3669,7 +3903,12 @@ export function useAgentSession(
       window.localStorage.setItem("breadboard-active-conversation", id);
 
       try {
-        const restored = await loadHermesSessionDetail(surface, id);
+        const restored = await loadHermesSessionDetail(surface, id, {
+          // A history-row prefetch is already an authoritative no-store read.
+          // Reuse it for this click instead of immediately issuing the same
+          // request again; older working-set entries still revalidate.
+          reuseRecentPrefetch: true,
+        });
         if (viewEpochRef.current !== viewEpoch) return;
         if (restored.id !== id) {
           throw new Error("This chat is no longer available.");
@@ -3759,6 +3998,7 @@ export function useAgentSession(
 
   return {
     sessionId,
+    createdSessionId,
     activeDirectory,
     filesystemMode,
     messages,

@@ -252,17 +252,69 @@ export function selectedSourceArtifactInventorySnapshot(input: {
 }
 
 /**
- * The Source Map may be re-authored once when late exact-page extraction adds
- * or changes registered artifacts. A second mutation after that replan cannot
- * be reconciled mechanically and must abort the job before scope planning.
+ * A Source Map is allowed a small number of complete model-authored
+ * reauthorizations when scanning its exact selected pages reveals previously
+ * unregistered artifacts. The cap is deliberately fixed and low: new evidence
+ * is never mechanically assigned, omitted, or folded into an earlier map.
+ */
+export const MAX_SOURCE_MAP_EVIDENCE_REAUTHORS = 2;
+
+function boundedSourceMapEvidenceTransition({
+  changed,
+  reauthorAttempts,
+}: {
+  changed: boolean;
+  reauthorAttempts: number;
+}): "stable" | "reauthor" | "fail" {
+  // A malformed counter must never make a stale Source Map look stable.
+  if (!Number.isSafeInteger(reauthorAttempts) || reauthorAttempts < 0) {
+    return "fail";
+  }
+  if (!changed) return "stable";
+  return reauthorAttempts < MAX_SOURCE_MAP_EVIDENCE_REAUTHORS
+    ? "reauthor"
+    : "fail";
+}
+
+/**
+ * The Source Map may be re-authored up to the bounded evidence budget when
+ * late exact-page extraction adds or changes registered artifacts. A later
+ * mutation still aborts before scope planning.
  */
 export function sourceMapArtifactInventoryTransition(input: {
   before: SelectedSourceArtifactInventorySnapshot;
   after: SelectedSourceArtifactInventorySnapshot;
-  replanAttempted: boolean;
+  reauthorAttempts: number;
 }): "stable" | "reauthor" | "fail" {
-  if (input.before.sourceArtifactInventoryHash === input.after.sourceArtifactInventoryHash) {
-    return "stable";
-  }
-  return input.replanAttempted ? "fail" : "reauthor";
+  return boundedSourceMapEvidenceTransition({
+    changed: input.before.sourceArtifactInventoryHash !== input.after.sourceArtifactInventoryHash,
+    reauthorAttempts: input.reauthorAttempts,
+  });
+}
+
+/**
+ * The Source Map is also bound to the reviewed source-set hash. A late page
+ * scan can change that hash when it causes the formula-review ledger to be
+ * revalidated, even if it did not add a planner-visible visual artifact. Keep
+ * that structural transition separate from any academic decision: callers use
+ * the result only to decide whether to ask the model to re-author every
+ * evidence-bound planning artifact within the same fixed budget.
+ */
+export function sourceMapPlanningEvidenceTransition(input: {
+  before: {
+    sourceSetHash: string;
+    sourceArtifactInventoryHash: string;
+  };
+  after: {
+      sourceSetHash: string;
+      sourceArtifactInventoryHash: string;
+    };
+  reauthorAttempts: number;
+}): "stable" | "reauthor" | "fail" {
+  return boundedSourceMapEvidenceTransition({
+    changed:
+      input.before.sourceSetHash !== input.after.sourceSetHash ||
+      input.before.sourceArtifactInventoryHash !== input.after.sourceArtifactInventoryHash,
+    reauthorAttempts: input.reauthorAttempts,
+  });
 }

@@ -12,6 +12,24 @@
  */
 export const CHAT_OVERSCAN = 6;
 
+/**
+ * How tall a message the person sent is allowed to stand before it is folded
+ * behind a Show more toggle. Twelve lines at the transcript's 24px leading:
+ * enough that an ordinary prompt is never touched, short enough that a pasted
+ * document stops burying the answer it was asking about.
+ */
+export const COLLAPSED_USER_MESSAGE_PX = 288;
+
+/**
+ * How far past that height a message has to reach before folding is worth it.
+ * Without the slack a message two lines too tall would be given a toggle that
+ * hides two lines.
+ */
+export const USER_MESSAGE_COLLAPSE_SLACK_PX = 48;
+
+/** The Show more toggle's own row, counted only in the height estimate. */
+export const USER_MESSAGE_TOGGLE_PX = 24;
+
 export type IdentifiableMessage = {
   role?: string;
   content?: string | null;
@@ -73,5 +91,17 @@ export function estimateChatRowHeight(
     lines += Math.max(1, Math.ceil(paragraph.length / charactersPerLine));
   }
   const chrome = message?.role === "assistant" ? 44 : 28;
+  // A long message the person sent is drawn folded (see
+  // `collapsible-user-message.tsx`), so guessing its unfolded height is
+  // guessing a height the row will never have — and an estimate several
+  // thousand pixels out is exactly what makes a scrollbar lurch as the row is
+  // measured for the first time.
+  if (
+    message?.role === "user" &&
+    lines * lineHeight >
+      COLLAPSED_USER_MESSAGE_PX + USER_MESSAGE_COLLAPSE_SLACK_PX
+  ) {
+    return chrome + COLLAPSED_USER_MESSAGE_PX + USER_MESSAGE_TOGGLE_PX;
+  }
   return Math.min(maximum, Math.max(minimum, chrome + lines * lineHeight));
 }

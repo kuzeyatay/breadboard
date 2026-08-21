@@ -109,6 +109,13 @@ export const BREADBOARD_PROFILE: RuleProfile = {
       window: 6,
       note: "an en dash between two numbers is a range, not an em dash tic",
     },
+    {
+      appliesTo: "inline-header-list",
+      context:
+        "[-+*]\\s+\\*\\*\\[S\\d+\\](?:\\s*,\\s*\\[S\\d+\\])*\\*\\*:",
+      window: 2,
+      note: "a bold source-citation key is bibliography structure, not an inline prose heading",
+    },
   ],
 };
 

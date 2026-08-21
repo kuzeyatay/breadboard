@@ -77,6 +77,10 @@ function checkResourcesRoot(resources, label) {
     path.join(dashboard, "node_modules", "pdfkit", "js", "data", "Helvetica.afm"),
     `${label} dashboard PDFKit Helvetica font metrics`,
   );
+  requireFile(
+    path.join(dashboard, "node_modules", "@embedpdf", "pdfium", "dist", "pdfium.wasm"),
+    `${label} dashboard PDFium wasm`,
+  );
   if (fs.existsSync(node) && fs.existsSync(dashboard)) {
     const mcpSdkImport = spawnSync(
       node,
@@ -108,6 +112,31 @@ function checkResourcesRoot(resources, label) {
     if (pdfParseImport.status !== 0) {
       const output = `${pdfParseImport.stderr ?? ""}\n${pdfParseImport.stdout ?? ""}`.trim();
       problems.push(`${label} dashboard cannot load PDF ingestion runtime: ${output || "unknown error"}`);
+    }
+
+    const pdfiumWasmLoad = spawnSync(
+      node,
+      [
+        "--input-type=module",
+        "-e",
+        [
+          "const { readFileSync } = await import('node:fs')",
+          "const { createRequire } = await import('node:module')",
+          "const require = createRequire(import.meta.url)",
+          "const wasmPath = require.resolve('@embedpdf/pdfium/pdfium.wasm')",
+          "const raw = readFileSync(wasmPath)",
+          "const wasmBinary = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)",
+          "const { init } = await import('@embedpdf/pdfium')",
+          "const wrapped = await init({ wasmBinary })",
+          "const pdfium = wrapped.pdfium ?? wrapped",
+          "pdfium._PDFiumExt_Init()",
+        ].join(";"),
+      ],
+      { cwd: dashboard, encoding: "utf8", windowsHide: true },
+    );
+    if (pdfiumWasmLoad.status !== 0) {
+      const output = `${pdfiumWasmLoad.stderr ?? ""}\n${pdfiumWasmLoad.stdout ?? ""}`.trim();
+      problems.push(`${label} dashboard cannot initialize packaged PDFium wasm: ${output || "unknown error"}`);
     }
 
     const pdfKitRender = spawnSync(
@@ -437,6 +466,19 @@ function checkResourcesRoot(resources, label) {
     path.join(resources, "app-services"),
     (name) => /^\.env($|\.(?!example))/.test(name),
     `${label} forbidden env file staged`,
+  );
+  // Model weights are a user download, never a shipped asset. The humanizer's
+  // checkpoint in particular carries an unresolved upstream licence (see
+  // humanizer-service/THIRD_PARTY_NOTICES.md), so a build that contained one
+  // would be redistributing something this project has no right to.
+  // `.pth` is deliberately absent: it is PyTorch's checkpoint extension and
+  // also Python's path-configuration extension, and every staged virtualenv is
+  // full of the latter. The extensions below have no such second meaning, and
+  // they are the ones this model would actually arrive as.
+  forbidMatches(
+    path.join(resources, "app-services"),
+    (name) => /\.(safetensors|ckpt|onnx|gguf)$/.test(name) || name === "pytorch_model.bin",
+    `${label} forbidden model weights staged`,
   );
 }
 

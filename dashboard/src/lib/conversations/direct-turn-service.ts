@@ -96,7 +96,7 @@ export interface StartDirectTurnInput {
   /** Internal result hand-back from a delegated agent, not a person's message. */
   internalAgentContinuation?: boolean;
   /**
-   * The user had Direct mode on for this message. The legacy transport field
+   * The user had Concise on for this message. The legacy transport field
    * keeps older clients compatible while the product name changes.
    * so it has to reach the runtime-less pipeline too: a style that only applied
    * with Agent mode on would silently stop working when they switched it off.
@@ -147,7 +147,7 @@ function directSystemPrompt(
       "Never claim to have read, written, run, saved, sent, or remembered anything.",
     ].join("\n"),
     currentLocationContext,
-    // This stays last even in Direct mode. Brevity may remove irrelevant
+    // This stays last even with Concise on. Brevity may remove irrelevant
     // detail, never the explanation that makes the remaining answer usable.
     readerComprehensionPrompt(),
   ].filter(Boolean).join("\n\n");

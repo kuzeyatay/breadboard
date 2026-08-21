@@ -7,6 +7,10 @@ import {
   exportFolderPdf,
   type FolderPdfExportMessage,
 } from '@/lib/folder-pdf-export-client';
+import {
+  quartzAssistantSelectionRequest,
+  type QuartzAssistantSelectionRequest,
+} from '@/lib/quartz-assistant-selection';
 
 interface Props {
   src: string;
@@ -82,6 +86,8 @@ export default function LibraryGardenClient({ src, title }: Props) {
   const [loadFailed, setLoadFailed] = useState(false);
   const [activeCluster, setActiveCluster] = useState<string | null>(null);
   const [activeMarkdown, setActiveMarkdown] = useState<ActiveMarkdown | null>(null);
+  const [assistantSelection, setAssistantSelection] =
+    useState<QuartzAssistantSelectionRequest | null>(null);
   const activeMarkdownCluster = activeMarkdown?.cluster;
   const activeMarkdownSlug = activeMarkdown?.slug;
   const quartzOrigin = useMemo(() => {
@@ -103,6 +109,13 @@ export default function LibraryGardenClient({ src, title }: Props) {
         event.origin !== quartzOrigin &&
         event.source !== iframeRef.current?.contentWindow
       ) {
+        return;
+      }
+
+      const selectionRequest = quartzAssistantSelectionRequest(data);
+      if (selectionRequest) {
+        if (event.source !== iframeRef.current?.contentWindow) return;
+        setAssistantSelection(selectionRequest);
         return;
       }
 
@@ -359,6 +372,7 @@ export default function LibraryGardenClient({ src, title }: Props) {
         activeClusterSlug={activeCluster}
         activeClusterName={activeCluster ?? undefined}
         activeMarkdown={activeMarkdown}
+        selectedTextRequest={assistantSelection}
       />
     </div>
   );

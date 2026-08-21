@@ -13,6 +13,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import EvidencePanel from "@/app/components/hermes/evidence-panel";
+import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
 import type { VerificationSummary } from "@/lib/hermes/evidence";
 import { playSpeechBlob, stopSpeechPlayback } from "@/lib/speech/playback";
 
@@ -30,9 +31,23 @@ export interface AssistantResponseBranch {
 interface Props {
   content: string;
   onRetry?: () => void;
+  /** Regenerate this turn as a branch; the standing preference humanizes it. */
+  onRewrite?: () => void;
   verification?: VerificationSummary;
   branch?: AssistantResponseBranch;
 }
+
+/**
+ * Older and provider-direct messages may not carry a verification ledger. The
+ * action must still be available: absence of a ledger is itself useful evidence
+ * information, and the panel can state that honestly instead of hiding it.
+ */
+const NO_RECORDED_EVIDENCE: VerificationSummary = {
+  state: "unverified",
+  evidence: [],
+  unsupportedClaims: [],
+  assumptions: [],
+};
 
 function contentKey(content: string): string {
   let hash = 2166136261;
@@ -167,6 +182,7 @@ export function MessageActionsSlot({
 export default function AssistantMessageActions({
   content,
   onRetry,
+  onRewrite,
   verification,
   branch,
 }: Props) {
@@ -174,6 +190,7 @@ export default function AssistantMessageActions({
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [humanizerEnabled] = useHumanizerMode();
   const [speechState, setSpeechState] = useState<SpeechState>("idle");
   const [dictationState, setDictationState] = useState<DictationState>("idle");
   const [speechMessage, setSpeechMessage] = useState<string | null>(null);
@@ -189,6 +206,7 @@ export default function AssistantMessageActions({
   const mountedRef = useRef(true);
   const { slot, suppressActions } = useContext(MessageActionsSlotContext);
   const storageKey = useMemo(() => contentKey(content), [content]);
+  const displayedVerification = verification ?? NO_RECORDED_EVIDENCE;
 
   useEffect(() => {
     const stored = localStorage.getItem(storageKey);
@@ -416,6 +434,11 @@ export default function AssistantMessageActions({
     onRetry?.();
   }
 
+  function rewriteResponse() {
+    setMenuOpen(false);
+    onRewrite?.();
+  }
+
   const actions = (
     <div className="mt-2 flex items-center gap-0.5" aria-label="Assistant response actions">
       <button
@@ -539,16 +562,24 @@ export default function AssistantMessageActions({
             aria-label="More response actions menu"
             className="absolute bottom-full left-0 z-20 mb-1 min-w-44 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-1 text-xs text-[var(--ink)] shadow-lg"
           >
-            {verification ? (
+            <button
+              type="button"
+              onClick={() => {
+                setMenuOpen(false);
+                setEvidenceOpen(true);
+              }}
+              className="block w-full rounded-lg px-3 py-2 text-left hover:bg-[var(--paper-strong)]"
+            >
+              View evidence
+            </button>
+            {humanizerEnabled && onRewrite && content.trim() ? (
               <button
                 type="button"
-                onClick={() => {
-                  setMenuOpen(false);
-                  setEvidenceOpen(true);
-                }}
+                onClick={rewriteResponse}
                 className="block w-full rounded-lg px-3 py-2 text-left hover:bg-[var(--paper-strong)]"
+                title="Regenerate this response as a new branch, then rewrite it naturally"
               >
-                View evidence
+                Rewrite naturally
               </button>
             ) : null}
             <button type="button" onClick={downloadResponse} className="block w-full rounded-lg px-3 py-2 text-left hover:bg-[var(--paper-strong)]">
@@ -576,11 +607,11 @@ export default function AssistantMessageActions({
             </button>
           </div>
         ) : null}
-        {evidenceOpen && verification && evidenceBox && typeof document !== "undefined"
+        {evidenceOpen && evidenceBox && typeof document !== "undefined"
           ? createPortal(
               <div ref={evidenceRef} style={evidenceBox.style} className="z-50">
                 <EvidencePanel
-                  verification={verification}
+                  verification={displayedVerification}
                   maxHeight={evidenceBox.maxHeight}
                   onClose={() => setEvidenceOpen(false)}
                 />

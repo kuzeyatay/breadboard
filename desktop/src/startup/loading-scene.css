@@ -1,0 +1,303 @@
+/* The Breadboard loading field — the animated scene the app waits on.
+   Shared, deliberately: the startup screen, the reconnect scene and every
+   window that opens onto a page still being built all wait in the same picture,
+   so a wait always reads as the same app doing the same thing. Only the field
+   lives here; what each page puts around it is that page's own stylesheet. */
+
+:root {
+  --leaf-light: #fffefa;
+  --leaf-mid: #e1e6df;
+  --leaf-edge: #9eafa5;
+  --leaf-shadow: rgba(45, 68, 57, 0.3);
+  --glow: rgba(63, 103, 83, 0.66);
+  --glow-soft: rgba(121, 166, 143, 0.2);
+}
+
+:root[data-theme="dark"] {
+  --leaf-light: #53645b;
+  --leaf-mid: #34433b;
+  --leaf-edge: #1c2923;
+  --leaf-shadow: rgba(0, 0, 0, 0.52);
+  --glow: rgba(145, 183, 161, 0.58);
+  --glow-soft: rgba(145, 183, 161, 0.15);
+}
+
+.loading-scene {
+  position: relative;
+  display: grid;
+  place-items: center;
+  isolation: isolate;
+}
+
+.loading-scene::before {
+  position: absolute;
+  z-index: -2;
+  width: min(72vw, 820px);
+  aspect-ratio: 1.55;
+  content: "";
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 44%, rgba(255, 255, 255, 0.94) 0 15%, transparent 55%),
+    radial-gradient(ellipse at center, rgba(104, 141, 122, 0.11), transparent 68%);
+  filter: blur(10px);
+  opacity: 1;
+  transition: opacity 620ms ease;
+}
+
+:root[data-theme="dark"] .loading-scene::before {
+  background:
+    radial-gradient(circle at 50% 44%, rgba(145, 183, 161, 0.12) 0 15%, transparent 55%),
+    radial-gradient(ellipse at center, rgba(80, 117, 98, 0.1), transparent 68%);
+}
+
+.kinetic-stage {
+  position: relative;
+  display: grid;
+  width: min(76vw, 680px);
+  height: min(64vh, 520px);
+  place-items: center;
+  perspective: 1100px;
+  perspective-origin: 50% 34%;
+  transition:
+    opacity 900ms ease,
+    transform 1.2s cubic-bezier(0.22, 0.68, 0.24, 1);
+}
+
+.stage-halo {
+  position: absolute;
+  top: 55%;
+  left: 50%;
+  width: 68%;
+  height: 22%;
+  border-radius: 50%;
+  background: radial-gradient(ellipse, var(--glow-soft), transparent 72%);
+  filter: blur(18px);
+  opacity: 0.8;
+  transform: translate(-50%, -50%);
+  animation: halo-breathe 3.2s ease-in-out infinite;
+}
+
+.kinetic-field {
+  position: relative;
+  display: flex;
+  width: min(69vw, 610px);
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(5px, 0.8vw, 10px);
+  transform: translate3d(0, -24%, 0) rotateX(54deg);
+  transform-style: preserve-3d;
+}
+
+.kinetic-row {
+  --row-delay: 0s;
+  display: flex;
+  justify-content: center;
+  gap: clamp(6px, 0.9vw, 11px);
+  transform-style: preserve-3d;
+}
+
+.kinetic-row:nth-child(1) {
+  --row-delay: -0.12s;
+  transform: translateZ(-18px) scale(0.82);
+}
+
+.kinetic-row:nth-child(2) {
+  --row-delay: -0.24s;
+  transform: translateZ(-6px) scale(0.94);
+}
+
+.kinetic-row:nth-child(3) {
+  --row-delay: -0.36s;
+}
+
+.kinetic-row:nth-child(4) {
+  --row-delay: -0.48s;
+  transform: translateZ(-6px) scale(0.94);
+}
+
+.kinetic-row:nth-child(5) {
+  --row-delay: -0.6s;
+  transform: translateZ(-18px) scale(0.82);
+}
+
+.kinetic-scale {
+  --column-delay: 0s;
+  position: relative;
+  width: clamp(34px, 5.1vw, 52px);
+  height: clamp(44px, 6.7vw, 68px);
+  transform-style: preserve-3d;
+}
+
+.kinetic-scale:nth-child(1) {
+  --column-delay: -0.48s;
+}
+
+.kinetic-scale:nth-child(2) {
+  --column-delay: -0.36s;
+}
+
+.kinetic-scale:nth-child(3) {
+  --column-delay: -0.24s;
+}
+
+.kinetic-scale:nth-child(4) {
+  --column-delay: -0.12s;
+}
+
+.kinetic-scale:nth-child(5) {
+  --column-delay: 0s;
+}
+
+.kinetic-scale:nth-child(6) {
+  --column-delay: 0.12s;
+}
+
+.kinetic-scale:nth-child(7) {
+  --column-delay: 0.24s;
+}
+
+.kinetic-scale:nth-child(8) {
+  --column-delay: 0.36s;
+}
+
+.kinetic-scale::before {
+  position: absolute;
+  inset: 5% 7% 0;
+  content: "";
+  border: 1px solid rgba(35, 68, 52, 0.22);
+  border-radius: 47% 47% 54% 54% / 34% 34% 67% 67%;
+  background:
+    linear-gradient(180deg, #6f8f7f, #274a3a 62%, #173328),
+    radial-gradient(circle at 50% 78%, var(--glow), transparent 68%);
+  box-shadow: 0 7px 13px rgba(31, 58, 45, 0.24);
+  clip-path: polygon(50% 0, 87% 16%, 94% 56%, 76% 88%, 50% 100%, 24% 88%, 6% 56%, 13% 16%);
+  filter: blur(0.25px);
+  opacity: 0.16;
+  transform: translateZ(-5px) scale(0.84);
+  animation: scale-glow 2.55s ease-in-out infinite;
+  animation-delay: calc(var(--row-delay) + var(--column-delay));
+}
+
+.kinetic-scale::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  border: 1px solid rgba(77, 104, 90, 0.38);
+  border-radius: 47% 47% 54% 54% / 34% 34% 67% 67%;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.96), transparent 42%),
+    linear-gradient(180deg, var(--leaf-light) 0 58%, var(--leaf-mid) 82%, var(--leaf-edge) 100%);
+  box-shadow:
+    0 10px 16px var(--leaf-shadow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -3px 5px rgba(73, 105, 89, 0.13);
+  clip-path: polygon(50% 0, 87% 16%, 94% 56%, 76% 88%, 50% 100%, 24% 88%, 6% 56%, 13% 16%);
+  transform-origin: 50% 88%;
+  transform-style: preserve-3d;
+  animation: scale-lift 2.55s cubic-bezier(0.42, 0, 0.24, 1) infinite;
+  animation-delay: calc(var(--row-delay) + var(--column-delay));
+  backface-visibility: visible;
+}
+
+:root[data-theme="dark"] .kinetic-scale::before {
+  border-color: rgba(145, 183, 161, 0.2);
+  background:
+    linear-gradient(180deg, #527260, #294638 62%, #14271e),
+    radial-gradient(circle at 50% 78%, var(--glow), transparent 68%);
+  box-shadow: 0 8px 17px rgba(0, 0, 0, 0.48);
+}
+
+:root[data-theme="dark"] .kinetic-scale::after {
+  border-color: rgba(168, 196, 187, 0.24);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.24), transparent 42%),
+    linear-gradient(180deg, var(--leaf-light) 0 58%, var(--leaf-mid) 82%, var(--leaf-edge) 100%);
+  box-shadow:
+    0 12px 20px var(--leaf-shadow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -3px 5px rgba(0, 0, 0, 0.24);
+}
+
+@keyframes scale-lift {
+  0%,
+  22%,
+  72%,
+  100% {
+    filter: brightness(1);
+    transform: rotateX(0deg) translateY(0) translateZ(0);
+  }
+
+  39% {
+    filter: brightness(1.035);
+    transform: rotateX(-58deg) translateY(-5px) translateZ(15px);
+  }
+
+  51% {
+    filter: brightness(1.015);
+    transform: rotateX(-24deg) translateY(-2px) translateZ(8px);
+  }
+}
+
+@keyframes scale-glow {
+  0%,
+  24%,
+  72%,
+  100% {
+    opacity: 0.16;
+    transform: translateZ(-5px) scale(0.84);
+  }
+
+  40% {
+    opacity: 0.94;
+    transform: translateZ(-5px) scale(1.02);
+  }
+}
+
+@keyframes halo-breathe {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: translate(-50%, -50%) scale(0.92);
+  }
+
+  50% {
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(1.05);
+  }
+}
+
+@media (max-width: 700px), (max-height: 560px) {
+  .kinetic-stage {
+    width: min(88vw, 560px);
+    height: min(74vh, 410px);
+  }
+
+  .kinetic-field {
+    width: min(78vw, 460px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kinetic-scale::after,
+  .kinetic-scale::before,
+  .stage-halo {
+    animation: none;
+  }
+
+  .kinetic-scale:nth-child(3n)::after {
+    transform: rotateX(-18deg) translateY(-2px) translateZ(7px);
+  }
+}
+
+/* A scene that shares its window with something to read — the reconnect
+   message — stands smaller, so the field and the words both fit without
+   either being pushed off the bottom of a short window. */
+.kinetic-stage.is-compact {
+  /* No reserved height here, unlike the full scene: the field's own box is
+     taller than the picture it paints (the rows are laid flat and lifted), and
+     that difference is the clearance the message below it stands in. Fixing a
+     height instead crops the box and the words land on the leaves. */
+  width: auto;
+  height: auto;
+  zoom: 0.72;
+}

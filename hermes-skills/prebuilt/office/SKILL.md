@@ -5,14 +5,17 @@ license: MIT
 allowed-tools:
   - office_run
   - office_export
+  - document_edit
+  - pdf_to_docx
 ---
 
 # Office
 
-Real .docx, .xlsx and .pptx files, built and edited with OfficeCLI — a
-document DOM over OpenXML, not a markdown converter. Two tools: `office_run`
-executes one OfficeCLI command, `office_export` hands the finished file to the
-user.
+Real .docx, .xlsx and .pptx files. OfficeCLI remains the authoring path for new
+documents: `office_run` executes one command and `office_export` hands the
+finished file to the user. Existing DOCX/PPTX attachments also have an
+in-process, byte-preserving path through `document_edit`; local PDF → DOCX uses
+`pdf_to_docx`.
 
 breadboard:
   category: featured
@@ -20,6 +23,8 @@ breadboard:
   requiredTools:
     - office_run
     - office_export
+    - document_edit
+    - pdf_to_docx
   requiredArtifactKinds: []
   requiredRuntimes: []
   requiredMcpServers: []
@@ -51,6 +56,23 @@ Verbs: `create`, `add`, `set`, `get`, `query`, `remove`, `move`, `swap`,
 `open`, `save`, `close`, `help`, `load_skill`. The watch/preview server and
 MCP mode are not available here — `view <file> html` is how a snapshot is
 rendered, and `office_export` attaches one to the artifact for you.
+
+## Existing attachments and PDF conversion
+
+When the turn includes an attached DOCX, PPTX or PDF, the system names its
+workspace copy in `<breadboard_editable_documents>`. Do not rebuild that file
+from its extracted markdown.
+
+- For DOCX/PPTX, call `document_edit` with the file and no patches. It returns
+  stable block anchors and their text. Call it again with only the requested
+  `{anchor, text}` replacements. The patch call publishes the result itself.
+- For PDF, call `pdf_to_docx` with the workspace file. It converts locally and
+  publishes the DOCX. The PDF viewer and original PDF are unchanged.
+- Element anchors such as `/body/p[3]` are document addresses, never file paths.
+
+Use OfficeCLI for creating a new document or for structural/formatting work the
+anchored replacement seam does not express. Do not convert a new-document task
+into an edit, and do not replace OfficeCLI with the in-process engine.
 
 **When unsure about a property name, a value format or a command's syntax, run
 `help` instead of guessing** — `help docx paragraph`, `help xlsx pivottable`,

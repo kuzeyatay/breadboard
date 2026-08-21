@@ -160,14 +160,22 @@ class AccountRotationTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         os.environ.pop("CODEX_HOME", None)
 
-    def _write_primary(self, account_id: str) -> None:
+    def _write_primary(self, account_id: str, *, connected_at: str | None = None) -> None:
         with open(os.path.join(self.home.name, "auth.json"), "w", encoding="utf-8") as fp:
-            json.dump(_auth(account_id), fp)
+            auth = _auth(account_id)
+            if connected_at:
+                auth["connected_at"] = connected_at
+            json.dump(auth, fp)
 
-    def _write_additional(self, name: str, account_id: str) -> None:
+    def _write_additional(
+        self, name: str, account_id: str, *, connected_at: str | None = None
+    ) -> None:
         os.makedirs(accounts.accounts_dir(), exist_ok=True)
         with open(os.path.join(accounts.accounts_dir(), f"{name}.json"), "w", encoding="utf-8") as fp:
-            json.dump(_auth(account_id), fp)
+            auth = _auth(account_id)
+            if connected_at:
+                auth["connected_at"] = connected_at
+            json.dump(auth, fp)
 
     def test_no_accounts_selects_nothing(self) -> None:
         self.assertIsNone(accounts.select_account())
@@ -206,6 +214,17 @@ class AccountRotationTests(unittest.TestCase):
         serialized = json.dumps(state)
         self.assertNotIn("secret-access-token", serialized)
         self.assertNotIn("secret-refresh-token", serialized)
+
+    def test_account_state_is_chronological_without_changing_routing_order(self) -> None:
+        self._write_primary("acct-newer", connected_at="2026-02-01T00:00:00Z")
+        self._write_additional(
+            "older", "acct-older", connected_at="2026-01-01T00:00:00Z"
+        )
+
+        self.assertEqual(accounts.select_account().key, "acct-newer")
+        state = accounts.account_state()
+        self.assertEqual([row["key"] for row in state], ["acct-older", "acct-newer"])
+        self.assertLess(state[0]["connectedAt"], state[1]["connectedAt"])
 
     def test_preserving_turns_switch_account_into_add_account(self) -> None:
         self._write_primary("acct-primary")

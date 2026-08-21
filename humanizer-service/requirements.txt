@@ -1,0 +1,27 @@
+# Breadboard humanizer service — pinned runtime dependencies.
+#
+# Python 3.13 is the target, for the same reason ColPali's environment is:
+# torch publishes no 3.14 wheels for Windows and 3.14 is this repository's
+# default interpreter, so scripts/setup-humanizer.mjs provisions
+# .runtime/humanizer-venv on 3.13 through uv rather than using whatever
+# `python` happens to be.
+#
+# torch is NOT pinned to a CUDA build here. The setup script installs it first
+# from the cu124 index when an NVIDIA card is present; leaving it unqualified
+# in this file means a CPU-only machine still gets a working (slower) service
+# instead of a failed install.
+#
+# The model weights are NOT a dependency and are not installed by this file.
+# They are an explicit, separate, opt-in download — see
+# docs/HUMANIZER_INTEGRATION.md and THIRD_PARTY_NOTICES.md.
+torch>=2.4
+# The `dtype` floor is not cosmetic: `from_pretrained` took `torch_dtype` until
+# transformers renamed it, and `model.py` passes `dtype`. An older resolution
+# would not error — it would fold the unknown keyword into the config and load
+# the model in the wrong precision. 4.57 is the version this was tested against.
+transformers>=4.57,<5
+# safetensors is what `transformers` prefers for this checkpoint; naming it
+# here keeps a pickle-only fallback from being silently acceptable.
+safetensors>=0.4.3
+sentencepiece>=0.2.0
+pydantic==2.13.4

@@ -20,9 +20,9 @@ import {
  * model picker uses, so "Claude" and "Anthropic" cannot look like two entries.
  *
  * Adding one used to be somewhere else again: this list had a button that
- * opened a second vendor picker. The account row now owns that action instead,
- * so Switch and Add another sit together at the point where their distinction
- * matters: replace this account, or keep it and sign in beside it.
+ * opened a second vendor picker. The provider header now owns that action, so
+ * Switch and Add another stay beside the provider they affect while Sign out
+ * remains beside the specific account it removes.
  *
  * ChatGPT authenticates through ChatMock's own OAuth (this panel drives it, and
  * preserves the current credential first so a sign-in adds rather than
@@ -48,6 +48,7 @@ interface ChatgptAccountRow {
   plan: string | null;
   /** The account in `auth.json`, which the login flow keeps writing to. */
   primary: boolean;
+  connectedAt: string | null;
   available: boolean;
   cooldownSeconds: number;
   cooldownReason: string | null;
@@ -126,6 +127,19 @@ function restingLabel(row: ChatgptAccountRow): string | null {
       ? `for about ${formatDuration(row.cooldownSeconds)}`
       : "until its quota resets";
   return row.cooldownReason ? `Resting ${when} — ${row.cooldownReason}` : `Resting ${when}`;
+}
+
+/** Oldest first; unknown dates stay visible at the end in their source order. */
+function chronological<T extends { connectedAt: string | null }>(rows: readonly T[]): T[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => {
+      if (left.row.connectedAt === right.row.connectedAt) return left.index - right.index;
+      if (left.row.connectedAt === null) return 1;
+      if (right.row.connectedAt === null) return -1;
+      return left.row.connectedAt.localeCompare(right.row.connectedAt);
+    })
+    .map(({ row }) => row);
 }
 
 export default function SettingsAccounts() {
@@ -590,12 +604,22 @@ export default function SettingsAccounts() {
             email: account.email,
             plan: account.plan,
             primary: true,
+            connectedAt: account.lastRefresh,
             available: true,
             cooldownSeconds: 0,
             cooldownReason: null,
           },
         ]
       : [];
+  const chronologicalChatgptRows = chronological(chatgptRows);
+  const subscriptionGroups = providers
+    .map((provider) => ({
+      provider,
+      accounts: chronological(
+        subscriptionAccounts.filter((subscription) => subscription.provider === provider.id),
+      ),
+    }))
+    .filter((group) => group.accounts.length > 0);
 
   if (loading) {
     return <p className="text-sm text-[var(--ink-muted)]">Reading your accounts…</p>;
@@ -604,97 +628,97 @@ export default function SettingsAccounts() {
   return (
     <div className="space-y-3">
       <ul className="space-y-2">
-        {/* Every ChatGPT account, through ChatMock's own OAuth.
-            Deliberately the same two-line row as the subscription accounts
-            below: every entry in this list is an account, and one of them
-            rendering as a taller block with a plan line, a refresh timestamp
-            and a file path read as a different kind of thing. The plan is in
-            the providers section below, beside the models it unlocks; the
-            credential path is a detail of where ChatMock keeps its token, not
-            something the reader is being asked to act on. */}
-        {chatgptRows.map((row) => {
-          const confirmKey = `chatgpt:${row.key}`;
-          const confirming = confirmingSignOut === confirmKey;
-          const dropping = busy === "signout" || busy === `forget:${row.key}`;
-          const resting = restingLabel(row);
-          const label = row.email ?? "ChatGPT";
-          return (
-            <li
-              key={row.key}
-              className="neu-surface-subtle flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4"
-            >
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-[var(--ink-heading)]">OpenAI</p>
-                <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">
-                  {row.email ?? "Signed in with ChatGPT"}
-                </p>
-                {resting ? (
-                  <p className="mt-0.5 truncate text-[11px] text-[var(--ink-muted)]">{resting}</p>
-                ) : null}
-              </div>
+        {/* A provider owns one surface. Its accounts sit inside in the order
+            they were connected, so a second credential reads as a sibling
+            rather than as a duplicate vendor. */}
+        {chronologicalChatgptRows.length > 0 ? (
+          <li className="neu-surface-subtle overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)]">
+            <div className="flex items-center justify-between gap-3 px-4 py-3">
+              <p className="text-sm font-medium text-[var(--ink-heading)]">OpenAI</p>
               <div className="flex shrink-0 items-center gap-2">
-                <ConnectionDot connected />
-                {confirming ? (
-                  <>
-                    <span className="text-xs text-[var(--ink-muted)]">Sign out?</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void (row.primary ? signOut() : forgetChatgptAccount(row.key, label))
-                      }
-                      disabled={busy !== null}
-                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--danger)] transition hover:bg-[var(--paper-strong)] disabled:opacity-50"
-                    >
-                      {dropping ? "Signing out…" : "Confirm"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmingSignOut(null)}
-                      disabled={busy !== null}
-                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
-                    >
-                      Keep
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    {/* The login flow writes `auth.json`, so only the primary
-                        account can be replaced. Preserving it first makes the
-                        adjacent action an add instead of a switch. */}
-                    {row.primary ? (
-                      <button
-                        type="button"
-                        onClick={() => void startLogin()}
-                        disabled={busy !== null || pendingSignIn}
-                        className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
-                      >
-                        {busy === "login" ? "Starting…" : "Switch"}
-                      </button>
-                    ) : null}
-                    {row.primary ? (
-                      <button
-                        type="button"
-                        onClick={() => void addChatgptAccount()}
-                        disabled={busy !== null || pendingSignIn}
-                        className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
-                      >
-                        {busy === "add" ? "Starting…" : "Add another"}
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => setConfirmingSignOut(confirmKey)}
-                      disabled={busy !== null || pendingSignIn}
-                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
-                    >
-                      Sign out
-                    </button>
-                  </>
-                )}
+                <button
+                  type="button"
+                  onClick={() => void startLogin()}
+                  disabled={busy !== null || pendingSignIn}
+                  className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {busy === "login" ? "Starting…" : "Switch"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void addChatgptAccount()}
+                  disabled={busy !== null || pendingSignIn}
+                  className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {busy === "add" ? "Starting…" : "Add another"}
+                </button>
               </div>
-            </li>
-          );
-        })}
+            </div>
+            <ul className="divide-y divide-[var(--line)] border-t border-[var(--line)]">
+              {chronologicalChatgptRows.map((row) => {
+                const confirmKey = `chatgpt:${row.key}`;
+                const confirming = confirmingSignOut === confirmKey;
+                const dropping = busy === "signout" || busy === `forget:${row.key}`;
+                const resting = restingLabel(row);
+                const label = row.email ?? "ChatGPT";
+                return (
+                  <li
+                    key={row.key}
+                    className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-xs text-[var(--ink-muted)]">
+                        {row.email ?? "Signed in with ChatGPT"}
+                      </p>
+                      {resting ? (
+                        <p className="mt-0.5 truncate text-[11px] text-[var(--ink-muted)]">
+                          {resting}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <ConnectionDot connected />
+                      {confirming ? (
+                        <>
+                          <span className="text-xs text-[var(--ink-muted)]">Sign out?</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void (row.primary
+                                ? signOut()
+                                : forgetChatgptAccount(row.key, label))
+                            }
+                            disabled={busy !== null}
+                            className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--danger)] transition hover:bg-[var(--paper-strong)] disabled:opacity-50"
+                          >
+                            {dropping ? "Signing out…" : "Confirm"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmingSignOut(null)}
+                            disabled={busy !== null}
+                            className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
+                          >
+                            Keep
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingSignOut(confirmKey)}
+                          disabled={busy !== null || pendingSignIn}
+                          className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
+                        >
+                          Sign out
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </li>
+        ) : null}
 
         {/* Nothing signed in at OpenAI. Still a row rather than an absence: it
             is the one account Breadboard cannot reach GPT models without. */}
@@ -720,101 +744,112 @@ export default function SettingsAccounts() {
           </li>
         ) : null}
 
-        {/* Everything signed in through the subscription proxy.
-            Switch and Sign out mean the same here as they do for ChatGPT above,
-            but they are built differently: the proxy keeps one file per
-            account, so a switch is "sign the new one in, then drop the old"
-            and a sign-out is the removal of a credential that cannot be
-            restored without redoing OAuth. Hence the confirm step. */}
-        {subscriptionAccounts.map((subscription) => {
-          const switching = busy === `switch:${subscription.file}`;
-          const dropping = busy === `drop:${subscription.file}`;
-          const confirming = confirmingSignOut === `cliproxy:${subscription.file}`;
-          const provider = providers.find((entry) => entry.id === subscription.provider);
+        {/* Everything signed in through the subscription proxy. The provider
+            header switches its most recently connected credential or adds a
+            sibling; Sign out stays on each account because it removes that
+            specific credential and cannot be undone without redoing OAuth. */}
+        {subscriptionGroups.map(({ provider, accounts }) => {
           const supportsMultiple = provider?.singleAccount !== true;
+          const switchAccount = accounts[accounts.length - 1];
+          const switching = busy === `switch:${switchAccount.file}`;
           return (
             <li
-              key={subscription.file}
-              className="neu-surface-subtle flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4"
+              key={provider.id}
+              className="neu-surface-subtle overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)]"
             >
-              <div className="min-w-0">
+              <div className="flex items-center justify-between gap-3 px-4 py-3">
                 <p className="text-sm font-medium text-[var(--ink-heading)]">
-                  {subscription.vendorLabel}
+                  {provider.vendorLabel}
                 </p>
-                <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">
-                  {subscription.account}
-                </p>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void startSubscriptionLogin(
+                        provider.id,
+                        provider.vendorLabel,
+                        switchAccount.file,
+                      )
+                    }
+                    disabled={busy !== null || pendingSignIn}
+                    className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+                  >
+                    {switching ? "Starting…" : "Switch"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void startSubscriptionLogin(provider.id, provider.vendorLabel, null)
+                    }
+                    disabled={!supportsMultiple || busy !== null || pendingSignIn}
+                    title={
+                      supportsMultiple
+                        ? undefined
+                        : `${provider.vendorLabel} supports one account at a time.`
+                    }
+                    className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {busy === "login" ? "Starting…" : "Add another"}
+                  </button>
+                </div>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <ConnectionDot connected />
-                {confirming ? (
-                  <>
-                    <span className="text-xs text-[var(--ink-muted)]">Sign out?</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void signOutSubscription(subscription.file, subscription.vendorLabel)
-                      }
-                      disabled={busy !== null}
-                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--danger)] transition hover:bg-[var(--paper-strong)] disabled:opacity-50"
+              <ul className="divide-y divide-[var(--line)] border-t border-[var(--line)]">
+                {accounts.map((subscription) => {
+                  const dropping = busy === `drop:${subscription.file}`;
+                  const confirming =
+                    confirmingSignOut === `cliproxy:${subscription.file}`;
+                  return (
+                    <li
+                      key={subscription.file}
+                      className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
                     >
-                      {dropping ? "Signing out…" : "Confirm"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmingSignOut(null)}
-                      disabled={busy !== null}
-                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
-                    >
-                      Keep
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void startSubscriptionLogin(
-                          subscription.provider,
-                          subscription.vendorLabel,
-                          subscription.file,
-                        )
-                      }
-                      disabled={busy !== null || pendingSignIn}
-                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
-                    >
-                      {switching ? "Starting…" : "Switch"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void startSubscriptionLogin(
-                          subscription.provider,
-                          subscription.vendorLabel,
-                          null,
-                        )
-                      }
-                      disabled={!supportsMultiple || busy !== null || pendingSignIn}
-                      title={
-                        supportsMultiple
-                          ? undefined
-                          : `${subscription.vendorLabel} supports one account at a time.`
-                      }
-                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {busy === "login" ? "Starting…" : "Add another"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmingSignOut(`cliproxy:${subscription.file}`)}
-                      disabled={busy !== null || pendingSignIn}
-                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
-                    >
-                      Sign out
-                    </button>
-                  </>
-                )}
-              </div>
+                      <p className="min-w-0 truncate text-xs text-[var(--ink-muted)]">
+                        {subscription.account}
+                      </p>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <ConnectionDot connected />
+                        {confirming ? (
+                          <>
+                            <span className="text-xs text-[var(--ink-muted)]">Sign out?</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void signOutSubscription(
+                                  subscription.file,
+                                  subscription.vendorLabel,
+                                )
+                              }
+                              disabled={busy !== null}
+                              className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--danger)] transition hover:bg-[var(--paper-strong)] disabled:opacity-50"
+                            >
+                              {dropping ? "Signing out…" : "Confirm"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmingSignOut(null)}
+                              disabled={busy !== null}
+                              className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
+                            >
+                              Keep
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setConfirmingSignOut(`cliproxy:${subscription.file}`)
+                            }
+                            disabled={busy !== null || pendingSignIn}
+                            className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
+                          >
+                            Sign out
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
             </li>
           );
         })}

@@ -16,6 +16,7 @@
 // by the composer and must stay free of `node:` imports.
 
 import fs from "node:fs";
+import path from "node:path";
 import type { ChatAttachment } from "./chat-attachments.ts";
 import {
   normalizeDocumentSummary,
@@ -38,6 +39,91 @@ export interface ResolvedDocument {
   /** The structured reading, re-derived when the request did not carry it. */
   text: string;
   figures: string[];
+}
+
+export interface StagedEditableDocuments {
+  context: string;
+  paths: Array<{ name: string; format: "docx" | "pptx" | "pdf"; path: string }>;
+}
+
+function safeWorkspaceName(name: string): string {
+  const parsed = path.parse(path.basename(name));
+  const base = parsed.name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^\.+/, "").slice(0, 100);
+  return base || "document";
+}
+
+/**
+ * Copy this turn's editable originals into the authorized runtime workspace.
+ * The blob-store copy remains immutable; subsequent tool calls operate on this
+ * per-conversation copy and publish their result through the artifact store.
+ */
+export function stageEditableDocumentAttachments(input: {
+  userId: number;
+  attachments: readonly ChatAttachment[] | undefined;
+  workspace: string;
+}): StagedEditableDocuments {
+  const candidates = (input.attachments ?? []).filter(
+    (attachment): attachment is Extract<ChatAttachment, { type: "document" }> =>
+      attachment.type === "document" && ["docx", "pptx", "pdf"].includes(attachment.format),
+  );
+  if (candidates.length === 0) return { context: "", paths: [] };
+
+  const workspace = fs.realpathSync(path.resolve(input.workspace));
+  const stagingRoot = path.join(workspace, ".breadboard");
+  const rootEntry = fs.lstatSync(stagingRoot, { throwIfNoEntry: false });
+  if (rootEntry?.isSymbolicLink() || (rootEntry && !rootEntry.isDirectory())) {
+    return { context: "", paths: [] };
+  }
+  if (!rootEntry) fs.mkdirSync(stagingRoot);
+  const realStagingRoot = fs.realpathSync(stagingRoot);
+  const rootRelative = path.relative(workspace, realStagingRoot);
+  if (!rootRelative || rootRelative.startsWith("..") || path.isAbsolute(rootRelative)) {
+    return { context: "", paths: [] };
+  }
+
+  const directory = path.join(realStagingRoot, "attachments");
+  const directoryEntry = fs.lstatSync(directory, { throwIfNoEntry: false });
+  if (directoryEntry?.isSymbolicLink() || (directoryEntry && !directoryEntry.isDirectory())) {
+    return { context: "", paths: [] };
+  }
+  if (!directoryEntry) fs.mkdirSync(directory);
+  const realDirectory = fs.realpathSync(directory);
+  const directoryRelative = path.relative(workspace, realDirectory);
+  if (directoryRelative.startsWith("..") || path.isAbsolute(directoryRelative)) {
+    return { context: "", paths: [] };
+  }
+
+  const staged: StagedEditableDocuments["paths"] = [];
+  for (const attachment of candidates) {
+    const resolved = resolveDocumentAttachment(input.userId, attachment);
+    if (!resolved || !["docx", "pptx", "pdf"].includes(resolved.format)) continue;
+    const format = resolved.format as "docx" | "pptx" | "pdf";
+    const filename = `${resolved.blobId}-${safeWorkspaceName(resolved.name)}.${format}`;
+    const target = path.join(realDirectory, filename);
+    const relative = path.relative(workspace, target);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+    try {
+      const existing = fs.lstatSync(target, { throwIfNoEntry: false });
+      if (existing?.isSymbolicLink() || (existing && !existing.isFile())) continue;
+      if (!existing) fs.copyFileSync(resolved.path, target, fs.constants.COPYFILE_EXCL);
+      staged.push({ name: resolved.name, format, path: relative.replaceAll("\\", "/") });
+    } catch {
+      // The attachment's structured reading still reaches the model. A staging
+      // failure removes editing, not reading, from this turn.
+    }
+  }
+
+  const context = staged.length
+    ? [
+        "<breadboard_editable_documents>",
+        "These are byte-preserving workspace copies of files attached to this conversation.",
+        ...staged.map((entry) =>
+          `- ${JSON.stringify(entry.name)} (${entry.format}): ${JSON.stringify(entry.path)}`),
+        "Use document_edit without patches to inspect DOCX/PPTX anchors, then patch them. Use pdf_to_docx for PDF conversion.",
+        "</breadboard_editable_documents>",
+      ].join("\n")
+    : "";
+  return { context, paths: staged };
 }
 
 /**

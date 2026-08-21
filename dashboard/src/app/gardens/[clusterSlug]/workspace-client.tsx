@@ -15,6 +15,7 @@ import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import TerminalSidebar, {
   CHAT_RAIL_RESIZE,
+  PENDING_CHAT_ROW_ID,
   type TerminalPanel,
   type TerminalSidebarChat,
 } from "@/app/components/hermes/terminal-sidebar";
@@ -29,23 +30,25 @@ import {
 } from "@/lib/conversations/unread";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
-import { useQueuedFollowUps } from "@/app/components/hermes/queued-follow-ups";
+import { useHumanizerMode } from "@/app/components/use-humanizer-mode";
+import {
+  restoreQueuedFollowUpDraft,
+  useQueuedFollowUps,
+} from "@/app/components/hermes/queued-follow-ups";
 import { useComposerInset } from "@/app/components/chat/use-composer-inset";
 import { useSmoothStreamText } from "@/app/components/chat/use-smooth-stream-text";
 import ChatDisclaimer from "@/app/components/chat/chat-disclaimer";
+import CollapsibleUserMessage from "@/app/components/chat/collapsible-user-message";
 import ChatGreetingEmptyState from "@/app/components/hermes/chat-greeting-empty-state";
 import type { ChatGreeting } from "@/lib/hermes/chat-greeting";
 import { useChatGreeting } from "@/app/components/hermes/use-chat-greeting";
 import { useChatDraft } from "@/app/components/hermes/use-chat-draft";
-import {
-  chatDraftKey,
-  clearChatDraft,
-  forgetChatDrafts,
-} from "@/lib/conversations/drafts";
+import { forgetChatDrafts } from "@/lib/conversations/drafts";
 import AssistantMessageActions, {
   MessageActionsSlot,
 } from "@/app/components/assistant-message-actions";
 import { isDirectModeEnabled } from "@/app/components/use-direct-mode";
+import { isPersonalizeEnabled } from "@/app/components/use-personalize";
 import {
   applyBranchVariant,
   cloneMessages,
@@ -125,6 +128,7 @@ import InlineArtifactCards, {
   useInlineArtifactPrefetch,
 } from "@/app/components/hermes/inline-artifact-cards";
 import InlineDeepResearchRun from "@/app/components/hermes/inline-deep-research-run";
+import InlineMaxResearchRun from "@/app/components/hermes/inline-max-research-run";
 import InlineOpenCodeRun from "@/app/components/hermes/inline-opencode-run";
 import InlineRufloRun from "@/app/components/hermes/inline-ruflo-run";
 import InlineAgentReachRun from "@/app/components/hermes/inline-agent-reach-run";
@@ -143,6 +147,7 @@ import InlineHardwareBlueprintRun from "@/app/components/hermes/inline-hardware-
 import InlineParametricCadRun from "@/app/components/hermes/inline-parametric-cad-run";
 import InlineHyperframesRun from "@/app/components/hermes/inline-hyperframes-run";
 import InlineResource2SkillRun from "@/app/components/hermes/inline-resource2skill-run";
+import InlineMatraixRun from "@/app/components/hermes/inline-matraix-run";
 import InlineOpenMontageRun from "@/app/components/hermes/inline-openmontage-run";
 import InlineOpenworkRun from "@/app/components/hermes/inline-openwork-run";
 import InlineOpenscienceRun from "@/app/components/hermes/inline-openscience-run";
@@ -171,6 +176,10 @@ import {
   briefFromResource2SkillCommand,
   resource2SkillUserMessage,
 } from "@/lib/resource2skill/identity.ts";
+import {
+  matraixUserMessage,
+  taskFromMatraixCommand,
+} from "@/lib/matraix/identity.ts";
 import {
   briefFromOpenMontageCommand,
   openMontageUserMessage,
@@ -265,6 +274,7 @@ import {
   deepResearchUserMessage,
   parseResearchRequest,
 } from "@/lib/deep-research/identity";
+import { maxResearchUserMessage } from "@/lib/max-research/identity.ts";
 import { loadAgentSettings } from "@/lib/agent-settings/client.ts";
 import { deepResearchDefaults } from "@/lib/agent-settings/defaults.ts";
 import {
@@ -417,6 +427,10 @@ interface Message {
     query: string;
     output: "report" | "answer";
   };
+  maxResearchRun?: {
+    runId: string;
+    query: string;
+  };
   openCodeRun?: {
     runId: string;
     task: string;
@@ -445,6 +459,7 @@ interface Message {
   parametricCadRun?: { runId: string; brief: string };
   hyperframesRun?: { runId: string; brief: string };
   resource2SkillRun?: { runId: string; brief: string };
+  matraixRun?: { runId: string; brief: string };
   openMontageRun?: { runId: string; brief: string };
   openworkRun?: { runId: string; task: string };
   openscienceRun?: { runId: string; task: string };
@@ -1095,6 +1110,7 @@ function hasRunningExternalAgent(message: Message): boolean {
       message.parametricCadRun ||
       message.hyperframesRun ||
       message.resource2SkillRun ||
+      message.matraixRun ||
       message.openMontageRun ||
       message.openworkRun ||
       message.openscienceRun ||
@@ -1244,12 +1260,16 @@ const ChatTranscript = memo(function ChatTranscript({
       message.role === "assistant" ? index : lastIndex,
     -1,
   );
+  const newestAssistant =
+    lastAssistantIndex >= 0 ? messages[lastAssistantIndex] : undefined;
+  const transcriptRevealKey = String(chatSessionId ?? "new");
   // The newest answer's text is revealed at a readable pace rather than drawn
   // straight from the buffer, so a reply that arrives in bursts (or whole)
   // still reads as a stream. Older messages render their content directly.
   const revealedAssistantContent = useSmoothStreamText(
-    lastAssistantIndex >= 0 ? messages[lastAssistantIndex].content : "",
+    newestAssistant?.content ?? "",
     isStreaming,
+    transcriptRevealKey,
   );
   const timeSeparators = chatTimeSeparatorLabels(messages);
 
@@ -1379,6 +1399,7 @@ const ChatTranscript = memo(function ChatTranscript({
               const externalRun =
                 msg.agentBrowserRun ??
                 msg.deepResearchRun ??
+                msg.maxResearchRun ??
                 msg.codexRun ??
                 msg.openCodeRun ??
                 msg.openPlanterRun ??
@@ -1397,6 +1418,7 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.parametricCadRun ??
                 msg.hyperframesRun ??
                 msg.resource2SkillRun ??
+                msg.matraixRun ??
                 msg.openMontageRun ??
                 msg.openworkRun ??
                 msg.openscienceRun ??
@@ -1551,11 +1573,15 @@ const ChatTranscript = memo(function ChatTranscript({
                           ) : (
                             <>
                               <div className="neu-chat-message neu-chat-message-user w-full rounded-2xl rounded-tr-sm px-4 py-3 text-sm">
-                                {splitLeadingCommandTokens(msg.content) ? (
-                                  <UserMessageText content={msg.content} />
-                                ) : (
-                                  <ChatMarkdown content={msg.content} compact />
-                                )}
+                                <CollapsibleUserMessage
+                                  messageKey={messageInteractionId}
+                                >
+                                  {splitLeadingCommandTokens(msg.content) ? (
+                                    <UserMessageText content={msg.content} />
+                                  ) : (
+                                    <ChatMarkdown content={msg.content} compact />
+                                  )}
+                                </CollapsibleUserMessage>
                               </div>
                               <div className="mt-1 flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                                 <button
@@ -1741,6 +1767,12 @@ const ChatTranscript = memo(function ChatTranscript({
                               }
                               usage={totalUsage}
                               responseDurationMs={msg.responseDurationMs}
+                              responseStartedAt={
+                                delegatedAgentActive ||
+                                isAgentContinuationResponse
+                                  ? undefined
+                                  : msg.createdAt
+                              }
                               // The delegation's own clock, so the timer
                               // carries on from the turn instead of restarting.
                               activePhaseStartedAt={delegatedAgentStartedAt}
@@ -1783,6 +1815,13 @@ const ChatTranscript = memo(function ChatTranscript({
                                       result,
                                     )
                                   }
+                                />
+                              ) : msg.maxResearchRun ? (
+                                <InlineMaxResearchRun
+                                  runId={msg.maxResearchRun.runId}
+                                  query={msg.maxResearchRun.query}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
                                 />
                               ) : msg.deepResearchRun ? (
                                 <InlineDeepResearchRun
@@ -2143,6 +2182,25 @@ const ChatTranscript = memo(function ChatTranscript({
                                   onTerminal={(result) =>
                                     onExternalAgentTerminal(
                                       msg.resource2SkillRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.matraixRun ? (
+                                <InlineMatraixRun
+                                  runId={msg.matraixRun.runId}
+                                  brief={msg.matraixRun.brief}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.matraixRun!.runId,
                                       result,
                                     )
                                   }
@@ -2653,6 +2711,9 @@ export default function WorkspaceClient({
   // Chat
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
+  // The chat this rail minted out of its own blank state, so an unsent draft
+  // can follow it there and nowhere else. See useChatDraft.
+  const [createdChatId, setCreatedChatId] = useState<number | null>(null);
   const activeChatIdRef = useRef<number | null>(null);
   // `null` initially means "pick the newest persisted chat". After the user
   // presses New chat it means something different: keep a blank, unsaved
@@ -2670,6 +2731,11 @@ export default function WorkspaceClient({
   // stale by definition. Dropping them prevents a slow refresh from briefly
   // restoring the old title over the optimistic one.
   const chatHistoryEpoch = useRef(0);
+  // Chats whose delete has been sent but not yet acknowledged. The epoch guard
+  // above only drops answers to requests that were already in flight; a reload
+  // that starts while a delete is working would still list the chat and put its
+  // row back. These ids are held out of the list until the server answers.
+  const deletingChatIds = useRef<Set<number>>(new Set());
   // Retrying an answer opens a sibling branch here exactly as it does in the
   // Terminal: the transcript being replaced is kept as a variant of the same
   // user message instead of being resent underneath it.
@@ -2701,6 +2767,7 @@ export default function WorkspaceClient({
   useChatDraft({
     surface: draftSurface,
     sessionId: activeChatId === null ? null : String(activeChatId),
+    createdSessionId: createdChatId === null ? null : String(createdChatId),
     value: input,
     onRestore: setInput,
   });
@@ -2756,6 +2823,7 @@ export default function WorkspaceClient({
   const [launchingExternalAgent, setLaunchingExternalAgent] = useState<
     | "agent-browser"
     | "deep-research"
+    | "max-research"
     | "codex"
     | "opencode"
     | "openplanter"
@@ -2773,6 +2841,7 @@ export default function WorkspaceClient({
     | "parametric-cad"
     | "hyperframes"
     | "resource2skill"
+    | "matraix"
     | "openmontage"
     | "openwork"
     | "openscience"
@@ -2791,6 +2860,7 @@ export default function WorkspaceClient({
   const externalAgentLaunchRef = useRef<
     | "agent-browser"
     | "deep-research"
+    | "max-research"
     | "codex"
     | "opencode"
     | "openplanter"
@@ -2808,6 +2878,7 @@ export default function WorkspaceClient({
     | "parametric-cad"
     | "hyperframes"
     | "resource2skill"
+    | "matraix"
     | "openmontage"
     | "openwork"
     | "openscience"
@@ -2966,6 +3037,7 @@ export default function WorkspaceClient({
     useState<LearnDestructiveAction | null>(null);
   const [learnSourceOnly, setLearnSourceOnly] = useState(true);
   const [learnSkipManualReview, setLearnSkipManualReview] = useState(false);
+  const [humanizerEnabled, setHumanizerEnabled] = useHumanizerMode();
   const [learnIncludedSourceSlugs, setLearnIncludedSourceSlugs] = useState<
     string[] | null
   >(null);
@@ -3189,7 +3261,9 @@ export default function WorkspaceClient({
       const res = await fetch(`/api/chat-sessions?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to load chats");
       const data = await res.json();
-      const sessions = (data.sessions ?? []) as ChatSession[];
+      const sessions = ((data.sessions ?? []) as ChatSession[]).filter(
+        (session) => !deletingChatIds.current.has(session.id),
+      );
       if (chatHistoryEpoch.current !== epoch) return;
       setChatSessions((previous) => {
         // The rail's marks come from its own feed and are not in this answer,
@@ -3202,6 +3276,10 @@ export default function WorkspaceClient({
           active: cached.get(session.id)?.active ?? false,
         }));
       });
+      // Landing on the newest chat because the list loaded is not a creation:
+      // whatever is in the composer belongs to the blank chat it was typed in,
+      // not to this one.
+      setCreatedChatId(null);
       setActiveChatId((current) => {
         if (pendingNewChatRef.current) return null;
         if (current && sessions.some((s) => s.id === current)) return current;
@@ -3289,6 +3367,26 @@ export default function WorkspaceClient({
     highlight: session.highlight ?? null,
     unread: unreadChats.has(String(session.id)),
   }));
+  // The first turn creates the durable garden chat, but the draft already
+  // represents a conversation to the person typing it. Show that selected row
+  // immediately; sending replaces it with the real numbered chat.
+  const pendingChatVisible =
+    activeChatId === null && (input.trim().length > 0 || draftMessages !== null);
+  const railChats: TerminalSidebarChat[] = pendingChatVisible
+    ? [
+        {
+          id: PENDING_CHAT_ROW_ID,
+          title: "New chat",
+          updatedAt: "",
+          active: false,
+          pinned: false,
+          pending: true,
+          highlight: null,
+          unread: false,
+        },
+        ...sidebarChats,
+      ]
+    : sidebarChats;
 
   // A chat counts as read while its transcript is the one on screen.
   const viewingChatId = activeChatId === null ? null : String(activeChatId);
@@ -3351,6 +3449,8 @@ export default function WorkspaceClient({
     pendingNewChatRef.current = false;
     setSidePanel(null);
     setActiveChatId(id);
+    // An existing chat, so nothing typed in the blank composer belongs to it.
+    setCreatedChatId(null);
     setDraftMessages(null);
   }, []);
 
@@ -3590,6 +3690,10 @@ export default function WorkspaceClient({
           // into it and have their next message routed into Deep Research.
           await launchDeepResearch(request.brief);
           return;
+        case "max-research":
+          // Same reasoning as Deep Research: nothing is needed from the chip.
+          await launchMaxResearch(request.brief);
+          return;
         case "agent-browser": {
           const selected = agentBrowserAgent ?? (await selectAgentBrowser());
           if (selected) await launchAgentBrowser(request.brief, selected);
@@ -3646,6 +3750,9 @@ export default function WorkspaceClient({
           return;
         case "hyperframes":
           await launchHyperframes(request.brief);
+          return;
+        case "matraix":
+          await launchMatraix(request.brief);
           return;
         case "resource2skill":
           await launchResource2Skill(request.brief);
@@ -3748,6 +3855,8 @@ export default function WorkspaceClient({
       steerableRunActive: steerableTurnActive,
       externalRunActive: externalRunHoldsQueue,
       onSteer: steerActiveResponse,
+      onRestoreDraft: (text) =>
+        restoreQueuedFollowUpDraft(text, setInput, textareaRef),
       onSendQueued: async (text) => {
         await handleSubmit(text);
       },
@@ -4671,6 +4780,7 @@ export default function WorkspaceClient({
       chatHistoryEpoch.current += 1;
       setChatSessions((previous) => [session, ...previous]);
       setActiveChatId(session.id);
+      setCreatedChatId(session.id);
       return session;
     } catch {
       addToast("Failed to create chat");
@@ -4720,11 +4830,17 @@ export default function WorkspaceClient({
     pendingNewChatRef.current = true;
     chatHistoryEpoch.current += 1;
     setActiveChatId(null);
+    setCreatedChatId(null);
     setDraftMessages(null);
     setSidePanel(null);
     setInput("");
-    // A new chat starts with an empty box rather than the last unstarted draft.
-    clearChatDraft(window.localStorage, chatDraftKey(draftSurface, null));
+    // The unstarted chat's draft is deliberately left alone. It is only ever
+    // written by someone typing into a blank composer and never sending, and
+    // since a send clears it explicitly, anything still in it is an unsent
+    // message — the one kind of text nothing else has a copy of. Clearing it
+    // here used to be harmless because an unsent draft was carried onto
+    // whichever chat opened next; now that it stays where it was written,
+    // this was the only thing that could destroy it.
     setChatAttachments([]);
     setAttachmentDistillStatus(null);
     setExternalAgentStatus("");
@@ -4765,31 +4881,55 @@ export default function WorkspaceClient({
     }
   }
 
-  // A streaming chat can be deleted: the route cancels the turn and any agent
-  // run it started before it removes the rows.
-  async function handleDeleteChat(sessionId?: number): Promise<boolean> {
-    const targetId = sessionId ?? activeChatId;
-    if (!targetId) return false;
-    const targetSession = chatSessions.find((s) => s.id === targetId);
-    if (!targetSession || (targetSession.isOwn === false && !isOwner))
-      return false;
-    chatHistoryEpoch.current += 1;
-    forgetChatDrafts(window.localStorage, draftSurface, [String(targetId)]);
-    forgetUnreadChats([String(targetId)]);
-    const remaining = chatSessions.filter((s) => s.id !== targetId);
-    setChatSessions(remaining);
-    if (activeChatId === targetId) setActiveChatId(remaining[0]?.id ?? null);
+  function canDeleteChat(sessionId: number): boolean {
+    const targetSession = chatSessions.find((s) => s.id === sessionId);
+    return Boolean(targetSession) && (targetSession?.isOwn !== false || isOwner);
+  }
+
+  /**
+   * Send one delete and report whether it committed.
+   *
+   * The row is already gone from the rail by the time this runs — callers own
+   * the list — so this is only the round trip and its aftermath. The chat is
+   * held out of any reload that overlaps the request: the epoch guard drops
+   * answers to reloads already in flight, but one that starts while the delete
+   * is working would still list the chat and put its row back.
+   */
+  async function sendChatDelete(targetId: number): Promise<boolean> {
+    deletingChatIds.current.add(targetId);
     try {
       const res = await fetch(`/api/chat-sessions/${targetId}`, {
         method: "DELETE",
       });
       if (!res.ok) throw new Error("Failed to delete chat");
+      // The chat is really gone, so its local traces can go too. Doing this
+      // only on success keeps a failed delete from taking the unsent draft
+      // with it.
+      forgetChatDrafts(window.localStorage, draftSurface, [String(targetId)]);
+      forgetUnreadChats([String(targetId)]);
       return true;
     } catch {
       addToast("Failed to delete chat");
+      // The chat survived; reload so it comes back where it belongs.
       fetchChatSessions();
       return false;
+    } finally {
+      deletingChatIds.current.delete(targetId);
     }
+  }
+
+  // A streaming chat can be deleted: the route cancels the turn and any agent
+  // run it started before it removes the rows. All of that stopping is round
+  // trips, so the row leaves on the click and the request runs behind it, and
+  // the chat comes back only if the server refuses.
+  async function handleDeleteChat(sessionId?: number): Promise<boolean> {
+    const targetId = sessionId ?? activeChatId;
+    if (!targetId || !canDeleteChat(targetId)) return false;
+    chatHistoryEpoch.current += 1;
+    const remaining = chatSessions.filter((s) => s.id !== targetId);
+    setChatSessions(remaining);
+    if (activeChatId === targetId) setActiveChatId(remaining[0]?.id ?? null);
+    return sendChatDelete(targetId);
   }
 
   async function deleteChatFromRail(chat: TerminalSidebarChat) {
@@ -4819,11 +4959,27 @@ export default function WorkspaceClient({
     });
     if (!confirmed) return;
     setRailError(null);
-    let failed = 0;
-    // One at a time: each delete stops that chat's live work before removing
-    // its rows, so a partial result is possible and has to be reported.
-    for (const chat of chats) {
-      if (!(await handleDeleteChat(Number(chat.id)))) failed += 1;
+    // Every row leaves at once. Deleting them through handleDeleteChat one at a
+    // time would empty the rail one row per round trip — ten chats would look
+    // like ten small waits — and each of those calls would rebuild the list
+    // from this render's chats, putting the rows still queued behind it back.
+    const targets = chats
+      .map((chat) => Number(chat.id))
+      .filter((id) => canDeleteChat(id));
+    const targetIds = new Set(targets);
+    chatHistoryEpoch.current += 1;
+    const remaining = chatSessions.filter((s) => !targetIds.has(s.id));
+    setChatSessions(remaining);
+    if (activeChatId !== null && targetIds.has(activeChatId))
+      setActiveChatId(remaining[0]?.id ?? null);
+    // Chats this reader may not delete never left the rail, so they count as
+    // failures without a request being sent.
+    let failed = chats.length - targets.length;
+    // The requests still go one at a time: each delete stops that chat's live
+    // work before removing its rows, so a partial result is possible and has
+    // to be reported.
+    for (const id of targets) {
+      if (!(await sendChatDelete(id))) failed += 1;
     }
     if (failed > 0) {
       setRailError(
@@ -6472,6 +6628,74 @@ export default function WorkspaceClient({
             error instanceof Error ? error.message : "unknown error"
           }`,
         },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  /**
+   * Max Research, from Garden.
+   *
+   * The card was already rendered here and the agent was already listed as
+   * something the model may delegate to on this surface — but there was no
+   * launcher and no dispatch case, so a delegated run fell to `default:` and
+   * the turn said only that it had been delegated. Written against the same
+   * shape as Deep Research above so the two stay legible side by side.
+   */
+  async function launchMaxResearch(task: string, userContentOverride?: string) {
+    if (externalAgentLaunchRef.current) return;
+    const question = task.trim();
+    if (!question) {
+      setExternalAgentStatus("Type a question for Max Research.");
+      return;
+    }
+    externalAgentLaunchRef.current = "max-research";
+    setLaunchingExternalAgent("max-research");
+    setExternalAgentStatus("");
+    const userContent = userContentOverride?.trim() || maxResearchUserMessage(question);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/max-research/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question, model, reasoningEffort }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The Max Research run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          maxResearchRun: { runId: String(data.run.runId), query: question },
+          externalAgentOutcome: "running" as const,
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "The Max Research run could not start.";
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        { role: "assistant", content: `The Max Research run could not start: ${message}` },
         prepared.title,
       );
     } finally {
@@ -8812,6 +9036,81 @@ export default function WorkspaceClient({
     }
   }
 
+  async function launchMatraix(brief: string) {
+    if (!brief || externalAgentLaunchRef.current) {
+      if (!brief)
+        setExternalAgentStatus("Tell MatrAIx what to put to a simulated population.");
+      return;
+    }
+    externalAgentLaunchRef.current = "matraix";
+    setLaunchingExternalAgent("matraix");
+    setExternalAgentStatus("");
+    const userContent = matraixUserMessage(brief);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...transcriptForRetriedTurn(prepared.session),
+      {
+        id: `matraix-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/matraix/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The MatrAIx study could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          matraixRun: { runId: String(data.run.runId), brief },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The MatrAIx study could not start: ${error instanceof Error ? error.message : "unknown error"}`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
   async function launchOpenMontage(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
       if (!brief)
@@ -9584,6 +9883,14 @@ export default function WorkspaceClient({
       return;
     }
 
+    const matraixBrief = taskFromMatraixCommand(text);
+    if (matraixBrief !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchMatraix(matraixBrief);
+      return;
+    }
+
     const productionBrief = briefFromOpenMontageCommand(text);
     if (productionBrief !== null) {
       setInput("");
@@ -10018,6 +10325,7 @@ export default function WorkspaceClient({
           attachments: pendingAttachments,
           selectedDocumentSlugs,
           adhdMode: isDirectModeEnabled(),
+          personalize: isPersonalizeEnabled(),
           // A worker's result is handed back on a hidden turn, and that turn is
           // the visible answer. Say so, or its evidence panel cannot name the
           // agent whose run it is reporting.
@@ -11363,31 +11671,6 @@ export default function WorkspaceClient({
                   </button>
                 )}
               </div>
-              {!active &&
-                (status !== "awaiting_confirmation" ||
-                  staleReviewForExistingGarden) && (
-                  <button
-                    type="button"
-                    onClick={() => setLearnPanelOpen(false)}
-                    className="neu-button-icon flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
-                    aria-label="Close Learn panel"
-                    title="Close"
-                  >
-                    <svg
-                      className="h-3.5 w-3.5"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M6 18 18 6M6 6l12 12"
-                      />
-                    </svg>
-                  </button>
-                )}
             </div>
           </div>
         </div>
@@ -11440,12 +11723,35 @@ export default function WorkspaceClient({
           </div>
         )}
 
-        {showLearnTokenUsage && learnTokenUsage ? (
-          <div
-            className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-gray-800 pt-2 text-[11px]"
-            aria-label="Learn token usage"
-          >
+        <div
+          className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-gray-800 pt-2 text-[11px]"
+          aria-label="Learn token usage"
+        >
             <span className="font-medium text-gray-300">Tokens</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={humanizerEnabled}
+              onClick={() => setHumanizerEnabled(!humanizerEnabled)}
+              className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-gray-400 transition-colors hover:text-gray-200"
+              title="After a full Learn build passes its checks, rewrite only the learner-facing prose locally and keep the original if any safety check fails"
+            >
+              <span>Rewrite naturally</span>
+              <span
+                aria-hidden
+                className={`neu-inset relative h-4 w-7 rounded-full transition-colors duration-200 ${
+                  humanizerEnabled ? "bg-emerald-500/80" : "bg-gray-700"
+                }`}
+              >
+                <span
+                  className={`neu-surface-raised absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white transition-transform duration-200 ${
+                    humanizerEnabled ? "translate-x-3" : "translate-x-0"
+                  }`}
+                />
+              </span>
+            </button>
+            {showLearnTokenUsage && learnTokenUsage ? (
+              <>
             <span
               className="flex items-center gap-1 font-mono tabular-nums text-gray-400"
               title={
@@ -11535,8 +11841,11 @@ export default function WorkspaceClient({
                 {learnUsageCallSummary}
               </span>
             ) : null}
-          </div>
-        ) : null}
+              </>
+            ) : (
+              <span className="ml-auto text-gray-600">Waiting for usage</span>
+            )}
+        </div>
 
         {panelExpanded &&
           proposedMap &&
@@ -13049,10 +13358,16 @@ export default function WorkspaceClient({
           collapsed={railCollapsed}
           onToggleCollapsed={rail.toggle}
           resize={rail}
-          chats={sidebarChats}
+          chats={railChats}
           loading={loadingChats}
           error={railError}
-          activeChatId={activeChatId === null ? null : String(activeChatId)}
+          activeChatId={
+            pendingChatVisible
+              ? PENDING_CHAT_ROW_ID
+              : activeChatId === null
+                ? null
+                : String(activeChatId)
+          }
           openPanel={sidePanel}
           panels={GARDEN_PANELS}
           onNewChat={handleNewChat}
@@ -13060,7 +13375,14 @@ export default function WorkspaceClient({
             setSidePanel((current) => (current === panel ? null : panel))
           }
           onOpenSearch={() => setSearchOpen(true)}
-          onOpenChat={(chat) => openChatById(chat.id)}
+          onOpenChat={(chat) => {
+            if (chat.pending) {
+              setSidePanel(null);
+              textareaRef.current?.focus();
+              return;
+            }
+            openChatById(chat.id);
+          }}
           onRenameChat={renameChatFromRail}
           onTogglePin={(chat) =>
             void patchChatMark(
@@ -13556,6 +13878,7 @@ export default function WorkspaceClient({
               onSelectParametricCad={() => {}}
               onSelectHyperframes={() => {}}
               onSelectResource2Skill={() => {}}
+              onSelectMatraix={() => {}}
               onSelectOpenMontage={() => {}}
               onSelectOpenwork={() => {}}
               onSelectOpenscience={() => {}}

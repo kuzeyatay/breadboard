@@ -1186,166 +1186,72 @@ function ReviewDeliveryPanel() {
   );
 }
 
-/**
- * What to call you.
- *
- * The account has only ever had a username, and a username is a handle: the
- * blank chat was greeting people as "kuzeyata" because that is all it had. The
- * name set here is what the greeting uses, and it travels into every turn's
- * memory context, so the assistant addresses a person rather than a login.
- */
-function NamePanel({
-  initial,
-}: {
-  initial: { firstName: string; lastName: string; nickname: string; username: string };
-}) {
-  const router = useRouter();
-  const [firstName, setFirstName] = useState(initial.firstName);
-  const [lastName, setLastName] = useState(initial.lastName);
-  const [saved, setSaved] = useState({ firstName: initial.firstName, lastName: initial.lastName });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [confirmed, setConfirmed] = useState(false);
-
-  const dirty = firstName !== saved.firstName || lastName !== saved.lastName;
-  // What the greeting will actually say once this is saved, worked out here
-  // rather than described in prose: the fallback to the username is the part
-  // people need to see, and a sentence about it is not the same as seeing it.
-  // The nickname is read from the prop rather than held here, because the panel
-  // below owns it — saving it refreshes the page and this sentence follows.
-  const nickname = initial.nickname.trim();
-  const greetingName = nickname || firstName.trim() || initial.username;
-
-  async function save() {
-    setBusy(true);
-    setError(null);
-    setConfirmed(false);
-    try {
-      const response = await fetch("/api/profile/identity", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ firstName, lastName }),
-      });
-      const data = (await response.json().catch(() => ({}))) as {
-        identity?: { firstName: string; lastName: string };
-        error?: string;
-      };
-      if (!response.ok || !data.identity) throw new Error(data.error || "Could not save your name");
-      setFirstName(data.identity.firstName);
-      setLastName(data.identity.lastName);
-      setSaved({ firstName: data.identity.firstName, lastName: data.identity.lastName });
-      setConfirmed(true);
-      // The heading at the top of this page is server-rendered from the same
-      // row, so it only catches up on a refetch.
-      router.refresh();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save your name");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Card
-      title="Your name"
-      hint={`Breadboard will call you ${greetingName}${
-        nickname
-          ? " — the nickname below wins over a first name"
-          : firstName.trim()
-            ? ""
-            : " — your username, until you give it something better"
-      }.`}
-    >
-      <form
-        className="space-y-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (dirty && !busy) void save();
-        }}
-      >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-gray-500">First name</span>
-            <input
-              type="text"
-              value={firstName}
-              maxLength={60}
-              autoComplete="given-name"
-              placeholder="Kuzey"
-              onChange={(event) => {
-                setFirstName(event.target.value);
-                setConfirmed(false);
-              }}
-              className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-gray-500">Surname</span>
-            <input
-              type="text"
-              value={lastName}
-              maxLength={60}
-              autoComplete="family-name"
-              placeholder="Optional"
-              onChange={(event) => {
-                setLastName(event.target.value);
-                setConfirmed(false);
-              }}
-              className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
-            />
-          </label>
-        </div>
-        <div className="flex items-center justify-between gap-3">
-          <p className="min-w-0 text-xs text-gray-600">
-            Used in the greeting on a blank chat, and given to the assistant so it knows who it is
-            talking to. Leave both empty to go back to your username.
-          </p>
-          <button
-            type="submit"
-            disabled={!dirty || busy}
-            className="neu-button shrink-0 rounded-lg border border-gray-800 px-3.5 py-2 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {busy ? "Saving…" : "Save"}
-          </button>
-        </div>
-        {error && <p className="text-xs text-red-400">{error}</p>}
-        {!error && confirmed && !dirty && (
-          <p className="text-xs text-gray-500">Saved.</p>
-        )}
-      </form>
-    </Card>
-  );
-}
-
 /** The cap the store enforces on the free-text note, shown as a counter. */
 const ABOUT_MAX_LENGTH = 1_500;
 
 /**
- * The rest of what the assistant knows about you before a word is typed.
+ * Who you are, in one card.
  *
- * The name answers "who is this"; these three answer "what should I already
- * know". A nickname outranks the first name when addressing someone — it is
- * the more deliberate answer, given by someone looking at both fields at once —
- * and the occupation and the note ride into the same `# user_identity` block on
- * every turn, temporary chats included. Nothing here is inferred, so nothing
- * here needs confirming: it is what they typed about themselves.
+ * The account has only ever had a username, and a username is a handle: the
+ * blank chat was greeting people as "kuzeyata" because that is all it had.
+ * Everything set here travels into every turn's `# user_identity` block, so the
+ * assistant addresses a person rather than a login.
+ *
+ * The name and the nickname used to live in two cards side by side, which left
+ * the obvious question — which one am I actually called? — answered in neither.
+ * They are one form now, and the sentence at the top of the card answers it out
+ * loud: the nickname wins, then the first name, then the username. Nothing here
+ * is inferred, so nothing here needs confirming: it is what they typed about
+ * themselves.
  */
-function AboutYouPanel({
+function IdentityPanel({
   initial,
 }: {
-  initial: { nickname: string; occupation: string; about: string };
+  initial: {
+    firstName: string;
+    lastName: string;
+    nickname: string;
+    occupation: string;
+    about: string;
+    username: string;
+  };
 }) {
   const router = useRouter();
+  const [firstName, setFirstName] = useState(initial.firstName);
+  const [lastName, setLastName] = useState(initial.lastName);
   const [nickname, setNickname] = useState(initial.nickname);
   const [occupation, setOccupation] = useState(initial.occupation);
   const [about, setAbout] = useState(initial.about);
-  const [saved, setSaved] = useState(initial);
+  const [saved, setSaved] = useState({
+    firstName: initial.firstName,
+    lastName: initial.lastName,
+    nickname: initial.nickname,
+    occupation: initial.occupation,
+    about: initial.about,
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
 
   const dirty =
-    nickname !== saved.nickname || occupation !== saved.occupation || about !== saved.about;
+    firstName !== saved.firstName ||
+    lastName !== saved.lastName ||
+    nickname !== saved.nickname ||
+    occupation !== saved.occupation ||
+    about !== saved.about;
+
+  // What the greeting will actually say once this is saved, worked out here
+  // rather than described in prose: the precedence is the part people need to
+  // see, and a sentence about it is not the same as seeing it. Both fields are
+  // local state now, so it follows along as they type.
+  const trimmedNickname = nickname.trim();
+  const trimmedFirstName = firstName.trim();
+  const greetingName = trimmedNickname || trimmedFirstName || initial.username;
+  const greetingSource = trimmedNickname
+    ? " — your nickname, which wins over a first name"
+    : trimmedFirstName
+      ? " — your first name; a nickname would win over it"
+      : " — your username, until you give it something better";
 
   async function save() {
     setBusy(true);
@@ -1355,26 +1261,36 @@ function AboutYouPanel({
       const response = await fetch("/api/profile/identity", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nickname, occupation, about }),
+        body: JSON.stringify({ firstName, lastName, nickname, occupation, about }),
       });
       const data = (await response.json().catch(() => ({}))) as {
-        identity?: { nickname: string; occupation: string; about: string };
+        identity?: {
+          firstName: string;
+          lastName: string;
+          nickname: string;
+          occupation: string;
+          about: string;
+        };
         error?: string;
       };
       if (!response.ok || !data.identity) throw new Error(data.error || "Could not save this");
       // The stored values are the normalized ones, so the fields show what the
       // assistant will actually be told rather than what was typed.
+      setFirstName(data.identity.firstName);
+      setLastName(data.identity.lastName);
       setNickname(data.identity.nickname);
       setOccupation(data.identity.occupation);
       setAbout(data.identity.about);
       setSaved({
+        firstName: data.identity.firstName,
+        lastName: data.identity.lastName,
         nickname: data.identity.nickname,
         occupation: data.identity.occupation,
         about: data.identity.about,
       });
       setConfirmed(true);
-      // The name card above says what you will be called, and a nickname
-      // changes that answer, so it has to re-read the row.
+      // The heading at the top of this page is server-rendered from the same
+      // row, so it only catches up on a refetch.
       router.refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not save this");
@@ -1391,7 +1307,7 @@ function AboutYouPanel({
   return (
     <Card
       title="About you"
-      hint="Given to the assistant at the start of every chat, this one included. Leave a field empty and it is not mentioned at all."
+      hint={`Breadboard will call you ${greetingName}${greetingSource}. All of this is given to the assistant at the start of every chat, this one included. Leave a field empty and it is not mentioned at all.`}
     >
       <form
         className="space-y-3"
@@ -1425,6 +1341,30 @@ function AboutYouPanel({
               className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
             />
           </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500">First name</span>
+            <input
+              type="text"
+              value={firstName}
+              maxLength={60}
+              autoComplete="given-name"
+              placeholder="Kuzey"
+              onChange={(event) => touch(() => setFirstName(event.target.value))}
+              className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500">Surname</span>
+            <input
+              type="text"
+              value={lastName}
+              maxLength={60}
+              autoComplete="family-name"
+              placeholder="Optional"
+              onChange={(event) => touch(() => setLastName(event.target.value))}
+              className="w-full rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:border-gray-600 focus:outline-none"
+            />
+          </label>
         </div>
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-gray-500">More about you</span>
@@ -1439,7 +1379,9 @@ function AboutYouPanel({
         </label>
         <div className="flex items-center justify-between gap-3">
           <p className="min-w-0 text-xs text-gray-600">
-            A nickname is what you are called, ahead of your first name.{" "}
+            The nickname is what you are called, ahead of your first name; leave both empty to go
+            back to your username. The full name, occupation and note are context the assistant
+            reads, not a greeting.{" "}
             {about.length > 0 && `${about.length} of ${ABOUT_MAX_LENGTH} characters. `}
             None of this is memory the assistant learned — it is what you told it.
           </p>
@@ -2228,21 +2170,16 @@ export default function ProfileClient({
           </div>
         </section>
 
-        {/* ------------------------------------------------ name, about you */}
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <NamePanel
+        {/* ----------------------------------------------------- about you */}
+        <div className="mt-4">
+          <IdentityPanel
             initial={{
               firstName: account.firstName,
               lastName: account.lastName,
               nickname: account.nickname,
-              username: account.username,
-            }}
-          />
-          <AboutYouPanel
-            initial={{
-              nickname: account.nickname,
               occupation: account.occupation,
               about: account.about,
+              username: account.username,
             }}
           />
         </div>

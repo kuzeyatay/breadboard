@@ -33,6 +33,9 @@ test("a selected intelligence mode becomes the durable user default", () => {
     reasoningEffort: "high",
     reasoningEffortByModel: {},
     intelligencePreferenceSet: false,
+    // "Rewrite naturally" as a standing preference. Off until asked for: it
+    // rewrites what Breadboard says.
+    humanizerAuto: false,
   });
 
   setHermesUserSettings(1, {
@@ -46,6 +49,8 @@ test("a selected intelligence mode becomes the durable user default", () => {
     reasoningEffort: "xhigh",
     reasoningEffortByModel: { "gpt-5.6-terra": "xhigh" },
     intelligencePreferenceSet: true,
+    // Choosing a model or an effort must not disturb the rewriting preference.
+    humanizerAuto: false,
   });
 
   setHermesUserSettings(1, { filesystemMode: "full" });

@@ -38,10 +38,44 @@ interface HastNode {
   children?: HastNode[];
 }
 
+/**
+ * Code spans and fenced blocks, which no prose transform may touch.
+ *
+ * A dollar inside `console.log("$5")` is one the author typed, and rewriting it
+ * would put a backslash on the reader's screen.
+ */
+const CODE_REGIONS = /```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*`/g;
+
+/** Apply a prose transform to everything except code. */
+function outsideCode(content: string, transform: (prose: string) => string): string {
+  let result = "";
+  let index = 0;
+  for (const match of content.matchAll(CODE_REGIONS)) {
+    result += transform(content.slice(index, match.index)) + match[0];
+    index = match.index + match[0].length;
+  }
+  return result + transform(content.slice(index));
+}
+
+/**
+ * A dollar sign that opens a price rather than a formula.
+ *
+ * `remark-math` reads a `$...$` pair as inline math, so "Helsing at $18B,
+ * Hadrian at $7.87B" parsed as the formula "18B, Hadrian at" and rendered in
+ * italic serif with both amounts swallowed. In a chat answer a dollar followed
+ * by a digit is overwhelmingly money; inline math opening on a bare digit is
+ * rare, and both `\(...\)` and `$$...$$` still reach KaTeX — the first is
+ * normalized just below, and neither is matched here.
+ */
+const CURRENCY_DOLLAR = /(?<![\\$])\$(?=\d)/g;
+
 function normalizeMathDelimiters(content: string): string {
-  return content
-    .replace(/\\\[([\s\S]*?)\\\]/g, (_match, math: string) => `$$\n${math.trim()}\n$$`)
-    .replace(/\\\(([\s\S]*?)\\\)/g, (_match, math: string) => `$${math.trim()}$`);
+  return outsideCode(content, (prose) =>
+    prose
+      .replace(/\\\[([\s\S]*?)\\\]/g, (_match, math: string) => `$$\n${math.trim()}\n$$`)
+      .replace(/\\\(([\s\S]*?)\\\)/g, (_match, math: string) => `$${math.trim()}$`)
+      .replace(CURRENCY_DOLLAR, "\\$&"),
+  );
 }
 
 const remarkPlugins = [remarkGfm, remarkMath];
@@ -109,9 +143,9 @@ function getCodeClassName(node: ReactNode): string | undefined {
   return typeof node.props.className === 'string' ? node.props.className : undefined;
 }
 
-function getLanguageLabel(className?: string): string {
+function getLanguageLabel(className?: string): string | null {
   const language = className?.match(/(?:^|\s)language-([^\s]+)/)?.[1]?.toLowerCase();
-  if (!language) return 'Code';
+  if (!language) return null;
   if (languageNames[language]) return languageNames[language];
 
   return language
@@ -187,34 +221,45 @@ function CodeBlock({ children, node, ...props }: MarkdownPreProps) {
   // `node` is supplied by react-markdown and should not be forwarded to the DOM.
   void node;
 
+  const copyControl = (
+    <button
+      type="button"
+      className="chat-code-copy"
+      data-selection-exclude
+      onClick={copyCode}
+      aria-label={copied ? 'Code copied' : 'Copy code'}
+      title={copied ? 'Copied' : 'Copy code'}
+    >
+      {copied ? (
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
+          <path d="m5 12 4 4L19 6" />
+        </svg>
+      ) : (
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
+          <rect x="9" y="3" width="11" height="13" rx="2" />
+          <path d="M15 16v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3" />
+        </svg>
+      )}
+    </button>
+  );
+
   return (
-    <div className="chat-code-block">
-      <div className="chat-code-block-header" data-selection-exclude>
-        <span className="chat-code-block-language">
-          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
-            <path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 6l-4 12" />
-          </svg>
-          <span>{language}</span>
-        </span>
-        <button
-          type="button"
-          className="chat-code-copy"
-          onClick={copyCode}
-          aria-label={copied ? 'Code copied' : 'Copy code'}
-          title={copied ? 'Copied' : 'Copy code'}
-        >
-          {copied ? (
+    <div
+      className={language ? 'chat-code-block' : 'chat-code-block chat-code-block-unlabelled'}
+    >
+      {language ? (
+        <div className="chat-code-block-header" data-selection-exclude>
+          <span className="chat-code-block-language">
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
-              <path d="m5 12 4 4L19 6" />
+              <path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 6l-4 12" />
             </svg>
-          ) : (
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
-              <rect x="9" y="3" width="11" height="13" rx="2" />
-              <path d="M15 16v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3" />
-            </svg>
-          )}
-        </button>
-      </div>
+            <span>{language}</span>
+          </span>
+          {copyControl}
+        </div>
+      ) : (
+        copyControl
+      )}
       <pre {...props}>{children}</pre>
     </div>
   );

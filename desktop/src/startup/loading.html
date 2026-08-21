@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>Breadboard</title>
+    <script src="./theme.js"></script>
+    <link rel="stylesheet" href="./loading-scene.css" />
+    <link rel="stylesheet" href="./loading.css" />
+  </head>
+  <body>
+    <header class="desktop-titlebar" aria-label="Window controls"></header>
+    <main class="shell">
+      <!-- What a window opened onto a page that has not painted yet waits in.
+           No scripts and no state: the field is a picture, and the page behind
+           it replaces this document the moment it has something to show. The
+           rows are written out rather than built, because there is nothing here
+           to run them. -->
+      <section class="loader loading-scene" aria-label="Opening Breadboard">
+        <div class="kinetic-stage" aria-hidden="true">
+          <div class="stage-halo"></div>
+          <div class="kinetic-field">
+            <div class="kinetic-row">
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+            </div>
+            <div class="kinetic-row">
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+            </div>
+            <div class="kinetic-row">
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+            </div>
+            <div class="kinetic-row">
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+            </div>
+            <div class="kinetic-row">
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+              <span class="kinetic-scale"></span>
+            </div>
+          </div>
+        </div>
+        <p class="visually-hidden" role="status" aria-live="polite">
+          Opening Breadboard. This window will fill in as soon as the page is
+          ready.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

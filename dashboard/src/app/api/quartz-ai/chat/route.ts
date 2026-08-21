@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth-options";
 import {
   apiErrorResponse,
+  ApiError,
   readJsonBody,
   requireEnabled,
   requireString,
@@ -40,7 +41,10 @@ import {
   getConversationForUser,
 } from "@/lib/conversations/store.ts";
 import { startConversationTurn } from "@/lib/conversations/turn-service.ts";
-import { getRuntimeSessionById } from "@/lib/hermes/runtime-store.ts";
+import {
+  getRuntimeSessionByConversation,
+  getRuntimeSessionById,
+} from "@/lib/hermes/runtime-store.ts";
 import { resolveConversationRuntime } from "@/lib/hermes/session-service.ts";
 
 export const dynamic = "force-dynamic";
@@ -56,6 +60,27 @@ export async function OPTIONS(request: Request) {
     status: 204,
     headers: corsHeaders(request.headers.get("origin")),
   });
+}
+
+function assertQuartzConversationScope(
+  conversation: NonNullable<ReturnType<typeof getConversationById>>,
+  input: { gardenId: string; clusterId: number; pageSlug: string },
+) {
+  if (
+    conversation.surface !== "quartz_ai" ||
+    conversation.default_garden_id !== input.clusterId
+  ) {
+    throw new ApiError(404, "session_not_found", "Session not found.");
+  }
+  const runtime = getRuntimeSessionByConversation(conversation.id);
+  if (
+    !runtime ||
+    runtime.surface !== "quartz_ai" ||
+      runtime.garden_id !== input.gardenId ||
+      runtime.page_slug !== input.pageSlug
+  ) {
+    throw new ApiError(404, "session_not_found", "Session not found.");
+  }
 }
 
 // POST: send a message from the Quartz page AI panel. The browser talks only to
@@ -104,15 +129,27 @@ export async function POST(request: Request) {
     // Terminal and Garden Chat. Anonymous readers continue below on their
     // browser-token-bound, public-only runtime and never touch private memory.
     if (userId !== null) {
-      const suppliedConversationId = typeof body.sessionId === "string" ? body.sessionId : null;
+      const suppliedConversationId =
+        typeof body.sessionId === "string" ? body.sessionId : null;
       let conversation = suppliedConversationId?.startsWith("conv_")
         ? getConversationForUser(suppliedConversationId, userId)
         : null;
-      if (!conversation && Number.isInteger(Number(body.sessionId)) && Number(body.sessionId) > 0) {
+      if (
+        !conversation &&
+        Number.isInteger(Number(body.sessionId)) &&
+        Number(body.sessionId) > 0
+      ) {
         const legacy = getRuntimeSessionById(Number(body.sessionId));
         if (legacy?.user_id === userId && legacy.conversation_id !== null) {
           conversation = getConversationById(legacy.conversation_id);
         }
+      }
+      if (conversation) {
+        assertQuartzConversationScope(conversation, {
+          gardenId,
+          clusterId: cluster.id,
+          pageSlug,
+        });
       }
       conversation ??= createConversation({
         userId,
@@ -130,11 +167,19 @@ export async function POST(request: Request) {
           activePageSlug: pageSlug,
         });
         return NextResponse.json(
-          { sessionId: conversation.public_id, clientToken: null, prepared: true },
+          {
+            sessionId: conversation.public_id,
+            clientToken: null,
+            prepared: true,
+          },
           { headers: cors },
         );
       }
-      const clientMessageId = requireString(body.clientMessageId, "clientMessageId", 128);
+      const clientMessageId = requireString(
+        body.clientMessageId,
+        "clientMessageId",
+        128,
+      );
       const result = await startConversationTurn({
         conversation,
         clientMessageId,
@@ -228,7 +273,10 @@ export async function POST(request: Request) {
         directory: session.activeDirectory,
         decision,
       });
-      const storedDecision = persistCapabilityDecision(session.row.id, decision);
+      const storedDecision = persistCapabilityDecision(
+        session.row.id,
+        decision,
+      );
       recordAuditEvent({
         eventType: "capability.decision",
         runtimeSessionId: session.row.id,
@@ -381,7 +429,7 @@ export async function POST(request: Request) {
       agentName: created.agentName,
       text: resolved.text,
       // The brokered map is authoritative; a selector may only narrow it.
-        tools: mergeSelectedTools(prepared.grant.allowedTools, resolved.tools),
+      tools: mergeSelectedTools(prepared.grant.allowedTools, resolved.tools),
       system: composeHermesSystemPrompt({
         surface: "quartz_ai",
         decision,

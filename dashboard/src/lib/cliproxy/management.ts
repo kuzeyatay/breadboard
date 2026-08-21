@@ -322,6 +322,7 @@ export async function readStatus(): Promise<CliproxyStatus> {
       vendorLabel: "Anthropic",
       file: CLAUDE_CODE_ACCOUNT_FILE,
       account: claudeStatus.email ?? claudeStatus.subscriptionType ?? "Signed in",
+      connectedAt: null,
     });
   }
 

@@ -7,7 +7,16 @@ import { VISUAL_SDK_VERSION } from "./visual-sdk.ts";
  * generation, and pre-generation executability review. It contains no
  * subject-specific pedagogy and no renderer-selection policy.
  */
-export const GENERATED_VISUAL_CAPABILITY_MANIFEST_VERSION = 2 as const;
+export const GENERATED_VISUAL_CAPABILITY_MANIFEST_VERSION = 3 as const;
+
+/**
+ * Controls are expression inputs, not artifact identifiers. Keep their compact
+ * grammar distinct from the broader visual/scene/output identifier grammar and
+ * reserve the two runtime expression variables before a model can project a
+ * learner control onto either one.
+ */
+export const GENERATED_VISUAL_CONTROL_ID_PATTERN = /^[a-z][a-z0-9_]{0,79}$/;
+export const GENERATED_VISUAL_RESERVED_CONTROL_IDS = ["x", "t"] as const;
 
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
@@ -70,6 +79,10 @@ export const GENERATED_VISUAL_CAPABILITY_MANIFEST = deepFreeze({
     exactProjectionRequired: true,
   },
   runtimeControls: {
+    controlIds: {
+      grammar: GENERATED_VISUAL_CONTROL_ID_PATTERN.source,
+      reserved: GENERATED_VISUAL_RESERVED_CONTROL_IDS,
+    },
     types: ["slider", "number", "select", "toggle", "button"],
     selectExpressionValue: "stable zero-based option index",
     toggleExpressionValue: "0 or 1",

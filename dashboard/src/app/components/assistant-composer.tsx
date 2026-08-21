@@ -36,6 +36,8 @@ import {
 } from '@/lib/hermes/composer-history';
 import { useDirectMode } from '@/app/components/use-direct-mode';
 import { useGoalMode } from '@/app/components/use-goal-mode';
+import { usePersonalize } from '@/app/components/use-personalize';
+import { useHumanizerMode } from '@/app/components/use-humanizer-mode';
 import { useYoloMode } from '@/app/components/use-yolo-mode';
 import { useAgentMode, useSuperAgent } from '@/app/components/use-agent-mode';
 import type { ModelFailoverNotice } from '@/app/components/use-assistant-intelligence';
@@ -96,9 +98,11 @@ import { HARDWARE_BLUEPRINT_COMMAND } from '@/lib/hardware/identity.ts';
 import { PARAMETRIC_CAD_COMMAND } from '@/lib/cad/identity.ts';
 import { HYPERFRAMES_COMMAND } from '@/lib/hyperframes/identity.ts';
 import { RESOURCE2SKILL_COMMAND } from '@/lib/resource2skill/identity.ts';
+import { MATRAIX_COMMAND } from '@/lib/matraix/identity.ts';
 import { OPENMONTAGE_COMMAND } from '@/lib/openmontage/identity.ts';
 import { OPENWORK_COMMAND } from '@/lib/openwork/identity.ts';
 import { OPENSCIENCE_COMMAND } from '@/lib/openscience/identity.ts';
+import { MAX_RESEARCH_COMMAND } from '@/lib/max-research/identity.ts';
 import { INBOX_ZERO_COMMAND } from '@/lib/inbox-zero/identity.ts';
 import { VIMAX_COMMAND } from '@/lib/vimax/identity.ts';
 import { VOX_DIRECTOR_COMMAND } from '@/lib/vox-director/identity.ts';
@@ -338,12 +342,15 @@ interface Props {
   /** HyperFrames needs no agent selection either — the command carries the brief. */
   onSelectHyperframes?: () => void;
   onSelectResource2Skill?: () => void;
+  /** MatrAIx likewise: the command carries the study brief and its cohort flags. */
+  onSelectMatraix?: () => void;
   /** OpenMontage likewise: the command carries the whole production brief. */
   onSelectOpenMontage?: () => void;
   /** OpenWork likewise: the command carries the task for its workspace. */
   onSelectOpenwork?: () => void;
   /** OpenScience likewise: the command carries the research goal. */
   onSelectOpenscience?: () => void;
+  onSelectMaxResearch?: () => void;
   /** Inbox Zero likewise: the command carries the instruction for the mailbox. */
   onSelectInboxZero?: () => void;
   onSelectVimax?: () => void;
@@ -544,9 +551,11 @@ export default function AssistantComposer({
   onSelectParametricCad,
   onSelectHyperframes,
   onSelectResource2Skill,
+  onSelectMatraix,
   onSelectOpenMontage,
   onSelectOpenwork,
   onSelectOpenscience,
+  onSelectMaxResearch,
   onSelectInboxZero,
   onSelectVimax,
   onSelectVoxDirector,
@@ -601,6 +610,8 @@ export default function AssistantComposer({
   // failure; nothing reads it now that the status line is gone.
   const [, setAgencyAgentNotice] = useState<string | null>(null);
   const commandBackdropRef = useRef<HTMLDivElement | null>(null);
+  const [personalize, setPersonalize] = usePersonalize();
+  const [humanizerEnabled, setHumanizerEnabled] = useHumanizerMode();
   const [directMode, setDirectMode] = useDirectMode();
   const [goalMode, setGoalMode] = useGoalMode();
   const [yoloMode, setYoloMode] = useYoloMode();
@@ -1173,9 +1184,11 @@ export default function AssistantComposer({
     onSelectParametricCad ? 'parametric-cad' : null,
     onSelectHyperframes ? 'hyperframes' : null,
     onSelectResource2Skill ? 'resource2skill' : null,
+    onSelectMatraix ? 'matraix' : null,
     onSelectOpenMontage ? 'openmontage' : null,
     onSelectOpenwork ? 'openwork' : null,
     onSelectOpenscience ? 'openscience' : null,
+    onSelectMaxResearch ? 'max-research' : null,
     onSelectInboxZero ? 'inbox-zero' : null,
     onSelectVimax ? 'vimax' : null,
     onSelectVoxDirector ? 'vox-director' : null,
@@ -1895,9 +1908,11 @@ export default function AssistantComposer({
             onSelectParametricCad={onSelectParametricCad ? () => insertCommandToken(PARAMETRIC_CAD_COMMAND) : undefined}
             onSelectHyperframes={onSelectHyperframes ? () => insertCommandToken(HYPERFRAMES_COMMAND) : undefined}
             onSelectResource2Skill={onSelectResource2Skill ? () => insertCommandToken(RESOURCE2SKILL_COMMAND) : undefined}
+            onSelectMatraix={onSelectMatraix ? () => insertCommandToken(MATRAIX_COMMAND) : undefined}
             onSelectOpenMontage={onSelectOpenMontage ? () => insertCommandToken(OPENMONTAGE_COMMAND) : undefined}
             onSelectOpenwork={onSelectOpenwork ? () => insertCommandToken(OPENWORK_COMMAND) : undefined}
             onSelectOpenscience={onSelectOpenscience ? () => insertCommandToken(OPENSCIENCE_COMMAND) : undefined}
+            onSelectMaxResearch={onSelectMaxResearch ? () => insertCommandToken(MAX_RESEARCH_COMMAND) : undefined}
             onSelectInboxZero={onSelectInboxZero ? () => insertCommandToken(INBOX_ZERO_COMMAND) : undefined}
             onSelectVimax={onSelectVimax ? () => insertCommandToken(VIMAX_COMMAND) : undefined}
             onSelectVoxDirector={
@@ -2171,6 +2186,67 @@ export default function AssistantComposer({
                     </div>
 
                     <div className="my-1.5 border-t border-[var(--line)]" />
+                    {/*
+                      Above Personalize. Turned on, this is a standing
+                      instruction rather than a per-message choice: every
+                      finished answer, every Markdown artifact and every garden
+                      note is offered to the local rewriter, and takes the
+                      rewrite when the preservation gates pass it. The model's
+                      own words are always kept as the first version, so the
+                      arrows under an answer switch back to them, and the
+                      per-answer "Rewrite naturally" action retries the turn as
+                      a new branch and humanizes that new answer.
+                    */}
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={humanizerEnabled}
+                      onClick={() => setHumanizerEnabled(!humanizerEnabled)}
+                      className="flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left text-[var(--ink)] transition hover:bg-[var(--paper-strong)]"
+                    >
+                      <span className="min-w-0">
+                        <span className="block">Rewrite naturally</span>
+                        <span className="block text-[11px] text-[var(--ink-muted)]">
+                          {humanizerEnabled
+                            ? 'Answers, artifacts and notes are rewritten locally'
+                            : "Off; answers are left as written"}
+                        </span>
+                      </span>
+                      <span
+                        aria-hidden
+                        className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${humanizerEnabled ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
+                      >
+                        <span
+                          className={`neu-surface-raised absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-200 ${humanizerEnabled ? 'translate-x-5' : 'translate-x-0'}`}
+                        />
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={personalize}
+                      onClick={() => setPersonalize(!personalize)}
+                      className="flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left text-[var(--ink)] transition hover:bg-[var(--paper-strong)]"
+                    >
+                      <span className="min-w-0">
+                        <span className="block">Personalize</span>
+                        <span className="block text-[11px] text-[var(--ink-muted)]">
+                          {personalize
+                            ? 'Answers use what Breadboard knows about you'
+                            : 'General answers, written for anyone'}
+                        </span>
+                      </span>
+                      <span
+                        aria-hidden
+                        className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${personalize ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
+                      >
+                        <span
+                          className={`neu-surface-raised absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-200 ${personalize ? 'translate-x-5' : 'translate-x-0'}`}
+                        />
+                      </span>
+                    </button>
+
                     <button
                       type="button"
                       role="switch"
@@ -2179,9 +2255,9 @@ export default function AssistantComposer({
                       className="flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left text-[var(--ink)] transition hover:bg-[var(--paper-strong)]"
                     >
                       <span className="min-w-0">
-                        <span className="block">Direct mode</span>
+                        <span className="block">Concise</span>
                         <span className="block text-[11px] text-[var(--ink-muted)]">
-                          Direct answers; next actions only when useful
+                          Concise answers; next actions only when useful
                         </span>
                       </span>
                       <span

@@ -19,6 +19,8 @@ interface Props {
   pendingPermission: PermissionPrompt | null;
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
+  /** Durable beginning of the response this row belongs to. */
+  responseStartedAt?: string;
   /** Start of an ongoing phase that runs outside the main chat connection. */
   activePhaseStartedAt?: string;
   /**
@@ -42,6 +44,7 @@ export default function ActivityPanel({
   pendingPermission,
   usage,
   responseDurationMs,
+  responseStartedAt,
   activePhaseStartedAt,
   carriedDurationMs,
   onPermissionDecision,
@@ -74,6 +77,7 @@ export default function ActivityPanel({
         active: responseActive,
         now,
         reportedDurationMs: responseDurationMs ?? usage?.responseDurationMs,
+        responseStartedAt,
         activePhaseStartedAt,
         activeFallbackStartedAtMs,
         carriedDurationMs,
@@ -83,6 +87,7 @@ export default function ActivityPanel({
       now,
       responseActive,
       responseDurationMs,
+      responseStartedAt,
       activeFallbackStartedAtMs,
       activePhaseStartedAt,
       carriedDurationMs,

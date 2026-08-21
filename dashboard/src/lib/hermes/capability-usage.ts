@@ -116,6 +116,8 @@ const TOOL_OWNERS: Record<string, ToolOwner> = {
   },
   office_run: { kind: "skill", id: "office", label: "Office documents" },
   office_export: { kind: "skill", id: "office", label: "Office documents" },
+  document_edit: { kind: "skill", id: "office", label: "Office documents" },
+  pdf_to_docx: { kind: "skill", id: "office", label: "Office documents" },
   watermark_inspect: {
     kind: "skill",
     id: "remove-ai-marks",
@@ -131,6 +133,8 @@ const TOOL_OWNERS: Record<string, ToolOwner> = {
     id: "remove-ai-marks",
     label: "Remove AI marks",
   },
+  humanize_text: { kind: "skill", id: "humanize", label: "Humanize" },
+  humanize_status: { kind: "skill", id: "humanize", label: "Humanize" },
   gadget_bindings: {
     kind: "skill",
     id: "generate-gadget",

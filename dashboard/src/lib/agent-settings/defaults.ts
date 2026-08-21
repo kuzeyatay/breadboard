@@ -408,3 +408,32 @@ export function videoUseDefaults(values: AgentSettingValues): VideoUseDefaults {
       choice(values, "reasoningEffort", ["low", "medium", "high"] as const) ?? "medium",
   };
 }
+
+// ---- MatrAIx ---------------------------------------------------------------
+
+export interface MatraixSettingsDefaults {
+  respondents: number;
+  seed: number;
+  allocation: "equalTotal" | "perCell" | "proportional";
+  sources: string[];
+}
+
+/**
+ * Stored study defaults, in the shape `parseMatraixRequest` fills its unsaid
+ * fields from. The pool is deliberately absent: which persona pool exists on
+ * this machine is a fact about the install, not a preference, and the run reads
+ * it from the clone.
+ */
+export function matraixDefaults(values: AgentSettingValues): MatraixSettingsDefaults {
+  const sources = Array.isArray(values.sources)
+    ? values.sources.filter((entry): entry is string => typeof entry === "string" && Boolean(entry))
+    : [];
+  return {
+    respondents: count(values, "respondents", 12),
+    seed: count(values, "seed", 42),
+    allocation:
+      choice(values, "allocation", ["equalTotal", "perCell", "proportional"] as const) ??
+      "equalTotal",
+    sources,
+  };
+}

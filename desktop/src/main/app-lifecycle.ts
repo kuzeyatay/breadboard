@@ -238,6 +238,12 @@ export class AppLifecycle {
         ...(persistent.colpaliMode !== "disabled"
           ? { colpali: await allocatePort(7733, taken) }
           : {}),
+        // Local text humanizer. 7735 is the documented development port, but
+        // it is only a preference: anything already holding it moves this to an
+        // OS-assigned one, and the dashboard is told which.
+        ...(persistent.humanizerMode !== "disabled"
+          ? { humanizer: await allocatePort(7735, taken) }
+          : {}),
         // Subscription proxy port, allocated before the binary is known to
         // exist: provisioning happens later, and re-allocating afterwards would
         // mean the port could differ from the one already handed to ChatMock.
@@ -271,11 +277,13 @@ export class AppLifecycle {
     const urls = serviceUrls(this.config);
     const startupHtmlPath = defaultStartupHtmlPath(this.moduleDir);
     const recoveryHtmlPath = path.join(path.dirname(startupHtmlPath), "recovery.html");
+    const loadingHtmlPath = path.join(path.dirname(startupHtmlPath), "loading.html");
     const allowed = allowedOriginsFor([
       urls.dashboard,
       urls.quartz,
       pathToFileURL(startupHtmlPath).toString(),
       pathToFileURL(recoveryHtmlPath).toString(),
+      pathToFileURL(loadingHtmlPath).toString(),
     ]);
     installGlobalSecurity(allowed);
 
@@ -283,6 +291,7 @@ export class AppLifecycle {
       allowed,
       startupHtmlPath,
       recoveryHtmlPath,
+      loadingHtmlPath,
       preloadPath: defaultPreloadPath(this.moduleDir),
       iconPath: this.iconPath(),
       initialTheme: readLastWindowTheme(this.paths.configDir),
@@ -664,6 +673,8 @@ export class AppLifecycle {
         return "Starting social publishing (first launch can take several minutes)";
       case "quartz":
         return "Starting garden";
+      case "humanizer":
+        return "Loading local rewriting model";
       case "dashboard":
         return "Starting workspace";
       default:
@@ -797,6 +808,9 @@ export class AppLifecycle {
       if (process.platform === "win32") {
         window.setTitleBarOverlay(titleBarForSurface(surface));
       }
+      // Windows forgets an overlay's colours whenever it rebuilds the frame, so
+      // the manager keeps what this window asked for and states it again.
+      this.windows.rememberWindowSurface(window, surface);
       if (surface === "light" || surface === "dark") {
         this.windows.rememberTheme(surface);
         try {

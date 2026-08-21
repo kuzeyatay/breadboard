@@ -8,6 +8,7 @@ import {
 } from "@/lib/hermes/route-helpers.ts";
 import { authorizeQuartzRuntimeSession } from "@/lib/hermes/session-service.ts";
 import {
+  getRuntimeSessionByConversation,
   listRuntimeMessages,
   presentRuntimeMessage,
   runtimeSessionTitle,
@@ -61,17 +62,51 @@ export async function GET(request: Request) {
     requireEnabled();
     const userId = await optionalUserId();
     const url = new URL(request.url);
-    const gardenId = requireString(url.searchParams.get("gardenId"), "gardenId", 200);
-    const pageSlug = requireString(url.searchParams.get("pageSlug"), "pageSlug", 400);
-    authorizeQuartzAccess(gardenId, userId);
+    const gardenId = requireString(
+      url.searchParams.get("gardenId"),
+      "gardenId",
+      200,
+    );
+    const pageSlug = requireString(
+      url.searchParams.get("pageSlug"),
+      "pageSlug",
+      400,
+    );
+    const { cluster } = authorizeQuartzAccess(gardenId, userId);
 
     if (userId !== null) {
-      const sessions = listConversationsForUser(userId).map((conversation) => ({
-        ...presentConversation(conversation),
-        gardenId,
-        pageSlug,
-        messages: listConversationMessages(conversation.id).map(presentConversationMessage),
-      }));
+      // Assistant history is its own page-scoped history. The canonical store
+      // also contains Terminal and Garden conversations; returning that whole
+      // list here made opening History in Quartz expose unrelated chats.
+      const sessions = listConversationsForUser(userId).flatMap(
+        (conversation) => {
+          if (
+            conversation.surface !== "quartz_ai" ||
+            conversation.default_garden_id !== cluster.id
+          ) {
+            return [];
+          }
+          const runtime = getRuntimeSessionByConversation(conversation.id);
+          if (
+            !runtime ||
+            runtime.surface !== "quartz_ai" ||
+            runtime.garden_id !== gardenId ||
+            runtime.page_slug !== pageSlug
+          ) {
+            return [];
+          }
+          return [
+            {
+              ...presentConversation(conversation),
+              gardenId,
+              pageSlug,
+              messages: listConversationMessages(conversation.id).map(
+                presentConversationMessage,
+              ),
+            },
+          ];
+        },
+      );
       return NextResponse.json({ sessions }, { headers: cors });
     }
 
@@ -84,7 +119,10 @@ export async function GET(request: Request) {
       userId: null,
       clientToken,
     });
-    if (session.row.garden_id !== gardenId || session.row.page_slug !== pageSlug) {
+    if (
+      session.row.garden_id !== gardenId ||
+      session.row.page_slug !== pageSlug
+    ) {
       return NextResponse.json({ sessions: [] }, { headers: cors });
     }
     return NextResponse.json(
@@ -93,7 +131,8 @@ export async function GET(request: Request) {
     );
   } catch (error) {
     const response = apiErrorResponse(error);
-    for (const [key, value] of Object.entries(cors)) response.headers.set(key, value);
+    for (const [key, value] of Object.entries(cors))
+      response.headers.set(key, value);
     return response;
   }
 }

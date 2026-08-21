@@ -42,6 +42,7 @@ import {
   putResearchState,
 } from "./store.ts";
 import type {
+  Corroboration,
   EntityRelationKind,
   EvidenceKind,
   RequestedField,
@@ -457,6 +458,16 @@ export interface SynthesisEntity {
       evidenceKind: EvidenceKind;
       publishedAt?: string;
       observedAt: string;
+      /**
+       * One source, several independent ones, or a disagreement. What the
+       * answer needs in order to write "one industry group reports" rather
+       * than the flat, unearned "the figure is".
+       */
+      corroboration?: Corroboration;
+      /** Every source behind it stands to gain from it being believed. */
+      selfInterestedOnly?: boolean;
+      /** Volatile, and older than the staleness horizon. Date it or drop it. */
+      stale?: boolean;
     }
   >;
   /** Values that exist but were reconstructed rather than stated. */
@@ -600,6 +611,11 @@ export function researchStatus(input: {
           evidenceKind: support?.evidenceKind ?? "explicit",
           ...(support?.publishedAt ? { publishedAt: support.publishedAt } : {}),
           observedAt: support?.observedAt ?? entity.createdAt,
+          // How firmly this may be stated, computed by the ledger rather than
+          // judged from the snippet still in context.
+          ...(cell.corroboration ? { corroboration: cell.corroboration } : {}),
+          ...(cell.selfInterestedOnly ? { selfInterestedOnly: true } : {}),
+          ...(cell.stale ? { stale: true } : {}),
         };
       } else if (cell.status === "inferred") {
         inferred[cell.field] = values[cell.field];

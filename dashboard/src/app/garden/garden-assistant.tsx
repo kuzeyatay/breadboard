@@ -17,6 +17,7 @@ import { useComposerInset } from '@/app/components/chat/use-composer-inset';
 import ChatDisclaimer from '@/app/components/chat/chat-disclaimer';
 import AssistantMessageActions from '@/app/components/assistant-message-actions';
 import { isDirectModeEnabled } from '@/app/components/use-direct-mode';
+import { isPersonalizeEnabled } from '@/app/components/use-personalize';
 import {
   chatAutoScrollContentKey,
   chatAutoScrollResponseKey,
@@ -36,8 +37,12 @@ import ChatTimeSeparator from '@/app/components/chat-time-separator';
 import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
 import ActivityPanel from '@/app/components/hermes/activity-panel';
 import { UserMessageText } from '@/app/components/hermes/command-text';
+import CollapsibleUserMessage from '@/app/components/chat/collapsible-user-message';
 import { useLegacyAgentActivity } from '@/app/components/hermes/use-legacy-agent-activity';
-import { useQueuedFollowUps } from '@/app/components/hermes/queued-follow-ups';
+import {
+  restoreQueuedFollowUpDraft,
+  useQueuedFollowUps,
+} from '@/app/components/hermes/queued-follow-ups';
 import { useChatDraft } from '@/app/components/hermes/use-chat-draft';
 import { forgetChatDrafts } from '@/lib/conversations/drafts';
 import ChatMarkdown from '@/app/components/chat-markdown';
@@ -59,6 +64,7 @@ import {
 import { chatTimeSeparatorLabels } from '@/lib/chat-time-separators';
 import type { VerificationSummary } from '@/lib/hermes/evidence';
 import { delegatedAgentCompletedLabelForMessage } from '@/lib/hermes/super-agent-activity';
+import type { QuartzAssistantSelectionRequest } from '@/lib/quartz-assistant-selection';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -71,6 +77,7 @@ interface ChatMessage {
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   verification?: VerificationSummary;
+  selectedText?: string;
 }
 
 interface ChatSession {
@@ -95,6 +102,7 @@ interface PermissionRequest {
   operations: string[];
   originalText: string;
   history: ChatMessage[];
+  selectedText?: string;
 }
 
 interface GraphStats {
@@ -162,6 +170,7 @@ interface Props {
   activeClusterSlug: string | null;
   activeClusterName?: string;
   activeMarkdown?: ActiveMarkdown | null;
+  selectedTextRequest?: QuartzAssistantSelectionRequest | null;
   initialOpen?: boolean;
 }
 
@@ -392,6 +401,8 @@ const NO_ACTIVITIES: AgentActivityProps['activities'] = [];
 
 type TranscriptRowProps = {
   message: ChatMessage;
+  /** Row identity, so a folded long message stays folded across remounts. */
+  messageKey: string;
   /** The separator that belongs above this message, if any. */
   separatorLabel: string | null;
   /** Live agent state belongs to the newest answer alone. */
@@ -421,6 +432,7 @@ const estimateAssistantRowHeight = (message: ChatMessage) =>
  */
 const TranscriptRow = memo(function TranscriptRow({
   message,
+  messageKey,
   separatorLabel,
   activities,
   connection,
@@ -438,9 +450,6 @@ const TranscriptRow = memo(function TranscriptRow({
         />
       ) : null}
       <div className={message.role === 'user' ? 'ml-6' : 'mr-2'}>
-        <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-gray-500">
-          {message.role === 'user' ? 'You' : 'Assistant'}
-        </div>
         <div
           className={
             message.role === 'user'
@@ -462,7 +471,26 @@ const TranscriptRow = memo(function TranscriptRow({
             {message.content ? <ChatMarkdown content={message.content} compact /> : null}
           </>
         ) : (
-          <UserMessageText content={message.content} />
+          <>
+            {message.selectedText ? (
+              <div className="mb-2 flex items-start gap-2 rounded-lg border border-[var(--selection-yellow-line)] bg-[var(--selection-yellow)] px-3 py-2 text-xs text-[var(--ink-muted)]">
+                <svg
+                  className="mt-0.5 h-4 w-4 shrink-0 text-[var(--botanical)]"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.7}
+                  aria-hidden
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 5v5a4 4 0 0 0 4 4h11m-3-3 3 3-3 3" />
+                </svg>
+                <span className="line-clamp-3">{message.selectedText}</span>
+              </div>
+            ) : null}
+            <CollapsibleUserMessage messageKey={messageKey}>
+              <UserMessageText content={message.content} />
+            </CollapsibleUserMessage>
+          </>
         )}
         {message.attachmentNames?.length ? (
           <p className="mt-1.5 text-[11px] text-gray-500">
@@ -486,12 +514,17 @@ export default function GardenAssistant({
   activeClusterSlug,
   activeClusterName,
   activeMarkdown,
+  selectedTextRequest,
   initialOpen = false,
 }: Props) {
   const resizeStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const previousClusterRef = useRef<string | null>(activeClusterSlug);
+  const handledSelectionRequestRef = useRef<string | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [chatOpen, setChatOpen] = useState(initialOpen);
   const [input, setInput] = useState('');
+  const [selectedTextContext, setSelectedTextContext] =
+    useState<QuartzAssistantSelectionRequest | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const timeSeparators = useMemo(
     () => chatTimeSeparatorLabels(messages),
@@ -499,6 +532,9 @@ export default function GardenAssistant({
   );
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
+  // The chat this assistant minted out of its own blank state, so an unsent
+  // draft can follow it there and nowhere else. See useChatDraft.
+  const [createdChatId, setCreatedChatId] = useState<number | null>(null);
   // Raised for as long as a turn this tab started owns what is on screen. The
   // transcript is put up before the chat row that will hold it exists, so the
   // empty session arriving must not be allowed to wipe it.
@@ -534,6 +570,8 @@ export default function GardenAssistant({
         agentActivity.connection === 'streaming' ||
         agentActivity.connection === 'waiting',
       onSteer: steerActiveResponse,
+      onRestoreDraft: (text) =>
+        restoreQueuedFollowUpDraft(text, setInput, composerTextareaRef),
       onSendQueued: async (text) => {
         await sendMessage(text);
       },
@@ -579,8 +617,24 @@ export default function GardenAssistant({
     if (previousClusterRef.current === activeClusterSlug) return;
     previousClusterRef.current = activeClusterSlug;
     setInput('');
+    setSelectedTextContext(null);
     setShowHistory(false);
   }, [activeClusterSlug]);
+
+  useEffect(() => {
+    if (
+      !activeClusterSlug ||
+      !selectedTextRequest ||
+      handledSelectionRequestRef.current === selectedTextRequest.requestId
+    ) {
+      return;
+    }
+    handledSelectionRequestRef.current = selectedTextRequest.requestId;
+    setSelectedTextContext(selectedTextRequest);
+    setShowHistory(false);
+    setChatOpen(true);
+    window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+  }, [activeClusterSlug, selectedTextRequest]);
 
   // Unsent text outlives a reload, filed under the chat it was typed in — and
   // under the cluster, since that is what the chats themselves are kept by.
@@ -590,6 +644,7 @@ export default function GardenAssistant({
   useChatDraft({
     surface: draftSurface,
     sessionId: activeChatId === null ? null : String(activeChatId),
+    createdSessionId: createdChatId === null ? null : String(createdChatId),
     value: input,
     onRestore: setInput,
   });
@@ -601,7 +656,9 @@ export default function GardenAssistant({
     // addressed by the Hermes runtime, so it is dropped on reconcile.
     const cached = loadQuartzChatSessions(activeClusterSlug);
     setChatSessions(cached);
+    // Reopening the newest chat for this cluster is not a creation.
     setActiveChatId(cached[0]?.id ?? null);
+    setCreatedChatId(null);
     setMessages(cached[0]?.messages ?? []);
 
     if (!activeClusterSlug) return;
@@ -609,7 +666,8 @@ export default function GardenAssistant({
     (async () => {
       try {
         const response = await fetch(
-          `/api/chat-sessions?clusterSlug=${encodeURIComponent(activeClusterSlug)}`,
+          `/api/chat-sessions?clusterSlug=${encodeURIComponent(activeClusterSlug)}&historySurface=assistant`,
+          { cache: 'no-store' },
         );
         if (!response.ok) return;
         const body = (await response.json()) as { sessions?: ChatSession[] };
@@ -810,7 +868,11 @@ export default function GardenAssistant({
       const response = await fetch('/api/chat-sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clusterSlug: activeClusterSlug, title }),
+        body: JSON.stringify({
+          clusterSlug: activeClusterSlug,
+          title,
+          historySurface: 'assistant',
+        }),
       });
       if (!response.ok) return null;
       const body = (await response.json()) as { session?: ChatSession };
@@ -827,6 +889,7 @@ export default function GardenAssistant({
         return sessions;
       });
       setActiveChatId(session.id);
+      setCreatedChatId(session.id);
       if (!options.keepMessages) setMessages([]);
       return session;
     } catch {
@@ -852,6 +915,8 @@ export default function GardenAssistant({
     if (isStreaming) return;
     localTurnRef.current = false;
     setActiveChatId(session.id);
+    // An existing chat, so nothing typed in the blank composer belongs to it.
+    setCreatedChatId(null);
     setMessages(session.messages ?? []);
     setShowHistory(false);
   }
@@ -864,6 +929,7 @@ export default function GardenAssistant({
       persistQuartzChatSessions(activeClusterSlug, sessions);
       if (activeChatId === sessionId) {
         setActiveChatId(sessions[0]?.id ?? null);
+        setCreatedChatId(null);
         setMessages(sessions[0]?.messages ?? []);
       }
       return sessions;
@@ -915,8 +981,13 @@ export default function GardenAssistant({
     textOverride?: string,
     historyOverride?: ChatMessage[],
     attachmentOverride?: readonly ChatAttachment[],
+    selectedTextOverride?: string,
   ) {
     const text = (textOverride ?? input).trim();
+    const selectedText = (
+      selectedTextOverride ??
+      (textOverride === undefined ? selectedTextContext?.text : undefined)
+    )?.slice(0, 4_000);
     const pendingAttachments: ChatAttachment[] = attachmentOverride
       ? [...attachmentOverride]
       : textOverride === undefined
@@ -934,6 +1005,7 @@ export default function GardenAssistant({
       createdAt: turnCreatedAt,
       attachmentNames,
       attachments: chatMessageAttachments(pendingAttachments),
+      ...(selectedText ? { selectedText } : {}),
     };
     const nextMessages = [...history, userMessage];
     // Corrections steered into this turn land here, between the turn's user
@@ -954,6 +1026,9 @@ export default function GardenAssistant({
     // the moment it is sent, not when the server has somewhere to keep it.
     localTurnRef.current = true;
     setInput('');
+    if (textOverride === undefined && selectedTextContext) {
+      setSelectedTextContext(null);
+    }
     setChatAttachments([]);
     setAttachmentStatus('');
     setIsStreaming(true);
@@ -989,7 +1064,12 @@ export default function GardenAssistant({
     let agentFailed = false;
     let pendingApproval: PermissionRequest | null = null;
     try {
-      if (activeMarkdown && wantsOpenMarkdownEdit(text) && pendingAttachments.length === 0) {
+      if (
+        activeMarkdown &&
+        !selectedText &&
+        wantsOpenMarkdownEdit(text) &&
+        pendingAttachments.length === 0
+      ) {
         const response = await fetch('/api/markdown-edit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1079,7 +1159,9 @@ export default function GardenAssistant({
           reasoningEffort,
           attachments: pendingAttachments,
           activeMarkdown: activeMarkdownContext,
+          selectedText,
           adhdMode: isDirectModeEnabled(),
+          personalize: isPersonalizeEnabled(),
         }),
         signal,
       });
@@ -1214,6 +1296,7 @@ export default function GardenAssistant({
                   : [],
                 originalText: text,
                 history,
+                selectedText,
               };
             }
             if (event.type === 'blocked' && pendingApproval) {
@@ -1308,7 +1391,7 @@ export default function GardenAssistant({
       }
       setPermissionRequest(null);
       // Resume the same task. The user does not restate it.
-      await sendMessage(request.originalText, request.history);
+      await sendMessage(request.originalText, request.history, undefined, request.selectedText);
     } finally {
       setApprovingPermission(false);
     }
@@ -1352,6 +1435,7 @@ export default function GardenAssistant({
       previousUser.content,
       messages.slice(0, userIndex),
       reusableChatAttachments(previousUser.attachments),
+      previousUser.selectedText,
     );
   }
 
@@ -1378,6 +1462,7 @@ export default function GardenAssistant({
       return (
         <TranscriptRow
           message={paced ? { ...message, content: revealedAssistantContent } : message}
+          messageKey={chatRowKey(message, index)}
           separatorLabel={timeSeparators[index] ?? null}
           activities={isNewest ? agentActivity.activities : NO_ACTIVITIES}
           connection={isNewest ? agentActivity.connection : 'idle'}
@@ -1560,7 +1645,7 @@ export default function GardenAssistant({
       <div className="border-b border-gray-800 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-white">Quartz AI</p>
+            <p className="truncate text-sm font-medium text-white">Assistant</p>
             <p className="truncate text-xs text-gray-400">
               {hasActiveCluster ? `${clusterLabel} Learning Map` : 'Open a garden or page to ask its map'}
             </p>
@@ -1715,6 +1800,47 @@ export default function GardenAssistant({
       </div>
 
       <div ref={composerInset.ref} className="bb-composer-overlay p-3">
+        {selectedTextContext ? (
+          <div className="mb-3 flex items-start gap-2 rounded-xl border border-[var(--selection-yellow-line)] bg-[var(--selection-yellow)] px-3 py-2 text-xs shadow-sm">
+            <svg
+              className="mt-0.5 h-4 w-4 shrink-0 text-[var(--botanical)]"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.7}
+              aria-hidden
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 5v5a4 4 0 0 0 4 4h11m-3-3 3 3-3 3" />
+            </svg>
+            <div className="min-w-0 flex-1">
+              <p className="font-medium text-[var(--ink-heading)]">Ask here</p>
+              <p className="mt-0.5 line-clamp-3 leading-5 text-[var(--ink-muted)]">
+                {selectedTextContext.text}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedTextContext(null);
+                composerTextareaRef.current?.focus();
+              }}
+              className="rounded-full p-1 text-[var(--ink-muted)] transition hover:bg-[color-mix(in_srgb,var(--paper-strong)_72%,transparent)] hover:text-[var(--ink-heading)]"
+              aria-label="Cancel selected-text question"
+              title="Cancel"
+            >
+              <svg
+                className="h-3.5 w-3.5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.8}
+                aria-hidden
+              >
+                <path strokeLinecap="round" d="m6 6 12 12M18 6 6 18" />
+              </svg>
+            </button>
+          </div>
+        ) : null}
         {permissionRequest && (
           <div className="mb-3 rounded-lg border border-amber-300/60 bg-amber-50/80 p-3 text-sm dark:border-amber-400/30 dark:bg-amber-950/30">
             <p className="font-medium text-amber-900 dark:text-amber-200">Access needed</p>
@@ -1763,6 +1889,7 @@ export default function GardenAssistant({
           className="hidden"
         />
         <AssistantComposer
+          textareaRef={composerTextareaRef}
           capabilitySurface="garden_chat"
           capabilityGardenSlug={activeClusterSlug}
           compact
@@ -2100,7 +2227,7 @@ export default function GardenAssistant({
         onClick={() => setChatOpen(true)}
         className="neu-button fixed bottom-5 right-5 z-[70] rounded-md border border-gray-700 bg-gray-950 px-4 py-2 text-sm font-medium text-gray-100 transition hover:border-gray-500 hover:bg-gray-900"
       >
-        Quartz AI
+        Assistant
       </button>
       {historyPanel}
       {promptsPanel}

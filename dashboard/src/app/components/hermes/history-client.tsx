@@ -1,4 +1,8 @@
 import BreadboardLoader from "@/app/components/breadboard-loader";
+import {
+  clearHermesSessionDeleting,
+  markHermesSessionDeleting,
+} from "@/lib/hermes/session-client";
 
 // Chat-history controls shared by the surfaces that render a Recents list
 // (garden chat and the dashboard terminal). Breadboard owns the durable
@@ -32,9 +36,20 @@ export function chatSessionIsActive(
   );
 }
 
+/**
+ * Delete one chat.
+ *
+ * Callers do not wait for this to decide what the rail shows: the route stops
+ * the chat's runtime turn, its terminal command and any agent run it launched
+ * before it removes the rows, and each of those is a round trip of its own, so
+ * a delete can take seconds. The row leaves on the click and this runs behind
+ * it. Marking the id keeps a history poll that overlaps the request from
+ * listing the chat that is on its way out.
+ */
 export async function deleteChatSession(
   sessionId: string,
 ): Promise<DeleteChatResult> {
+  markHermesSessionDeleting(sessionId);
   try {
     const response = await fetch(
       `/api/hermes/sessions/${encodeURIComponent(sessionId)}`,
@@ -51,6 +66,11 @@ export async function deleteChatSession(
     };
   } catch {
     return { deleted: false, error: "This chat could not be deleted." };
+  } finally {
+    // Whether it worked or not, the id stops being hidden: a chat that was
+    // deleted is gone from the server's answer anyway, and one that survived
+    // has to be listed again so the rail can show it back.
+    clearHermesSessionDeleting(sessionId);
   }
 }
 

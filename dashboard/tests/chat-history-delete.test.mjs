@@ -36,6 +36,32 @@ const runtimeStore = fs.readFileSync(
   path.join(import.meta.dirname, "../src/lib/hermes/runtime-store.ts"),
   "utf8",
 );
+const sessionClient = fs.readFileSync(
+  path.join(import.meta.dirname, "../src/lib/hermes/session-client.ts"),
+  "utf8",
+);
+const workspaceClient = fs.readFileSync(
+  path.join(
+    import.meta.dirname,
+    "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+  ),
+  "utf8",
+);
+
+// The body of one top-level function inside a client component, so an
+// assertion about what happens before what cannot be satisfied by a match
+// somewhere else in a 10,000-line file.
+function functionBody(rawSource, signature, label) {
+  // These files are checked out with whichever line endings git hands this
+  // machine, and the search below is anchored on a newline plus the closing
+  // brace of a function at component level.
+  const source = rawSource.split("\r\n").join("\n");
+  const start = source.indexOf(signature);
+  assert.ok(start !== -1, `${label}: ${signature} not found`);
+  const end = source.indexOf("\n  }\n", start);
+  assert.ok(end !== -1, `${label}: end of ${signature} not found`);
+  return source.slice(start, end);
+}
 
 // The FK clauses below are copied from src/lib/conversations/schema.ts,
 // src/lib/db.ts and src/lib/hermes/artifact-schema.ts. The point is the
@@ -256,8 +282,89 @@ test("the terminal deletes a batch of chats behind one confirmation, and reports
   // only the chats that actually went leave the list, and the rest are counted
   // back to the user instead of disappearing quietly.
   assert.match(terminal, /for \(const item of items\) \{[\s\S]{0,220}await deleteChatSession\(item\.id\)/);
-  assert.match(terminal, /current\.filter\(\(entry\) => !deleted\.has\(entry\.id\)\)/);
+  // Every picked row leaves at once; the requests that follow decide only what
+  // is reported, never what the rail shows.
+  assert.match(terminal, /current\.filter\(\(entry\) => !targets\.has\(entry\.id\)\)/);
   assert.match(terminal, /\$\{failed\} of \$\{items\.length\} chats could not be deleted\./);
   // Deleting the chat you are looking at still leaves you on a fresh one.
-  assert.match(terminal, /if \(session\.sessionId && deleted\.has\(session\.sessionId\)\) startNewChat\(\)/);
+  assert.match(terminal, /if \(session\.sessionId && targets\.has\(session\.sessionId\)\) startNewChat\(\)/);
+});
+
+// Deleting a chat cancels its runtime turn, its terminal command and any agent
+// run it launched before it removes the rows, and each of those is a round trip
+// of its own. None of that may be something the reader waits through: the row
+// leaves on the click and the request finishes behind it.
+test("a deleted chat leaves the list on the click, not when the server answers", () => {
+  for (const [label, source, signature] of [
+    [
+      "terminal",
+      terminal,
+      "async function deleteHistorySession(item: TerminalSidebarChat)",
+    ],
+    [
+      "garden chat",
+      gardenChat,
+      "async function deleteHistorySession(item: RuntimeHistorySession)",
+    ],
+  ]) {
+    const body = functionBody(source, signature, label);
+    const removed = body.indexOf("setHistory((current) => current.filter");
+    const sent = body.indexOf("await deleteChatSession(");
+    assert.ok(removed !== -1 && sent !== -1, `${label}: delete not found`);
+    assert.ok(removed < sent, `${label}: the row must go before the request`);
+    // Same for the chat you are looking at — it is replaced by a fresh one
+    // straight away rather than after the round trip.
+    assert.ok(
+      body.indexOf("startNewChat()") < sent,
+      `${label}: the open chat must be replaced before the request`,
+    );
+    // A refusal is the only thing that brings the chat back, and it comes back
+    // from the server rather than from a guess about where its row belonged.
+    assert.match(body, /if \(!result\.deleted\) \{[\s\S]*?notifyHermesSessionsChanged/, label);
+  }
+
+  // The terminal's bulk delete empties the rows before any request goes out,
+  // so ten chats cost one click rather than ten waits.
+  const bulk = functionBody(
+    terminal,
+    "async function deleteHistorySessions(items: TerminalSidebarChat[])",
+    "terminal",
+  );
+  assert.ok(
+    bulk.indexOf("setHistory((current) => current.filter") <
+      bulk.indexOf("await deleteChatSession("),
+    "the picked rows must go before the first request",
+  );
+
+  // While a delete is in flight the chat is still in the history the server
+  // serves, so any poll that overlaps it would list the chat and put the row
+  // back. Summaries hide the id until the request settles.
+  assert.match(historyClient, /markHermesSessionDeleting\(sessionId\)/);
+  assert.match(
+    historyClient,
+    /finally \{[\s\S]{0,400}clearHermesSessionDeleting\(sessionId\)/,
+    "the id must stop being hidden however the delete ends",
+  );
+  assert.match(sessionClient, /const deletingSessions = new Set<string>\(\)/);
+  assert.match(sessionClient, /function withoutDeleting\(/);
+  assert.match(sessionClient, /return request\.then\(withoutDeleting\)/);
+
+  // The garden workspace has its own list and its own route, and owes the
+  // reader the same thing.
+  const workspaceDelete = functionBody(
+    workspaceClient,
+    "async function handleDeleteChat(sessionId?: number)",
+    "workspace",
+  );
+  assert.ok(
+    workspaceDelete.indexOf("setChatSessions(remaining)") <
+      workspaceDelete.indexOf("return sendChatDelete(targetId)"),
+    "workspace: the row must go before the request",
+  );
+  assert.match(workspaceClient, /deletingChatIds\.current\.add\(targetId\)/);
+  assert.match(
+    workspaceClient,
+    /\.filter\(\s*\(session\) => !deletingChatIds\.current\.has\(session\.id\),?\s*\)/,
+    "a reload must not list a chat whose delete is still in flight",
+  );
 });

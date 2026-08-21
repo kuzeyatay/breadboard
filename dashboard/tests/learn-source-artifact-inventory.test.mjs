@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  MAX_SOURCE_MAP_EVIDENCE_REAUTHORS,
   selectedSourceArtifactInventorySnapshot,
   sourceMapArtifactInventoryTransition,
+  sourceMapPlanningEvidenceTransition,
 } from "../src/lib/learn-source-artifact-inventory.ts";
 
 const identities = [
@@ -84,7 +86,7 @@ test("every planner-visible selected artifact field participates in the canonica
   }
 });
 
-test("a late non-equation artifact forces one Source Map reauthor and a second drift fails closed", () => {
+test("late artifacts receive two complete Source Map reauthors before the fixed cap fails closed", () => {
   const before = snapshot([visual()]);
   const afterFirstLateScan = snapshot([
     visual(),
@@ -104,7 +106,7 @@ test("a late non-equation artifact forces one Source Map reauthor and a second d
     sourceMapArtifactInventoryTransition({
       before,
       after: afterFirstLateScan,
-      replanAttempted: false,
+      reauthorAttempts: 0,
     }),
     "reauthor",
   );
@@ -137,9 +139,113 @@ test("a late non-equation artifact forces one Source Map reauthor and a second d
     sourceMapArtifactInventoryTransition({
       before: afterFirstLateScan,
       after: afterSecondLateScan,
-      replanAttempted: true,
+      reauthorAttempts: 1,
+    }),
+    "reauthor",
+  );
+  assert.equal(
+    sourceMapArtifactInventoryTransition({
+      before: afterSecondLateScan,
+      after: before,
+      reauthorAttempts: MAX_SOURCE_MAP_EVIDENCE_REAUTHORS,
     }),
     "fail",
+  );
+});
+
+test("combined Source Map evidence uses the same bounded reauthor budget", () => {
+  const before = snapshot([visual()]);
+  const afterInventoryDrift = snapshot([
+    visual(),
+    visual({
+      sourceVisualId: "S1.P312.F1",
+      pageNumber: 312,
+      type: "figure",
+      caption: "Late source figure",
+      exactText: undefined,
+      bbox: { x: 0.15, y: 0.1, width: 0.7, height: 0.65 },
+      croppedImagePath: "/garden/assets/source-visuals/late-figure.png",
+      pageImagePath: "/garden/assets/source-pages/page-312.png",
+    }),
+  ]);
+  const sourceSetBefore = "a".repeat(64);
+  const sourceSetAfterFormulaReview = "b".repeat(64);
+
+  for (const reauthorAttempts of [0, 1, MAX_SOURCE_MAP_EVIDENCE_REAUTHORS]) {
+    assert.equal(
+      sourceMapPlanningEvidenceTransition({
+        before: {
+          sourceSetHash: sourceSetBefore,
+          sourceArtifactInventoryHash: before.sourceArtifactInventoryHash,
+        },
+        after: {
+          sourceSetHash: sourceSetBefore,
+          sourceArtifactInventoryHash: before.sourceArtifactInventoryHash,
+        },
+        reauthorAttempts,
+      }),
+      "stable",
+      "unchanged evidence remains stable at every valid point in the bounded budget",
+    );
+  }
+  assert.equal(
+    sourceMapPlanningEvidenceTransition({
+      before: {
+        sourceSetHash: sourceSetBefore,
+        sourceArtifactInventoryHash: before.sourceArtifactInventoryHash,
+      },
+      after: {
+        sourceSetHash: sourceSetAfterFormulaReview,
+        sourceArtifactInventoryHash: before.sourceArtifactInventoryHash,
+      },
+      reauthorAttempts: 0,
+    }),
+    "reauthor",
+    "a formula-review-only source-set change must reauthor the Source Map",
+  );
+  assert.equal(
+    sourceMapPlanningEvidenceTransition({
+      before: {
+        sourceSetHash: sourceSetBefore,
+        sourceArtifactInventoryHash: before.sourceArtifactInventoryHash,
+      },
+      after: {
+        sourceSetHash: sourceSetBefore,
+        sourceArtifactInventoryHash: afterInventoryDrift.sourceArtifactInventoryHash,
+      },
+      reauthorAttempts: 1,
+    }),
+    "reauthor",
+    "a late planner-visible artifact must reauthor the Source Map",
+  );
+  assert.equal(
+    sourceMapPlanningEvidenceTransition({
+      before: {
+        sourceSetHash: sourceSetAfterFormulaReview,
+        sourceArtifactInventoryHash: afterInventoryDrift.sourceArtifactInventoryHash,
+      },
+      after: {
+        sourceSetHash: "c".repeat(64),
+        sourceArtifactInventoryHash: afterInventoryDrift.sourceArtifactInventoryHash,
+      },
+      reauthorAttempts: MAX_SOURCE_MAP_EVIDENCE_REAUTHORS,
+    }),
+    "fail",
+  );
+  assert.equal(
+    sourceMapPlanningEvidenceTransition({
+      before: {
+        sourceSetHash: sourceSetBefore,
+        sourceArtifactInventoryHash: before.sourceArtifactInventoryHash,
+      },
+      after: {
+        sourceSetHash: sourceSetBefore,
+        sourceArtifactInventoryHash: before.sourceArtifactInventoryHash,
+      },
+      reauthorAttempts: -1,
+    }),
+    "fail",
+    "a malformed counter must not turn evidence into a trusted stable state",
   );
 });
 

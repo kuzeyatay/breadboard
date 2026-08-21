@@ -72,6 +72,7 @@ const nextConfig: NextConfig = {
   // leaves those requires to run against node_modules at runtime, where the
   // catch can do its job, instead of failing the bundler's static resolution.
   serverExternalPackages: [
+    '@embedpdf/pdfium',
     '@firecrawl/anydoc',
     'better-sqlite3',
     'esbuild',
@@ -91,6 +92,7 @@ const nextConfig: NextConfig = {
   },
   outputFileTracingIncludes: {
     '/*': [
+      'node_modules/@embedpdf/pdfium/**/*',
       'node_modules/esbuild/**/*',
       'node_modules/@esbuild/win32-x64/**/*',
       'node_modules/three/**/*',
@@ -110,12 +112,28 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(process.cwd(), ".."),
     resolveAlias: {
+      '@genoffice/docx-engine': path.resolve(process.cwd(), 'src/vendor/genoffice/docx-engine/src/index.ts'),
+      '@genoffice/font-metrics': path.resolve(process.cwd(), 'src/vendor/genoffice/font-metrics/src/index.ts'),
+      '@genoffice/pdf2docx': path.resolve(process.cwd(), 'src/vendor/genoffice/pdf2docx/src/index.ts'),
+      '@genoffice/pptx-engine/background-promote': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/background-promote.ts'),
+      '@genoffice/pptx-engine/identity': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/identity.ts'),
+      '@genoffice/pptx-engine/table-grid': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/table-grid.ts'),
+      '@genoffice/pptx-engine': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/index.ts'),
+      '@genoffice/pptx-render': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-render/src/index.ts'),
       'pdf-parse': 'pdf-parse/dist/pdf-parse/cjs/index.cjs',
     },
   },
   webpack: (config, { isServer, nextRuntime }) => {
     config.resolve.alias = {
       ...config.resolve.alias,
+      '@genoffice/docx-engine': path.resolve(process.cwd(), 'src/vendor/genoffice/docx-engine/src/index.ts'),
+      '@genoffice/font-metrics': path.resolve(process.cwd(), 'src/vendor/genoffice/font-metrics/src/index.ts'),
+      '@genoffice/pdf2docx': path.resolve(process.cwd(), 'src/vendor/genoffice/pdf2docx/src/index.ts'),
+      '@genoffice/pptx-engine/background-promote': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/background-promote.ts'),
+      '@genoffice/pptx-engine/identity': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/identity.ts'),
+      '@genoffice/pptx-engine/table-grid': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/table-grid.ts'),
+      '@genoffice/pptx-engine': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/index.ts'),
+      '@genoffice/pptx-render': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-render/src/index.ts'),
       'pdf-parse': 'pdf-parse/dist/pdf-parse/cjs/index.cjs',
     };
     // `serverExternalPackages: ['mem0ai']` is not sufficient on its own here.

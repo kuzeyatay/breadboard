@@ -7,6 +7,10 @@ import {
   exportFolderPdf,
   type FolderPdfExportMessage,
 } from '@/lib/folder-pdf-export-client';
+import {
+  quartzAssistantSelectionRequest,
+  type QuartzAssistantSelectionRequest,
+} from '@/lib/quartz-assistant-selection';
 
 interface Props {
   clusterSlug: string;
@@ -132,6 +136,8 @@ export default function GardenClient({
   const [activeMarkdown, setActiveMarkdown] = useState<ActiveMarkdown | null>(() =>
     note ? { cluster: clusterSlug, slug: note, loading: true } : null,
   );
+  const [assistantSelection, setAssistantSelection] =
+    useState<QuartzAssistantSelectionRequest | null>(null);
   const activeMarkdownCluster = activeMarkdown?.cluster;
   const activeMarkdownSlug = activeMarkdown?.slug;
   const quartzOrigin = useMemo(() => {
@@ -159,6 +165,13 @@ export default function GardenClient({
         event.origin !== quartzOrigin &&
         event.source !== iframeRef.current?.contentWindow
       ) {
+        return;
+      }
+
+      const selectionRequest = quartzAssistantSelectionRequest(data);
+      if (selectionRequest) {
+        if (event.source !== iframeRef.current?.contentWindow) return;
+        setAssistantSelection(selectionRequest);
         return;
       }
 
@@ -626,6 +639,7 @@ export default function GardenClient({
         activeClusterSlug={activeCluster}
         activeClusterName={activeCluster === clusterSlug ? clusterName : activeCluster}
         activeMarkdown={activeMarkdown}
+        selectedTextRequest={assistantSelection}
         initialOpen={initialChatOpen}
       />
     </div>

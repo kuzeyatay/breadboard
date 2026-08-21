@@ -1,0 +1,676 @@
+// One surface over five agents that were never built to be interchangeable.
+//
+// Four of them own a run: they take a task, return a run id, emit events, and
+// eventually settle. Their signatures already agree closely enough that a thin
+// adapter is honest rather than a pretence — `startRun`, `getEventsSince`,
+// `isTerminal`, `abortRun`, in that shape, in every one of them.
+//
+// ARIS is the exception and stays one. It is not a runtime that fetches
+// anything; it is the cloned harness's own research methodology, which shapes
+// how the question is approached and how the results are reconciled. Modelling
+// it as a fifth fetcher would mean inventing a run for it and reporting an
+// empty result as a failure, so it resolves immediately with guidance instead.
+//
+// Nothing here reaches a service at module load: every runtime is imported at
+// call time, so a question that engages three participants pays for three.
+
+import { DEFAULT_RESULT_LIMIT } from "../get-doc/identity.ts";
+import type { MaxResearchParticipant } from "./plan.ts";
+
+export interface ParticipantResult {
+  participant: MaxResearchParticipant;
+  status: "completed" | "failed" | "unavailable" | "aborted";
+  /** What this participant found, in its own words. Empty when it failed. */
+  output: string;
+  /** Its own run id, for the evidence trail and for aborting. */
+  runId?: string;
+  /** Why it produced nothing, when it produced nothing. */
+  reason?: string;
+  /** Pages it read, where the runtime can say. */
+  websites?: Array<{ url: string; title?: string; domain?: string }>;
+  /** Artifacts it saved — Get Doc's full texts, OpenScience's workspace files. */
+  artifacts?: Array<{ name: string; path?: string; url?: string }>;
+  /**
+   * Parts of this participant's reach that were closed while it worked.
+   *
+   * Agent Reach can read the open web but not a platform behind a login, and
+   * which is which changes with the machine's setup. Without this the answer
+   * silently omits whatever it could not get to, and the reader has no way to
+   * tell a subject nobody discusses from a forum the agent simply could not
+   * open.
+   */
+  limitations?: Array<{ name: string; detail: string }>;
+}
+
+export interface ParticipantContext {
+  userId: number;
+  model: string;
+  reasoningEffort: string;
+  baseUrl: string;
+  conversationContext?: string;
+  /** Aborts every participant when the orchestrating run is stopped. */
+  signal?: AbortSignal;
+}
+
+/** How long any one participant may hold the whole run up. */
+export const PARTICIPANT_TIMEOUT_MS = 45 * 60_000;
+
+/**
+ * What a participant is asked, in the pieces it actually needs.
+ *
+ * Flattened to one string before, which suited the three that take a task and
+ * broke the one that takes a search query: Get Doc's `query` is documented as
+ * the user's own words, and a question with guidance appended became catalog
+ * queries that arXiv and Crossref answered with HTTP 400.
+ */
+export interface ParticipantBrief {
+  /** The question, exactly as asked. */
+  question: string;
+  /** How to approach it. Never part of a search query. */
+  guidance: string;
+  /** Both together, for participants that take a task. */
+  brief: string;
+}
+
+export interface ParticipantRuntime {
+  /** Whether this participant can run at all right now, and why not. */
+  available(): Promise<{ available: boolean; reason?: string }>;
+  /** Run it to completion. Never throws: a failure is a returned result. */
+  run(
+    brief: ParticipantBrief,
+    context: ParticipantContext,
+  ): Promise<ParticipantResult>;
+}
+
+function unavailable(
+  participant: MaxResearchParticipant,
+  reason: string,
+): ParticipantResult {
+  return { participant, status: "unavailable", output: "", reason };
+}
+
+function failed(
+  participant: MaxResearchParticipant,
+  error: unknown,
+  runId?: string,
+): ParticipantResult {
+  return {
+    participant,
+    status: "failed",
+    output: "",
+    ...(runId ? { runId } : {}),
+    reason:
+      error instanceof Error ? error.message : "The run failed without a reason.",
+  };
+}
+
+/**
+ * Drive one of the four run-owning agents to completion.
+ *
+ * Polling rather than subscribing, because that is the interface all four
+ * actually expose: an event log and a terminal predicate. The interval is
+ * deliberately unhurried — these runs are measured in minutes, and a tight loop
+ * would spend the orchestrator's time watching rather than working.
+ */
+async function driveRun(input: {
+  participant: MaxResearchParticipant;
+  start: () => { runId: string } | Promise<{ runId: string }>;
+  isTerminal: (runId: string) => boolean;
+  collect: (runId: string) => ParticipantResult;
+  abort: (runId: string) => void;
+  signal?: AbortSignal;
+  pollMs?: number;
+  timeoutMs?: number;
+}): Promise<ParticipantResult> {
+  let runId: string;
+  try {
+    runId = (await input.start()).runId;
+  } catch (error) {
+    return failed(input.participant, error);
+  }
+
+  const pollMs = input.pollMs ?? 4_000;
+  const deadline = Date.now() + (input.timeoutMs ?? PARTICIPANT_TIMEOUT_MS);
+  while (!input.isTerminal(runId)) {
+    if (input.signal?.aborted) {
+      input.abort(runId);
+      return { participant: input.participant, status: "aborted", output: "", runId };
+    }
+    if (Date.now() > deadline) {
+      input.abort(runId);
+      // Keep whatever it had reached. A participant cut off at the budget has
+      // usually done real work — Agent Reach runs up to sixteen steps and holds
+      // its answer-so-far — and discarding it means the orchestration paid for
+      // forty-five minutes and carried none of it into the answer. Reported as
+      // partial rather than completed, so nothing reads it as a finished pass.
+      let partial = "";
+      try {
+        partial = input.collect(runId).output;
+      } catch {
+        // A runtime that has already dropped the run has nothing to give back.
+      }
+      return {
+        participant: input.participant,
+        status: partial ? "completed" : "failed",
+        output: partial,
+        runId,
+        reason: partial
+          ? "Cut off at the time this orchestration allows, so this is what it had reached rather than a finished pass."
+          : "The run exceeded the time this orchestration allows it.",
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+
+  try {
+    return input.collect(runId);
+  } catch (error) {
+    return failed(input.participant, error, runId);
+  }
+}
+
+/**
+ * The runtimes, resolved lazily.
+ *
+ * Exported as a factory rather than a constant so a test can substitute one
+ * without a service, and so importing the plan never drags five runtimes and
+ * their databases in behind it.
+ */
+export function participantRuntime(
+  participant: MaxResearchParticipant,
+): ParticipantRuntime {
+  switch (participant) {
+    case "deep_research":
+      return deepResearchRuntime();
+    case "agent_reach":
+      return runManagerRuntime(participant, {
+        load: () => import("../agent-reach/run-manager.ts"),
+        health: async () =>
+          (await import("../agent-reach/runtime.ts")).runtimeAvailability(),
+      });
+    case "get_doc":
+      return getDocRuntime();
+    case "openscience":
+      return runManagerRuntime(participant, {
+        load: () => import("../openscience/run-manager.ts"),
+        health: async () =>
+          (await import("../openscience/runtime.ts")).runtimeAvailability(),
+      });
+    case "aris":
+      return arisRuntime();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+
+function deepResearchRuntime(): ParticipantRuntime {
+  return {
+    async available() {
+      // The mode alone is not availability. A run with the service enabled but
+      // its shared secret unset fails with `service_misconfigured` the instant
+      // it starts — which is what a live run did, after this reported the
+      // participant available and the plan committed to it as the required one.
+      // The service already answers this properly; ask it.
+      const { health } = await import("../deep-research/service.ts");
+      const { resolveDeepResearchConfig } = await import(
+        "../deep-research/config.ts"
+      );
+      // Checked separately from `health()`, which reports the service's own
+      // state and not whether this process can talk to it: a live run found the
+      // service healthy, the mode enabled, and the shared secret unset, which
+      // is `service_misconfigured` at the first call. Availability has to mean
+      // what `requireEnabled` means, or the plan commits to a participant that
+      // cannot start.
+      if (!resolveDeepResearchConfig().secret.trim()) {
+        return {
+          available: false,
+          reason: "The Deep Research shared secret is not configured.",
+        };
+      }
+      try {
+        const state = await health();
+        if (state.runtimeState === "available") return { available: true };
+        return {
+          available: false,
+          reason:
+            state.runtimeState === "disabled"
+              ? "Deep Research is switched off."
+              : state.runtimeState === "misconfigured"
+                ? "The Deep Research service is running but not configured to answer."
+                : "The Deep Research service is not reachable.",
+        };
+      } catch (error) {
+        return {
+          available: false,
+          reason:
+            error instanceof Error
+              ? error.message
+              : "The Deep Research service could not be reached.",
+        };
+      }
+    },
+    async run(brief, context) {
+      const service = await import("../deep-research/service.ts");
+      let runId: string;
+      try {
+        const summary = await service.startRun(context.userId, {
+          query: brief.brief,
+          output: "report",
+          ...(context.conversationContext
+            ? { conversationPublicId: undefined }
+            : {}),
+        });
+        runId = summary.runId;
+      } catch (error) {
+        return failed("deep_research", error);
+      }
+
+      const deadline = Date.now() + PARTICIPANT_TIMEOUT_MS;
+      for (;;) {
+        if (context.signal?.aborted) {
+          await service.abortRun(context.userId, runId).catch(() => undefined);
+          return { participant: "deep_research", status: "aborted", output: "", runId };
+        }
+        let summary;
+        try {
+          summary = await service.getRun(context.userId, runId);
+        } catch (error) {
+          return failed("deep_research", error, runId);
+        }
+        if (summary.status !== "running") {
+          if (summary.status !== "completed" || !summary.result) {
+            return {
+              participant: "deep_research",
+              status: summary.status === "aborted" ? "aborted" : "failed",
+              output: "",
+              runId,
+              reason: summary.failure?.message ?? "The run produced no report.",
+            };
+          }
+          const websites = await service
+            .runWebsites(context.userId, runId)
+            .catch(() => []);
+          return {
+            participant: "deep_research",
+            status: "completed",
+            output: summary.result,
+            runId,
+            ...(websites.length ? { websites } : {}),
+          };
+        }
+        if (Date.now() > deadline) {
+          await service.abortRun(context.userId, runId).catch(() => undefined);
+          return {
+            participant: "deep_research",
+            status: "failed",
+            output: "",
+            runId,
+            reason: "The run exceeded the time this orchestration allows it.",
+          };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 4_000));
+      }
+    },
+  };
+}
+
+/** Agent Reach and OpenScience, which share the in-process run-manager shape. */
+function runManagerRuntime(
+  participant: MaxResearchParticipant,
+  runtime: {
+    load: () => Promise<Record<string, unknown>>;
+    /**
+     * The runtime's own health, not merely whether its module imports.
+     *
+     * Importing a run manager proves nothing: both of these throw from
+     * `startRun` when their clone is missing or their launcher is absent, so an
+     * import-only check reported "available" at plan time and then failed as a
+     * participant — which is precisely the ordering the pre-plan check exists
+     * to avoid.
+     */
+    health: () => Promise<{ available: boolean; reason?: string | null }>;
+  },
+): ParticipantRuntime {
+  const load = runtime.load;
+  return {
+    async available() {
+      try {
+        await load();
+        const state = await runtime.health();
+        return state.available
+          ? { available: true }
+          : { available: false, reason: state.reason ?? "The runtime is unavailable." };
+      } catch (error) {
+        return {
+          available: false,
+          reason:
+            error instanceof Error ? error.message : "The runtime is unavailable.",
+        };
+      }
+    },
+    async run(brief, context) {
+      let module: Record<string, unknown>;
+      try {
+        module = await load();
+      } catch (error) {
+        return failed(participant, error);
+      }
+      const startRun = module.startRun as
+        | ((input: Record<string, unknown>) => { runId: string })
+        | undefined;
+      const isTerminal = module.isTerminal as
+        | ((userId: number, runId: string) => boolean)
+        | undefined;
+      const abortRun = module.abortRun as
+        | ((userId: number, runId: string) => unknown)
+        | undefined;
+      const getEventsSince = module.getEventsSince as
+        | ((userId: number, runId: string, since?: number) => unknown[])
+        | undefined;
+      if (!startRun || !isTerminal || !getEventsSince) {
+        return unavailable(participant, "The runtime does not expose a run.");
+      }
+
+      return driveRun({
+        participant,
+        start: () =>
+          startRun({
+            userId: context.userId,
+            task: brief.brief,
+            model: context.model,
+            reasoningEffort: context.reasoningEffort,
+            baseUrl: context.baseUrl,
+            ...(context.conversationContext
+              ? { conversationContext: context.conversationContext }
+              : {}),
+          }),
+        isTerminal: (runId) => isTerminal(context.userId, runId),
+        abort: (runId) => void abortRun?.(context.userId, runId),
+        collect: (runId) => {
+          const events = getEventsSince(context.userId, runId, 0);
+          const status = terminalStatusFromEvents(events);
+          const output = summarizeEvents(events);
+          const limitations = collectLimitations(events);
+          return {
+            participant,
+            status,
+            output: status === "completed" ? output : "",
+            runId,
+            ...(limitations?.length ? { limitations } : {}),
+            ...(status === "completed"
+              ? {}
+              : { reason: output || "The run ended without an answer." }),
+          };
+        },
+        ...(context.signal ? { signal: context.signal } : {}),
+      });
+    },
+  };
+}
+
+function getDocRuntime(): ParticipantRuntime {
+  return {
+    async available() {
+      const { sourceAvailability } = await import("../get-doc/run-manager.ts");
+      const ready = sourceAvailability();
+      return ready.ready.length
+        ? { available: true }
+        : { available: false, reason: "No document source is configured." };
+    },
+    async run(brief, context) {
+      const manager = await import("../get-doc/run-manager.ts");
+      return driveRun({
+        participant: "get_doc",
+        start: () =>
+          manager.startRun({
+            userId: context.userId,
+            // A complete request, not a partial one behind a cast.
+            //
+            // This was `{ query } as never`, and the cast hid exactly what it
+            // was covering: every other field was missing, so `limit` was
+            // undefined, OpenAlex's `per-page` became `limit * 2` — NaN — and
+            // every catalog answered HTTP 400. A live run reported "no
+            // documents matched" for a question with a substantial literature,
+            // and that reached the answer as "the literature has nothing".
+            //
+            // The bare question is the query, because the planner turns it into
+            // catalog terms; guidance goes to the context it reads as
+            // background rather than as words to search for.
+            request: {
+              query: brief.question,
+              limit: DEFAULT_RESULT_LIMIT,
+              openAccessOnly: false,
+              yearFrom: null,
+              yearTo: null,
+              sources: null,
+            },
+            model: context.model,
+            reasoningEffort: context.reasoningEffort,
+            baseUrl: context.baseUrl,
+            conversationContext: [context.conversationContext, brief.guidance]
+              .filter(Boolean)
+              .join("\n\n"),
+          }),
+        isTerminal: (runId) => manager.isTerminal(context.userId, runId),
+        abort: (runId) => void manager.abortRun(context.userId, runId),
+        collect: (runId) => {
+          const events = manager.getEventsSince(context.userId, runId, 0);
+          const status = terminalStatusFromEvents(events);
+          const output = summarizeEvents(events);
+          return {
+            participant: "get_doc",
+            status,
+            output: status === "completed" ? output : "",
+            runId,
+            ...(status === "completed"
+              ? { artifacts: collectArtifacts(events) }
+              : { reason: output || "The run ended without an answer." }),
+          };
+        },
+        ...(context.signal ? { signal: context.signal } : {}),
+      });
+    },
+  };
+}
+
+/**
+ * ARIS: methodology, not retrieval.
+ *
+ * It resolves at once with the cloned harness's own research guidance for this
+ * question. That guidance is what the synthesis is written under, which is the
+ * whole of its contribution — and reporting "unavailable" when the clone is
+ * absent is the truthful outcome rather than a failed fetch.
+ */
+function arisRuntime(): ParticipantRuntime {
+  return {
+    async available() {
+      const { arisAvailability } = await import("../aris/agent.ts");
+      const state = arisAvailability();
+      return state.available
+        ? { available: true }
+        : { available: false, reason: state.reason ?? "ARIS is not installed." };
+    },
+    async run(brief) {
+      const { arisAvailability, renderArisTurnGuidance } = await import(
+        "../aris/agent.ts"
+      );
+      const state = arisAvailability();
+      if (!state.available) {
+        return unavailable("aris", state.reason ?? "ARIS is not installed.");
+      }
+      const guidance = renderArisTurnGuidance(brief.question);
+      return guidance
+        ? { participant: "aris", status: "completed", output: guidance }
+        : unavailable("aris", "ARIS matched no workflow to this question.");
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * How a run actually ended, read from its own terminal event.
+ *
+ * The predicate these runtimes expose is `isTerminal`, which says a run has
+ * stopped and nothing about whether it succeeded. Assuming success from it —
+ * which this did — hands the synthesis a failure message as though it were a
+ * finding: a live run reported Agent Reach "completed" with the thirty-one
+ * characters of its own "finished without an answer" notice, which would then
+ * have been reconciled as evidence.
+ */
+export function terminalStatusFromEvents(
+  events: readonly unknown[],
+): "completed" | "failed" | "aborted" {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const type = (events[index] as { type?: unknown })?.type;
+    if (typeof type !== "string") continue;
+    if (type.endsWith("run.failed")) return "failed";
+    if (type.endsWith("run.aborted")) return "aborted";
+    if (type.endsWith("run.completed")) return "completed";
+  }
+  // No terminal event at all: the log cannot say it worked, so it does not.
+  return "failed";
+}
+
+/** Bound on how much of one participant's log is carried into synthesis. */
+const MAX_PARTICIPANT_OUTPUT = 40_000;
+
+/** One event's payload, or the event itself when it carries no envelope. */
+function payloadOf(event: unknown): Record<string, unknown> | null {
+  if (!event || typeof event !== "object") return null;
+  const payload = (event as { payload?: unknown }).payload ?? event;
+  return payload && typeof payload === "object"
+    ? (payload as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * A run's event log, reduced to what it actually concluded.
+ *
+ * The terminal event carries the result in every one of these runtimes, but not
+ * under a single field name, so the likely ones are tried in order of how
+ * specific they are. Falling back to the whole log is deliberate: a run that
+ * finished without a tidy summary still found things, and dropping it entirely
+ * would be worse than handing the synthesis something untidy.
+ */
+export function summarizeEvents(events: readonly unknown[]): string {
+  const payloads = events
+    .map((event) =>
+      event && typeof event === "object"
+        ? ((event as { payload?: unknown }).payload ?? event)
+        : event,
+    )
+    .filter((payload): payload is Record<string, unknown> =>
+      Boolean(payload && typeof payload === "object"),
+    );
+
+  const KEYS = ["report", "result", "summary", "answer", "output", "text"];
+
+  // The terminal event first, and on its own.
+  //
+  // These runtimes reuse one field for two jobs: Agent Reach puts a progress
+  // note and its final answer both under `summary`, so a scan of the whole log
+  // can return "Choosing a platform and backend" — a step-zero status line — as
+  // though it were the finding. A live run did exactly that. What the run
+  // concluded is in the event that ended it, so that event is asked first and
+  // the rest of the log is only a fallback.
+  const terminalIndex = events.findLastIndex((event) => {
+    const type = (event as { type?: unknown })?.type;
+    return (
+      typeof type === "string" &&
+      (type.endsWith("run.completed") ||
+        type.endsWith("run.failed") ||
+        type.endsWith("run.aborted"))
+    );
+  });
+  if (terminalIndex >= 0) {
+    const terminal = payloadOf(events[terminalIndex]);
+    const type = String((events[terminalIndex] as { type?: unknown })?.type ?? "");
+    // A run that failed says why under `error`, not under a content key. Asking
+    // only for content made the reducer fall through to the log and report the
+    // last progress line — "Reviewing what came back" — as the reason a run
+    // failed, which hid the actual error from everything downstream.
+    const keys = type.endsWith("run.completed")
+      ? KEYS
+      : ["error", "message", "reason", ...KEYS];
+    for (const key of keys) {
+      const value = terminal?.[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim().slice(0, MAX_PARTICIPANT_OUTPUT);
+      }
+    }
+  }
+
+  for (const key of KEYS) {
+    for (let index = payloads.length - 1; index >= 0; index -= 1) {
+      const value = payloads[index][key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim().slice(0, MAX_PARTICIPANT_OUTPUT);
+      }
+    }
+  }
+
+  const lines = payloads
+    .map((payload) => {
+      const message = payload.message ?? payload.claim ?? payload.title;
+      return typeof message === "string" ? message.trim() : "";
+    })
+    .filter(Boolean);
+  return lines.join("\n").slice(0, MAX_PARTICIPANT_OUTPUT);
+}
+
+/** Files a run saved, where its events name them. */
+/**
+ * Channels a run reported as unusable, from its own diagnostic event.
+ *
+ * Agent Reach opens by running its doctor and emitting the result, so the run
+ * itself already knows which platforms were closed to it. This lifts that into
+ * the result so the answer can say so rather than quietly leaving those
+ * sources out.
+ */
+export function collectLimitations(
+  events: readonly unknown[],
+): ParticipantResult["limitations"] {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const payload = payloadOf(events[index]);
+    const channels = payload?.channels;
+    if (!Array.isArray(channels)) continue;
+    const closed = channels
+      .filter(
+        (channel): channel is Record<string, unknown> =>
+          Boolean(channel && typeof channel === "object") &&
+          (channel as Record<string, unknown>).status !== "ok",
+      )
+      .map((channel) => ({
+        name: String(channel.channel ?? channel.name ?? "unknown"),
+        detail: String(channel.status ?? "unavailable"),
+      }));
+    return closed.length ? closed : undefined;
+  }
+  return undefined;
+}
+
+export function collectArtifacts(
+  events: readonly unknown[],
+): ParticipantResult["artifacts"] {
+  const artifacts: NonNullable<ParticipantResult["artifacts"]> = [];
+  for (const event of events) {
+    const payload =
+      event && typeof event === "object"
+        ? ((event as { payload?: unknown }).payload as
+            | Record<string, unknown>
+            | undefined)
+        : undefined;
+    const saved = payload?.document ?? payload?.artifact ?? payload?.file;
+    if (!saved || typeof saved !== "object") continue;
+    const record = saved as Record<string, unknown>;
+    const name = record.title ?? record.name ?? record.filename;
+    if (typeof name !== "string" || !name.trim()) continue;
+    artifacts.push({
+      name: name.trim(),
+      ...(typeof record.path === "string" ? { path: record.path } : {}),
+      ...(typeof record.url === "string" ? { url: record.url } : {}),
+    });
+  }
+  return artifacts.length ? artifacts : undefined;
+}

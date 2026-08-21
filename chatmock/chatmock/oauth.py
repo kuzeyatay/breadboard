@@ -192,6 +192,7 @@ class OAuthHTTPServer(http.server.HTTPServer):
                 "account_id": bundle.token_data.account_id,
             },
             "last_refresh": bundle.last_refresh,
+            "connected_at": bundle.last_refresh,
         }
         return write_auth_file(auth_json_contents)
 
@@ -240,6 +241,7 @@ class OAuthHandler(http.server.BaseHTTPRequestHandler):
                 "account_id": auth_bundle.token_data.account_id,
             },
             "last_refresh": auth_bundle.last_refresh,
+            "connected_at": auth_bundle.last_refresh,
         }
         if write_auth_file(auth_json_contents):
             self.server.exit_code = 0

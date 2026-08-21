@@ -8505,7 +8505,12 @@ function collectFinalizeChecks({
               ledger: executabilityLedger,
               finalLearningUnits: contract.units,
               visualizationPlan,
-              requireGenerationPhase: true,
+              // A normal generation emits its own review ledger. A
+              // map-bound route bundle deliberately rehydrates the exact
+              // confirmed planning ledger instead; its explicit planning
+              // context is still required to match exactly below.
+              requireGenerationPhase:
+                expectedVisualContractExecutabilityContext?.phase !== "planning",
               authoritativeCanonicalEvidenceByUnit: canonicalEvidence,
               expectedContext: expectedVisualContractExecutabilityContext,
             }),

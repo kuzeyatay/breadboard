@@ -52,6 +52,7 @@ interface ChatMessage {
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   verification?: VerificationSummary;
+  selectedText?: string;
   externalAgentRun?: ExternalAgentRun;
   externalAgentOutcome?: ExternalAgentOutcome;
   externalAgentStartedAt?: string;
@@ -107,6 +108,7 @@ function mergeRuntimeMetadata(
   if (message.internalAgentContinuation === true) {
     metadata.internalAgentContinuation = true;
   }
+  if (message.selectedText) metadata.selectedText = message.selectedText;
   if (message.externalAgentRun) {
     metadata.externalAgent = true;
     metadata.externalAgentRun = message.externalAgentRun;
@@ -254,6 +256,10 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
     const attachments = role === "user"
       ? normalizeChatMessageAttachments(record.attachments)
       : [];
+    const selectedText =
+      role === "user" && typeof record.selectedText === "string"
+        ? record.selectedText.trim().slice(0, 4_000)
+        : "";
     const createdAt =
       typeof record.createdAt === "string" &&
       Number.isFinite(Date.parse(record.createdAt))
@@ -269,6 +275,7 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
       sources,
       ...(attachmentNames.length ? { attachmentNames } : {}),
       ...(attachments.length ? { attachments } : {}),
+      ...(selectedText ? { selectedText } : {}),
       ...(usage ? { usage } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(verification ? { verification } : {}),

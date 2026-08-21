@@ -171,6 +171,25 @@ test("accounts are read from credential filenames", () => {
   );
 });
 
+test("sibling credentials are returned in chronological order", () => {
+  const authDir = config.cliproxyAuthDir();
+  const older = path.join(authDir, "kimi-older@example.com.json");
+  const newer = path.join(authDir, "kimi-newer@example.com.json");
+  fs.writeFileSync(older, "{}");
+  fs.writeFileSync(newer, "{}");
+  fs.utimesSync(older, new Date("2026-01-01T00:00:00Z"), new Date("2026-01-01T00:00:00Z"));
+  fs.utimesSync(newer, new Date("2026-02-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z"));
+
+  const siblings = config
+    .readCliproxyAccounts()
+    .filter((account) => account.provider === "kimi");
+  assert.deepEqual(
+    siblings.map((account) => account.account),
+    ["older@example.com", "newer@example.com"],
+  );
+  assert.ok(siblings[0].connectedAt < siblings[1].connectedAt);
+});
+
 test("an empty auth dir is not an error", () => {
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), "bb-cliproxy-empty-"));
   const previous = process.env.CLIPROXY_HOME;
@@ -288,9 +307,14 @@ test("usage limits are scoped to the plan they actually describe", () => {
   assert.match(popover, /isChatgptModel/);
   assert.match(popover, /providerUsageLink/);
   assert.match(popover, /target="_blank"/);
-  // The refresh probe is a real ChatGPT request; polling it while another
-  // provider is active would spend the quota it claims to report on.
-  assert.match(popover, /if \(effectiveModel && !isChatgptModel\(effectiveModel\)\) return;/);
+  // Google and Claude subscription models have their own read-only quota
+  // snapshots. Other external providers remain excluded from polling.
+  assert.match(popover, /isGoogleSubscriptionModel/);
+  assert.match(popover, /isClaudeSubscriptionModel/);
+  assert.match(popover, /query\.set\("model", activeModel\)/);
+  assert.match(popover, /!isChatgptModel\(activeModel\) && !googleUsageActive && !claudeUsageActive/);
+  assert.match(popover, /Google-reported model quota/);
+  assert.match(popover, /Anthropic-reported subscription usage/);
 
   const composer = source("src/app/components/assistant-composer.tsx");
   assert.match(composer, /activeModel=\{model\}/);

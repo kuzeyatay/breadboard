@@ -8,20 +8,16 @@
   --chrome: #faf7ef;
   --ink: #17261f;
   --muted: #607068;
-  --leaf: #496d5e;
-  --leaf-soft: rgba(73, 109, 94, 0.16);
-  --leaf-faint: rgba(73, 109, 94, 0.07);
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --background: #0b0c0a;
+  /* One black, not two: the caption strip Electron paints is a fixed
+     colour, so a darker field under it draws a seam across the top. */
+  --background: #171916;
   --chrome: #171916;
   --ink: #ccd2c9;
   --muted: #9da8a1;
-  --leaf: #91b7a1;
-  --leaf-soft: rgba(145, 183, 161, 0.18);
-  --leaf-faint: rgba(145, 183, 161, 0.07);
 }
 
 * {
@@ -59,86 +55,27 @@ body {
   display: grid;
   width: 100%;
   height: calc(100vh - var(--titlebar-height));
-  place-content: center;
-  place-items: center;
-  padding: 48px;
+  align-content: center;
+  justify-items: center;
+  padding: 40px 48px 56px;
   text-align: center;
 }
 
-.recovery::before,
-.recovery::after {
-  position: absolute;
-  content: "";
-  border-radius: 50%;
-  pointer-events: none;
-}
-
-.recovery::before {
-  width: min(68vw, 760px);
-  aspect-ratio: 1.8;
-  background: radial-gradient(ellipse, var(--leaf-faint), transparent 70%);
-  filter: blur(18px);
-}
-
-.recovery::after {
-  width: 230px;
-  height: 230px;
-  border: 1px solid var(--leaf-soft);
-  opacity: 0;
-  animation: quiet-ring 3s ease-out infinite;
-}
-
-.mark {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  height: 58px;
-  align-items: end;
-  gap: 7px;
-  margin-bottom: 27px;
-}
-
-.mark span {
-  width: 13px;
-  height: 34px;
-  border-radius: 12px 12px 8px 8px;
-  background: var(--leaf);
-  box-shadow: 0 8px 22px var(--leaf-soft);
-  opacity: 0.44;
-  transform-origin: 50% 100%;
-  animation: leaf-rise 1.8s cubic-bezier(0.42, 0, 0.2, 1) infinite;
-}
-
-.mark span:nth-child(1),
-.mark span:nth-child(5) {
-  height: 25px;
-}
-
-.mark span:nth-child(2),
-.mark span:nth-child(4) {
-  height: 42px;
-}
-
-.mark span:nth-child(2) {
-  animation-delay: 120ms;
-}
-
-.mark span:nth-child(3) {
-  animation-delay: 240ms;
-}
-
-.mark span:nth-child(4) {
-  animation-delay: 360ms;
-}
-
-.mark span:nth-child(5) {
-  animation-delay: 480ms;
+/* The field carries the scene's own key light, so the message sits above that
+   glow rather than beside a second one of its own. */
+.recovery-field {
+  display: grid;
+  place-items: center;
 }
 
 .message {
   position: relative;
   z-index: 1;
   width: min(620px, 82vw);
+  /* Pulled up under the field: the stage reserves height for the lift the
+     scales make at the top of their cycle, and the message would otherwise
+     float a long way below empty space. */
+  margin-top: -12px;
 }
 
 h1 {
@@ -168,51 +105,8 @@ h1 {
   white-space: nowrap !important;
 }
 
-@keyframes leaf-rise {
-  0%,
-  64%,
-  100% {
-    opacity: 0.4;
-    transform: scaleY(0.72) translateY(3px);
-  }
-
-  30% {
-    opacity: 0.94;
-    transform: scaleY(1) translateY(0);
-  }
-}
-
-@keyframes quiet-ring {
-  0% {
-    opacity: 0;
-    transform: scale(0.72);
-  }
-
-  32% {
-    opacity: 0.6;
-  }
-
-  100% {
-    opacity: 0;
-    transform: scale(1.35);
-  }
-}
-
-@media (max-height: 520px) {
-  .mark {
-    margin-bottom: 18px;
-    transform: scale(0.82);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .mark span,
-  .recovery::after {
-    animation: none;
-  }
-
-  .mark span {
-    opacity: 0.78;
-    transform: none;
+@media (max-height: 620px) {
+  .kinetic-stage.is-compact {
+    zoom: 0.5;
   }
 }

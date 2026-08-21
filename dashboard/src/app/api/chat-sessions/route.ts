@@ -24,6 +24,7 @@ import { isChatHighlight } from "@/lib/conversations/highlights";
 export const dynamic = "force-dynamic";
 
 type ChatRole = "user" | "assistant";
+type ChatHistorySurface = "garden_chat" | "assistant";
 
 type ChatMessage = {
   id?: string;
@@ -37,6 +38,7 @@ type ChatMessage = {
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   verification?: VerificationSummary;
+  selectedText?: string;
 } & ReturnType<typeof externalAgentMessageFields>;
 
 interface ChatSessionRow {
@@ -65,6 +67,10 @@ function cleanTitle(value: unknown): string {
   return title.slice(0, 80) || "New chat";
 }
 
+function chatHistorySurface(value: unknown): ChatHistorySurface {
+  return value === "assistant" ? "assistant" : "garden_chat";
+}
+
 function parseSources(value: string | null): string[] {
   if (!value) return [];
   try {
@@ -86,14 +92,25 @@ function parseTokenUsage(value: string | null): ChatTokenUsage | undefined {
   }
 }
 
-function parseVerification(value: string | null): VerificationSummary | undefined {
+function parseVerification(
+  value: string | null,
+): VerificationSummary | undefined {
   if (!value) return undefined;
   try {
     const parsed = JSON.parse(value) as { verification?: unknown };
     const verification = parsed?.verification;
     if (!verification || typeof verification !== "object") return undefined;
     const state = (verification as { state?: unknown }).state;
-    if (!["verified", "partially_verified", "unverified", "contradicted", "not_applicable"].includes(String(state))) return undefined;
+    if (
+      ![
+        "verified",
+        "partially_verified",
+        "unverified",
+        "contradicted",
+        "not_applicable",
+      ].includes(String(state))
+    )
+      return undefined;
     return verification as VerificationSummary;
   } catch {
     return undefined;
@@ -123,6 +140,17 @@ function parseInternalAgentContinuation(value: string | null): boolean {
   }
 }
 
+function parseSelectedText(value: string | null): string | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as { selectedText?: unknown };
+    if (typeof parsed?.selectedText !== "string") return undefined;
+    return parsed.selectedText.trim().slice(0, 4_000) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function parseExternalAgentFields(
   value: string | null,
   role: ChatRole,
@@ -143,17 +171,20 @@ function parseExternalAgentFields(
   }
 }
 
-function parseAttachmentFields(value: string | null): Pick<
-  ChatMessage,
-  "attachmentNames" | "attachments"
-> {
+function parseAttachmentFields(
+  value: string | null,
+): Pick<ChatMessage, "attachmentNames" | "attachments"> {
   if (!value) return {};
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return {};
     const attachmentNames = Array.isArray(parsed.attachmentNames)
       ? parsed.attachmentNames
-          .filter((name): name is string => typeof name === "string" && Boolean(name.trim()))
+          .filter(
+            (name): name is string =>
+              typeof name === "string" && Boolean(name.trim()),
+          )
           .map((name) => name.trim().slice(0, 240))
           .slice(0, 12)
       : [];
@@ -208,6 +239,7 @@ function readSessions(
   currentUserId: number,
   filterUserId: number | null,
   includeUsername: boolean,
+  historySurface: ChatHistorySurface,
 ) {
   let rows: ChatSessionRow[];
 
@@ -217,28 +249,28 @@ function readSessions(
         `SELECT cs.id, cs.user_id, cs.title, cs.created_at, cs.updated_at, u.username AS owner_username
          FROM chat_sessions cs
          JOIN users u ON u.id = cs.user_id
-         WHERE cs.cluster_id = ?
+         WHERE cs.cluster_id = ? AND cs.history_surface = ?
          ORDER BY cs.updated_at DESC, cs.id DESC`,
       )
-      .all(clusterId) as ChatSessionRow[];
+      .all(clusterId, historySurface) as ChatSessionRow[];
   } else if (filterUserId !== null) {
     rows = db
       .prepare(
         `SELECT id, user_id, title, created_at, updated_at
          FROM chat_sessions
-         WHERE cluster_id = ? AND user_id = ?
+         WHERE cluster_id = ? AND user_id = ? AND history_surface = ?
          ORDER BY updated_at DESC, id DESC`,
       )
-      .all(clusterId, filterUserId) as ChatSessionRow[];
+      .all(clusterId, filterUserId, historySurface) as ChatSessionRow[];
   } else {
     rows = db
       .prepare(
         `SELECT id, user_id, title, created_at, updated_at
          FROM chat_sessions
-         WHERE cluster_id = ?
+         WHERE cluster_id = ? AND history_surface = ?
          ORDER BY updated_at DESC, id DESC`,
       )
-      .all(clusterId) as ChatSessionRow[];
+      .all(clusterId, historySurface) as ChatSessionRow[];
   }
 
   if (rows.length === 0) return [];
@@ -263,6 +295,8 @@ function readSessions(
     const internalAgentContinuation =
       message.role === "user" &&
       parseInternalAgentContinuation(message.tool_calls);
+    const selectedText =
+      message.role === "user" ? parseSelectedText(message.tool_calls) : undefined;
     const externalAgent = parseExternalAgentFields(
       message.tool_calls,
       message.role,
@@ -274,9 +308,8 @@ function readSessions(
         : {}),
       role: message.role,
       ...delegatedAgentPresentation(message.content, externalAgent),
-      ...(internalAgentContinuation
-        ? { internalAgentContinuation: true }
-        : {}),
+      ...(internalAgentContinuation ? { internalAgentContinuation: true } : {}),
+      ...(selectedText ? { selectedText } : {}),
       createdAt: message.created_at,
       sources: parseSources(message.sources),
       ...(usage ? { usage } : {}),
@@ -308,6 +341,7 @@ function readSessionSummaries(
   clusterId: number,
   currentUserId: number,
   filterUserId: number | null,
+  historySurface: ChatHistorySurface,
 ) {
   const rows = db
     .prepare(
@@ -318,11 +352,13 @@ function readSessionSummaries(
        FROM chat_sessions cs
        JOIN users u ON u.id = cs.user_id
        LEFT JOIN conversations c ON c.id = cs.conversation_id
-       WHERE cs.cluster_id = ?${filterUserId !== null ? " AND cs.user_id = ?" : ""}
+       WHERE cs.cluster_id = ? AND cs.history_surface = ?${filterUserId !== null ? " AND cs.user_id = ?" : ""}
        ORDER BY (c.pinned_at IS NOT NULL) DESC, cs.updated_at DESC, cs.id DESC`,
     )
     .all(
-      ...(filterUserId !== null ? [clusterId, filterUserId] : [clusterId]),
+      ...(filterUserId !== null
+        ? [clusterId, historySurface, filterUserId]
+        : [clusterId, historySurface]),
     ) as Array<
     ChatSessionRow & {
       conversation_row_id: number | null;
@@ -373,7 +409,8 @@ function readSessionSummaries(
     active:
       running.has(row.id) ||
       (row.conversation_row_id !== null &&
-        externalActivity.get(row.conversation_row_id)?.externalAgentActive === true),
+        externalActivity.get(row.conversation_row_id)?.externalAgentActive ===
+          true),
   }));
 }
 
@@ -384,6 +421,7 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const clusterSlug = searchParams.get("clusterSlug")?.trim();
+  const historySurface = chatHistorySurface(searchParams.get("historySurface"));
   if (!clusterSlug) {
     return NextResponse.json(
       { error: "clusterSlug is required" },
@@ -397,6 +435,7 @@ export async function GET(request: Request) {
 
   const isOwner = access.ownerId === userId;
   const includePublicChats =
+    historySurface === "garden_chat" &&
     isOwner &&
     searchParams.get("includePublicChats") === "1" &&
     access.visibility === "public" &&
@@ -415,6 +454,7 @@ export async function GET(request: Request) {
         access.id,
         userId,
         includePublicChats ? null : userId,
+        historySurface,
       ),
     });
   }
@@ -424,6 +464,7 @@ export async function GET(request: Request) {
     userId,
     includePublicChats ? null : userId,
     includePublicChats,
+    historySurface,
   );
   return NextResponse.json({ sessions });
 }
@@ -434,6 +475,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await request.json();
+  const historySurface = chatHistorySurface(body.historySurface);
   const clusterSlug =
     typeof body.clusterSlug === "string" ? body.clusterSlug.trim() : "";
   if (!clusterSlug) {
@@ -454,9 +496,9 @@ export async function POST(request: Request) {
 
   const result = db
     .prepare(
-      "INSERT INTO chat_sessions (cluster_id, user_id, title) VALUES (?, ?, ?)",
+      "INSERT INTO chat_sessions (cluster_id, user_id, title, history_surface) VALUES (?, ?, ?, ?)",
     )
-    .run(access.id, userId, cleanTitle(body.title));
+    .run(access.id, userId, cleanTitle(body.title), historySurface);
 
   ensureConversationForLegacyChatSession(
     Number(result.lastInsertRowid),

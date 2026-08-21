@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiErrorResponse, readJsonBody, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
 import { capabilityForInternalToolRequest } from "@/lib/hermes/tool-service-auth.ts";
+import { humanizeStoredText } from "@/lib/humanizer/auto-server.ts";
 import { tokenAllows, verifyCapabilityToken } from "@/lib/hermes/capability-token.ts";
 import {
   getActiveCapabilityDecision,
@@ -275,7 +276,22 @@ export async function POST(request: Request) {
             ...shared,
             rendererId: requiredText(args.renderer, "renderer", 40),
             mimeType: text(args.mimeType, 160),
-            content: content(args.content),
+            // "Rewrite naturally", when the user has it on as a standing
+            // preference. Markdown only: the rewriter takes prose apart with a
+            // Markdown segmenter, and handing it an HTML or JSON body would be
+            // handing it a document it cannot read. Failure here is silent and
+            // returns the original - a rewrite must never cost somebody their
+            // artifact.
+            content:
+              kind === "markdown"
+                ? (
+                    await humanizeStoredText(
+                      session.user_id,
+                      content(args.content),
+                      "artifact",
+                    )
+                  ).text
+                : content(args.content),
           });
       if (provenance) {
         addArtifactProvenance({

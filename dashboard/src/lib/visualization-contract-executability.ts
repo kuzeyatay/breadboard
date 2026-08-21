@@ -19,6 +19,8 @@ import {
   GENERATED_VISUAL_CAPABILITY_MANIFEST,
   GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
   GENERATED_VISUAL_CAPABILITY_MANIFEST_VERSION,
+  GENERATED_VISUAL_CONTROL_ID_PATTERN,
+  GENERATED_VISUAL_RESERVED_CONTROL_IDS,
 } from "./generated-visual-capabilities.ts";
 import {
   buildVisualizationPlan,
@@ -996,6 +998,7 @@ export function visualContractExecutabilitySystemPrompt(): string {
     "Necessity, requirement, unit identity, teaching-medium policy, and publication policy are immutable. Do not return any of those fields inside a replacement. Code will discard the entire batch if one unit is missing, duplicated, extra, malformed, ungrounded, or invalid; code will never fill, merge, demote, or reinterpret your pedagogy.",
     "Approve only when the interaction goal, learner controls, learner-visible observable, and expected insight form an executable learning activity. The learner must be able to perform the action named by the goal using the declared controls, observe the consequence needed to judge the result, and reach the expected insight from the represented states.",
     "Judge realizability against the exact versioned technicalCapabilities manifest in the request. Approve only when the declared learner sequence can be implemented with those control state transitions, expressions, conditional visibility rules, scene kinds, primitive topology, and hard limits; do not assume hidden state, geometry, widgets, or renderer features absent from that manifest.",
+    `Every learner control id must match ${GENERATED_VISUAL_CONTROL_ID_PATTERN.source}; ${GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")} are runtime expression variables and are forbidden control ids. Reject or replace any contract that violates this policy.`,
     "Check goal-to-control-to-observable executability explicitly. Every condition or case that is decisive for the expected insight must be represented by a declared control state or by explicit observable behavior; a selector that merely changes what is displayed is insufficient when the goal requires a distinct learner decision, comparison, prediction, or evaluation.",
     "For interactionGoal test_prediction, the learner must commit a prediction before the outcome is revealed or evaluated. Require three distinct authored controls in order: an evidence-grounded slider/number/select marked prediction_input, a protocol_action button/toggle marked commit_prediction, then a protocol_action button/toggle marked reveal_outcome or evaluate_prediction. The protocol default must keep the result hidden, and the later observable must retain the selected prediction while showing the result or evaluation.",
     "Use only the canonical evidence supplied with that same unit. Every source-semantic control label and option, observable label, and expected insight must be literally grounded by exact quotes at their anchors. Pure protocol_action controls instead require exactly empty evidence; their model-authored UI labels may express only interaction mechanics and never substantiate a subject claim, observable, or insight. Do not invent subject-matter claims, cases, variables, conditions, or units.",

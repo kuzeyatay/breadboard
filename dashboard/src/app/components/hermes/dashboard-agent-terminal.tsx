@@ -48,12 +48,15 @@ import {
 import { useChatDraft } from "./use-chat-draft";
 import {
   invalidateHermesSessionSummaries,
+  notifyHermesSessionsChanged,
   HERMES_SESSIONS_CHANGED_EVENT,
   loadHermesSessionSummaries,
+  prefetchHermesSessionDetail,
   type HermesSessionSnapshot,
 } from "@/lib/hermes/session-client";
 import TerminalSidebar, {
   CHAT_RAIL_RESIZE,
+  PENDING_CHAT_ROW_ID,
   type TerminalPanel,
   type TerminalSidebarChat,
 } from "./terminal-sidebar";
@@ -224,6 +227,10 @@ import {
   resource2SkillUserMessage,
 } from "@/lib/resource2skill/identity.ts";
 import {
+  matraixUserMessage,
+  taskFromMatraixCommand,
+} from "@/lib/matraix/identity.ts";
+import {
   briefFromOpenMontageCommand,
   openMontageUserMessage,
 } from "@/lib/openmontage/identity.ts";
@@ -235,6 +242,8 @@ import {
   openscienceUserMessage,
   taskFromOpenscienceCommand,
 } from "@/lib/openscience/identity.ts";
+import { maxResearchInvocation } from "@/lib/max-research/identity.ts";
+import { launchMaxResearchTurn } from "./launch-max-research";
 import {
   inboxZeroUserMessage,
   taskFromInboxZeroCommand,
@@ -761,9 +770,11 @@ function RuntimeTerminal({
   const [launchingHyperframesRun, setLaunchingHyperframesRun] = useState(false);
   const [launchingResource2SkillRun, setLaunchingResource2SkillRun] =
     useState(false);
+  const [launchingMatraixRun, setLaunchingMatraixRun] = useState(false);
   const [launchingOpenMontageRun, setLaunchingOpenMontageRun] = useState(false);
   const [launchingOpenworkRun, setLaunchingOpenworkRun] = useState(false);
   const [launchingOpenscienceRun, setLaunchingOpenscienceRun] = useState(false);
+  const [launchingMaxResearchRun, setLaunchingMaxResearchRun] = useState(false);
   const [launchingInboxZeroRun, setLaunchingInboxZeroRun] = useState(false);
   // Covers the hand-off before an individual launcher raises its own flag
   // (health checks and agent selection can take seconds).
@@ -774,9 +785,11 @@ function RuntimeTerminal({
   const cadDispatchingRef = useRef(false);
   const hyperframesDispatchingRef = useRef(false);
   const resource2SkillDispatchingRef = useRef(false);
+  const matraixDispatchingRef = useRef(false);
   const openMontageDispatchingRef = useRef(false);
   const openworkDispatchingRef = useRef(false);
   const openscienceDispatchingRef = useRef(false);
+  const maxResearchDispatchingRef = useRef(false);
   const inboxZeroDispatchingRef = useRef(false);
   const vimaxDispatchingRef = useRef(false);
   const voxDirectorDispatchingRef = useRef(false);
@@ -889,8 +902,16 @@ function RuntimeTerminal({
   // The chat to come back to when the reader leaves temporary mode, so the
   // toggle behaves like a detour rather than a reset.
   const chatBeforeTemporary = useRef<string | null>(null);
+  // The terminal always comes up on a blank chat rather than reopening the one
+  // it was last left in. A conversation with a turn still running is not lost
+  // by this: the run belongs to the server-side pump, and opening the chat from
+  // history reattaches to it mid-flight.
   const sessionCreateOptions = useMemo(
-    () => ({ title: "New chat", temporary: temporaryChat }),
+    () => ({
+      title: "New chat",
+      temporary: temporaryChat,
+      restoreLastConversation: false,
+    }),
     [temporaryChat],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
@@ -900,6 +921,7 @@ function RuntimeTerminal({
   useChatDraft({
     surface: "dashboard_terminal",
     sessionId: session.sessionId,
+    createdSessionId: session.createdSessionId,
     value: input || submittedDraft || "",
     onRestore: setInput,
     enabled: !temporaryChat,
@@ -982,9 +1004,11 @@ function RuntimeTerminal({
     launchingCadRun ||
     launchingHyperframesRun ||
     launchingResource2SkillRun ||
+    launchingMatraixRun ||
     launchingOpenMontageRun ||
     launchingOpenworkRun ||
     launchingOpenscienceRun ||
+    launchingMaxResearchRun ||
     launchingInboxZeroRun ||
     deepResearch.launching ||
     codex.launching ||
@@ -992,6 +1016,11 @@ function RuntimeTerminal({
     ruflo.launching;
   const currentChatActive =
     busy || externalRunLaunching || chatSessionIsActive(null, session.messages);
+  const blankSavedChatSelected =
+    !temporaryChat &&
+    session.sessionId === null &&
+    session.messages.length === 0 &&
+    !currentChatActive;
   const isPublic = scope === "public";
 
   useLayoutEffect(() => {
@@ -4053,6 +4082,102 @@ function RuntimeTerminal({
   );
 
   /**
+   * MatrAIx carries the whole study in the command: what to ask about, and any
+   * cohort flags typed with it. The turn is recorded as soon as the run starts,
+   * because a study of a dozen respondents is a dozen sequential model calls and
+   * the person will not be watching the whole time.
+   */
+  const launchMatraixRun = useCallback(
+    async (brief: string, options: { branchGroupId?: string } = {}) => {
+      if (matraixDispatchingRef.current) return;
+      matraixDispatchingRef.current = true;
+      setLaunchingMatraixRun(true);
+      let clientMessageId = crypto.randomUUID();
+      const userContent = matraixUserMessage(brief);
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+        branchGroupId: options.branchGroupId,
+      });
+      let runStarted = false;
+      try {
+        // The study reads the chat it was launched from, so the conversation is
+        // materialized before it starts. The call is idempotent and the turn
+        // binds to the same conversation either way.
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const response = await fetch("/api/matraix/runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            brief,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+            clientMessageId,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.run?.runId) {
+          throw new Error(
+            typeof data?.message === "string"
+              ? data.message
+              : typeof data?.error === "string"
+                ? data.error
+                : "The MatrAIx study could not start.",
+          );
+        }
+        runStarted = true;
+        await session.appendExternalAgentTurn({
+          clientMessageId,
+          userContent,
+          run: { kind: "matraix", runId: String(data.run.runId), brief },
+          branchGroupId: options.branchGroupId,
+        });
+      } catch (cause) {
+        if (runStarted) {
+          setAttachmentStatus(
+            cause instanceof Error
+              ? cause.message
+              : "The study started, but its chat turn could not be saved.",
+          );
+          return;
+        }
+        const assistantContent = `The MatrAIx study could not start: ${cause instanceof Error ? cause.message : "unknown error"}`;
+        try {
+          await session.appendExternalAgentTurn({
+            clientMessageId,
+            userContent,
+            assistantContent,
+            outcome: "failed",
+            branchGroupId: options.branchGroupId,
+          });
+        } catch (persistenceError) {
+          setAttachmentStatus(
+            persistenceError instanceof Error
+              ? persistenceError.message
+              : "The MatrAIx turn could not be saved.",
+          );
+        }
+      } finally {
+        matraixDispatchingRef.current = false;
+        setLaunchingMatraixRun(false);
+      }
+    },
+    [model, reasoningEffort, session],
+  );
+
+  const routeMatraixCommand = useCallback(
+    (text: string, options: { branchGroupId?: string } = {}): boolean => {
+      const brief = taskFromMatraixCommand(text);
+      if (brief === null) return false;
+      setAttachmentStatus("");
+      if (brief && !matraixDispatchingRef.current) void launchMatraixRun(brief, options);
+      return true;
+    },
+    [launchMatraixRun],
+  );
+
+  /**
    * OpenMontage carries its whole production brief in the command. A production
    * is the longest run in the palette — it plans, generates, edits and renders —
    * so the turn is recorded as soon as the run starts and the card reports the
@@ -4324,6 +4449,65 @@ function RuntimeTerminal({
     [model, reasoningEffort, session],
   );
 
+  /**
+   * Max Research carries its whole question in the message and then runs for
+   * tens of minutes. The turn is therefore recorded the moment the run starts
+   * rather than when it finishes: the card is where the person watches five
+   * agents work, and a chat that showed nothing until the end would hide the
+   * only part of an hour-long run they can act on.
+   */
+  const launchMaxResearchRun = useCallback(
+    async (
+      question: string,
+      options: { branchGroupId?: string; userContent?: string } = {},
+    ) => {
+      if (maxResearchDispatchingRef.current) return;
+      maxResearchDispatchingRef.current = true;
+      setLaunchingMaxResearchRun(true);
+      try {
+        await launchMaxResearchTurn({
+          session,
+          question,
+          model,
+          reasoningEffort,
+          ...(options.branchGroupId ? { branchGroupId: options.branchGroupId } : {}),
+          ...(options.userContent ? { userContent: options.userContent } : {}),
+          onStatus: setAttachmentStatus,
+        });
+      } finally {
+        maxResearchDispatchingRef.current = false;
+        setLaunchingMaxResearchRun(false);
+      }
+    },
+    [model, reasoningEffort, session],
+  );
+
+  /**
+   * Both ways in, and the plain-language one is honoured here rather than being
+   * left to Super Agent. A person who typed "max research" is asking to watch
+   * five agents work, not to be told afterwards that something happened.
+   */
+  const routeMaxResearchCommand = useCallback(
+    (text: string, options: { branchGroupId?: string } = {}): boolean => {
+      // Under Super Agent the model owns the turn and reaches this same agent
+      // through `agent_launch`, so plain language goes back to it rather than
+      // opening a second, visible run alongside the one it is running.
+      const invocation = maxResearchInvocation(text, isSuperAgentEnabled());
+      if (!invocation) return false;
+      setAttachmentStatus("");
+      if (invocation.question && !maxResearchDispatchingRef.current) {
+        void launchMaxResearchRun(invocation.question, {
+          ...options,
+          // Typed as a slash command, the canonical form *is* what they wrote.
+          // Typed in their own words, those words are what the transcript keeps
+          // — the same rule Deep Research follows.
+          ...(invocation.selectAgent ? {} : { userContent: text }),
+        });
+      }
+      return true;
+    },
+    [launchMaxResearchRun],
+  );
   const routeOpenscienceCommand = useCallback(
     (text: string, options: { branchGroupId?: string } = {}): boolean => {
       const task = taskFromOpenscienceCommand(text);
@@ -5389,9 +5573,11 @@ function RuntimeTerminal({
         routeParametricCadCommand(text) ||
         routeHyperframesCommand(text) ||
         routeResource2SkillCommand(text) ||
+        routeMatraixCommand(text) ||
         routeOpenMontageCommand(text) ||
         routeOpenworkCommand(text) ||
         routeOpenscienceCommand(text) ||
+        routeMaxResearchCommand(text) ||
         routeInboxZeroCommand(text) ||
         routeVimaxCommand(text) ||
       routeVoxDirectorCommand(text) ||
@@ -5681,11 +5867,13 @@ function RuntimeTerminal({
       model,
       reasoningEffort,
       routeDeepResearchCommand,
+      routeMaxResearchCommand,
       routeSocialsManagerCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
+      routeMatraixCommand,
       routeOpenMontageCommand,
       routeOpenworkCommand,
       routeOpenscienceCommand,
@@ -5817,6 +6005,13 @@ function RuntimeTerminal({
           // into it and have their next message routed into Deep Research.
           await deepResearch.launch(request.brief);
           return;
+        case "max-research":
+          // Same reasoning as Deep Research: the launcher needs nothing from
+          // the composer chip, and selecting one would strand
+          // `/agents:max-research` in the composer for the length of an
+          // hour-long run.
+          await launchMaxResearchRun(request.brief);
+          return;
         case "agent-browser": {
           const selected = agentBrowserAgent ?? (await selectAgentBrowser());
           if (selected) await launchAgentBrowserRun(request.brief, selected);
@@ -5893,6 +6088,9 @@ function RuntimeTerminal({
           return;
         case "resource2skill":
           await launchResource2SkillRun(request.brief);
+          return;
+        case "matraix":
+          await launchMatraixRun(request.brief);
           return;
         case "openmontage":
           await launchOpenMontageRun(request.brief);
@@ -6115,6 +6313,7 @@ function RuntimeTerminal({
         routeParametricCadCommand(trimmed) ||
         routeHyperframesCommand(trimmed) ||
         routeResource2SkillCommand(trimmed) ||
+        routeMatraixCommand(trimmed) ||
         routeOpenMontageCommand(trimmed) ||
         routeOpenworkCommand(trimmed) ||
         routeOpenscienceCommand(trimmed) ||
@@ -6144,6 +6343,7 @@ function RuntimeTerminal({
       routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
+      routeMatraixCommand,
       routeOpenMontageCommand,
       routeOpenworkCommand,
       routeOpenscienceCommand,
@@ -6235,6 +6435,7 @@ function RuntimeTerminal({
         routeParametricCadCommand(text, { branchGroupId }) ||
         routeHyperframesCommand(text, { branchGroupId }) ||
         routeResource2SkillCommand(text, { branchGroupId }) ||
+        routeMatraixCommand(text, { branchGroupId }) ||
         routeOpenMontageCommand(text, { branchGroupId }) ||
         routeOpenworkCommand(text, { branchGroupId }) ||
         routeOpenscienceCommand(text, { branchGroupId }) ||
@@ -6269,6 +6470,7 @@ function RuntimeTerminal({
       routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
+      routeMatraixCommand,
       routeOpenMontageCommand,
       routeOpenworkCommand,
       routeOpenscienceCommand,
@@ -6352,6 +6554,7 @@ function RuntimeTerminal({
           routeParametricCadCommand(previousUser.content, { branchGroupId }) ||
           routeHyperframesCommand(previousUser.content, { branchGroupId }) ||
           routeResource2SkillCommand(previousUser.content, { branchGroupId }) ||
+          routeMatraixCommand(previousUser.content, { branchGroupId }) ||
           routeOpenMontageCommand(previousUser.content, { branchGroupId }) ||
           routeOpenworkCommand(previousUser.content, { branchGroupId }) ||
           routeOpenscienceCommand(previousUser.content, { branchGroupId }) ||
@@ -6362,6 +6565,9 @@ function RuntimeTerminal({
           routeLegalCommand(previousUser.content, [], { branchGroupId }) ||
           routeWardrobeCommand(previousUser.content, [], { branchGroupId })
         ) {
+          return;
+        }
+        if (routeMaxResearchCommand(previousUser.content, { branchGroupId })) {
           return;
         }
         if (routeDeepResearchCommand(previousUser.content, { branchGroupId })) {
@@ -6396,11 +6602,13 @@ function RuntimeTerminal({
       model,
       reasoningEffort,
       routeDeepResearchCommand,
+      routeMaxResearchCommand,
       routeSocialsManagerCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
+      routeMatraixCommand,
       routeOpenMontageCommand,
       routeOpenworkCommand,
       routeOpenscienceCommand,
@@ -6442,12 +6650,13 @@ function RuntimeTerminal({
     setSubmittedDraft(null);
     session.reset();
     setInput("");
-    // Asking for a new chat means an empty box, so the draft left in the
-    // unstarted-chat bucket goes with it rather than reappearing here.
-    clearChatDraft(
-      window.localStorage,
-      chatDraftKey("dashboard_terminal", null),
-    );
+    // The unstarted chat's draft is deliberately left alone. It is only ever
+    // written by someone typing into a blank composer and never sending, and
+    // since a send clears it explicitly, anything still in it is an unsent
+    // message — the one kind of text nothing else has a copy of. Clearing it
+    // here used to be harmless because an unsent draft was carried onto
+    // whichever chat opened next; now that it stays where it was written,
+    // this was the only thing that could destroy it.
     setChatAttachments([]);
     setAttachmentStatus("");
   }
@@ -6520,6 +6729,10 @@ function RuntimeTerminal({
    * new chat from inside a temporary one is how you leave.
    */
   function startNewSavedChat() {
+    // New chat is a destination, not a reset command. Repeating it while the
+    // untouched destination is already selected used to detach state a second
+    // time and could make a finishing background chat look newly unread.
+    if (blankSavedChatSelected) return;
     chatBeforeTemporary.current = null;
     setTemporaryChat(false);
     startNewChat();
@@ -6529,6 +6742,12 @@ function RuntimeTerminal({
   // and any agent run it still has going before it removes the rows. So this no
   // longer refuses while a response is streaming — that was a rule about our
   // bookkeeping, and the confirmation says what will happen instead.
+  //
+  // All that stopping is round trips of its own, so the delete is optimistic:
+  // the row leaves on the click and the request finishes behind it. The epoch
+  // bump drops polls already in flight, and deleteChatSession hides the id from
+  // the ones that start while it works, so a pre-delete snapshot cannot ghost
+  // the chat back into the rail. Only a refusal brings the row back.
   async function deleteHistorySession(item: TerminalSidebarChat) {
     const confirmed = await confirm({
       title: "Delete this chat?",
@@ -6538,26 +6757,34 @@ function RuntimeTerminal({
     });
     if (!confirmed) return;
     setHistoryError(null);
+    historyEpoch.current += 1;
+    setHistory((current) => current.filter((entry) => entry.id !== item.id));
+    // The open chat is on its way out; fall back to an empty one.
+    if (item.id === session.sessionId) startNewChat();
     const result = await deleteChatSession(item.id);
+    historyEpoch.current += 1;
     if (!result.deleted) {
       setHistoryError(result.error ?? "This chat could not be deleted.");
+      // The chat is still on the server, so ask for the list again rather than
+      // guessing where its row belonged. The reader stays in the blank chat
+      // they were moved to: reopening the survivor over whatever they have
+      // since typed would cost more than the click of opening it themselves.
+      notifyHermesSessionsChanged("dashboard_terminal");
       return;
     }
-    // The server has committed; drop polls still in flight so a pre-delete
-    // snapshot cannot ghost the chat back into the rail for a tick.
-    historyEpoch.current += 1;
     invalidateHermesSessionSummaries("dashboard_terminal");
-    setHistory((current) => current.filter((entry) => entry.id !== item.id));
+    // Local traces go only once the chat is really gone — a failed delete
+    // would otherwise take the unsent draft with it.
     forgetUnreadChats([item.id]);
     forgetChatDrafts(window.localStorage, "dashboard_terminal", [item.id]);
-    // The open chat no longer exists; fall back to an empty one.
-    if (item.id === session.sessionId) startNewChat();
   }
 
-  // Bulk delete from the rail's Recents menu. Deletes run one at a time: the
-  // route stops each chat's live work and then removes the conversation and its
-  // runtime sessions in one transaction, so a partial result is still possible
-  // and has to be reported rather than assumed away.
+  // Bulk delete from the rail's Recents menu. Every row leaves at once and the
+  // requests run behind them one at a time: the route stops each chat's live
+  // work and then removes the conversation and its runtime sessions in one
+  // transaction, so a partial result is still possible and has to be reported
+  // rather than assumed away. Ten chats therefore cost one click rather than
+  // ten waits — the rail is settled long before the last request lands.
   async function deleteHistorySessions(items: TerminalSidebarChat[]) {
     if (items.length === 0) return;
     const single = items.length === 1;
@@ -6571,6 +6798,11 @@ function RuntimeTerminal({
     });
     if (!confirmed) return;
     setHistoryError(null);
+    const targets = new Set(items.map((item) => item.id));
+    historyEpoch.current += 1;
+    setHistory((current) => current.filter((entry) => !targets.has(entry.id)));
+    // The open chat may be among them; fall back to an empty one.
+    if (session.sessionId && targets.has(session.sessionId)) startNewChat();
     const deleted = new Set<string>();
     let firstError: string | null = null;
     for (const item of items) {
@@ -6578,18 +6810,11 @@ function RuntimeTerminal({
       if (result.deleted) deleted.add(item.id);
       else firstError ??= result.error ?? "This chat could not be deleted.";
     }
+    historyEpoch.current += 1;
+    invalidateHermesSessionSummaries("dashboard_terminal");
     if (deleted.size > 0) {
-      // As in the single delete: polls that overlapped the removals may still
-      // carry the deleted chats and would ghost them back for a tick.
-      historyEpoch.current += 1;
-      invalidateHermesSessionSummaries("dashboard_terminal");
-      setHistory((current) =>
-        current.filter((entry) => !deleted.has(entry.id)),
-      );
       forgetUnreadChats(deleted);
       forgetChatDrafts(window.localStorage, "dashboard_terminal", deleted);
-      // The open chat may have been one of them; fall back to an empty one.
-      if (session.sessionId && deleted.has(session.sessionId)) startNewChat();
     }
     const failed = items.length - deleted.size;
     if (failed > 0) {
@@ -6598,6 +6823,9 @@ function RuntimeTerminal({
           ? firstError
           : `${failed} of ${items.length} chats could not be deleted.`,
       );
+      // Some of these chats survived. Reload rather than reinsert, so the ones
+      // that are still there come back in their real order.
+      notifyHermesSessionsChanged("dashboard_terminal");
     }
   }
 
@@ -6611,6 +6839,36 @@ function RuntimeTerminal({
     highlight: item.highlight,
     unread: unreadChats.has(item.id),
   }));
+  // A blank conversation has no durable id until its first turn is sent. Put
+  // its row in Recents from the first typed character, so the rail responds to
+  // the draft immediately instead of waiting for session creation and a
+  // history refresh. It adopts the real id during send and stays put until the
+  // durable summary replaces it.
+  const pendingChatId = !temporaryChat
+    ? session.sessionId === null &&
+      (input || submittedDraft || "").trim().length > 0
+      ? PENDING_CHAT_ROW_ID
+      : session.sessionId !== null &&
+          session.createdSessionId === session.sessionId &&
+          !history.some((item) => item.id === session.sessionId)
+        ? session.sessionId
+        : null
+    : null;
+  const railChats: TerminalSidebarChat[] = pendingChatId !== null
+    ? [
+        {
+          id: pendingChatId,
+          title: "New chat",
+          updatedAt: "",
+          active: false,
+          pinned: false,
+          pending: true,
+          highlight: null,
+          unread: false,
+        },
+        ...sidebarChats,
+      ]
+    : sidebarChats;
   // The rollup the dock bar carries. A chat still running is not counted: the
   // dot says something is waiting to be read, not that something is happening.
   const unreadCount = sidebarChats.filter(
@@ -7164,15 +7422,28 @@ function RuntimeTerminal({
               collapsed={rail.collapsed}
               onToggleCollapsed={rail.toggle}
               resize={rail}
-              chats={sidebarChats}
+              chats={railChats}
               loading={historyLoading}
               error={historyError}
-              activeChatId={session.sessionId}
+              activeChatId={pendingChatId ?? session.sessionId}
               openPanel={sidePanel}
               onNewChat={startNewSavedChat}
+              newChatDisabled={blankSavedChatSelected}
               onTogglePanel={togglePanel}
               onOpenSearch={() => setSearchOpen(true)}
-              onOpenChat={(chat) => openHistorySession(chat.id)}
+              onPrefetchChat={(chat) => {
+                void prefetchHermesSessionDetail("dashboard_terminal", chat.id).catch(
+                  () => undefined,
+                );
+              }}
+              onOpenChat={(chat) => {
+                if (chat.pending) {
+                  setSidePanel(null);
+                  composerTextareaRef.current?.focus();
+                  return;
+                }
+                openHistorySession(chat.id);
+              }}
               onRenameChat={(chat, title) =>
                 void patchHistorySession(
                   chat,
@@ -7322,6 +7593,7 @@ function RuntimeTerminal({
                 onRunWorkflow={runWorkflowAutomation}
                 onAskSelection={askSelection}
                 onSteer={steer}
+                steerableRun={Boolean(session.activeRunId) && !runtimeUnavailable}
                 onSendQueued={sendQueued}
                 onEditMessage={editMessage}
                 onDeleteMessage={session.deleteMessage}
@@ -7392,9 +7664,11 @@ function RuntimeTerminal({
                 onSelectParametricCad={() => {}}
                 onSelectHyperframes={() => {}}
                 onSelectResource2Skill={() => {}}
+                onSelectMatraix={() => {}}
                 onSelectOpenMontage={() => {}}
                 onSelectOpenwork={() => {}}
                 onSelectOpenscience={() => {}}
+                onSelectMaxResearch={() => {}}
                 onSelectInboxZero={() => {}}
                 onSelectVimax={() => {}}
                 onSelectVoxDirector={() => {}}

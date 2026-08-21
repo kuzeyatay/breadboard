@@ -4,6 +4,7 @@ import {
 } from "../chat-attachments.ts";
 import { resolveCommandMessage } from "../hermes/commands.ts";
 import { prepareDocumentContext } from "../document-skills/turn.ts";
+import { stageEditableDocumentAttachments } from "../document-attachments-server.ts";
 import { prepareTurn, mergeSelectedTools } from "../hermes/dispatch-core.ts";
 import { adjudicateWebGrounding } from "../hermes/web-grounding-decider.ts";
 import {
@@ -49,9 +50,12 @@ import {
   failAssistantMessage,
   updateConversation,
   ConversationStoreError,
+  presentConversationMessage,
   type ConversationRow,
   type ConversationMessageRow,
 } from "./store.ts";
+import { withDelegatedResearchSources } from "./delegated-research-sources.ts";
+import type { ExternalAgentCall } from "../hermes/evidence.ts";
 import { generateAndApplyConversationTitle } from "./title-service.ts";
 import {
   composeMemoryContext,
@@ -97,6 +101,7 @@ import {
   githubExplorerCommandText,
   GITHUB_EXPLORER_SKILL,
 } from "../hermes/github-explorer-intent.ts";
+import { humanizeCommandText } from "../hermes/humanize-intent.ts";
 import {
   hasReconstructableAttachment,
   hasReconstructableImages,
@@ -141,6 +146,8 @@ import {
   classifyResearch,
   researchPipelineApplies,
 } from "../research/classify.ts";
+import { researchPipelineRule } from "../research/directive.ts";
+import { clearResearchState } from "../research/store.ts";
 import {
   chatTextSelectionQuestionPrompt,
   type ChatTextSelectionReference,
@@ -207,12 +214,20 @@ export interface StartConversationTurnInput {
    */
   superAgent?: boolean;
   /**
-   * The user had Direct mode on for this message, so the turn is written in the
+   * The user had Concise on for this message, so the turn is written in the
    * underlying `i-have-adhd` output style. Shape only: it selects no skill, grants no
    * capability, and never reaches the capability decision. Per-message, never
    * stored, exactly like Super agent above.
    */
   adhdMode?: boolean;
+  /**
+   * Personalize, as it stood when the message was sent. Off withholds the
+   * user's name, their durable memories and their synthesized profile from
+   * this turn, so a general question gets a general answer. Read-side only:
+   * memory still saves. Absent means on, which is what an older client that
+   * does not send the field should get.
+   */
+  personalize?: boolean;
   /**
    * The user switched Goal Mode on for this turn. Breadboard creates or resumes
    * its per-conversation Goal-compatible state before dispatch.
@@ -404,6 +419,7 @@ export async function startConversationTurn(
     query: input.text,
     activeGardenId: session.row.cluster_id,
     projectScopeId: "breadboard",
+    personalize: input.personalize !== false,
   });
   const currentConversationMessages =
     input.branchHistory ??
@@ -445,6 +461,30 @@ export async function startConversationTurn(
     });
   }
   const filesystemGrants = listFilesystemGrants(input.conversation.user_id);
+  // Whether the tracked research pipeline should be on the turn at all, read
+  // from the request rather than from a switch.
+  //
+  // It used to be Super agent only, which made a protocol for covering a broad
+  // question available exactly when the user had already decided to spend on a
+  // broad turn — and absent when they simply asked a research question. The
+  // gate that keeps an ordinary turn cheap is `researchPipelineApplies`, not
+  // the switch: it wants a non-trivial intent and a budget worth more than
+  // eight searches before it says yes.
+  const requestResearchPlan =
+    input.internalAgentContinuation === true
+      ? null
+      : classifyResearch({ question: input.text });
+  const researchToolsWarranted =
+    requestResearchPlan !== null && researchPipelineApplies(requestResearchPlan);
+  // A branched turn is this question being asked again, so it starts from an
+  // empty ledger. The research session is keyed by conversation and lives in
+  // process, so without this a regenerated answer inherits the previous
+  // attempt's coverage, its spent search budget, and its stop decision — and
+  // `research_status` could tell it to stop writing before it had searched
+  // anything. Re-rolling an answer has to mean re-rolling the work behind it.
+  if (input.branchHistory !== undefined) {
+    clearResearchState(input.conversation.id);
+  }
   let prepared = prepareTurn({
     request: input.text,
     priorRequests,
@@ -459,6 +499,7 @@ export async function startConversationTurn(
     // capability boundary immediately instead of waiting five minutes.
     interactiveApprovals: !context.deliveryChannel,
     superAgent: input.superAgent === true,
+    researchPipeline: researchToolsWarranted,
   });
   const missingFilesystemTarget = prepared.pendingPermissions.some(
     (permission) =>
@@ -544,6 +585,7 @@ export async function startConversationTurn(
           ],
           interactiveApprovals: !context.deliveryChannel,
           superAgent: input.superAgent === true,
+          researchPipeline: researchToolsWarranted,
         });
         if (!regranted.blocked) {
           prepared = regranted;
@@ -680,11 +722,20 @@ export async function startConversationTurn(
     authenticated: true,
     priorMessages: currentConversationMessages,
   });
+  // After every skill that claims a turn on its subject, because "humanize the
+  // summary of this video" is Watch's turn with a rewrite at the end of it, and
+  // before messaging for the same reason messaging is last.
+  const humanizeSelection = humanizeCommandText({
+    text: githubExplorerSelection.text,
+    surface: input.surface,
+    authenticated: true,
+    priorMessages: currentConversationMessages,
+  });
   // Last in the chain on purpose: "send this to my WhatsApp" is an errand
   // attached to whatever the turn was already about, so any skill that claimed
   // the turn on its own wording keeps it.
   const messagingSelection = messagingCommandText({
-    text: githubExplorerSelection.text,
+    text: humanizeSelection.text,
     surface: input.surface,
     authenticated: true,
     priorMessages: currentConversationMessages,
@@ -711,7 +762,8 @@ export async function startConversationTurn(
       !imageTo3dSelection.automatic &&
       !audioSelection.automatic &&
       !diagramSelection.automatic &&
-      !githubExplorerSelection.automatic
+      !githubExplorerSelection.automatic &&
+      !humanizeSelection.automatic
     ) {
       throw error;
     }
@@ -823,10 +875,17 @@ export async function startConversationTurn(
   // could not talk itself out of — the same discipline the map and web
   // grounding gates already use. Cheap: a pure function over the request text,
   // no model call and no network. See lib/research/classify.ts.
-  const researchPlan =
-    superAgent && !input.internalAgentContinuation
+  const researchPlan = input.internalAgentContinuation
+    ? null
+    : superAgent
+      // Under Super agent the plan is re-read from the resolved text, which is
+      // what the skill selections above may have rewritten the request into.
       ? classifyResearch({ question: resolved.userText || input.text })
-      : null;
+      // Otherwise it is the same plan the tool gate was decided from. Reusing
+      // the object rather than re-classifying is what guarantees the directive
+      // and the tools cannot disagree — a turn told to run the protocol
+      // without the tools to run it would simply stall.
+      : requestResearchPlan;
   const researchPipeline =
     researchPlan && researchPipelineApplies(researchPlan) ? researchPlan : null;
   if (superAgentInventory) {
@@ -1032,6 +1091,11 @@ export async function startConversationTurn(
   // Documents big enough to crowd out the conversation are distilled into
   // book-to-skill skills first, and enter the turn as a structured index the
   // model reads on demand. Anything smaller keeps travelling verbatim.
+  const editableDocuments = stageEditableDocumentAttachments({
+    userId: input.conversation.user_id,
+    attachments: input.attachments,
+    workspace: session.activeDirectory,
+  });
   const documents = await prepareDocumentContext({
     userId: input.conversation.user_id,
     attachments: input.attachments,
@@ -1131,7 +1195,13 @@ export async function startConversationTurn(
     additional: [
       superAgentInventory
         ? renderSuperAgentDirective(superAgentInventory, researchPipeline)
-        : "",
+        : // Without the inventory there is no super-agent directive to carry
+          // the protocol, so it ships on its own. The tools are open either
+          // way; a turn given them and no contract would use them as three
+          // ordinary tools and lose the one guarantee they exist for.
+          researchPipeline
+          ? researchPipelineRule(researchPipeline)
+          : "",
       composeMemoryContext(
         memory,
         input.branchHistory
@@ -1176,6 +1246,7 @@ export async function startConversationTurn(
           )
         : "",
       documents.context,
+      editableDocuments.context,
       connectedApps.systemContext,
       authorizedGardenContext(input.conversation.user_id, session.row.garden_id),
       renderSurfaceContext(input.surface, context),
@@ -1304,9 +1375,15 @@ export async function startConversationTurn(
   // the agent whose work it is entirely built from. Read before the new run
   // begins, so `getLatestRuntimeRun` is still the turn that did the delegating.
   const carriedDelegations = input.internalAgentContinuation
-    ? externalAgentCallsForRun(
-        getLatestRuntimeRun(session.row.id)?.id,
-      ).map((call) => ({ ...call, carried: true }))
+    ? await withDelegatedResearchSources(
+        externalAgentCallsForRun(
+          getLatestRuntimeRun(session.row.id)?.id,
+        ).map((call) => ({ ...call, carried: true })),
+        {
+          userId: input.conversation.user_id,
+          messages: memory.recentMessages,
+        },
+      )
     : [];
   const run = beginRuntimeRun({
     runtimeSessionId: session.row.id,

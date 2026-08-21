@@ -51,6 +51,12 @@ export interface TerminalSidebarChat {
   updatedAt: string;
   active: boolean;
   pinned: boolean;
+  /**
+   * A blank chat with a composer draft that is not in the history feed yet.
+   * It belongs in the rail immediately, but cannot be renamed, pinned, or
+   * included in bulk actions until its durable summary arrives.
+   */
+  pending?: boolean;
   /** A palette slug from lib/conversations/highlights, or null for unmarked. */
   highlight: string | null;
   /** Finished while the user was in another chat, and still unread. */
@@ -67,6 +73,8 @@ interface Props {
   activeChatId: string | null;
   openPanel: TerminalPanel | null;
   onNewChat: () => void;
+  /** The selected view is already an untouched ordinary new chat. */
+  newChatDisabled?: boolean;
   onTogglePanel: (panel: TerminalPanel) => void;
   /**
    * Which panel buttons the rail offers, in `TERMINAL_PANELS` order. Defaults to
@@ -76,6 +84,8 @@ interface Props {
    */
   panels?: readonly TerminalPanel[];
   onOpenSearch: () => void;
+  /** Warm the transcript while a row shows intent, before it is opened. */
+  onPrefetchChat?: (chat: TerminalSidebarChat) => void;
   onOpenChat: (chat: TerminalSidebarChat) => void;
   onRenameChat: (chat: TerminalSidebarChat, title: string) => void;
   onTogglePin: (chat: TerminalSidebarChat) => void;
@@ -114,7 +124,48 @@ interface Props {
 }
 
 const SECTION_STATE_KEY = "breadboard:terminal-sidebar:sections";
+export const PENDING_CHAT_ROW_ID = "pending:new-chat";
 const PLACEHOLDER_CHAT_TITLES = new Set(["New chat", "Assistant conversation"]);
+
+/**
+ * A first-message rename plays as two moves rather than one: the placeholder is
+ * unwritten a character at a time, then the generated name is written in its
+ * place. `erasingTitle` is the outgoing name, kept only long enough to be
+ * deleted on screen.
+ */
+type TitleTransition = {
+  seenTitle: string;
+  phase: "idle" | "erasing" | "typing";
+  erasingTitle: string;
+};
+
+const TITLE_PHASE_ATTRIBUTE: Record<TitleTransition["phase"], string | undefined> = {
+  idle: undefined,
+  erasing: "erase",
+  typing: "type",
+};
+
+/** Deleting reads faster than writing, the way a hand backspaces a word. */
+const TITLE_ERASE_MS_PER_CHARACTER = 34;
+const TITLE_TYPE_MS_PER_CHARACTER = 46;
+
+/** Long names would otherwise hold the rail hostage; short ones would blink. */
+function titleAnimationMs(text: string, perCharacter: number, min: number, max: number): number {
+  return Math.round(Math.min(max, Math.max(min, Math.max(1, text.length) * perCharacter)));
+}
+
+function titleEraseMs(text: string): number {
+  return titleAnimationMs(text, TITLE_ERASE_MS_PER_CHARACTER, 320, 700);
+}
+
+function titleTypeMs(text: string): number {
+  return titleAnimationMs(text, TITLE_TYPE_MS_PER_CHARACTER, 520, 1300);
+}
+
+function prefersReducedTitleMotion(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
 
 export function formatChatTime(value: string): string {
   const date = new Date(value.includes("T") ? value : `${value}Z`);
@@ -318,6 +369,7 @@ function NavButton({
   icon,
   active = false,
   compact = false,
+  disabled = false,
   onClick,
 }: {
   label: string;
@@ -325,21 +377,24 @@ function NavButton({
   active?: boolean;
   /** Icon-only, for the collapsed rail. The label stays as the accessible name. */
   compact?: boolean;
+  disabled?: boolean;
   onClick?: () => void;
 }) {
   // Flat list items, not cards: a column of raised controls reads as separate
   // objects and swamps the chat list underneath it.
-  const className = compact
-    ? `flex h-9 w-9 items-center justify-center rounded-lg transition ${
-        active
-          ? "bg-[var(--paper-strong)] text-[var(--ink-heading)]"
-          : "text-[var(--ink)] hover:bg-[var(--paper-strong)]"
-      }`
-    : `flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition ${
-        active
-          ? "bg-[var(--paper-strong)] font-medium text-[var(--ink-heading)]"
-          : "text-[var(--ink)] hover:bg-[var(--paper-strong)]"
-      }`;
+  const className = `${
+    compact
+      ? `flex h-9 w-9 items-center justify-center rounded-lg transition ${
+          active
+            ? "bg-[var(--paper-strong)] text-[var(--ink-heading)]"
+            : "text-[var(--ink)] hover:bg-[var(--paper-strong)]"
+        }`
+      : `flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition ${
+          active
+            ? "bg-[var(--paper-strong)] font-medium text-[var(--ink-heading)]"
+            : "text-[var(--ink)] hover:bg-[var(--paper-strong)]"
+        }`
+  } ${disabled ? "cursor-not-allowed opacity-45" : ""}`;
   const content = (
     <>
       <span
@@ -355,6 +410,7 @@ function NavButton({
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       aria-pressed={active}
       // Collapsed, the icon is the whole button, so the name has to be said out
       // loud — to the screen reader and, on hover, to the eye.
@@ -408,6 +464,7 @@ function ChatRow({
   mode = "idle",
   checked = false,
   onPick,
+  onPrefetch,
   onOpenMenu,
   onCloseMenu,
   onOpen,
@@ -423,6 +480,7 @@ function ChatRow({
   mode?: RailMode;
   checked?: boolean;
   onPick?: () => void;
+  onPrefetch?: () => void;
   onOpenMenu: () => void;
   onCloseMenu: () => void;
   onOpen: () => void;
@@ -436,27 +494,42 @@ function ChatRow({
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(chat.title);
-  const [titleTransition, setTitleTransition] = useState({
+  const [titleTransition, setTitleTransition] = useState<TitleTransition>({
     seenTitle: chat.title,
-    typing: false,
+    phase: "idle",
+    erasingTitle: chat.title,
   });
   // Prop-derived state is adjusted during render so the generated title's
   // first painted frame is already clipped; an effect would briefly flash the
   // complete name before beginning the typing reveal.
   if (titleTransition.seenTitle !== chat.title) {
+    const renamed =
+      PLACEHOLDER_CHAT_TITLES.has(titleTransition.seenTitle) &&
+      !PLACEHOLDER_CHAT_TITLES.has(chat.title);
     setTitleTransition({
       seenTitle: chat.title,
-      typing:
-        PLACEHOLDER_CHAT_TITLES.has(titleTransition.seenTitle) &&
-        !PLACEHOLDER_CHAT_TITLES.has(chat.title),
+      // The placeholder is unwritten before the real name is written, so the
+      // rename reads as one continuous edit. Reduced motion has no travelling
+      // clipping edge to unwind, so it goes straight to the fade.
+      phase: renamed ? (prefersReducedTitleMotion() ? "typing" : "erasing") : "idle",
+      erasingTitle: titleTransition.seenTitle,
     });
   }
+  // Erasing still shows the outgoing placeholder; only afterwards does the row
+  // start writing the name it was renamed to.
+  const transitionTitle =
+    titleTransition.phase === "erasing" ? titleTransition.erasingTitle : chat.title;
   // Measured when the menu is opened: the rail scrolls, so the menu is placed
   // against the viewport rather than inside the row.
   const [menuPosition, setMenuPosition] = useState<MenuPosition>({ top: 0, left: 0 });
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const titleRef = useRef<HTMLSpanElement>(null);
   const marquee = useTitleMarquee(titleRef);
+
+  function showIntent() {
+    marquee.start();
+    if (mode === "idle" && !chat.pending) onPrefetch?.();
+  }
 
   // Reported through an effect rather than the handlers so every way out of
   // renaming — commit, Escape, or the row unmounting under a collapsed
@@ -541,14 +614,19 @@ function ChatRow({
       <button
         type="button"
         onClick={mode === "idle" ? onOpen : () => onPick?.()}
-        onMouseEnter={marquee.start}
+        onMouseEnter={showIntent}
         onMouseLeave={marquee.stop}
-        onFocus={marquee.start}
+        onFocus={showIntent}
         onBlur={marquee.stop}
+        onPointerDown={() => {
+          if (mode === "idle" && !chat.pending) onPrefetch?.();
+        }}
         title={
           mode === "highlighting"
             ? `Highlight ${chat.title}`
-            : `${chat.title} · ${formatChatTime(chat.updatedAt)}`
+            : chat.pending
+              ? chat.title
+              : `${chat.title} · ${formatChatTime(chat.updatedAt)}`
         }
         className="min-w-0 flex-1 rounded-lg px-2.5 py-[7px] text-left"
       >
@@ -557,26 +635,32 @@ function ChatRow({
             ref={titleRef}
             className="bb-chat-marquee-text"
             data-marquee={marquee.running ? "run" : undefined}
-            data-title-renaming={titleTransition.typing ? "true" : undefined}
+            data-title-renaming={TITLE_PHASE_ATTRIBUTE[titleTransition.phase]}
             onAnimationEnd={(event) => {
-              if (
+              if (event.animationName === "bb-chat-title-erase") {
+                setTitleTransition((current) =>
+                  current.phase === "erasing" ? { ...current, phase: "typing" } : current,
+                );
+              } else if (
                 event.animationName === "bb-chat-title-type" ||
                 event.animationName === "bb-chat-title-fade"
               ) {
                 setTitleTransition((current) => ({
                   ...current,
-                  typing: false,
+                  phase: "idle",
                 }));
               }
             }}
             style={
               {
                 ...marquee.style,
-                "--bb-title-character-count": Math.max(1, chat.title.length),
+                "--bb-title-character-count": Math.max(1, transitionTitle.length),
+                "--bb-title-erase-duration": `${titleEraseMs(titleTransition.erasingTitle)}ms`,
+                "--bb-title-type-duration": `${titleTypeMs(chat.title)}ms`,
               } as CSSProperties
             }
           >
-            {chat.title}
+            {transitionTitle}
           </span>
         </span>
       </button>
@@ -587,52 +671,54 @@ function ChatRow({
       ) : chat.unread ? (
         <UnreadChatDot label={`${chat.title} finished — unread`} className="mr-2 h-2 w-2" />
       ) : null}
-      <span
-        className={`mr-1 shrink-0 items-center gap-0.5 ${
-          mode !== "idle"
-            ? "hidden"
-            : menuOpen
-              ? "flex"
-              : "hidden group-hover:flex group-focus-within:flex"
-        }`}
-      >
-        <button
-          type="button"
-          onClick={onTogglePin}
-          title={chat.pinned ? "Unpin chat" : "Pin chat"}
-          aria-label={chat.pinned ? `Unpin ${chat.title}` : `Pin ${chat.title}`}
-          className={`rounded-md p-1 transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] ${
-            chat.pinned ? "text-[var(--botanical)]" : "text-[var(--ink-muted)]"
+      {!chat.pending ? (
+        <span
+          className={`mr-1 shrink-0 items-center gap-0.5 ${
+            mode !== "idle"
+              ? "hidden"
+              : menuOpen
+                ? "flex"
+                : "hidden group-hover:flex group-focus-within:flex"
           }`}
         >
-          <PinIcon filled={chat.pinned} />
-        </button>
-        <button
-          ref={menuButtonRef}
-          type="button"
-          data-row-menu-button
-          onClick={() => {
-            if (menuOpen) {
-              onCloseMenu();
-              return;
-            }
-            const rect = menuButtonRef.current?.getBoundingClientRect();
-            if (rect) {
-              setMenuPosition(
-                menuPositionFor(rect, { width: window.innerWidth, height: window.innerHeight }),
-              );
-            }
-            onOpenMenu();
-          }}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          title="More actions"
-          aria-label={`More actions for ${chat.title}`}
-          className="rounded-md p-1 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
-        >
-          <MoreIcon />
-        </button>
-      </span>
+          <button
+            type="button"
+            onClick={onTogglePin}
+            title={chat.pinned ? "Unpin chat" : "Pin chat"}
+            aria-label={chat.pinned ? `Unpin ${chat.title}` : `Pin ${chat.title}`}
+            className={`rounded-md p-1 transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] ${
+              chat.pinned ? "text-[var(--botanical)]" : "text-[var(--ink-muted)]"
+            }`}
+          >
+            <PinIcon filled={chat.pinned} />
+          </button>
+          <button
+            ref={menuButtonRef}
+            type="button"
+            data-row-menu-button
+            onClick={() => {
+              if (menuOpen) {
+                onCloseMenu();
+                return;
+              }
+              const rect = menuButtonRef.current?.getBoundingClientRect();
+              if (rect) {
+                setMenuPosition(
+                  menuPositionFor(rect, { width: window.innerWidth, height: window.innerHeight }),
+                );
+              }
+              onOpenMenu();
+            }}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            title="More actions"
+            aria-label={`More actions for ${chat.title}`}
+            className="rounded-md p-1 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
+          >
+            <MoreIcon />
+          </button>
+        </span>
+      ) : null}
       {/* The rail scrolls, so the menu is positioned against the viewport. */}
       {menuOpen ? (
         <RowMenu
@@ -964,9 +1050,11 @@ export default function TerminalSidebar({
   activeChatId,
   openPanel,
   onNewChat,
+  newChatDisabled = false,
   onTogglePanel,
   panels = TERMINAL_PANELS,
   onOpenSearch,
+  onPrefetchChat,
   onOpenChat,
   onRenameChat,
   onTogglePin,
@@ -1059,7 +1147,8 @@ export default function TerminalSidebar({
   // was deleted here, deleted in another tab, or pinned), and deriving keeps
   // the count and the delete honest without a second copy of the list. The
   // ones that failed to delete are still there, so they stay checked.
-  const selectedChats = recents.filter((chat) => selectedIds.has(chat.id));
+  const workableRecents = recents.filter((chat) => !chat.pending);
+  const selectedChats = workableRecents.filter((chat) => selectedIds.has(chat.id));
 
   const toggleChecked = useCallback((id: string) => {
     setSelectedIds((current) => {
@@ -1086,9 +1175,10 @@ export default function TerminalSidebar({
       chat={chat}
       selected={chat.id === activeChatId}
       menuOpen={menuChatId === chat.id}
-      mode={workable ? mode : "idle"}
+      mode={workable && !chat.pending ? mode : "idle"}
       checked={selectedIds.has(chat.id)}
       onPick={() => (mode === "selecting" ? toggleChecked(chat.id) : paint(chat))}
+      onPrefetch={() => onPrefetchChat?.(chat)}
       onOpenMenu={() => setMenuChatId(chat.id)}
       onCloseMenu={() => setMenuChatId(null)}
       onOpen={() => onOpenChat(chat)}
@@ -1126,6 +1216,7 @@ export default function TerminalSidebar({
             label="New chat"
             icon={<NewChatIcon />}
             compact={collapsed}
+            disabled={newChatDisabled}
             onClick={onNewChat}
           />
           {panels.includes("artifacts") ? (
@@ -1208,12 +1299,12 @@ export default function TerminalSidebar({
             <SectionHeader
               label="Recents"
               open={sections.recents}
-              count={recents.length}
+              count={loading ? 0 : recents.length}
               onToggle={() => toggleSection("recents")}
               action={
                 <>
                   {mode === "idle" ? recentsAction : null}
-                  {recents.length > 0 && mode === "idle" ? (
+                  {workableRecents.length > 0 && mode === "idle" ? (
                     <SectionMenuButton
                       label="Recents"
                       open={recentsMenu !== null}
@@ -1243,7 +1334,7 @@ export default function TerminalSidebar({
               />
             ) : null}
             {sections.recents ? (
-              loading && chats.length === 0 ? (
+              loading ? (
                 <ChatHistoryLoading />
               ) : recents.length === 0 ? (
                 <p className="px-2 py-6 text-center text-xs text-[var(--ink-muted)]">
@@ -1254,8 +1345,10 @@ export default function TerminalSidebar({
                   {mode === "selecting" ? (
                     <SelectionBar
                       count={selectedChats.length}
-                      total={recents.length}
-                      onSelectAll={() => setSelectedIds(new Set(recents.map((chat) => chat.id)))}
+                      total={workableRecents.length}
+                      onSelectAll={() =>
+                        setSelectedIds(new Set(workableRecents.map((chat) => chat.id)))
+                      }
                       onClear={() => setSelectedIds(new Set())}
                       onDelete={() => onDeleteChats(selectedChats)}
                       onCancel={stopWorking}

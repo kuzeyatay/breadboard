@@ -132,6 +132,25 @@ test("the rule-of-three detector is off for garden prose but present upstream", 
   assert.ok(BREADBOARD_PROFILE.disable.includes("oxford-triple"));
 });
 
+test("source citation labels are bibliography structure, not inline prose headings", () => {
+  const sources = [
+    "### Sources",
+    "",
+    "* **[S1], [S2], [S3]**: Census tables and longitudinal survey waves.",
+    "* **[S8]**: National Center for Health Statistics benchmarks.",
+  ].join("\n");
+  const ids = scoreProse(sources).findings.map((finding) => finding.id);
+  assert.ok(!ids.includes("inline-header-list"));
+
+  const ordinaryInlineHeading = "* **Marriage survival**: Roughly half remain married.";
+  assert.ok(
+    scoreProse(ordinaryInlineHeading).findings.some(
+      (finding) => finding.id === "inline-header-list",
+    ),
+    "the exemption must stay limited to source keys",
+  );
+});
+
 test("the profile can only forgive, never add findings", () => {
   const page = fs.readFileSync(
     path.join(repoRoot, "quartz", "content", "physics-for-ee", "_index.md"),

@@ -120,6 +120,7 @@ test("opening a chat with a draft puts that draft back", () => {
       previousKey: "dashboard_terminal:conv_a",
       newChatKey: "dashboard_terminal:new",
       sessionId: "conv_b",
+      createdSessionId: null,
     }),
     { next: "kept for this chat", carried: false },
   );
@@ -133,6 +134,7 @@ test("opening a chat with no draft empties the box", () => {
       previousKey: "dashboard_terminal:conv_a",
       newChatKey: "dashboard_terminal:new",
       sessionId: "conv_b",
+      createdSessionId: null,
     }),
     { next: "", carried: false },
   );
@@ -146,6 +148,7 @@ test("text typed before a chat existed follows it once it is created", () => {
       previousKey: "dashboard_terminal:new",
       newChatKey: "dashboard_terminal:new",
       sessionId: "conv_fresh",
+      createdSessionId: "conv_fresh",
     }),
     { next: "a follow-up typed while the first answer streamed", carried: true },
   );
@@ -159,8 +162,43 @@ test("a stored draft still wins over carrying text into a new chat", () => {
       previousKey: "dashboard_terminal:new",
       newChatKey: "dashboard_terminal:new",
       sessionId: "conv_fresh",
+      createdSessionId: "conv_fresh",
     }),
     { next: "what this chat was left with", carried: false },
+  );
+});
+
+test("a chat that merely opened under a blank composer does not take its text", () => {
+  // Reload, or a page away and back: the composer starts on the unstarted chat
+  // with its draft restored, and moments later the newest existing chat is
+  // reopened underneath it. That chat was not created here, so the text stays
+  // where it was typed rather than turning up as a draft of an old chat.
+  assert.deepEqual(
+    resolveDraftRestore({
+      stored: null,
+      value: "typed into the new chat",
+      previousKey: "dashboard_terminal:new",
+      newChatKey: "dashboard_terminal:new",
+      sessionId: "conv_last_used",
+      createdSessionId: null,
+    }),
+    { next: "", carried: false },
+  );
+});
+
+test("clicking an existing chat out of a blank one leaves the draft behind", () => {
+  // The composer had created a chat earlier in this session, but the chat being
+  // opened now is not that one, so nothing follows the reader into it.
+  assert.deepEqual(
+    resolveDraftRestore({
+      stored: null,
+      value: "typed into the new chat",
+      previousKey: "dashboard_terminal:new",
+      newChatKey: "dashboard_terminal:new",
+      sessionId: "conv_from_the_rail",
+      createdSessionId: "conv_made_earlier",
+    }),
+    { next: "", carried: false },
   );
 });
 
@@ -207,6 +245,27 @@ test("every chat surface keeps its composer's text across a reload", () => {
   }
 });
 
+test("every surface says which chat it created, so a draft follows only that one", () => {
+  // The carry is gated on the surface naming the chat it minted itself. A
+  // surface that wires the composer but not this would silently file unsent
+  // text under whichever chat happened to open next.
+  assert.match(terminal, /createdSessionId: session\.createdSessionId/);
+  assert.match(gardenChat, /createdSessionId: session\.createdSessionId/);
+  for (const [name, surface] of [
+    ["knowledge terminal", knowledgeTerminal],
+    ["garden assistant", gardenAssistant],
+    ["garden workspace", workspace],
+  ]) {
+    assert.match(
+      surface,
+      /createdSessionId: created(Chat)?Id === null \? null : String\(created(Chat)?Id\)/,
+      name,
+    );
+  }
+  // And the hook refuses to carry when no surface said so.
+  assert.match(hook, /createdSessionId = null/);
+});
+
 test("a temporary chat leaves no draft behind, and a deleted chat takes its draft with it", () => {
   assert.match(terminal, /enabled: !temporaryChat/);
   assert.match(terminal, /forgetChatDrafts\(window\.localStorage, "dashboard_terminal", \[item\.id\]\)/);
@@ -222,8 +281,27 @@ test("a temporary chat leaves no draft behind, and a deleted chat takes its draf
   assert.match(hook, /if \(!enabled\) \{\s*clearChatDraft\(window\.localStorage, key\);/);
 });
 
-test("starting a new chat gives an empty box rather than the last unstarted draft", () => {
-  assert.match(terminal, /clearChatDraft\(window\.localStorage, chatDraftKey\("dashboard_terminal", null\)\)/);
-  assert.match(gardenChat, /clearChatDraft\(window\.localStorage, chatDraftKey\(draftSurface, null\)\)/);
-  assert.match(workspace, /clearChatDraft\(window\.localStorage, chatDraftKey\(draftSurface, null\)\)/);
+test("an unsent draft survives asking for a new chat, since nothing else holds it", () => {
+  // These surfaces used to wipe the unstarted-chat bucket here, which was
+  // harmless only while an unsent draft was carried onto whichever chat opened
+  // next. Now that it stays filed where it was typed, this was the one thing
+  // that could destroy it — so the composer comes back to it instead.
+  for (const [name, surface] of [
+    ["dashboard terminal", terminal],
+    ["garden chat", gardenChat],
+    ["garden workspace", workspace],
+  ]) {
+    assert.doesNotMatch(
+      surface,
+      /clearChatDraft\(\s*window\.localStorage,\s*chatDraftKey\([^)]*, null\),?\s*\)/,
+      name,
+    );
+  }
+  // The terminal still clears explicitly on send, because its composer keeps
+  // showing the sent words until the server acknowledges them — the empty box
+  // that clears every other surface's bucket never happens there.
+  assert.match(
+    terminal,
+    /clearChatDraft\(\s*window\.localStorage,\s*chatDraftKey\("dashboard_terminal", draftSessionId\),?\s*\)/,
+  );
 });

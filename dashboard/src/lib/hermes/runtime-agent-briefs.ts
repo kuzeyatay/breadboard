@@ -96,6 +96,12 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
     choose:
       "The web-research section below governs this one and the two after it — read it before launching any of them.",
   },
+  "max-research": {
+    group: "research",
+    does: "Commissions the other research agents at once — indexed web, open internet, published literature, and a workspace that can run things — then reconciles their findings into one answer and audits it against them before returning it.",
+    choose:
+      "For a question worth an hour: where sources are likely to disagree, where a repeated figure needs tracing to its origin, or where the web and the literature would answer differently. It runs for tens of minutes, so send anything a single search settles to Deep Research.",
+  },
   "agent-reach": {
     group: "research",
     does: "Reads named places on the internet — specific sites, directories, listings — by running the upstream retrieval tools behind an allowlist and pulling structured detail out of the pages.",
@@ -196,6 +202,12 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
   legal: {
     group: "work",
     does: "Harvey LAB's legal harness working over the documents attached to the message — review, comparison, and drafting against the actual files. The attachment tray is its input, which is why only the user can start it.",
+  },
+  matraix: {
+    group: "work",
+    does: "Writes a questionnaire from the brief, draws a cohort from a pool of persona records on a 1,290-dimension schema, and runs each persona as its own agent — returning how the answers split, the breakdown by any dimension, and every respondent's stated reason.",
+    choose:
+      "Choose it when the question is what a population would say: would people pay this, which wording lands, who objects. It simulates opinion rather than finding it — for what people actually said, Deep Research reads the web.",
   },
 
   "hardware-blueprint": {

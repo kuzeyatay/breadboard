@@ -43,8 +43,10 @@ import {
 } from "./history-client";
 import {
   invalidateHermesSessionSummaries,
+  notifyHermesSessionsChanged,
   HERMES_SESSIONS_CHANGED_EVENT,
   loadHermesSessionSummaries,
+  prefetchHermesSessionDetail,
   type HermesSessionSnapshot,
 } from "@/lib/hermes/session-client";
 import {
@@ -52,11 +54,7 @@ import {
   useAgentSession,
   type ExternalAgentTurnResult,
 } from "./use-agent-session";
-import {
-  chatDraftKey,
-  clearChatDraft,
-  forgetChatDrafts,
-} from "@/lib/conversations/drafts";
+import { forgetChatDrafts } from "@/lib/conversations/drafts";
 import { useChatDraft } from "./use-chat-draft";
 import { useWorkflowAutomation } from "./use-workflow-automation";
 import { useDeepResearchAgent } from "./use-deep-research-agent";
@@ -64,6 +62,8 @@ import {
   directDeepResearchInvocation,
   taskFromDeepResearchIntent,
 } from "@/lib/deep-research/identity.ts";
+import { maxResearchInvocation } from "@/lib/max-research/identity.ts";
+import { launchMaxResearchTurn } from "./launch-max-research";
 import { taskFromOpenCodeCommand } from "@/lib/opencode/identity.ts";
 import { useOpenCodeAgent } from "./use-opencode-agent";
 import { taskFromCodexCommand } from "@/lib/codex/identity.ts";
@@ -183,6 +183,7 @@ export default function GardenAgentChat({
   useChatDraft({
     surface: draftSurface,
     sessionId: session.sessionId,
+    createdSessionId: session.createdSessionId,
     value: input,
     onRestore: setInput,
   });
@@ -435,6 +436,41 @@ export default function GardenAgentChat({
     [gardenSlug, loadProposals],
   );
 
+  const maxResearchDispatchingRef = useRef(false);
+
+  /**
+   * Max Research on the Garden surface. Same launcher as the Terminal, because
+   * the turn is identical on both: one question, no attachments, nothing
+   * stacked. Plain language counts here too — a person who typed "max research"
+   * is asking to watch five agents work.
+   */
+  const routeMaxResearchCommand = useCallback(
+    (text: string, options: { branchGroupId?: string } = {}): boolean => {
+      // Same rule as Deep Research directly below: under Super Agent the model
+      // delegates this itself, inside its own turn.
+      const invocation = maxResearchInvocation(text, isSuperAgentEnabled());
+      if (!invocation) return false;
+      if (invocation.question && !maxResearchDispatchingRef.current) {
+        maxResearchDispatchingRef.current = true;
+        void launchMaxResearchTurn({
+          session,
+          question: invocation.question,
+          model,
+          reasoningEffort,
+          ...(options.branchGroupId ? { branchGroupId: options.branchGroupId } : {}),
+          // Their own words when they used them; the canonical command only
+          // when that is literally what they typed.
+          ...(invocation.selectAgent ? {} : { userContent: text }),
+          onStatus: setResearchNotice,
+        }).finally(() => {
+          maxResearchDispatchingRef.current = false;
+        });
+      }
+      return true;
+    },
+    [model, reasoningEffort, session],
+  );
+
   const routeDeepResearchCommand = useCallback(
     (text: string, options: { branchGroupId?: string } = {}): boolean => {
       const invocation = directDeepResearchInvocation(
@@ -522,6 +558,10 @@ export default function GardenAgentChat({
     }
     // Deep Research owns the turn when it is active (or explicitly invoked), the
     // same contract as in the dashboard terminal.
+    if (routeMaxResearchCommand(text)) {
+      setInput("");
+      return;
+    }
     if (routeDeepResearchCommand(text)) {
       setInput("");
       return;
@@ -560,6 +600,7 @@ export default function GardenAgentChat({
     model,
     openCode,
     reasoningEffort,
+    routeMaxResearchCommand,
     routeDeepResearchCommand,
     ruflo,
     session,
@@ -626,6 +667,7 @@ export default function GardenAgentChat({
   const sendSuggestedPrompt = useCallback(
     (text: string) => {
       if (busy || session.loadingSession) return;
+      if (routeMaxResearchCommand(text)) return;
       if (routeDeepResearchCommand(text)) return;
       if (deepResearch.agent) {
         void deepResearch.launch(text);
@@ -638,6 +680,7 @@ export default function GardenAgentChat({
       deepResearch,
       model,
       reasoningEffort,
+      routeMaxResearchCommand,
       routeDeepResearchCommand,
       session,
     ],
@@ -647,7 +690,10 @@ export default function GardenAgentChat({
     (userMessageIndex: number, branchGroupId: string) => {
       const previousUser = session.messages[userMessageIndex];
       if (previousUser) {
-        if (routeDeepResearchCommand(previousUser.content, { branchGroupId })) {
+        if (routeMaxResearchCommand(previousUser.content, { branchGroupId })) {
+        return;
+      }
+      if (routeDeepResearchCommand(previousUser.content, { branchGroupId })) {
           return;
         }
         void session.send(previousUser.content, {
@@ -672,8 +718,13 @@ export default function GardenAgentChat({
     ruflo.clear();
     session.reset();
     setInput("");
-    // A new chat starts with an empty box rather than the last unstarted draft.
-    clearChatDraft(window.localStorage, chatDraftKey(draftSurface, null));
+    // The unstarted chat's draft is deliberately left alone. It is only ever
+    // written by someone typing into a blank composer and never sending, and
+    // since a send clears it explicitly, anything still in it is an unsent
+    // message — the one kind of text nothing else has a copy of. Clearing it
+    // here used to be harmless because an unsent draft was carried onto
+    // whichever chat opened next; now that it stays where it was written,
+    // this was the only thing that could destroy it.
     setView("chat");
   }
 
@@ -687,7 +738,11 @@ export default function GardenAgentChat({
   }
 
   // The route stops whatever the chat still has running before it removes the
-  // rows, so a streaming response is no longer a reason to refuse the delete.
+  // rows, so a streaming response is no longer a reason to refuse the delete —
+  // and since that stopping is round trips of its own, the row leaves on the
+  // click and the request finishes behind it. deleteChatSession hides the id
+  // from history until the server answers, so a refresh that overlaps the
+  // delete cannot ghost the row back. Only a refusal brings it back.
   async function deleteHistorySession(item: RuntimeHistorySession) {
     const confirmed = await confirm({
       title: "Delete this chat?",
@@ -697,16 +752,20 @@ export default function GardenAgentChat({
     });
     if (!confirmed) return;
     setHistoryError(null);
+    setHistory((current) => current.filter((entry) => entry.id !== item.id));
+    // The open chat is on its way out; fall back to an empty one.
+    if (item.id === session.sessionId) startNewChat();
     const result = await deleteChatSession(item.id);
     if (!result.deleted) {
       setHistoryError(result.error ?? "This chat could not be deleted.");
+      // The chat is still on the server: reload rather than reinsert, so it
+      // comes back where it actually belongs in the list.
+      notifyHermesSessionsChanged("garden_chat");
       return;
     }
     invalidateHermesSessionSummaries("garden_chat");
-    setHistory((current) => current.filter((entry) => entry.id !== item.id));
+    // The draft goes only once the chat is really gone.
     forgetChatDrafts(window.localStorage, draftSurface, [item.id]);
-    // The open chat no longer exists; fall back to an empty one.
-    if (item.id === session.sessionId) startNewChat();
   }
 
   function toggleView(next: PanelView) {
@@ -845,6 +904,21 @@ export default function GardenAgentChat({
                   <button
                     type="button"
                     onClick={() => openHistorySession(item)}
+                    onMouseEnter={() => {
+                      void prefetchHermesSessionDetail("garden_chat", item.id).catch(
+                        () => undefined,
+                      );
+                    }}
+                    onFocus={() => {
+                      void prefetchHermesSessionDetail("garden_chat", item.id).catch(
+                        () => undefined,
+                      );
+                    }}
+                    onPointerDown={() => {
+                      void prefetchHermesSessionDetail("garden_chat", item.id).catch(
+                        () => undefined,
+                      );
+                    }}
                     className="min-w-0 flex-1 rounded-md px-2.5 py-2 text-left"
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -975,6 +1049,7 @@ export default function GardenAgentChat({
           onRunWorkflow={runWorkflowAutomation}
           onAskSelection={askSelection}
           onSteer={steer}
+          steerableRun={Boolean(session.activeRunId)}
           onSendQueued={sendQueued}
           onEditMessage={editMessage}
           onDeleteMessage={session.deleteMessage}
@@ -1042,7 +1117,7 @@ export default function GardenAgentChat({
           emptyState={
             <div className="flex flex-col items-center gap-5 py-8 text-center">
               <div>
-                <p className="text-sm font-medium text-gray-200">Quartz AI</p>
+                <p className="text-sm font-medium text-gray-200">Assistant</p>
                 <p className="mt-1.5 text-xs text-gray-500">
                   Grounded answers with citations. Ask it to trace a source,
                   compare sections, find gaps, quiz you, or propose a

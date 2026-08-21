@@ -24,6 +24,7 @@ is handed the specific file this module selected.
 import glob
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from . import failover
@@ -144,24 +145,60 @@ def note_account_exhausted(key: str, *, reason: str = "", seconds: int | None = 
     failover.note_exhausted(f"{COOLDOWN_PREFIX}{key}", reason=reason, seconds=seconds)
 
 
+def _connected_at(account: ChatGptAccount) -> Optional[str]:
+    """Original sign-in time when known, with file creation as a legacy fallback."""
+    stored = account.auth.get("connected_at")
+    if isinstance(stored, str):
+        try:
+            parsed = datetime.fromisoformat(stored.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        except ValueError:
+            pass
+
+    try:
+        stat = os.stat(account.path)
+        # st_birthtime is stable on platforms that expose it; Windows' ctime
+        # is creation time. Other platforms fall back to mtime for old auth
+        # files written before connected_at was stored in the JSON.
+        timestamp = getattr(stat, "st_birthtime", None)
+        if timestamp is None:
+            timestamp = stat.st_ctime if os.name == "nt" else stat.st_mtime
+        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
 def account_state() -> List[Dict[str, Any]]:
     """Redacted account list for the management API. Never includes a token."""
     state: List[Dict[str, Any]] = []
     for account in list_accounts():
         cooldown = failover.cooldown_for(account.cooldown_key)
+        connected_at = _connected_at(account)
         state.append(
             {
                 "key": account.key,
                 "email": account.email,
                 "plan": account.plan,
                 "primary": account.primary,
+                # File time is the only chronology shared by the primary
+                # credential and preserved siblings. Keep routing order in
+                # list_accounts(); only the management view is chronological.
+                "connectedAt": connected_at,
                 "path": account.path,
                 "available": cooldown is None,
                 "cooldownSeconds": cooldown.remaining_seconds if cooldown else 0,
                 "cooldownReason": cooldown.reason if cooldown else None,
             }
         )
-    return state
+    return sorted(
+        state,
+        key=lambda row: (
+            row["connectedAt"] is None,
+            row["connectedAt"] or "",
+        ),
+    )
 
 
 def add_account_path(label: str) -> str:

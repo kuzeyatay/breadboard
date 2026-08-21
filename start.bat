@@ -8,6 +8,10 @@ if exist "%~dp0.runtime\cad-venv\Scripts\python.exe" start "Parametric CAD" cmd 
 rem ColPali page retrieval over attached documents. Optional in the same way:
 rem without the environment (npm run setup:colpali) documents are inlined whole.
 if exist "%~dp0.runtime\colpali-venv\Scripts\python.exe" start "ColPali" cmd /k "cd /d ""%~dp0"" && node scripts/start-colpali.mjs"
+rem Local text humanizer ("Rewrite naturally" and /humanize). Optional in the
+rem same way: without the environment (npm run setup:humanizer) the action and
+rem the skill both report that the rewriter is unavailable.
+if exist "%~dp0.runtime\humanizer-venv\Scripts\python.exe" start "Humanizer" cmd /k "cd /d ""%~dp0"" && node scripts/start-humanizer.mjs"
 
 echo Waiting for ChatMock on http://127.0.0.1:8765/health ...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$deadline = (Get-Date).AddSeconds(90); do { try { $response = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 2; if ($response.StatusCode -eq 200) { exit 0 } } catch {}; Start-Sleep -Milliseconds 500 } while ((Get-Date) -lt $deadline); exit 1"

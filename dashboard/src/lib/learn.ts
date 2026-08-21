@@ -84,8 +84,9 @@ import {
   type SourceVisualSourceIdentity,
 } from "@/lib/source-visuals";
 import {
+  MAX_SOURCE_MAP_EVIDENCE_REAUTHORS,
   selectedSourceArtifactInventorySnapshot,
-  sourceMapArtifactInventoryTransition,
+  sourceMapPlanningEvidenceTransition,
 } from "@/lib/learn-source-artifact-inventory";
 import {
   assessLessonQuality,
@@ -176,6 +177,7 @@ import {
 } from "@/lib/model-source-anchor-ledger";
 import { learnBuildStateMode } from "@/lib/garden-build/mode";
 import { runCanonicalGardenShadowBuild } from "@/lib/garden-build/shadow";
+import { humanizeFinishedLearnBuild } from "@/lib/learn-humanizer";
 import {
   buildVisualizationCoverageReport,
   applyVisualizationRoutesToLearningUnits,
@@ -204,7 +206,11 @@ import {
   reviewVisualizationPlanExecutability,
   saveVisualContractExecutabilityLedger,
   strictVisualContractExecutabilityResponseOrExactRaw,
+  visualContractExecutabilityArtifactProvenanceProblems,
+  visualContractExecutabilityLinkageProblems,
   VISUAL_CONTRACT_EXECUTABILITY_LEDGER_RELATIVE_PATH,
+  type VisualContractExecutabilityLedger,
+  type VisualContractExecutabilityLedgerContext,
   type VisualContractExecutabilityProviderRequest,
 } from "@/lib/visualization-contract-executability";
 import {
@@ -228,9 +234,9 @@ import {
 } from "@/lib/learn-atomic-promotion";
 import {
   createLearnBuildWorkspace,
-  defaultWorkspaceRoot,
   disposeLearnBuildWorkspace,
   fingerprintDurableGardenState,
+  learnWorkspaceRootCandidates,
   verifyAuthoritativeSourceAnchorLedger,
   type LearnBuildWorkspace,
 } from "@/lib/learn-build-workspace";
@@ -306,8 +312,32 @@ export interface StoredLearningMap {
    * assigns. Persisted so page writing gates on the same answer planning did,
    * without a second model call that could resolve differently. */
   syllabusCoverage?: SyllabusCoverage | null;
+  /** Complete model-approved visual route bundle. It is map-bound so lesson
+   * generation never has to ask the model to allocate visuals a second time. */
+  visualNecessityReview?: GardenVisualNecessityPlan;
+  visualizationPlan?: VisualizationPlan;
+  visualContractExecutabilityLedger?: VisualContractExecutabilityLedger;
+  visualRouteBinding?: ConfirmedVisualRouteBinding;
   createdAt: string;
   confirmedAt?: string;
+}
+
+interface ConfirmedVisualRouteBinding {
+  schemaVersion: 1;
+  sourceSetHash: string;
+  sourceArtifactInventoryHash: string;
+  sourceFormulaReviewSetHash: string;
+  learningUnitContractSha256: string;
+  visualNecessityReviewSha256: string;
+  visualizationPlanSha256: string;
+  visualContractExecutabilityLedgerSha256: string;
+}
+
+interface ConfirmedVisualRouteBundle {
+  visualNecessityReview: GardenVisualNecessityPlan;
+  visualizationPlan: VisualizationPlan;
+  executabilityLedger: VisualContractExecutabilityLedger;
+  binding: ConfirmedVisualRouteBinding;
 }
 
 export interface LearnStatusSnapshot {
@@ -422,6 +452,10 @@ interface LearnMapRow {
   source_ids_json: string | null;
   syllabus_source_id: string | null;
   syllabus_coverage_json: string | null;
+  visual_necessity_review_json: string | null;
+  visualization_plan_json: string | null;
+  visual_contract_executability_ledger_json: string | null;
+  visual_route_binding_json: string | null;
   created_at: string;
   confirmed_at: string | null;
 }
@@ -1037,6 +1071,10 @@ function ensureLearnTables(): void {
       source_ids_json           TEXT NOT NULL DEFAULT '[]',
       syllabus_source_id        TEXT,
       syllabus_coverage_json    TEXT,
+      visual_necessity_review_json TEXT,
+      visualization_plan_json   TEXT,
+      visual_contract_executability_ledger_json TEXT,
+      visual_route_binding_json TEXT,
       created_at                TEXT NOT NULL,
       confirmed_at              TEXT
     );
@@ -1142,6 +1180,18 @@ function ensureLearnTables(): void {
     db.exec(
       "ALTER TABLE learn_maps ADD COLUMN source_artifact_inventory_hash TEXT NOT NULL DEFAULT ''",
     );
+  }
+  if (!learnMapColumns.has("visual_necessity_review_json")) {
+    db.exec("ALTER TABLE learn_maps ADD COLUMN visual_necessity_review_json TEXT");
+  }
+  if (!learnMapColumns.has("visualization_plan_json")) {
+    db.exec("ALTER TABLE learn_maps ADD COLUMN visualization_plan_json TEXT");
+  }
+  if (!learnMapColumns.has("visual_contract_executability_ledger_json")) {
+    db.exec("ALTER TABLE learn_maps ADD COLUMN visual_contract_executability_ledger_json TEXT");
+  }
+  if (!learnMapColumns.has("visual_route_binding_json")) {
+    db.exec("ALTER TABLE learn_maps ADD COLUMN visual_route_binding_json TEXT");
   }
 
   const learnVersionColumns = new Set(
@@ -1425,6 +1475,17 @@ function rowToMap(row: LearnMapRow | undefined): StoredLearningMap | null {
     syllabusSourceId: row.syllabus_source_id ?? undefined,
     syllabusCoverage:
       (parseJson(row.syllabus_coverage_json ?? "") as SyllabusCoverage | null) ?? null,
+    visualNecessityReview:
+      (parseJson(row.visual_necessity_review_json ?? "") as GardenVisualNecessityPlan | null) ??
+      undefined,
+    visualizationPlan:
+      (parseJson(row.visualization_plan_json ?? "") as VisualizationPlan | null) ?? undefined,
+    visualContractExecutabilityLedger:
+      (parseJson(row.visual_contract_executability_ledger_json ?? "") as VisualContractExecutabilityLedger | null) ??
+      undefined,
+    visualRouteBinding:
+      (parseJson(row.visual_route_binding_json ?? "") as ConfirmedVisualRouteBinding | null) ??
+      undefined,
     createdAt: row.created_at,
     confirmedAt: row.confirmed_at ?? undefined,
   };
@@ -2041,8 +2102,11 @@ function insertLearnMap({
       id, garden_id, job_id, status, source_map_json, scope_contract_json,
       learning_map_json, proposed_order_json, visual_opportunities_json,
       coverage_plan_json, source_set_hash, source_artifact_inventory_hash,
-      source_ids_json, syllabus_source_id, syllabus_coverage_json, created_at, confirmed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      source_ids_json, syllabus_source_id, syllabus_coverage_json,
+      visual_necessity_review_json, visualization_plan_json,
+      visual_contract_executability_ledger_json, visual_route_binding_json,
+      created_at, confirmed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     stored.id,
     stored.gardenId,
@@ -2059,6 +2123,10 @@ function insertLearnMap({
     jsonString(stored.sourceIds),
     stored.syllabusSourceId ?? null,
     stored.syllabusCoverage ? jsonString(stored.syllabusCoverage) : null,
+    null,
+    null,
+    null,
+    null,
     stored.createdAt,
     null,
   );
@@ -3942,6 +4010,184 @@ function syllabusCoverageEvidenceRecoveryHashFromCoveragePlan(
     : undefined;
 }
 
+function sha256Json(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
+}
+
+function confirmedVisualRouteBindingHash(binding: ConfirmedVisualRouteBinding): string {
+  return sha256Json(binding);
+}
+
+/** Bind the model-authoritative contract shape, not incidental JSON key order
+ * or optional-field spelling introduced while SQLite round-trips it. */
+function learningUnitContractBindingSha256(
+  learningUnits: LearningUnitContract[],
+): string {
+  return sha256Json(
+    normalizeLearningUnits({ learningUnits }, { modelAuthoredOnly: true }),
+  );
+}
+
+function createConfirmedVisualRouteBundle(input: {
+  sourceSetHash: string;
+  sourceArtifactInventoryHash: string;
+  sourceFormulaReviewSetHash: string | undefined;
+  learningUnits: LearningUnitContract[];
+  visualNecessityReview: GardenVisualNecessityPlan;
+  visualizationPlan: VisualizationPlan;
+  executabilityLedger: VisualContractExecutabilityLedger;
+}): ConfirmedVisualRouteBundle {
+  const sourceFormulaReviewSetHash = input.sourceFormulaReviewSetHash?.trim();
+  if (!sourceFormulaReviewSetHash || !isSha256(sourceFormulaReviewSetHash)) {
+    throw new LearnPipelineConflictError(
+      "Cannot bind a visual route bundle without the confirmed source-formula review hash.",
+      { requiresReplan: true },
+    );
+  }
+  const binding: ConfirmedVisualRouteBinding = {
+    schemaVersion: 1,
+    sourceSetHash: input.sourceSetHash,
+    sourceArtifactInventoryHash: input.sourceArtifactInventoryHash,
+    sourceFormulaReviewSetHash,
+    learningUnitContractSha256: learningUnitContractBindingSha256(input.learningUnits),
+    visualNecessityReviewSha256: sha256Json(input.visualNecessityReview),
+    visualizationPlanSha256: sha256Json(input.visualizationPlan),
+    visualContractExecutabilityLedgerSha256: sha256Json(input.executabilityLedger),
+  };
+  return {
+    visualNecessityReview: structuredClone(input.visualNecessityReview),
+    visualizationPlan: structuredClone(input.visualizationPlan),
+    executabilityLedger: structuredClone(input.executabilityLedger),
+    binding,
+  };
+}
+
+function visualNecessityReviewBindingProblems(
+  review: GardenVisualNecessityPlan | undefined,
+  learningUnits: readonly LearningUnitContract[],
+): string[] {
+  if (!review ||
+      !Array.isArray(review.decisions) ||
+      !Array.isArray(review.teachingMedia) ||
+      !Array.isArray(review.decisionRecords) ||
+      !review.budget ||
+      !Array.isArray(review.overrides) ||
+      !review.zeroVisualSafeguard) {
+    return ["the persisted visual-necessity review is missing or malformed"];
+  }
+  const expectedUnitIds = learningUnits.map((unit) => unit.id);
+  const exactCoverageProblems = [
+    ["decisions", review.decisions.map((decision) => decision.unitId)],
+    ["teaching media", review.teachingMedia.map((medium) => medium.unitId)],
+    ["decision records", review.decisionRecords.map((record) => record.unitId)],
+  ].flatMap(([label, ids]) => {
+    const unitIds = ids as string[];
+    return JSON.stringify(unitIds) === JSON.stringify(expectedUnitIds)
+      ? []
+      : [`persisted visual-necessity ${label} do not exactly cover the confirmed Learning Unit Contract`];
+  });
+  return exactCoverageProblems;
+}
+
+function confirmedVisualRouteBundleProblems(input: {
+  gardenId: string;
+  map: StoredLearningMap;
+  context: LearnSourceContext;
+  learningUnits: LearningUnitContract[];
+  canonicalEvidenceByUnit?: ReturnType<typeof canonicalVisualizationEvidenceByUnit>;
+}): string[] {
+  const { map } = input;
+  const bundle = {
+    visualNecessityReview: map.visualNecessityReview,
+    visualizationPlan: map.visualizationPlan,
+    executabilityLedger: map.visualContractExecutabilityLedger,
+    binding: map.visualRouteBinding,
+  };
+  if (!bundle.visualizationPlan || !bundle.executabilityLedger || !bundle.binding) {
+    return ["the confirmed visual route plan and executability ledger were not persisted with this Learning Map"];
+  }
+  const problems = visualNecessityReviewBindingProblems(
+    bundle.visualNecessityReview,
+    input.learningUnits,
+  );
+  const sourceFormulaReviewSetHash = sourceFormulaReviewSetHashFromCoveragePlan(map.coveragePlan);
+  const binding = bundle.binding;
+  if (!isSha256(binding.learningUnitContractSha256) ||
+      !isSha256(binding.visualNecessityReviewSha256) ||
+      !isSha256(binding.visualizationPlanSha256) ||
+      !isSha256(binding.visualContractExecutabilityLedgerSha256)) {
+    problems.push("the persisted visual route binding has malformed integrity hashes");
+  }
+  if (binding.schemaVersion !== 1 ||
+      binding.sourceSetHash !== map.sourceSetHash ||
+      binding.sourceSetHash !== input.context.sourceSetHash ||
+      binding.sourceArtifactInventoryHash !== map.sourceArtifactInventoryHash ||
+      binding.sourceArtifactInventoryHash !== input.context.sourceArtifactInventoryHash ||
+      !sourceFormulaReviewSetHash ||
+      binding.sourceFormulaReviewSetHash !== sourceFormulaReviewSetHash ||
+      binding.sourceFormulaReviewSetHash !== input.context.sourceFormulaReviewSetHash) {
+    problems.push("the persisted visual route binding no longer matches the confirmed source, inventory, or formula-review evidence");
+  }
+  if (bundle.visualNecessityReview) {
+    const expected = createConfirmedVisualRouteBundle({
+      sourceSetHash: map.sourceSetHash,
+      sourceArtifactInventoryHash: map.sourceArtifactInventoryHash,
+      sourceFormulaReviewSetHash,
+      learningUnits: input.learningUnits,
+      visualNecessityReview: bundle.visualNecessityReview,
+      visualizationPlan: bundle.visualizationPlan,
+      executabilityLedger: bundle.executabilityLedger,
+    }).binding;
+    if (JSON.stringify(binding) !== JSON.stringify(expected)) {
+      problems.push("the persisted visual route bundle does not match its confirmed-map binding hashes");
+    }
+  }
+  if (bundle.executabilityLedger.context.phase !== "planning" ||
+      bundle.executabilityLedger.context.learningMapId !== map.id ||
+      bundle.executabilityLedger.context.jobId !== map.jobId) {
+    problems.push("the persisted executability ledger is not the planning review for this Learning Map");
+  }
+  problems.push(...visualContractExecutabilityLinkageProblems({
+    gardenId: input.gardenId,
+    ledger: bundle.executabilityLedger,
+    finalLearningUnits: input.learningUnits,
+    visualizationPlan: bundle.visualizationPlan,
+    authoritativeCanonicalEvidenceByUnit: input.canonicalEvidenceByUnit,
+    expectedContext: bundle.executabilityLedger.context,
+  }));
+  return [...new Set(problems)];
+}
+
+function confirmedVisualRouteBundleForGeneration(input: {
+  gardenId: string;
+  map: StoredLearningMap;
+  context: LearnSourceContext;
+  learningUnits: LearningUnitContract[];
+  canonicalEvidenceByUnit: ReturnType<typeof canonicalVisualizationEvidenceByUnit>;
+}): ConfirmedVisualRouteBundle {
+  const problems = confirmedVisualRouteBundleProblems(input);
+  if (problems.length > 0 ||
+      !input.map.visualNecessityReview ||
+      !input.map.visualizationPlan ||
+      !input.map.visualContractExecutabilityLedger ||
+      !input.map.visualRouteBinding) {
+    throw new LearnPipelineConflictError(
+      `This confirmed Learning Map has a missing or stale visual route binding: ${problems.join("; ") || "bundle is incomplete"}. Run Learn planning again and confirm the new proposed map before generation.`,
+      { requiresReplan: true },
+    );
+  }
+  return {
+    visualNecessityReview: structuredClone(input.map.visualNecessityReview),
+    visualizationPlan: structuredClone(input.map.visualizationPlan),
+    executabilityLedger: structuredClone(input.map.visualContractExecutabilityLedger),
+    binding: structuredClone(input.map.visualRouteBinding),
+  };
+}
+
 function syllabusCoverageRecoverySources(
   context: LearnSourceContext,
 ): Array<{ sourceId: string; relPath: string; body?: string }> {
@@ -3950,6 +4196,63 @@ function syllabusCoverageRecoverySources(
     relPath: source.relPath,
     body: source.body,
   }));
+}
+
+/**
+ * A Source Map reauthor may legitimately follow a late formula review or a
+ * newly registered source artifact. Those changes alter the combined
+ * `sourceSetHash`, so that hash cannot distinguish a safe evidence rebind from
+ * a user/source mutation. Compare the raw teaching/syllabus identities and
+ * base source bytes separately, then let the model redo coverage against the
+ * refreshed reviewed ledger.
+ */
+function syllabusCoverageRebindSourceBindingProblems(input: {
+  before: LearnSourceContext;
+  after: LearnSourceContext;
+}): string[] {
+  const problems: string[] = [];
+  if (input.before.baseSourceSetHash !== input.after.baseSourceSetHash) {
+    problems.push("selected teaching-source or syllabus raw evidence changed");
+  }
+  if (JSON.stringify(input.before.selectedSourceIds) !== JSON.stringify(input.after.selectedSourceIds)) {
+    problems.push("selected source ids or their order changed");
+  }
+  const teachingSourceIdentity = (context: LearnSourceContext) => context.sources.map((source) => ({
+    slug: source.slug,
+    relPath: source.relPath,
+    sourceFile: source.sourceFile ?? "",
+  }));
+  if (
+    JSON.stringify(teachingSourceIdentity(input.before)) !==
+      JSON.stringify(teachingSourceIdentity(input.after))
+  ) {
+    problems.push("selected teaching-source identity changed");
+  }
+  const syllabusIdentity = (context: LearnSourceContext) => {
+    const syllabus = context.syllabus;
+    return syllabus
+      ? {
+          slug: syllabus.slug,
+          title: syllabus.title ?? "",
+          description: syllabus.description ?? "",
+          relPath: syllabus.relPath,
+          sourceFile: syllabus.sourceFile ?? "",
+        }
+      : null;
+  };
+  if (
+    JSON.stringify(syllabusIdentity(input.before)) !==
+      JSON.stringify(syllabusIdentity(input.after))
+  ) {
+    problems.push("selected syllabus identity changed");
+  }
+  if (
+    JSON.stringify(input.before.sourceVisualSourceIdentityMap) !==
+      JSON.stringify(input.after.sourceVisualSourceIdentityMap)
+  ) {
+    problems.push("selected source stable-identity map changed");
+  }
+  return [...new Set(problems)];
 }
 
 function syllabusCoverageRecoveryBindingProblems(input: {
@@ -4772,7 +5075,7 @@ export async function runLearnPlanning({
       modelCalls: initialFormulaReview.modelCalls,
     });
 
-    const structuralSourceAnchors = structuralSourceTextAnchorCatalog(context);
+    let structuralSourceAnchors = structuralSourceTextAnchorCatalog(context);
     let canonicalSourceAnchorCatalog = [
       ...structuralSourceAnchorPromptCatalog(structuralSourceAnchors),
       ...context.sourceFigures.map((figure) => ({
@@ -4785,7 +5088,7 @@ export async function runLearnPlanning({
     ];
     let promptSourceContext = promptSources(context);
     const hasSyllabus = Boolean(context.syllabus);
-    const syllabusPayload = promptSyllabus(context);
+    let syllabusPayload = promptSyllabus(context);
     if (context.syllabus) {
       appendLearnEvent(contentPath, gardenId, "learn_syllabus_applied", {
         jobId: job.id,
@@ -4814,11 +5117,13 @@ export async function runLearnPlanning({
       sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
     };
     const planningWarnings: string[] = [];
+    let syllabusCoverageWarnings: string[] = [];
 
     // Stage 1b: one model reads the syllabus, then a separate source-grounded
     // model authors every material-availability and unit-teachability verdict.
     // Code checks exact IDs/citations and completeness but makes no semantic
     // match or fallback decision.
+    let syllabusPlan: SyllabusPlan | null = null;
     let syllabusCoverage: SyllabusCoverage | null = null;
     if (context.syllabus) {
       updateLearnJob(job.id, {
@@ -4839,7 +5144,8 @@ export async function runLearnPlanning({
         stageLabel: "Syllabus reading",
         validate: modelAuthoredSyllabusPlanProblems,
       });
-      const syllabusPlan = projectModelAuthoredSyllabusPlan(syllabusCall.parsed);
+      const initialSyllabusPlan = projectModelAuthoredSyllabusPlan(syllabusCall.parsed);
+      syllabusPlan = initialSyllabusPlan;
       const syllabusSourceIds = context.sources.map((source) => source.slug);
       updateLearnJob(job.id, {
         currentStep: "Checking syllabus coverage against selected sources",
@@ -4853,19 +5159,19 @@ export async function runLearnPlanning({
         gardenId,
         system: SYLLABUS_COVERAGE_PROMPT,
         user: compactJson({
-          syllabusPlan,
-          selectedSourceCatalog: promptSyllabusCoverageSourceCatalog(context, syllabusPlan),
+          syllabusPlan: initialSyllabusPlan,
+          selectedSourceCatalog: promptSyllabusCoverageSourceCatalog(context, initialSyllabusPlan),
         }),
         sourceContext: { ...planningSourceMeta, taskType: "syllabus_coverage" },
         contentPath,
         jobId: job.id,
         stageLabel: "Syllabus coverage review",
         validate: (value) =>
-          syllabusCoverageDecisionProblems(value, syllabusPlan, syllabusSourceIds),
+          syllabusCoverageDecisionProblems(value, initialSyllabusPlan, syllabusSourceIds),
         preserveExactContent: true,
       });
       syllabusCoverage = projectModelAuthoredSyllabusCoverage(
-        syllabusPlan,
+        initialSyllabusPlan,
         coverageCall.parsed,
         syllabusSourceIds,
       );
@@ -4888,7 +5194,7 @@ export async function runLearnPlanning({
         });
         try {
           const recovery = await runSyllabusCoverageEvidenceRecovery({
-            syllabusPlan,
+            syllabusPlan: initialSyllabusPlan,
             initialCoverageRaw: coverageCall.content,
             initialCoverageDecision: coverageCall.parsed,
             sources: context.sources.map((source) => ({
@@ -4996,20 +5302,20 @@ export async function runLearnPlanning({
           untaughtUnitTitles: syllabusCoverage.untaughtUnitTitles,
         });
         if (syllabusCoverage.missingCitations.length > 0) {
-          planningWarnings.push(
+          syllabusCoverageWarnings.push(
             `The syllabus assigns ${syllabusCoverage.missingCitations.length} work(s) that are not in this garden: ${syllabusCoverage.missingCitations
               .slice(0, 8)
               .join("; ")}. Lessons will not be written from them — upload them to have them covered.`,
           );
         }
         for (const unitTitle of syllabusCoverage.untaughtUnitTitles.slice(0, 8)) {
-          planningWarnings.push(
+          syllabusCoverageWarnings.push(
             `Syllabus item "${unitTitle}" could not be fully supported by the available source material and was left uncovered.`,
           );
         }
       }
     }
-    const syllabusCoveragePayload = syllabusCoverage
+    const syllabusCoveragePayload = () => syllabusCoverage
       ? {
           courseTitle: syllabusCoverage.courseTitle,
           units: syllabusCoverage.units,
@@ -5017,6 +5323,222 @@ export async function runLearnPlanning({
           untaughtUnitTitles: syllabusCoverage.untaughtUnitTitles,
         }
       : undefined;
+    const replaceSyllabusCoverageWarnings = (coverage: SyllabusCoverage): void => {
+      syllabusCoverageWarnings = [];
+      if (coverage.missingCitations.length > 0) {
+        syllabusCoverageWarnings.push(
+          `The syllabus assigns ${coverage.missingCitations.length} work(s) that are not in this garden: ${coverage.missingCitations
+            .slice(0, 8)
+            .join("; ")}. Lessons will not be written from them; upload them to have them covered.`,
+        );
+      }
+      for (const unitTitle of coverage.untaughtUnitTitles.slice(0, 8)) {
+        syllabusCoverageWarnings.push(
+          `Syllabus item "${unitTitle}" could not be fully supported by the available source material and was left uncovered.`,
+        );
+      }
+    };
+    const rebindSyllabusCoverage = async (): Promise<void> => {
+      if (!context.syllabus) return;
+      const activeSyllabusPlan = syllabusPlan;
+      if (!activeSyllabusPlan) {
+        throw new LearnPipelineConflictError(
+          "Syllabus coverage could not be rebound because its model-authored syllabus plan is unavailable.",
+        );
+      }
+      planningSourceMeta.sourceIds = context.sources.map((source) => source.slug);
+      planningSourceMeta.sourceSetHash = context.sourceSetHash;
+      planningSourceMeta.sourceArtifactInventoryHash = context.sourceArtifactInventoryHash;
+      syllabusPayload = promptSyllabus(context);
+      updateLearnJob(job.id, {
+        currentStep: "Rechecking syllabus coverage against refreshed source evidence",
+        progressPercent: 5,
+      });
+      appendLearnEvent(contentPath, gardenId, "learn_syllabus_coverage_rebind_started", {
+        jobId: job.id,
+        sourceSetHash: context.sourceSetHash,
+        sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
+      });
+      await learnCheckpoint(job.id);
+      const syllabusSourceIds = context.sources.map((source) => source.slug);
+      const coverageCall = await callValidatedPlanningJson({
+        client,
+        model,
+        taskType: "source_map",
+        gardenId,
+        system: SYLLABUS_COVERAGE_PROMPT,
+        user: compactJson({
+          syllabusPlan: activeSyllabusPlan,
+          selectedSourceCatalog: promptSyllabusCoverageSourceCatalog(
+            context,
+            activeSyllabusPlan,
+          ),
+        }),
+        sourceContext: { ...planningSourceMeta, taskType: "syllabus_coverage_rebind" },
+        contentPath,
+        jobId: job.id,
+        stageLabel: "Syllabus coverage rebind review",
+        validate: (value) =>
+          syllabusCoverageDecisionProblems(value, activeSyllabusPlan, syllabusSourceIds),
+        preserveExactContent: true,
+      });
+      let reboundCoverage = projectModelAuthoredSyllabusCoverage(
+        activeSyllabusPlan,
+        coverageCall.parsed,
+        syllabusSourceIds,
+      );
+      if (!syllabusCoverageHasTeachableUnits(reboundCoverage)) {
+        appendLearnEvent(contentPath, gardenId, "learn_syllabus_coverage_evidence_recovery_started", {
+          jobId: job.id,
+          stage: "source_map_rebind",
+          sourceSetHash: context.sourceSetHash,
+          sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
+          initialTeachableCount: 0,
+          maximumSelectorCandidates: 1,
+          maximumCoverageReviewCandidates: 1,
+        });
+        try {
+          const recovery = await runSyllabusCoverageEvidenceRecovery({
+            syllabusPlan: activeSyllabusPlan,
+            initialCoverageRaw: coverageCall.content,
+            initialCoverageDecision: coverageCall.parsed,
+            sources: syllabusCoverageRecoverySources(context),
+            anchors: structuralSourceAnchors,
+            sourceSetHash: context.sourceSetHash,
+            sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
+            model,
+            checkpoint: () => throwIfLearnCancelled(job.id),
+            provider: async (request: SyllabusCoverageRecoveryProviderRequest) => {
+              await learnCheckpoint(job.id);
+              const result = await callPlanningJsonWithRetry({
+                client,
+                model,
+                taskType: "source_map",
+                gardenId,
+                system: request.system,
+                user: request.user,
+                sourceContext: {
+                  ...planningSourceMeta,
+                  ...request.sourceContext,
+                },
+                contentPath,
+                jobId: job.id,
+                preserveExactContent: true,
+              });
+              throwIfLearnCancelled(job.id);
+              return {
+                rawResponse: result.content,
+                councilRunId: result.councilRunId,
+                model,
+              };
+            },
+          });
+          reboundCoverage = recovery.coverage;
+          const recoveryLiveContext = collectLearnSourceContext(
+            contentPath,
+            gardenId,
+            context.selectedSourceIds,
+            context.syllabus?.slug,
+          );
+          const rawSourceBindingProblems = syllabusCoverageRebindSourceBindingProblems({
+            before: context,
+            after: recoveryLiveContext,
+          });
+          const recoveryDriftProblems = syllabusCoverageRecoveryReceiptProblems({
+            receipt: recovery.receipt,
+            sources: syllabusCoverageRecoverySources(recoveryLiveContext),
+            anchors: structuralSourceTextAnchorCatalog(recoveryLiveContext),
+            coverage: recovery.coverage,
+            expectedSourceSetHash: recoveryLiveContext.sourceSetHash,
+            expectedSourceArtifactInventoryHash:
+              recoveryLiveContext.sourceArtifactInventoryHash,
+          });
+          if (rawSourceBindingProblems.length > 0 ||
+              recoveryLiveContext.sourceSetHash !== context.sourceSetHash ||
+              recoveryLiveContext.sourceArtifactInventoryHash !==
+                context.sourceArtifactInventoryHash ||
+              recoveryDriftProblems.length > 0) {
+            throw new LearnPipelineConflictError(
+              `Selected source or syllabus evidence changed during bounded coverage rebind recovery: ${[
+                ...rawSourceBindingProblems,
+                ...recoveryDriftProblems,
+              ].join("; ") || "live evidence hashes changed"}. No Source Map or Learning Unit Contract was requested.`,
+            );
+          }
+          appendLearnEvent(contentPath, gardenId, "learn_syllabus_coverage_evidence_recovery_reviewed", {
+            jobId: job.id,
+            stage: "source_map_rebind",
+            outcome: recovery.receipt.outcome,
+            receiptHash: recovery.receipt.integritySha256,
+            selectedPages: recovery.receipt.selectedPages.map((page) => ({
+              anchorId: page.anchorId,
+              sourceId: page.sourceId,
+              pageNumber: page.pageNumber,
+              exactTextSha256: page.exactTextSha256,
+            })),
+            selectorCouncilRunId: recovery.receipt.selectorAttempts[0].councilRunId,
+            coverageReviewCouncilRunId: recovery.receipt.coverageReviewAttempts[0].councilRunId,
+            semanticCandidates: 2,
+          });
+          if (!recovery.recovered) {
+            appendLearnEvent(contentPath, gardenId, "learn_syllabus_coverage_evidence_recovery_terminal", {
+              jobId: job.id,
+              stage: "source_map_rebind",
+              outcome: recovery.receipt.outcome,
+              receiptHash: recovery.receipt.integritySha256,
+              sourceMapRequested: false,
+              learningUnitContractRequested: false,
+            });
+            throw new Error(
+              "Independent exact-page syllabus coverage rereview still found zero teachable units. No Source Map or Learning Unit Contract was requested.",
+            );
+          }
+        } catch (error) {
+          appendLearnEvent(contentPath, gardenId, "learn_syllabus_coverage_evidence_recovery_failed", {
+            jobId: job.id,
+            stage: "source_map_rebind",
+            error: errorMessage(error),
+            sourceMapRequested: false,
+            learningUnitContractRequested: false,
+          });
+          throw error;
+        }
+      }
+      const coverageLiveContext = collectLearnSourceContext(
+        contentPath,
+        gardenId,
+        context.selectedSourceIds,
+        context.syllabus?.slug,
+      );
+      const rawSourceBindingProblems = syllabusCoverageRebindSourceBindingProblems({
+        before: context,
+        after: coverageLiveContext,
+      });
+      if (rawSourceBindingProblems.length > 0 ||
+          coverageLiveContext.sourceSetHash !== context.sourceSetHash ||
+          coverageLiveContext.sourceArtifactInventoryHash !==
+            context.sourceArtifactInventoryHash) {
+        throw new LearnPipelineConflictError(
+          `Selected source or syllabus evidence changed during syllabus coverage rebind: ${rawSourceBindingProblems.join("; ") || "live evidence hashes changed"}. No Source Map or Learning Unit Contract was requested.`,
+        );
+      }
+      syllabusCoverage = reboundCoverage;
+      replaceSyllabusCoverageWarnings(reboundCoverage);
+      const summary = summarizeSyllabusCoverage(reboundCoverage);
+      appendLearnEvent(contentPath, gardenId, "learn_syllabus_materials_resolved", {
+        jobId: job.id,
+        stage: "source_map_rebind",
+        ...summary,
+        missingCitations: reboundCoverage.missingCitations,
+        untaughtUnitTitles: reboundCoverage.untaughtUnitTitles,
+      });
+      appendLearnEvent(contentPath, gardenId, "learn_syllabus_coverage_rebound", {
+        jobId: job.id,
+        sourceSetHash: context.sourceSetHash,
+        sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
+        evidenceRecoveryHash: reboundCoverage.evidenceRecovery?.integritySha256 ?? "",
+      });
+    };
 
     await learnCheckpoint(job.id);
     const requestSourceMap = async () => {
@@ -5028,6 +5550,7 @@ export async function runLearnPlanning({
         gardenId,
         context,
       );
+      const sourceSetHash = context.sourceSetHash;
       canonicalSourceAnchorCatalog = [
         ...structuralSourceAnchorPromptCatalog(structuralSourceAnchors),
         ...context.sourceFigures.map((figure) => ({
@@ -5050,7 +5573,7 @@ export async function runLearnPlanning({
         user: compactJson({
           sourceOnly,
           syllabus: syllabusPayload,
-          syllabusCoverage: syllabusCoveragePayload,
+          syllabusCoverage: syllabusCoveragePayload(),
           sourceContext: promptSourceContext,
           canonicalSourceAnchors: canonicalSourceAnchorCatalog,
         }),
@@ -5068,19 +5591,21 @@ export async function runLearnPlanning({
           })),
         }),
       });
-      return { call, artifactInventory };
+      return { call, artifactInventory, sourceSetHash };
     };
     let sourceMapRequest = await requestSourceMap();
     let sourceMapCall = sourceMapRequest.call;
     await learnCheckpoint(job.id);
     let sourceMap = sourceMapCall.parsed as Record<string, unknown>;
     let sourceMapArtifactInventory = sourceMapRequest.artifactInventory;
-    let sourceMapReplanAttempted = false;
+    let sourceMapSourceSetHash = sourceMapRequest.sourceSetHash;
+    let sourceMapReauthorAttempts = 0;
 
-    // One complete re-authoring cycle is allowed when pages selected by the
-    // Source Map reveal a different registered artifact inventory. The second
-    // loop iteration checks even when the reauthored map selects no pages, so
-    // concurrent ledger drift cannot be laundered into scope planning.
+    // A small fixed number of complete model reauthoring cycles is allowed
+    // when pages selected by the Source Map reveal a different registered
+    // artifact inventory. Every iteration checks even when the map selects no
+    // pages, so concurrent ledger drift cannot be laundered into scope
+    // planning; the hard cap below still fails closed.
     for (;;) {
       persistSelectedStructuralSourceAnchors({
         clusterDir: clusterPath(contentPath, gardenId),
@@ -5107,7 +5632,7 @@ export async function runLearnPlanning({
         });
         appendLearnEvent(contentPath, gardenId, "learn_source_map_pages_scanned", {
           jobId: job.id,
-          sourceMapAttempt: sourceMapReplanAttempted ? 2 : 1,
+          sourceMapAttempt: sourceMapReauthorAttempts + 1,
           selectedAnchorIds: selectedSourcePageHints.map((hint) => hint.anchorId),
           requestedPages: selectedPageDiscovery.requestedPages,
           discoveredArtifactIds: selectedPageDiscovery.discoveredIds,
@@ -5124,7 +5649,7 @@ export async function runLearnPlanning({
         });
         appendLearnEvent(contentPath, gardenId, "learn_source_formulas_reviewed", {
           jobId: job.id,
-          stage: sourceMapReplanAttempted
+          stage: sourceMapReauthorAttempts > 0
             ? "planning_source_map_pages_replan"
             : "planning_source_map_pages",
           reviewSetHash: postSelectionReview.reviewedFormulaSetHash,
@@ -5135,20 +5660,63 @@ export async function runLearnPlanning({
         });
       }
 
+      // Recollect after every selected-page scan. Formula review can change
+      // the combined source-set hash without adding a visible artifact, while
+      // a source/syllabus edit is never safe to rebind mechanically.
+      const refreshedPlanningContext = collectLearnSourceContext(
+        contentPath,
+        gardenId,
+        context.selectedSourceIds,
+        context.syllabus?.slug,
+      );
+      const rawSourceBindingProblems = syllabusCoverageRebindSourceBindingProblems({
+        before: context,
+        after: refreshedPlanningContext,
+      });
+      if (rawSourceBindingProblems.length > 0) {
+        throw new LearnPipelineConflictError(
+          `Selected source or syllabus identity/raw evidence changed while Source Map pages were scanned: ${rawSourceBindingProblems.join("; ")}. No stale map was retained.`,
+        );
+      }
+      context = refreshedPlanningContext;
+      structuralSourceAnchors = structuralSourceTextAnchorCatalog(context);
+      canonicalSourceAnchorCatalog = [
+        ...structuralSourceAnchorPromptCatalog(structuralSourceAnchors),
+        ...context.sourceFigures.map((figure) => ({
+          id: figure.figureId,
+          sourceId: figure.sourceId,
+          page: figure.page,
+          title: figure.caption,
+          kind: figure.kind,
+        })),
+      ];
+      promptSourceContext = promptSources(context);
+      syllabusPayload = promptSyllabus(context);
+      planningSourceMeta.sourceIds = context.sources.map((source) => source.slug);
+      planningSourceMeta.sourceSetHash = context.sourceSetHash;
+      planningSourceMeta.sourceArtifactInventoryHash = context.sourceArtifactInventoryHash;
       const postSelectedPageArtifactInventory = refreshSelectedSourceArtifactInventory(
         contentPath,
         gardenId,
         context,
       );
-      const inventoryTransition = sourceMapArtifactInventoryTransition({
-        before: sourceMapArtifactInventory,
-        after: postSelectedPageArtifactInventory,
-        replanAttempted: sourceMapReplanAttempted,
+      const evidenceTransition = sourceMapPlanningEvidenceTransition({
+        before: {
+          sourceSetHash: sourceMapSourceSetHash,
+          sourceArtifactInventoryHash:
+            sourceMapArtifactInventory.sourceArtifactInventoryHash,
+        },
+        after: {
+          sourceSetHash: context.sourceSetHash,
+          sourceArtifactInventoryHash:
+            postSelectedPageArtifactInventory.sourceArtifactInventoryHash,
+        },
+        reauthorAttempts: sourceMapReauthorAttempts,
       });
-      if (inventoryTransition === "stable") break;
-      if (inventoryTransition === "fail") {
+      if (evidenceTransition === "stable") break;
+      if (evidenceTransition === "fail") {
         throw new Error(
-          "Selected source-artifact inventory changed again after the bounded Source Map replan. Start Learn planning again so no map can be confirmed against stale artifact evidence.",
+          `Selected source-artifact inventory changed after ${MAX_SOURCE_MAP_EVIDENCE_REAUTHORS} bounded Source Map reauthorizations, or its source-set binding drifted. Start Learn planning again so no map can be confirmed against stale artifact evidence.`,
         );
       }
 
@@ -5157,16 +5725,25 @@ export async function runLearnPlanning({
         stage: "planning_source_map_pages",
         beforeHash: sourceMapArtifactInventory.sourceArtifactInventoryHash,
         afterHash: postSelectedPageArtifactInventory.sourceArtifactInventoryHash,
+        beforeSourceSetHash: sourceMapSourceSetHash,
+        afterSourceSetHash: context.sourceSetHash,
         beforeArtifactCount: sourceMapArtifactInventory.artifacts.length,
         afterArtifactCount: postSelectedPageArtifactInventory.artifacts.length,
-        action: "reauthor_source_map",
+        reauthorAttempt: sourceMapReauthorAttempts + 1,
+        reauthorLimit: MAX_SOURCE_MAP_EVIDENCE_REAUTHORS,
+        action: "rebind_syllabus_coverage_and_reauthor_source_map",
       });
-      sourceMapReplanAttempted = true;
+      // The coverage call is model-authored against the refreshed ledger. It
+      // replaces (rather than rewrites) any older coverage receipt, so a stale
+      // recovery hash cannot reach Source Map, LUC, or commit persistence.
+      await rebindSyllabusCoverage();
+      sourceMapReauthorAttempts += 1;
       sourceMapRequest = await requestSourceMap();
       sourceMapCall = sourceMapRequest.call;
       await learnCheckpoint(job.id);
       sourceMap = sourceMapCall.parsed as Record<string, unknown>;
       sourceMapArtifactInventory = sourceMapRequest.artifactInventory;
+      sourceMapSourceSetHash = sourceMapRequest.sourceSetHash;
     }
 
     // The model request validates its own candidate, but run the same strict
@@ -5212,7 +5789,7 @@ export async function runLearnPlanning({
       user: compactJson({
         sourceOnly,
         syllabus: syllabusPayload,
-        syllabusCoverage: syllabusCoveragePayload,
+        syllabusCoverage: syllabusCoveragePayload(),
         sourceMap,
         sources: promptSourcesCompact(context),
       }),
@@ -5241,7 +5818,7 @@ export async function runLearnPlanning({
     const topicMapPlanningPacket = () => ({
       sourceOnly,
       syllabus: syllabusPayload,
-      syllabusCoverage: syllabusCoveragePayload,
+      syllabusCoverage: syllabusCoveragePayload(),
       sourceMap,
       scopeContract,
       sources: spineSourceContext,
@@ -5691,6 +6268,7 @@ export async function runLearnPlanning({
         new Set([
           ...(Array.isArray(planRecord.warnings) ? planRecord.warnings.filter((item): item is string => typeof item === "string") : []),
           ...planningWarnings,
+          ...syllabusCoverageWarnings,
         ]),
       ),
     });
@@ -5878,6 +6456,18 @@ export async function runLearnPlanning({
         ...visualizationPlanning.repairAudit,
       },
     });
+    // The visual allocation is a confirmed-map decision, not generation-time
+    // advice. Persist its full pre-executability record, final route plan, and
+    // signed review ledger together with the exact source/contract bindings.
+    const confirmedVisualRouteBundle = createConfirmedVisualRouteBundle({
+      sourceSetHash: context.sourceSetHash,
+      sourceArtifactInventoryHash: context.sourceArtifactInventoryHash,
+      sourceFormulaReviewSetHash: context.sourceFormulaReviewSetHash,
+      learningUnits,
+      visualNecessityReview,
+      visualizationPlan,
+      executabilityLedger: planningExecutabilityLedger,
+    });
     persistRoutedVisualPlans(clusterPath(contentPath, gardenId), learningUnits);
     learningMap = learningMapWithConfirmedUnitContracts(learningMap, learningUnits);
     const routedCoveragePlan = sourceCoveragePlan(
@@ -5891,12 +6481,18 @@ export async function runLearnPlanning({
     );
     const routedMapUpdate = db.prepare(
       `UPDATE learn_maps
-       SET learning_map_json = ?, proposed_order_json = ?, coverage_plan_json = ?
+       SET learning_map_json = ?, proposed_order_json = ?, coverage_plan_json = ?,
+           visual_necessity_review_json = ?, visualization_plan_json = ?,
+           visual_contract_executability_ledger_json = ?, visual_route_binding_json = ?
        WHERE id = ? AND source_artifact_inventory_hash = ?`,
     ).run(
       jsonString(learningMap),
       jsonString(learningMap.sections),
       jsonString(routedCoveragePlan),
+      jsonString(confirmedVisualRouteBundle.visualNecessityReview),
+      jsonString(confirmedVisualRouteBundle.visualizationPlan),
+      jsonString(confirmedVisualRouteBundle.executabilityLedger),
+      jsonString(confirmedVisualRouteBundle.binding),
       storedMap.id,
       context.sourceArtifactInventoryHash,
     );
@@ -5909,6 +6505,10 @@ export async function runLearnPlanning({
       learningMap,
       proposedOrder: learningMap.sections,
       coveragePlan: routedCoveragePlan,
+      visualNecessityReview: confirmedVisualRouteBundle.visualNecessityReview,
+      visualizationPlan: confirmedVisualRouteBundle.visualizationPlan,
+      visualContractExecutabilityLedger: confirmedVisualRouteBundle.executabilityLedger,
+      visualRouteBinding: confirmedVisualRouteBundle.binding,
     });
     saveVisualizationPlan(clusterPath(contentPath, gardenId), visualizationPlan);
     saveVisualContractExecutabilityLedger({
@@ -5921,12 +6521,20 @@ export async function runLearnPlanning({
       path: VISUAL_CONTRACT_EXECUTABILITY_LEDGER_RELATIVE_PATH,
       modelCalls: executabilityReview.calls,
       replacedUnitIds: executabilityReview.replacedUnitIds,
+      phase: "planning",
+      visualRouteBindingHash: confirmedVisualRouteBindingHash(
+        confirmedVisualRouteBundle.binding,
+      ),
     });
     appendLearnEvent(contentPath, gardenId, "visual_opportunity_analysis_completed", {
       jobId: job.id,
       learningMapId: storedMap.id,
       opportunitiesDetected: visualizationPlan.opportunities.length,
       durationMs: Date.now() - visualizationPlanningStartedAt,
+      phase: "planning",
+      visualRouteBindingHash: confirmedVisualRouteBindingHash(
+        confirmedVisualRouteBundle.binding,
+      ),
     });
     for (const opportunity of visualizationPlan.opportunities) {
       appendLearnEvent(contentPath, gardenId, "visual_opportunity_detected", {
@@ -5949,6 +6557,10 @@ export async function runLearnPlanning({
         compatibilityScore: decision.compatibilityScore,
         reason: decision.reason,
         duplicateOf: decision.duplicateOf,
+        phase: "planning",
+        visualRouteBindingHash: confirmedVisualRouteBindingHash(
+          confirmedVisualRouteBundle.binding,
+        ),
       });
     }
     const finalPlanningContext = collectLearnSourceContext(
@@ -6211,6 +6823,32 @@ export function confirmLearningMap({
         syllabusCoverage: map.syllabusCoverage,
         stage: "Map confirmation",
       });
+      const confirmationLearningUnits = learningUnitsFromCoveragePlan(map.coveragePlan);
+      let confirmationCanonicalEvidence: ReturnType<typeof canonicalVisualizationEvidenceByUnit>;
+      try {
+        confirmationCanonicalEvidence = canonicalVisualizationEvidenceByUnit(
+          clusterPath(contentPath, gardenId),
+          confirmationLearningUnits,
+        );
+      } catch (error) {
+        throw new LearnPipelineConflictError(
+          `The proposed Learning Map cannot prove its canonical visual evidence: ${errorMessage(error)}. Run Learn planning again before confirmation.`,
+          { requiresReplan: true },
+        );
+      }
+      const confirmedVisualRouteProblems = confirmedVisualRouteBundleProblems({
+        gardenId,
+        map,
+        context: confirmationContext,
+        learningUnits: confirmationLearningUnits,
+        canonicalEvidenceByUnit: confirmationCanonicalEvidence,
+      });
+      if (confirmedVisualRouteProblems.length > 0) {
+        throw new LearnPipelineConflictError(
+          `The proposed Learning Map has no valid confirmed visual route bundle: ${confirmedVisualRouteProblems.join("; ")}. Run Learn planning again before confirmation.`,
+          { requiresReplan: true },
+        );
+      }
       if (alreadyConfirmed) return { map, jobId: map.jobId, changed: false };
       const planningJob = getLearnJobById(map.jobId);
       if (
@@ -7005,8 +7643,11 @@ function restoreLearnDatabaseSnapshot(
         id, garden_id, job_id, status, source_map_json, scope_contract_json,
         learning_map_json, proposed_order_json, visual_opportunities_json,
         coverage_plan_json, source_set_hash, source_artifact_inventory_hash,
-        source_ids_json, syllabus_source_id, syllabus_coverage_json, created_at, confirmed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        source_ids_json, syllabus_source_id, syllabus_coverage_json,
+        visual_necessity_review_json, visualization_plan_json,
+        visual_contract_executability_ledger_json, visual_route_binding_json,
+        created_at, confirmed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of baselineMaps) {
       insertMap.run(
@@ -7026,6 +7667,10 @@ function restoreLearnDatabaseSnapshot(
         row.source_ids_json ?? "[]",
         row.syllabus_source_id ?? null,
         row.syllabus_coverage_json ?? null,
+        row.visual_necessity_review_json ?? null,
+        row.visualization_plan_json ?? null,
+        row.visual_contract_executability_ledger_json ?? null,
+        row.visual_route_binding_json ?? null,
         row.created_at,
         row.confirmed_at,
       );
@@ -7391,6 +8036,7 @@ async function reconcileInteractiveVisuals({
   client,
   model,
   contentPath,
+  durableEventContentPath,
   gardenId,
   jobId,
   textbookVersionId,
@@ -7405,7 +8051,12 @@ async function reconcileInteractiveVisuals({
 }: {
   client: OpenAI;
   model: string;
+  /** The mutable staging root that owns generated visual artifacts. */
   contentPath: string;
+  /** Optional durable garden root for bounded, non-publishing browser
+   * diagnostics. Successful artifacts and every other visual event remain
+   * staged until promotion. */
+  durableEventContentPath?: string;
   gardenId: string;
   jobId: string;
   textbookVersionId: string;
@@ -7503,12 +8154,35 @@ async function reconcileInteractiveVisuals({
       availableSourceAnchorIds: new Set(
         Object.keys(buildCanonicalSourceAnchors(path.join(contentPath, gardenId), { allowInferredFormulaText: false })),
       ),
-      onEvent: (event) => appendLearnEvent(contentPath, gardenId, event.type, {
-        ...event.data,
-        jobId,
-        textbookVersionId,
-        pageId,
-      }),
+      onEvent: (event) => {
+        const eventData = {
+          ...event.data,
+          jobId,
+          textbookVersionId,
+          pageId,
+        };
+        appendLearnEvent(contentPath, gardenId, event.type, eventData);
+        // A failed generation disposes its staging directory. Preserve only
+        // the bounded, path-sanitized browser-matrix receipt at the durable
+        // root so a terminal runtime failure remains diagnosable without
+        // publishing a candidate, its source, or a visual artifact.
+        if (
+          durableEventContentPath &&
+          durableEventContentPath !== contentPath &&
+          event.type === "visual_browser_tests_completed" &&
+          event.data.previewMatrixReceipt
+        ) {
+          appendLearnEvent(
+            durableEventContentPath,
+            gardenId,
+            "learn_visual_preview_matrix_observed",
+            {
+              ...eventData,
+              stage: "staging_unpublished",
+            },
+          );
+        }
+      },
       checkCancelled: () => throwIfLearnCancelled(jobId),
     });
     if (result.manifest) {
@@ -7935,6 +8609,15 @@ export async function runTextbookGeneration({
     if (!isContractBackedLearningMap(selectedMap)) {
       throw new Error(
         "This confirmed learning map was created before Learning Unit Contracts existed. Start Learn again to draft a new source-grounded learning map.",
+      );
+    }
+    if (!selectedMap.visualNecessityReview ||
+        !selectedMap.visualizationPlan ||
+        !selectedMap.visualContractExecutabilityLedger ||
+        !selectedMap.visualRouteBinding) {
+      throw new LearnPipelineConflictError(
+        "This confirmed Learning Map predates its durable visual route bundle. Run Learn planning again and confirm the new proposed map before generation.",
+        { requiresReplan: true },
       );
     }
     if (gardenLease && selectedMap.jobId !== jobId) {
@@ -8474,20 +9157,30 @@ export async function runTextbookGeneration({
         }
       }
     }
-    // Rerun the whole-garden model decision against the post-formula contract;
-    // every unit and every active interaction are independently validated.
-    const generationVisualNecessityReview = await planAndReviewVisualNecessity({
-      client,
-      model,
+    // Visual necessity, routing, and executability are all part of the map the
+    // user confirmed. Rehydrate that exact bundle only after the independent
+    // source/formula gates above have proven that its bindings still hold.
+    const confirmedCanonicalVisualEvidence = canonicalVisualizationEvidenceByUnit(
+      clusterDir,
+      confirmedLearningUnits,
+    );
+    const confirmedVisualRouteBundle = confirmedVisualRouteBundleForGeneration({
       gardenId,
-      contentPath: artifactContentPath,
-      jobId: job.id,
+      map,
+      context,
       learningUnits: confirmedLearningUnits,
+      canonicalEvidenceByUnit: confirmedCanonicalVisualEvidence,
     });
-    confirmedLearningUnits = generationVisualNecessityReview.learningUnits;
+    const generationVisualNecessityReview = confirmedVisualRouteBundle.visualNecessityReview;
+    const generationExecutabilityLedger = confirmedVisualRouteBundle.executabilityLedger;
+    // Preserve the actual planning review context. Relabelling it as a fresh
+    // generation model review would fabricate provenance the model never saw.
+    const generationExecutabilityContext: VisualContractExecutabilityLedgerContext =
+      generationExecutabilityLedger.context;
+    visualizationPlan = confirmedVisualRouteBundle.visualizationPlan;
     verifyAuthoritativeSourceAnchorLedger(workspace);
-    // Persist the model-authored visual plan. The writer may still reconcile
-    // source/formula registry integrity, but it cannot replace visual pedagogy.
+    // The writer may reconcile source/formula registry integrity, but it can
+    // never replace the confirmed visual pedagogy or route allocation.
     const contractWrite = writeLearningUnitContractArtifacts({
       clusterDir,
       units: confirmedLearningUnits,
@@ -8503,6 +9196,15 @@ export async function runTextbookGeneration({
     confirmedLearningUnits = contractWrite.units;
     confirmedSourceArtifactAssignments = contractWrite.assignments;
     confirmedSourceArtifactOmissions = contractWrite.omissions;
+    if (
+      learningUnitContractBindingSha256(confirmedLearningUnits) !==
+      confirmedVisualRouteBundle.binding.learningUnitContractSha256
+    ) {
+      throw new LearnPipelineConflictError(
+        "Generation would alter the confirmed Learning Unit Contract after visual routing. Run Learn planning again and confirm a new map.",
+        { requiresReplan: true },
+      );
+    }
     let repairedCoveragePlan = {
       ...planningRecord(map.coveragePlan),
       learningUnitContracts: confirmedLearningUnits,
@@ -8519,92 +9221,6 @@ export async function runTextbookGeneration({
       learningMap: repairedLearningMap,
       proposedOrder: repairedLearningMap.sections,
     };
-    // Rebuild after formula assignment reconciliation so visualization
-    // opportunities see the exact confirmed contracts that page generation
-    // will use. The saved plan is the auditable routing control plane for this
-    // run; page-specific target paths are filled as each unit is written.
-    const visualizationPlanningStartedAt = Date.now();
-    const generationCanonicalVisualEvidence = canonicalVisualizationEvidenceByUnit(
-      clusterDir,
-      confirmedLearningUnits,
-    );
-    const generationVisualizationPlanning = await buildVisualizationPlanWithContractRepair({
-      gardenId,
-      learningMap: repairedLearningMap,
-      learningUnits: confirmedLearningUnits,
-      visualBudget: generationVisualNecessityReview.budget,
-      canonicalEvidenceByUnit: generationCanonicalVisualEvidence,
-      necessityReviewCalls: generationVisualNecessityReview.reviewCalls,
-      rejectedNecessityReviews: generationVisualNecessityReview.rejectedReviews,
-      visualDecisionOverrides: generationVisualNecessityReview.overrides,
-      repairProvider: (packet) => requestVisualizationContractRepair({
-        client,
-        model,
-        gardenId,
-        packet,
-      }),
-      maxRepairAttempts: 2,
-      checkCancelled: () => throwIfLearnCancelled(job.id),
-      onEvent: (type, data) => appendLearnEvent(contentPath, gardenId, type, {
-        jobId: job.id,
-        textbookVersionId,
-        ...data,
-      }),
-    });
-    const generationExecutabilityContext = {
-      phase: "generation" as const,
-      jobId: job.id,
-      model,
-      learningMapId: map.id,
-      textbookVersionId,
-    };
-    const generationExecutabilityReview = await reviewVisualizationPlanExecutability({
-      gardenId,
-      learningMap: repairedLearningMap,
-      learningUnits: generationVisualizationPlanning.learningUnits,
-      initialPlan: generationVisualizationPlanning.plan,
-      canonicalEvidenceByUnit: generationCanonicalVisualEvidence,
-      auditContext: generationExecutabilityContext,
-      maximumRepeatedInteractionSignature: LEARN_VISUAL_MAX_REPEATED_INTERACTION_SIGNATURE,
-      provider: (request) => requestVisualizationContractExecutabilityReview({
-        client,
-        model,
-        gardenId,
-        request,
-      }),
-      checkCancelled: () => throwIfLearnCancelled(job.id),
-      onEvent: (type, data) => appendLearnEvent(contentPath, gardenId, type, {
-        jobId: job.id,
-        textbookVersionId,
-        ...data,
-      }),
-    });
-    visualizationPlan = generationExecutabilityReview.plan;
-    confirmedLearningUnits = generationExecutabilityReview.learningUnits;
-    confirmedLearningUnits = applyVisualizationRoutesToLearningUnits(
-      confirmedLearningUnits,
-      visualizationPlan,
-    );
-    visualizationPlan = buildFinalVisualizationPlanFromRoutedContracts({
-      gardenId,
-      learningMap: repairedLearningMap,
-      finalRoutedLearningUnits: confirmedLearningUnits,
-      reviewedPlan: visualizationPlan,
-      canonicalEvidenceByUnit: generationCanonicalVisualEvidence,
-    });
-    // As in planning, prove that the durable ledger can be built before any
-    // generation-phase contract/plan artifact is replaced.
-    const generationExecutabilityLedger = buildVisualContractExecutabilityLedger({
-      gardenId,
-      context: generationExecutabilityContext,
-      review: generationExecutabilityReview,
-      finalRoutedLearningUnits: confirmedLearningUnits,
-      finalVisualizationPlan: visualizationPlan,
-      structuralContractRepair: {
-        source: generationVisualizationPlanning.repairSource,
-        ...generationVisualizationPlanning.repairAudit,
-      },
-    });
     persistRoutedVisualPlans(clusterDir, confirmedLearningUnits);
     repairedCoveragePlan = {
       ...repairedCoveragePlan,
@@ -8626,30 +9242,48 @@ export async function runTextbookGeneration({
       gardenDir: clusterDir,
       ledger: generationExecutabilityLedger,
     });
+    const rehydratedArtifactProvenanceProblems =
+      visualContractExecutabilityArtifactProvenanceProblems({
+        gardenDir: clusterDir,
+        gardenId,
+        ledger: generationExecutabilityLedger,
+        finalLearningUnits: confirmedLearningUnits,
+      });
+    if (rehydratedArtifactProvenanceProblems.length > 0) {
+      throw new LearnPipelineConflictError(
+        `The confirmed visual route bundle could not be rehydrated exactly: ${rehydratedArtifactProvenanceProblems.join("; ")}. Run Learn planning again and confirm a new map.`,
+        { requiresReplan: true },
+      );
+    }
+    appendLearnEvent(contentPath, gardenId, "visual_route_plan_rehydrated", {
+      jobId: job.id,
+      textbookVersionId,
+      learningMapId: map.id,
+      phase: "generation",
+      provenance: "confirmed_map",
+      planningJobId: generationExecutabilityLedger.context.jobId,
+      planningModel: generationExecutabilityLedger.context.model,
+      visualRouteBindingHash: confirmedVisualRouteBindingHash(
+        confirmedVisualRouteBundle.binding,
+      ),
+      visualizationPlanSha256: confirmedVisualRouteBundle.binding.visualizationPlanSha256,
+      visualContractExecutabilityLedgerSha256:
+        confirmedVisualRouteBundle.binding.visualContractExecutabilityLedgerSha256,
+    });
     appendLearnEvent(contentPath, gardenId, "visual_contract_executability_ledger_persisted", {
       jobId: job.id,
       textbookVersionId,
       path: VISUAL_CONTRACT_EXECUTABILITY_LEDGER_RELATIVE_PATH,
-      modelCalls: generationExecutabilityReview.calls,
-      replacedUnitIds: generationExecutabilityReview.replacedUnitIds,
-    });
-    appendLearnEvent(contentPath, gardenId, "visual_opportunity_analysis_completed", {
-      jobId: job.id,
-      textbookVersionId,
-      opportunitiesDetected: visualizationPlan.opportunities.length,
-      durationMs: Date.now() - visualizationPlanningStartedAt,
+      modelCalls: 0,
+      replacedUnitIds: [],
+      phase: "generation",
+      provenance: "confirmed_map_rehydrated",
+      ledgerContextPhase: generationExecutabilityLedger.context.phase,
+      visualRouteBindingHash: confirmedVisualRouteBindingHash(
+        confirmedVisualRouteBundle.binding,
+      ),
     });
     for (const decision of visualizationPlan.decisions) {
-      appendLearnEvent(contentPath, gardenId, "visual_route_selected", {
-        jobId: job.id,
-        textbookVersionId,
-        visualizationId: decision.opportunityId,
-        route: decision.route,
-        selectedRenderer: decision.selectedRenderer,
-        compatibilityScore: decision.compatibilityScore,
-        reason: decision.reason,
-        duplicateOf: decision.duplicateOf,
-      });
       if (decision.route === "intentional_omission") {
         visualizationOutcomes.push({
           opportunityId: decision.opportunityId,
@@ -9132,6 +9766,7 @@ export async function runTextbookGeneration({
           client,
           model,
           contentPath: artifactContentPath,
+          durableEventContentPath: contentPath,
           gardenId,
           jobId: job.id,
           textbookVersionId,
@@ -9727,6 +10362,58 @@ export async function runTextbookGeneration({
         reason: criticError instanceof Error ? criticError.message : String(criticError),
       });
       throw criticError;
+    }
+
+    // Optional final prose pass. It deliberately runs after the whole learner
+    // tree has been generated, finalized, verified, and approved by the critic
+    // so no in-flight page or internal planning artifact is ever rewritten.
+    // The helper captures every original, offers only learning/**/*.md to the
+    // local humanizer, then restores the entire candidate unless the same hard
+    // final-artifact verifier accepts it.
+    const humanizerRun = await humanizeFinishedLearnBuild({
+      userId,
+      gardenDir: clusterDir,
+      checkCancelled: () => throwIfLearnCancelled(job.id),
+      onStart: (fileCount) =>
+        updateLearnJob(job.id, {
+          status: "building_navigation",
+          currentStep: `Rewriting ${fileCount} finished lesson${fileCount === 1 ? "" : "s"} naturally`,
+          progressPercent: 98,
+          currentSectionTitle: undefined,
+          currentPageTitle: undefined,
+        }),
+      validate: () => {
+        const finalCheck = verifyFinalArtifactNoMutation({
+          gardenDir: clusterDir,
+          gardenSlug: gardenId,
+          strictModelApprovedVisuals: true,
+          expectedVisualContractExecutabilityContext: generationExecutabilityContext,
+          expectedSourceFormulaReviewContext: sourceFormulaReviewFinalizationContext,
+        });
+        return {
+          accepted: finalCheck.accepted,
+          problems: [
+            ...finalCheck.validationFailures,
+            ...finalCheck.unresolvedRepairFailures,
+            ...finalCheck.mutatedFiles.map(
+              (file) => `mutated during verification: ${file}`,
+            ),
+          ],
+        };
+      },
+    });
+    if (humanizerRun.requested) {
+      appendLearnEvent(contentPath, gardenId, "learn_humanizer_completed", {
+        jobId: job.id,
+        textbookVersionId,
+        adopted: humanizerRun.adopted,
+        reason: humanizerRun.reason,
+        filesConsidered: humanizerRun.filesConsidered,
+        candidateFiles: humanizerRun.candidateFiles,
+        adoptedFiles: humanizerRun.adoptedFiles,
+        chunks: humanizerRun.chunks,
+        validationProblems: humanizerRun.validationProblems,
+      });
     }
 
     throwIfLearnCancelled(job.id);
@@ -11894,6 +12581,22 @@ function previousGardenForAbandonedJob(
   return null;
 }
 
+/** Remove every known disposable staging root for a terminal abandoned job.
+ * Both the default LOCALAPPDATA root and the OS-temp fallback are included so
+ * recovery does not depend on knowing which root a prior worker reached. */
+function disposeAbandonedLearnWorkspaces(gardenId: string, jobId: string): void {
+  for (const abandonedWorkspace of learnWorkspaceRootCandidates(gardenId, jobId)) {
+    try {
+      fs.rmSync(abandonedWorkspace, { recursive: true, force: true });
+    } catch (cleanupError) {
+      console.warn(
+        `[learn] Abandoned workspace remains at ${abandonedWorkspace}:`,
+        cleanupError,
+      );
+    }
+  }
+}
+
 /**
  * Recover work whose process disappeared. This is intentionally run by the
  * Node startup sweeper, never by a GET/status request: status remains a pure
@@ -12017,6 +12720,7 @@ export async function recoverAbandonedLearnJobs({
               "learn_abandoned_job_superseded",
               { jobId: current.id, newerJobId: newerJob.id },
             );
+            disposeAbandonedLearnWorkspaces(current.garden_id, current.id);
             recoveredJobIds.push(current.id);
             continue;
           }
@@ -12101,18 +12805,7 @@ export async function recoverAbandonedLearnJobs({
             { jobId: candidate.id, error: errorMessage(error) },
           );
         }
-        const abandonedWorkspace = defaultWorkspaceRoot(
-          candidate.garden_id,
-          candidate.id,
-        );
-        try {
-          fs.rmSync(abandonedWorkspace, { recursive: true, force: true });
-        } catch (cleanupError) {
-          console.warn(
-            `[learn] Abandoned workspace remains at ${abandonedWorkspace}:`,
-            cleanupError,
-          );
-        }
+        disposeAbandonedLearnWorkspaces(candidate.garden_id, candidate.id);
         recoveredJobIds.push(candidate.id);
       } finally {
         lease.release();

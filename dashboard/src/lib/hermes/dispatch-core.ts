@@ -39,6 +39,12 @@ export interface PrepareTurnInput {
   interactiveApprovals?: boolean;
   /** The user had Super agent on when they sent this message. */
   superAgent?: boolean;
+  /**
+   * The request is broad enough to be worth the tracked research pipeline, as
+   * judged from its own text. Opens the three `research_*` tools and nothing
+   * else — it widens no filesystem, command, or isolation authority.
+   */
+  researchPipeline?: boolean;
 }
 
 export interface PreparedTurn {
@@ -80,6 +86,7 @@ export function prepareTurn(input: PrepareTurnInput): PreparedTurn {
     confirmedPermissionIds: input.confirmedPermissionIds,
     interactiveApprovals: input.interactiveApprovals,
     superAgent: input.superAgent,
+    researchPipeline: input.researchPipeline,
   });
   return {
     plan,
