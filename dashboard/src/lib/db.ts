@@ -25,6 +25,8 @@ import { ensureSocialsManagerSchema } from "./socials-manager/schema.ts";
 import { ensureTelegramSchema } from "./telegram/schema.ts";
 import { ensureWhatsAppSchema } from "./whatsapp/schema.ts";
 import { ensureReviewSchema } from "./review/schema.ts";
+import { ensureMcpOAuthSchema } from "./hermes/mcp-oauth-schema.ts";
+import { ensureSpotifySchema } from "./spotify/schema.ts";
 
 const DB_PATH = path.join(databaseDir(), "brain.db");
 
@@ -778,6 +780,7 @@ ensureColumn("chat_messages", "proposal", "proposal TEXT");
 // Canonical, surface-independent conversation and memory ownership. This runs
 // after the legacy chat and Hermes tables exist so its guarded backfill can
 // preserve every user-visible transcript without a destructive migration.
+ensureMcpOAuthSchema(db);
 ensureConversationSchema(db);
 // Bookkeeping mapping durable memories to their mem0 semantic-index entries.
 // Must follow the conversation schema: it references durable_memories(id).
@@ -802,6 +805,8 @@ ensureCadSchema(db);
 
 // Per-user connected-app ownership, one-time OAuth state, and encrypted vault.
 ensureNangoSchema(db);
+// Conversation-scoped tracks selected by the native inline Spotify player.
+ensureSpotifySchema(db);
 
 // Additive cron-scheduled chat jobs; the schema lives with its store in
 // src/lib/schedules/ and is safe to re-apply.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formulaMetricFamily, isWorkedExampleFormula } from "../src/lib/learn-utils.ts";
+import { formulaMetricFamily, isFormulaExpression, isWorkedExampleFormula } from "../src/lib/learn-utils.ts";
 
 const BS = String.fromCharCode(92); // a literal backslash, unmangled by tooling
 
@@ -26,6 +26,12 @@ test("OCR-flattened summation definition is NOT a worked example", () => {
 test("LaTeX summation / product definitions are NOT worked examples", () => {
   assert.equal(isWorkedExampleFormula(`N_{${BS}text{spikes}}=${BS}sum_{t=1}^{T}${BS}sum_{i=1}^{N}S_i[t]`), false);
   assert.equal(isWorkedExampleFormula(`${BS}prod_{i=1}^{3} x_i`), false);
+});
+
+test("bounded and contour integrals are expressions, not worked examples", () => {
+  const stokes = `${BS}oint ${BS}mathbf{H}${BS}cdot d${BS}mathbf{L} ${BS}equiv ${BS}int_S (${BS}nabla ${BS}times ${BS}mathbf{H})${BS}cdot d${BS}mathbf{S} ${BS}tag{30}`;
+  assert.equal(isFormulaExpression(stokes), true);
+  assert.equal(isWorkedExampleFormula(stokes), false);
 });
 
 // Symbolic metric definitions remain non-worked-example.

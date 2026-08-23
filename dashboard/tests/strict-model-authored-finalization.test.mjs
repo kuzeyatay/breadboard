@@ -245,6 +245,73 @@ test("strict export leaves model formulas, source anchors, concepts, and empty c
   );
 });
 
+test("strict export accepts selected structural text evidence without synthesizing a text-concept record", (t) => {
+  const fixture = makeStrictBoundaryGarden();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const page = fs.readFileSync(fixture.pagePath, "utf-8")
+    .replace('sourceAnchors: ["text-source-page-1", "text-source-page-2", "S1.P1.E1"]', 'sourceAnchors: ["text-source-page-1", "S1.P1.E1"]');
+  fs.writeFileSync(fixture.pagePath, page, "utf-8");
+  const structural = {
+    id: "text-source-page-1",
+    kind: "guidance",
+    sourceId: "source",
+    page: 1,
+    title: "Page 1",
+    exactText: "Accuracy is the number of correct predictions divided by the total number of predictions.",
+    provenance: {
+      origin: "selected_source_markdown_page",
+      sourceRelPath: "sources/source.md",
+      extraction: "exact_markdown_page_block",
+    },
+  };
+  fs.writeFileSync(fixture.anchorLedgerPath, `${JSON.stringify({
+    sourceTextConceptAnchors: [],
+    sourceStructuralAnchors: [structural],
+  }, null, 2)}\n`, "utf-8");
+  const before = semanticSnapshot(fixture);
+
+  const report = finalizeGardenExport({
+    gardenDir: fixture.gardenDir,
+    gardenSlug: "strict-garden",
+    preserveModelAuthoredContent: true,
+  });
+
+  assert.deepEqual(semanticSnapshot(fixture), before);
+  const textAnchorFailures = report.criticalProblems.filter((problem) =>
+    /text-source-page-1/.test(problem) && /not registered|missing or empty|missing semanticSummary|missing conceptKeywords/i.test(problem),
+  );
+  assert.deepEqual(textAnchorFailures, [], report.criticalProblems.join("\n"));
+  const ledger = JSON.parse(fs.readFileSync(fixture.anchorLedgerPath, "utf-8"));
+  assert.deepEqual(ledger.sourceTextConceptAnchors, []);
+  assert.deepEqual(ledger.sourceStructuralAnchors, [structural]);
+});
+
+test("strict export regenerates Source Coverage from formula usage", (t) => {
+  const fixture = makeStrictBoundaryGarden();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const page = fs.readFileSync(fixture.pagePath, "utf-8")
+    .replace("sourceFormulaAnchors: []", 'sourceFormulaAnchors: ["S1.P1.E1"]');
+  fs.writeFileSync(fixture.pagePath, page, "utf-8");
+
+  const report = finalizeGardenExport({
+    gardenDir: fixture.gardenDir,
+    gardenSlug: "strict-garden",
+    preserveModelAuthoredContent: true,
+  });
+
+  const coverage = fs.readFileSync(
+    path.join(fixture.gardenDir, ".breadboard", "planning", "Source Coverage.md"),
+    "utf-8",
+  );
+  assert.match(coverage, /S1\.P1\.E1 \(used\)/);
+  assert.match(coverage, /## Explained as Text Formulas[\s\S]*S1\.P1\.E1/);
+  assert.equal(
+    report.criticalProblems.some((problem) => /Source Coverage marks S1\.P1\.E1 as "unused"|Source Coverage lists S1\.P1\.E1 under "Missing or Misplaced"/.test(problem)),
+    false,
+    report.criticalProblems.join("\n"),
+  );
+});
+
 test("strict contract repair ignores a requested deterministic executor and preserves semantic files", async (t) => {
   const fixture = makeStrictBoundaryGarden();
   t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));

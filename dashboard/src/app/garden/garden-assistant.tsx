@@ -64,7 +64,16 @@ import {
 import { chatTimeSeparatorLabels } from '@/lib/chat-time-separators';
 import type { VerificationSummary } from '@/lib/hermes/evidence';
 import { delegatedAgentCompletedLabelForMessage } from '@/lib/hermes/super-agent-activity';
-import type { QuartzAssistantSelectionRequest } from '@/lib/quartz-assistant-selection';
+import type {
+  QuartzAssistantSelectionRequest,
+  QuartzInlineAnswerUpdate,
+} from '@/lib/quartz-assistant-selection';
+
+interface QuartzInlineSelectionReference {
+  requestId: string;
+  highlightId: string;
+  pageSlug?: string;
+}
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -78,6 +87,8 @@ interface ChatMessage {
   responseDurationMs?: number;
   verification?: VerificationSummary;
   selectedText?: string;
+  /** A Garden "Ask here" turn is kept in history but drawn on its page mark. */
+  inlineSelection?: QuartzInlineSelectionReference;
 }
 
 interface ChatSession {
@@ -103,6 +114,7 @@ interface PermissionRequest {
   originalText: string;
   history: ChatMessage[];
   selectedText?: string;
+  selectionContext?: QuartzAssistantSelectionRequest;
 }
 
 interface GraphStats {
@@ -171,6 +183,7 @@ interface Props {
   activeClusterName?: string;
   activeMarkdown?: ActiveMarkdown | null;
   selectedTextRequest?: QuartzAssistantSelectionRequest | null;
+  onInlineAnswerUpdate?: (update: QuartzInlineAnswerUpdate) => void;
   initialOpen?: boolean;
 }
 
@@ -515,6 +528,7 @@ export default function GardenAssistant({
   activeClusterName,
   activeMarkdown,
   selectedTextRequest,
+  onInlineAnswerUpdate,
   initialOpen = false,
 }: Props) {
   const resizeStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -526,9 +540,13 @@ export default function GardenAssistant({
   const [selectedTextContext, setSelectedTextContext] =
     useState<QuartzAssistantSelectionRequest | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const timeSeparators = useMemo(
-    () => chatTimeSeparatorLabels(messages),
+  const visibleMessages = useMemo(
+    () => messages.filter((message) => !message.inlineSelection),
     [messages],
+  );
+  const timeSeparators = useMemo(
+    () => chatTimeSeparatorLabels(visibleMessages),
+    [visibleMessages],
   );
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
@@ -544,10 +562,13 @@ export default function GardenAssistant({
   // The newest answer's text is revealed at a readable pace rather than drawn
   // straight from the buffer, so a reply that arrives in bursts (or whole)
   // still reads as a stream. Older messages render their content directly.
-  const newestMessage = messages[messages.length - 1];
+  const newestMessage = visibleMessages[visibleMessages.length - 1];
+  const streamingInlineSelection = Boolean(
+    isStreaming && messages[messages.length - 1]?.inlineSelection,
+  );
   const revealedAssistantContent = useSmoothStreamText(
     newestMessage?.role === 'assistant' ? newestMessage.content : '',
-    isStreaming,
+    isStreaming && !streamingInlineSelection,
   );
   const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
   const [approvingPermission, setApprovingPermission] = useState(false);
@@ -635,6 +656,32 @@ export default function GardenAssistant({
     setChatOpen(true);
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
   }, [activeClusterSlug, selectedTextRequest]);
+
+  // The iframe keeps answers beside their marks in localStorage. Re-publish
+  // completed inline turns from canonical chat history after a reload or page
+  // navigation so a fresh Quartz document can rebuild that local association.
+  useEffect(() => {
+    if (isStreaming || !onInlineAnswerUpdate) return;
+    const questions = new Map<string, string>();
+    for (const message of messages) {
+      const selection = message.inlineSelection;
+      if (!selection) continue;
+      if (message.role === 'user') {
+        questions.set(selection.requestId, message.content);
+        continue;
+      }
+      if (!message.content) continue;
+      onInlineAnswerUpdate({
+        ...selection,
+        question: questions.get(selection.requestId) ?? 'Question about this highlight',
+        answer: message.content,
+        state: 'complete',
+        ...(message.responseDurationMs !== undefined
+          ? { responseDurationMs: message.responseDurationMs }
+          : {}),
+      });
+    }
+  }, [isStreaming, messages, onInlineAnswerUpdate]);
 
   // Unsent text outlives a reload, filed under the chat it was typed in — and
   // under the cluster, since that is what the chats themselves are kept by.
@@ -800,9 +847,9 @@ export default function GardenAssistant({
     awayFromBottom: transcriptAwayFromBottom,
     scrollToBottom: jumpToNewestMessage,
   } = useChatAutoScroll<HTMLDivElement>({
-    isResponding: isStreaming,
-    responseKey: chatAutoScrollResponseKey(messages),
-    contentKey: chatAutoScrollContentKey(messages),
+    isResponding: isStreaming && !streamingInlineSelection,
+    responseKey: chatAutoScrollResponseKey(visibleMessages),
+    contentKey: chatAutoScrollContentKey(visibleMessages),
     enabled: chatOpen,
     conversationKey: activeChatId,
     virtual: transcriptVirtual,
@@ -812,20 +859,22 @@ export default function GardenAssistant({
   // untouched, so a message's place in the conversation is also its row.
   const railItems = useMemo<ChatMessageRailItem[]>(
     () =>
-      messages.flatMap((message, index) =>
+      visibleMessages.flatMap((message, index) =>
         message.role === 'user'
           ? [{ rowIndex: index, label: message.content }]
           : [],
       ),
-    [messages],
+    [visibleMessages],
   );
 
   // What the composer's arrow keys recall — the same messages the rail ticks,
   // as text rather than as landmarks.
   const sentMessages = useMemo(
     () =>
-      messages.flatMap((message) => (message.role === 'user' ? [message.content] : [])),
-    [messages],
+      visibleMessages.flatMap((message) =>
+        message.role === 'user' ? [message.content] : [],
+      ),
+    [visibleMessages],
   );
 
   function updateSessionMessages(sessionId: number, nextMessages: ChatMessage[], title?: string) {
@@ -982,12 +1031,23 @@ export default function GardenAssistant({
     historyOverride?: ChatMessage[],
     attachmentOverride?: readonly ChatAttachment[],
     selectedTextOverride?: string,
+    selectionContextOverride?: QuartzAssistantSelectionRequest,
   ) {
     const text = (textOverride ?? input).trim();
-    const selectedText = (
-      selectedTextOverride ??
-      (textOverride === undefined ? selectedTextContext?.text : undefined)
-    )?.slice(0, 4_000);
+    const selectionContext =
+      selectionContextOverride ??
+      (textOverride === undefined ? selectedTextContext ?? undefined : undefined);
+    const selectedText = (selectedTextOverride ?? selectionContext?.text)?.slice(0, 4_000);
+    const inlineSelection =
+      selectionContext?.mode === 'inline'
+        ? {
+            requestId: selectionContext.requestId,
+            highlightId: selectionContext.highlightId,
+            ...(selectionContext.pageSlug
+              ? { pageSlug: selectionContext.pageSlug }
+              : {}),
+          }
+        : undefined;
     const pendingAttachments: ChatAttachment[] = attachmentOverride
       ? [...attachmentOverride]
       : textOverride === undefined
@@ -1006,6 +1066,7 @@ export default function GardenAssistant({
       attachmentNames,
       attachments: chatMessageAttachments(pendingAttachments),
       ...(selectedText ? { selectedText } : {}),
+      ...(inlineSelection ? { inlineSelection } : {}),
     };
     const nextMessages = [...history, userMessage];
     // Corrections steered into this turn land here, between the turn's user
@@ -1018,8 +1079,23 @@ export default function GardenAssistant({
       content: '',
       createdAt: turnCreatedAt,
       sources: [],
+      ...(inlineSelection ? { inlineSelection } : {}),
     };
     const responseStartedAt = performance.now();
+    const publishInlineAnswer = (
+      state: QuartzInlineAnswerUpdate['state'],
+      answer = assistantMessage.content,
+      responseDurationMs?: number,
+    ) => {
+      if (!inlineSelection) return;
+      onInlineAnswerUpdate?.({
+        ...inlineSelection,
+        question: displayText,
+        answer,
+        state,
+        ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
+      });
+    };
 
     // Everything below needs a chat row, and on a fresh chat that is a round
     // trip to the server. The message goes up first: what was typed appears
@@ -1033,6 +1109,7 @@ export default function GardenAssistant({
     setAttachmentStatus('');
     setIsStreaming(true);
     setMessages([...nextMessages, assistantMessage]);
+    publishInlineAnswer('pending', '');
     // Thinking belongs to the turn, not to the request that answers it, so it
     // is raised here rather than once there is a chat row to send against.
     const turnSignal = agentActivity.start();
@@ -1043,13 +1120,15 @@ export default function GardenAssistant({
     if (!session || session.isOwn === false) {
       session = await createChatSession(undefined, { keepMessages: true });
       if (!session) {
+        const creationError = 'I could not create a chat history entry yet.';
         setMessages([
           ...nextMessages,
           {
             ...assistantMessage,
-            content: 'I could not create a chat history entry yet.',
+            content: creationError,
           },
         ]);
+        publishInlineAnswer('error', creationError);
         agentActivity.finish(true);
         activityStarted = false;
         setIsStreaming(false);
@@ -1160,6 +1239,7 @@ export default function GardenAssistant({
           attachments: pendingAttachments,
           activeMarkdown: activeMarkdownContext,
           selectedText,
+          selectedTextContext: selectionContext,
           adhdMode: isDirectModeEnabled(),
           personalize: isPersonalizeEnabled(),
         }),
@@ -1189,6 +1269,9 @@ export default function GardenAssistant({
           ...steerContext.messages,
           { ...assistantMessage },
         ]);
+        publishInlineAnswer(
+          assistantMessage.content ? 'streaming' : 'pending',
+        );
       };
 
       while (true) {
@@ -1297,6 +1380,7 @@ export default function GardenAssistant({
                 originalText: text,
                 history,
                 selectedText,
+                selectionContext,
               };
             }
             if (event.type === 'blocked' && pendingApproval) {
@@ -1316,6 +1400,11 @@ export default function GardenAssistant({
         ...assistantMessage,
         responseDurationMs: Math.round(performance.now() - responseStartedAt),
       };
+      publishInlineAnswer(
+        'complete',
+        assistantMessage.content,
+        assistantMessage.responseDurationMs,
+      );
       const finalMessages = [
         ...nextMessages,
         ...steerContext.messages,
@@ -1327,19 +1416,26 @@ export default function GardenAssistant({
       const aborted = error instanceof Error && error.name === 'AbortError';
       agentFailed = !aborted;
       const message = aborted ? 'The request was stopped.' : error instanceof Error ? error.message : 'Assistant could not answer right now';
+      const failureAnswer = aborted
+        ? 'The request was stopped.'
+        : `I could not reach the assistant for this garden yet. ${message}`;
       const finalMessages: ChatMessage[] = [
         ...nextMessages,
         ...steerContext.messages,
         {
           role: 'assistant',
           createdAt: turnCreatedAt,
-          content: aborted
-            ? 'The request was stopped.'
-            : `I could not reach the assistant for this garden yet. ${message}`,
+          content: failureAnswer,
           sources: [],
           responseDurationMs: Math.round(performance.now() - responseStartedAt),
+          ...(inlineSelection ? { inlineSelection } : {}),
         },
       ];
+      publishInlineAnswer(
+        'error',
+        failureAnswer,
+        Math.round(performance.now() - responseStartedAt),
+      );
       setMessages(finalMessages);
       await persistChatSession(session.id, finalMessages, sessionTitle);
     } finally {
@@ -1391,7 +1487,13 @@ export default function GardenAssistant({
       }
       setPermissionRequest(null);
       // Resume the same task. The user does not restate it.
-      await sendMessage(request.originalText, request.history, undefined, request.selectedText);
+      await sendMessage(
+        request.originalText,
+        request.history,
+        undefined,
+        request.selectedText,
+        request.selectionContext,
+      );
     } finally {
       setApprovingPermission(false);
     }
@@ -1454,7 +1556,8 @@ export default function GardenAssistant({
 
   const renderTranscriptRow = useCallback(
     (message: ChatMessage, index: number) => {
-      const isNewest = index === messages.length - 1;
+      const isNewest = index === visibleMessages.length - 1;
+      const storedIndex = messages.indexOf(message);
       const paced =
         isNewest &&
         message.role === 'assistant' &&
@@ -1468,8 +1571,12 @@ export default function GardenAssistant({
           connection={isNewest ? agentActivity.connection : 'idle'}
           pendingPermission={isNewest ? agentActivity.pendingPermission : null}
           onPermissionDecision={handlePermissionDecision}
-          showActions={!(isStreaming && isNewest)}
-          onRetry={isNewest ? () => retryAssistantMessage(index) : undefined}
+          showActions={!(isStreaming && !streamingInlineSelection && isNewest)}
+          onRetry={
+            isNewest && storedIndex >= 0
+              ? () => retryAssistantMessage(storedIndex)
+              : undefined
+          }
         />
       );
     },
@@ -1477,13 +1584,15 @@ export default function GardenAssistant({
     // from the newest row, which re-renders anyway.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
-      messages.length,
+      messages,
+      visibleMessages.length,
       timeSeparators,
       agentActivity.activities,
       agentActivity.connection,
       agentActivity.pendingPermission,
       handlePermissionDecision,
       isStreaming,
+      streamingInlineSelection,
       revealedAssistantContent,
     ],
   );
@@ -1740,7 +1849,7 @@ export default function GardenAssistant({
         ref={transcriptScrollRef}
         className="bb-chat-scroller bb-chat-scroll-tail flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4"
       >
-        {messages.length === 0 ? (
+        {visibleMessages.length === 0 ? (
           <div className="space-y-4">
             <div>
               <p className="text-sm font-medium text-gray-100">
@@ -1773,7 +1882,7 @@ export default function GardenAssistant({
           <VirtualizedMessageList
             surface="garden-assistant"
             className="w-full"
-            items={messages}
+            items={visibleMessages}
             scrollRef={transcriptScrollRef}
             bridge={transcriptVirtual}
             // What `space-y-4` drew between rows.
@@ -1784,7 +1893,7 @@ export default function GardenAssistant({
             renderItem={renderTranscriptRow}
           />
         )}
-        {messages.length > 0 ? <ChatDisclaimer /> : null}
+        {visibleMessages.length > 0 ? <ChatDisclaimer /> : null}
       </div>
         <ChatMessageRail
           surface="garden-assistant"
@@ -1813,7 +1922,9 @@ export default function GardenAssistant({
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 5v5a4 4 0 0 0 4 4h11m-3-3 3 3-3 3" />
             </svg>
             <div className="min-w-0 flex-1">
-              <p className="font-medium text-[var(--ink-heading)]">Ask here</p>
+              <p className="font-medium text-[var(--ink-heading)]">
+                {selectedTextContext.mode === 'inline' ? 'Ask here' : 'Ask in chat'}
+              </p>
               <p className="mt-0.5 line-clamp-3 leading-5 text-[var(--ink-muted)]">
                 {selectedTextContext.text}
               </p>

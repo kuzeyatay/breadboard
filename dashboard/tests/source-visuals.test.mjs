@@ -1031,7 +1031,7 @@ test("garden-global source slots survive A+B to B-only and B-only to A+B selecti
     const baseSourceSetHash = "b".repeat(64);
     saveSourceFormulaReviewSetManifest(firstRoot, garden, {
       schemaVersion: 1,
-      promptVersion: 1,
+      promptVersion: 2,
       model: "review-model",
       sourceIds: ["b"],
       sourceIdentityMap: bOnly,
@@ -1209,13 +1209,183 @@ test("AI formula review projects exactText, caption, and a fresh PDF-render crop
   }
 });
 
+test("AI formula review accepts one complete JSON code fence while preserving the raw audited response", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-review-fenced-"));
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-review-fenced-cache-"));
+  try {
+    const garden = "garden";
+    seedFormulaReviewGarden(root, garden, [1]);
+    const rawResponse = `\`\`\`json\n${JSON.stringify({
+      reviews: [acceptedReview("S1.P1.E1", 1)],
+    })}\n\`\`\``;
+    let calls = 0;
+    const result = await reviewRequiredSourceFormulaExactText({
+      client: fakeClient(async () => {
+        calls += 1;
+        return { choices: [{ message: { content: rawResponse } }] };
+      }),
+      model: "review-model",
+      contentPath: root,
+      gardenSlug: garden,
+      selectedSourceIds: ["src"],
+      requiredFormulaIds: ["S1.P1.E1"],
+      cacheRoot,
+      renderPdfPage: async () => solidPng(),
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(result.modelCalls, 1);
+    const [reviewed] = loadSourceVisuals(root, garden);
+    assert.equal(reviewed.exactText, "x_1=1");
+    const envelope = JSON.parse(fs.readFileSync(
+      path.join(root, garden, ...reviewed.formulaReview.reviewRecordPath.split("/")),
+      "utf-8",
+    ));
+    assert.equal(envelope.rawResponse, rawResponse);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(cacheRoot, { recursive: true, force: true });
+  }
+});
+
+test("AI formula review preserves model-authored LaTeX after repairing only an illegal JSON escape", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-review-illegal-escape-"));
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-review-illegal-escape-cache-"));
+  try {
+    const garden = "garden";
+    seedFormulaReviewGarden(root, garden, [1]);
+    const acceptedExactText = String.raw`\mathbf{A}=\oint\frac{\mu_0 I\,d\mathbf{L}}{4\pi R}\tag{47}`;
+    const serialized = JSON.stringify({
+      reviews: [{
+        ...acceptedReview("S1.P1.E1", 1),
+        acceptedExactText,
+      }],
+    });
+    const rawResponse = serialized.replaceAll("\\\\", "\\");
+    assert.notEqual(rawResponse, serialized);
+    assert.throws(() => JSON.parse(rawResponse), /Bad escaped character/);
+    let calls = 0;
+    const result = await reviewRequiredSourceFormulaExactText({
+      client: fakeClient(async () => {
+        calls += 1;
+        return { choices: [{ message: { content: rawResponse } }] };
+      }),
+      model: "review-model",
+      contentPath: root,
+      gardenSlug: garden,
+      selectedSourceIds: ["src"],
+      requiredFormulaIds: ["S1.P1.E1"],
+      cacheRoot,
+      renderPdfPage: async () => solidPng(),
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(result.modelCalls, 1);
+    const [reviewed] = loadSourceVisuals(root, garden);
+    assert.equal(reviewed.exactText, acceptedExactText);
+    assert.doesNotMatch(reviewed.exactText, /[\u0000-\u001F\u007F]/);
+    const envelope = JSON.parse(fs.readFileSync(
+      path.join(root, garden, ...reviewed.formulaReview.reviewRecordPath.split("/")),
+      "utf-8",
+    ));
+    assert.equal(envelope.rawResponse, rawResponse);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(cacheRoot, { recursive: true, force: true });
+  }
+});
+
+test("AI formula review rejects valid JSON whose escaped LaTeX would introduce a control character", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-review-control-character-"));
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-review-control-character-cache-"));
+  try {
+    const garden = "garden";
+    seedFormulaReviewGarden(root, garden, [1]);
+    const invalidRaw = JSON.stringify({
+      reviews: [{
+        ...acceptedReview("S1.P1.E1", 1),
+        acceptedExactText: "\frachalf",
+      }],
+    });
+    const requestTexts = [];
+    let calls = 0;
+    const result = await reviewRequiredSourceFormulaExactText({
+      client: fakeClient(async (request) => {
+        calls += 1;
+        requestTexts.push(request.messages[1].content[0].text);
+        return { choices: [{ message: { content: calls === 1
+          ? invalidRaw
+          : JSON.stringify({ reviews: [acceptedReview("S1.P1.E1", 1)] }) } }] };
+      }),
+      model: "review-model",
+      contentPath: root,
+      gardenSlug: garden,
+      selectedSourceIds: ["src"],
+      requiredFormulaIds: ["S1.P1.E1"],
+      cacheRoot,
+      renderPdfPage: async () => solidPng(),
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(result.modelCalls, 2);
+    assert.match(requestTexts[1], /acceptedExactText must not contain control characters/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(cacheRoot, { recursive: true, force: true });
+  }
+});
+
+test("AI formula review confines escape recovery to acceptedExactText", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-review-escape-scope-"));
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-review-escape-scope-cache-"));
+  try {
+    const garden = "garden";
+    seedFormulaReviewGarden(root, garden, [1]);
+    const serialized = JSON.stringify({
+      reviews: [{
+        ...acceptedReview("S1.P1.E1", 1),
+        acceptedCaption: String.raw`Permittivity \epsilon_0`,
+      }],
+    });
+    const invalidRaw = serialized.replace(
+      String.raw`\\epsilon_0`,
+      String.raw`\epsilon_0`,
+    );
+    let calls = 0;
+    const requestTexts = [];
+    const result = await reviewRequiredSourceFormulaExactText({
+      client: fakeClient(async (request) => {
+        calls += 1;
+        requestTexts.push(request.messages[1].content[0].text);
+        return { choices: [{ message: { content: calls === 1
+          ? invalidRaw
+          : JSON.stringify({ reviews: [acceptedReview("S1.P1.E1", 1)] }) } }] };
+      }),
+      model: "review-model",
+      contentPath: root,
+      gardenSlug: garden,
+      selectedSourceIds: ["src"],
+      requiredFormulaIds: ["S1.P1.E1"],
+      cacheRoot,
+      renderPdfPage: async () => solidPng(),
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(result.modelCalls, 2);
+    assert.match(requestTexts[1], /response was not valid JSON/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(cacheRoot, { recursive: true, force: true });
+  }
+});
+
 test("malformed formula review gets bounded AI-only rereview with exact prior response and diagnostic", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-review-repair-"));
   const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-review-repair-cache-"));
   try {
     const garden = "garden";
     seedFormulaReviewGarden(root, garden, [1]);
-    const invalidRaw = '{"reviews":[]}';
+    const invalidRaw = 'Here is the JSON you requested:\n```json\n{"reviews":[]}\n```';
     const requestTexts = [];
     let calls = 0;
     const client = fakeClient(async (request) => {
@@ -1242,14 +1412,14 @@ test("malformed formula review gets bounded AI-only rereview with exact prior re
     assert.match(requestTexts[1], /exact prior raw response and strict parse diagnostic/);
     const repairPacket = JSON.parse(requestTexts[1].slice(requestTexts[1].lastIndexOf("\n") + 1));
     assert.equal(repairPacket.rawResponse, invalidRaw);
-    assert.match(requestTexts[1], /reviews must contain exactly 1 entries; received 0/);
+    assert.match(requestTexts[1], /response was not valid JSON/);
     const [reviewed] = loadSourceVisuals(root, garden);
     const envelope = JSON.parse(fs.readFileSync(
       path.join(root, garden, ...reviewed.formulaReview.reviewRecordPath.split("/")),
       "utf-8",
     ));
     assert.equal(envelope.repairHistory[0].rawResponse, invalidRaw);
-    assert.match(envelope.repairHistory[0].diagnostic, /exactly 1 entries/);
+    assert.match(envelope.repairHistory[0].diagnostic, /response was not valid JSON/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(cacheRoot, { recursive: true, force: true });

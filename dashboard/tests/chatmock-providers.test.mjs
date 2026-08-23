@@ -103,10 +103,20 @@ test("the providers panel never renders a stored key back to the browser", () =>
   assert.doesNotMatch(panel, /provider\.apiKey\b/);
 });
 
-test("Google AI Studio setup stays visible before a key is saved", () => {
+test("Google AI Studio and OpenRouter setup stay visible before keys are saved", () => {
   const panel = source("src/app/components/settings-providers.tsx");
   assert.match(panel, /provider\.id === "google"/);
+  assert.match(panel, /provider\.id === "openrouter"/);
   assert.match(panel, /type="password"/);
+});
+
+test("connected providers use the account row's accessible green status dot", () => {
+  const panel = source("src/app/components/settings-providers.tsx");
+  assert.match(panel, /badge\?\.tone === "connected"/);
+  assert.match(panel, /role="status"/);
+  assert.match(panel, /aria-label=\{badge\.text\}/);
+  assert.match(panel, /h-2 w-2 shrink-0 rounded-full bg-\[var\(--botanical\)\]/);
+  assert.doesNotMatch(panel, /color-mix\(in_srgb,var\(--botanical\)/);
 });
 
 test("provider routes require a session before touching ChatMock", () => {

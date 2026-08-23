@@ -123,6 +123,21 @@ describe("Learn syllabus source-set hash", () => {
     assert.notEqual(before, after);
   });
 
+  test("editing prompt-visible syllabus metadata changes the hash", () => {
+    const baseline = sourceDoc("course-syllabus", "Week 1: forces.");
+    const renamed = { ...baseline, title: "Renamed course guide" };
+    const described = { ...baseline, description: "Updated course scope" };
+    const moved = {
+      ...baseline,
+      relPath: "sources/moved-course-syllabus.md",
+      sourceFile: "moved-course-syllabus.pdf",
+    };
+    const before = sourceSetHashWithSyllabus(base, baseline);
+    assert.notEqual(sourceSetHashWithSyllabus(base, renamed), before);
+    assert.notEqual(sourceSetHashWithSyllabus(base, described), before);
+    assert.notEqual(sourceSetHashWithSyllabus(base, moved), before);
+  });
+
   test("swapping which document is the syllabus changes the hash", () => {
     const body = "Week 1: forces.";
     assert.notEqual(
@@ -168,6 +183,13 @@ describe("Learn pipeline wiring", () => {
       persistedSyllabi,
       4,
       `expected the syllabus persisted alongside each selection, found ${persistedSyllabi}`,
+    );
+  });
+
+  test("a syllabus rebind guards every prompt-visible syllabus identity field", () => {
+    assert.match(
+      learnSource,
+      /const syllabusIdentity = \(context: LearnSourceContext\) => \{[\s\S]*?title: syllabus\.title \?\? ""[\s\S]*?description: syllabus\.description \?\? ""[\s\S]*?relPath: syllabus\.relPath[\s\S]*?sourceFile: syllabus\.sourceFile \?\? ""/,
     );
   });
 

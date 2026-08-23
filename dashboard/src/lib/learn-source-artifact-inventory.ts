@@ -34,6 +34,30 @@ export interface CanonicalSelectedSourceArtifact {
   pageImagePath: string | null;
 }
 
+/** The deliberately small artifact taxonomy used by Source Map contracts.
+ * Detector labels remain in the source-visual ledger; this helper only
+ * projects them into the planner's registered-artifact contract. */
+export type SourceMapArtifactKind = "figure" | "graph" | "table" | "formula";
+
+export type SourceMapArtifactInputKind =
+  | "figure"
+  | "graph"
+  | "table"
+  | "equation"
+  | "diagram"
+  | "photo"
+  | "formula"
+  | "unknown";
+
+export function sourceMapArtifactKind(
+  kind: SourceMapArtifactInputKind,
+): SourceMapArtifactKind {
+  if (kind === "table") return "table";
+  if (kind === "equation" || kind === "formula") return "formula";
+  if (kind === "graph") return "graph";
+  return "figure";
+}
+
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }

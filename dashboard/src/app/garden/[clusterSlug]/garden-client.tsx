@@ -10,6 +10,7 @@ import {
 import {
   quartzAssistantSelectionRequest,
   type QuartzAssistantSelectionRequest,
+  type QuartzInlineAnswerUpdate,
 } from '@/lib/quartz-assistant-selection';
 
 interface Props {
@@ -147,6 +148,13 @@ export default function GardenClient({
       return '';
     }
   }, []);
+
+  function postInlineAnswer(update: QuartzInlineAnswerUpdate) {
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: 'second-brain:assistant-inline-answer', ...update },
+      quartzOrigin || '*',
+    );
+  }
 
   useEffect(() => {
     if (!trackPublicView) return;
@@ -640,6 +648,7 @@ export default function GardenClient({
         activeClusterName={activeCluster === clusterSlug ? clusterName : activeCluster}
         activeMarkdown={activeMarkdown}
         selectedTextRequest={assistantSelection}
+        onInlineAnswerUpdate={postInlineAnswer}
         initialOpen={initialChatOpen}
       />
     </div>

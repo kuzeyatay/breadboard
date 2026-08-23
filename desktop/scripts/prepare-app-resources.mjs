@@ -16,6 +16,7 @@
 //     agency-agents/              <- bundled specialist persona catalog (read-only)
 //     scientific-agent-skills/    <- pinned K-Dense scientific skills (read-only)
 //     auto-claude-code-research-in-sleep/ <- ARIS guide + research skills (read-only)
+//     openGym/                 <- exercise catalogue + upstream notices (read-only)
 //     quartz-template/            <- Quartz program files (no content/public)
 //     scriberr/                   <- docker-compose only (optional Docker mode)
 //     shared/                     <- static shared assets
@@ -740,6 +741,26 @@ fs.copyFileSync(
   path.join(stagingRoot, "scriberr", "docker-compose.yml"),
 );
 
+// --- openGym catalogue ----------------------------------------------------
+// openGym's Breadboard agent runs in the dashboard process. It only needs the
+// compact catalogue at runtime; animations are loaded from a local media mount
+// when present and otherwise cached from the dataset's pinned CDN revision.
+{
+  const openGymRoot = path.join(repoRoot, "openGym");
+  const openGymTarget = path.join(stagingRoot, "openGym");
+  const catalogue = path.join(openGymRoot, "frontend", "src", "lib", "exercises-data.js");
+  if (!fs.existsSync(catalogue)) fail(`openGym catalogue not found: ${catalogue}`);
+  log("staging openGym exercise catalogue");
+  freshDir(openGymTarget);
+  const catalogueTarget = path.join(openGymTarget, "frontend", "src", "lib");
+  fs.mkdirSync(catalogueTarget, { recursive: true });
+  fs.copyFileSync(catalogue, path.join(catalogueTarget, "exercises-data.js"));
+  for (const notice of ["LICENSE", "NOTICE.md", "README.md"]) {
+    const source = path.join(openGymRoot, notice);
+    if (fs.existsSync(source)) fs.copyFileSync(source, path.join(openGymTarget, notice));
+  }
+}
+
 // --- shared static assets -------------------------------------------------
 if (fs.existsSync(path.join(repoRoot, "shared"))) {
   log("staging shared assets");
@@ -777,6 +798,7 @@ const licenseSources = [
   ["codex", path.join(repoRoot, "codex", "LICENSE")],
   ["goal", path.join(repoRoot, "goal", "LICENSE")],
   ["hermes-agent", path.join(hermesRoot, "LICENSE")],
+  ["openGym", path.join(repoRoot, "openGym", "LICENSE")],
   ["scientific-agent-skills", path.join(scientificSkillsRoot, "LICENSE.md")],
   ["quartz", path.join(repoRoot, "quartz", "LICENSE.txt")],
   ["postiz", path.join(repoRoot, "postiz-app", "LICENSE")],

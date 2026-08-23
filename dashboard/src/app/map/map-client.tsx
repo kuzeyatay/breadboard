@@ -18,6 +18,10 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 import { formatDistance, formatDuration } from "@/lib/map/format.ts";
 import type { GeographicContext, MapPlace } from "@/lib/map/types.ts";
+import {
+  automaticTravelMode,
+  type RouteModePreference,
+} from "@/lib/map/travel-mode.ts";
 
 interface CategoryOption {
   id: string;
@@ -36,8 +40,7 @@ const POLL_INTERVAL_MS = 2_500;
 const SUGGEST_DEBOUNCE_MS = 280;
 const ROUTE_SOURCE_ID = "breadboard-route";
 const ROUTE_LAYER_ID = "breadboard-route-line";
-
-type TravelMode = "walking" | "driving" | "cycling";
+const DEVICE_LOCATION_ERROR = "Breadboard could not read this device's location.";
 
 export default function MapClient({
   conversationPublicId,
@@ -59,7 +62,7 @@ export default function MapClient({
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [radius, setRadius] = useState(1_500);
-  const [mode, setMode] = useState<TravelMode>("walking");
+  const [mode, setMode] = useState<RouteModePreference>("auto");
 
   const scopeBody = useMemo(
     () => (conversationPublicId ? { conversation: conversationPublicId } : {}),
@@ -212,7 +215,7 @@ export default function MapClient({
         style: settings.styleUrl,
         center: [28.9784, 41.0082],
         zoom: 10,
-        attributionControl: { compact: true },
+        attributionControl: { compact: false },
       });
       map.addControl(new maplibre.NavigationControl({ visualizePitch: false }), "top-right");
       map.addControl(
@@ -286,6 +289,10 @@ export default function MapClient({
     [context],
   );
   const route = context?.activeRoute;
+  const automaticMode =
+    context?.currentLocation && selectedPlace
+      ? automaticTravelMode(context.currentLocation, selectedPlace)
+      : "walking";
 
   /** Markers and route geometry, re-rendered from state on every revision. */
   useEffect(() => {
@@ -368,6 +375,7 @@ export default function MapClient({
     }
     navigator.geolocation.getCurrentPosition(
       (position) => {
+        setStatus(null);
         void postContextAction({
           action: "current_location",
           location: {
@@ -378,7 +386,7 @@ export default function MapClient({
           },
         });
       },
-      () => setStatus("Breadboard could not read this device's location."),
+      () => setStatus(DEVICE_LOCATION_ERROR),
     );
   }, [postContextAction]);
 
@@ -490,13 +498,16 @@ export default function MapClient({
           </button>
           <select
             value={mode}
-            onChange={(event) => setMode(event.target.value as TravelMode)}
+            onChange={(event) => setMode(event.target.value as RouteModePreference)}
             aria-label="Travel mode"
             className="rounded-lg border border-[var(--rule)] bg-[var(--paper-raised)] px-2 py-1 text-xs"
           >
+            <option value="auto">
+              Auto ({automaticMode === "walking" ? "Walking" : "Driving"})
+            </option>
             <option value="walking">Walking</option>
-            <option value="cycling">Cycling</option>
             <option value="driving">Driving</option>
+            <option value="cycling">Cycling</option>
           </select>
           <button
             type="button"
@@ -601,7 +612,7 @@ export default function MapClient({
               <span className="text-[var(--ink-muted)]"> ({route.mode})</span>
             </p>
             <p className="mt-1 text-xs text-[var(--ink-muted)]">
-              {route.origin.name} → {route.destination.name}
+              {route.origin.name} to {route.destination.name}
             </p>
             <p className="mt-1 text-[10px] text-[var(--ink-muted)]">
               {route.provenance.provider} ·{" "}
@@ -617,7 +628,7 @@ export default function MapClient({
           </section>
         )}
 
-        {status && (
+        {status && !(status === DEVICE_LOCATION_ERROR && context?.currentLocation) && (
           <p className="rounded-lg border border-[var(--rule)] bg-[var(--paper-sunken)] p-2 text-xs text-[var(--ink-muted)]">
             {status}
           </p>

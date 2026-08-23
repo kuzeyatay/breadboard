@@ -2,12 +2,14 @@
 
 // Settings → Connections: the external apps Breadboard may act through.
 //
-// This used to be a tab in the capability palette, beside Skills and MCP. It
-// reads better here: connecting an account is setup, done once, while the
-// palette is for picking something to do right now. The rows themselves are
-// unchanged so the surface still looks like the one people learned.
+// Connecting an account is setup, done once; the capability surfaces are for
+// deciding what an agent may do with it afterward.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { invalidateCommandResponseCache } from "@/lib/hermes/command-client-cache";
+import { invalidateSettingsCache } from "@/lib/settings-client-cache";
+
+const SPOTIFY_CONNECTION_URL = "/api/hermes/connections/spotify";
 
 type ComposioResponse = {
   configured: boolean;
@@ -30,6 +32,12 @@ type AppIntegration = {
   managedAuthentication?: boolean;
 };
 
+type SpotifyConnection = {
+  configured: boolean;
+  connected: boolean;
+  status: "connected" | "needs_reauth" | "not_connected";
+};
+
 function LoadingRows() {
   return (
     <div className="space-y-2 p-2" aria-label="Loading connections">
@@ -50,16 +58,19 @@ export default function SettingsConnections() {
   const [appIntegrations, setAppIntegrations] = useState<AppIntegration[]>([]);
   const [connectionsLoading, setConnectionsLoading] = useState(false);
   const [connectionsMessage, setConnectionsMessage] = useState<string | null>(null);
+  const [spotify, setSpotify] = useState<SpotifyConnection | null>(null);
+  const [spotifyBusy, setSpotifyBusy] = useState(false);
   const [query, setQuery] = useState("");
 
   const loadConnections = useCallback(async () => {
     setConnectionsLoading(true);
     try {
-      const [response, integrationsResponse] = await Promise.all([
+      const [response, integrationsResponse, spotifyResponse] = await Promise.all([
         fetch("/api/hermes/composio", { cache: "no-store" }),
         fetch("/api/hermes/composio/integrations", {
           cache: "no-store",
         }),
+        fetch(SPOTIFY_CONNECTION_URL, { cache: "no-store" }),
       ]);
       const payload = (await response.json().catch(() => ({}))) as
         | ComposioResponse
@@ -73,13 +84,19 @@ export default function SettingsConnections() {
         );
       }
       setConnectionsMessage(payload.message);
+      if (spotifyResponse.ok) {
+        const spotifyPayload = (await spotifyResponse.json()) as SpotifyConnection;
+        setSpotify(spotifyPayload);
+      }
       if (integrationsResponse.ok) {
         const integrationsPayload = (await integrationsResponse.json()) as {
           integrations?: AppIntegration[];
         };
         setAppIntegrations(
           Array.isArray(integrationsPayload.integrations)
-            ? integrationsPayload.integrations
+            ? integrationsPayload.integrations.filter(
+                (integration) => integration.slug.toLowerCase() !== "spotify",
+              )
             : [],
         );
       }
@@ -134,6 +151,79 @@ export default function SettingsConnections() {
         .includes(normalized),
     );
   }, [appIntegrations, query]);
+
+  const spotifyMatchesQuery = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return !normalized || "spotify music playback playlists".includes(normalized);
+  }, [query]);
+
+  async function connectSpotify() {
+    const popup = window.open(
+      "about:blank",
+      "breadboard-spotify-oauth",
+      "popup,width=720,height=760",
+    );
+    if (popup) popup.opener = null;
+    setSpotifyBusy(true);
+    setConnectionsMessage("Opening Spotify sign-in…");
+    try {
+      const response = await fetch(SPOTIFY_CONNECTION_URL, { method: "POST" });
+      const payload = (await response.json().catch(() => ({}))) as {
+        authorizationUrl?: string;
+        message?: string;
+        error?: string;
+      };
+      if (!response.ok || !payload.authorizationUrl) {
+        throw new Error(
+          payload.message ?? payload.error ?? "Spotify sign-in could not be started.",
+        );
+      }
+      invalidateSettingsCache("/api/hermes/mcp");
+      invalidateCommandResponseCache();
+      if (popup) popup.location.replace(payload.authorizationUrl);
+      else window.location.assign(payload.authorizationUrl);
+      setConnectionsMessage(
+        "Finish signing in with Spotify in the opened window, then return here.",
+      );
+    } catch (cause) {
+      popup?.close();
+      setConnectionsMessage(
+        cause instanceof Error
+          ? cause.message
+          : "Spotify sign-in could not be started.",
+      );
+    } finally {
+      setSpotifyBusy(false);
+    }
+  }
+
+  async function disconnectSpotify() {
+    if (!window.confirm("Disconnect Spotify from Breadboard?")) return;
+    setSpotifyBusy(true);
+    setConnectionsMessage("Disconnecting Spotify…");
+    try {
+      const response = await fetch(SPOTIFY_CONNECTION_URL, { method: "DELETE" });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as {
+          message?: string;
+          error?: string;
+        };
+        throw new Error(
+          payload.message ?? payload.error ?? "Spotify could not be disconnected.",
+        );
+      }
+      invalidateSettingsCache("/api/hermes/mcp");
+      invalidateCommandResponseCache();
+      setSpotify({ configured: false, connected: false, status: "not_connected" });
+      setConnectionsMessage("Spotify disconnected.");
+    } catch (cause) {
+      setConnectionsMessage(
+        cause instanceof Error ? cause.message : "Spotify could not be disconnected.",
+      );
+    } finally {
+      setSpotifyBusy(false);
+    }
+  }
 
   async function connectApp(integration: AppIntegration) {
     const popup = window.open("about:blank", "_blank");
@@ -201,7 +291,7 @@ export default function SettingsConnections() {
       </div>
       <div className="px-1">
         <p className="text-xs leading-5 text-[var(--ink-muted)]">
-          Connections securely link external apps to Breadboard through Composio, letting agents use their information and actions when you ask while keeping credentials outside the chat.
+          Connections securely link external apps to Breadboard, letting agents use their information and actions when you ask while keeping credentials outside the chat.
         </p>
       </div>
       {connectionsMessage ? (
@@ -209,13 +299,63 @@ export default function SettingsConnections() {
           {connectionsMessage}
         </p>
       ) : null}
-      {!appIntegrations.length && connectionsLoading ? (
+      {!appIntegrations.length && !spotify && connectionsLoading ? (
         <LoadingRows />
-      ) : visibleAppIntegrations.length ? (
+      ) : spotifyMatchesQuery || visibleAppIntegrations.length ? (
         <ul
           className="grid grid-cols-1 gap-2 sm:grid-cols-2"
           aria-label="Available app connections"
         >
+          {spotifyMatchesQuery ? (
+            <li className="neu-card flex min-w-0 items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] p-3">
+              <span
+                aria-hidden
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#1ed760] text-[#0b2214]"
+              >
+                <svg viewBox="0 0 24 24" className="h-6 w-6" fill="currentColor">
+                  <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm4.59 14.42a.62.62 0 0 1-.86.2c-2.36-1.44-5.33-1.77-8.82-.97a.63.63 0 0 1-.28-1.22c3.82-.87 7.1-.5 9.76 1.12.3.18.39.57.2.87Zm1.23-2.74a.78.78 0 0 1-1.08.26c-2.7-1.66-6.82-2.14-10.01-1.17a.78.78 0 1 1-.46-1.5c3.65-1.1 8.19-.57 11.3 1.34.37.23.48.7.25 1.07Zm.1-2.85C14.68 8.9 9.34 8.72 6.25 9.66a.94.94 0 0 1-.55-1.8c3.55-1.07 9.45-.86 13.18 1.35a.94.94 0 0 1-.96 1.62Z" />
+                </svg>
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-[var(--ink-heading)]">
+                  Spotify
+                </span>
+                <span className="mt-0.5 block truncate text-[10px] text-[var(--ink-muted)]">
+                  {spotify?.connected
+                    ? "Connected"
+                    : spotify?.configured
+                      ? "Sign-in required"
+                      : "Music, playlists, and playback"}
+                </span>
+              </span>
+              <span className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => void connectSpotify()}
+                  disabled={spotifyBusy || connectionsLoading}
+                  className="neu-button rounded-lg px-2.5 py-1.5 text-xs font-medium text-[var(--botanical)] disabled:opacity-50"
+                  aria-label={`${spotify?.connected ? "Reconnect" : "Connect"} Spotify`}
+                >
+                  {spotifyBusy
+                    ? "Opening…"
+                    : spotify?.connected
+                      ? "Reconnect"
+                      : "Connect"}
+                </button>
+                {spotify?.configured ? (
+                  <button
+                    type="button"
+                    onClick={() => void disconnectSpotify()}
+                    disabled={spotifyBusy || connectionsLoading}
+                    className="rounded-lg px-2 py-1.5 text-xs text-[#9a4438] disabled:opacity-50"
+                    aria-label="Disconnect Spotify"
+                  >
+                    Remove
+                  </button>
+                ) : null}
+              </span>
+            </li>
+          ) : null}
           {visibleAppIntegrations.map((integration) => (
             <li
               key={integration.integrationId}

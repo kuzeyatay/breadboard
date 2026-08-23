@@ -119,6 +119,7 @@ function eventLine(event: GardenEvent): string {
     learn_source_figure_linked: "Source figure linked to a visual",
     learn_visual_index_pruned: "Stale visual index entries pruned",
     learn_export_finalized: "Export finalized and validated",
+    learn_humanizer_completed: "Finished lesson prose rewrite",
     learn_generation_completed: "Lesson generation completed",
     learn_failed: "Learn failed",
     learn_cancelled: "Learn cancelled",

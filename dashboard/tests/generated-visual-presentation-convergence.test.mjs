@@ -438,6 +438,7 @@ test("Learn generated visuals expose the flat visual-first camera contract", () 
   assert.match(runtime, /addEventListener\("keydown"/);
   assert.match(runtime, /event\.key === "Home"/);
   assert.match(runtime, /prefers-reduced-motion/);
+  assert.match(runtime, /\.gv-status h3,\.gv-status strong,\.gv-status p \{ overflow-wrap:anywhere; \}/);
   assert.match(runtime, /visibilitychange/);
   assert.match(runtime, /document\.title\s*=\s*definition\.title/);
   assert.match(

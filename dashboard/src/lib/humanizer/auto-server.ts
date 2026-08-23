@@ -1,11 +1,11 @@
 // Automatic rewriting for text the server writes down.
 //
 // The chat transcript humanizes itself from the browser, because an answer is
-// already on screen and the swap belongs to the surface showing it. An artifact
-// and a garden note are different: they are written by the server, usually
-// while the agent is working and nobody is looking at a composer, and by the
-// time a person sees one it has been on disk for a while. So they are rewritten
-// here, at the moment they are stored.
+// already on screen and the swap belongs to the surface showing it. Artifacts,
+// garden notes, and a finished Learn tree are different: they are written by
+// the server, usually while the agent is working and nobody is looking at a
+// composer. Artifacts and notes use this at storage time; Learn captures it
+// once after the complete staged build has passed its normal gates.
 //
 // One rule governs everything below: **this never fails a write.** A rewriter
 // that is not installed, is busy with another chat, times out, or has its
@@ -132,6 +132,24 @@ export function storedTextHumanizerForUser(
   userId: number,
 ): ((text: string, reason: AutoHumanizeReason) => Promise<AutoHumanizeResult>) | null {
   if (!humanizerAutoEnabled(userId)) return null;
+  return availableTextHumanizer();
+}
+
+/**
+ * Resolve the local rewriter without consulting an account preference.
+ *
+ * Explicit post-write actions (for example enabling Rewrite naturally after a
+ * Learn build has already completed) have already captured the user's intent
+ * in their request. They still respect machine-level provisioning: disabled or
+ * unavailable humanizer installations remain a safe no-op.
+ */
+export function availableTextHumanizer():
+  | ((
+      text: string,
+      reason: AutoHumanizeReason,
+    ) => Promise<AutoHumanizeResult>)
+  | null {
+  if (humanizerMode() === "disabled") return null;
   return humanizeEligibleStoredText;
 }
 

@@ -799,9 +799,9 @@ test("legacy Hardware Blueprint cards recover rich state from their owned artifa
   );
   assert.ok(assistant, "the saved Hardware Blueprint turn is missing");
   assert.equal(
-    assistant.metadata.externalAgentState,
-    undefined,
-    "the compatibility path should not mutate canonical legacy metadata",
+    "metadata" in assistant,
+    false,
+    "detail responses should project metadata fields instead of duplicating the raw envelope",
   );
   assert.equal(assistant.externalAgentState.kind, "hardware-blueprint");
   assert.equal(assistant.externalAgentState.designTitle, design.title);
@@ -899,7 +899,7 @@ test("chat restore and all external launchers use the shared persistence path", 
   );
 
   assert.match(sessionRoute, /presentHermesSessionSummary/);
-  assert.match(sessionPresentation, /externalAgentMessageFields\(presented\.metadata\)/);
+  assert.match(sessionPresentation, /externalAgentMessageFields\(metadata\)/);
   assert.match(terminal, /kind: "agent_tars"/);
   assert.match(terminal, /kind: "agent_browser"/);
   assert.match(terminal, /kind: "openplanter"/);

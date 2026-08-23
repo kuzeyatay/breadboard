@@ -91,7 +91,14 @@ const DEFAULT_DETECTION_TIMEOUT_MS = 45_000;
 const DETECTOR_VERSION = 3;
 const DETECTION_IMAGE_MAX_DIMENSION = 768;
 const SOURCE_FORMULA_REVIEW_SCHEMA_VERSION = 1;
-const SOURCE_FORMULA_REVIEW_PROMPT_VERSION = 1;
+// V2 adds an explicit JSON transport rule and a bounded, field-scoped LaTeX
+// escape recovery path. V1 receipts remain independently verifiable only by
+// replaying their signed raw-JSON protocol below; new normal reviews always
+// use V2 rather than silently certifying old responses under new rules.
+const SOURCE_FORMULA_REVIEW_LEGACY_PROMPT_VERSION = 1;
+const SOURCE_FORMULA_REVIEW_PROMPT_VERSION = 2;
+const SOURCE_FORMULA_REVIEW_LEGACY_SYSTEM_PROMPT_SHA256 =
+  "3fc92b3571daaa9ff3bfe2346d8d3617e10496b22e2706db714453b6f082f839";
 const SOURCE_FORMULA_REVIEW_MAX_SEMANTIC_ATTEMPTS = 3;
 const SOURCE_FORMULA_REVIEW_MAX_CONCURRENCY = 3;
 // A successful whole-page recovery requires another normal formula review.
@@ -181,7 +188,7 @@ export type SourceFormulaIdentityAssessment =
 
 export interface SourceFormulaReviewProvenance {
   schemaVersion: 1;
-  promptVersion: 1;
+  promptVersion: 1 | 2;
   model: string;
   reviewedAt: string;
   decision: SourceFormulaReviewDecision;
@@ -348,7 +355,7 @@ export interface SourceFormulaArtifactTopologyConsensusRepairProvenance {
 
 export interface SourceFormulaReviewSetManifest {
   schemaVersion: 1;
-  promptVersion: 1;
+  promptVersion: 1 | 2;
   model: string;
   /** Selected teaching sources, in the exact order used by this Learn run. */
   sourceIds: string[];
@@ -1156,7 +1163,7 @@ interface SourceFormulaReviewRejectedPage extends SourceFormulaReviewPageRejecti
 
 interface SourceFormulaReviewCacheEnvelopeUnsigned {
   schemaVersion: 1;
-  promptVersion: 1;
+  promptVersion: 1 | 2;
   cacheKey: string;
   model: string;
   sourceId: string;
@@ -1747,6 +1754,7 @@ Rules:
 - approve means acceptedExactText and acceptedCaption exactly equal both supplied current fields.
 - replace means you independently author the complete corrected record and at least one accepted field differs from its current value.
 - acceptedExactText must preserve every visible sign, limit direction, prime, vector mark, subscript, superscript, equality, integral, differential, delimiter, and displayed equation number/tag.
+- JSON-escape every literal LaTeX backslash in acceptedExactText: in the raw response, a LaTeX \\mathbf command must be encoded as \\\\mathbf. Do not emit a single backslash before any LaTeX command.
 - acceptedCaption must accurately identify what this displayed equation states; do not inherit a misleading detector caption.
 - identityAssessment=preserved is required for approve or replace: the bbox/crop must still denote that one equation even if its old transcription was wrong.
 - Use reject with identity_mismatch when the bbox/id points at a different equation, merges/splits equations, or cannot safely retain the same identity.
@@ -2164,15 +2172,34 @@ async function sourceFormulaPageEvidence(
     );
 }
 
+type SourceFormulaReviewProtocol = "v1" | "v2";
+
+function sourceFormulaReviewProtocolMetadata(
+  protocol: SourceFormulaReviewProtocol,
+): { promptVersion: 1 | 2; systemPromptSha256: string } {
+  if (protocol === "v1") {
+    return {
+      promptVersion: SOURCE_FORMULA_REVIEW_LEGACY_PROMPT_VERSION,
+      systemPromptSha256: SOURCE_FORMULA_REVIEW_LEGACY_SYSTEM_PROMPT_SHA256,
+    };
+  }
+  return {
+    promptVersion: SOURCE_FORMULA_REVIEW_PROMPT_VERSION,
+    systemPromptSha256: sha256(SOURCE_FORMULA_REVIEW_SYSTEM_PROMPT),
+  };
+}
+
 function pageReviewKeyMaterial(
   evidence: SourceFormulaReviewPageEvidence,
   model: string,
   inputs = evidence.inputs,
+  protocol: SourceFormulaReviewProtocol = "v2",
 ): Record<string, unknown> {
+  const protocolMetadata = sourceFormulaReviewProtocolMetadata(protocol);
   return {
     schemaVersion: SOURCE_FORMULA_REVIEW_SCHEMA_VERSION,
-    promptVersion: SOURCE_FORMULA_REVIEW_PROMPT_VERSION,
-    systemPromptSha256: sha256(SOURCE_FORMULA_REVIEW_SYSTEM_PROMPT),
+    promptVersion: protocolMetadata.promptVersion,
+    systemPromptSha256: protocolMetadata.systemPromptSha256,
     model,
     sourceId: evidence.sourceId,
     pageNumber: evidence.pageNumber,
@@ -2187,19 +2214,22 @@ function pageReviewCacheKey(
   evidence: SourceFormulaReviewPageEvidence,
   model: string,
   inputs = evidence.inputs,
+  protocol: SourceFormulaReviewProtocol = "v2",
 ): string {
-  return sha256(JSON.stringify(pageReviewKeyMaterial(evidence, model, inputs)));
+  return sha256(JSON.stringify(pageReviewKeyMaterial(evidence, model, inputs, protocol)));
 }
 
 function pageReviewRequestPayload(
   evidence: SourceFormulaReviewPageEvidence,
   model: string,
   inputs = evidence.inputs,
+  protocol: SourceFormulaReviewProtocol = "v2",
 ): string {
+  const protocolMetadata = sourceFormulaReviewProtocolMetadata(protocol);
   return JSON.stringify({
     task: "Independently review every supplied formula record against the page image and labeled crop. Return the exact JSON response shape from the system prompt.",
-    systemPromptSha256: sha256(SOURCE_FORMULA_REVIEW_SYSTEM_PROMPT),
-    ...pageReviewKeyMaterial(evidence, model, inputs),
+    systemPromptSha256: protocolMetadata.systemPromptSha256,
+    ...pageReviewKeyMaterial(evidence, model, inputs, protocol),
     canonicalPageText: evidence.canonicalPageText,
   });
 }
@@ -2213,16 +2243,153 @@ function sourceFormulaReviewAttemptPayload(
   return `${basePayload}\n\nThe prior response was invalid. Rereview the complete page batch and return a full replacement response. Here is the exact prior raw response and strict parse diagnostic:\n${JSON.stringify(prior)}`;
 }
 
+/**
+ * Accept the one provider-format variation that remains unambiguous: a complete
+ * response wrapped in a single JSON (or language-less) Markdown fence. Do not
+ * extract JSON from surrounding prose; raw responses remain the audited record.
+ */
+function sourceFormulaReviewJsonCandidate(raw: string): string {
+  const trimmed = raw.trim();
+  const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
+/** Find the closing quote even when the response contains an invalid escape. */
+function sourceFormulaReviewJsonStringEnd(candidate: string, start: number): number | null {
+  if (candidate[start] !== '"') return null;
+  for (let index = start + 1; index < candidate.length; index += 1) {
+    if (candidate[index] === "\\") {
+      if (index + 1 >= candidate.length) return null;
+      index += 1;
+      continue;
+    }
+    if (candidate[index] === '"') return index;
+  }
+  return null;
+}
+
+function sourceFormulaReviewFormulaTextCandidate(value: string): {
+  value: string;
+  repaired: boolean;
+} {
+  let repaired = false;
+  let output = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character !== "\\") {
+      output += character;
+      continue;
+    }
+    const next = value[index + 1];
+    if (!next) {
+      output += character;
+      continue;
+    }
+    const validUnicodeEscape =
+      next === "u" && /^[0-9a-f]{4}$/i.test(value.slice(index + 2, index + 6));
+    if (next === '"' || next === "\\" || next === "/" || validUnicodeEscape) {
+      output += validUnicodeEscape ? value.slice(index, index + 6) : character + next;
+      index += validUnicodeEscape ? 5 : 1;
+      continue;
+    }
+    const nextAfter = value[index + 2];
+    const texControlWord =
+      (next === "b" || next === "f" || next === "n" || next === "r" || next === "t") &&
+      (nextAfter === "{" || (nextAfter !== undefined && /^[a-z]$/i.test(nextAfter)));
+    const validShortEscape =
+      next === "b" || next === "f" || next === "n" || next === "r" || next === "t";
+    if (texControlWord || !validShortEscape) {
+      output += "\\\\" + next;
+      repaired = true;
+      index += 1;
+      continue;
+    }
+    output += character + next;
+    index += 1;
+  }
+  return { value: output, repaired };
+}
+
+/**
+ * On a strict JSON parse failure only, repair literal LaTeX escapes solely in
+ * an acceptedExactText value. All other response bytes stay parser-strict.
+ */
+function sourceFormulaReviewFormulaEscapeCandidate(candidate: string): {
+  candidate: string;
+  repaired: boolean;
+} {
+  let repaired = false;
+  let output = "";
+  let index = 0;
+  while (index < candidate.length) {
+    const stringStart = candidate.indexOf('"', index);
+    if (stringStart < 0) {
+      output += candidate.slice(index);
+      break;
+    }
+    output += candidate.slice(index, stringStart);
+    const keyEnd = sourceFormulaReviewJsonStringEnd(candidate, stringStart);
+    if (keyEnd === null) {
+      output += candidate.slice(stringStart);
+      break;
+    }
+    output += candidate.slice(stringStart, keyEnd + 1);
+    index = keyEnd + 1;
+    if (candidate.slice(stringStart + 1, keyEnd) !== "acceptedExactText") continue;
+
+    let valueStart = index;
+    while (/\s/.test(candidate[valueStart] ?? "")) valueStart += 1;
+    if (candidate[valueStart] !== ":") continue;
+    valueStart += 1;
+    while (/\s/.test(candidate[valueStart] ?? "")) valueStart += 1;
+    if (candidate[valueStart] !== '"') continue;
+    const valueEnd = sourceFormulaReviewJsonStringEnd(candidate, valueStart);
+    if (valueEnd === null) continue;
+    const normalized = sourceFormulaReviewFormulaTextCandidate(
+      candidate.slice(valueStart + 1, valueEnd),
+    );
+    output += candidate.slice(index, valueStart + 1);
+    output += normalized.value;
+    output += candidate[valueEnd];
+    repaired ||= normalized.repaired;
+    index = valueEnd + 1;
+  }
+  return { candidate: output, repaired };
+}
+
+function parseSourceFormulaReviewJson(raw: string): unknown {
+  const candidate = sourceFormulaReviewJsonCandidate(raw);
+  try {
+    return JSON.parse(candidate);
+  } catch (originalError) {
+    const repaired = sourceFormulaReviewFormulaEscapeCandidate(candidate);
+    if (!repaired.repaired) throw originalError;
+    try {
+      return JSON.parse(repaired.candidate);
+    } catch {
+      throw originalError;
+    }
+  }
+}
+
+/** V1 accepted only raw JSON; retain that exact signed grammar for receipts. */
+function parseSourceFormulaReviewJsonV1(raw: string): unknown {
+  return JSON.parse(raw);
+}
+
 function parseSourceFormulaReviewResponse(
   raw: unknown,
   inputs: readonly SourceFormulaReviewInput[],
+  protocol: SourceFormulaReviewProtocol = "v2",
 ): SourceFormulaReviewModelDecision[] {
   if (typeof raw !== "string" || !raw.trim()) {
     throw new SourceFormulaReviewProtocolError("response was empty or missing");
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = protocol === "v1"
+      ? parseSourceFormulaReviewJsonV1(raw)
+      : parseSourceFormulaReviewJson(raw);
   } catch (error) {
     throw new SourceFormulaReviewProtocolError(
       `response was not valid JSON (${error instanceof Error ? error.message : String(error)})`,
@@ -2300,8 +2467,11 @@ function parseSourceFormulaReviewResponse(
         `reviews[${index}].reason must be 1-${SOURCE_FORMULA_REVIEW_MAX_REASON_CHARS} characters`,
       );
     }
-    const acceptedExactText = typeof record.acceptedExactText === "string"
-      ? record.acceptedExactText.trim()
+    const rawAcceptedExactText = typeof record.acceptedExactText === "string"
+      ? record.acceptedExactText
+      : undefined;
+    const acceptedExactText = rawAcceptedExactText
+      ? rawAcceptedExactText.trim()
       : undefined;
     const acceptedCaption = typeof record.acceptedCaption === "string"
       ? record.acceptedCaption.trim()
@@ -2349,6 +2519,15 @@ function parseSourceFormulaReviewResponse(
       if (!acceptedExactText || acceptedExactText.length > SOURCE_FORMULA_REVIEW_MAX_EXACT_TEXT_CHARS) {
         throw new SourceFormulaReviewProtocolError(
           `reviews[${index}].acceptedExactText must be 1-${SOURCE_FORMULA_REVIEW_MAX_EXACT_TEXT_CHARS} characters`,
+        );
+      }
+      if (
+        protocol === "v2" &&
+        rawAcceptedExactText &&
+        /[\u0000-\u001F\u007F]/.test(rawAcceptedExactText)
+      ) {
+        throw new SourceFormulaReviewProtocolError(
+          `reviews[${index}].acceptedExactText must not contain control characters`,
         );
       }
       if (!acceptedCaption || acceptedCaption.length > SOURCE_FORMULA_REVIEW_MAX_CAPTION_CHARS) {
@@ -3779,6 +3958,35 @@ function sourceFormulaArtifactRecoveryEnvelopeIntegrity(
   return sha256(JSON.stringify(unsigned));
 }
 
+/**
+ * A topology receipt records the exact rejected normal-review request that
+ * authorized it. V1 and V2 use different signed payloads and parsers, so an
+ * old receipt is valid only when it byte-for-byte replays one of those known
+ * contracts. Unknown prompt fingerprints remain fail-closed.
+ */
+function sourceFormulaReviewProtocolForFailedReview(
+  failedReview: SourceFormulaArtifactRecoveryFailedReview,
+  evidence: SourceFormulaReviewPageEvidence,
+  inputs: readonly SourceFormulaReviewInput[],
+): SourceFormulaReviewProtocol | null {
+  for (const protocol of ["v2", "v1"] as const) {
+    if (
+      failedReview.cacheKey !== pageReviewCacheKey(
+        evidence,
+        failedReview.model,
+        inputs,
+        protocol,
+      )
+    ) continue;
+    const expectedPayload = sourceFormulaReviewAttemptPayload(
+      pageReviewRequestPayload(evidence, failedReview.model, inputs, protocol),
+      failedReview.repairHistory,
+    );
+    if (failedReview.requestPayload === expectedPayload) return protocol;
+  }
+  return null;
+}
+
 function sourceFormulaArtifactRecoveryFailedReviewMatches(
   failedReview: SourceFormulaArtifactRecoveryFailedReview,
   evidence: SourceFormulaReviewPageEvidence,
@@ -3793,15 +4001,24 @@ function sourceFormulaArtifactRecoveryFailedReviewMatches(
       failedReview.semanticAttempt < 1 ||
       failedReview.semanticAttempt > SOURCE_FORMULA_REVIEW_MAX_SEMANTIC_ATTEMPTS ||
       !Array.isArray(failedReview.repairHistory) ||
-      !Array.isArray(failedReview.inputVisuals) ||
-      failedReview.cacheKey !== pageReviewCacheKey(evidence, failedReview.model, failedReview.inputVisuals)
+      !Array.isArray(failedReview.inputVisuals)
     ) return false;
+    const protocol = sourceFormulaReviewProtocolForFailedReview(
+      failedReview,
+      evidence,
+      failedReview.inputVisuals,
+    );
+    if (!protocol) return false;
     for (const repair of failedReview.repairHistory) {
       if (!repair || typeof repair.rawResponse !== "string" || typeof repair.diagnostic !== "string") {
         return false;
       }
       try {
-        parseSourceFormulaReviewResponse(repair.rawResponse, failedReview.inputVisuals);
+        parseSourceFormulaReviewResponse(
+          repair.rawResponse,
+          failedReview.inputVisuals,
+          protocol,
+        );
         return false;
       } catch (error) {
         if (!(error instanceof SourceFormulaReviewProtocolError) || error.message !== repair.diagnostic) {
@@ -3810,14 +4027,10 @@ function sourceFormulaArtifactRecoveryFailedReviewMatches(
       }
     }
     if (failedReview.semanticAttempt !== failedReview.repairHistory.length + 1) return false;
-    const expectedPayload = sourceFormulaReviewAttemptPayload(
-      pageReviewRequestPayload(evidence, failedReview.model, failedReview.inputVisuals),
-      failedReview.repairHistory,
-    );
-    if (failedReview.requestPayload !== expectedPayload) return false;
     const decisions = parseSourceFormulaReviewResponse(
       failedReview.rawResponse,
       failedReview.inputVisuals,
+      protocol,
     );
     const rejectedById = new Map(decisions
       .filter((decision) => decision.action === "reject")
@@ -5019,23 +5232,28 @@ function sourceFormulaArtifactTopologyConsensusFormulaFeedbackMatches(
       failedReview.semanticAttempt < 1 ||
       failedReview.semanticAttempt > SOURCE_FORMULA_REVIEW_MAX_SEMANTIC_ATTEMPTS ||
       failedReview.semanticAttempt !== failedReview.repairHistory.length + 1 ||
-      failedReview.cacheKey !== pageReviewCacheKey(evidence, failedReview.model, expectedInputs)
+      !Array.isArray(failedReview.repairHistory)
     ) return false;
+    const protocol = sourceFormulaReviewProtocolForFailedReview(
+      failedReview,
+      evidence,
+      expectedInputs,
+    );
+    if (!protocol) return false;
     for (const repair of failedReview.repairHistory) {
       if (!repair || typeof repair.rawResponse !== "string" || typeof repair.diagnostic !== "string") return false;
       try {
-        parseSourceFormulaReviewResponse(repair.rawResponse, expectedInputs);
+        parseSourceFormulaReviewResponse(repair.rawResponse, expectedInputs, protocol);
         return false;
       } catch (error) {
         if (!(error instanceof SourceFormulaReviewProtocolError) || error.message !== repair.diagnostic) return false;
       }
     }
-    const expectedPayload = sourceFormulaReviewAttemptPayload(
-      pageReviewRequestPayload(evidence, failedReview.model, expectedInputs),
-      failedReview.repairHistory,
-    );
-    if (failedReview.requestPayload !== expectedPayload) return false;
-    const parsed = parseSourceFormulaReviewResponse(failedReview.rawResponse, expectedInputs)
+    const parsed = parseSourceFormulaReviewResponse(
+      failedReview.rawResponse,
+      expectedInputs,
+      protocol,
+    )
       .filter((decision) => decision.action === "reject");
     if (
       parsed.length !== feedback.rejections.length ||

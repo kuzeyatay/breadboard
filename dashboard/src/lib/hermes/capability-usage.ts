@@ -203,6 +203,7 @@ export const AUTOMATIC_SELECTION_REASONS: Record<string, string> = {
   "image-to-3d": "The message asked for a 3D model of an attached picture.",
   "audio-analysis": "The message was about an attached track.",
   "diagram-design": "The message asked for a diagram.",
+  goal: "The message set an objective to keep working toward.",
 };
 
 interface Accumulated {

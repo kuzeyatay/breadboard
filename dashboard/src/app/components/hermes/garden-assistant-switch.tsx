@@ -5,7 +5,10 @@
 // launcher with a different identity.
 
 import GardenAssistant from "@/app/garden/garden-assistant";
-import type { QuartzAssistantSelectionRequest } from "@/lib/quartz-assistant-selection";
+import type {
+  QuartzAssistantSelectionRequest,
+  QuartzInlineAnswerUpdate,
+} from "@/lib/quartz-assistant-selection";
 
 interface ActiveMarkdown {
   cluster: string;
@@ -20,6 +23,7 @@ interface Props {
   activeClusterName?: string;
   activeMarkdown?: ActiveMarkdown | null;
   selectedTextRequest?: QuartzAssistantSelectionRequest | null;
+  onInlineAnswerUpdate?: (update: QuartzInlineAnswerUpdate) => void;
   initialOpen?: boolean;
 }
 

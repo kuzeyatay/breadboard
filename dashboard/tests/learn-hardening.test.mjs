@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   assessLessonQuality,
   formatQualityProblemForRepair,
+  hasPlaceholderText,
   hasFallbackFingerprint,
   countSourceCommentary,
   sourceCommentaryMatches,
@@ -128,6 +129,22 @@ describe("fallback + commentary detectors", () => {
     );
     assert.match(overviewValidator, /problems\.push\(formatQualityProblemForRepair\(problem\)\)/);
     assert.match(learnSource, /failedProblems:\s*lastOverviewProblems/);
+  });
+
+  test("placeholder feedback preserves a real unfinished line without rejecting ordinary passive prose", () => {
+    const ordinaryProse =
+      "A scalar magnetic potential allows the magnetic field intensity to be written as a gradient.";
+    assert.equal(hasPlaceholderText(ordinaryProse), false);
+
+    const offending = "This section is to be written later.";
+    const result = assessLessonQuality(`${GOOD_BODY}\n\n${offending}`);
+    const problem = result.problems.find((candidate) => candidate.code === "placeholder");
+    assert.ok(problem);
+    assert.deepEqual(problem.evidence, [offending]);
+    assert.equal(
+      formatQualityProblemForRepair(problem),
+      `placeholder: contains placeholder / meta-instruction text; offending text: ${JSON.stringify(offending)}`,
+    );
   });
 
   test("source-formula gate inspects model-authored display math before Quartz rewrites it", () => {

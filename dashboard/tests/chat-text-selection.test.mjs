@@ -56,19 +56,24 @@ test("overlap detection prevents nested clickable highlights", () => {
 });
 
 test("selected-text questions are explicitly grounded in their excerpt", () => {
-  const prompt = chatTextSelectionQuestionPrompt("like how many?", {
-    id: "inline:12345678",
-    mode: "inline",
-    sourceMessageId: "message:12345678",
-    start: 15,
-    end: 30,
-    quote: "several minutes",
-    prefix: "Expect this to take ",
-    suffix: ". It only reads file metadata.",
-  });
+  const prompt = chatTextSelectionQuestionPrompt(
+    "like how many?",
+    {
+      id: "inline:12345678",
+      mode: "inline",
+      sourceMessageId: "message:12345678",
+      start: 15,
+      end: 30,
+      quote: "several minutes",
+      prefix: "Expect this to take ",
+      suffix: ". It only reads file metadata.",
+    },
+    "The complete source response says the scan normally takes seven minutes.",
+  );
   assert.match(prompt, /specifically in relation to that excerpt/);
   assert.match(prompt, /"highlightedText":"several minutes"/);
   assert.match(prompt, /"contextBefore":"Expect this to take "/);
+  assert.match(prompt, /"sourceResponse":"The complete source response/);
   assert.match(prompt, /User question:\nlike how many\?/);
   assert.match(prompt, /Do not switch to another topic/);
 });

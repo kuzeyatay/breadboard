@@ -108,6 +108,7 @@ const DISPOSABLE_BREADBOARD_ENTRIES = new Set([
   "critic-report.md",
   "formula-assignment-plan.json",
   "formula-identities.json",
+  "humanizer",
   "learn-build.lock.json",
   "learning-unit-contract.json",
   "repair-log.json",

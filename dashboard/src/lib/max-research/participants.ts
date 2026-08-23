@@ -163,10 +163,55 @@ async function driveRun(input: {
   }
 
   try {
-    return input.collect(runId);
+    return withRealFindings(input.collect(runId));
   } catch (error) {
     return failed(input.participant, error, runId);
   }
+}
+
+/**
+ * The shortest output that can be a finding rather than the absence of one.
+ *
+ * Set from what a failing run actually returns. A live drive had Agent Reach
+ * settle "completed" with 70 characters and OpenScience settle "completed" with
+ * *one*, and both were counted as findings — so the synthesis believed it had
+ * four participants' evidence when it had two, and wrote an answer the audit
+ * layer then buried under "the run could not trace..." because most of it was
+ * traceable to nothing. A genuine finding from any of these runs to hundreds or
+ * thousands of characters; nothing legitimate lands near this line.
+ */
+const MINIMUM_USEFUL_OUTPUT = 200;
+
+/** How long to wait for a slot when the Deep Research service is at its limit. */
+const BUSY_SERVICE_GRACE_MS = 5 * 60_000;
+
+/** How long to let a Deep Research service that is starting finish starting. */
+const SERVICE_START_GRACE_MS = 45_000;
+
+/**
+ * Demote a run that stopped without finding anything.
+ *
+ * `completed` from a run manager means the process ended, not that it produced
+ * evidence — the same gap that has bitten this orchestration before. Saying so
+ * matters more than it looks: a participant recorded as completed-but-empty is
+ * invisible to the reader, while one recorded as failed appears in the answer's
+ * own account of what it could not reach.
+ */
+function withRealFindings(result: ParticipantResult): ParticipantResult {
+  if (result.status !== "completed") return result;
+  // ARIS contributes method rather than retrieval, and its guidance is
+  // deliberately short. It is not measured against a findings threshold.
+  if (result.participant === "aris") return result;
+  const output = result.output.trim();
+  if (output.length >= MINIMUM_USEFUL_OUTPUT) return result;
+  return {
+    ...result,
+    status: "failed",
+    output: "",
+    reason: output
+      ? `The run ended without findings — it returned ${output.length} characters, which is too little to be evidence: ${output.slice(0, 120)}`
+      : "The run ended without returning anything.",
+  };
 }
 
 /**
@@ -191,17 +236,143 @@ export function participantRuntime(
     case "get_doc":
       return getDocRuntime();
     case "openscience":
-      return runManagerRuntime(participant, {
-        load: () => import("../openscience/run-manager.ts"),
-        health: async () =>
-          (await import("../openscience/runtime.ts")).runtimeAvailability(),
-      });
+      return openscienceRuntime();
     case "aris":
       return arisRuntime();
   }
 }
 
 /* ------------------------------------------------------------------ */
+
+/**
+ * OpenScience, which does not take the shape every other run manager takes.
+ *
+ * The generic adapter hands each runtime a flat `{ userId, task, model,
+ * reasoningEffort, baseUrl }`. OpenScience's `startRun` also requires an
+ * `apiKey` and an `options` object naming its harness, and it reads
+ * `run.options.harness` while emitting `run.started` — so the omission did not
+ * surface as a validation error but as `Cannot read properties of undefined
+ * (reading 'harness')`, a TypeError thrown before the run began. A live Max
+ * Research run recorded exactly that and reported the participant as failed
+ * with a message no reader could act on.
+ *
+ * `research` rather than `plan`: Max Research commissions this participant to
+ * do the work, not to describe what it would do. `deliverFiles` is on because
+ * the scripts and figures a run leaves behind are the evidence for what it
+ * claims to have observed.
+ */
+/**
+ * One OpenScience run at a time, per process.
+ *
+ * Its session store writes each record to a temp file carrying a pid and a
+ * uuid and then renames it into place. Two runs overlapping made that rename
+ * fail on Windows with `EPERM: operation not permitted`, and the participant
+ * reported a path nobody could act on. The store is the vendored server's, so
+ * the thing Breadboard controls is whether it is ever asked to do two at once.
+ *
+ * Queueing costs the second run its wait; colliding costs it the participant
+ * entirely, in a run already measured in tens of minutes. A chained promise
+ * rather than a counter, so a run that throws still releases the next one.
+ */
+let openscienceQueue: Promise<unknown> = Promise.resolve();
+
+function queueOpenscience<T>(work: () => Promise<T>): Promise<T> {
+  const next = openscienceQueue.then(work, work);
+  // Swallowed on the queue only — the caller still sees the real result.
+  openscienceQueue = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
+function openscienceRuntime(): ParticipantRuntime {
+  return {
+    async available() {
+      try {
+        await import("../openscience/run-manager.ts");
+        const { runtimeAvailability } = await import("../openscience/runtime.ts");
+        const state = await runtimeAvailability();
+        return state.available
+          ? { available: true }
+          : { available: false, reason: state.reason ?? "The runtime is unavailable." };
+      } catch (error) {
+        return {
+          available: false,
+          reason: error instanceof Error ? error.message : "The runtime is unavailable.",
+        };
+      }
+    },
+    async run(brief, context) {
+      let module: typeof import("../openscience/run-manager.ts");
+      let apiKey: string;
+      try {
+        module = await import("../openscience/run-manager.ts");
+        apiKey = (await import("../agent-browser/provider.ts")).chatmockApiKeyValue();
+      } catch (error) {
+        return failed("openscience", error);
+      }
+      // OpenScience streams its answer as `assistant.delta` events and never
+      // emits a terminal content event, so `summarizeEvents` — which reads the
+      // run.completed payload and falls back to scanning for content keys —
+      // found nothing and returned one or two stray characters. Two live drives
+      // recorded exactly that: 750 seconds of work, 63% of the whole run, and
+      // "**" as the finding. `onTerminal` is the runtime's own accessor for the
+      // assembled answer, so it is what this reads.
+      let terminal: { outcome: string; content: string } | null = null;
+      return queueOpenscience(() =>
+        driveRun({
+        participant: "openscience",
+        start: () => {
+          const summary = module.startRun({
+            userId: context.userId,
+            task: brief.brief,
+            model: context.model,
+            reasoningEffort: context.reasoningEffort,
+            baseUrl: context.baseUrl,
+            apiKey,
+            options: { harness: "research", deliverFiles: true },
+            ...(context.conversationContext
+              ? { conversationContext: context.conversationContext }
+              : {}),
+          });
+          module.onTerminal(context.userId, summary.runId, (result) => {
+            terminal = result;
+          });
+          return summary;
+        },
+        isTerminal: (runId) => module.isTerminal(context.userId, runId),
+        abort: (runId) => void module.abortRun?.(context.userId, runId),
+        collect: (runId) => {
+          const events = module.getEventsSince(context.userId, runId, 0);
+          const settled = terminal as { outcome: string; content: string } | null;
+          const output = (settled?.content ?? "").trim();
+          const status =
+            settled?.outcome === "completed"
+              ? ("completed" as const)
+              : settled?.outcome === "aborted"
+                ? ("aborted" as const)
+                : settled
+                  ? ("failed" as const)
+                  : terminalStatusFromEvents(events);
+          const limitations = collectLimitations(events);
+          const artifacts = collectArtifacts(events);
+          return {
+            participant: "openscience" as const,
+            status,
+            output: status === "completed" ? output : "",
+            runId,
+            ...(limitations?.length ? { limitations } : {}),
+            ...(artifacts?.length ? { artifacts } : {}),
+            ...(status === "completed" || !output ? {} : { reason: output.slice(0, 400) }),
+          };
+        },
+        signal: context.signal,
+        }),
+      );
+    },
+  };
+}
 
 function deepResearchRuntime(): ParticipantRuntime {
   return {
@@ -228,7 +399,23 @@ function deepResearchRuntime(): ParticipantRuntime {
         };
       }
       try {
-        const state = await health();
+        // `health()` starts the service when it finds it down, then re-checks
+        // once, immediately. A service that is still booting fails that second
+        // check and the participant is dropped — which is exactly what a live
+        // drive recorded: Deep Research reported "not reachable" at 18s, and a
+        // direct probe a few minutes later answered "available" in 67ms,
+        // because the run's own check is what had started it.
+        //
+        // Waiting is affordable precisely here. This orchestration is about to
+        // spend ten minutes or more, and Deep Research is the participant that
+        // supplies the broad web evidence; losing it costs far more than the
+        // half minute spent letting it finish starting.
+        let state = await health();
+        const deadline = Date.now() + SERVICE_START_GRACE_MS;
+        while (state.runtimeState === "unavailable" && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 3_000));
+          state = await health();
+        }
         if (state.runtimeState === "available") return { available: true };
         return {
           available: false,
@@ -237,7 +424,7 @@ function deepResearchRuntime(): ParticipantRuntime {
               ? "Deep Research is switched off."
               : state.runtimeState === "misconfigured"
                 ? "The Deep Research service is running but not configured to answer."
-                : "The Deep Research service is not reachable.",
+                : "The Deep Research service did not become reachable in time.",
         };
       } catch (error) {
         return {
@@ -252,17 +439,45 @@ function deepResearchRuntime(): ParticipantRuntime {
     async run(brief, context) {
       const service = await import("../deep-research/service.ts");
       let runId: string;
-      try {
-        const summary = await service.startRun(context.userId, {
-          query: brief.brief,
-          output: "report",
-          ...(context.conversationContext
-            ? { conversationPublicId: undefined }
-            : {}),
-        });
-        runId = summary.runId;
-      } catch (error) {
-        return failed("deep_research", error);
+      // The service caps how many runs it will hold at once and answers a
+      // request over that cap with `too_many_runs`. Treating that as a failure
+      // drops the participant that contributes the most evidence over a queue
+      // that clears in minutes — which is what happened the moment three
+      // orchestrations overlapped. A full service is a reason to wait, not a
+      // reason to give up: this run is going to take twenty minutes anyway.
+      const startDeadline = Date.now() + BUSY_SERVICE_GRACE_MS;
+      for (;;) {
+        try {
+          const summary = await service.startRun(context.userId, {
+            query: brief.brief,
+            output: "report",
+            ...(context.conversationContext
+              ? { conversationPublicId: undefined }
+              : {}),
+          });
+          runId = summary.runId;
+          break;
+        } catch (error) {
+          // `too_many_runs` is the cap; `service_unavailable` is the same
+          // service under the same pressure answering a different way. Three
+          // overlapping orchestrations produced one of each, and only the first
+          // was being waited out.
+          const busy =
+            error instanceof Error &&
+            /too_many_runs|service_unavailable|429|503/.test(error.message);
+          if (!busy || Date.now() >= startDeadline || context.signal?.aborted) {
+            return busy
+              ? {
+                  participant: "deep_research",
+                  status: "failed",
+                  output: "",
+                  reason:
+                    "The Deep Research service stayed busy for the whole time this orchestration waited for a slot.",
+                }
+              : failed("deep_research", error);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 15_000));
+        }
       }
 
       const deadline = Date.now() + PARTICIPANT_TIMEOUT_MS;

@@ -136,9 +136,11 @@ test("quartz inline script wires the terminal capability set", () => {
   assert.match(inline, /assistant\.completed/);
   assert.match(inline, /dataset\.usage/);
   assert.match(inline, /breadboard-ai-retry/);
-  // The existing Quartz highlighter adds Ask here, keeps a durable yellow mark,
-  // and hands the exact excerpt to Assistant before focus moves to its prompt.
-  assert.match(highlighter, /data-highlight-action="ask"/);
+  // The Quartz highlighter separates transcript and in-place answers, keeps a
+  // durable yellow mark, and hands the excerpt plus its neighbours to Assistant.
+  assert.match(highlighter, /data-highlight-action="ask-chat"/);
+  assert.match(highlighter, /data-highlight-action="ask-inline"/);
+  assert.match(highlighter, />Ask in chat<\/span>/);
   assert.match(highlighter, />Ask here<\/span>/);
   assert.match(highlighterInline, /addSpan\([\s\S]*DEFAULT_HIGHLIGHT_COLOR\)/);
   assert.match(
@@ -146,6 +148,8 @@ test("quartz inline script wires the terminal capability set", () => {
     /new CustomEvent\("breadboard:assistant-ask-here"/,
   );
   assert.match(highlighterInline, /window\.parent\.postMessage/);
+  assert.match(highlighterInline, /second-brain:assistant-inline-answer/);
+  assert.match(highlighterInline, /span\.start - QUESTION_CONTEXT/);
   assert.match(inline, /addEventListener\("breadboard:assistant-ask-here"/);
   assert.match(inline, /selectedTextOverride \?\? activeTextSelection\?\.text/);
   assert.match(inline, /selectedText,/);

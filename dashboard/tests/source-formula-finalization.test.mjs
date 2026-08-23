@@ -200,6 +200,109 @@ function buildFormulaGarden(root, { body, metadataText, duplicate = false } = {}
   return gardenDir;
 }
 
+/** Install eleven required source definitions on one page. This deliberately
+ * exceeds the ordinary metadata budget: every entry is a one-to-one exact
+ * projection of a reviewed source equation, which is the only permitted
+ * exemption from Formula Metadata Noise. */
+function writeDenseReviewedFormulaPage(
+  gardenDir,
+  { duplicateLastAnchor = false, driftLastText = false } = {},
+) {
+  const formulas = [
+    { id: FORMULA_ID, exactText: REVIEWED_TEXT, caption: "Mass-energy equivalence" },
+    ...Array.from({ length: 10 }, (_, index) => ({
+      id: `S1.P${index + 10}.E1`,
+      exactText: `Q_{${index + 1}} = R_{${index + 1}} \\tag{${index + 2}}`,
+      caption: `Reviewed symbolic identity ${index + 1}`,
+    })),
+  ];
+  const breadboardDir = path.join(gardenDir, ".breadboard");
+  const ledgerPath = path.join(breadboardDir, "source-visuals.json");
+  const ledger = JSON.parse(fs.readFileSync(ledgerPath, "utf8"));
+  const existingById = new Map(ledger.map((entry) => [entry.sourceVisualId, entry]));
+  for (const [index, formula] of formulas.entries()) {
+    existingById.set(formula.id, {
+      sourceVisualId: formula.id,
+      sourceId: "S1",
+      pageNumber: index + 1,
+      type: "equation",
+      caption: formula.caption,
+      exactText: formula.exactText,
+      bbox: { x: 0.1, y: 0.2, width: 0.5, height: 0.1 },
+      usageStatus: "assigned",
+    });
+  }
+  writeJson(ledgerPath, [...existingById.values()]);
+
+  const contractPath = path.join(breadboardDir, "learning-unit-contract.json");
+  const contract = JSON.parse(fs.readFileSync(contractPath, "utf8"));
+  const unit = contract.learningUnits[0];
+  unit.sourceAnchors = formulas.map((formula) => formula.id);
+  unit.sourceFormulas = formulas.map((formula) => ({
+    id: formula.id,
+    teachingGoal: `State ${formula.caption}.`,
+    termsToDefine: ["quantity"],
+    placement: "before_example",
+  }));
+  contract.sourceArtifactAssignments = formulas.map((formula) => ({
+    sourceArtifactId: formula.id,
+    assignedLearningUnitId: "U1",
+    placement: "before_example",
+    reason: "Reviewed source definition",
+    requiredInterpretation: `State ${formula.caption}.`,
+  }));
+  writeJson(contractPath, contract);
+
+  const manifestPath = path.join(breadboardDir, "source-formula-review-set.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.formulaIds = formulas.map((formula) => formula.id);
+  writeJson(manifestPath, manifest);
+
+  const lastIndex = formulas.length - 1;
+  const projections = formulas.map((formula, index) => {
+    const expected = duplicateLastAnchor && index === lastIndex ? formulas[0] : formula;
+    return {
+      anchor: expected.id,
+      text: driftLastText && index === lastIndex
+        ? `${formula.exactText} + \\delta`
+        : expected.exactText,
+    };
+  });
+  const pagePath = path.join(gardenDir, "learning", "1. Foundations", "1.1 Mass Energy.md");
+  const metadata = projections.map(({ anchor, text }) => [
+    '  - kind: "source_definition"',
+    `    text: ${JSON.stringify(text)}`,
+    '    groundingStatus: "source-anchored"',
+    `    sourceAnchor: "${anchor}"`,
+  ].join("\n")).join("\n");
+  fs.writeFileSync(pagePath, `---
+title: "Mass-energy equivalence"
+knowledge_type: "learning-page"
+breadboardType: "learning_page"
+generatedBy: "learn_button"
+learningUnitId: "U1"
+sourceAnchors: ${JSON.stringify(formulas.map((formula) => formula.id))}
+sourceFormulaAnchors: ${JSON.stringify(formulas.map((formula) => formula.id))}
+sourceSetHash: "${COMBINED_SOURCE_SET_HASH}"
+sourceFormulaReviewSetHash: "${REVIEW_SET_HASH}"
+formulas:
+${metadata}
+---
+
+# Mass-energy equivalence
+
+${projections.map(({ text }) => `$$\n${text}\n$$`).join("\n\n")}
+`);
+}
+
+function formulaMetadataNoiseCheck(gardenDir) {
+  const check = auditGardenForFinalization(gardenDir, "reviewed-formulas").checks.find(
+    (candidate) => candidate.name === "Formula Metadata Noise",
+  );
+  assert.ok(check, "Formula Metadata Noise check must be present");
+  return check;
+}
+
 async function syllabusRecoveryFixture(gardenDir, { recovered = true } = {}) {
   const syllabusPlan = {
     courseTitle: "Fields",
@@ -389,6 +492,67 @@ test("central audit rejects a manifest whose combined source hash is not derived
         issue.evidence.check === "AI-reviewed source-formula manifest binding" &&
         /combinedSourceSetHash is not derived/.test(issue.message)),
       JSON.stringify(audit.nonRepairableIssues, null, 2),
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("formula-review manifest accepts prompt V2 and rejects unsupported prompt versions", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-manifest-prompt-version-"));
+  try {
+    const gardenDir = buildFormulaGarden(root);
+    const manifestPath = path.join(gardenDir, ".breadboard", "source-formula-review-set.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+
+    manifest.promptVersion = 2;
+    writeJson(manifestPath, manifest);
+    const v2Audit = auditGardenForFinalization(gardenDir, "reviewed-formulas");
+    assert.equal(
+      v2Audit.nonRepairableIssues.some((issue) =>
+        issue.evidence.check === "AI-reviewed source-formula manifest binding" &&
+        /invalid promptVersion/.test(issue.message)),
+      false,
+      JSON.stringify(v2Audit.nonRepairableIssues, null, 2),
+    );
+
+    manifest.promptVersion = 3;
+    writeJson(manifestPath, manifest);
+    const v3Audit = auditGardenForFinalization(gardenDir, "reviewed-formulas");
+    assert.ok(
+      v3Audit.nonRepairableIssues.some((issue) =>
+        issue.evidence.check === "AI-reviewed source-formula manifest binding" &&
+        /invalid promptVersion/.test(issue.message)),
+      JSON.stringify(v3Audit.nonRepairableIssues, null, 2),
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Formula Metadata Noise exempts only one-to-one dense exact reviewed source projections", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-noise-reviewed-"));
+  try {
+    const gardenDir = buildFormulaGarden(root);
+
+    writeDenseReviewedFormulaPage(gardenDir);
+    const exactCheck = formulaMetadataNoiseCheck(gardenDir);
+    assert.equal(exactCheck.status, "PASS", exactCheck.problems.join(" | "));
+
+    writeDenseReviewedFormulaPage(gardenDir, { duplicateLastAnchor: true });
+    const duplicateCheck = formulaMetadataNoiseCheck(gardenDir);
+    assert.equal(duplicateCheck.status, "FAIL");
+    assert.ok(
+      duplicateCheck.problems.some((problem) => /contains 11 entries/.test(problem)),
+      duplicateCheck.problems.join(" | "),
+    );
+
+    writeDenseReviewedFormulaPage(gardenDir, { driftLastText: true });
+    const driftCheck = formulaMetadataNoiseCheck(gardenDir);
+    assert.equal(driftCheck.status, "FAIL");
+    assert.ok(
+      driftCheck.problems.some((problem) => /contains 11 entries/.test(problem)),
+      driftCheck.problems.join(" | "),
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

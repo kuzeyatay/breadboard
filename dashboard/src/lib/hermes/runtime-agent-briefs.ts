@@ -45,6 +45,7 @@ export const RUNTIME_AGENT_GROUPS = [
   { key: "research", label: "Research, reading, and learning" },
   { key: "markets", label: "Markets" },
   { key: "communication", label: "Mail and social accounts" },
+  { key: "fitness", label: "Fitness and training" },
   { key: "work", label: "Documents, deliverables, and long-running work" },
   { key: "design", label: "Physical design and imaging" },
   { key: "video", label: "Video" },
@@ -175,6 +176,13 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
     choose:
       "Choose it for finding roles, tailoring an application to a real posting, or anything that should build on what earlier runs stored. A CV you are simply writing is writing.",
   },
+
+  "open-gym": {
+    group: "fitness",
+    does: "Plans and remembers workouts against openGym's 1,324-exercise catalogue, tracks training preferences and programs across runs, and shows the registered animated demonstration with exercise-form answers.",
+    choose:
+      "Choose it for how to perform a named exercise, building or revising a full training program, or continuing the user's saved workout plan. Do not choose it to diagnose pain or injury, prescribe rehabilitation or nutrition, or answer a general fitness fact that needs no catalogue or persistent plan.",
+  },
   openwork: {
     group: "work",
     does: "Carries out a knowledge-work task inside its own workspace, with its own installed skills, on the OpenCode engine. The message is the entire brief.",
@@ -191,7 +199,7 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
     group: "work",
     does: "Produces real files through real software: web pages, PowerPoint decks, Excel workbooks, Blender scenes, and REAPER audio projects, built by distilled skills rather than described in prose.",
     choose:
-      "Choose it when the deliverable is one of those five kinds. You can write the content of a deck yourself; you cannot produce the .pptx.",
+      "Choose it when the deliverable is one of those five kinds. You can write the content of a deck yourself; you cannot produce the .pptx. It is the choice when the file format is the requirement; when the deck is to be presented or shared as a link, Bolt Slides builds it better.",
   },
   "meeting-notes": {
     group: "work",
@@ -202,6 +210,12 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
   legal: {
     group: "work",
     does: "Harvey LAB's legal harness working over the documents attached to the message — review, comparison, and drafting against the actual files. The attachment tray is its input, which is why only the user can start it.",
+  },
+  "bolt-slides": {
+    group: "work",
+    does: "Plans a deck slide by slide, themes it, and compiles React source with Vite into a running web app: every slide a responsive page with click-builds, a thumbnail rail, annotation, and a synced presenter view. It returns a link and files the deck as an artifact here.",
+    choose:
+      "Choose it when the deck will be presented or shared as a link and the interactivity is the point — a punchline that lands on a click, a live product mock. Resource2Skill makes the .pptx; this makes the web deck.",
   },
   matraix: {
     group: "work",

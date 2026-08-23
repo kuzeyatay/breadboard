@@ -31,6 +31,7 @@ const GENERATED_LEARN_PATHS = [
   ".breadboard/canonical-shadow",
   ".breadboard/debug/failed-pages",
   ".breadboard/debug/failed-repairs",
+  ".breadboard/humanizer",
   ".breadboard/learn-run-snapshots",
   ".breadboard/planning",
   ".breadboard/quarantine",

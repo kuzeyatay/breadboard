@@ -57,6 +57,24 @@ footer,
 }
 `;
 
+// The preview is served from the dashboard origin, while the full Quartz site
+// has its own origin and theme storage. Seed Quartz's theme synchronously,
+// before prescript.js reads its generic `theme` key and before the canvas is
+// painted. Relying only on the postMessage bridge leaves the first graph render
+// at the operating-system preference, which can be dark inside a light app.
+const PREVIEW_THEME_SCRIPT = `
+<script>
+(() => {
+  try {
+    const parentTheme = window.parent.document.documentElement.dataset.theme;
+    const theme = parentTheme === "dark" ? "dark" : "light";
+    window.localStorage.setItem("theme", theme);
+    document.documentElement.setAttribute("saved-theme", theme);
+  } catch {}
+})();
+</script>
+`;
+
 const PREVIEW_READY_SCRIPT = `
 <script>
 (() => {
@@ -138,6 +156,7 @@ function injectPreviewShell(
   const prescriptUrl = proxyUrl(origin, 'prescript', refresh, clusterSlug);
   const postscriptUrl = proxyUrl(origin, 'postscript', refresh, clusterSlug);
   const headInjection = [
+    PREVIEW_THEME_SCRIPT,
     `<base href="${baseHref}">`,
     `<style>${PREVIEW_STYLE}</style>`,
     PREVIEW_READY_SCRIPT,

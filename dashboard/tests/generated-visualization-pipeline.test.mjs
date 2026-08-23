@@ -508,6 +508,41 @@ test("strict AST compiler emits only the fixed JSON envelope and deterministic t
   assert.equal(tests.passed, true, JSON.stringify(tests));
 });
 
+test("diagram node values reject a deeply nested expression instead of silently accepting it", () => {
+  let nestedExpression = '{ kind: "constant", value: 1 }';
+  for (let index = 0; index < 18; index += 1) {
+    nestedExpression = `{ kind: "binary", op: "add", left: ${nestedExpression}, right: { kind: "constant", value: 1 } }`;
+  }
+  const source = `import { defineVisualization } from "@breadboard/visual-sdk";
+export default defineVisualization({
+  schemaVersion: 1,
+  sdkVersion: "1.0.0",
+  title: "Deep diagram expression",
+  description: "A diagram carries an invalid deep numeric value.",
+  accessibilityDescription: "A deliberately invalid diagram value validates the expression ceiling.",
+  controls: [],
+  outputs: [],
+  scenes: [{
+    kind: "diagram",
+    title: "Deep value",
+    nodes: [{ id: "deep", label: "Deep", x: 100, y: 100, value: ${nestedExpression} }],
+    edges: []
+  }]
+});`;
+  const compiled = compileGeneratedVisualization(source);
+  assert.equal(compiled.validation.valid, false);
+  assert.match(
+    compiled.validation.errors.join("; "),
+    /scenes\[0\]\.nodes\[0\]\.value(?:\.[a-z]+)*: expression is invalid or too deeply nested/i,
+  );
+  const bareNumeric = compileGeneratedVisualization(source.replace(nestedExpression, "1"));
+  assert.equal(bareNumeric.validation.valid, false);
+  assert.match(
+    bareNumeric.validation.errors.join("; "),
+    /scenes\[0\]\.nodes\[0\]\.value: expression is invalid or too deeply nested/i,
+  );
+});
+
 test("generated controls use the planner identifier grammar while runtime x and t stay reserved", () => {
   const sourceWithOneCharacterControl = validSource.replaceAll(
     'id: "gain"',

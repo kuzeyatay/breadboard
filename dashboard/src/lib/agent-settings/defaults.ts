@@ -19,6 +19,11 @@ import {
   type DocumentSourceId,
 } from "../get-doc/identity.ts";
 import {
+  BOLT_SLIDES_DEFAULT_SLIDES,
+  isBoltSlidesTheme,
+  type BoltSlidesTheme,
+} from "../bolt-slides/identity.ts";
+import {
   TUTOR_CAPABILITIES,
   type TutorOptionalTool,
   type TutorRequest,
@@ -435,5 +440,26 @@ export function matraixDefaults(values: AgentSettingValues): MatraixSettingsDefa
       choice(values, "allocation", ["equalTotal", "perCell", "proportional"] as const) ??
       "equalTotal",
     sources,
+  };
+}
+
+// ---- Bolt Slides -----------------------------------------------------------
+
+export interface BoltSlidesSettingsDefaults {
+  slides: number;
+  theme: BoltSlidesTheme;
+}
+
+/**
+ * Stored deck defaults, in the shape `parseBoltSlidesRequest` fills its unsaid
+ * fields from. A theme the catalog no longer offers falls back to "auto" rather
+ * than being passed through, because the run would otherwise ask the model to
+ * dress a deck in a family nobody can describe.
+ */
+export function boltSlidesDefaults(values: AgentSettingValues): BoltSlidesSettingsDefaults {
+  const theme = values.theme;
+  return {
+    slides: count(values, "slides", BOLT_SLIDES_DEFAULT_SLIDES),
+    theme: isBoltSlidesTheme(theme) ? theme : "auto",
   };
 }

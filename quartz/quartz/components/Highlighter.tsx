@@ -96,9 +96,19 @@ const Highlighter: QuartzComponent = () => (
       <button
         type="button"
         class="bb-highlight-ask"
-        data-highlight-action="ask"
-        title="Ask Assistant about this selection"
-        aria-label="Ask Assistant about this selection"
+        data-highlight-action="ask-chat"
+        title="Ask about this selection in chat"
+        aria-label="Ask about this selection in chat"
+      >
+        <AskIcon />
+        <span>Ask in chat</span>
+      </button>
+      <button
+        type="button"
+        class="bb-highlight-ask"
+        data-highlight-action="ask-inline"
+        title="Attach an answer to this highlight"
+        aria-label="Attach an answer to this highlight"
       >
         <AskIcon />
         <span>Ask here</span>

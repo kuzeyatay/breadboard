@@ -317,6 +317,18 @@ html[data-breadboard-desktop="true"] body > .min-h-screen {
   min-height: calc(100vh - var(--breadboard-titlebar-height));
 }
 
+/* A full-viewport image viewer keeps its close button in the top-right corner,
+   which on the desktop shell is exactly where Electron paints the native
+   Windows caption buttons — a compositor layer above all web content, so the
+   button ends up hidden under them and unclickable. Starting the overlay below
+   the drag strip moves every control clear of the frame and leaves the strip
+   draggable. The variable is only defined on the desktop html element, so
+   browser sessions still cover the whole viewport. Use this in place of
+   `inset-0`, not alongside it. */
+.bb-viewer-overlay {
+  inset: var(--breadboard-titlebar-height, 0px) 0 0 0;
+}
+
 /* The calendar is a fixed-height app shell rather than a scrolling page: the
    toolbar and sidebar stay put while the grid scrolls inside them. It needs a
    definite height for that, so it gets the same desktop title-bar deduction the

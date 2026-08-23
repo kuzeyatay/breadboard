@@ -132,13 +132,33 @@ test("the client freezes active-answer intelligence and reveals durable boundari
     assert.match(surface, /model=\{selectedModel\}/);
   }
   assert.match(hookSource, /queueModelChange: \(model: string\) => Promise<void>/);
-  assert.match(hookSource, /if \(!target\?\.clientMessageId\)/);
+  assert.match(hookSource, /if \(!target\?\.clientMessageId\) return;/);
   assert.match(hookSource, /formatAssistantModelChangeName\(model\)/);
-  assert.match(hookSource, /modelChange,/);
   assert.match(panelSource, /storedMessage\.modelChangesAfter/);
   assert.match(panelSource, /ChatModelChangeSeparator/);
   assert.match(separatorSource, /Switched to \$\{modelName\}/);
   assert.match(separatorSource, /aria-label=\{label\}/);
+});
+
+test("changing models before the first message keeps a new chat empty", () => {
+  const queueSource = hookSource.slice(
+    hookSource.indexOf("const queueModelChange"),
+    hookSource.indexOf("const beginDelegatedExternalAgentTurn"),
+  );
+  const emptyChatGuard = queueSource.indexOf(
+    "if (!target?.clientMessageId) return;",
+  );
+
+  assert.ok(emptyChatGuard >= 0, "an empty chat must ignore model boundaries");
+  assert.ok(
+    emptyChatGuard < queueSource.indexOf("setMessages"),
+    "the empty-chat guard must run before any separator can be painted",
+  );
+  assert.doesNotMatch(
+    queueSource.slice(0, queueSource.indexOf("const answerClientMessageId")),
+    /model-change:/,
+    "an initial model selection must not create a presentation-only transcript row",
+  );
 });
 
 test("the boundary is drawn on the switch, not on the write that confirms it", () => {

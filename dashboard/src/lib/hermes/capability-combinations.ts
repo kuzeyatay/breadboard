@@ -23,6 +23,7 @@ import { agencyAgentSlugFromToken } from "./agency-agent-command.ts";
 import { AGENT_REACH_COMMAND } from "../agent-reach/identity.ts";
 import { PARAMETRIC_CAD_COMMAND } from "../cad/identity.ts";
 import { CAREER_OPS_COMMAND } from "../career-ops/identity.ts";
+import { OPEN_GYM_COMMAND } from "../open-gym/identity.ts";
 import { TRADINGAGENTS_COMMAND } from "../tradingagents/identity.ts";
 import { CODEX_COMMAND } from "../codex/identity.ts";
 import { DEEP_RESEARCH_SLASH_COMMAND } from "../deep-research/identity.ts";
@@ -55,6 +56,7 @@ import { STOCK_ANALYST_COMMAND } from "../stock-analyst/identity.ts";
 import { PAPER_TRADER_COMMAND } from "../paper-trader/identity.ts";
 import { VIMAX_COMMAND } from "../vimax/identity.ts";
 import { VOX_DIRECTOR_COMMAND } from "../vox-director/identity.ts";
+import { BOLT_SLIDES_COMMAND } from "../bolt-slides/identity.ts";
 
 /** Structurally identical to `HermesSurface`, redeclared to keep this module
  * out of the server-only config module's import graph. */
@@ -175,6 +177,11 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
     requiresLaunchApproval: false,
   }),
   profile("career-ops", CAREER_OPS_COMMAND, "Career Ops"),
+  profile("open-gym", OPEN_GYM_COMMAND, "openGym", {
+    // It reads the local catalogue and writes only the user's private training
+    // state plus an artifact in the launching conversation.
+    requiresLaunchApproval: false,
+  }),
   // Meeting Notes takes a recording, so attachments are the point rather than an
   // extra. It is the one attachment-shaped agent a model may still launch, and
   // the reason is a real difference rather than an exception: where Video Use
@@ -310,6 +317,12 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   // calls and writes files under its own run, and touches nothing else — so it
   // asks for approval like every other agent that produces a deliverable.
   profile("matraix", MATRAIX_COMMAND, "MatrAIx"),
+  // Bolt Slides writes a deck from the message and builds it into a running web
+  // app. The brief is the whole request, so nothing stacked onto it survives,
+  // and it takes no attachments: the run has no image step, and a file handed to
+  // it would have nowhere to go. A delegated launch is safe — it spends model
+  // calls, writes into its own workspace, and files one artifact on this chat.
+  profile("bolt-slides", BOLT_SLIDES_COMMAND, "Bolt Slides"),
   // Agent TARS drives a real browser or desktop from the Terminal only; Garden
   // Chat offers the same palette entry as a setup dialog, with no chat runner.
   profile("agent-tars", AGENT_TARS_SLASH_COMMAND, "Agent TARS", {

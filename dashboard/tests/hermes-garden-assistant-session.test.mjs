@@ -99,10 +99,10 @@ test("approving resumes the original task without the user restating it", () => 
   assert.ok(approveBlock.length > 0);
   assert.match(approveBlock, /\/api\/hermes\/filesystem-grants/);
   // The stored request text is re-dispatched, not the composer's current value.
-  assert.match(
-    approveBlock,
-    /sendMessage\(request\.originalText, request\.history, undefined, request\.selectedText\)/,
-  );
+  assert.match(approveBlock, /request\.originalText/);
+  assert.match(approveBlock, /request\.history/);
+  assert.match(approveBlock, /request\.selectedText/);
+  assert.match(approveBlock, /request\.selectionContext/);
 });
 
 test("approval requests only the operations the paused turn needed", () => {

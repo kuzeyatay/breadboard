@@ -69,6 +69,22 @@ describe("formula worked-example lineage", () => {
     assert.ok(audit.problems.some((p) => /worked-example arithmetic as source_definition/.test(p)));
   });
 
+  test("exact reviewed symbolic source identities are not relabeled as worked examples", () => {
+    const exact = "a_B = B/\\sqrt{B_x^2+B_y^2+B_z^2} = B/|B| \\tag{2}";
+    const entries = [{
+      kind: "source_definition",
+      text: exact,
+      groundingStatus: "source-anchored",
+      sourceAnchor: "S1.P19.E2",
+    }];
+    const audit = auditFormulaMetadata(entries, {
+      isExactReviewedSourceProjection: (entry) =>
+        entry.sourceAnchor === "S1.P19.E2" && entry.text === exact,
+    });
+    assert.equal(audit.valid, true, JSON.stringify(audit.problems));
+    assert.deepEqual(audit.invalidDefinitions, []);
+  });
+
   test("5. compactFormulaMetadataByLineage keeps the definition + representative examples per family", () => {
     const entries = [
       { kind: "source_definition", text: "\\text{Accuracy}=\\frac{N_c}{N_t}", groundingStatus: "source-anchored", sourceAnchor: "S1.P6.E1", formulaFamily: "accuracy" },

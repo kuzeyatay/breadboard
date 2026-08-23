@@ -1168,6 +1168,30 @@ export function formulaStructuralKind(text: string): FormulaStructuralKind {
   return "definition";
 }
 
+/**
+ * Formula reviews retain source transcription exactly. Whitespace may differ
+ * between the source ledger and frontmatter serialization, but no algebraic or
+ * symbol normalization is permitted for this identity check.
+ */
+function exactFormulaProjectionKey(text: string | undefined): string {
+  return String(text ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function formulaMatchesAnchoredExactText(
+  formulaText: string,
+  anchor: CanonicalSourceAnchor | undefined,
+): boolean {
+  return Boolean(
+    anchor?.kind === "formula" &&
+    anchor.exactText &&
+    exactFormulaProjectionKey(formulaText) === exactFormulaProjectionKey(anchor.exactText),
+  );
+}
+
 /** Best-effort full classification when the frontmatter omits `kind`. */
 export function classifyFormulaKind(entry: RawFormulaEntry): FormulaKind {
   const declared = String(entry.kind ?? "").trim();
@@ -2146,7 +2170,11 @@ export function auditFinalGardenState(state: FinalGardenState): FinalAuditResult
       const anchor = anchors[anchorId];
       if (!anchor || anchor.kind !== "formula" || !anchor.formulaFamily) continue;
       const formulaFamily = formulaMetricFamily(formula.text);
-      if (formulaFamily && !metricFamiliesCompatible(formulaFamily, anchor.formulaFamily)) {
+      if (
+        formulaFamily &&
+        !metricFamiliesCompatible(formulaFamily, anchor.formulaFamily) &&
+        !formulaMatchesAnchoredExactText(formula.text, anchor)
+      ) {
         add("anchor_compatibility", `${page.rel}: formula "${formula.text.slice(0, 48)}" is a ${formulaFamily} formula but is grounded to ${anchorId}, the ${anchor.formulaFamily} formula — semantically incompatible`);
       }
     }
@@ -2155,6 +2183,15 @@ export function auditFinalGardenState(state: FinalGardenState): FinalAuditResult
     const definitionFamilies = new Set<string>();
     for (const f of page.formulas) {
       if (f.structuralKind !== "definition") continue;
+      const anchoredSource = f.sourceAnchor ? anchors[f.sourceAnchor] : undefined;
+      if (
+        anchoredSource?.kind === "formula" &&
+        anchoredSource.formulaFamily &&
+        formulaMatchesAnchoredExactText(f.text, anchoredSource)
+      ) {
+        definitionFamilies.add(anchoredSource.formulaFamily);
+        continue;
+      }
       const fam = formulaMetricFamily(f.text);
       if (fam) definitionFamilies.add(fam);
     }
@@ -2889,12 +2926,17 @@ function regroundMismatchedFormulas(
   rawFm: string,
   ledgerFamilies: Map<string, string>,
   familyToAnchorId: Map<string, string>,
+  exactFormulaTexts: ReadonlyMap<string, string>,
 ): { rawFm: string; changed: boolean } {
   const entries = parseFullFormulaEntries(rawFm);
   let changed = false;
   for (const entry of entries) {
     if (entry.kind !== "source_definition" && entry.kind !== "source_derived_definition") continue;
     if (!entry.sourceAnchor) continue;
+    const exactText = exactFormulaTexts.get(entry.sourceAnchor);
+    if (exactText && exactFormulaProjectionKey(entry.text) === exactFormulaProjectionKey(exactText)) {
+      continue;
+    }
     const anchorFamily = ledgerFamilies.get(entry.sourceAnchor);
     const formulaFamily = formulaMetricFamily(entry.text);
     if (!anchorFamily || !formulaFamily || metricFamiliesCompatible(formulaFamily, anchorFamily)) continue;
@@ -6196,6 +6238,11 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string, opts
   // (3) Per-page reconciliation: prune anchors to contract, relabel worked
   //     examples, sync tags to the repaired contract handles.
   const ledgerFamilies = ledgerFormulaFamilies(gardenDir);
+  const exactFormulaTexts = new Map(
+    Object.values(state.sourceAnchors)
+      .filter((anchor) => anchor.kind === "formula" && Boolean(anchor.exactText))
+      .map((anchor) => [anchor.id, String(anchor.exactText)]),
+  );
   const familyToAnchorId = new Map<string, string>();
   for (const [id, fam] of ledgerFamilies) if (!familyToAnchorId.has(fam)) familyToAnchorId.set(fam, id);
   const groundedRequired: Array<{ pageRel: string; anchor: string }> = [];
@@ -6246,7 +6293,12 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string, opts
       result.notes.push(`${page.rel}: relabeled worked-example formula(s) mislabeled as source_definition`);
     }
     // Reground formulas grounded to a semantically-wrong-family anchor (Fix 3).
-    const reground = regroundMismatchedFormulas(rawFm, ledgerFamilies, familyToAnchorId);
+    const reground = regroundMismatchedFormulas(
+      rawFm,
+      ledgerFamilies,
+      familyToAnchorId,
+      exactFormulaTexts,
+    );
     if (reground.changed) {
       rawFm = reground.rawFm;
       result.notes.push(`${page.rel}: regrounded formula(s) to the semantically compatible source anchor`);

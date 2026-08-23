@@ -24,6 +24,7 @@ import ArtifactViewer, {
 } from "./artifact-viewer";
 import ArtifactImageStudio from "./artifact-image-studio";
 import ArtifactVideoStudio from "./artifact-video-studio";
+import { ArtifactDockHostProvider } from "./artifact-dock-host";
 
 // Re-exported so existing importers (garden-agent-chat, inline cards) keep a
 // single stable import site even though the definitions now live in the viewer.
@@ -362,6 +363,9 @@ export default function ArtifactPanel({
   const [artifacts, setArtifacts] = useState<PresentedArtifact[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
+  // The element the viewer opens into: this panel's own body, so an opened
+  // artifact replaces the archive instead of docking beside it.
+  const [viewerHost, setViewerHost] = useState<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [imageStudioSource, setImageStudioSource] = useState<PresentedArtifact | "new" | null>(null);
@@ -570,7 +574,7 @@ export default function ArtifactPanel({
 
   return (
     <section
-      className={`flex min-h-0 flex-col bg-[var(--paper-surface)] text-[var(--ink)] ${compact ? "h-full" : "max-h-[62vh]"}`}
+      className={`relative flex min-h-0 flex-col bg-[var(--paper-surface)] text-[var(--ink)] ${compact ? "h-full" : "max-h-[62vh]"}`}
       aria-label="Artifacts"
     >
       {!hideHeader ? (
@@ -772,24 +776,37 @@ export default function ArtifactPanel({
         })}
       </div>
 
-      <ArtifactViewer
-        artifact={openArtifact}
-        onClose={() => setOpenId(null)}
-        onEditImage={(artifact) => {
-          setOpenId(null);
-          setImagePromptSource(null);
-          setImageStudioSource(artifact);
-        }}
-        onCreateImage={(artifact) => {
-          setOpenId(null);
-          setImagePromptSource(artifact);
-          setImageStudioSource("new");
-        }}
-        onEditVideo={(artifact) => {
-          setOpenId(null);
-          setVideoStudioSource(artifact);
-        }}
+      {/* Opening a row from the archive is a change of view, not a second
+          panel: the viewer takes over the rail the list is sitting in rather
+          than opening its own dock beside it. The list stays mounted
+          underneath, so closing the artifact comes back to the same scroll
+          position and the same search. */}
+      <div
+        ref={setViewerHost}
+        aria-hidden={openArtifact ? undefined : true}
+        className={`absolute inset-0 z-20 ${openArtifact ? "" : "pointer-events-none invisible"}`}
       />
+
+      <ArtifactDockHostProvider host={viewerHost}>
+        <ArtifactViewer
+          artifact={openArtifact}
+          onClose={() => setOpenId(null)}
+          onEditImage={(artifact) => {
+            setOpenId(null);
+            setImagePromptSource(null);
+            setImageStudioSource(artifact);
+          }}
+          onCreateImage={(artifact) => {
+            setOpenId(null);
+            setImagePromptSource(artifact);
+            setImageStudioSource("new");
+          }}
+          onEditVideo={(artifact) => {
+            setOpenId(null);
+            setVideoStudioSource(artifact);
+          }}
+        />
+      </ArtifactDockHostProvider>
       {videoStudioSource ? (
         <ArtifactVideoStudio
           artifact={videoStudioSource}

@@ -17,6 +17,88 @@ test("chat rails receive summaries and selected chats receive transcripts", () =
   assert.match(presentation, /listConversationMessages\(conversation\.id\)/);
   assert.match(client, /SUMMARY_TTL_MS = 5_000/);
   assert.match(client, /detailRequests/);
+  assert.match(client, /prefetchHermesSessionDetail/);
+  assert.match(client, /DETAIL_CACHE_FRESH_MS = 5_000/);
+  assert.match(client, /detailFreshUntil\.get\(key\)/);
+  assert.match(presentation, /const \{ metadata, \.\.\.presentedMessage \} = presented/);
+  assert.match(presentation, /\.\.\.presentedMessage/);
+  assert.doesNotMatch(presentation, /\.\.\.presented,/);
+});
+
+test("chat detail prefetch reuses cached and in-flight transcripts", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let calls = 0;
+  let now = 1_000;
+  Date.now = () => now;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ session: { id: "prefetch-regression" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    const client = await import("../src/lib/hermes/session-client.ts?prefetch-regression");
+    const first = await client.prefetchHermesSessionDetail(
+      "dashboard_terminal",
+      "prefetch-regression",
+    );
+    const cached = await client.prefetchHermesSessionDetail(
+      "dashboard_terminal",
+      "prefetch-regression",
+    );
+    assert.equal(calls, 1);
+    assert.strictEqual(cached, first);
+    const opened = await client.loadHermesSessionDetail(
+      "dashboard_terminal",
+      "prefetch-regression",
+      { reuseRecentPrefetch: true },
+    );
+    assert.equal(calls, 1);
+    assert.strictEqual(opened, first);
+
+    now += 5_001;
+    const refreshed = await client.prefetchHermesSessionDetail(
+      "dashboard_terminal",
+      "prefetch-regression",
+    );
+    assert.equal(calls, 2, "an expired transcript must be fetched again");
+    assert.notStrictEqual(refreshed, first);
+
+    client.invalidateHermesSessionDetail("dashboard_terminal", "prefetch-regression");
+    const selected = client.loadHermesSessionDetail(
+      "dashboard_terminal",
+      "prefetch-regression",
+    );
+    const joined = client.prefetchHermesSessionDetail(
+      "dashboard_terminal",
+      "prefetch-regression",
+    );
+    const [selectedResult, joinedResult] = await Promise.all([selected, joined]);
+    assert.equal(calls, 3);
+    assert.strictEqual(joinedResult, selectedResult);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+  }
+});
+
+test("local development defaults to Turbopack and history rows prefetch details", () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  const terminal = source("app/components/hermes/dashboard-agent-terminal.tsx");
+  const garden = source("app/components/hermes/garden-agent-chat.tsx");
+  const sidebar = source("app/components/hermes/terminal-sidebar.tsx");
+
+  assert.equal(packageJson.scripts.dev, "next dev");
+  assert.equal(packageJson.scripts["dev:webpack"], "next dev --webpack");
+  assert.match(terminal, /prefetchHermesSessionDetail\("dashboard_terminal", chat\.id\)/);
+  assert.match(garden, /prefetchHermesSessionDetail\("garden_chat", item\.id\)/);
+  assert.match(sidebar, /onMouseEnter=\{showIntent\}/);
+  assert.match(sidebar, /onPointerDown=/);
 });
 
 test("history polling is bounded, visibility-aware, and cannot overlap", () => {

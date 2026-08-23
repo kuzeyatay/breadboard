@@ -14,6 +14,7 @@ import {
   type ConnectedAppTokens,
 } from "./vault.ts";
 import type { ConnectedAppProxyRequest } from "./types.ts";
+import { spotifyClientId } from "../spotify/config.ts";
 
 const STATE_TTL_MS = 10 * 60 * 1_000;
 const MAX_PROVIDER_RESPONSE_BYTES = 1024 * 1024;
@@ -26,7 +27,7 @@ type OAuthStateRow = {
   expires_at: string;
 };
 
-type OAuthClient = { clientId: string; clientSecret: string };
+type OAuthClient = { clientId: string; clientSecret: string | null };
 
 function objectRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -59,6 +60,12 @@ function credentialCandidates(integration: NangoIntegration): string[] {
 }
 
 function oauthClient(integration: NangoIntegration): OAuthClient {
+  // Spotify's browser player uses Authorization Code with PKCE. Its public
+  // client id is safe to ship; a client secret must never be present in a
+  // desktop/browser application.
+  if (integration.slug === "spotify") {
+    return { clientId: spotifyClientId(), clientSecret: null };
+  }
   const mapped = credentialsMap();
   for (const candidate of credentialCandidates(integration)) {
     const record = objectRecord(mapped[candidate] ?? mapped[envName(candidate)]);
@@ -95,6 +102,21 @@ function safeServiceOrigin(requestOrigin: string): string {
     url.protocol === "http:" &&
     ["127.0.0.1", "localhost", "::1"].includes(url.hostname);
   if (url.protocol !== "https:" && !loopback) {
+    throw new ApiError(503, "invalid_public_url", "Connected apps are temporarily unavailable.");
+  }
+  return url.origin;
+}
+
+function safeExplicitOrigin(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new ApiError(503, "invalid_public_url", "Connected apps are temporarily unavailable.");
+  }
+  const loopback =
+    url.protocol === "http:" && ["127.0.0.1", "::1"].includes(url.hostname);
+  if ((url.protocol !== "https:" && !loopback) || url.username || url.password) {
     throw new ApiError(503, "invalid_public_url", "Connected apps are temporarily unavailable.");
   }
   return url.origin;
@@ -140,6 +162,10 @@ export function beginEmbeddedOAuth(input: {
   userId: number;
   integrationValue: string;
   requestOrigin: string;
+  callbackPath?:
+    | "/api/hermes/connections/oauth/callback"
+    | "/api/hermes/mcp/oauth/callback";
+  callbackOrigin?: string;
 }): { authorizationUrl: string; expiresAt: string } {
   const integration = findNangoIntegration(input.integrationValue);
   if (!integration) {
@@ -150,7 +176,13 @@ export function beginEmbeddedOAuth(input: {
     throw new ApiError(400, "unsupported_app_auth", `${integration.name} does not support embedded OAuth sign-in yet.`);
   }
   const client = oauthClient(integration);
-  const redirectUri = `${safeServiceOrigin(input.requestOrigin)}/api/hermes/connections/oauth/callback`;
+  const redirectUri = `${
+    input.callbackOrigin
+      ? safeExplicitOrigin(input.callbackOrigin)
+      : safeServiceOrigin(input.requestOrigin)
+  }${
+    input.callbackPath ?? "/api/hermes/connections/oauth/callback"
+  }`;
   const state = crypto.randomBytes(32).toString("base64url");
   const verifier = metadata.disablePkce
     ? null
@@ -249,7 +281,7 @@ async function requestTokens(input: {
   const client = oauthClient(input.integration);
   const templateValues = {
     client_id: client.clientId,
-    client_secret: client.clientSecret,
+    client_secret: client.clientSecret ?? "",
     code: input.code ?? "",
     redirect_uri: input.redirectUri ?? "",
     refresh_token: input.refreshToken ?? "",
@@ -267,11 +299,11 @@ async function requestTokens(input: {
     ...(input.verifier ? { code_verifier: input.verifier } : {}),
   };
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (metadata.authorizationMethod === "header") {
+  if (metadata.authorizationMethod === "header" && client.clientSecret) {
     headers.Authorization = `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString("base64")}`;
   } else {
     params.client_id = client.clientId;
-    params.client_secret = client.clientSecret;
+    if (client.clientSecret) params.client_secret = client.clientSecret;
   }
   const body =
     metadata.bodyFormat === "json"
@@ -382,6 +414,19 @@ export async function completeEmbeddedOAuth(input: {
   };
 }
 
+/** Identify which embedded provider owns an OAuth state without consuming it. */
+export function embeddedOAuthStateSlug(state: string): string | null {
+  if (!state || state.length > 512) return null;
+  const row = db
+    .prepare(
+      "SELECT slug FROM connected_app_oauth_states WHERE state_hash = ? AND expires_at > ?",
+    )
+    .get(stateHash(state), new Date().toISOString()) as
+      | { slug: string }
+      | undefined;
+  return row?.slug ?? null;
+}
+
 async function activeTokens(userId: number, integration: NangoIntegration): Promise<ConnectedAppTokens> {
   const stored = readConnectedAppTokens(userId, integration.slug);
   if (!stored) throw new ApiError(409, "app_connection_required", `${integration.name} must be reconnected.`);
@@ -394,8 +439,23 @@ async function activeTokens(userId: number, integration: NangoIntegration): Prom
     integration,
     refreshToken: stored.refreshToken,
   });
+  // OAuth providers commonly omit unchanged scopes from refresh responses.
+  // Preserve the original grant so capability checks do not incorrectly turn
+  // a healthy connection into "reconnect required" after the first hour.
+  if (!refreshed.scope) refreshed.scope = stored.scope;
   storeConnectedAppTokens(userId, integration.slug, refreshed);
   return refreshed;
+}
+
+export async function connectedAppTokensFor(
+  userId: number,
+  integrationValue: string,
+): Promise<ConnectedAppTokens> {
+  const integration = findNangoIntegration(integrationValue);
+  if (!integration) {
+    throw new ApiError(400, "invalid_app_integration", "The app connection is invalid.");
+  }
+  return activeTokens(userId, integration);
 }
 
 export async function embeddedProviderRequest(input: {
@@ -445,12 +505,20 @@ export async function embeddedProviderRequest(input: {
   }
   const payload = await readProviderPayload(response);
   if (!response.ok) {
+    const authenticationFailed = response.status === 401;
+    const forbidden = response.status === 403;
     throw new ApiError(
-      response.status === 401 || response.status === 403 ? 409 : 502,
-      "provider_request_failed",
-      response.status === 401 || response.status === 403
+      authenticationFailed ? 409 : forbidden ? 403 : 502,
+      authenticationFailed
+        ? "provider_authentication_failed"
+        : forbidden
+          ? "provider_request_forbidden"
+          : "provider_request_failed",
+      authenticationFailed
         ? `${input.integration.name} must be reconnected.`
-        : "The connected app rejected the request.",
+        : forbidden
+          ? `${input.integration.name} does not allow this action for the connected account.`
+          : "The connected app rejected the request.",
     );
   }
   return payload;

@@ -97,6 +97,12 @@ test("agent stream reconnects bounded transport failures but not run timeouts", 
   );
   assert.equal(
     isRecoverableAgentStreamDisconnect(
+      new DOMException("The operation timed out", "TimeoutError"),
+    ),
+    true,
+  );
+  assert.equal(
+    isRecoverableAgentStreamDisconnect(
       new AgentStreamTimeoutError("inactivity_timeout"),
     ),
     false,

@@ -205,26 +205,36 @@ test("the release is pinned rather than resolved at runtime", () => {
   );
 });
 
-test("a run gets its browser off-screen, not headless", () => {
+test("a run's browser is a real window, hidden, and never headless", () => {
   const launch = source("src/lib/agent-browser/browser-profile.ts");
-  assert.match(
-    launch,
-    /--window-position=-32000,-32000/,
-    "a real window parked off every display is what sites treat normally",
+  const hider = source("src/lib/agent-browser/hide-window.ts");
+
+  // Checked against the code rather than the file: the comments explaining why
+  // each rejected approach was rejected necessarily name its flag.
+  const code = launch.replace(/^\s*\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // A window is what keeps Chromium alive: `--no-startup-window` was tried and
+  // the browser exited while idle, so the bridge was gone before the first
+  // command arrived.
+  assert.ok(
+    !/--no-startup-window/.test(code),
+    "with no window the browser exits while idle and the bridge disappears",
   );
+  // Off-screen was tried too and left a taskbar button pointing at a window
+  // past the edge of every display, which did nothing when clicked.
+  assert.ok(
+    !/--window-position=-32000/.test(code),
+    "the off-screen window left a dead taskbar button behind",
+  );
+  // What actually removes it, applied only to Breadboard's own browser.
+  assert.match(launch, /if \(options\.background\) \{/);
+  assert.match(launch, /hideBackgroundBrowser\(env\);/);
+  assert.match(hider, /ShowWindow/);
   // Verified live: the extension does connect under --headless=new, and then
   // Reddit answers with a challenge page instead of JSON. Driving a real
-  // browser is the entire point of OpenCLI. Checked against the code rather
-  // than the file, since the comment explaining this names the flag too.
-  const code = launch.replace(/^\s*\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // browser is the entire point of OpenCLI.
   assert.ok(
     !/--headless/.test(code),
     "headless connects but gets challenged, which defeats the purpose",
-  );
-  assert.match(
-    launch,
-    /options\.background\s*$|options\.background\n/m,
-    "the off-screen flags must be conditional, so signing in still shows a window",
   );
 });
 
@@ -255,4 +265,39 @@ test("a background window is reused, put away, and never taken from a person", (
     /\.finally\(\(\) => \{\s*\r?\n\s*if \(run\.openedBridgeWindow\) closeBridgeWindow\(\);/,
     "closing has to happen on abort and failure too, not just on success",
   );
+});
+
+test("the window hider survives the way this environment allows", async () => {
+  const hider = await import("../src/lib/agent-browser/hide-window.ts");
+  const text = source("src/lib/agent-browser/hide-window.ts");
+
+  // Not detached. A detached child is silently never started in some sandboxed
+  // environments — measured: the watcher's first line never ran, while the
+  // identical command as an ordinary child ran fine.
+  assert.match(text, /execFile\(/);
+  assert.ok(
+    !/detached: true/.test(text),
+    "a detached watcher was never started at all here",
+  );
+  assert.match(text, /child\.unref\(\)/, "and Node must not wait on it");
+
+  // Matched on the profile directory, not a pid: Chromium hands work between
+  // processes as it starts, so the pid Node spawned is not reliably the one
+  // that ends up owning the window.
+  assert.match(text, /\$ProfileDir/);
+  assert.ok(
+    !/TargetPid/.test(text),
+    "a watcher bound to the spawned pid exits immediately having hidden nothing",
+  );
+
+  // The script it writes has to be a script: `param` must be its first
+  // statement or PowerShell will not bind the argument.
+  assert.match(text, /String\.raw`param\(\[string\]\$ProfileDir\)/);
+
+  assert.equal(
+    typeof hider.hideBackgroundBrowser,
+    "function",
+    "the launch path calls this by name",
+  );
+  assert.match(hider.windowHiderScriptPath({ BREADBOARD_DATA_DIR: "/tmp/x" }), /hide-agent-browser\.ps1$/);
 });

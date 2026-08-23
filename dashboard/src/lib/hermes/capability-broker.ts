@@ -44,6 +44,7 @@ import {
   FACTCHECK_TOOLS,
   RECALL_TOOLS,
   RESEARCH_TOOLS,
+  SPOTIFY_TOOLS,
   SUPER_AGENT_TOOLS,
   WATCH_TOOLS,
   WORKSPACE_TOOLS,
@@ -233,6 +234,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...WORLDMONITOR_TOOLS,
       ...IMAGE_SEARCH_TOOLS,
       ...MAP_TOOLS,
+      ...SPOTIFY_TOOLS,
       ...CALENDAR_TOOLS,
       ...PLAN_TOOLS,
       ...OFFICE_TOOLS,
@@ -779,6 +781,12 @@ function buildToolMap(
   for (const tool of MAP_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  // Music requests are ordinary authenticated chat turns. The route still
+  // requires the Spotify skill to be selected before it can search or queue a
+  // track for the inline browser player.
+  for (const tool of SPOTIFY_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   // "Add a card for the Berlin follow-up" is a plain knowledge turn too, so the
   // board does not depend on the turn's capability class either. It is the one
   // scope here that writes, which is deliberate: a board the assistant can read
@@ -876,6 +884,7 @@ function buildToolMap(
     // Geographic state is one signed-in person's map session, and this surface
     // is the anonymous public one.
     for (const tool of MAP_TOOLS) map[tool] = false;
+    for (const tool of SPOTIFY_TOOLS) map[tool] = false;
     // The board is one person's work, and this surface is the anonymous public
     // one — doubly disqualifying, since these tools also write.
     for (const tool of PLAN_TOOLS) map[tool] = false;

@@ -3,6 +3,15 @@ import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { requireUserId, RouteError, routeErrorResponse } from '@/lib/server-auth';
 import { readUsageLimits } from '@/lib/usage-limits';
 import { buildUsageRefreshRequest } from '@/lib/usage-refresh';
+import {
+  antigravityModelId,
+  readGoogleUsageLimits,
+} from '@/lib/cliproxy/google-usage-limits';
+import {
+  CLAUDE_USAGE_PAGE,
+  claudeSubscriptionModelId,
+  readClaudeUsageLimits,
+} from '@/lib/claude-usage-limits';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,12 +21,50 @@ const NO_STORE_HEADERS = {
   Expires: '0',
 };
 
-export async function GET() {
+export async function GET(request: Request) {
+  const model = new URL(request.url).searchParams.get('model')?.trim() ?? '';
+  const googleModel = antigravityModelId(model);
+  const claudeModel = claudeSubscriptionModelId(model);
   try {
     await requireUserId();
+    if (googleModel) {
+      return NextResponse.json(await readGoogleUsageLimits(model), {
+        headers: NO_STORE_HEADERS,
+      });
+    }
+    if (claudeModel) {
+      return NextResponse.json(await readClaudeUsageLimits(model), {
+        headers: NO_STORE_HEADERS,
+      });
+    }
     return NextResponse.json(readUsageLimits(), { headers: NO_STORE_HEADERS });
   } catch (error) {
     if (error instanceof RouteError) return routeErrorResponse(error);
+    if (googleModel) {
+      return NextResponse.json(
+        {
+          provider: 'google',
+          available: false,
+          model: googleModel,
+          accounts: [],
+          error: error instanceof Error ? error.message : 'Could not load Google usage limits.',
+        },
+        { status: 502, headers: NO_STORE_HEADERS },
+      );
+    }
+    if (claudeModel) {
+      return NextResponse.json(
+        {
+          provider: 'anthropic',
+          available: false,
+          model: claudeModel,
+          limits: [],
+          usage_url: CLAUDE_USAGE_PAGE,
+          error: error instanceof Error ? error.message : 'Could not load Anthropic usage limits.',
+        },
+        { status: 502, headers: NO_STORE_HEADERS },
+      );
+    }
     return NextResponse.json({ available: false }, { headers: NO_STORE_HEADERS });
   }
 }

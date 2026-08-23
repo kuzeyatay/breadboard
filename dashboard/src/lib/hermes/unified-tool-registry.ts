@@ -47,7 +47,11 @@ export async function connectedAppRegistryForTurn(input: {
    */
   allowAllConnectionTools?: boolean;
 }): Promise<ConnectedAppTurnRegistry> {
-  const installedConnections = listMcpConnections(input.userId, true);
+  // Spotify is a Breadboard-owned connected app with native tools and browser
+  // playback. Ignore retired pilot-MCP rows left by older builds.
+  const installedConnections = listMcpConnections(input.userId, true).filter(
+    (connection) => connection.slug !== "spotify",
+  );
   for (const connection of installedConnections) {
     try {
       await input.runtime.addMcpConnection(

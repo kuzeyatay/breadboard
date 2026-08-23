@@ -122,6 +122,34 @@ test("all required control types must influence a numeric output or scene expres
   assert.equal(JSON.parse(selectCheck.detail).alternateState, 0);
 });
 
+test("timeline progress must use a declared control rather than an invented runtime input", () => {
+  const definition = definitionWithExpressions();
+  definition.scenes = [{
+    kind: "timeline",
+    title: "Reviewed progression",
+    progressInput: "progress",
+    steps: [
+      { id: "start", label: "Start", description: "Initial state.", at: 0 },
+      { id: "finish", label: "Finish", description: "Final state.", at: 1 },
+    ],
+  }];
+  for (const progressInput of ["progress", "t", "x"]) {
+    definition.scenes[0].progressInput = progressInput;
+    const invalid = validateGeneratedVisualizationDefinition(definition, opportunity);
+    assert.match(
+      invalid.errors.join("; "),
+      new RegExp(
+        `timeline progressInput "${progressInput}" must name one declared control id \\(gain, sample_count, representation, show_phase, advance\\)`,
+        "i",
+      ),
+    );
+  }
+
+  definition.scenes[0].progressInput = "advance";
+  const valid = validateGeneratedVisualizationDefinition(definition, opportunity);
+  assert.equal(valid.errors.length, 0, valid.errors.join("; "));
+});
+
 test("select influence checks every non-default option index", () => {
   const selectOpportunity = structuredClone(opportunity);
   const requiredSelect = selectOpportunity.requiredInputs.find(
@@ -167,6 +195,32 @@ test("select influence checks every non-default option index", () => {
   assert.ok(selectCheck);
   assert.equal(selectCheck.passed, true, JSON.stringify(selectCheck));
   assert.equal(JSON.parse(selectCheck.detail).alternateState, 2);
+});
+
+test("candidate tests translate select option labels into their expression indices", () => {
+  const definition = definitionWithExpressions();
+  const result = runGeneratedVisualDeterministicTests({
+    definition,
+    opportunity,
+    testCases: [
+      {
+        name: "time-domain option",
+        inputs: { representation: "time domain" },
+        expected: { output_representation: 0 },
+      },
+      {
+        name: "frequency-domain option",
+        inputs: { representation: "frequency domain" },
+        expected: { output_representation: 1 },
+      },
+    ],
+  });
+
+  const candidateTests = result.semanticTests.filter((check) =>
+    check.name.startsWith("candidate test:"),
+  );
+  assert.equal(candidateTests.length, 2);
+  assert.ok(candidateTests.every((check) => check.passed), JSON.stringify(candidateTests));
 });
 
 test("inert required controls fail even when their IDs and labels are present", () => {

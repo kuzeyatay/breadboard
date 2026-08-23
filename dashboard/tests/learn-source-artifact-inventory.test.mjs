@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   MAX_SOURCE_MAP_EVIDENCE_REAUTHORS,
   selectedSourceArtifactInventorySnapshot,
+  sourceMapArtifactKind,
   sourceMapArtifactInventoryTransition,
   sourceMapPlanningEvidenceTransition,
 } from "../src/lib/learn-source-artifact-inventory.ts";
@@ -36,6 +37,17 @@ function snapshot(visuals, selectedSourceIds = ["source-a", "source-b"]) {
     visuals,
   });
 }
+
+test("Source Map artifact kinds normalize detector labels without changing the ledger", () => {
+  assert.equal(sourceMapArtifactKind("diagram"), "figure");
+  assert.equal(sourceMapArtifactKind("figure"), "figure");
+  assert.equal(sourceMapArtifactKind("photo"), "figure");
+  assert.equal(sourceMapArtifactKind("unknown"), "figure");
+  assert.equal(sourceMapArtifactKind("graph"), "graph");
+  assert.equal(sourceMapArtifactKind("table"), "table");
+  assert.equal(sourceMapArtifactKind("equation"), "formula");
+  assert.equal(sourceMapArtifactKind("formula"), "formula");
+});
 
 test("canonical selected artifact inventory is order-independent and preserves planner-visible provenance", () => {
   const equation = visual();

@@ -54,6 +54,7 @@ const FEATURED: Array<{
   provider: string;
   name?: string;
 }> = [
+  { slug: "spotify", provider: "spotify", name: "Spotify" },
   { slug: "gmail", provider: "google-mail", name: "Gmail" },
   { slug: "slack", provider: "slack" },
   { slug: "github", provider: "github", name: "GitHub" },
@@ -73,6 +74,16 @@ const FEATURED: Array<{
 ];
 
 const SCOPES: Record<string, string[]> = {
+  spotify: [
+    "streaming",
+    "user-read-email",
+    "user-read-private",
+    "user-read-playback-state",
+    "user-modify-playback-state",
+    "user-library-read",
+    "user-library-modify",
+    "playlist-modify-private",
+  ],
   gmail: [
     "openid",
     "email",

@@ -102,6 +102,10 @@ import {
   taskFromCareerOpsCommand,
 } from "@/lib/career-ops/identity.ts";
 import {
+  openGymUserMessage,
+  taskFromOpenGymCommand,
+} from "@/lib/open-gym/identity.ts";
+import {
   TRADINGAGENTS_AGENT_ID,
   TRADINGAGENTS_AGENT_NAME,
   parseTradingAgentsCommand,
@@ -230,6 +234,10 @@ import {
   matraixUserMessage,
   taskFromMatraixCommand,
 } from "@/lib/matraix/identity.ts";
+import {
+  boltSlidesUserMessage,
+  taskFromBoltSlidesCommand,
+} from "@/lib/bolt-slides/identity.ts";
 import {
   briefFromOpenMontageCommand,
   openMontageUserMessage,
@@ -745,6 +753,7 @@ function RuntimeTerminal({
     useState(false);
   const [launchingDeepTutorRun, setLaunchingDeepTutorRun] = useState(false);
   const [launchingCareerOpsRun, setLaunchingCareerOpsRun] = useState(false);
+  const [launchingOpenGymRun, setLaunchingOpenGymRun] = useState(false);
   const [launchingTradingAgentsRun, setLaunchingTradingAgentsRun] =
     useState(false);
   const [launchingVibeTradingRun, setLaunchingVibeTradingRun] = useState(false);
@@ -771,6 +780,7 @@ function RuntimeTerminal({
   const [launchingResource2SkillRun, setLaunchingResource2SkillRun] =
     useState(false);
   const [launchingMatraixRun, setLaunchingMatraixRun] = useState(false);
+  const [launchingBoltSlidesRun, setLaunchingBoltSlidesRun] = useState(false);
   const [launchingOpenMontageRun, setLaunchingOpenMontageRun] = useState(false);
   const [launchingOpenworkRun, setLaunchingOpenworkRun] = useState(false);
   const [launchingOpenscienceRun, setLaunchingOpenscienceRun] = useState(false);
@@ -782,10 +792,12 @@ function RuntimeTerminal({
   const deepResearchDispatchingRef = useRef(false);
   const socialsManagerDispatchingRef = useRef(false);
   const hardwareDispatchingRef = useRef(false);
+  const openGymDispatchingRef = useRef(false);
   const cadDispatchingRef = useRef(false);
   const hyperframesDispatchingRef = useRef(false);
   const resource2SkillDispatchingRef = useRef(false);
   const matraixDispatchingRef = useRef(false);
+  const boltSlidesDispatchingRef = useRef(false);
   const openMontageDispatchingRef = useRef(false);
   const openworkDispatchingRef = useRef(false);
   const openscienceDispatchingRef = useRef(false);
@@ -986,6 +998,7 @@ function RuntimeTerminal({
     launchingGetDocRun ||
     launchingMeetingNotesRun ||
     launchingCareerOpsRun ||
+    launchingOpenGymRun ||
     launchingTradingAgentsRun ||
     launchingVibeTradingRun ||
     launchingStockAnalystRun ||
@@ -1005,6 +1018,7 @@ function RuntimeTerminal({
     launchingHyperframesRun ||
     launchingResource2SkillRun ||
     launchingMatraixRun ||
+    launchingBoltSlidesRun ||
     launchingOpenMontageRun ||
     launchingOpenworkRun ||
     launchingOpenscienceRun ||
@@ -3801,6 +3815,85 @@ function RuntimeTerminal({
     [launchHardwareBlueprintRun],
   );
 
+  /** openGym is command-carried and available with the dashboard at startup. */
+  const launchOpenGymRun = useCallback(
+    async (task: string, options: { branchGroupId?: string } = {}) => {
+      if (openGymDispatchingRef.current) return;
+      openGymDispatchingRef.current = true;
+      setLaunchingOpenGymRun(true);
+      const normalizedTask = task.trim();
+      const requestedClientMessageId = crypto.randomUUID();
+      let clientMessageId = requestedClientMessageId;
+      const userContent = openGymUserMessage(normalizedTask);
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+        branchGroupId: options.branchGroupId,
+      });
+      const attachToExistingTurn = clientMessageId !== requestedClientMessageId;
+      let runStarted = false;
+      try {
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const response = await fetch("/api/open-gym/runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            task: normalizedTask,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+            clientMessageId,
+            attachToExistingTurn,
+            branchGroupId: options.branchGroupId,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.run?.runId) {
+          throw new Error(typeof data?.error === "string" ? data.error : "The openGym run could not start.");
+        }
+        runStarted = true;
+        await session.appendExternalAgentTurn({
+          clientMessageId,
+          userContent,
+          run: { kind: "open_gym", runId: String(data.run.runId), task: normalizedTask },
+          branchGroupId: options.branchGroupId,
+        });
+      } catch (cause) {
+        if (runStarted) {
+          setAttachmentStatus(cause instanceof Error ? cause.message : "openGym started, but its chat turn could not be saved.");
+          return;
+        }
+        const assistantContent = `openGym could not start: ${cause instanceof Error ? cause.message : "unknown error"}`;
+        try {
+          await session.appendExternalAgentTurn({
+            clientMessageId,
+            userContent,
+            assistantContent,
+            outcome: "failed",
+            branchGroupId: options.branchGroupId,
+          });
+        } catch (persistenceError) {
+          setAttachmentStatus(persistenceError instanceof Error ? persistenceError.message : "The openGym turn could not be saved.");
+        }
+      } finally {
+        openGymDispatchingRef.current = false;
+        setLaunchingOpenGymRun(false);
+      }
+    },
+    [model, reasoningEffort, session],
+  );
+
+  const routeOpenGymCommand = useCallback(
+    (text: string, options: { branchGroupId?: string } = {}): boolean => {
+      const task = taskFromOpenGymCommand(text);
+      if (task === null) return false;
+      setAttachmentStatus("");
+      if (task && !openGymDispatchingRef.current) void launchOpenGymRun(task, options);
+      return true;
+    },
+    [launchOpenGymRun],
+  );
+
   /**
    * Parametric CAD needs no agent selection either: the command carries the
    * whole brief. The conversation must exist first so the built design can be
@@ -4175,6 +4268,102 @@ function RuntimeTerminal({
       return true;
     },
     [launchMatraixRun],
+  );
+
+  /**
+   * Bolt Slides carries the whole deck in the command: what it is about, and
+   * any flags typed with it. The turn is recorded as soon as the run starts —
+   * planning, writing and building a deck takes minutes, and the person will
+   * not be watching all of it.
+   */
+  const launchBoltSlidesRun = useCallback(
+    async (brief: string, options: { branchGroupId?: string } = {}) => {
+      if (boltSlidesDispatchingRef.current) return;
+      boltSlidesDispatchingRef.current = true;
+      setLaunchingBoltSlidesRun(true);
+      let clientMessageId = crypto.randomUUID();
+      const userContent = boltSlidesUserMessage(brief);
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+        branchGroupId: options.branchGroupId,
+      });
+      let runStarted = false;
+      try {
+        // The finished deck is filed as an artifact of this chat, so the
+        // conversation is materialized before the run starts. The call is
+        // idempotent and the turn binds to the same conversation either way.
+        const conversationPublicId = await session.ensureConversation(clientMessageId);
+        const response = await fetch("/api/bolt-slides/runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            brief,
+            model,
+            reasoningEffort,
+            conversationPublicId,
+            clientMessageId,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.run?.runId) {
+          throw new Error(
+            typeof data?.message === "string"
+              ? data.message
+              : typeof data?.error === "string"
+                ? data.error
+                : "The deck could not be started.",
+          );
+        }
+        runStarted = true;
+        await session.appendExternalAgentTurn({
+          clientMessageId,
+          userContent,
+          run: { kind: "bolt_slides", runId: String(data.run.runId), brief },
+          branchGroupId: options.branchGroupId,
+        });
+      } catch (cause) {
+        if (runStarted) {
+          setAttachmentStatus(
+            cause instanceof Error
+              ? cause.message
+              : "The deck started, but its chat turn could not be saved.",
+          );
+          return;
+        }
+        const assistantContent = `The deck could not be started: ${cause instanceof Error ? cause.message : "unknown error"}`;
+        try {
+          await session.appendExternalAgentTurn({
+            clientMessageId,
+            userContent,
+            assistantContent,
+            outcome: "failed",
+            branchGroupId: options.branchGroupId,
+          });
+        } catch (persistenceError) {
+          setAttachmentStatus(
+            persistenceError instanceof Error
+              ? persistenceError.message
+              : "The Bolt Slides turn could not be saved.",
+          );
+        }
+      } finally {
+        boltSlidesDispatchingRef.current = false;
+        setLaunchingBoltSlidesRun(false);
+      }
+    },
+    [model, reasoningEffort, session],
+  );
+
+  const routeBoltSlidesCommand = useCallback(
+    (text: string, options: { branchGroupId?: string } = {}): boolean => {
+      const brief = taskFromBoltSlidesCommand(text);
+      if (brief === null) return false;
+      setAttachmentStatus("");
+      if (brief && !boltSlidesDispatchingRef.current) void launchBoltSlidesRun(brief, options);
+      return true;
+    },
+    [launchBoltSlidesRun],
   );
 
   /**
@@ -5569,11 +5758,13 @@ function RuntimeTerminal({
       }
       if (
         routeSocialsManagerCommand(text) ||
+        routeOpenGymCommand(text) ||
         routeHardwareBlueprintCommand(text) ||
         routeParametricCadCommand(text) ||
         routeHyperframesCommand(text) ||
         routeResource2SkillCommand(text) ||
         routeMatraixCommand(text) ||
+        routeBoltSlidesCommand(text) ||
         routeOpenMontageCommand(text) ||
         routeOpenworkCommand(text) ||
         routeOpenscienceCommand(text) ||
@@ -5869,11 +6060,13 @@ function RuntimeTerminal({
       routeDeepResearchCommand,
       routeMaxResearchCommand,
       routeSocialsManagerCommand,
+      routeOpenGymCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
       routeMatraixCommand,
+      routeBoltSlidesCommand,
       routeOpenMontageCommand,
       routeOpenworkCommand,
       routeOpenscienceCommand,
@@ -6054,6 +6247,9 @@ function RuntimeTerminal({
           if (selected) await launchCareerOpsRun(request.brief, selected);
           return;
         }
+        case "open-gym":
+          await launchOpenGymRun(request.brief);
+          return;
         case "vibe-trading": {
           const selected = vibeTradingAgent ?? (await selectVibeTrading());
           if (selected) await launchVibeTradingRun(request.brief, selected);
@@ -6091,6 +6287,9 @@ function RuntimeTerminal({
           return;
         case "matraix":
           await launchMatraixRun(request.brief);
+          return;
+        case "bolt-slides":
+          await launchBoltSlidesRun(request.brief);
           return;
         case "openmontage":
           await launchOpenMontageRun(request.brief);
@@ -6309,11 +6508,13 @@ function RuntimeTerminal({
       if (!trimmed || runtimeUnavailable) return;
       if (
         routeSocialsManagerCommand(trimmed) ||
+        routeOpenGymCommand(trimmed) ||
         routeHardwareBlueprintCommand(trimmed) ||
         routeParametricCadCommand(trimmed) ||
         routeHyperframesCommand(trimmed) ||
         routeResource2SkillCommand(trimmed) ||
         routeMatraixCommand(trimmed) ||
+        routeBoltSlidesCommand(trimmed) ||
         routeOpenMontageCommand(trimmed) ||
         routeOpenworkCommand(trimmed) ||
         routeOpenscienceCommand(trimmed) ||
@@ -6339,11 +6540,13 @@ function RuntimeTerminal({
       reasoningEffort,
       routeDeepResearchCommand,
       routeSocialsManagerCommand,
+      routeOpenGymCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
       routeMatraixCommand,
+      routeBoltSlidesCommand,
       routeOpenMontageCommand,
       routeOpenworkCommand,
       routeOpenscienceCommand,
@@ -6431,11 +6634,13 @@ function RuntimeTerminal({
       if (runtimeUnavailable) return;
       if (
         routeSocialsManagerCommand(text, { branchGroupId }) ||
+        routeOpenGymCommand(text, { branchGroupId }) ||
         routeHardwareBlueprintCommand(text, { branchGroupId }) ||
         routeParametricCadCommand(text, { branchGroupId }) ||
         routeHyperframesCommand(text, { branchGroupId }) ||
         routeResource2SkillCommand(text, { branchGroupId }) ||
         routeMatraixCommand(text, { branchGroupId }) ||
+        routeBoltSlidesCommand(text, { branchGroupId }) ||
         routeOpenMontageCommand(text, { branchGroupId }) ||
         routeOpenworkCommand(text, { branchGroupId }) ||
         routeOpenscienceCommand(text, { branchGroupId }) ||
@@ -6466,11 +6671,13 @@ function RuntimeTerminal({
       reasoningEffort,
       routeDeepResearchCommand,
       routeSocialsManagerCommand,
+      routeOpenGymCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
       routeMatraixCommand,
+      routeBoltSlidesCommand,
       routeOpenMontageCommand,
       routeOpenworkCommand,
       routeOpenscienceCommand,
@@ -6548,6 +6755,7 @@ function RuntimeTerminal({
       if (previousUser) {
         if (
           routeSocialsManagerCommand(previousUser.content, { branchGroupId }) ||
+          routeOpenGymCommand(previousUser.content, { branchGroupId }) ||
           routeHardwareBlueprintCommand(previousUser.content, {
             branchGroupId,
           }) ||
@@ -6555,6 +6763,7 @@ function RuntimeTerminal({
           routeHyperframesCommand(previousUser.content, { branchGroupId }) ||
           routeResource2SkillCommand(previousUser.content, { branchGroupId }) ||
           routeMatraixCommand(previousUser.content, { branchGroupId }) ||
+        routeBoltSlidesCommand(previousUser.content, { branchGroupId }) ||
           routeOpenMontageCommand(previousUser.content, { branchGroupId }) ||
           routeOpenworkCommand(previousUser.content, { branchGroupId }) ||
           routeOpenscienceCommand(previousUser.content, { branchGroupId }) ||
@@ -6604,11 +6813,13 @@ function RuntimeTerminal({
       routeDeepResearchCommand,
       routeMaxResearchCommand,
       routeSocialsManagerCommand,
+      routeOpenGymCommand,
       routeHardwareBlueprintCommand,
       routeParametricCadCommand,
       routeHyperframesCommand,
       routeResource2SkillCommand,
       routeMatraixCommand,
+      routeBoltSlidesCommand,
       routeOpenMontageCommand,
       routeOpenworkCommand,
       routeOpenscienceCommand,
@@ -7665,6 +7876,7 @@ function RuntimeTerminal({
                 onSelectHyperframes={() => {}}
                 onSelectResource2Skill={() => {}}
                 onSelectMatraix={() => {}}
+                onSelectBoltSlides={() => {}}
                 onSelectOpenMontage={() => {}}
                 onSelectOpenwork={() => {}}
                 onSelectOpenscience={() => {}}
@@ -7720,6 +7932,7 @@ function RuntimeTerminal({
                 }}
                 careerOpsAgent={careerOpsAgent}
                 onSelectCareerOps={() => void selectCareerOps()}
+                onSelectOpenGym={() => {}}
                 onClearCareerOps={() => {
                   setCareerOpsAgent(null);
                   setAttachmentStatus("");

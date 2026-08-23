@@ -35,7 +35,7 @@ import {
   composerHistoryMove,
 } from '@/lib/hermes/composer-history';
 import { useDirectMode } from '@/app/components/use-direct-mode';
-import { useGoalMode } from '@/app/components/use-goal-mode';
+import GoalCard from '@/app/components/hermes/goal-card';
 import { usePersonalize } from '@/app/components/use-personalize';
 import { useHumanizerMode } from '@/app/components/use-humanizer-mode';
 import { useYoloMode } from '@/app/components/use-yolo-mode';
@@ -57,6 +57,7 @@ import MeetingRecorderBar from '@/app/components/hermes/meeting-recorder-bar';
 import type { MeetingRecording } from '@/lib/meeting-notes/use-meeting-recorder';
 import { DEEP_TUTOR_COMMAND } from '@/lib/deep-tutor/identity.ts';
 import { CAREER_OPS_COMMAND } from '@/lib/career-ops/identity.ts';
+import { OPEN_GYM_COMMAND } from '@/lib/open-gym/identity.ts';
 import { TRADINGAGENTS_AGENT_ID, TRADINGAGENTS_COMMAND } from '@/lib/tradingagents/identity.ts';
 import { VIBE_TRADING_COMMAND } from '@/lib/vibe-trading/identity.ts';
 import { STOCK_ANALYST_COMMAND } from '@/lib/stock-analyst/identity.ts';
@@ -99,6 +100,7 @@ import { PARAMETRIC_CAD_COMMAND } from '@/lib/cad/identity.ts';
 import { HYPERFRAMES_COMMAND } from '@/lib/hyperframes/identity.ts';
 import { RESOURCE2SKILL_COMMAND } from '@/lib/resource2skill/identity.ts';
 import { MATRAIX_COMMAND } from '@/lib/matraix/identity.ts';
+import { BOLT_SLIDES_COMMAND } from '@/lib/bolt-slides/identity.ts';
 import { OPENMONTAGE_COMMAND } from '@/lib/openmontage/identity.ts';
 import { OPENWORK_COMMAND } from '@/lib/openwork/identity.ts';
 import { OPENSCIENCE_COMMAND } from '@/lib/openscience/identity.ts';
@@ -120,6 +122,9 @@ import { imageFilesFromClipboard } from '@/lib/chat-attachments';
 import { composerSegments } from '@/lib/composer-links';
 import { modelAttachmentHref } from '@/lib/model-attachments';
 import ModelCubeIcon from '@/app/components/model-cube-icon';
+
+/** What the goal card's play button sends when a goal has stalled. */
+const GOAL_CONTINUATION_MESSAGE = 'Continue working on the goal.';
 
 export interface ComposerAttachment {
   name: string;
@@ -267,6 +272,8 @@ interface Props {
   careerOpsAgent?: { id: string; name: string } | null;
   onClearCareerOps?: () => void;
   onSelectCareerOps?: () => void;
+  /** Inserts openGym's canonical command; the command owns the run. */
+  onSelectOpenGym?: () => void;
   /**
    * Active Vibe Trading agent. A prompt agent like the ones above, even though
    * the run is owned by the cloned project's own service rather than by a
@@ -344,6 +351,8 @@ interface Props {
   onSelectResource2Skill?: () => void;
   /** MatrAIx likewise: the command carries the study brief and its cohort flags. */
   onSelectMatraix?: () => void;
+  /** Bolt Slides too: the command carries the deck brief and its flags. */
+  onSelectBoltSlides?: () => void;
   /** OpenMontage likewise: the command carries the whole production brief. */
   onSelectOpenMontage?: () => void;
   /** OpenWork likewise: the command carries the task for its workspace. */
@@ -515,6 +524,7 @@ export default function AssistantComposer({
   careerOpsAgent,
   onClearCareerOps,
   onSelectCareerOps,
+  onSelectOpenGym,
   vibeTradingAgent,
   onClearVibeTrading,
   onSelectVibeTrading,
@@ -552,6 +562,7 @@ export default function AssistantComposer({
   onSelectHyperframes,
   onSelectResource2Skill,
   onSelectMatraix,
+  onSelectBoltSlides,
   onSelectOpenMontage,
   onSelectOpenwork,
   onSelectOpenscience,
@@ -613,7 +624,6 @@ export default function AssistantComposer({
   const [personalize, setPersonalize] = usePersonalize();
   const [humanizerEnabled, setHumanizerEnabled] = useHumanizerMode();
   const [directMode, setDirectMode] = useDirectMode();
-  const [goalMode, setGoalMode] = useGoalMode();
   const [yoloMode, setYoloMode] = useYoloMode();
   const [agentMode, setAgentMode] = useAgentMode();
   const [superAgent, setSuperAgent] = useSuperAgent();
@@ -954,6 +964,26 @@ export default function AssistantComposer({
     else if (paperTraderSelection) onSubmit();
   };
   const canSend = formAgent ? formRequestReady : canSubmit;
+  // The goal card's play button sends this and nothing else. It is a message
+  // rather than a hidden signal on purpose: the turn it starts is one the
+  // person asked for, so it belongs in the transcript where they can see what
+  // they pressed. The system section already carries the objective, so the
+  // sentence does not need to repeat it.
+  const goalContinuationRequested = useRef(false);
+  const requestGoalContinuation = () => {
+    if (goalContinuationRequested.current || value.trim()) return;
+    goalContinuationRequested.current = true;
+    onChange(GOAL_CONTINUATION_MESSAGE);
+  };
+  // Submitting from inside the click would race the host's own state: `value`
+  // is a prop, and `onSubmit` reads the draft the host holds. Waiting for the
+  // draft to come back through props is what makes the send carry the text.
+  useEffect(() => {
+    if (!goalContinuationRequested.current) return;
+    if (value !== GOAL_CONTINUATION_MESSAGE) return;
+    goalContinuationRequested.current = false;
+    onSubmit();
+  }, [value, onSubmit]);
   const canQueueFollowUp =
     queueHeld &&
     !queueDisabled &&
@@ -1171,6 +1201,7 @@ export default function AssistantComposer({
     onSelectMeetingNotes ? 'meeting-notes' : null,
     onSelectDeepTutor ? 'deep-tutor' : null,
     onSelectCareerOps ? 'career-ops' : null,
+    onSelectOpenGym ? 'open-gym' : null,
     onSelectTradingAgents ? 'trading-agent' : null,
     onSelectShorts ? 'shorts' : null,
     onSelectFormsmith ? 'formsmith' : null,
@@ -1185,6 +1216,7 @@ export default function AssistantComposer({
     onSelectHyperframes ? 'hyperframes' : null,
     onSelectResource2Skill ? 'resource2skill' : null,
     onSelectMatraix ? 'matraix' : null,
+    onSelectBoltSlides ? 'bolt-slides' : null,
     onSelectOpenMontage ? 'openmontage' : null,
     onSelectOpenwork ? 'openwork' : null,
     onSelectOpenscience ? 'openscience' : null,
@@ -1213,6 +1245,15 @@ export default function AssistantComposer({
           onClose={() => setShowSlashCommands(false)}
           onSelect={selectDirectSlashCommand}
         />
+        {capabilitySessionId && capabilitySurface !== 'quartz_ai' ? (
+          <GoalCard
+            sessionId={capabilitySessionId}
+            refreshKey={runState}
+            running={runInFlight}
+            onContinue={requestGoalContinuation}
+            continueBlocked={disabled || isSending || queueHeld || Boolean(value.trim())}
+          />
+        ) : null}
         {headerContent ? (
           <div className="mb-1 border-b border-[var(--line)] px-1 pb-1.5">
             {headerContent}
@@ -1895,6 +1936,7 @@ export default function AssistantComposer({
             onSelectMeetingNotes={onSelectMeetingNotes ? () => insertCommandToken(MEETING_NOTES_COMMAND) : undefined}
             onSelectDeepTutor={onSelectDeepTutor ? () => insertCommandToken(DEEP_TUTOR_COMMAND) : undefined}
             onSelectCareerOps={onSelectCareerOps ? () => insertCommandToken(CAREER_OPS_COMMAND) : undefined}
+            onSelectOpenGym={onSelectOpenGym ? () => insertCommandToken(OPEN_GYM_COMMAND) : undefined}
             onSelectVibeTrading={onSelectVibeTrading ? () => insertCommandToken(VIBE_TRADING_COMMAND) : undefined}
             onSelectStockAnalyst={onSelectStockAnalyst ? () => insertCommandToken(STOCK_ANALYST_COMMAND) : undefined}
             onSelectDeerFlow={onSelectDeerFlow ? () => insertCommandToken(DEER_FLOW_COMMAND) : undefined}
@@ -1909,6 +1951,7 @@ export default function AssistantComposer({
             onSelectHyperframes={onSelectHyperframes ? () => insertCommandToken(HYPERFRAMES_COMMAND) : undefined}
             onSelectResource2Skill={onSelectResource2Skill ? () => insertCommandToken(RESOURCE2SKILL_COMMAND) : undefined}
             onSelectMatraix={onSelectMatraix ? () => insertCommandToken(MATRAIX_COMMAND) : undefined}
+            onSelectBoltSlides={onSelectBoltSlides ? () => insertCommandToken(BOLT_SLIDES_COMMAND) : undefined}
             onSelectOpenMontage={onSelectOpenMontage ? () => insertCommandToken(OPENMONTAGE_COMMAND) : undefined}
             onSelectOpenwork={onSelectOpenwork ? () => insertCommandToken(OPENWORK_COMMAND) : undefined}
             onSelectOpenscience={onSelectOpenscience ? () => insertCommandToken(OPENSCIENCE_COMMAND) : undefined}
@@ -2321,29 +2364,6 @@ export default function AssistantComposer({
                     <button
                       type="button"
                       role="switch"
-                      aria-checked={goalMode}
-                      onClick={() => setGoalMode(!goalMode)}
-                      className="flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left text-[var(--ink)] transition hover:bg-[var(--paper-strong)]"
-                    >
-                      <span className="min-w-0">
-                        <span className="block">Goal mode</span>
-                        <span className="block text-[11px] text-[var(--ink-muted)]">
-                          Keep a verified objective across this chat’s turns
-                        </span>
-                      </span>
-                      <span
-                        aria-hidden
-                        className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${goalMode ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
-                      >
-                        <span
-                          className={`neu-surface-raised absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-200 ${goalMode ? 'translate-x-5' : 'translate-x-0'}`}
-                        />
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      role="switch"
                       aria-checked={superAgent}
                       onClick={() => setSuperAgent(!superAgent)}
                       className="flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left text-[var(--ink)] transition hover:bg-[var(--paper-strong)]"
@@ -2515,7 +2535,7 @@ export default function AssistantComposer({
 
       {activeLightbox ? (
         <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-6 backdrop-blur-sm"
+          className="bb-viewer-overlay fixed z-[100] flex items-center justify-center bg-black/80 p-6 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
           aria-label={`Image preview: ${activeLightbox.attachment.name}`}

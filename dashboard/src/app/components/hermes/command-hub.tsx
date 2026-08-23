@@ -38,6 +38,7 @@ import { AGENT_TARS_SLASH_COMMAND } from "@/lib/ui-tars/identity.ts";
 import { AGENT_BROWSER_SLASH_COMMAND } from "@/lib/agent-browser/identity.ts";
 import { AGENT_REACH_COMMAND } from "@/lib/agent-reach/identity.ts";
 import { CAREER_OPS_COMMAND } from "@/lib/career-ops/identity.ts";
+import { OPEN_GYM_COMMAND } from "@/lib/open-gym/identity.ts";
 import { VIBE_TRADING_COMMAND } from "@/lib/vibe-trading/identity.ts";
 import { STOCK_ANALYST_COMMAND } from "@/lib/stock-analyst/identity.ts";
 import { DEER_FLOW_COMMAND } from "@/lib/deer-flow/identity.ts";
@@ -55,6 +56,7 @@ import { PARAMETRIC_CAD_COMMAND } from "@/lib/cad/identity.ts";
 import { HYPERFRAMES_COMMAND } from "@/lib/hyperframes/identity.ts";
 import { RESOURCE2SKILL_COMMAND } from "@/lib/resource2skill/identity.ts";
 import { MATRAIX_COMMAND } from "@/lib/matraix/identity.ts";
+import { BOLT_SLIDES_COMMAND } from "@/lib/bolt-slides/identity.ts";
 import { OPENMONTAGE_COMMAND } from "@/lib/openmontage/identity.ts";
 import { OPENWORK_COMMAND } from "@/lib/openwork/identity.ts";
 import { OPENSCIENCE_COMMAND } from "@/lib/openscience/identity.ts";
@@ -72,6 +74,10 @@ import {
   ARIS_AGENT_COMMAND,
   ARIS_AGENT_SLUG,
 } from "@/lib/aris/identity.ts";
+import {
+  SPOTIFY_AGENT_COMMAND,
+  SPOTIFY_AGENT_SLUG,
+} from "@/lib/spotify-agent/identity.ts";
 import SkillsCatalogPanel from "./skills-catalog-panel";
 import WorkflowTemplatesPanel from "./workflow-templates-panel";
 import FavoriteBox, {
@@ -105,6 +111,9 @@ const Resource2SkillSettingsDialog = dynamic(
   { ssr: false },
 );
 
+const BoltSlidesSettingsDialog = dynamic(() => import("./bolt-slides-settings-dialog"), {
+  ssr: false,
+});
 const MatraixSettingsDialog = dynamic(() => import("./matraix-settings-dialog"), {
   ssr: false,
 });
@@ -241,6 +250,8 @@ interface Props {
   onSelectDeepTutor?: () => void;
   /** When provided, selecting Career Ops inserts its canonical command. */
   onSelectCareerOps?: () => void;
+  /** When provided, selecting openGym inserts its canonical command. */
+  onSelectOpenGym?: () => void;
   onSelectTradingAgents?: () => void;
   /**
    * Shorts, like Trading Agent, is selected rather than typed after: it takes a
@@ -270,6 +281,8 @@ interface Props {
   onSelectResource2Skill?: () => void;
   /** When provided, selecting MatrAIx inserts its canonical command. */
   onSelectMatraix?: () => void;
+  /** When provided, selecting Bolt Slides inserts its canonical command. */
+  onSelectBoltSlides?: () => void;
   /** When provided, selecting OpenMontage inserts its canonical command. */
   onSelectOpenMontage?: () => void;
   /** When provided, selecting OpenWork inserts its canonical command. */
@@ -451,6 +464,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onSelectMeetingNotes,
       onSelectDeepTutor,
       onSelectCareerOps,
+      onSelectOpenGym,
       onSelectTradingAgents,
       onSelectShorts,
       onSelectFormsmith,
@@ -465,6 +479,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onSelectHyperframes,
       onSelectResource2Skill,
       onSelectMatraix,
+      onSelectBoltSlides,
       onSelectOpenMontage,
       onSelectOpenwork,
       onSelectOpenscience,
@@ -513,6 +528,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const [hyperframesSettingsOpen, setHyperframesSettingsOpen] = useState(false);
     const [resource2SkillSettingsOpen, setResource2SkillSettingsOpen] = useState(false);
     const [matraixSettingsOpen, setMatraixSettingsOpen] = useState(false);
+    const [boltSlidesSettingsOpen, setBoltSlidesSettingsOpen] = useState(false);
     const [openMontageSettingsOpen, setOpenMontageSettingsOpen] = useState(false);
     const [openworkSettingsOpen, setOpenworkSettingsOpen] = useState(false);
     const [openscienceSettingsOpen, setOpenscienceSettingsOpen] = useState(false);
@@ -705,9 +721,17 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         : null,
       [tab, tabItems],
     );
+    const spotifyAgent = useMemo(
+      () => tab === "agent"
+        ? tabItems.find((item) => item.slug === SPOTIFY_AGENT_SLUG) ?? null
+        : null,
+      [tab, tabItems],
+    );
     const agencyDirectoryItems = useMemo(
       () => tab === "agent"
-        ? tabItems.filter((item) => item.slug !== ARIS_AGENT_SLUG)
+        ? tabItems.filter(
+            (item) => item.slug !== ARIS_AGENT_SLUG && item.slug !== SPOTIFY_AGENT_SLUG,
+          )
         : tabItems,
       [tab, tabItems],
     );
@@ -985,6 +1009,22 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const showAris =
       surface !== "quartz_ai" &&
       Boolean(arisAgent);
+    const showSpotifyAgent =
+      surface !== "quartz_ai" &&
+      Boolean(spotifyAgent) &&
+      matchesAgentSearch(
+        "Spotify",
+        SPOTIFY_AGENT_COMMAND,
+        "music playback song track artist album playlist library queue pause resume skip volume now playing spotify connect",
+      );
+    const showOpenGym =
+      surface !== "quartz_ai" &&
+      Boolean(onSelectOpenGym) &&
+      matchesAgentSearch(
+        "openGym",
+        OPEN_GYM_COMMAND,
+        "fitness exercise workout gym training program routine plan strength calisthenics form technique animation demonstration",
+      );
     const showAgencyDirectory =
       agencyDirectoryItems.length > 0 ||
       matchesAgentSearch(
@@ -1008,12 +1048,21 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         MATRAIX_COMMAND,
         "survey population personas simulated users respondents cohort market research focus group willingness to pay audience",
       );
+    const showBoltSlides =
+      surface !== "quartz_ai" &&
+      Boolean(onSelectBoltSlides) &&
+      matchesAgentSearch(
+        "Bolt Slides",
+        BOLT_SLIDES_COMMAND,
+        "deck slides presentation pitch keynote talk slideshow present presenter interactive web react animated builds",
+      );
     const hasVisibleAgents =
       showAgentTars ||
       showAgentBrowser ||
       showAgentReach ||
       showGetDoc ||
       showCareerOps ||
+      showOpenGym ||
       showTradingAgents ||
       showVibeTrading ||
       showStockAnalyst ||
@@ -1027,6 +1076,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       showHyperframes ||
       showResource2Skill ||
       showMatraix ||
+      showBoltSlides ||
       showOpenMontage ||
       showOpenwork ||
       showOpenscience ||
@@ -1039,6 +1089,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       showOpenCode ||
       showRuflo ||
       showAris ||
+      showSpotifyAgent ||
       showAgencyDirectory;
     useEffect(() => {
       setActiveIndex((index) => Math.min(index, Math.max(0, agencyDirectoryItems.length - 1)));
@@ -1489,6 +1540,33 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                   <>
                     <ul role="listbox" aria-label="Agents" className="divide-y divide-[var(--line)]">
                     {[
+                    ...(showSpotifyAgent && spotifyAgent
+                      ? [{ name: "Spotify", node: (
+                      <li key="agent-spotify"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForItem(spotifyAgent))}
+                      >
+                        <button
+                          id="agent-spotify-entry"
+                          type="button"
+                          onClick={() => choose(spotifyAgent)}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">
+                            {SPOTIFY_AGENT_COMMAND}
+                          </span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Finds music, manages playlists and the library, and controls Spotify Connect playback.
+                          </span>
+                        </button>
+                        <FavoriteBox
+                          color={highlightColorForItem(spotifyAgent)}
+                          onColorChange={(color) => setHighlight(spotifyAgent, color)}
+                          label="Choose Spotify highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
                     ...(showAris && arisAgent
                       ? [{ name: "ARIS", node: (
                       <li key="aris"
@@ -1751,6 +1829,34 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                           color={highlightColorForId("agent:career-ops")}
                           onColorChange={(color) => setHighlightId("agent:career-ops", color)}
                           label="Choose Career Ops highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
+                    ...(showOpenGym
+                      ? [{ name: "openGym", node: (
+                      <li key="open-gym"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForId("agent:open-gym"))}
+                      >
+                        <button
+                          id="open-gym-entry"
+                          type="button"
+                          onClick={() => {
+                            onSelectOpenGym?.();
+                            onOpenChange(false);
+                          }}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{OPEN_GYM_COMMAND}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Builds and remembers training programs from openGym&apos;s 1,324-exercise library. Ask how to perform a registered exercise and its animation plays right in chat.
+                          </span>
+                        </button>
+                        <FavoriteBox
+                          color={highlightColorForId("agent:open-gym")}
+                          onColorChange={(color) => setHighlightId("agent:open-gym", color)}
+                          label="Choose openGym highlight color"
                         />
                       </li>
                       ) }]
@@ -2193,6 +2299,41 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                           color={highlightColorForId("agent:resource2skill")}
                           onColorChange={(color) => setHighlightId("agent:resource2skill", color)}
                           label="Choose Resource2Skill highlight color"
+                        />
+                      </li>
+                      ) }]
+                      : []),
+                    ...(showBoltSlides
+                      ? [{ name: "Bolt Slides", node: (
+                      <li key="bolt-slides"
+                        className="group flex items-center gap-2 hover:bg-[var(--paper-surface)]"
+                        style={capabilityHighlightStyle(highlightColorForId("agent:bolt-slides"))}
+                      >
+                        <button
+                          id="bolt-slides-entry"
+                          type="button"
+                          onClick={() => {
+                            onSelectBoltSlides?.();
+                            onOpenChange(false);
+                          }}
+                          className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)]"
+                        >
+                          <span className="block break-all font-mono text-sm font-medium text-[var(--ink-heading)]">{BOLT_SLIDES_COMMAND}</span>
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-[var(--ink)]">
+                            Builds a presentation you can actually present &mdash; every slide a live web page, with click-builds, annotation, and a presenter view.
+                          </span>
+                        </button>
+                        <AgentSettingsButton
+                          name="Bolt Slides"
+                          onOpen={() => {
+                            setBoltSlidesSettingsOpen(true);
+                            onOpenChange(false);
+                          }}
+                        />
+                        <FavoriteBox
+                          color={highlightColorForId("agent:bolt-slides")}
+                          onColorChange={(color) => setHighlightId("agent:bolt-slides", color)}
+                          label="Choose Bolt Slides highlight color"
                         />
                       </li>
                       ) }]
@@ -2974,6 +3115,9 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         ) : null}
         {surface === "quartz_ai" ? null : resource2SkillSettingsOpen ? (
           <Resource2SkillSettingsDialog onClose={() => setResource2SkillSettingsOpen(false)} />
+        ) : null}
+        {surface === "quartz_ai" ? null : boltSlidesSettingsOpen ? (
+          <BoltSlidesSettingsDialog onClose={() => setBoltSlidesSettingsOpen(false)} />
         ) : null}
         {surface === "quartz_ai" ? null : matraixSettingsOpen ? (
           <MatraixSettingsDialog onClose={() => setMatraixSettingsOpen(false)} />

@@ -240,6 +240,15 @@ export const MAP_TOOLS = [
   "map_get_selected_place",
 ] as const;
 
+// Spotify's first-party browser player. Search is read-only; play records a
+// track queue for the conversation's inline Web Playback SDK device. Neither
+// tool can target or open the native Spotify application.
+export const SPOTIFY_TOOLS = [
+  "spotify_search",
+  "spotify_play",
+  "spotify_create_playlist",
+] as const;
+
 // The calendar at /calendar. Read-only on purpose: the tools reach the store's
 // query methods and none of its writes, so an agent can answer any question
 // about the user's schedule and cannot alter it. The user id comes from the
@@ -408,6 +417,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...WORLDMONITOR_TOOLS,
       ...IMAGE_SEARCH_TOOLS,
       ...MAP_TOOLS,
+      ...SPOTIFY_TOOLS,
       ...CALENDAR_TOOLS,
       ...PLAN_TOOLS,
       ...OFFICE_TOOLS,
@@ -443,6 +453,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...WORLDMONITOR_TOOLS,
     ...IMAGE_SEARCH_TOOLS,
     ...MAP_TOOLS,
+    ...SPOTIFY_TOOLS,
     ...CALENDAR_TOOLS,
     ...PLAN_TOOLS,
     ...OFFICE_TOOLS,

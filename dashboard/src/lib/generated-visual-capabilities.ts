@@ -182,6 +182,7 @@ export const GENERATED_VISUAL_CAPABILITY_MANIFEST = deepFreeze({
         "bounded filled planar patch with 3-12 ordered, coplanar, non-collinear, non-self-intersecting vertices",
       conditionalVisibility:
         "groups and primitives accept expression-valued visibleWhen",
+      labelModes: ["inline", "legend_only"],
       palette: ["green", "blue", "amber", "violet", "red", "cyan", "gray"],
       patterns: ["solid", "striped", "dotted", "crosshatch"],
     },

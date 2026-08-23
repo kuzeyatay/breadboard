@@ -10,6 +10,7 @@ import {
 import {
   quartzAssistantSelectionRequest,
   type QuartzAssistantSelectionRequest,
+  type QuartzInlineAnswerUpdate,
 } from '@/lib/quartz-assistant-selection';
 
 interface Props {
@@ -97,6 +98,13 @@ export default function LibraryGardenClient({ src, title }: Props) {
       return '';
     }
   }, []);
+
+  function postInlineAnswer(update: QuartzInlineAnswerUpdate) {
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: 'second-brain:assistant-inline-answer', ...update },
+      quartzOrigin || '*',
+    );
+  }
 
   const isLoaded = loadedSource === src && !loadFailed;
 
@@ -373,6 +381,7 @@ export default function LibraryGardenClient({ src, title }: Props) {
         activeClusterName={activeCluster ?? undefined}
         activeMarkdown={activeMarkdown}
         selectedTextRequest={assistantSelection}
+        onInlineAnswerUpdate={postInlineAnswer}
       />
     </div>
   );

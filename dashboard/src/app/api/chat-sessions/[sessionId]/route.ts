@@ -41,6 +41,12 @@ export const dynamic = "force-dynamic";
 
 type ChatRole = "user" | "assistant";
 
+interface QuartzInlineSelectionReference {
+  requestId: string;
+  highlightId: string;
+  pageSlug?: string;
+}
+
 interface ChatMessage {
   role: ChatRole;
   content: string;
@@ -53,6 +59,7 @@ interface ChatMessage {
   responseDurationMs?: number;
   verification?: VerificationSummary;
   selectedText?: string;
+  inlineSelection?: QuartzInlineSelectionReference;
   externalAgentRun?: ExternalAgentRun;
   externalAgentOutcome?: ExternalAgentOutcome;
   externalAgentStartedAt?: string;
@@ -109,6 +116,7 @@ function mergeRuntimeMetadata(
     metadata.internalAgentContinuation = true;
   }
   if (message.selectedText) metadata.selectedText = message.selectedText;
+  if (message.inlineSelection) metadata.inlineSelection = message.inlineSelection;
   if (message.externalAgentRun) {
     metadata.externalAgent = true;
     metadata.externalAgentRun = message.externalAgentRun;
@@ -214,6 +222,28 @@ function cleanTitle(value: unknown): string | null {
   return title || null;
 }
 
+function normalizeInlineSelection(
+  value: unknown,
+): QuartzInlineSelectionReference | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const requestId = typeof record.requestId === "string"
+    ? record.requestId.trim().slice(0, 128)
+    : "";
+  const highlightId = typeof record.highlightId === "string"
+    ? record.highlightId.trim().slice(0, 128)
+    : "";
+  const pageSlug = typeof record.pageSlug === "string"
+    ? record.pageSlug.trim().slice(0, 400)
+    : "";
+  if (!requestId || !highlightId) return undefined;
+  return {
+    requestId,
+    highlightId,
+    ...(pageSlug ? { pageSlug } : {}),
+  };
+}
+
 function normalizeMessages(value: unknown): ChatMessage[] | null {
   if (!Array.isArray(value)) return null;
 
@@ -260,6 +290,7 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
       role === "user" && typeof record.selectedText === "string"
         ? record.selectedText.trim().slice(0, 4_000)
         : "";
+    const inlineSelection = normalizeInlineSelection(record.inlineSelection);
     const createdAt =
       typeof record.createdAt === "string" &&
       Number.isFinite(Date.parse(record.createdAt))
@@ -276,6 +307,7 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
       ...(attachmentNames.length ? { attachmentNames } : {}),
       ...(attachments.length ? { attachments } : {}),
       ...(selectedText ? { selectedText } : {}),
+      ...(inlineSelection ? { inlineSelection } : {}),
       ...(usage ? { usage } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(verification ? { verification } : {}),
