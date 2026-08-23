@@ -44,6 +44,59 @@ function answerContractStandard(): string {
   }
 }
 
+/**
+ * Where a closed channel would leave a mark if it had actually been read.
+ *
+ * A channel can be shut for one participant and reached by another: Agent
+ * Reach's Reddit channel needs a login it does not have, while Deep Research
+ * reads reddit.com over the open web like any other page.
+ */
+const CHANNEL_DOMAINS: Readonly<Record<string, readonly string[]>> = {
+  reddit: ["reddit.com"],
+  twitter: ["twitter.com", "x.com"],
+  github: ["github.com"],
+  facebook: ["facebook.com"],
+  instagram: ["instagram.com"],
+  linkedin: ["linkedin.com"],
+  youtube: ["youtube.com", "youtu.be"],
+  xiaohongshu: ["xiaohongshu.com"],
+  xueqiu: ["xueqiu.com"],
+  xiaoyuzhou: ["xiaoyuzhou.fm"],
+  bilibili: ["bilibili.com"],
+};
+
+/**
+ * The closed channels that really did leave a hole in the evidence.
+ *
+ * A live run ended by telling the reader that Reddit was closed, in an answer
+ * that cited two Reddit threads — because one participant reported its own
+ * unauthenticated channel while another had read the site perfectly well over
+ * the open web. Both statements were true of their own participant and the
+ * sentence built from them was false about the run. A channel is only reported
+ * closed here when nothing from it appears in what the run actually collected.
+ */
+export function unreachedSources(
+  results: readonly ParticipantResult[],
+): string[] {
+  const gathered = results
+    .filter((result) => result.status === "completed")
+    .map((result) => result.output.toLowerCase())
+    .join(" ");
+  const closed = new Set<string>();
+  for (const result of results) {
+    for (const limitation of result.limitations ?? []) {
+      const name = limitation.name.trim();
+      if (!name) continue;
+      const domains = CHANNEL_DOMAINS[name.toLowerCase()] ?? [];
+      // No known domain means nothing can contradict it — a search backend,
+      // say — so it is reported as closed on the participant's word.
+      if (domains.some((domain) => gathered.includes(domain))) continue;
+      closed.add(name);
+    }
+  }
+  return [...closed];
+}
+
 function participantBlock(result: ParticipantResult): string {
   const attributes = [
     `participant="${result.participant}"`,
@@ -106,17 +159,20 @@ export function maxResearchSynthesisPrompt(input: {
           "",
         ].join("\n")
       : "",
-    input.results.some((r) => r.limitations?.length)
-      ? `Parts of the record were closed while this ran: ${input.results
-          .filter((r) => r.limitations?.length)
-          .map(
-            (r) =>
-              `${r.participant} could not reach ${r.limitations!
-                .map((l) => l.name)
-                .join(", ")}`,
-          )
-          .join("; ")}. End the answer with a short line naming these, so the reader can tell a subject nobody discusses from a source that was simply shut. Do not pad it into a paragraph and do not apologise — one line, plainly.`
-      : "",
+    (() => {
+      const closed = unreachedSources(input.results);
+      return closed.length
+        ? `Parts of the record were closed while this ran and nothing from them reached these findings: ${closed.join(", ")}. End the answer with a short line naming these, so the reader can tell a subject nobody discusses from a source that was simply shut. Do not pad it into a paragraph and do not apologise — one line, plainly.`
+        : "";
+    })(),
+    "",
+    // Live drives attributed findings in the finished prose as "`agent_reach`
+    // found..." and "`deep_research` also returned...", because the blocks
+    // below are labelled with those ids and nothing said not to. They are
+    // internal names for parts of this machine; a reader has no idea what they
+    // are, and the attribution a reader actually needs is to the study or
+    // publisher, which is a fact about the world rather than about the run.
+    "Never name a participant in the answer. `deep_research`, `agent_reach`, `get_doc`, `openscience` and `aris` are internal names for parts of this system, and a reader does not know what they are. Attribute a finding to its source — the study, the dataset, the publisher — not to whichever participant retrieved it. The one exception is the line about what went unread, which is about the run rather than the world, and even there name the part of the record — the open internet, the primary literature, the workspace — rather than the participant.",
     "",
     standard,
     "",

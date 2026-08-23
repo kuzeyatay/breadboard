@@ -136,6 +136,7 @@ import InlineGetDocRun from "@/app/components/hermes/inline-get-doc-run";
 import InlineMeetingNotesRun from "@/app/components/hermes/inline-meeting-notes-run";
 import InlineDeepTutorRun from "@/app/components/hermes/inline-deep-tutor-run";
 import InlineCareerOpsRun from "@/app/components/hermes/inline-career-ops-run";
+import InlineOpenGymRun from "@/app/components/hermes/inline-open-gym-run";
 import InlineTradingAgentsRun from "@/app/components/hermes/inline-tradingagents-run";
 import InlineVibeTradingRun from "@/app/components/hermes/inline-vibe-trading-run";
 import InlineStockAnalystRun from "@/app/components/hermes/inline-stock-analyst-run";
@@ -148,6 +149,7 @@ import InlineParametricCadRun from "@/app/components/hermes/inline-parametric-ca
 import InlineHyperframesRun from "@/app/components/hermes/inline-hyperframes-run";
 import InlineResource2SkillRun from "@/app/components/hermes/inline-resource2skill-run";
 import InlineMatraixRun from "@/app/components/hermes/inline-matraix-run";
+import InlineBoltSlidesRun from "@/app/components/hermes/inline-bolt-slides-run";
 import InlineOpenMontageRun from "@/app/components/hermes/inline-openmontage-run";
 import InlineOpenworkRun from "@/app/components/hermes/inline-openwork-run";
 import InlineOpenscienceRun from "@/app/components/hermes/inline-openscience-run";
@@ -180,6 +182,10 @@ import {
   matraixUserMessage,
   taskFromMatraixCommand,
 } from "@/lib/matraix/identity.ts";
+import {
+  boltSlidesUserMessage,
+  taskFromBoltSlidesCommand,
+} from "@/lib/bolt-slides/identity.ts";
 import {
   briefFromOpenMontageCommand,
   openMontageUserMessage,
@@ -313,6 +319,10 @@ import {
   careerOpsUserMessage,
   taskFromCareerOpsCommand,
 } from "@/lib/career-ops/identity.ts";
+import {
+  openGymUserMessage,
+  taskFromOpenGymCommand,
+} from "@/lib/open-gym/identity.ts";
 import {
   TRADINGAGENTS_AGENT_ID,
   TRADINGAGENTS_AGENT_NAME,
@@ -449,6 +459,7 @@ interface Message {
   meetingNotesRun?: { runId: string; task: string };
   deepTutorRun?: { runId: string; task: string; capability: string };
   careerOpsRun?: { runId: string; task: string };
+  openGymRun?: { runId: string; task: string };
   tradingAgentsRun?: { runId: string; task: string };
   vibeTradingRun?: { runId: string; task: string };
   stockAnalystRun?: { runId: string; task: string };
@@ -460,6 +471,7 @@ interface Message {
   hyperframesRun?: { runId: string; brief: string };
   resource2SkillRun?: { runId: string; brief: string };
   matraixRun?: { runId: string; brief: string };
+  boltSlidesRun?: { runId: string; brief: string };
   openMontageRun?: { runId: string; brief: string };
   openworkRun?: { runId: string; task: string };
   openscienceRun?: { runId: string; task: string };
@@ -720,6 +732,13 @@ type LearnStatus =
   | "failed"
   | "cancelled";
 
+type LearnHumanizerStatus =
+  | "ai"
+  | "running"
+  | "humanized"
+  | "restoring_ai"
+  | "failed";
+
 interface LearnJobInfo {
   id: string;
   model: string;
@@ -783,6 +802,15 @@ interface LearnStatusResponse {
   proposedLearningMap?: LearnMapInfo | null;
   confirmedLearningMapId?: string;
   latestTextbookVersionId?: string;
+  humanizer?: {
+    versionId: string;
+    requested: boolean;
+    activeCopy: "ai" | "humanized";
+    status: LearnHumanizerStatus;
+    reason?: string;
+    error?: string;
+    updatedAt: string;
+  } | null;
   hasSources?: boolean;
   sourceCount?: number;
   selectedSourceIds?: string[];
@@ -1100,6 +1128,7 @@ function hasRunningExternalAgent(message: Message): boolean {
       message.meetingNotesRun ||
       message.deepTutorRun ||
       message.careerOpsRun ||
+      message.openGymRun ||
       message.tradingAgentsRun ||
       message.vibeTradingRun ||
       message.stockAnalystRun ||
@@ -1111,6 +1140,7 @@ function hasRunningExternalAgent(message: Message): boolean {
       message.hyperframesRun ||
       message.resource2SkillRun ||
       message.matraixRun ||
+      message.boltSlidesRun ||
       message.openMontageRun ||
       message.openworkRun ||
       message.openscienceRun ||
@@ -1408,6 +1438,7 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.meetingNotesRun ??
                 msg.deepTutorRun ??
                 msg.careerOpsRun ??
+                msg.openGymRun ??
                 msg.tradingAgentsRun ??
                 msg.vibeTradingRun ??
                 msg.stockAnalystRun ??
@@ -1419,6 +1450,7 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.hyperframesRun ??
                 msg.resource2SkillRun ??
                 msg.matraixRun ??
+                msg.boltSlidesRun ??
                 msg.openMontageRun ??
                 msg.openworkRun ??
                 msg.openscienceRun ??
@@ -2090,6 +2122,21 @@ const ChatTranscript = memo(function ChatTranscript({
                                     )
                                   }
                                 />
+                              ) : msg.openGymRun ? (
+                                <InlineOpenGymRun
+                                  runId={msg.openGymRun.runId}
+                                  task={msg.openGymRun.task}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(msg.openGymRun!.runId, result)
+                                  }
+                                />
                               ) : msg.socialsManagerRun ? (
                                 <InlineSocialsManagerRun
                                   runId={msg.socialsManagerRun.runId}
@@ -2201,6 +2248,25 @@ const ChatTranscript = memo(function ChatTranscript({
                                   onTerminal={(result) =>
                                     onExternalAgentTerminal(
                                       msg.matraixRun!.runId,
+                                      result,
+                                    )
+                                  }
+                                />
+                              ) : msg.boltSlidesRun ? (
+                                <InlineBoltSlidesRun
+                                  runId={msg.boltSlidesRun.runId}
+                                  brief={msg.boltSlidesRun.brief}
+                                  persistedContent={msg.content}
+                                  persistedOutcome={msg.externalAgentOutcome}
+                                  persistedUsage={msg.usage}
+                                  onRetry={
+                                    i === lastAssistantIndex && !isStreaming
+                                      ? () => onRetryAssistant(i)
+                                      : undefined
+                                  }
+                                  onTerminal={(result) =>
+                                    onExternalAgentTerminal(
+                                      msg.boltSlidesRun!.runId,
                                       result,
                                     )
                                   }
@@ -2832,6 +2898,7 @@ export default function WorkspaceClient({
     | "meeting-notes"
     | "deep-tutor"
     | "career-ops"
+    | "open-gym"
     | "trading-agent"
     | "vibe-trading"
     | "stock-analyst"
@@ -2842,6 +2909,7 @@ export default function WorkspaceClient({
     | "hyperframes"
     | "resource2skill"
     | "matraix"
+    | "bolt-slides"
     | "openmontage"
     | "openwork"
     | "openscience"
@@ -2869,6 +2937,7 @@ export default function WorkspaceClient({
     | "meeting-notes"
     | "deep-tutor"
     | "career-ops"
+    | "open-gym"
     | "trading-agent"
     | "vibe-trading"
     | "stock-analyst"
@@ -2879,6 +2948,7 @@ export default function WorkspaceClient({
     | "hyperframes"
     | "resource2skill"
     | "matraix"
+    | "bolt-slides"
     | "openmontage"
     | "openwork"
     | "openscience"
@@ -3038,6 +3108,10 @@ export default function WorkspaceClient({
   const [learnSourceOnly, setLearnSourceOnly] = useState(true);
   const [learnSkipManualReview, setLearnSkipManualReview] = useState(false);
   const [humanizerEnabled, setHumanizerEnabled] = useHumanizerMode();
+  const [learnHumanizerRequestBusy, setLearnHumanizerRequestBusy] =
+    useState(false);
+  const previousHumanizerPreferenceRef = useRef(humanizerEnabled);
+  const pendingFinishedLearnHumanizerRef = useRef<boolean | null>(null);
   const [learnIncludedSourceSlugs, setLearnIncludedSourceSlugs] = useState<
     string[] | null
   >(null);
@@ -3061,6 +3135,9 @@ export default function WorkspaceClient({
   const lastSyncedLearnSelectionRef = useRef<string | null>(null);
   const lastSyncedLearnSyllabusRef = useRef<string | null>(null);
   const autoConfirmingLearnJobRef = useRef<string | null>(null);
+  const previousLearnHumanizerStatusRef = useRef<
+    LearnHumanizerStatus | undefined
+  >(undefined);
   const {
     model,
     setModel,
@@ -3186,6 +3263,92 @@ export default function WorkspaceClient({
     return null;
   }, [clusterSlug]);
 
+  const switchFinishedLearnHumanizer = useCallback(
+    async (enabled: boolean) => {
+      const versionId = learnState?.latestTextbookVersionId;
+      if (
+        !versionId ||
+        learnHumanizerRequestBusy ||
+        isLearnActive(learnState?.job?.status)
+      ) {
+        return;
+      }
+      setLearnHumanizerRequestBusy(true);
+      try {
+        const res = await fetch(
+          `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/humanizer`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled, expectedVersionId: versionId }),
+          },
+        );
+        const data = (await res.json().catch(() => ({}))) as
+          LearnStatusResponse & { error?: string; accepted?: boolean };
+        if (!res.ok || data.error) {
+          throw new Error(data.error ?? "Could not switch the finished Learn copy");
+        }
+        setLearnState(data);
+        if (data.accepted !== true) {
+          await fetchDocuments();
+          setGraphRefreshVersion((value) => value + 1);
+          addToast(
+            enabled
+              ? "Finished lessons rewritten naturally"
+              : "Switched lessons back to the AI copy",
+            "success",
+          );
+        }
+      } catch (error) {
+        await fetchLearnStatus();
+        addToast(
+          error instanceof Error
+            ? error.message
+            : "Could not switch the finished Learn copy",
+        );
+      } finally {
+        setLearnHumanizerRequestBusy(false);
+      }
+    },
+    [
+      addToast,
+      clusterSlug,
+      fetchDocuments,
+      fetchLearnStatus,
+      learnHumanizerRequestBusy,
+      learnState?.job?.status,
+      learnState?.latestTextbookVersionId,
+    ],
+  );
+
+  useEffect(() => {
+    if (previousHumanizerPreferenceRef.current !== humanizerEnabled) {
+      previousHumanizerPreferenceRef.current = humanizerEnabled;
+      pendingFinishedLearnHumanizerRef.current = humanizerEnabled;
+    }
+    const desired = pendingFinishedLearnHumanizerRef.current;
+    if (
+      desired === null ||
+      !learnState?.latestTextbookVersionId ||
+      learnHumanizerRequestBusy ||
+      isLearnActive(learnState?.job?.status) ||
+      learnState?.job?.status === "awaiting_confirmation" ||
+      learnState?.humanizer?.status === "running" ||
+      learnState?.humanizer?.status === "restoring_ai"
+    ) {
+      return;
+    }
+    pendingFinishedLearnHumanizerRef.current = null;
+    void switchFinishedLearnHumanizer(desired);
+  }, [
+    humanizerEnabled,
+    learnHumanizerRequestBusy,
+    learnState?.humanizer?.status,
+    learnState?.job?.status,
+    learnState?.latestTextbookVersionId,
+    switchFinishedLearnHumanizer,
+  ]);
+
   useEffect(() => {
     void fetchLearnStatus();
   }, [fetchLearnStatus]);
@@ -3236,14 +3399,54 @@ export default function WorkspaceClient({
 
   useEffect(() => {
     const active =
-      isLearnActive(learnState?.job?.status) || learnBusy || learnCancelBusy;
+      isLearnActive(learnState?.job?.status) ||
+      learnState?.humanizer?.status === "running" ||
+      learnState?.humanizer?.status === "restoring_ai" ||
+      learnHumanizerRequestBusy ||
+      learnBusy ||
+      learnCancelBusy;
     if (!active) return;
     void fetchLearnStatus();
     const id = window.setInterval(() => {
       void fetchLearnStatus();
     }, 2000);
     return () => window.clearInterval(id);
-  }, [fetchLearnStatus, learnBusy, learnCancelBusy, learnState?.job?.status]);
+  }, [
+    fetchLearnStatus,
+    learnBusy,
+    learnCancelBusy,
+    learnHumanizerRequestBusy,
+    learnState?.humanizer?.status,
+    learnState?.job?.status,
+  ]);
+
+  useEffect(() => {
+    const current = learnState?.humanizer?.status;
+    const previous = previousLearnHumanizerStatusRef.current;
+    previousLearnHumanizerStatusRef.current = current;
+    if (previous !== "running" && previous !== "restoring_ai") return;
+    if (current === "running" || current === "restoring_ai") return;
+    if (current === "failed") {
+      addToast(
+        learnState?.humanizer?.error ||
+          "The finished Learn copy could not be switched",
+      );
+      return;
+    }
+    void fetchDocuments();
+    setGraphRefreshVersion((value) => value + 1);
+    addToast(
+      current === "humanized"
+        ? "Finished lessons rewritten naturally"
+        : "Switched lessons back to the AI copy",
+      "success",
+    );
+  }, [
+    addToast,
+    fetchDocuments,
+    learnState?.humanizer?.error,
+    learnState?.humanizer?.status,
+  ]);
 
   useEffect(() => {
     setLearnTimerNowMs(Date.now());
@@ -3723,6 +3926,9 @@ export default function WorkspaceClient({
           if (!careerOpsAgent) await selectCareerOps();
           await launchCareerOps(request.brief);
           return;
+        case "open-gym":
+          await launchOpenGym(request.brief);
+          return;
         case "vibe-trading":
           if (!vibeTradingAgent) await selectVibeTrading();
           await launchVibeTrading(request.brief);
@@ -3753,6 +3959,9 @@ export default function WorkspaceClient({
           return;
         case "matraix":
           await launchMatraix(request.brief);
+          return;
+        case "bolt-slides":
+          await launchBoltSlides(request.brief);
           return;
         case "resource2skill":
           await launchResource2Skill(request.brief);
@@ -8124,6 +8333,77 @@ export default function WorkspaceClient({
     }
   }
 
+  async function launchOpenGym(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Tell openGym what exercise or program you need.");
+      return;
+    }
+    externalAgentLaunchRef.current = "open-gym";
+    setLaunchingExternalAgent("open-gym");
+    setExternalAgentStatus("");
+    const normalizedTask = task.trim();
+    const userContent = openGymUserMessage(normalizedTask);
+    const launchClientMessageId = crypto.randomUUID();
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...transcriptForRetriedTurn(prepared.session),
+      {
+        id: `open-gym-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/open-gym/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task: normalizedTask,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+          clientMessageId: launchClientMessageId,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(typeof data?.error === "string" ? data.error : "The openGym run could not start.");
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          openGymRun: { runId: String(data.run.runId), task: normalizedTask },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `openGym could not start: ${error instanceof Error ? error.message : "unknown error"}`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
   async function launchParametricCad(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
       if (!brief)
@@ -9111,6 +9391,80 @@ export default function WorkspaceClient({
     }
   }
 
+  async function launchBoltSlides(brief: string) {
+    if (!brief || externalAgentLaunchRef.current) {
+      if (!brief) setExternalAgentStatus("Tell Bolt Slides what the deck is about.");
+      return;
+    }
+    externalAgentLaunchRef.current = "bolt-slides";
+    setLaunchingExternalAgent("bolt-slides");
+    setExternalAgentStatus("");
+    const userContent = boltSlidesUserMessage(brief);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...transcriptForRetriedTurn(prepared.session),
+      {
+        id: `bolt-slides-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/bolt-slides/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The deck could not be started.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          boltSlidesRun: { runId: String(data.run.runId), brief },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The deck could not be started: ${error instanceof Error ? error.message : "unknown error"}`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
   async function launchOpenMontage(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
       if (!brief)
@@ -9851,6 +10205,14 @@ export default function WorkspaceClient({
       return;
     }
 
+    const openGymTask = taskFromOpenGymCommand(text);
+    if (openGymTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchOpenGym(openGymTask);
+      return;
+    }
+
     const hardwareBrief = taskFromHardwareBlueprintCommand(text);
     if (hardwareBrief !== null) {
       setInput("");
@@ -9888,6 +10250,14 @@ export default function WorkspaceClient({
       setInput("");
       setChatAttachments([]);
       void launchMatraix(matraixBrief);
+      return;
+    }
+
+    const boltSlidesBrief = taskFromBoltSlidesCommand(text);
+    if (boltSlidesBrief !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchBoltSlides(boltSlidesBrief);
       return;
     }
 
@@ -10853,6 +11223,10 @@ export default function WorkspaceClient({
     const job = learnState?.job ?? null;
     const status = job?.status ?? "idle";
     const active = isLearnActive(status);
+    const learnHumanizerActive =
+      learnHumanizerRequestBusy ||
+      learnState?.humanizer?.status === "running" ||
+      learnState?.humanizer?.status === "restoring_ai";
     const proposedMap = learnState?.proposedLearningMap ?? null;
     const hasLearnData = Boolean(
       job ||
@@ -11727,32 +12101,10 @@ export default function WorkspaceClient({
           className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-gray-800 pt-2 text-[11px]"
           aria-label="Learn token usage"
         >
-            <span className="font-medium text-gray-300">Tokens</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={humanizerEnabled}
-              onClick={() => setHumanizerEnabled(!humanizerEnabled)}
-              className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-gray-400 transition-colors hover:text-gray-200"
-              title="After a full Learn build passes its checks, rewrite only the learner-facing prose locally and keep the original if any safety check fails"
-            >
-              <span>Rewrite naturally</span>
+          <span className="font-medium text-gray-300">Tokens</span>
+          {showLearnTokenUsage && learnTokenUsage ? (
+            <>
               <span
-                aria-hidden
-                className={`neu-inset relative h-4 w-7 rounded-full transition-colors duration-200 ${
-                  humanizerEnabled ? "bg-emerald-500/80" : "bg-gray-700"
-                }`}
-              >
-                <span
-                  className={`neu-surface-raised absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white transition-transform duration-200 ${
-                    humanizerEnabled ? "translate-x-3" : "translate-x-0"
-                  }`}
-                />
-              </span>
-            </button>
-            {showLearnTokenUsage && learnTokenUsage ? (
-              <>
-            <span
               className="flex items-center gap-1 font-mono tabular-nums text-gray-400"
               title={
                 learnTimerPaused
@@ -11837,14 +12189,50 @@ export default function WorkspaceClient({
             )}
 
             {learnUsageCallSummary ? (
-              <span className="ml-auto text-gray-600">
+              <span className="text-gray-600">
                 {learnUsageCallSummary}
               </span>
             ) : null}
-              </>
-            ) : (
-              <span className="ml-auto text-gray-600">Waiting for usage</span>
-            )}
+            </>
+          ) : (
+            <span className="text-gray-600">Waiting for usage</span>
+          )}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={humanizerEnabled}
+            aria-busy={learnHumanizerActive}
+            disabled={learnHumanizerActive}
+            onClick={() => setHumanizerEnabled(!humanizerEnabled)}
+            className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap text-gray-400 transition-colors hover:text-gray-200 disabled:cursor-wait disabled:opacity-60"
+            title={
+              learnState?.humanizer?.status === "running"
+                ? "Rewriting the completed lessons naturally"
+                : learnState?.humanizer?.status === "restoring_ai"
+                  ? "Restoring the original AI lesson copy"
+                  : "After a full Learn build passes its checks, rewrite only the learner-facing prose locally and keep the original if any safety check fails"
+            }
+          >
+            <span>
+              {learnState?.humanizer?.status === "running"
+                ? "Rewriting naturally..."
+                : learnState?.humanizer?.status === "restoring_ai"
+                  ? "Restoring AI copy..."
+                  : "Rewrite naturally"}
+            </span>
+            <span
+              aria-hidden
+              className={`neu-inset relative h-4 w-7 rounded-full transition-colors duration-200 ${
+                humanizerEnabled ? "bg-emerald-500/80" : "bg-gray-700"
+              }`}
+            >
+              <span
+                className={`neu-surface-raised absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white transition-transform duration-200 ${
+                  humanizerEnabled ? "translate-x-3" : "translate-x-0"
+                }`}
+              />
+            </span>
+          </button>
         </div>
 
         {panelExpanded &&
@@ -13874,11 +14262,13 @@ export default function WorkspaceClient({
               openPlanterAgent={openPlanterAgent}
               onSelectOpenPlanter={() => void selectOpenPlanter()}
               onSelectSocialsManager={() => {}}
+              onSelectOpenGym={() => {}}
               onSelectHardwareBlueprint={() => {}}
               onSelectParametricCad={() => {}}
               onSelectHyperframes={() => {}}
               onSelectResource2Skill={() => {}}
               onSelectMatraix={() => {}}
+              onSelectBoltSlides={() => {}}
               onSelectOpenMontage={() => {}}
               onSelectOpenwork={() => {}}
               onSelectOpenscience={() => {}}

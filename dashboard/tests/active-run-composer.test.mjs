@@ -409,11 +409,11 @@ test("runtime problems render as recoverable in-chat errors", () => {
   const stateBlock = runtimePanel.slice(stateRow, stateRow + 900);
   assert.doesNotMatch(stateBlock, /stateAction=/);
   assert.doesNotMatch(stateBlock, /Try again/);
-  const inlineError = runtimePanel.indexOf(
-    "{failureInline && index === lastAssistantIndex ? (",
+  const inlineError = runtimePanel.search(
+    /\{failureInline &&\s*index === lastAssistantIndex &&/,
   );
   assert.ok(inlineError > stateRow);
-  const inlineBlock = runtimePanel.slice(inlineError, inlineError + 300);
+  const inlineBlock = runtimePanel.slice(inlineError, inlineError + 700);
   assert.match(inlineBlock, /role="alert"/);
   assert.match(inlineBlock, /<ChatMarkdown content=\{failureText/);
   // Failures that cannot attach to a plain assistant message — run cards,
@@ -479,6 +479,15 @@ test("an active turn reconnects after a transient event-stream network drop", ()
     sessionHook,
     /failed \|\|[\s\S]*stopRequestedRef\.current \|\|[\s\S]*controller\.signal\.aborted/,
   );
+});
+
+test("message dispatch retries the same turn across a local dashboard restart", () => {
+  assert.match(sessionHook, /AGENT_MESSAGE_DISPATCH_ATTEMPTS/);
+  assert.match(sessionHook, /async function dispatchAgentMessage/);
+  assert.match(sessionHook, /signal: AbortSignal\.timeout\(policy\.timeoutMs\)/);
+  assert.match(sessionHook, /retry: payload\.retry === true \|\| attempt > 0/);
+  assert.match(sessionHook, /await dispatchAgentMessage\(/);
+  assert.doesNotMatch(sessionHook, /setError\(\s*["']Failed to fetch/);
 });
 
 test("send and stop use one stable responsive button shell", () => {

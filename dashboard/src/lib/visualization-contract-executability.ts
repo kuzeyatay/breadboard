@@ -105,6 +105,16 @@ const VISUALIZATION_PLAN_RELATIVE_PATH = ".breadboard/visualization-plan.json" a
 
 type ActiveRequirement = "required" | "recommended" | "optional";
 
+/**
+ * Concept aliases are canonicalized when the final Learning Unit Contract is
+ * reloaded, while the signed review packet preserves the model's original
+ * alias order.  Treat only this set-like projection as order-insensitive; all
+ * other immutable packet metadata remains byte-for-byte structural equality.
+ */
+function sameStringMultiset(left: readonly string[], right: readonly string[]): boolean {
+  return isDeepStrictEqual([...left].sort(), [...right].sort());
+}
+
 export interface VisualContractExecutabilityUnitPacket {
   unitId: string;
   title: string;
@@ -3241,7 +3251,13 @@ export function visualContractExecutabilityLinkageProblems(input: {
         necessity: packetUnit.necessity,
         requirement: packetUnit.requirement,
       };
-      if (!expectedMetadata || !isDeepStrictEqual(packetMetadata, expectedMetadata)) {
+      const metadataMatches = expectedMetadata &&
+        isDeepStrictEqual(
+          { ...packetMetadata, concepts: undefined },
+          { ...expectedMetadata, concepts: undefined },
+        ) &&
+        sameStringMultiset(packetMetadata.concepts, expectedMetadata.concepts);
+      if (!metadataMatches) {
         problems.push(
           `executability ledger attempt ${expectedAttempt} packet metadata for ${packetUnit.unitId} differs from the final immutable unit`,
         );

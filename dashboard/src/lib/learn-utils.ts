@@ -169,6 +169,17 @@ export function sourceSetHashWithSyllabus(
     .update("\0syllabus\0")
     .update(syllabus.slug)
     .update("\0")
+    // Every field below can reach a syllabus-planning prompt or identifies the
+    // selected guide. Keep a title/description-only edit from being silently
+    // treated as the same planning evidence.
+    .update(syllabus.title ?? "")
+    .update("\0")
+    .update(syllabus.description ?? "")
+    .update("\0")
+    .update(syllabus.relPath ?? "")
+    .update("\0")
+    .update(syllabus.sourceFile ?? "")
+    .update("\0")
     .update(syllabus.body ?? "")
     .digest("hex");
 }
@@ -286,7 +297,7 @@ export function isWorkedExampleFormula(expr: string): boolean {
   // \sum_{t=1}^{T}\sum_{i=1}^{N} into "sum sum ... t=1 i=1" previously tripped
   // the chained-equality rule below and mislabeled the canonical definition as
   // a worked example. Aggregation notation is excluded from both heuristics.
-  const aggregationNotation = /\\(?:sum|prod|int)/.test(expr) || /\bsum\b|\bprod\b|\bint\b/i.test(expr);
+  const aggregationNotation = /\\(?:sum|prod|oint|int)(?![A-Za-z])/.test(expr) || /\bsum\b|\bprod\b|\boint\b|\bint\b/i.test(expr);
   if (aggregationNotation) return false;
   // Chained equality with concrete values is a substitution/result even when
   // the left-hand variable has a descriptive subscript (for example
@@ -317,7 +328,10 @@ export function isFormulaExpression(expr: string): boolean {
   if (/^[+-]?\d+(?:\.\d+)?(?:\\?%)?$/.test(compacted)) return false;
   if (isTrivialFormulaFragment(expr)) return false;
   if (/^(?:ms|s|j|w|hz|khz|mhz|v|a)$/i.test(compacted)) return false;
-  if (/\\(?:frac|sum|prod|int|sqrt|min|max|log|exp|Delta|tau|lambda|eta|theta|operatorname)\b/.test(expr)) return true;
+  // TeX command names end before `_`, `^`, or `{`, not only at a JavaScript
+  // word boundary. This recognizes bounded integrals such as `\\int_S` and
+  // contour integrals such as `\\oint` without accepting longer prose words.
+  if (/\\(?:frac|sum|prod|oint|int|sqrt|min|max|log|exp|Delta|tau|lambda|eta|theta|operatorname)(?![A-Za-z])/.test(expr)) return true;
   if (/[=<>≤≥≈∝]/.test(expr) || /\\(?:geq|leq|neq|approx)\b/.test(expr)) {
     return /[A-Za-z0-9\\]/.test(expr);
   }
@@ -495,7 +509,11 @@ export const PLACEHOLDER_PATTERNS: RegExp[] = [
   /\bstart with the idea itself\b/i,
   /\bname the starting idea\b/i,
   /\bwhat is the main idea to take away from\b/i,
-  /\bto be written\b/i,
+  // "allows a field to be written as a gradient" is normal explanatory
+  // prose. Only reject an actual unfinished-content marker, a location/time
+  // marker, or a named content item that has been left for later writing.
+  /\bto be written(?:\s+(?:here|later|below|above|soon|afterward)|\s*[:—-]|[.?!]\s*$)/im,
+  /\b(?:answer|content|copy|details?|draft|example|explanation|lesson|page|paragraph|section|text)\s+(?:is|are|remains?)?\s*to be written\b/i,
   /\bplaceholder\b/i,
   /\bTODO\b/,
   /\blorem ipsum\b/i,
@@ -705,9 +723,60 @@ export function scrubSourceCommentaryProse(markdown: string): string {
     .join("\n");
 }
 
+export interface PlaceholderTextMatch {
+  /** Exact phrase that triggered the unfinished-prose detector. */
+  matchedText: string;
+  /** Exact Markdown line containing the phrase, for a focused model repair. */
+  snippet: string;
+}
+
+interface IndexedPlaceholderTextMatch extends PlaceholderTextMatch {
+  start: number;
+  end: number;
+}
+
+/**
+ * Find unfinished-prose markers while retaining the complete affected line.
+ * The old boolean-only result made a model repair guess which sentence to
+ * rewrite, and made operational failures impossible to diagnose after a
+ * staging workspace was discarded.
+ */
+export function placeholderTextMatches(markdown: string): PlaceholderTextMatch[] {
+  const candidates: IndexedPlaceholderTextMatch[] = [];
+  for (const pattern of PLACEHOLDER_PATTERNS) {
+    const global = new RegExp(
+      pattern.source,
+      pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
+    );
+    for (const match of markdown.matchAll(global)) {
+      const start = match.index;
+      if (start === undefined || !match[0]) continue;
+      const end = start + match[0].length;
+      const lineStart = markdown.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+      const nextLineBreak = markdown.indexOf("\n", end);
+      const lineEnd = nextLineBreak === -1 ? markdown.length : nextLineBreak;
+      candidates.push({
+        matchedText: match[0],
+        snippet: markdown.slice(lineStart, lineEnd).trim() || match[0],
+        start,
+        end,
+      });
+    }
+  }
+  candidates.sort((left, right) => left.start - right.start || right.end - left.end);
+  const distinct: IndexedPlaceholderTextMatch[] = [];
+  for (const candidate of candidates) {
+    if (distinct.some((accepted) => accepted.start === candidate.start && accepted.end === candidate.end)) {
+      continue;
+    }
+    distinct.push(candidate);
+  }
+  return distinct.map(({ matchedText, snippet }) => ({ matchedText, snippet }));
+}
+
 /** True when the markdown contains meta-instruction / placeholder language. */
 export function hasPlaceholderText(markdown: string): boolean {
-  return PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(markdown));
+  return placeholderTextMatches(markdown).length > 0;
 }
 
 /**
@@ -834,8 +903,14 @@ export function assessLessonQuality(
   const words = proseWordCount(body);
   const minWords = options.minWords ?? MIN_LESSON_WORDS;
 
-  if (hasPlaceholderText(body)) {
-    problems.push({ code: "placeholder", message: "contains placeholder / meta-instruction text", hard: true });
+  const placeholderMatches = placeholderTextMatches(body);
+  if (placeholderMatches.length > 0) {
+    problems.push({
+      code: "placeholder",
+      message: "contains placeholder / meta-instruction text",
+      hard: true,
+      evidence: [...new Set(placeholderMatches.map((match) => match.snippet))],
+    });
   }
   const scaffoldLines = emptyBulletScaffoldLines(body);
   if (scaffoldLines.length >= 2) {
@@ -1300,13 +1375,36 @@ export function wikilinkForRelPath(relPath: string, label: string): string {
 
 const LEARNING_ROOT = "learning";
 
-function linkSlug(value: string): string {
-  return value
+const LINK_SLUG_COMBINING_MARKS = /[\u0300-\u036f]/g;
+// Language models commonly make prose-title slugs by *eliding* a possessive
+// apostrophe (`Maxwell's` -> `maxwells`), while the older resolver treated it
+// as a word separator (`maxwell-s`). Accept both forms during link resolution.
+const LINK_SLUG_ELIDABLE_APOSTROPHES = /['\u2018\u2019\u02bb\u02bc\uff07"]/g;
+
+function normalizedLinkSlug(value: string, elideApostrophes: boolean): string {
+  const normalized = value
     .toLowerCase()
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(LINK_SLUG_COMBINING_MARKS, "");
+  return (elideApostrophes ? normalized.replace(LINK_SLUG_ELIDABLE_APOSTROPHES, "") : normalized)
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function linkSlug(value: string): string {
+  return normalizedLinkSlug(value, true);
+}
+
+/**
+ * Accept both conventional possessive elision (`maxwells`) and the legacy
+ * separator form (`maxwell-s`). Keeping the latter avoids breaking links
+ * emitted before canonical possessive slugging was introduced.
+ */
+function linkSlugAliases(value: string): Set<string> {
+  return new Set([
+    linkSlug(value),
+    normalizedLinkSlug(value, false),
+  ].filter(Boolean));
 }
 
 interface LinkTargetEntry {
@@ -1317,8 +1415,8 @@ interface LinkTargetEntry {
   label: string;
   /** Slug of the (sanitized + raw) title, for loose matching. */
   slugs: Set<string>;
-  /** For subsections: the parent section's slug, for `[[Section#Sub]]` disambiguation. */
-  sectionSlug?: string;
+  /** For subsections: accepted parent-section aliases, for `[[Section#Sub]]` disambiguation. */
+  sectionSlugs?: Set<string>;
   /** For subsections: the `N.M` numeric label. */
   numberLabel?: string;
 }
@@ -1333,26 +1431,30 @@ export function buildLearningLinkTargets(
       kind: "page",
       target: `${LEARNING_ROOT}/Topic Overview`,
       label: "Topic Overview",
-      slugs: new Set([linkSlug("Topic Overview")]),
+      slugs: linkSlugAliases("Topic Overview"),
     },
     {
       kind: "page",
       target: `${LEARNING_ROOT}/Learning Map`,
       label: "Learning Map",
-      slugs: new Set([linkSlug("Learning Map")]),
+      slugs: linkSlugAliases("Learning Map"),
     },
   ];
   map.sections.forEach((section, sectionIndex) => {
     const sectionNumber = sectionIndex + 1;
     const sectionTitle = sanitizeLearnerTitle(section.title);
     const folder = `${LEARNING_ROOT}/${textbookSectionFolder(sectionNumber, sectionTitle)}`;
-    const sectionSlug = linkSlug(sectionTitle);
+    const sectionSlugs = new Set([
+      ...linkSlugAliases(sectionTitle),
+      ...linkSlugAliases(section.title),
+      ...linkSlugAliases(`${sectionNumber}. ${sectionTitle}`),
+    ]);
     entries.push({
       kind: "section",
       target: `${folder}/_index`,
       label: sectionTitle,
-      slugs: new Set([sectionSlug, linkSlug(section.title), linkSlug(`${sectionNumber}. ${sectionTitle}`)]),
-      sectionSlug,
+      slugs: sectionSlugs,
+      sectionSlugs,
     });
     section.subsections.forEach((subsection, subsectionIndex) => {
       const subsectionNumber = subsectionIndex + 1;
@@ -1364,11 +1466,11 @@ export function buildLearningLinkTargets(
         target: `${folder}/${fileName.replace(/\.md$/i, "")}`,
         label: subsectionTitle,
         slugs: new Set([
-          linkSlug(subsectionTitle),
-          linkSlug(subsection.title),
-          linkSlug(`${numberLabel} ${subsectionTitle}`),
+          ...linkSlugAliases(subsectionTitle),
+          ...linkSlugAliases(subsection.title),
+          ...linkSlugAliases(`${numberLabel} ${subsectionTitle}`),
         ]),
-        sectionSlug,
+        sectionSlugs,
         numberLabel,
       });
     });
@@ -1431,7 +1533,7 @@ export function canonicalizeLearnerWikilinks(
       const candidates = (bySlug.get(slug) ?? []).filter((entry) => entry.kind === "subsection");
       if (candidates.length === 0) return undefined;
       if (sectionSlug) {
-        const scoped = candidates.find((entry) => entry.sectionSlug === sectionSlug);
+        const scoped = candidates.find((entry) => entry.sectionSlugs?.has(sectionSlug));
         if (scoped) return scoped;
       }
       return candidates[0];

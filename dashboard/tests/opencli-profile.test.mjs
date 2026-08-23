@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -26,6 +28,24 @@ const statusBody = (contextIds, profileRequired = false) => ({
 
 const serving = (body) => async () => new Response(JSON.stringify(body), { status: 200 });
 const noSleep = async () => {};
+
+/**
+ * A claim that can never touch the real `~/.breadboard`.
+ *
+ * `claimBreadboardProfile` remembers the profile it selected, and it defaults
+ * to `process.env` — so a test that omitted `env` wrote its fixture contextId
+ * into the user's actual data directory. That is how `late7`, a value invented
+ * three tests down, ended up as the remembered production profile and quietly
+ * disabled profile selection on this machine. Every call goes through here now,
+ * and a test may still pass its own `env` when the record is what it is testing.
+ */
+function claimScoped(options) {
+  return bridge.claimBreadboardProfile({ env: scratchEnv(), ...options });
+}
+
+function scratchEnv() {
+  return { BREADBOARD_DATA_DIR: fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-bridge-")) };
+}
 
 test("the daemon's profiles are read from its side-effect-free status API", async () => {
   const seen = [];
@@ -70,7 +90,7 @@ test("a daemon that is not running reads as null, not as an empty list", async (
 
 test("the profile that appears after the launch is named and selected", async () => {
   const calls = [];
-  const claim = await bridge.claimBreadboardProfile({
+  const claim = await claimScoped({
     before: ["personal1"],
     fetchImpl: serving(statusBody(["personal1", "fresh42"])),
     execImpl: async (args) => {
@@ -96,7 +116,7 @@ test("a single connected browser needs no selecting and is not renamed on a gues
   // closes and the same profile directory reconnects under the same id, so
   // ours is already in the snapshot. Renaming whatever is connected would be
   // the one move that could point the agents at a personal browser.
-  const claim = await bridge.claimBreadboardProfile({
+  const claim = await claimScoped({
     before: ["twktfdp7"],
     fetchImpl: serving(statusBody(["twktfdp7"])),
     execImpl: async () => assert.fail("a single profile must never be renamed on a guess"),
@@ -109,7 +129,7 @@ test("a single connected browser needs no selecting and is not renamed on a gues
 });
 
 test("several unidentifiable browsers are reported rather than guessed between", async () => {
-  const claim = await bridge.claimBreadboardProfile({
+  const claim = await claimScoped({
     before: ["personal1", "personal2"],
     fetchImpl: serving(statusBody(["personal1", "personal2"], true)),
     execImpl: async () => assert.fail("nothing new appeared, so nothing may be renamed"),
@@ -123,7 +143,7 @@ test("several unidentifiable browsers are reported rather than guessed between",
 });
 
 test("a browser that never connects is reported as exactly that", async () => {
-  const claim = await bridge.claimBreadboardProfile({
+  const claim = await claimScoped({
     before: [],
     fetchImpl: serving(statusBody([])),
     execImpl: async () => assert.fail("nothing connected, so nothing may be renamed"),
@@ -136,7 +156,7 @@ test("a browser that never connects is reported as exactly that", async () => {
 });
 
 test("two profiles appearing at once are left alone rather than guessed between", async () => {
-  const claim = await bridge.claimBreadboardProfile({
+  const claim = await claimScoped({
     before: [],
     fetchImpl: serving(statusBody(["one", "two"])),
     execImpl: async () => assert.fail("an ambiguous profile must not be selected"),
@@ -149,7 +169,7 @@ test("two profiles appearing at once are left alone rather than guessed between"
 
 test("waiting stops as soon as the browser connects", async () => {
   let poll = 0;
-  const claim = await bridge.claimBreadboardProfile({
+  const claim = await claimScoped({
     before: [],
     // The browser takes a moment to bring its extension up, as it really does.
     fetchImpl: async () => {
@@ -166,7 +186,7 @@ test("waiting stops as soon as the browser connects", async () => {
 });
 
 test("a claim that fails leaves the person a browser rather than an error", async () => {
-  const noDaemon = await bridge.claimBreadboardProfile({
+  const noDaemon = await claimScoped({
     before: [],
     fetchImpl: async () => {
       throw new Error("ECONNREFUSED");
@@ -178,7 +198,7 @@ test("a claim that fails leaves the person a browser rather than an error", asyn
   assert.equal(noDaemon.status, "skipped");
   assert.match(noDaemon.reason, /daemon is not running/);
 
-  const renameFailed = await bridge.claimBreadboardProfile({
+  const renameFailed = await claimScoped({
     before: [],
     fetchImpl: serving(statusBody(["fresh42"])),
     execImpl: async (args) =>
@@ -212,7 +232,7 @@ test("the identified profile is remembered, so a re-open does not have to infer 
   assert.equal(bridge.rememberedContextId(env), null);
 
   // First open: a personal browser is already connected, ours is the new one.
-  const first = await bridge.claimBreadboardProfile({
+  const first = await claimScoped({
     before: ["personal1"],
     fetchImpl: serving(statusBody(["personal1", "ours88"])),
     execImpl: async () => ({ ok: true, message: "" }),
@@ -226,7 +246,7 @@ test("the identified profile is remembered, so a re-open does not have to infer 
   // Re-open: the daemon still lists ours from last time, so it is in the
   // snapshot and nothing looks fresh. Inference alone would give up here.
   const calls = [];
-  const second = await bridge.claimBreadboardProfile({
+  const second = await claimScoped({
     before: ["personal1", "ours88"],
     fetchImpl: serving(statusBody(["personal1", "ours88"], true)),
     execImpl: async (args) => {
@@ -252,7 +272,7 @@ test("a remembered profile that is not connected does not override what is", asy
   fs.mkdirSync(path.dirname(bridge.bridgeProfileRecordPath(env)), { recursive: true });
   fs.writeFileSync(bridge.bridgeProfileRecordPath(env), JSON.stringify({ contextId: "gone77" }), "utf8");
 
-  const claim = await bridge.claimBreadboardProfile({
+  const claim = await claimScoped({
     before: ["personal1", "personal2"],
     fetchImpl: serving(statusBody(["personal1", "personal2"], true)),
     execImpl: async () => assert.fail("a profile that is not connected must not be selected"),
@@ -271,7 +291,7 @@ test("nothing is remembered when the claim did not fully succeed", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-bridge-"));
   const env = { BREADBOARD_DATA_DIR: dir };
 
-  const claim = await bridge.claimBreadboardProfile({
+  const claim = await claimScoped({
     before: [],
     fetchImpl: serving(statusBody(["ours88"])),
     execImpl: async (args) =>

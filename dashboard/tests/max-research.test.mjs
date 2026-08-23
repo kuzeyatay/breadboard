@@ -548,8 +548,13 @@ test("a run manager's health is asked, not assumed from its import", () => {
   const body = source("src/lib/max-research/participants.ts");
   assert.match(body, /health: \(\) => Promise<\{ available: boolean/);
   assert.match(body, /runtimeAvailability\(\)/);
-  // Both of the run-manager participants supply one.
-  assert.equal(body.match(/runtimeAvailability\(\),/g)?.length, 2);
+  // Both run-manager participants consult it. Counted by call rather than by
+  // punctuation: OpenScience has its own adapter now (it needs an apiKey and an
+  // options.harness the generic one never passed), so it calls this in a
+  // slightly different shape while doing the same thing.
+  assert.equal(body.match(/runtimeAvailability\(\)/g)?.length, 2);
+  assert.match(body, /openscience\/runtime\.ts/);
+  assert.match(body, /agent-reach\/runtime\.ts/);
 });
 
 test("a participant that cannot start is dropped from the plan, not from the answer", async () => {
@@ -899,7 +904,13 @@ test("a closed source is named at the end so the reader is told", () => {
       },
     ],
   });
-  assert.match(prompt, /agent_reach could not reach reddit, twitter/);
+  // Named as parts of the record rather than as participants: the reader has
+  // no idea what `agent_reach` is, and the sentence is about what went unread.
+  assert.match(prompt, /closed while this ran and nothing from them reached these findings: reddit, twitter/);
+  assert.ok(
+    !/agent_reach could not reach/.test(prompt),
+    "the closed-source line must not attribute to an internal participant name",
+  );
   assert.match(prompt, /End the answer with a short line naming these/);
   assert.match(prompt, /a subject nobody discusses from a source that was simply shut/);
 });

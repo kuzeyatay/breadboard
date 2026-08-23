@@ -57,6 +57,14 @@ function checkResourcesRoot(resources, label) {
     `${label} dashboard standalone server`,
   );
   requireFile(
+    path.join(resources, "app-services", "openGym", "frontend", "src", "lib", "exercises-data.js"),
+    `${label} openGym exercise catalogue`,
+  );
+  requireFile(
+    path.join(resources, "app-services", "openGym", "LICENSE"),
+    `${label} openGym license`,
+  );
+  requireFile(
     path.join(
       dashboard,
       "node_modules",

@@ -431,7 +431,31 @@ describe("Learn validation, reads, and publication contracts", () => {
 
     const dossierSource = sourceOf(namedFunction("buildPageDossier"));
     assert.match(dossierSource, /exactSourceSnippetsForAnchors/);
+    assert.match(dossierSource, /requiredSourceFormulaDossierEntries/);
     assert.doesNotMatch(dossierSource, /selectRelevantSourceSnippets|fallbackKeywords/);
+
+    const formulaDossierSource = sourceOf(namedFunction("requiredSourceFormulaDossierEntries"));
+    assert.match(formulaDossierSource, /anchor\.exactText\?\.trim\(\)/);
+    assert.match(formulaDossierSource, /verbatim canonical equation transcription/);
+    assert.match(learnSource, /dossier\.requiredSourceFormulas is an exact-copy checklist/);
+    assert.match(learnSource, /If failedProblems includes missing-source-formula/);
+
+    const literalFormulaSheet = sourceOf(namedFunction("withVerbatimSourceFormulaCopySheet"));
+    assert.match(literalFormulaSheet, /"\$\$",\s*exactText,\s*"\$\$"/);
+    assert.match(literalFormulaSheet, /literal Markdown display blocks, not JSON strings/);
+    assert.match(literalFormulaSheet, /two ASCII backslashes before &/);
+    assert.match(literalFormulaSheet, /blocks,\s*payload/);
+    const formulaRepairSelection = sourceOf(namedFunction("sourceFormulasNeedingVerbatimRepair"));
+    assert.match(formulaRepairSelection, /problem\.code === "missing-source-formula"/);
+    const formulaRepairFormatting = sourceOf(namedFunction("formatModelAuthoredLessonQualityProblemForRepair"));
+    assert.match(formulaRepairFormatting, /VERBATIM SOURCE FORMULA COPY SHEET/);
+    const generationSource = sourceOf(namedFunction("runTextbookGeneration"));
+    assert.equal(
+      (generationSource.match(/user:\s*withVerbatimSourceFormulaCopySheet\(/g) ?? []).length,
+      2,
+      "both initial generation and focused repair must receive the literal formula copy sheet",
+    );
+    assert.match(generationSource, /const formulasNeedingRepair = sourceFormulasNeedingVerbatimRepair/);
 
     const exactProjection = sourceOf(namedFunction("exactSourceSnippetsForAnchors"));
     assert.match(exactProjection, /input\.anchors/);
@@ -660,6 +684,10 @@ describe("Learn validation, reads, and publication contracts", () => {
     const sourceMapValidation = sourceOf(namedFunction("sourceMapPlanProblems"));
     assert.match(sourceMapValidation, /registered\.sourceId !== sourceId/);
     assert.match(sourceMapValidation, /rawKind !== registered\.kind/);
+    assert.match(sourceMapValidation, /sourceMapArtifactKind\(artifact\.kind\)/);
+    assert.match(sourceOf(namedFunction("promptSources")), /sourceMapPromptFigures\(context\.sourceFigures\)/);
+    assert.match(planningSource, /sourceMapFigureAnchorPromptCatalog\(context\.sourceFigures\)/);
+    assert.match(learnSource, /authoritative normalized Source Map artifact catalog/);
   });
 
   test("selected artifact inventory survives map/version persistence and rollback restoration", () => {
@@ -1761,9 +1789,11 @@ test("half-swap plus restore failure exposes the retained previous tree honestly
   const originalRenameSync = fs.renameSync;
   fs.renameSync = (source, target) => {
     const sourceName = path.basename(String(source));
+    const sourceParentName = path.basename(path.dirname(String(source)));
     if (
       path.resolve(String(target)) === path.resolve(destination) &&
-      (sourceName.startsWith(".garden.incoming-") ||
+      (sourceParentName.startsWith(".garden.incoming-") ||
+        sourceName.startsWith(".garden.incoming-") ||
         sourceName.startsWith(".garden.previous-"))
     ) {
       throw Object.assign(new Error(`injected rename failure for ${sourceName}`), {

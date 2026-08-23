@@ -7,9 +7,9 @@ export interface ProviderUsageLink {
 /**
  * Return the provider-owned page that reports live subscription usage.
  *
- * Claude Code does not expose its plan-limit snapshot through a documented
- * non-interactive CLI command. Sending `/usage` through print mode would be a
- * real model request, so Breadboard opens Claude's own live usage view instead.
+ * Breadboard embeds Claude's read-only usage snapshot. This provider-owned page
+ * remains available as a detailed view and as a fallback when that snapshot is
+ * unavailable.
  */
 export function providerUsageLink(
   modelId: string | undefined,

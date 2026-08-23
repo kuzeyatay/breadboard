@@ -29,6 +29,8 @@ import type {
   StartRuntimeRunInput,
 } from "../contracts.ts";
 import type { AgentRuntimeConfig } from "../config.ts";
+import { getMcpConnectionBySlug } from "../../hermes/mcp-connections.ts";
+import { beginMcpAuthentication } from "../../hermes/mcp-oauth.ts";
 import {
   createHermesEventNormalizationState,
   normalizeHermesEvent,
@@ -399,6 +401,9 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "recall_frame_context",
       "recall_control",
       "mcp_call",
+      "spotify_search",
+      "spotify_play",
+      "spotify_create_playlist",
     ];
     const proxy = userId ? proxyMcpDiscovery(userId) : { tools: [], mcp: {} };
     return {
@@ -944,10 +949,17 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     return setProxyMcpConnectionConnected(userId, name, connected);
   }
 
-  async startMcpAuthentication(): Promise<never> {
-    // OAuth tokens deliberately remain in Breadboard. A full browser redirect
-    // flow is unavailable until the proxy has a server-side OAuth token store.
-    throw new Error("MCP authentication must be completed with a configured credential header.");
+  async startMcpAuthentication(
+    _directory: string,
+    name: string,
+    userId?: number,
+  ): Promise<{ authorizationUrl: string }> {
+    if (!userId) throw new Error("MCP authentication requires an authenticated user.");
+    const connection = getMcpConnectionBySlug(userId, name);
+    if (!connection || !connection.enabled) {
+      throw new Error("The MCP connection is unavailable.");
+    }
+    return beginMcpAuthentication(connection);
   }
 
   private requireSession(input: RuntimeSessionReference): HermesSessionState {

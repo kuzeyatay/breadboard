@@ -50,6 +50,10 @@ export function isAgentStreamTimeoutError(
 export function isRecoverableAgentStreamDisconnect(value: unknown): boolean {
   if (value instanceof AgentStreamDisconnectedError) return true;
   if (!(value instanceof Error) || value.name === "AbortError") return false;
+  // `AbortSignal.timeout()` rejects fetch with a TimeoutError. Treat that like
+  // the browser's other transport failures; the caller still owns the bounded
+  // retry policy, while explicit user cancellation remains AbortError above.
+  if (value.name === "TimeoutError") return true;
   return /failed to fetch|load failed|network error|network request failed/i.test(
     value.message,
   );

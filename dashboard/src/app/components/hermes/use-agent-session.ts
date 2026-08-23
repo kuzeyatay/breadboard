@@ -13,7 +13,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isDirectModeEnabled } from "@/app/components/use-direct-mode";
 import { isPersonalizeEnabled } from "@/app/components/use-personalize";
-import { isGoalModeEnabled } from "@/app/components/use-goal-mode";
 import { isYoloModeEnabled, useYoloMode } from "@/app/components/use-yolo-mode";
 import {
   isAgentModeEnabled,
@@ -94,6 +93,62 @@ import { scrubbed } from "@/lib/watermarks/scrub-text";
 import { formatAssistantModelChangeName } from "@/lib/ai-models";
 
 export type AgentSurface = "dashboard_terminal" | "garden_chat" | "quartz_ai";
+
+// A dev dashboard can disappear while Next compiles a cold route and then be
+// restarted by the desktop supervisor. Message ids make this POST idempotent,
+// so replaying the same body is safer than turning a transient local restart
+// into a durable "Failed to fetch" assistant response.
+const AGENT_MESSAGE_DISPATCH_ATTEMPTS = [
+  { delayMs: 0, timeoutMs: 90_000 },
+  { delayMs: 500, timeoutMs: 30_000 },
+  { delayMs: 1_500, timeoutMs: 30_000 },
+  { delayMs: 4_000, timeoutMs: 30_000 },
+] as const;
+
+async function dispatchAgentMessage(
+  url: string,
+  payload: Record<string, unknown>,
+): Promise<Response> {
+  let lastFailure: unknown = null;
+  for (const [attempt, policy] of AGENT_MESSAGE_DISPATCH_ATTEMPTS.entries()) {
+    if (policy.delayMs > 0) {
+      await new Promise<void>((resolve) =>
+        window.setTimeout(resolve, policy.delayMs),
+      );
+    }
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...payload,
+          // If the previous connection vanished after reserving the turn, the
+          // server is allowed to recover that same turn instead of rejecting
+          // it as an accidental duplicate.
+          retry: payload.retry === true || attempt > 0,
+        }),
+        signal: AbortSignal.timeout(policy.timeoutMs),
+      });
+      if (
+        ![502, 503, 504].includes(response.status) ||
+        attempt === AGENT_MESSAGE_DISPATCH_ATTEMPTS.length - 1
+      ) {
+        return response;
+      }
+      lastFailure = new AgentStreamDisconnectedError(
+        `The message endpoint returned ${response.status}.`,
+      );
+    } catch (error) {
+      if (!isRecoverableAgentStreamDisconnect(error)) throw error;
+      lastFailure = error;
+    }
+  }
+  throw new AgentStreamDisconnectedError(
+    lastFailure
+      ? "Breadboard restarted while sending this message and could not reconnect automatically."
+      : "Breadboard could not send this message.",
+  );
+}
 
 export interface ToolActivity {
   toolCallId: string;
@@ -226,6 +281,8 @@ export interface AgentMessage {
    * found, the scripts it ran, the files it wrote, and its answer.
    */
   careerOpsRun?: { runId: string; task: string };
+  /** Persistent openGym coaching/program run with catalogue animations. */
+  openGymRun?: { runId: string; task: string };
   /**
    * Present when this assistant turn is a TradingAgents analysis (the cloned
    * multi-agent trading framework, driven by ChatMock). Renders the firm's
@@ -314,6 +371,11 @@ export interface AgentMessage {
    * cohort being drawn and each persona answering, then renders the report.
    */
   matraixRun?: { runId: string; brief: string };
+  /**
+   * Present when this assistant turn is a Bolt Slides deck. The card streams
+   * the plan and the build, then frames the finished presentation.
+   */
+  boltSlidesRun?: { runId: string; brief: string };
   /**
    * Present when this assistant turn is an OpenMontage run. The card streams
    * the production and replays it from the workspace afterwards.
@@ -808,6 +870,7 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["agentBrowserRun", "agent_browser"],
   ["agentReachRun", "agent_reach"],
   ["careerOpsRun", "career_ops"],
+  ["openGymRun", "open_gym"],
   ["tradingAgentsRun", "trading_agents"],
   ["vibeTradingRun", "vibe_trading"],
   ["stockAnalystRun", "stock_analyst"],
@@ -834,6 +897,7 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["legalRun", "legal_agent"],
   ["wardrobeRun", "wardrobe"],
   ["matraixRun", "matraix"],
+  ["boltSlidesRun", "bolt_slides"],
   ["openworkRun", "openwork"],
   ["openscienceRun", "openscience"],
   ["inboxZeroRun", "inbox_zero"],
@@ -2247,20 +2311,10 @@ export function useAgentSession(
             !message.modelChange &&
             Boolean(message.clientMessageId?.trim()),
         );
-      if (!target?.clientMessageId) {
-        const modelChange = formatAssistantModelChangeName(model);
-        if (!modelChange) return;
-        setMessages((current) => [
-          ...current,
-          {
-            id: `model-change:${crypto.randomUUID()}`,
-            role: "assistant",
-            content: "",
-            modelChange,
-          },
-        ]);
-        return;
-      }
+      // A model picked before the first turn is the conversation's starting
+      // model, not a change within its transcript. There is no prior answer to
+      // attach a durable boundary to, so keep an untouched new chat empty.
+      if (!target?.clientMessageId) return;
 
       const answerClientMessageId = target.clientMessageId;
       const optimisticLabel = formatAssistantModelChangeName(model);
@@ -3064,41 +3118,36 @@ export function useAgentSession(
           // A rapid toggle followed by Send must not let an older session update
           // land after this turn's authoritative value.
           await yoloSyncRef.current;
-          const dispatched = await fetch(
+          const dispatched = await dispatchAgentMessage(
             `/api/hermes/sessions/${activeSessionId}/messages`,
             {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                clientMessageId: userMessage.id,
-                text: trimmed,
-                surface,
-                surfaceContext: {
-                  activeGardenSlug: createOptions?.gardenSlug,
-                  activePageSlug: createOptions?.pageSlug,
-                  selectedText: options?.textSelection?.quote,
-                },
-                model: options?.model,
-                reasoningEffort: options?.reasoningEffort,
-                continuation: options?.continuation,
-                internalAgentContinuation:
-                  options?.internalAgentContinuation === true,
-                attachments: options?.attachments,
-                confirmedPermissionIds: options?.confirmedPermissionIds,
-                retry: Boolean(resumedBlockedTurn) || ensured.initialTurnReserved,
-                branchGroupId: options?.branchGroupId,
-                textSelection: options?.textSelection,
-                branchHistory,
-                branchContextId,
-                // Per-message, like the model and the effort beside it: the switch
-                // as it stood when this message was sent governs this turn only.
-                superAgent: superAgentEnabled,
-                adhdMode: isDirectModeEnabled(),
-            personalize: isPersonalizeEnabled(),
-                goalMode: isGoalModeEnabled(),
-                yoloMode: isYoloModeEnabled(),
-                currentLocation,
-              }),
+              clientMessageId: userMessage.id,
+              text: trimmed,
+              surface,
+              surfaceContext: {
+                activeGardenSlug: createOptions?.gardenSlug,
+                activePageSlug: createOptions?.pageSlug,
+                selectedText: options?.textSelection?.quote,
+              },
+              model: options?.model,
+              reasoningEffort: options?.reasoningEffort,
+              continuation: options?.continuation,
+              internalAgentContinuation:
+                options?.internalAgentContinuation === true,
+              attachments: options?.attachments,
+              confirmedPermissionIds: options?.confirmedPermissionIds,
+              retry: Boolean(resumedBlockedTurn) || ensured.initialTurnReserved,
+              branchGroupId: options?.branchGroupId,
+              textSelection: options?.textSelection,
+              branchHistory,
+              branchContextId,
+              // Per-message, like the model and the effort beside it: the switch
+              // as it stood when this message was sent governs this turn only.
+              superAgent: superAgentEnabled,
+              adhdMode: isDirectModeEnabled(),
+              personalize: isPersonalizeEnabled(),
+              yoloMode: isYoloModeEnabled(),
+              currentLocation,
             },
           );
           if (dispatched.ok) markTurnPersisted(activeSessionId);

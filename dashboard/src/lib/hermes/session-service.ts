@@ -723,7 +723,9 @@ async function loadUnifiedToolRegistryForRuntime(
   // Local terminal, filesystem, and browser tools are registered by the
   // runtime when createSession/restoreSession returns. Instance-scoped MCP
   // sources are then added here, producing the one registry exposed to the LLM.
-  for (const connection of listMcpConnections(row.user_id, true)) {
+  for (const connection of listMcpConnections(row.user_id, true).filter(
+    (candidate) => candidate.slug !== "spotify",
+  )) {
     try {
       const status = await runtime.addMcpConnection(
         directory,

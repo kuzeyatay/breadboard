@@ -26,6 +26,12 @@ export const dynamic = "force-dynamic";
 type ChatRole = "user" | "assistant";
 type ChatHistorySurface = "garden_chat" | "assistant";
 
+interface QuartzInlineSelectionReference {
+  requestId: string;
+  highlightId: string;
+  pageSlug?: string;
+}
+
 type ChatMessage = {
   id?: string;
   role: ChatRole;
@@ -39,6 +45,7 @@ type ChatMessage = {
   responseDurationMs?: number;
   verification?: VerificationSummary;
   selectedText?: string;
+  inlineSelection?: QuartzInlineSelectionReference;
 } & ReturnType<typeof externalAgentMessageFields>;
 
 interface ChatSessionRow {
@@ -146,6 +153,37 @@ function parseSelectedText(value: string | null): string | undefined {
     const parsed = JSON.parse(value) as { selectedText?: unknown };
     if (typeof parsed?.selectedText !== "string") return undefined;
     return parsed.selectedText.trim().slice(0, 4_000) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseInlineSelection(
+  value: string | null,
+): QuartzInlineSelectionReference | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as { inlineSelection?: unknown };
+    const selection = parsed?.inlineSelection;
+    if (!selection || typeof selection !== "object" || Array.isArray(selection)) {
+      return undefined;
+    }
+    const record = selection as Record<string, unknown>;
+    const requestId = typeof record.requestId === "string"
+      ? record.requestId.trim().slice(0, 128)
+      : "";
+    const highlightId = typeof record.highlightId === "string"
+      ? record.highlightId.trim().slice(0, 128)
+      : "";
+    const pageSlug = typeof record.pageSlug === "string"
+      ? record.pageSlug.trim().slice(0, 400)
+      : "";
+    if (!requestId || !highlightId) return undefined;
+    return {
+      requestId,
+      highlightId,
+      ...(pageSlug ? { pageSlug } : {}),
+    };
   } catch {
     return undefined;
   }
@@ -297,6 +335,7 @@ function readSessions(
       parseInternalAgentContinuation(message.tool_calls);
     const selectedText =
       message.role === "user" ? parseSelectedText(message.tool_calls) : undefined;
+    const inlineSelection = parseInlineSelection(message.tool_calls);
     const externalAgent = parseExternalAgentFields(
       message.tool_calls,
       message.role,
@@ -310,6 +349,7 @@ function readSessions(
       ...delegatedAgentPresentation(message.content, externalAgent),
       ...(internalAgentContinuation ? { internalAgentContinuation: true } : {}),
       ...(selectedText ? { selectedText } : {}),
+      ...(inlineSelection ? { inlineSelection } : {}),
       createdAt: message.created_at,
       sources: parseSources(message.sources),
       ...(usage ? { usage } : {}),

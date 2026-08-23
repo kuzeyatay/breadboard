@@ -12,6 +12,8 @@ import {
   loadArisAgentDefinition,
 } from "../aris/agent.ts";
 import { ARIS_AGENT_SLUG } from "../aris/identity.ts";
+import { loadSpotifyAgentDefinition } from "../spotify-agent/agent.ts";
+import { SPOTIFY_AGENT_SLUG } from "../spotify-agent/identity.ts";
 
 const MAX_AGENT_FILE_BYTES = 512 * 1024;
 const MAX_AGENT_FILES = 1_000;
@@ -620,6 +622,9 @@ export function findAgencyAgent(
   if (normalized === ARIS_AGENT_SLUG) {
     return loadArisAgentDefinition() as AgencyAgentDefinition | null;
   }
+  if (normalized === SPOTIFY_AGENT_SLUG) {
+    return loadSpotifyAgentDefinition() as AgencyAgentDefinition;
+  }
   return loadAgencyAgentsCatalog(options).agents.find((agent) => agent.slug === normalized) ?? null;
 }
 
@@ -637,7 +642,11 @@ export function presentAgencyAgent(agent: AgencyAgentDefinition): PublicAgencyAg
     ...(agent.color ? { color: agent.color } : {}),
     ...(agent.vibe ? { vibe: agent.vibe } : {}),
     services: agent.services,
-    source: agent.slug === ARIS_AGENT_SLUG ? "ARIS" : "Agency Agents",
+    source: agent.slug === ARIS_AGENT_SLUG
+      ? "ARIS"
+      : agent.slug === SPOTIFY_AGENT_SLUG
+        ? "Breadboard"
+        : "Agency Agents",
   };
 }
 

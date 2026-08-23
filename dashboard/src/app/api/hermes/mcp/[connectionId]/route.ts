@@ -48,7 +48,8 @@ export async function PATCH(
           connection.slug,
           userId,
         ) as { authorizationUrl: string };
-      } catch {
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
         throw new ApiError(
           409,
           "mcp_auth_failed",

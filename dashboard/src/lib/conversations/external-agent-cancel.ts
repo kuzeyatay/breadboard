@@ -49,6 +49,8 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../agent-reach/run-manager.ts")).abortRun(userId, runId),
   career_ops: async (userId, runId) =>
     (await import("../career-ops/run-manager.ts")).abortRun(userId, runId),
+  open_gym: async (userId, runId) =>
+    (await import("../open-gym/run-manager.ts")).abortRun(userId, runId),
   trading_agents: async (userId, runId) =>
     (await import("../tradingagents/run-manager.ts")).abortRun(userId, runId),
   vibe_trading: async (userId, runId) =>
@@ -114,6 +116,8 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../wardrobe/run-manager.ts")).abortRun(userId, runId),
   matraix: async (userId, runId) =>
     (await import("../matraix/run-manager.ts")).abortRun(userId, runId),
+  bolt_slides: async (userId, runId) =>
+    (await import("../bolt-slides/run-manager.ts")).abortRun(userId, runId),
 } as const satisfies Record<
   ExternalAgentRunKind,
   (userId: number, runId: string) => Promise<unknown>

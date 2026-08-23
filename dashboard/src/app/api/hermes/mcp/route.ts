@@ -9,6 +9,7 @@ import {
   saveMcpConnection,
 } from "@/lib/hermes/mcp-connections.ts";
 import {
+  ApiError,
   apiErrorResponse,
   readJsonBody,
   requireEnabled,
@@ -62,6 +63,13 @@ export async function POST(request: Request) {
     requireEnabled();
     const body = await readJsonBody(request);
     const parsed = parseMcpConfig(body);
+    if (parsed.slug === "spotify") {
+      throw new ApiError(
+        409,
+        "spotify_uses_connections",
+        "Connect Spotify from Settings → Connections.",
+      );
+    }
     const connection = saveMcpConnection(userId, parsed);
     const runtime = getAgentRuntime();
     let connectionStatus: unknown = {

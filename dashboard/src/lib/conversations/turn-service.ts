@@ -115,6 +115,10 @@ import {
   AUDIO_ANALYSIS_SKILL,
 } from "../hermes/audio-intent.ts";
 import {
+  spotifyCommandText,
+  SPOTIFY_SKILL,
+} from "../hermes/spotify-intent.ts";
+import {
   analyzableTracks,
   hasAnalyzableAttachment,
   hasRecentAnalyzableAudio,
@@ -165,10 +169,12 @@ import {
 import { readGeographicContext, recordCurrentLocation } from "../map/store.ts";
 import { parseCurrentLocationPayload } from "../hermes/current-location-context.ts";
 import {
-  activateGoalMode,
   GOAL_MODE_CONNECTION,
+  GOAL_MODE_SKILL,
+  readGoalModeState,
   type GoalModeState,
 } from "../goal-mode.ts";
+import { goalCommandText } from "../hermes/goal-intent.ts";
 
 export interface ConversationSurfaceContext {
   activeGardenSlug?: string;
@@ -228,11 +234,6 @@ export interface StartConversationTurnInput {
    * does not send the field should get.
    */
   personalize?: boolean;
-  /**
-   * The user switched Goal Mode on for this turn. Breadboard creates or resumes
-   * its per-conversation Goal-compatible state before dispatch.
-   */
-  goalMode?: boolean;
   /**
    * The user had YOLO mode on for this message. This configures Hermes's
    * session-scoped approval bypass only; Breadboard's capability policy and
@@ -692,13 +693,23 @@ export async function startConversationTurn(
     hasImageAttachment: hasReconstructableAttachment(input.attachments),
     hasRecentImageAttachment: hasReconstructableImages(earlierMessages),
   });
+  // Playback intent gets first refusal on an attached track. "Play this" is a
+  // control request; waveform analysis sees the message only when playback did
+  // not claim it.
+  const spotifySelection = spotifyCommandText({
+    text: imageTo3dSelection.text,
+    surface: input.surface,
+    authenticated: true,
+    hasAudioAttachment: hasAnalyzableAttachment(input.attachments),
+    activeAgentSlug: reservation.conversation.active_agency_agent_slug,
+  });
   // An attached song, unlike an attached picture, is nearly always the subject
   // of the turn — so this reads like Watch rather than like Image to 3D: the
   // track selects the skill unless the words say the file is being handled
   // rather than listened to. A track from an earlier message counts too,
   // because "and what about the chorus?" arrives with no attachment.
   const audioSelection = audioAnalysisCommandText({
-    text: imageTo3dSelection.text,
+    text: spotifySelection.text,
     surface: input.surface,
     authenticated: true,
     hasAudioAttachment: hasAnalyzableAttachment(input.attachments),
@@ -740,6 +751,24 @@ export async function startConversationTurn(
     authenticated: true,
     priorMessages: currentConversationMessages,
   });
+  // Whatever goal this conversation is already under, read before anything is
+  // selected: it decides both whether the Goal skill has anything to do this
+  // turn and whether the goal tools travel on the run at all.
+  const existingGoal =
+    input.surface === "quartz_ai"
+      ? null
+      : readGoalModeState(input.conversation.public_id);
+  // Last in the chain, and deliberately so. A turn carries at most one skill,
+  // so anything that fires ahead of this has claimed the turn on its own
+  // subject — and "keep watching this stream until they announce the price" is
+  // Watch's turn with a commitment attached, not a goal with a video in it. A
+  // goal only takes a turn nothing else wanted.
+  const goalSelection = goalCommandText({
+    text: messagingSelection.text,
+    surface: input.surface,
+    authenticated: true,
+    hasActiveGoal: existingGoal !== null,
+  });
   const commandContext = {
     mode: decision.mode,
     surface: input.surface,
@@ -753,17 +782,19 @@ export async function startConversationTurn(
   // because neither adds a prefix unless it selected automatically.
   const resolved = await resolveCommandMessage(
     input.conversation.user_id,
-    messagingSelection.text,
+    goalSelection.text,
     session.activeDirectory,
     commandContext,
   ).catch(async (error: unknown) => {
     if (
       !watchSelection.automatic &&
       !imageTo3dSelection.automatic &&
+      !spotifySelection.automatic &&
       !audioSelection.automatic &&
       !diagramSelection.automatic &&
       !githubExplorerSelection.automatic &&
-      !humanizeSelection.automatic
+      !humanizeSelection.automatic &&
+      !goalSelection.automatic
     ) {
       throw error;
     }
@@ -789,6 +820,10 @@ export async function startConversationTurn(
     resolved.invocations.some(
       (invocation) => invocation.kind === "skill" && invocation.slug === IMAGE_TO_3D_SKILL,
     );
+  const automaticMusicPlayback = spotifySelection.automatic &&
+    resolved.invocations.some(
+      (invocation) => invocation.kind === "skill" && invocation.slug === SPOTIFY_SKILL,
+    );
   const automaticAudioAnalysis = audioSelection.automatic &&
     resolved.invocations.some(
       (invocation) => invocation.kind === "skill" && invocation.slug === AUDIO_ANALYSIS_SKILL,
@@ -803,6 +838,13 @@ export async function startConversationTurn(
       (invocation) =>
         invocation.kind === "skill" && invocation.slug === GITHUB_EXPLORER_SKILL,
     );
+  // However the skill got here — typed as `/goal`, or selected from the
+  // wording above — this is the turn that starts a goal.
+  const goalSkillSelected = resolved.invocations.some(
+    (invocation) =>
+      invocation.kind === "skill" && invocation.slug === GOAL_MODE_SKILL,
+  );
+  const automaticGoal = goalSelection.automatic && goalSkillSelected;
   let turnConversation = reservation.conversation;
   let activeAgencyAgent: AgencyAgentDefinition | null = null;
   if (resolved.agencyAgentSelection?.action === "clear") {
@@ -833,9 +875,11 @@ export async function startConversationTurn(
       automaticMessaging: messagingSelection.automatic,
       automaticWatch,
       automaticImageTo3d,
+      automaticMusicPlayback,
       automaticAudioAnalysis,
       automaticDiagramDesign,
       automaticGithubExplorer,
+      automaticGoal,
       activeAgencyAgentSlug: activeAgencyAgent?.slug ?? null,
     },
   });
@@ -902,37 +946,21 @@ export async function startConversationTurn(
       ]),
     ];
   }
-  // Goal Mode is explicitly selected by the person for this message. It starts
-  // from the task they sent, after command tokens have been stripped, and then
-  // remains bound to this conversation only. The state bridge is local and
-  // deterministic; it never launches the cloned server in the request path.
-  const goalMode = input.goalMode === true && input.surface !== "quartz_ai";
-  let goalModeState: GoalModeState | null = null;
+  // A goal reaches a turn one of two ways: the Goal skill was selected for it,
+  // in which case the model writes the objective itself with create_goal and
+  // there is nothing here yet; or this conversation already holds one, in which
+  // case it governs the turn whether or not the person mentioned it. Both need
+  // the same thing from this decision — the goal tools on the run — and the
+  // state bridge stays local and deterministic, never launching the cloned
+  // server in the request path.
+  const goalModeState: GoalModeState | null =
+    input.surface === "quartz_ai" ? null : existingGoal;
+  const goalMode = goalModeState !== null || goalSkillSelected;
   if (goalMode) {
-    try {
-      goalModeState = activateGoalMode({
-        conversationPublicId: input.conversation.public_id,
-        objective: resolved.userText || input.text,
-      });
-      decision.allowedTools = [...new Set([...decision.allowedTools, "mcp_call"])];
-      decision.selectedConnections = [
-        ...new Set([...decision.selectedConnections, GOAL_MODE_CONNECTION]),
-      ];
-    } catch (error) {
-      // A malformed / oversized objective must not make an otherwise valid
-      // chat turn disappear. The normal task runs, without Goal Mode context,
-      // and the audit trail exposes why activation was unavailable.
-      recordAuditEvent({
-        eventType: "goal_mode.activation_failed",
-        runtimeSessionId: session.row.id,
-        userId: input.conversation.user_id,
-        gardenId: session.row.garden_id,
-        payload: {
-          conversationPublicId: input.conversation.public_id,
-          message: error instanceof Error ? error.message.slice(0, 300) : "goal_mode_activation_failed",
-        },
-      });
-    }
+    decision.allowedTools = [...new Set([...decision.allowedTools, "mcp_call"])];
+    decision.selectedConnections = [
+      ...new Set([...decision.selectedConnections, GOAL_MODE_CONNECTION]),
+    ];
   }
   const engine = resolveHermesEngine(input.model, input.reasoningEffort);
   const runtime = getAgentRuntimeByKind(session.runtimeKind);
@@ -979,7 +1007,8 @@ export async function startConversationTurn(
       decisionId: storedDecision.id,
       mode: decision.mode,
       superAgent,
-      goalMode: Boolean(goalModeState),
+      goalMode,
+      goalSkillSelected,
       yoloMode: input.yoloMode === true,
       ...(superAgentInventory
         ? {
@@ -1138,7 +1167,7 @@ export async function startConversationTurn(
   const tools = mergeSelectedTools(prepared.grant.allowedTools, {
     ...resolved.tools,
     ...connectedApps.tools,
-    ...(goalModeState ? { mcp_call: true } : {}),
+    ...(goalMode ? { mcp_call: true } : {}),
   });
   // Whether this turn needs verified map data is decided here, before dispatch,
   // from the request and Breadboard's own geographic state — never from what the
@@ -1192,6 +1221,7 @@ export async function startConversationTurn(
     conversationPublicId: input.conversation.public_id,
     adhdMode: input.adhdMode === true,
     goalMode: goalModeState,
+    goalSkillSelected,
     additional: [
       superAgentInventory
         ? renderSuperAgentDirective(superAgentInventory, researchPipeline)
@@ -1298,8 +1328,20 @@ export async function startConversationTurn(
   const defaultRuntimeText =
     resolved.text ||
     "Acknowledge the persona selection briefly and ask how you can help.";
+  const selectionSourceMessage = input.textSelection
+    ? currentConversationMessages.find(
+        (message) =>
+          message.role === "assistant" &&
+          (input.textSelection!.sourceMessageId === `msg_${message.id}` ||
+            input.textSelection!.sourceMessageId === message.client_message_id),
+      )?.content
+    : undefined;
   const runtimeText = input.textSelection
-    ? chatTextSelectionQuestionPrompt(defaultRuntimeText, input.textSelection)
+    ? chatTextSelectionQuestionPrompt(
+        defaultRuntimeText,
+        input.textSelection,
+        selectionSourceMessage,
+      )
     : defaultRuntimeText;
   const requiredVisualizerSkill = selectedInteractiveVisualizerSkill(
     new Set(
@@ -1334,6 +1376,7 @@ export async function startConversationTurn(
           ]
         : []),
       ...(automaticImageTo3d ? [{ slug: IMAGE_TO_3D_SKILL }] : []),
+      ...(automaticMusicPlayback ? [{ slug: SPOTIFY_SKILL }] : []),
       ...(automaticAudioAnalysis ? [{ slug: AUDIO_ANALYSIS_SKILL }] : []),
       ...(automaticDiagramDesign ? [{ slug: DIAGRAM_DESIGN_SKILL }] : []),
       ...(automaticGithubExplorer ? [{ slug: GITHUB_EXPLORER_SKILL }] : []),
@@ -1397,10 +1440,14 @@ export async function startConversationTurn(
       variant: engine.variant,
       tools,
       system: baseSystem,
-      ...(goalModeState
+      // On the turn that starts a goal there is no id yet — the model has not
+      // called create_goal — so the run records that a goal governs it and
+      // leaves the id null. Accounting resolves the id at the end of the turn,
+      // when there is one.
+      ...(goalMode
         ? {
             goalMode: {
-              goalId: goalModeState.goal_id,
+              goalId: goalModeState?.goal_id ?? null,
               enabled: true,
             },
           }

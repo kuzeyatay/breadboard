@@ -43,6 +43,29 @@ describe("Quartz markdown normalization", () => {
     assert.match(normalizeQuartzMarkdown(markdown), /\\qquad \\text\{\(35\)\}/);
   });
 
+  test("preserves a multi-row aligned source equation for verbatim display checks", () => {
+    const canonical = String.raw`\begin{aligned}
+\int_{\mathrm{front}}&\doteq\mathbf{D}_{\mathrm{front}}\cdot\Delta\mathbf{S}_{\mathrm{front}}\\
+&\doteq\mathbf{D}_{\mathrm{front}}\cdot\Delta y\,\Delta z\,\mathbf{a}_{x}\\
+&\doteq D_{x,\mathrm{front}}\,\Delta y\,\Delta z
+\end{aligned}`;
+    const markdown = `$$\n${canonical}\n$$`;
+
+    assert.deepEqual(
+      extractVerbatimDisplayMath(markdown).map((expression) => expression.formula),
+      [canonical],
+    );
+  });
+
+  test("does not hide an extra aligned-row escape in a source formula", () => {
+    const canonical = String.raw`\begin{aligned}a\\&b\end{aligned}`;
+    const malformed = String.raw`\begin{aligned}a\\\&b\end{aligned}`;
+    const extracted = extractVerbatimDisplayMath(`$$\n${malformed}\n$$`)[0]?.formula ?? "";
+    const compact = (value) => value.replace(/\s+/g, " ").trim();
+
+    assert.notEqual(compact(extracted), compact(canonical));
+  });
+
   test("does not count display-like text hidden in non-rendered Markdown regions", () => {
     const hidden = String.raw`D_{n1}=D_{n2}\tag{35}`;
     const visible = String.raw`D_{t1}=D_{t2}\tag{33}`;

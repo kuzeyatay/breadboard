@@ -83,10 +83,11 @@ export default function SettingsProviders() {
    *
    * Pay-per-token providers normally appear only after a key was explicitly
    * stored; ChatMock deliberately ignores stray environment keys (see
-   * `env_provider_keys_allowed`). Google is the one setup-first exception: it
-   * is the reliable recovery path when an OAuth subscription account is
-   * temporarily unable to carry Breadboard's full system context, and hiding it
-   * before setup would make that path impossible to reach from the app.
+   * `env_provider_keys_allowed`). Google and OpenRouter are setup-first
+   * integrations: both are useful recovery paths when an OAuth subscription
+   * account is temporarily unable to carry Breadboard's full system context,
+   * and hiding them before setup would make those paths impossible to reach
+   * from the app.
    */
   const visibleProviders = useMemo(
     () =>
@@ -94,7 +95,10 @@ export default function SettingsProviders() {
         (provider) =>
           provider.kind !== "chatgpt_oauth" &&
           provider.id !== "cliproxy" &&
-          (provider.id === "google" || !provider.requiresApiKey || provider.hasStoredKey),
+          (provider.id === "google" ||
+            provider.id === "openrouter" ||
+            !provider.requiresApiKey ||
+            provider.hasStoredKey),
       ),
     [state],
   );
@@ -244,8 +248,9 @@ export default function SettingsProviders() {
            * A card with nothing set up already says so twice — "no API key is
            * configured" under the description, and a button that reads Set up
            * rather than Edit. A "Not configured" badge was a third statement of
-           * it, and the loudest of the three. The badge now speaks only when it
-           * carries something the card does not: connected, or switched off.
+           * it, and the loudest of the three. Connectedness is the same green,
+           * accessible status dot used by the account rows; a badge remains
+           * only for the distinct switched-off state.
            */
           const status = providerStatusBadge(provider);
           const badge = status && status.tone !== "idle" ? status : null;
@@ -263,14 +268,15 @@ export default function SettingsProviders() {
                     <p className="text-sm font-medium text-[var(--ink-heading)]">
                       {provider.label}
                     </p>
-                    {badge ? (
+                    {badge?.tone === "connected" ? (
                       <span
-                        className={
-                          badge.tone === "connected"
-                            ? "rounded-full border border-[color-mix(in_srgb,var(--botanical)_45%,transparent)] bg-[color-mix(in_srgb,var(--botanical)_12%,var(--paper-raised))] px-2 py-0.5 text-[10px] font-medium text-[var(--botanical)]"
-                            : "rounded-full border border-[var(--line-strong)] bg-[var(--paper-strong)] px-2 py-0.5 text-[10px] text-[var(--ink-muted)]"
-                        }
-                      >
+                        role="status"
+                        aria-label={badge.text}
+                        title={badge.text}
+                        className="h-2 w-2 shrink-0 rounded-full bg-[var(--botanical)]"
+                      />
+                    ) : badge ? (
+                      <span className="rounded-full border border-[var(--line-strong)] bg-[var(--paper-strong)] px-2 py-0.5 text-[10px] text-[var(--ink-muted)]">
                         {badge.text}
                       </span>
                     ) : null}

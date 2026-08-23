@@ -1,10 +1,13 @@
-// Agent mode, Goal Mode, and Super agent: the runtime switches under YOLO mode.
+// Agent mode and Super agent: the runtime switches under YOLO mode.
 //
 // Agent mode decides which pipeline a message travels: on, the Hermes agent
 // runtime; off, straight to the provider. Super agent is agent mode with the
 // whole inventory selected for the turn. Both are checked here where the promise
 // is cheap to break — the coupling between them, the client's routing decision,
 // and the server's capability elevation.
+//
+// Goal used to be a third switch in this menu. It is a skill now, so it is
+// absent from here by design and pinned in goal-skill.test.mjs instead.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -36,24 +39,24 @@ function installBrowser(initial = {}) {
   return store;
 }
 
-test("the Intelligence menu offers Goal Mode between Agent and Super agent", () => {
+test("the Intelligence menu runs YOLO, then Agent, then Super agent", () => {
   const yolo = composer.indexOf("YOLO mode");
   const agent = composer.indexOf("Agent mode");
-  const goal = composer.indexOf("Goal mode");
   const superAgent = composer.indexOf("Super agent");
-  assert.ok(yolo >= 0 && agent > yolo && goal > agent && superAgent > goal);
+  assert.ok(yolo >= 0 && agent > yolo && superAgent > agent);
+  // Goal is a skill, not a switch. A row here would offer to turn on something
+  // that is now started by asking for it.
+  assert.equal(composer.indexOf("Goal mode"), -1);
 
   const block = composer.slice(agent - 600, superAgent + 900);
   assert.match(block, /aria-checked=\{agentMode\}/);
   assert.match(block, /onClick=\{\(\) => setAgentMode\(!agentMode\)\}/);
-  assert.match(block, /aria-checked=\{goalMode\}/);
-  assert.match(block, /onClick=\{\(\) => setGoalMode\(!goalMode\)\}/);
   assert.match(block, /aria-checked=\{superAgent\}/);
   assert.match(block, /onClick=\{\(\) => setSuperAgent\(!superAgent\)\}/);
-  // All three switches are the same control the YOLO row uses, so they read the same
+  // Both switches are the same control the YOLO row uses, so they read the same
   // to a screen reader and animate the same way.
-  assert.equal(block.match(/role="switch"/g)?.length, 3);
-  assert.equal(block.match(/translate-x-5/g)?.length, 3);
+  assert.equal(block.match(/role="switch"/g)?.length, 2);
+  assert.equal(block.match(/translate-x-5/g)?.length, 2);
 });
 
 test("agent mode defaults to on and super agent to off", async () => {
@@ -103,18 +106,14 @@ test("a stale stored super agent never survives agent mode being off", async () 
   assert.equal(store.isSuperAgentEnabled(), false);
 });
 
-test("Goal Mode turns Agent mode on before its next message", async () => {
-  const stored = installBrowser({ "breadboard:agent-mode": "false" });
-  const goal =
-    await import("../src/app/components/use-goal-mode.ts?coupling-check");
-  const agent =
-    await import("../src/app/components/use-agent-mode.ts?goal-coupling-check");
-
-  goal.setGoalModeEnabled(true);
-  assert.equal(goal.isGoalModeEnabled(), true);
-  assert.equal(agent.isAgentModeEnabled(), true);
-  assert.equal(stored.get("breadboard:goal-mode"), "true");
-  assert.equal(stored.get("breadboard:agent-mode"), "true");
+test("a skill named with agent mode off is explained, not silently dropped", () => {
+  // Goal used to force agent mode on for itself. As a skill it needs the agent
+  // runtime for the same reason every other skill does, and the direct prompt
+  // already owns that explanation — so there is no switch left to couple.
+  assert.match(
+    directService,
+    /A message beginning with a `\/token` is a skill[\s\S]{0,200}?needs Agent mode on/,
+  );
 });
 
 test("the chat client routes by agent mode and sends its selected runtime modes per message", () => {
@@ -127,7 +126,6 @@ test("the chat client routes by agent mode and sends its selected runtime modes 
   assert.match(agentSession, /sessions\/\$\{input\.sessionId\}\/direct/);
   assert.match(agentSession, /const superAgentEnabled = isSuperAgentEnabled\(\)/);
   assert.match(agentSession, /superAgent: superAgentEnabled/);
-  assert.match(agentSession, /goalMode: isGoalModeEnabled\(\)/);
   // The agent path is still the only one that opens an event stream.
   assert.match(agentSession, /\/events\?\$\{streamContext\.toString\(\)\}/);
 });

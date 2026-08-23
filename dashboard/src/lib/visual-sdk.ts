@@ -183,11 +183,16 @@ export type SpatialPaletteColor =
 
 export type SpatialSurfacePattern = "solid" | "striped" | "dotted" | "crosshatch";
 
+/** Controls whether a primitive's required name is also drawn on the canvas. */
+export type SpatialLabelMode = "inline" | "legend_only";
+
 interface SpatialPrimitiveBase {
   id: string;
   label: string;
   color?: SpatialPaletteColor;
   pattern?: SpatialSurfacePattern;
+  /** Defaults to inline; legend_only keeps the required legend and ARIA name. */
+  labelMode?: SpatialLabelMode;
   opacity?: number;
   visibleWhen?: VisualExpression;
 }

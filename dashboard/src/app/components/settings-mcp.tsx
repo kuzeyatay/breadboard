@@ -65,15 +65,20 @@ export default function SettingsMcp() {
     return () => window.clearTimeout(timer);
   }, [load]);
 
+  const userManagedConnections = useMemo(
+    () => connections.filter((connection) => connection.slug !== "spotify"),
+    [connections],
+  );
+
   const visibleConnections = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    if (!normalized) return connections;
-    return connections.filter((connection) =>
+    if (!normalized) return userManagedConnections;
+    return userManagedConnections.filter((connection) =>
       `${connection.displayName} ${connection.slug} ${connection.transport}`
         .toLowerCase()
         .includes(normalized),
     );
-  }, [connections, query]);
+  }, [query, userManagedConnections]);
 
   function clearForm() {
     setName("");
@@ -162,6 +167,10 @@ export default function SettingsMcp() {
       action === "remove" &&
       !window.confirm(`Remove ${connection.displayName} from Breadboard?`)
     ) return;
+    const authWindow = action === "authenticate"
+      ? window.open("about:blank", "breadboard-mcp-oauth", "popup,width=720,height=760")
+      : null;
+    if (authWindow) authWindow.opener = null;
     setBusy(`${connection.id}:${action}`);
     setNotice(`${action === "remove" ? "Removing" : "Checking"} MCP server…`);
     try {
@@ -189,7 +198,8 @@ export default function SettingsMcp() {
         throw new Error(payload.message ?? payload.error ?? "The MCP action failed.");
       }
       if (payload.authorizationUrl) {
-        window.open(payload.authorizationUrl, "_blank", "noopener,noreferrer");
+        if (authWindow) authWindow.location.replace(payload.authorizationUrl);
+        else window.location.assign(payload.authorizationUrl);
         setNotice("Secure sign-in opened. Test the MCP server after completing it.");
       } else {
         await refreshAfterMutation(
@@ -203,6 +213,7 @@ export default function SettingsMcp() {
         );
       }
     } catch (cause) {
+      authWindow?.close();
       setNotice(cause instanceof Error ? cause.message : "The MCP action failed.");
     } finally {
       setBusy(null);
@@ -274,7 +285,7 @@ export default function SettingsMcp() {
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search MCP servers" aria-label="Search MCP servers" className="neu-control w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] py-2.5 pl-9 pr-3 text-sm" />
       </div>
       {notice ? <p role="status" className="px-1 text-xs text-[var(--botanical)]">{notice}</p> : null}
-      {loading && !connections.length ? (
+      {loading && !userManagedConnections.length ? (
         <div className="space-y-2" aria-label="Loading MCP servers">{[0, 1].map((row) => <div key={row} className="h-20 animate-pulse rounded-xl bg-[var(--paper-strong)] motion-reduce:animate-none" />)}</div>
       ) : visibleConnections.length ? (
         <ul className="space-y-2" aria-label="Configured MCP servers">

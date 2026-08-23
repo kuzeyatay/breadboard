@@ -1990,6 +1990,35 @@ test("ledger survives replacement, links review to route only, and fails closed 
     visualizationPlan: placedPlan,
   }), [], "only the three page-placement fields may change after the ledger is written");
 
+  const aliasOrderOnly = structuredClone(ledger);
+  aliasOrderOnly.attempts[0].packet.units[0].concepts.reverse();
+  refreshExecutabilityAttemptHashes(aliasOrderOnly.attempts[0]);
+  refreshLedgerIntegrity(aliasOrderOnly);
+  assert.deepEqual(
+    visualContractExecutabilityLinkageProblems({
+      gardenId: GARDEN_ID,
+      ledger: aliasOrderOnly,
+      finalLearningUnits: routedUnits,
+      visualizationPlan: placedPlan,
+    }),
+    [],
+    "canonical alias ordering must not invalidate an otherwise signed immutable packet",
+  );
+
+  const aliasSetTamper = structuredClone(aliasOrderOnly);
+  aliasSetTamper.attempts[0].packet.units[0].concepts.splice(0, 1, "invented-alias");
+  refreshExecutabilityAttemptHashes(aliasSetTamper.attempts[0]);
+  refreshLedgerIntegrity(aliasSetTamper);
+  assert.match(
+    visualContractExecutabilityLinkageProblems({
+      gardenId: GARDEN_ID,
+      ledger: aliasSetTamper,
+      finalLearningUnits: routedUnits,
+      visualizationPlan: placedPlan,
+    }).join(" "),
+    /packet metadata.*differs from the final immutable unit/i,
+  );
+
   const provenanceDriftPlan = structuredClone(placedPlan);
   provenanceDriftPlan.opportunities[0].sourceAnchorIds.push("invented.anchor");
   assert.match(

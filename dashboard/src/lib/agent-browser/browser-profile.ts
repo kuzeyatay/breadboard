@@ -17,6 +17,7 @@
 // instance of this module — and a run refuses to start while the window is open.
 
 import { spawn } from "node:child_process";
+import { hideBackgroundBrowser } from "./hide-window.ts";
 import {
   installedOpenCliExtension,
   openCliExtensionArgs,
@@ -209,15 +210,27 @@ export interface SignInWindow {
   startedAt: string;
   executable: string;
   /**
-   * Opened for the agents rather than for a person, and positioned off-screen.
+   * Opened for the agents rather than for a person, with no window at all.
    *
-   * OpenCLI can only drive a browser that is actually running, so a run needs a
-   * window whether or not anybody wants to look at one. Headless is not an
-   * option: the extension connects in `--headless=new`, but Reddit answers a
-   * headless browser with a challenge page instead of JSON — which is the whole
-   * reason OpenCLI drives a real browser in the first place. A real window
-   * parked at -32000,-32000 is indistinguishable to the site and invisible to
-   * the person.
+   * OpenCLI can only drive a browser that is actually running, so a run needs
+   * one whether or not anybody wants to look at it. Two approaches were tried
+   * and measured before this one:
+   *
+   * Headless is out. The extension does connect under `--headless=new`, and
+   * then Reddit answers with a challenge page instead of JSON — defeating the
+   * one thing OpenCLI exists to do, which is drive a browser sites treat as
+   * real.
+   *
+   * Off-screen at -32000,-32000 worked and looked wrong: Windows still put a
+   * button on the taskbar, and clicking it did nothing, because the window it
+   * pointed at was past the edge of every display. A control that is visible
+   * and dead is worse than either extreme.
+   *
+   * `--no-startup-window` starts the browser process and creates no window, so
+   * there is nothing on screen and nothing in the taskbar, while the extension
+   * still loads and sites still see an ordinary browser. Verified live: it
+   * connects in about 22 seconds (slower than the 5 a window takes, since the
+   * service worker has no page to wake it) and returns real Reddit results.
    */
   background?: boolean;
 }
@@ -344,11 +357,12 @@ export function openSignInWindow(
       "--no-first-run",
       "--no-default-browser-check",
       ...(extension ? openCliExtensionArgs(extension.path) : []),
-      // Off the edge of every display rather than headless: sites treat it as
-      // the ordinary browser it is, and nobody has to watch it work.
-      ...(options.background
-        ? ["--window-position=-32000,-32000", "--window-size=1280,900"]
-        : []),
+      // A real window, hidden a fraction of a second later by the watcher
+      // below. `--no-startup-window` was tried and is worse than it looks:
+      // with no window Chromium has nothing holding it open and exits while
+      // idle, so the bridge is gone before the first command arrives. The
+      // window is what keeps the process alive; hiding it is what keeps it out
+      // of the way.
       ...(startUrl ? [startUrl] : []),
     ],
     // Detached and unreferenced: this window outlives the request that opened
@@ -364,6 +378,12 @@ export function openSignInWindow(
     executable,
     ...(options.background ? { background: true } : {}),
   };
+  if (options.background) {
+    // The window the launch just created, and every later one OpenCLI opens
+    // when it needs a tab, hidden for as long as the browser lives. A person's
+    // own sign-in window is never background, so it is never touched.
+    hideBackgroundBrowser(env);
+  }
   try {
     writeFileSync(markerPath(env), JSON.stringify(state), "utf8");
   } catch {

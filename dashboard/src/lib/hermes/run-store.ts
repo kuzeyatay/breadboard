@@ -35,9 +35,13 @@ export interface RuntimeRunDispatch {
   variant?: string;
   system?: string;
   tools?: Record<string, boolean>;
-  /** Goal Mode state active for this run; used by the native Goal MCP bridge. */
+  /**
+   * A goal governs this run; read by the native Goal MCP bridge. The id is
+   * null on the turn that creates the goal, because the model has not called
+   * create_goal yet when the run is dispatched.
+   */
   goalMode?: {
-    goalId: string;
+    goalId: string | null;
     enabled: true;
   };
   /** Durable products that must exist before this run may report completion. */

@@ -1568,6 +1568,11 @@ class UnslopIntegrationTests(unittest.TestCase):
         directive = unslop_directive(compact=True) or ""
         for guard in ("S1.P12.F1", "breadboard-visual", "frontmatter", "display math"):
             self.assertIn(guard, directive)
+        for repair_exception in ("missing-source-formula", "VERBATIM SOURCE FORMULA COPY SHEET", "byte-for-byte"):
+            self.assertIn(repair_exception, directive)
+        full_directive = unslop_directive(compact=False) or ""
+        for repair_exception in ("missing-source-formula", "VERBATIM SOURCE FORMULA COPY SHEET", "byte-for-byte"):
+            self.assertIn(repair_exception, full_directive)
         self.assertLess(len(directive), 4000, "the compact block stopped being compact")
 
     def test_structured_task_type_is_never_unslopped(self) -> None:

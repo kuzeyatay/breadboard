@@ -1,6 +1,6 @@
 ---
 title: "My garden"
-date: "2026-08-15"
+date: "2026-08-22"
 description: "All the gardens attached to your account."
 knowledge_type: "garden-overview"
 garden_scope: "private"

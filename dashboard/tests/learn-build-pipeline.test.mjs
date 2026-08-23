@@ -753,6 +753,28 @@ test("46. failed manifest verification preserves the previous published garden",
   assert.ok(fs.existsSync(path.join(dest, "keep.md"))); // previous preserved intact
 });
 
+test("46a. promoted candidate keeps the logical garden basename during verification", async () => {
+  const parent = tmp("promote-logical-name");
+  const staging = path.join(parent, "staging");
+  fs.mkdirSync(staging, { recursive: true });
+  fs.writeFileSync(path.join(staging, "candidate.md"), "new");
+  const destination = path.join(parent, "electromagnetism-1");
+
+  let verifiedCandidate = "";
+  const result = await promoteStagingGarden({
+    stagingGardenDir: staging,
+    destinationGardenDir: destination,
+    verifyManifest: (candidate) => {
+      verifiedCandidate = candidate;
+      return path.basename(candidate) === path.basename(destination);
+    },
+  });
+
+  assert.equal(result.promoted, true, result.reason);
+  assert.equal(path.basename(verifiedCandidate), "electromagnetism-1");
+  assert.equal(fs.readFileSync(path.join(destination, "candidate.md"), "utf8"), "new");
+});
+
 test("46b. destination concurrency check aborts before swap", async () => {
   const parent = tmp("promote-concurrent");
   const staging = path.join(parent, "staging");

@@ -80,8 +80,14 @@ export function composeHermesSystemPrompt(input: {
    * key for compatibility with clients that were already open during rename.
    */
   adhdMode?: boolean;
-  /** Goal-compatible state selected for this one conversation turn. */
+  /** The goal governing this conversation, when it already holds one. */
   goalMode?: GoalModeState | null;
+  /**
+   * The Goal skill was selected for this turn. With no state alongside it, this
+   * is the turn that starts a goal and the section tells the model to create
+   * one; with state, the goal already exists and the flag changes nothing.
+   */
+  goalSkillSelected?: boolean;
   /**
    * Material supplied with this turn rather than written by the user: extracted
    * attachment text, a selected source document. It is scanned for values that
@@ -196,7 +202,9 @@ export function composeHermesSystemPrompt(input: {
   // local file read, never a call into the control plane.
   const loopState = loopStateSection(input.conversationPublicId, input.surface);
   if (loopState) sections.push(loopState);
-  const goalMode = goalModeSection(input.goalMode ?? null);
+  const goalMode = goalModeSection(input.goalMode ?? null, process.env, {
+    skillSelected: input.goalSkillSelected === true,
+  });
   if (goalMode) sections.push(goalMode);
   if (input.additional?.trim()) sections.push(input.additional.trim());
   // Persona overlays are deliberately last and explicitly subordinate. They

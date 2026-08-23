@@ -45,6 +45,23 @@ mark.bb-hl {
   &[data-hl-color="purple"] {
     background-color: var(--bb-hl-purple);
   }
+
+  &[data-hl-answer] {
+    box-shadow: inset 0 -2px 0 var(--bb-hl-dot-yellow);
+  }
+
+  &[data-hl-answer="pending"],
+  &[data-hl-answer="streaming"] {
+    animation: bb-highlight-answer-pulse 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes bb-highlight-answer-pulse {
+  50% {
+    box-shadow:
+      inset 0 -2px 0 var(--bb-hl-dot-yellow),
+      0 0 0 0.18rem rgb(255 213 79 / 13%);
+  }
 }
 
 /* The menu keeps its own dark material in both themes: it floats over the page
@@ -288,4 +305,105 @@ mark.bb-hl {
   height: 1px;
   margin: 0.25rem 0.15rem;
   background: rgb(255 255 255 / 13%);
+}
+
+.bb-highlight-answer {
+  position: absolute;
+  z-index: 1201;
+  overflow: auto;
+  padding: 1rem;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 1rem;
+  background: #2f2f31;
+  color: #ececee;
+  box-shadow:
+    0 1.1rem 2.6rem rgb(0 0 0 / 44%),
+    0 0.15rem 0.5rem rgb(0 0 0 / 30%);
+  font-family: var(--bodyFont);
+
+  &[hidden] {
+    display: none;
+  }
+}
+
+.bb-highlight-answer-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.bb-highlight-answer-question {
+  flex: 1;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid rgb(255 213 79 / 25%);
+  border-radius: 0.7rem;
+  background: rgb(255 213 79 / 11%);
+  color: #fff8d8;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.bb-highlight-answer-close {
+  display: grid;
+  place-items: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #b9b9bd;
+  font: inherit;
+  font-size: 1.25rem;
+  cursor: pointer;
+
+  &:hover {
+    background: rgb(255 255 255 / 9%);
+    color: white;
+  }
+}
+
+.bb-highlight-answer-status {
+  min-height: 1.1rem;
+  margin-top: 0.75rem;
+  color: #a8a8ad;
+  font-size: 0.75rem;
+}
+
+.bb-highlight-answer-body {
+  margin-top: 0.35rem;
+  color: #eeeeef;
+  font-size: 0.9rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.bb-highlight-answer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  margin-top: 0.9rem;
+
+  button {
+    padding: 0.35rem 0.65rem;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 999px;
+    background: transparent;
+    color: #c9c9cc;
+    font: inherit;
+    font-size: 0.74rem;
+    cursor: pointer;
+
+    &:hover {
+      background: rgb(255 255 255 / 8%);
+      color: white;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  mark.bb-hl[data-hl-answer="pending"],
+  mark.bb-hl[data-hl-answer="streaming"] {
+    animation: none;
+  }
 }

@@ -18,6 +18,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const source = (relative) => fs.readFileSync(path.join(here, "..", relative), "utf8");
 
 const runtimeTerminal = source("src/app/components/hermes/dashboard-agent-terminal.tsx");
+const runtimePanel = source("src/app/components/hermes/agent-runtime-panel.tsx");
 const legacyTerminal = source("src/app/components/knowledge-terminal.tsx");
 const emptyState = source("src/app/components/hermes/chat-greeting-empty-state.tsx");
 
@@ -130,18 +131,19 @@ test("over a day it uses the clock, the calendar and the name", () => {
 
 });
 
-test("the name is the usual shape, not a rule every line has to obey", () => {
-  // The vocative is still what makes most hours theirs. Splash lines skip it
-  // on purpose — "Hello, world, Grey" is not a greeting — and an account with
-  // nothing to call them never gets a dangling comma.
+test("the name is an occasional touch, not a rule every line has to obey", () => {
+  // A name comes up sometimes, while most visits leave enough room for the
+  // greeting itself. Splash lines always skip it, and an account with nothing
+  // to call them never gets a dangling comma.
   const week = sweep(24 * 7);
   const named = week.filter((entry) => entry.greeting.name === "Grey");
   const nameless = week.filter((entry) => entry.greeting.name === null);
+  assert.ok(named.length > 0, "the rotation never used the name");
   assert.ok(
-    named.length / week.length > 0.55,
-    `only ${named.length} of ${week.length} greetings used the name`,
+    named.length / week.length < 0.3,
+    `${named.length} of ${week.length} greetings still used the name`,
   );
-  assert.ok(nameless.length > 0, "the rotation never reached a splash line");
+  assert.ok(nameless.length > named.length, "the name was still the default");
 
   for (const entry of named) {
     // A vocative lead has to read as a sentence once the name is appended.
@@ -302,11 +304,9 @@ test("off the record asks the questions worth asking when nothing is kept", () =
   assert.ok(leads.has("off-the-record") || leads.has("quietly"));
 });
 
-test("it is funny sometimes, which is the only way it stays funny", () => {
-  // A product that quips at you on every blank screen has a personality rather
-  // than a sense of humour, and it wears out inside a week. The lighter lines
-  // are eligible on some hours and compete with the plain ones even then, so
-  // they should land often enough to notice and rarely enough to enjoy.
+test("the title-screen easter eggs are frequent without becoming constant", () => {
+  // The lighter lines should feel like a real part of the screen now, while a
+  // plain greeting still gets room to breathe between them.
   const week = sweep(24 * 7);
   const light = new Set([
     "nocturnal", "sleep-rumour", "midnight-oil", "living-dangerously", "better-judgement",
@@ -322,22 +322,24 @@ test("it is funny sometimes, which is the only way it stays funny", () => {
     "no-pressure", "clean-slate", "after-you",
     "quite-the-collection", "at-your-service", "here-we-go", "cause-trouble",
     "the-usual", "fancy-seeing-you",
-    "hardcore-mode", "does-not-replace-sleep", "out-of-office-hours",
-    "generating-terrain", "limited-edition-hour",
-    "hello-world", "also-try-outside", "not-on-the-exam",
-    "always-dns", "works-on-my-machine", "could-have-been-a-note",
-    "low-battery", "rubber-duck", "you-are-here",
-    "currently-buffering", "one-more-compile", "watched-compile",
-    "peaceful-difficulty", "also-try-writing",
+    "hardcore-mode", "does-not-replace-sleep", "out-of-office-hours", "moon-joined",
+    "generating-terrain", "limited-edition-hour", "first-spawn",
+    "hello-world", "also-try-outside", "not-on-the-exam", "coffee-not-included",
+    "always-dns", "works-on-my-machine", "could-have-been-a-note", "side-quest-accepted",
+    "low-battery", "rubber-duck", "you-are-here", "plot-thickens",
+    "currently-buffering", "one-more-compile", "watched-compile", "night-shift-enabled",
+    "peaceful-difficulty", "also-try-writing", "weekend-mode",
     "inventory-full", "please-hold", "notes-miss-you", "chunk-loaded",
     "spawn-point-set", "insert-greeting", "advancement-made", "now-with-extra-gardens",
     "now-entering-garden", "have-you-watered", "this-never-happened", "nobody-saw-you",
     "may-contain-insight", "as-seen-on-localhost", "certified-present",
-    "mildly-unsupervised", "feature-complete-ish",
+    "mildly-unsupervised", "feature-complete-ish", "questions-more", "context-window",
+    "autosave-love", "assembly-required", "patch-notes", "probably-not-sentient",
+    "tiny-invisible-math", "tangent-summoning",
   ]);
   const share = week.filter((entry) => light.has(entry.greeting.leadId)).length / week.length;
-  assert.ok(share > 0.05, `the lighter lines never came up (${share})`);
-  assert.ok(share < 0.45, `the lighter lines came up ${Math.round(share * 100)}% of the time`);
+  assert.ok(share > 0.35, `the lighter lines only came up ${Math.round(share * 100)}% of the time`);
+  assert.ok(share < 0.8, `the lighter lines came up ${Math.round(share * 100)}% of the time`);
 
   // And the plain time-of-day greetings are still the backbone underneath.
   const plain = week.filter((entry) =>
@@ -513,6 +515,8 @@ test("the lighter openers are prompts, not punchlines", () => {
   assert.ok(day.has("Quiz me on a topic from my notes and do not go easy."));
   assert.ok(day.has("Settle an argument I am having with myself."));
   assert.ok(day.has("Find the weakest thing I have written and tell me why it is weak."));
+  assert.ok(day.has("Find a rabbit hole in my gardens worth going down."));
+  assert.ok(day.has("Give me a side quest based on what I have been learning."));
   // Every card is still something you could press send on.
   for (const prompt of day) assert.match(prompt, /[.?]$/);
 });
@@ -671,4 +675,11 @@ test("picking an opener fills the composer instead of sending it", () => {
   // Nothing on this path reaches the runtime any more.
   assert.doesNotMatch(runtimeTerminal, /sendSuggestedPrompt/);
   assert.doesNotMatch(emptyState, /session\.send|sendMessage/);
+});
+
+test("the empty transcript loader has contrast on the dark chat surface", () => {
+  assert.match(
+    runtimePanel,
+    /<BreadboardLoader\s+label="Loading this chat"\s+className="h-5 w-5 text-gray-400"/,
+  );
 });

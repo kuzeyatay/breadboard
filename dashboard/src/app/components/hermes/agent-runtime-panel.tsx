@@ -62,6 +62,7 @@ import InlineProposalCards from "./inline-proposal-cards";
 import InlineConversationMap, {
   type InlineConversationMapKind,
 } from "./inline-conversation-map";
+import InlineSpotifyPlayer from "./inline-spotify-player";
 import InlineDeepResearchRun from "./inline-deep-research-run";
 import InlineMaxResearchRun from "./inline-max-research-run";
 import InlineAgentReachRun from "./inline-agent-reach-run";
@@ -70,6 +71,7 @@ import InlineMeetingNotesRun from "./inline-meeting-notes-run";
 import type { MeetingRecording } from "@/lib/meeting-notes/use-meeting-recorder";
 import InlineDeepTutorRun from "./inline-deep-tutor-run";
 import InlineCareerOpsRun from "./inline-career-ops-run";
+import InlineOpenGymRun from "./inline-open-gym-run";
 import InlineVibeTradingRun from "./inline-vibe-trading-run";
 import InlineStockAnalystRun from "./inline-stock-analyst-run";
 import InlinePaperTraderRun from "./inline-paper-trader-run";
@@ -83,6 +85,7 @@ import InlineParametricCadRun from "./inline-parametric-cad-run";
 import InlineHyperframesRun from "./inline-hyperframes-run";
 import InlineResource2SkillRun from "./inline-resource2skill-run";
 import InlineMatraixRun from "./inline-matraix-run";
+import InlineBoltSlidesRun from "./inline-bolt-slides-run";
 import InlineOpenMontageRun from "./inline-openmontage-run";
 import InlineOpenworkRun from "./inline-openwork-run";
 import InlineOpenscienceRun from "./inline-openscience-run";
@@ -124,6 +127,7 @@ import {
 } from "./use-agent-session";
 import type { HermesSurface } from "@/lib/hermes/config.ts";
 import { requiresGeographicGrounding } from "@/lib/map/grounding.ts";
+import { spotifyPlayerAssistantIndex } from "@/lib/hermes/spotify-intent.ts";
 import type { LocalWorkflowSummary } from "@/lib/workflows/types";
 import {
   externalAgentCardContent,
@@ -290,6 +294,7 @@ interface Props {
   careerOpsAgent?: { id: string; name: string } | null;
   onClearCareerOps?: () => void;
   onSelectCareerOps?: () => void;
+  onSelectOpenGym?: () => void;
   vibeTradingAgent?: { id: string; name: string } | null;
   onClearVibeTrading?: () => void;
   onSelectVibeTrading?: () => void;
@@ -330,6 +335,7 @@ interface Props {
   onSelectHyperframes?: () => void;
   onSelectResource2Skill?: () => void;
   onSelectMatraix?: () => void;
+  onSelectBoltSlides?: () => void;
   onSelectOpenMontage?: () => void;
   onSelectOpenwork?: () => void;
   onSelectOpenscience?: () => void;
@@ -638,6 +644,7 @@ export default function AgentRuntimePanel({
   careerOpsAgent,
   onClearCareerOps,
   onSelectCareerOps,
+  onSelectOpenGym,
   vibeTradingAgent,
   onClearVibeTrading,
   onSelectVibeTrading,
@@ -675,6 +682,7 @@ export default function AgentRuntimePanel({
   onSelectHyperframes,
   onSelectResource2Skill,
   onSelectMatraix,
+  onSelectBoltSlides,
   onSelectOpenMontage,
   onSelectOpenwork,
   onSelectOpenscience,
@@ -964,6 +972,10 @@ export default function AgentRuntimePanel({
   );
   const timeSeparators = useMemo(
     () => chatTimeSeparatorLabels(messages),
+    [messages],
+  );
+  const spotifyPlayerOwner = useMemo(
+    () => spotifyPlayerAssistantIndex(messages),
     [messages],
   );
   const inlinedCourseCorrections = useMemo(() => {
@@ -1831,7 +1843,10 @@ export default function AgentRuntimePanel({
             // transcript that is still arriving reads as "this chat is empty".
             loadingTranscript ? (
               <div className="flex items-center justify-center py-12">
-                <BreadboardLoader label="Loading this chat" />
+                <BreadboardLoader
+                  label="Loading this chat"
+                  className="h-5 w-5 text-gray-400"
+                />
               </div>
             ) : failureText ? (
               // A turn that died before it wrote anything — a preflight that
@@ -1916,6 +1931,16 @@ export default function AgentRuntimePanel({
                 const inlineMapRequestStartedAt = inlineMapKind
                   ? messages[previousUserMessageIndex(messages, index)]?.createdAt
                   : undefined;
+                const inlineSpotify =
+                  message.role === "assistant" &&
+                  index === spotifyPlayerOwner &&
+                  !isExternalAgentRunMessage(message)
+                    ? {
+                        requestedAt:
+                          messages[previousUserMessageIndex(messages, index)]
+                            ?.createdAt,
+                      }
+                    : null;
                 const delegatedAgentCompleted =
                   delegatedAgentCompletedLabelForMessage(message);
                 const delegatedAgentStartedAt =
@@ -2350,6 +2375,27 @@ export default function AgentRuntimePanel({
                           }}
                         />
                       </div>
+                    ) : message.openGymRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlineOpenGymRun
+                          runId={message.openGymRun.runId}
+                          task={message.openGymRun.task}
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted || index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
                     ) : message.vibeTradingRun ? (
                       <div className="text-sm leading-7 text-gray-200">
                         <InlineVibeTradingRun
@@ -2625,6 +2671,28 @@ export default function AgentRuntimePanel({
                         <InlineMatraixRun
                           runId={message.matraixRun.runId}
                           brief={message.matraixRun.brief}
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          persistedUsage={message.usage}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted || index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
+                    ) : message.boltSlidesRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlineBoltSlidesRun
+                          runId={message.boltSlidesRun.runId}
+                          brief={message.boltSlidesRun.brief}
                           persistedContent={message.content}
                           persistedOutcome={message.externalAgentOutcome}
                           persistedUsage={message.usage}
@@ -3022,6 +3090,13 @@ export default function AgentRuntimePanel({
                             requestedAt={inlineMapRequestStartedAt}
                           />
                         ) : null}
+                        {inlineSpotify && sessionId && surface !== "quartz_ai" ? (
+                          <InlineSpotifyPlayer
+                            key={`${sessionId}:${inlineSpotify.requestedAt ?? ""}`}
+                            conversationPublicId={sessionId}
+                            requestedAt={inlineSpotify.requestedAt}
+                          />
+                        ) : null}
                         {visibleAssistantContent ||
                         inlinedCourseCorrections.byAssistantIndex.has(index) ? (
                           inlinedCourseCorrections.byAssistantIndex.has(index) ? (
@@ -3304,6 +3379,7 @@ export default function AgentRuntimePanel({
           careerOpsAgent={careerOpsAgent}
           onClearCareerOps={onClearCareerOps}
           onSelectCareerOps={onSelectCareerOps}
+          onSelectOpenGym={onSelectOpenGym}
           vibeTradingAgent={vibeTradingAgent}
           onClearVibeTrading={onClearVibeTrading}
           onSelectVibeTrading={onSelectVibeTrading}
@@ -3341,6 +3417,7 @@ export default function AgentRuntimePanel({
           onSelectHyperframes={onSelectHyperframes}
           onSelectResource2Skill={onSelectResource2Skill}
           onSelectMatraix={onSelectMatraix}
+          onSelectBoltSlides={onSelectBoltSlides}
           onSelectOpenMontage={onSelectOpenMontage}
           onSelectOpenwork={onSelectOpenwork}
           onSelectOpenscience={onSelectOpenscience}

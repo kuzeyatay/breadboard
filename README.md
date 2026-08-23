@@ -382,6 +382,13 @@ This starts:
 > `/agents:codex` is selected, works in a Garden-connected repository, and uses
 > ChatMock's Responses API. See [docs/CODEX_INTEGRATION.md](docs/CODEX_INTEGRATION.md).
 >
+> **openGym** is the persistent fitness-program and exercise-technique agent.
+> `/agents:open-gym <request>` works from the cloned 1,324-exercise catalogue;
+> registered exercise how-to answers play the matching animation in chat, and
+> full programs are saved across restarts and published as Markdown artifacts.
+> It runs inside the Dashboard, so there is no second service to start. See
+> [docs/OPEN_GYM_INTEGRATION.md](docs/OPEN_GYM_INTEGRATION.md).
+>
 > **HyperFrames** makes videos. `/agents:hyperframes <brief>` scaffolds a
 > HyperFrames project, has a Codex process write the composition against the
 > clone's own video skills, renders an MP4 with the local CLI + FFmpeg, and

@@ -87,7 +87,14 @@ export async function promoteStagingGarden(input: {
   const destination = input.destinationGardenDir;
   const parent = path.dirname(destination);
   const base = path.basename(destination);
-  const incoming = path.join(parent, `.${base}.incoming-${Date.now().toString(36)}`);
+  // Validation resolves canonical /<garden-slug>/assets URLs from the garden
+  // directory basename. Keep that logical basename inside a unique hidden
+  // staging container so verification sees the same identity as publication.
+  const incomingContainer = path.join(
+    parent,
+    `.${base}.incoming-${Date.now().toString(36)}`,
+  );
+  const incoming = path.join(incomingContainer, base);
   const recoveryOwnerSuffix = input.recoveryOwnerId
     ? `-${crypto.createHash("sha256").update(input.recoveryOwnerId).digest("hex").slice(0, 16)}`
     : "";
@@ -102,12 +109,12 @@ export async function promoteStagingGarden(input: {
     attempts = attempt;
     try {
       // 1. Stage the complete tree in a sibling temp dir.
-      fs.rmSync(incoming, { recursive: true, force: true });
+      fs.rmSync(incomingContainer, { recursive: true, force: true });
       copyTreeSync(input.stagingGardenDir, incoming);
 
       // 2. Verify the promoted-to-be tree before touching the destination.
       if (input.verifyManifest && !input.verifyManifest(incoming)) {
-        fs.rmSync(incoming, { recursive: true, force: true });
+        fs.rmSync(incomingContainer, { recursive: true, force: true });
         return {
           promoted: false,
           destination,
@@ -125,7 +132,7 @@ export async function promoteStagingGarden(input: {
         input.verifyCurrentDestination &&
         !input.verifyCurrentDestination(destination)
       ) {
-        fs.rmSync(incoming, { recursive: true, force: true });
+        fs.rmSync(incomingContainer, { recursive: true, force: true });
         return {
           promoted: false,
           destination,
@@ -138,7 +145,7 @@ export async function promoteStagingGarden(input: {
         input.prepareIncomingForCommit &&
         !input.prepareIncomingForCommit(incoming, destination)
       ) {
-        fs.rmSync(incoming, { recursive: true, force: true });
+        fs.rmSync(incomingContainer, { recursive: true, force: true });
         return {
           promoted: false,
           destination,
@@ -173,7 +180,7 @@ export async function promoteStagingGarden(input: {
             // Never start another promotion attempt while the old destination
             // is displaced. Doing so could install the incoming tree and lose
             // the caller's only rollback pointer.
-            try { fs.rmSync(incoming, { recursive: true, force: true }); } catch { /* preserve backup */ }
+            try { fs.rmSync(incomingContainer, { recursive: true, force: true }); } catch { /* preserve backup */ }
             return {
               promoted: false,
               destination,
@@ -189,6 +196,8 @@ export async function promoteStagingGarden(input: {
         }
         throw swapError;
       }
+
+      try { fs.rmdirSync(incomingContainer); } catch { /* empty staging container is harmless */ }
 
       // 4. Success: retain the previous version until the swap succeeded, then
       //    clean it up best-effort.
@@ -209,7 +218,7 @@ export async function promoteStagingGarden(input: {
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
       // Clean the incoming temp dir before retrying.
-      try { fs.rmSync(incoming, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { fs.rmSync(incomingContainer, { recursive: true, force: true }); } catch { /* ignore */ }
       if (!isLockError(error) || attempt === options.maxAttempts) break;
       const delay = Math.min(options.maxDelayMs, options.initialDelayMs * 2 ** (attempt - 1));
       await sleep(delay);

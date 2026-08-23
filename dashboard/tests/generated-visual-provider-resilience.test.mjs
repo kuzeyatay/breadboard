@@ -8,6 +8,7 @@ import {
   GENERATED_VISUAL_MAX_SOURCE_CHARS,
   GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES,
   GENERATED_VISUAL_REPAIR_HISTORY_MAX_ENTRIES,
+  GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_MAX_ATTEMPTS,
   GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS,
   GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS,
   GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS,
@@ -137,6 +138,7 @@ function baseInput(gardenDir, events, overrides = {}) {
     formulaDefinitions,
     maxAttempts: 5,
     criticMaxAttempts: 3,
+    criticTransportSessionCooldownMs: 0,
     runBrowserTests: false,
     onEvent: (event) => events.push(event),
     ...overrides,
@@ -426,6 +428,7 @@ test("built-in candidate transport retry uses the bounded complex-visual deadlin
     assert.deepEqual(userPacket.sdkDocumentation.outputTypes, [...GENERATED_VISUAL_CAPABILITY_MANIFEST.outputs.representations]);
     assert.deepEqual(userPacket.sdkDocumentation.sceneTypes, [...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.kinds]);
     assert.deepEqual(userPacket.sdkDocumentation.spatialPrimitiveTypes, [...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.primitiveKinds]);
+    assert.deepEqual(userPacket.sdkDocumentation.spatialLabelModes, [...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.labelModes]);
     assert.equal(userPacket.sdkDocumentation.maxControls, GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.controls);
     assert.equal(userPacket.sdkDocumentation.maxScenes, GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.scenes);
     assert.equal(userPacket.sdkDocumentation.maxSpatialGroups, GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.spatialGroups);
@@ -904,7 +907,173 @@ test("critic transport retry preserves the validated artifact and critic protoco
   }
 });
 
-test("critic transport exhaustion is terminal without consuming critic protocol or generation repair attempts", async () => {
+test("critic availability session reuses the exact validated candidate and previews after transport exhaustion", async () => {
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-session-retry-"));
+  const events = [];
+  const criticRequests = [];
+  const cooldowns = [];
+  let candidateCalls = 0;
+  try {
+    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
+      candidateProvider: async () => {
+        candidateCalls += 1;
+        return candidate();
+      },
+      criticProvider: async (input) => {
+        criticRequests.push(input);
+        if (criticRequests.length <= GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS)
+          throw providerTimeout();
+        return approvedCritic();
+      },
+      criticTransportSessionWaiter: async ({ cooldownMs, signal }) => {
+        cooldowns.push({ cooldownMs, aborted: Boolean(signal?.aborted) });
+      },
+    }));
+
+    assert.equal(result.manifest?.generationAttempt, 1, result.errors.join("; "));
+    assert.equal(candidateCalls, 1);
+    assert.equal(
+      criticRequests.length,
+      GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS + 1,
+    );
+    for (const field of [
+      "client",
+      "model",
+      "opportunity",
+      "candidate",
+      "definition",
+      "sourceContext",
+      "sourceFigureSummaries",
+      "formulaDefinitions",
+      "previewPath",
+      "previews",
+      "tests",
+      "priorCriticFailure",
+    ]) {
+      criticRequests.slice(1).forEach((request) =>
+        assert.equal(request[field], criticRequests[0][field], field),
+      );
+    }
+    assert.deepEqual(cooldowns, [{ cooldownMs: 0, aborted: false }]);
+    assert.equal(
+      events.filter(({ type }) => type === "visual_critic_transport_session_retry").length,
+      1,
+    );
+    assert.equal(
+      events.filter(({ type }) => type === "visual_critic_transport_session_resumed").length,
+      1,
+    );
+    assert.equal(events.some(({ type }) => type === "visual_critic_retry"), false);
+    assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
+    assert.equal(events.filter(({ type }) => type === "visual_critic_completed").length, 1);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("tracked Learn client retries the identical multimodal critic body in one bounded availability session", async () => {
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-tracked-session-"));
+  const events = [];
+  const rawBodies = [];
+  const rawOptions = [];
+  const usageEvents = [];
+  let rawCalls = 0;
+  const client = {
+    chat: {
+      completions: {
+        create: async (body, options) => {
+          rawBodies.push(body);
+          rawOptions.push(options);
+          rawCalls += 1;
+          if (rawCalls <= 6)
+            throw Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
+          return {
+            choices: [{ message: { content: JSON.stringify(detailedApproval()) } }],
+            usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+          };
+        },
+      },
+    },
+  };
+  attachLearnTokenUsageTracking(
+    client,
+    (event) => usageEvents.push(event),
+    { retry502: { sleep: async () => undefined } },
+  );
+  const cooldowns = [];
+  try {
+    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
+      client,
+      candidateProvider: async () => candidate(),
+      criticTransportSessionWaiter: async ({ cooldownMs }) => {
+        cooldowns.push(cooldownMs);
+      },
+    }));
+
+    assert.equal(result.manifest?.generationAttempt, 1, result.errors.join("; "));
+    assert.equal(rawBodies.length, 7);
+    rawBodies.slice(1).forEach((body) => assert.deepEqual(body, rawBodies[0]));
+    rawOptions.forEach((options) => {
+      assert.equal(options.timeout, GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS);
+      assert.equal(options.maxRetries, 0);
+    });
+    assert.deepEqual(cooldowns, [0]);
+    assert.deepEqual(
+      usageEvents.map(({ type }) => type),
+      ["started", "completed", "started", "completed"],
+    );
+    assert.equal(
+      events.filter(({ type }) => type === "visual_critic_transport_session_retry").length,
+      1,
+    );
+    assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
+    assert.equal(events.filter(({ type }) => type === "visual_published").length, 1);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("cancellation during a critic availability cooldown does not start another critic session", async () => {
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-session-cancel-"));
+  const events = [];
+  const controller = new AbortController();
+  const cancellation = new Error("cancelled during critic transport session");
+  let criticCalls = 0;
+  try {
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        abortSignal: controller.signal,
+        candidateProvider: async () => candidate(),
+        criticProvider: async () => {
+          criticCalls += 1;
+          throw providerTimeout();
+        },
+        criticTransportSessionCooldownMs: 1,
+        criticTransportSessionWaiter: async () => {
+          controller.abort(cancellation);
+        },
+      })),
+      cancellation,
+    );
+
+    assert.equal(criticCalls, GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS);
+    assert.equal(
+      events.filter(({ type }) => type === "visual_critic_transport_session_retry").length,
+      1,
+    );
+    assert.equal(
+      events.filter(({ type }) => type === "visual_critic_transport_session_resumed").length,
+      0,
+    );
+    assert.equal(events.some(({ type }) => type === "visual_critic_retry"), false);
+    assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
+    assert.equal(events.some(({ type }) => type === "visual_published"), false);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("critic transport exhaustion is terminal only after the bounded availability sessions without consuming protocol or repair attempts", async () => {
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-provider-exhaust-"));
   const events = [];
   let candidateCalls = 0;
@@ -924,20 +1093,46 @@ test("critic transport exhaustion is terminal without consuming critic protocol 
     assert.equal(result.manifest, null);
     assert.equal(result.failureCategory, "critic");
     assert.equal(candidateCalls, 1);
-    assert.equal(criticCalls, GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS);
+    assert.equal(
+      criticCalls,
+      GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS *
+        GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_MAX_ATTEMPTS,
+    );
     assert.deepEqual(
       events.filter(({ type }) => type === "visual_critic_transport_retry").map(({ data }) => ({
         attempt: data.attempt,
         criticAttempt: data.criticAttempt,
+        criticTransportSession: data.criticTransportSession,
       })),
-      [{ attempt: 1, criticAttempt: 1 }, { attempt: 1, criticAttempt: 1 }],
+      [
+        { attempt: 1, criticAttempt: 1, criticTransportSession: 1 },
+        { attempt: 1, criticAttempt: 1, criticTransportSession: 1 },
+        { attempt: 1, criticAttempt: 1, criticTransportSession: 2 },
+        { attempt: 1, criticAttempt: 1, criticTransportSession: 2 },
+      ],
     );
     assert.deepEqual(
       events.filter(({ type }) => type === "visual_critic_transport_exhausted").map(({ data }) => ({
         attempt: data.attempt,
         criticAttempt: data.criticAttempt,
+        criticTransportSession: data.criticTransportSession,
       })),
-      [{ attempt: 1, criticAttempt: 1 }],
+      [
+        { attempt: 1, criticAttempt: 1, criticTransportSession: 1 },
+        { attempt: 1, criticAttempt: 1, criticTransportSession: 2 },
+      ],
+    );
+    assert.deepEqual(
+      events.filter(({ type }) => type === "visual_critic_transport_session_retry").map(({ data }) => ({
+        criticTransportSession: data.criticTransportSession,
+        nextCriticTransportSession: data.nextCriticTransportSession,
+        cooldownMs: data.cooldownMs,
+      })),
+      [{ criticTransportSession: 1, nextCriticTransportSession: 2, cooldownMs: 0 }],
+    );
+    assert.equal(
+      events.filter(({ type }) => type === "visual_critic_transport_session_resumed").length,
+      1,
     );
     assert.equal(events.some(({ type }) => type === "visual_critic_retry"), false);
     assert.equal(events.some(({ type }) => type === "visual_critic_failed"), false);
@@ -965,6 +1160,7 @@ test("custom critic AbortError caused by the owned deadline returns a truthful c
         criticCalls += 1;
         return exhaustOwnedDeadlineWithNestedProviderAbort(signal);
       },
+      criticTransportSessionMaxAttempts: 1,
     }));
 
     assert.equal(result.manifest, null);
@@ -1024,6 +1220,15 @@ test("critic prompt requires topology/domain comparison and legacy approval ente
     assert.match(system, /actual topology and domain against its labels, explanation, interaction contract, and source evidence/i);
     assert.match(system, /centered\/full from bounded\/clipped\/one-sided\/sector geometry/i);
     assert.match(system, /open from closed geometry/i);
+    assert.match(system, /plane\(center,normal,size\) is a finite centered full rectangular patch and is valid for a full rectangular box face/i);
+    assert.match(system, /do not require a polygon merely because that face is finite/i);
+    assert.match(system, /Diagram node\.value is optional and must remain an expression object.*never a bare numeric value/i);
+    assert.match(system, /do not request a derived formula or deep expression tree inside a diagram node value/i);
+    assert.match(system, /Do not request a long derived formula inside any spatial coordinate either.*simple literal\/input\/one-operation geometry/i);
+    assert.match(system, /Never request min or max as a binary expression operator/i);
+    assert.match(system, /Cylinder and cone primitives are bounded capped closed solids.*ordered polygon facets.*open, uncapped, clipped, one-sided, or sector surface/i);
+    assert.match(system, /named-point normal, tangent, or basis-direction claim.*edge, vertex, seam, or cap.*face normal.*parallel or antiparallel/i);
+    assert.match(system, /screen-relative left\/right\/top\/bottom statement as a literal rendered claim.*exact supplied preview.*world-coordinate relationship rather than a camera assumption/i);
     assert.match(system, /relabeling does not change topology or domain/i);
     assert.match(system, /independently recompute every evaluable relationship from the literal definition/i);
     assert.match(system, /vector's endpoint delta and magnitude/i);

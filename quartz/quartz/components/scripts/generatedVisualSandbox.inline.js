@@ -4,6 +4,7 @@
   const ROOT_ID = "breadboard-generated-visual-root"
   const INIT = "breadboard-generated-visual:init"
   const THEME = "breadboard-generated-visual:theme"
+  const PREVIEW_PRIMARY_SPATIAL_FRAME = "breadboard-generated-visual:preview-primary-spatial-frame"
   const EVENT = "breadboard-generated-visual:event"
   const SVG_NS = "http://www.w3.org/2000/svg"
   let diagramCounter = 0
@@ -62,6 +63,60 @@
     document.body.dataset.breadboardRuntimeDiagnostics = encodeURIComponent(
       JSON.stringify(bounded),
     )
+  }
+
+  const readRuntimeDiagnostics = () => {
+    const encoded = document.body.dataset.breadboardRuntimeDiagnostics
+    if (!encoded) return []
+    try {
+      const parsed = JSON.parse(decodeURIComponent(encoded))
+      return Array.isArray(parsed) ? parsed.filter((entry) => typeof entry === "string") : []
+    } catch {
+      return []
+    }
+  }
+
+  const validatePreviewPrimarySpatialFrame = () => {
+    const viewport = {
+      width: Math.max(0, Number(document.documentElement.clientWidth) || Number(window.innerWidth) || 0),
+      height: Math.max(0, Number(document.documentElement.clientHeight) || Number(window.innerHeight) || 0),
+    }
+    const spatialHosts = Array.from(document.querySelectorAll("[data-spatial-host=true]"))
+    const primary = spatialHosts
+      .map((host, sceneIndex) => ({
+        sceneIndex,
+        hasRenderedPrimitive: Boolean(host.querySelector("[data-spatial-kind]")),
+        svg: host.querySelector("[data-spatial-projection]"),
+      }))
+      .find(({ hasRenderedPrimitive, svg }) => {
+        if (!hasRenderedPrimitive || !svg || svg.getClientRects().length === 0) return false
+        const box = svg.getBoundingClientRect()
+        return box.width > 0 && box.height > 0
+      })
+    const failures = []
+    if (viewport.width <= 640 && primary) {
+        const box = primary.svg.getBoundingClientRect()
+        const rounded = (value) => Math.round(value * 10) / 10
+        const allowance = 2
+        const overflow = [
+          box.left < -allowance ? `left=${rounded(-box.left)}` : undefined,
+          box.right > viewport.width + allowance
+            ? `right=${rounded(box.right - viewport.width)}`
+            : undefined,
+          box.top < -allowance ? `top=${rounded(-box.top)}` : undefined,
+          box.bottom > viewport.height + allowance
+            ? `bottom=${rounded(box.bottom - viewport.height)}`
+            : undefined,
+        ].filter(Boolean)
+        if (overflow.length)
+          failures.push(
+            `spatial.preview_primary_viewport_out_of_frame: scene=${primary.sceneIndex}; overflow=${overflow.join(",")}; viewport=${viewport.width}x${viewport.height}`,
+          )
+    }
+    document.body.dataset.breadboardPreviewPrimarySpatialFrame =
+      failures.length === 0 ? "passed" : "failed"
+    if (failures.length)
+      writeRuntimeDiagnostics([...failures, ...readRuntimeDiagnostics()])
   }
 
   const element = (tag, className, text) => {
@@ -259,6 +314,8 @@
     .gv-node { fill:var(--viz-accent-soft); stroke:var(--viz-accent); stroke-width:1.5; }
     .gv-edge { stroke:var(--viz-muted); stroke-width:1.5; }
     .gv-label { fill:var(--viz-text); font-size:18px; font-weight:600; paint-order:stroke; stroke:var(--viz-bg); stroke-width:3px; stroke-linejoin:round; text-anchor:middle; }
+    .gv-svg .gv-plot-axis-label { font-size:22px; }
+    .gv-svg .gv-plot-axis-label[data-plot-axis-label=y] { text-anchor:start; }
     .gv-node-label { font-size:15px; }
     .gv-spatial-object,.gv-spatial-camera { outline:none; }
     .gv-spatial-object:focus-visible,.gv-spatial-camera:focus-visible { outline:3px solid var(--viz-accent); outline-offset:-4px; }
@@ -297,6 +354,7 @@
     .gv-table th,.gv-table td { border-bottom:1px solid var(--viz-line); padding:8px 6px; text-align:left; }
     .gv-formula { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; overflow-wrap:anywhere; }
     .gv-status { border-left:3px solid var(--viz-accent); padding-left:12px; }
+    .gv-status h3,.gv-status strong,.gv-status p { overflow-wrap:anywhere; }
     .gv-status strong { display:block; font-size:18px; margin:3px 0; }
     .gv-sr { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
     button:focus-visible,input:focus-visible,select:focus-visible { outline:2px solid var(--viz-accent); outline-offset:3px; }
@@ -334,8 +392,9 @@
       class: "gv-svg",
       role: "img",
       "aria-label": scene.title,
+      "data-plot-scene": "true",
     })
-    const margin = { left: 64, right: 18, top: 18, bottom: 68 }
+    const margin = { left: 78, right: 18, top: 44, bottom: 60 }
     const width = 640 - margin.left - margin.right
     const height = 340 - margin.top - margin.bottom
     const seriesValues = []
@@ -444,19 +503,221 @@
       circle.appendChild(title)
       svg.appendChild(circle)
     })
-    const xLabel = svgElement("text", { x: margin.left + width / 2, y: 330, class: "gv-label" })
+    const xLabel = svgElement("text", {
+      x: margin.left + width / 2,
+      y: 328,
+      class: "gv-label gv-plot-axis-label",
+      "data-plot-axis-label": "x",
+    })
     xLabel.textContent = scene.xLabel
     svg.appendChild(xLabel)
     const yLabel = svgElement("text", {
-      x: 13,
-      y: margin.top + height / 2,
-      class: "gv-label",
-      transform: `rotate(-90 13 ${margin.top + height / 2})`,
+      x: margin.left,
+      y: 28,
+      class: "gv-label gv-plot-axis-label",
+      "data-plot-axis-label": "y",
     })
     yLabel.textContent = scene.yLabel
     svg.appendChild(yLabel)
     host.appendChild(svg)
     return host
+  }
+
+  const DIAGRAM_NODE_FOOTPRINT_PADDING = 8
+  const DIAGRAM_NODE_MAX_CIRCLE_RADIUS = 80
+  const DIAGRAM_NODE_MAX_RECT_WIDTH = 160
+  const DIAGRAM_NODE_MAX_RECT_HEIGHT = 112
+  const DIAGRAM_NODE_LAYOUT_SETTLE_PASSES = 2
+
+  const diagramNodeGeometry = (node) => {
+    if (node.tagName.toLowerCase() === "rect") {
+      const width = finite(node.getAttribute("width"), 96)
+      const height = finite(node.getAttribute("height"), 50)
+      return {
+        kind: "rect",
+        centerX: finite(node.getAttribute("x")) + width / 2,
+        centerY: finite(node.getAttribute("y")) + height / 2,
+        halfWidth: width / 2,
+        halfHeight: height / 2,
+      }
+    }
+    const radius = finite(node.getAttribute("r"), 32)
+    return {
+      kind: "circle",
+      centerX: finite(node.getAttribute("cx")),
+      centerY: finite(node.getAttribute("cy")),
+      halfWidth: radius,
+      halfHeight: radius,
+      radius,
+    }
+  }
+
+  const setDiagramNodeCenter = (node, centerX, centerY) => {
+    if (node.tagName.toLowerCase() === "rect") {
+      const geometry = diagramNodeGeometry(node)
+      node.setAttribute("x", String(centerX - geometry.halfWidth))
+      node.setAttribute("y", String(centerY - geometry.halfHeight))
+      return
+    }
+    node.setAttribute("cx", String(centerX))
+    node.setAttribute("cy", String(centerY))
+  }
+
+  const setDiagramLabelCenter = (label, centerX, centerY) => {
+    label.setAttribute("x", String(centerX))
+    label.setAttribute("y", String(centerY))
+    label.querySelectorAll("tspan").forEach((line) => line.setAttribute("x", String(centerX)))
+  }
+
+  // SVG text geometry is expressed in the diagram's 640 by 360 user space.
+  // Unlike a client rect it is unaffected by page scroll, an offscreen focused
+  // control, or a responsive CSS-to-viewBox scale conversion.
+  const diagramUserCoordinateBounds = (node) => {
+    try {
+      const box = node.getBBox()
+      if (
+        ![box.x, box.y, box.width, box.height].every(Number.isFinite) ||
+        box.width <= 0 ||
+        box.height <= 0
+      )
+        return null
+      return box
+    } catch {
+      return null
+    }
+  }
+
+  const diagramBoundaryPoint = (geometry, directionX, directionY, padding = 0) => {
+    const length = Math.hypot(directionX, directionY)
+    if (length < 1e-6) return { x: geometry.centerX, y: geometry.centerY }
+    const unitX = directionX / length
+    const unitY = directionY / length
+    if (geometry.kind === "circle") {
+      const distance = geometry.radius + padding
+      return {
+        x: geometry.centerX + unitX * distance,
+        y: geometry.centerY + unitY * distance,
+      }
+    }
+    const horizontalDistance = Math.abs(unitX) > 1e-6
+      ? geometry.halfWidth / Math.abs(unitX)
+      : Infinity
+    const verticalDistance = Math.abs(unitY) > 1e-6
+      ? geometry.halfHeight / Math.abs(unitY)
+      : Infinity
+    const distance = Math.min(horizontalDistance, verticalDistance) + padding
+    return {
+      x: geometry.centerX + unitX * distance,
+      y: geometry.centerY + unitY * distance,
+    }
+  }
+
+  /**
+   * Diagram labels use responsive typography, so the safe footprint is only
+   * knowable after the SVG is connected. Grow each authored shape in place;
+   * never shorten source labels or move nodes apart, which would conceal a
+   * genuinely dense authored graph from the runtime collision checks.
+   */
+  const layoutDiagramFootprints = (svg) => {
+    const nodes = Array.from(svg.querySelectorAll("[data-diagram-node]"))
+    const labels = Array.from(svg.querySelectorAll("[data-diagram-node-label]"))
+    const nodeById = new Map(nodes.map((node) => [node.dataset.diagramNode, node]))
+    const labelByNodeId = new Map(labels.map((label) => [label.dataset.diagramNodeLabel, label]))
+    // Re-measure once after expansion/recentering. This is deliberately
+    // bounded: it settles text whose x/y changes with the moved node without
+    // making a dense authored graph converge by repeatedly moving its nodes.
+    for (let pass = 0; pass < DIAGRAM_NODE_LAYOUT_SETTLE_PASSES; pass += 1) {
+      nodes.forEach((node) => {
+        const nodeId = node.dataset.diagramNode
+        const label = labelByNodeId.get(nodeId)
+        if (!label) return
+        const labelBox = diagramUserCoordinateBounds(label)
+        if (!labelBox) return
+        let geometry = diagramNodeGeometry(node)
+        const requiredHalfWidth = Math.max(
+          Math.abs(labelBox.x - geometry.centerX),
+          Math.abs(labelBox.x + labelBox.width - geometry.centerX),
+        ) + DIAGRAM_NODE_FOOTPRINT_PADDING
+        const requiredHalfHeight = Math.max(
+          Math.abs(labelBox.y - geometry.centerY),
+          Math.abs(labelBox.y + labelBox.height - geometry.centerY),
+        ) + DIAGRAM_NODE_FOOTPRINT_PADDING
+        let expanded = false
+        let capped = false
+        if (geometry.kind === "circle") {
+          const requiredRadius = Math.hypot(requiredHalfWidth, requiredHalfHeight)
+          const nextRadius = Math.min(DIAGRAM_NODE_MAX_CIRCLE_RADIUS, requiredRadius)
+          if (nextRadius > geometry.radius + 0.1) {
+            node.setAttribute("r", String(nextRadius))
+            expanded = true
+          }
+          capped = requiredRadius > DIAGRAM_NODE_MAX_CIRCLE_RADIUS + 0.1
+        } else {
+          const requiredWidth = Math.max(96, requiredHalfWidth * 2)
+          const requiredHeight = Math.max(50, requiredHalfHeight * 2)
+          const nextWidth = Math.min(DIAGRAM_NODE_MAX_RECT_WIDTH, requiredWidth)
+          const nextHeight = Math.min(DIAGRAM_NODE_MAX_RECT_HEIGHT, requiredHeight)
+          if (nextWidth > geometry.halfWidth * 2 + 0.1 || nextHeight > geometry.halfHeight * 2 + 0.1) {
+            node.setAttribute("width", String(nextWidth))
+            node.setAttribute("height", String(nextHeight))
+            node.setAttribute("x", String(geometry.centerX - nextWidth / 2))
+            node.setAttribute("y", String(geometry.centerY - nextHeight / 2))
+            expanded = true
+          }
+          capped = requiredWidth > DIAGRAM_NODE_MAX_RECT_WIDTH + 0.1 || requiredHeight > DIAGRAM_NODE_MAX_RECT_HEIGHT + 0.1
+        }
+        if (capped) node.dataset.diagramNodeFootprint = "capped"
+        else if (expanded || node.dataset.diagramNodeFootprint === "expanded")
+          node.dataset.diagramNodeFootprint = "expanded"
+        else node.dataset.diagramNodeFootprint = "base"
+
+        geometry = diagramNodeGeometry(node)
+        const centeredX = Math.max(
+          geometry.halfWidth + DIAGRAM_NODE_FOOTPRINT_PADDING,
+          Math.min(640 - geometry.halfWidth - DIAGRAM_NODE_FOOTPRINT_PADDING, geometry.centerX),
+        )
+        const centeredY = Math.max(
+          geometry.halfHeight + DIAGRAM_NODE_FOOTPRINT_PADDING,
+          Math.min(360 - geometry.halfHeight - DIAGRAM_NODE_FOOTPRINT_PADDING, geometry.centerY),
+        )
+        if (centeredX !== geometry.centerX || centeredY !== geometry.centerY) {
+          setDiagramNodeCenter(node, centeredX, centeredY)
+          setDiagramLabelCenter(label, centeredX, centeredY)
+        }
+      })
+    }
+
+    const edgeLabels = new Map(
+      Array.from(svg.querySelectorAll("[data-diagram-edge-label]")).map((label) => [
+        label.dataset.diagramEdgeIndex,
+        label,
+      ]),
+    )
+    Array.from(svg.querySelectorAll("line[data-diagram-edge-index]")).forEach((edge) => {
+      const from = nodeById.get(edge.dataset.diagramEdgeFrom)
+      const to = nodeById.get(edge.dataset.diagramEdgeTo)
+      if (!from || !to) return
+      const fromGeometry = diagramNodeGeometry(from)
+      const toGeometry = diagramNodeGeometry(to)
+      const directionX = toGeometry.centerX - fromGeometry.centerX
+      const directionY = toGeometry.centerY - fromGeometry.centerY
+      const start = diagramBoundaryPoint(fromGeometry, directionX, directionY)
+      const end = diagramBoundaryPoint(
+        toGeometry,
+        -directionX,
+        -directionY,
+        edge.dataset.diagramEdgeDirected === "true" ? 6 : 0,
+      )
+      edge.setAttribute("x1", String(start.x))
+      edge.setAttribute("y1", String(start.y))
+      edge.setAttribute("x2", String(end.x))
+      edge.setAttribute("y2", String(end.y))
+      const label = edgeLabels.get(edge.dataset.diagramEdgeIndex)
+      if (label) {
+        label.setAttribute("x", String((fromGeometry.centerX + toGeometry.centerX) / 2))
+        label.setAttribute("y", String((fromGeometry.centerY + toGeometry.centerY) / 2 - 6))
+      }
+    })
   }
 
   const renderDiagram = (scene, state) => {
@@ -467,6 +728,7 @@
       class: "gv-svg",
       role: "img",
       "aria-label": scene.title,
+      "data-diagram-scene": "true",
     })
     const markerId = `gv-arrow-${(diagramCounter += 1)}`
     const defs = svgElement("defs")
@@ -488,7 +750,7 @@
       y: Math.max(48, Math.min(312, finite(node.y, 180))),
     }))
     const nodes = new Map(renderedNodes.map((node) => [node.id, node]))
-    for (const edge of scene.edges) {
+    for (const [edgeIndex, edge] of scene.edges.entries()) {
       const from = nodes.get(edge.from)
       const to = nodes.get(edge.to)
       if (!from || !to) continue
@@ -508,6 +770,10 @@
           y2: to.y - (dy / length) * endInset,
           class: "gv-edge",
           "stroke-width": strength,
+          "data-diagram-edge-index": edgeIndex,
+          "data-diagram-edge-from": edge.from,
+          "data-diagram-edge-to": edge.to,
+          "data-diagram-edge-directed": String(Boolean(edge.directed)),
           ...(edge.directed ? { "marker-end": `url(#${markerId})` } : {}),
         }),
       )
@@ -516,6 +782,8 @@
           x: (from.x + to.x) / 2,
           y: (from.y + to.y) / 2 - 6,
           class: "gv-label",
+          "data-diagram-edge-label": `${edge.from}-${edge.to}`,
+          "data-diagram-edge-index": edgeIndex,
         })
         label.textContent = edge.label
         svg.appendChild(label)
@@ -531,25 +799,50 @@
             height: 50,
             rx: 9,
             class: "gv-node",
+            "data-diagram-node": node.id,
+            "data-diagram-node-footprint": "base",
           }),
         )
       else
-        svg.appendChild(svgElement("circle", { cx: node.x, cy: node.y, r: 32, class: "gv-node" }))
+        svg.appendChild(svgElement("circle", {
+          cx: node.x,
+          cy: node.y,
+          r: 32,
+          class: "gv-node",
+          "data-diagram-node": node.id,
+          "data-diagram-node-footprint": "base",
+        }))
       const value = node.value ? ` ${format(evaluate(node.value, state), 2)}` : ""
       const words = `${node.label}${value}`.trim().split(/\s+/)
       const lines = []
+      // A live value makes an otherwise compact identifier materially wider at
+      // the accessible mobile font size. Keep its value on a distinct, short
+      // line when needed so the responsive footprint can stay bounded without
+      // discarding either the authored label or the observable number.
+      const maxLineCharacters = node.value ? 8 : 14
       for (const word of words) {
         const current = lines[lines.length - 1]
-        if (!current || `${current} ${word}`.length > 14) lines.push(word)
+        if (!current || `${current} ${word}`.length > maxLineCharacters) lines.push(word)
         else lines[lines.length - 1] = `${current} ${word}`
       }
+      // Keep every authored word visible. If a fourth short line would be
+      // needed, keep its remainder together on the third line so the measured
+      // footprint can expand or fail deterministically instead of truncating
+      // a source-grounded label or live value.
+      const visibleLines = lines.length > 3
+        ? [...lines.slice(0, 2), lines.slice(2).join(" ")]
+        : lines
       const label = svgElement("text", {
         x: node.x,
-        y: node.y - (lines.length - 1) * 8 + 4,
+        y: node.y,
         class: "gv-label gv-node-label",
+        "data-diagram-node-label": node.id,
       })
-      lines.slice(0, 3).forEach((line, index) => {
-        const span = svgElement("tspan", { x: node.x, dy: index === 0 ? 0 : 16 })
+      visibleLines.forEach((line, index) => {
+        const span = svgElement("tspan", {
+          x: node.x,
+          dy: index === 0 ? `${-(visibleLines.length - 1) * 0.725}em` : "1.45em",
+        })
         span.textContent = line
         label.appendChild(span)
       })
@@ -879,6 +1172,7 @@
         spatialPalette[primitive.color] ||
         spatialPalette[spatialColorCycle[index % spatialColorCycle.length]],
       pattern: primitive.pattern || spatialPatternCycle[index % spatialPatternCycle.length],
+      labelMode: primitive.labelMode === "legend_only" ? "legend_only" : "inline",
       opacity: Number.isFinite(opacityValue) ? Math.max(0.1, Math.min(1, opacityValue)) : 0.32,
     }
     if (primitive.kind === "plane") {
@@ -1757,6 +2051,7 @@
           "data-spatial-id": object.id,
           "data-spatial-kind": object.kind,
           "data-spatial-pattern": object.pattern,
+          "data-spatial-label-mode": object.labelMode,
         })
         const projectedAnchor = project(object.anchor)
         const geometryBox = geometryBoxById.get(object.id)
@@ -1913,7 +2208,8 @@
             svgElement("circle", { cx: from[0], cy: from[1], r: 3, fill: object.color }),
           )
         }
-        labelRequests.push({ object, anchor: projectedAnchor })
+        if (object.labelMode === "inline")
+          labelRequests.push({ object, anchor: projectedAnchor })
         svg.appendChild(objectGroup)
       })
 
@@ -2162,6 +2458,18 @@
     const valuesHost = element("div", "gv-values")
     const controlsHost = element("div", "gv-controls")
     const controlElements = new Map()
+    let diagramLayoutFrame = 0
+    const layoutRenderedDiagrams = () => {
+      scenesHost.querySelectorAll("[data-diagram-scene=true]").forEach(layoutDiagramFootprints)
+    }
+    const scheduleDiagramLayout = () => {
+      if (diagramLayoutFrame) cancelAnimationFrame(diagramLayoutFrame)
+      diagramLayoutFrame = requestAnimationFrame(() => {
+        diagramLayoutFrame = 0
+        layoutRenderedDiagrams()
+      })
+    }
+    window.addEventListener("resize", scheduleDiagramLayout)
     valuesHost.setAttribute("aria-live", "polite")
     valuesHost.setAttribute("aria-atomic", "true")
 
@@ -2257,6 +2565,10 @@
           scenesHost.appendChild(host)
         }
       })
+      layoutRenderedDiagrams()
+      // A container-query font change can settle one frame after a fresh draw.
+      // The follow-up pass keeps a learner's next rendered frame fitted too.
+      scheduleDiagramLayout()
       if (Number.isInteger(focusSpatialSceneIndex)) {
         const spatialView = scenesHost.querySelector(
           `[data-spatial-scene-index="${focusSpatialSceneIndex}"]`,
@@ -2567,6 +2879,8 @@
       resumeWhenVisible = false
       stopAnimation()
       document.removeEventListener("visibilitychange", onVisibilityChange)
+      window.removeEventListener("resize", scheduleDiagramLayout)
+      if (diagramLayoutFrame) cancelAnimationFrame(diagramLayoutFrame)
       if (activeSpatialDragCleanup) activeSpatialDragCleanup()
       activeDefinitionCleanup = null
     }
@@ -2601,6 +2915,9 @@
                 const primitives = host.querySelectorAll("[data-spatial-kind]")
                 const legendItems = host.querySelectorAll("[data-spatial-legend-id]")
                 const labels = Array.from(host.querySelectorAll("[data-spatial-label-for]"))
+                const inlinePrimitives = Array.from(primitives).filter(
+                  (primitive) => primitive.dataset.spatialLabelMode !== "legend_only",
+                )
                 const labelBoxes = labels.map((label) => label.getBBox())
                 if (!svg) failures.push(`${scope}.projection: missing projection SVG`)
                 else {
@@ -2614,6 +2931,85 @@
                     )
                   if (!svg.querySelector("desc"))
                     failures.push(`${scope}.description: missing SVG desc`)
+
+                  // Bounds are authored SVG user units, not CSS-pixel
+                  // measurements. This catches a camera scale that crops a
+                  // vector arrowhead or an inline label before the visual
+                  // reaches critic review, while retaining the authored view
+                  // rather than silently auto-fitting it at runtime.
+                  const safeFrame = { left: 12, right: 628, top: 12, bottom: 388 }
+                  const labelFrame = { left: 0, right: 640, top: 0, bottom: 400 }
+                  const authoredScale = Number(
+                    String(svg.dataset.spatialCamera || "").split(",")[2],
+                  )
+                  const rounded = (value) => Math.round(value * 1000) / 1000
+                  const boxFromPrimitive = (primitive) => {
+                    const left = Number(primitive.dataset.spatialGeometryLeft)
+                    const right = Number(primitive.dataset.spatialGeometryRight)
+                    const top = Number(primitive.dataset.spatialGeometryTop)
+                    const bottom = Number(primitive.dataset.spatialGeometryBottom)
+                    return [left, right, top, bottom].every(Number.isFinite)
+                      ? { left, right, top, bottom }
+                      : null
+                  }
+                  const scaleAtMost = (box) => {
+                    if (!Number.isFinite(authoredScale) || authoredScale <= 0) return undefined
+                    const ratios = []
+                    if (box.left < 320)
+                      ratios.push((320 - safeFrame.left) / Math.max(1e-6, 320 - box.left))
+                    if (box.right > 320)
+                      ratios.push((safeFrame.right - 320) / Math.max(1e-6, box.right - 320))
+                    if (box.top < 200)
+                      ratios.push((200 - safeFrame.top) / Math.max(1e-6, 200 - box.top))
+                    if (box.bottom > 200)
+                      ratios.push((safeFrame.bottom - 200) / Math.max(1e-6, box.bottom - 200))
+                    return ratios.length ? authoredScale * Math.min(...ratios) : undefined
+                  }
+                  Array.from(primitives).forEach((primitive, primitiveIndex) => {
+                    const geometry = boxFromPrimitive(primitive)
+                    const primitiveId = String(primitive.dataset.spatialId ?? primitiveIndex)
+                    if (!geometry) {
+                      failures.push(`${scope}.geometry_box: primitive=${primitiveId}; missing finite projected bounds`)
+                      return
+                    }
+                    const overflow = [
+                      geometry.left < safeFrame.left
+                        ? `left=${rounded(safeFrame.left - geometry.left)}`
+                        : undefined,
+                      geometry.right > safeFrame.right
+                        ? `right=${rounded(geometry.right - safeFrame.right)}`
+                        : undefined,
+                      geometry.top < safeFrame.top
+                        ? `top=${rounded(safeFrame.top - geometry.top)}`
+                        : undefined,
+                      geometry.bottom > safeFrame.bottom
+                        ? `bottom=${rounded(geometry.bottom - safeFrame.bottom)}`
+                        : undefined,
+                    ].filter(Boolean)
+                    if (overflow.length) {
+                      const recommendedScale = scaleAtMost(geometry)
+                      failures.push(
+                        `${scope}.geometry_out_of_frame: primitive=${primitiveId}; overflow=${overflow.join(",")}; authoredScale=${Number.isFinite(authoredScale) ? rounded(authoredScale) : "unknown"}; scaleAtMost=${recommendedScale === undefined ? "unknown" : rounded(recommendedScale)}`,
+                      )
+                    }
+                  })
+                  labels.forEach((label, labelIndex) => {
+                    const box = label.getBBox()
+                    const overflow = [
+                      box.x < labelFrame.left ? `left=${rounded(labelFrame.left - box.x)}` : undefined,
+                      box.x + box.width > labelFrame.right
+                        ? `right=${rounded(box.x + box.width - labelFrame.right)}`
+                        : undefined,
+                      box.y < labelFrame.top ? `top=${rounded(labelFrame.top - box.y)}` : undefined,
+                      box.y + box.height > labelFrame.bottom
+                        ? `bottom=${rounded(box.y + box.height - labelFrame.bottom)}`
+                        : undefined,
+                    ].filter(Boolean)
+                    if (overflow.length)
+                      failures.push(
+                        `${scope}.label_out_of_frame: label=${String(label.dataset.spatialLabelFor ?? labelIndex)}; overflow=${overflow.join(",")}`,
+                      )
+                  })
                 }
                 if (primitives.length === 0)
                   failures.push(`${scope}.primitives: expected at least 1; actual=0`)
@@ -2621,9 +3017,9 @@
                   failures.push(
                     `${scope}.legend_count: expected=${primitives.length}; actual=${legendItems.length}`,
                   )
-                if (labels.length !== primitives.length)
+                if (labels.length !== inlinePrimitives.length)
                   failures.push(
-                    `${scope}.label_count: expected=${primitives.length}; actual=${labels.length}`,
+                    `${scope}.label_count: expected=${inlinePrimitives.length}; actual=${labels.length}`,
                   )
                 labelBoxes.forEach((box, index) =>
                   labelBoxes.slice(index + 1).forEach((candidate, offset) => {
@@ -2657,6 +3053,168 @@
                 })
               },
             )
+          const boxOverlapArea = (left, right) =>
+            Math.max(0, Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x)) *
+            Math.max(0, Math.min(left.y + left.height, right.y + right.height) - Math.max(left.y, right.y))
+          const boxInside = (inner, outer, allowance = 0) =>
+            inner.x >= outer.x - allowance &&
+            inner.y >= outer.y - allowance &&
+            inner.x + inner.width <= outer.x + outer.width + allowance &&
+            inner.y + inner.height <= outer.y + outer.height + allowance
+          const collectDiagramDiagnostics = (phase) =>
+            Array.from(document.querySelectorAll("[data-diagram-scene=true]")).forEach(
+              (svg, diagramIndex) => {
+                // Test the same settled geometry a learner sees, including a
+                // responsive-font layout pass after the control update.
+                layoutDiagramFootprints(svg)
+                const scope = `diagram.${phase}.scene[${diagramIndex}]`
+                const nodes = Array.from(svg.querySelectorAll("[data-diagram-node]"))
+                const nodeLabels = Array.from(svg.querySelectorAll("[data-diagram-node-label]"))
+                const edgeLabels = Array.from(svg.querySelectorAll("[data-diagram-edge-label]"))
+                const nodeById = new Map(nodes.map((node) => [node.dataset.diagramNode, node]))
+                const allLabels = [...nodeLabels, ...edgeLabels]
+                const svgBox = svg.getBoundingClientRect()
+                allLabels.forEach((label, labelIndex) => {
+                  const box = label.getBoundingClientRect()
+                  if (!boxInside(box, svgBox, 1))
+                    failures.push(
+                      `${scope}.label_out_of_bounds: label=${String(label.dataset.diagramNodeLabel || label.dataset.diagramEdgeLabel || labelIndex)}; ${boxSummary(box)}`,
+                    )
+                })
+                nodeLabels.forEach((label) => {
+                  const nodeId = label.dataset.diagramNodeLabel
+                  const node = nodeById.get(nodeId)
+                  if (!node) {
+                    failures.push(`${scope}.node_label_owner: missing node=${String(nodeId)}`)
+                    return
+                  }
+                  const labelBox = label.getBoundingClientRect()
+                  const nodeBox = node.getBoundingClientRect()
+                  if (!boxInside(labelBox, nodeBox, 1))
+                    failures.push(
+                      `${scope}.node_label_footprint: node=${String(nodeId)}; label=${boxSummary(labelBox)}; footprint=${boxSummary(nodeBox)}`,
+                    )
+                  const lineElements = Array.from(label.querySelectorAll("tspan"))
+                  const nodeWidth = node.tagName.toLowerCase() === "rect"
+                    ? Number(node.getAttribute("width"))
+                    : Number(node.getAttribute("r")) * 2
+                  // SVG exposes shaped line lengths in its own user coordinates.
+                  // Never compare CSS-pixel font metrics or character counts to
+                  // raw viewBox dimensions: that creates viewport-dependent
+                  // false failures for labels whose actual bounds fit the node.
+                  const measuredLineWidth = Math.max(
+                    0,
+                    ...lineElements.map((line) => {
+                      try {
+                        const width = line.getComputedTextLength?.()
+                        return Number.isFinite(width) && width > 0 ? width : 0
+                      } catch {
+                        return 0
+                      }
+                    }),
+                  )
+                  if (Number.isFinite(nodeWidth) && measuredLineWidth > nodeWidth - 4)
+                    failures.push(
+                      `${scope}.node_label_footprint: node=${String(nodeId)}; measuredLineWidth=${Math.round(measuredLineWidth * 10) / 10}; nodeWidth=${String(nodeWidth)}`,
+                    )
+                  const lineBoxes = lineElements
+                    .map((line) => line.getBoundingClientRect())
+                    .filter((box) => box.width > 0 && box.height > 0)
+                  lineBoxes.forEach((box, index) => {
+                    lineBoxes.slice(index + 1).forEach((candidate, offset) => {
+                      const overlapArea = boxOverlapArea(box, candidate)
+                      if (overlapArea > 1)
+                        failures.push(
+                          `${scope}.node_label_line_overlap: node=${String(nodeId)}; firstLine=${String(index)}; secondLine=${String(index + offset + 1)}; overlapArea=${Math.round(overlapArea * 10) / 10}`,
+                        )
+                    })
+                  })
+                })
+                nodes.forEach((node, index) => {
+                  const box = node.getBoundingClientRect()
+                  if (!boxInside(box, svgBox, 1))
+                    failures.push(
+                      `${scope}.node_out_of_bounds: node=${String(node.dataset.diagramNode)}; ${boxSummary(box)}`,
+                    )
+                  nodes.slice(index + 1).forEach((candidate) => {
+                    const overlapArea = boxOverlapArea(box, candidate.getBoundingClientRect())
+                    if (overlapArea > 1)
+                      failures.push(
+                        `${scope}.node_overlap: first=${String(node.dataset.diagramNode)}; second=${String(candidate.dataset.diagramNode)}; overlapArea=${Math.round(overlapArea * 10) / 10}`,
+                      )
+                  })
+                })
+                allLabels.forEach((label, index) => {
+                  const box = label.getBoundingClientRect()
+                  allLabels.slice(index + 1).forEach((candidate) => {
+                    const overlapArea = boxOverlapArea(box, candidate.getBoundingClientRect())
+                    if (overlapArea > 1)
+                      failures.push(
+                        `${scope}.label_overlap: first=${String(label.dataset.diagramNodeLabel || label.dataset.diagramEdgeLabel)}; second=${String(candidate.dataset.diagramNodeLabel || candidate.dataset.diagramEdgeLabel)}; overlapArea=${Math.round(overlapArea * 10) / 10}`,
+                      )
+                  })
+                })
+                edgeLabels.forEach((label) => {
+                  const box = label.getBoundingClientRect()
+                  nodes.forEach((node) => {
+                    const overlapArea = boxOverlapArea(box, node.getBoundingClientRect())
+                    if (overlapArea > 1)
+                      failures.push(
+                        `${scope}.edge_label_node_overlap: edge=${String(label.dataset.diagramEdgeLabel)}; node=${String(node.dataset.diagramNode)}; overlapArea=${Math.round(overlapArea * 10) / 10}`,
+                      )
+                  })
+                })
+              },
+            )
+          const collectPlotDiagnostics = (phase) =>
+            Array.from(document.querySelectorAll("[data-plot-scene=true]")).forEach(
+              (svg, plotIndex) => {
+                const scope = "plot." + phase + ".scene[" + plotIndex + "]"
+                const labels = Array.from(
+                  svg.querySelectorAll("[data-plot-axis-label]"),
+                )
+                if (labels.length !== 2) {
+                  failures.push(
+                    scope + ".axis_label_count: expected=2; actual=" + labels.length,
+                  )
+                }
+                labels.forEach((label, labelIndex) => {
+                  let box
+                  try {
+                    box = label.getBBox()
+                  } catch {
+                    failures.push(
+                      scope + ".axis_label_box: axis=" + String(label.dataset.plotAxisLabel ?? labelIndex) + "; unavailable",
+                    )
+                    return
+                  }
+                  if (
+                    ![box.x, box.y, box.width, box.height].every(Number.isFinite)
+                  ) {
+                    failures.push(
+                      scope + ".axis_label_box: axis=" + String(label.dataset.plotAxisLabel ?? labelIndex) + "; nonfinite",
+                    )
+                    return
+                  }
+                  const overflow = [
+                    box.x < 0 ? "left=" + Math.round(-box.x * 10) / 10 : undefined,
+                    box.x + box.width > 640
+                      ? "right=" + Math.round((box.x + box.width - 640) * 10) / 10
+                      : undefined,
+                    box.y < 0 ? "top=" + Math.round(-box.y * 10) / 10 : undefined,
+                    box.y + box.height > 340
+                      ? "bottom=" + Math.round((box.y + box.height - 340) * 10) / 10
+                      : undefined,
+                  ].filter(Boolean)
+                  if (overflow.length) {
+                    failures.push(
+                      scope + ".axis_label_out_of_frame: axis=" + String(label.dataset.plotAxisLabel ?? labelIndex) + "; overflow=" + overflow.join(","),
+                    )
+                  }
+                })
+              },
+            )
+          collectPlotDiagnostics("default")
           const first = document.querySelector("[data-control-id]")
           if (first) {
             first.focus()
@@ -2672,6 +3230,8 @@
             } else first.click()
           }
           collectSpatialDiagnostics("after_control_change")
+          collectDiagramDiagnostics("after_control_change")
+          collectPlotDiagnostics("after_control_change")
           document.querySelectorAll("[data-output-finite]").forEach((node) => {
             if (node.dataset.outputFinite !== "true")
               failures.push(
@@ -2681,6 +3241,8 @@
           const resetButton = document.querySelector("[data-action=reset]")
           if (resetButton) resetButton.click()
           collectSpatialDiagnostics("after_reset")
+          collectDiagramDiagnostics("after_reset")
+          collectPlotDiagnostics("after_reset")
           document.querySelectorAll("[data-control-id]").forEach((node) => {
             const control = definition.controls.find(
               (candidate) => candidate.id === node.dataset.controlId,
@@ -2731,6 +3293,11 @@
     if (event.source !== window && event.source !== parent) return
     const message = event.data
     if (!message) return
+    if (message.type === PREVIEW_PRIMARY_SPATIAL_FRAME) {
+      if (window.__BREADBOARD_VISUAL_TEST_MODE__)
+        validatePreviewPrimarySpatialFrame()
+      return
+    }
     if (message.type === THEME) {
       const theme = message.theme === "dark" ? "dark" : "light"
       document.documentElement.dataset.theme = theme

@@ -99,6 +99,70 @@ test("generated candidate prompt and schema explicitly require the six-field env
     assert.ok(requests[0].response_format.json_schema.schema.required.includes(field));
   }
   assert.equal(requests[0].response_format.json_schema.strict, true);
+  assert.match(
+    system,
+    /status scene.*threshold is required and must be a literal finite number.*never an expression, string, null, NaN, or Infinity/i,
+  );
+  assert.match(
+    system,
+    /vector primitive is a finite directed segment.*must not call it an unbounded line, ray, or axis/i,
+  );
+  assert.match(
+    system,
+    /timeline scene is exactly.*progressInput must exactly equal one of the declared reviewed control ids.*There is no implicit progress, time, step, or output input/i,
+  );
+  assert.match(
+    system,
+    /spatial primitive label must name that rendered primitive itself.*narrow mobile previews/i,
+  );
+  assert.match(
+    system,
+    /Screen-left\/right\/top\/bottom are presentation-dependent, not world geometry.*do not make a screen-relative placement claim.*every relevant labelled preview/i,
+  );
+  assert.match(
+    system,
+    /For every screen-relative left\/right\/top\/bottom claim, perform a projection audit.*world-coordinate relationship instead/i,
+  );
+  assert.match(
+    system,
+    /authored view values must be literal finite numbers within azimuthDegrees -180\.\.180, elevationDegrees -85\.\.85, and scale 0\.25\.\.2/i,
+  );
+  assert.match(
+    system,
+    /every spatial group and primitive label must be a concise nonempty 1-72-character string/i,
+  );
+  assert.match(
+    system,
+    /authored opacity, when present, must be a literal finite number between 0\.1 and 1/i,
+  );
+  assert.match(
+    system,
+    /at least one allowed alternate control state must change by more than 1e-9 the evaluated value of an output\.expression or numeric scene expression/i,
+  );
+  assert.match(
+    system,
+    /whenever a label, explanation, or accessibility text calls a vector unit or normalized, its evaluated to-from Euclidean norm must be exactly 1 in every rendered state/i,
+  );
+  assert.match(
+    system,
+    /Do not call a direction vector unit or normalized by implication: from:\[0,0,0\] to:\[1,0,0\] has magnitude 1, while to:\[1,1,1\] has magnitude sqrt\(3\)/i,
+  );
+  assert.match(
+    system,
+    /Cylinder and cone primitives are bounded capped closed solids; never use either when the claim requires an open, uncapped, clipped, one-sided, or sector surface/i,
+  );
+  assert.match(
+    system,
+    /named-point normal, tangent, or basis-direction claim.*relative interior.*not an edge, vertex, seam, or cap.*face normal must be parallel or antiparallel/i,
+  );
+  assert.match(
+    system,
+    /make an internal checklist from every exactErrors and exactHistory entry.*not merely their labels, explanation, or the newest entry/i,
+  );
+  assert.match(
+    system,
+    /FINAL NON-NEGOTIABLE SELF-CHECK BEFORE THE JSON RESPONSE: verify the literal sourceCode, not just its prose/i,
+  );
 });
 
 test("candidate envelope rejects missing, extra, and malformed fields without defaulting", () => {

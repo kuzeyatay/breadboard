@@ -90,9 +90,6 @@ export async function POST(
       // absent so a client compiled before the switch existed keeps behaving
       // as it did.
       personalize: body.personalize !== false,
-      // Goal Mode is likewise a per-message choice. Its durable state is
-      // conversation-scoped on the server, never a browser-supplied goal body.
-      goalMode: body.goalMode === true,
       // Hermes keeps YOLO on the live session, but the browser setting remains
       // authoritative. Every message therefore reasserts the current value.
       yoloMode: body.yoloMode === true,

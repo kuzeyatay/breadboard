@@ -13,6 +13,7 @@ interface UsageLimitWindow {
 }
 
 interface UsageLimitsPayload {
+  provider?: "chatgpt" | "google" | "anthropic";
   available?: boolean;
   captured_at?: string;
   file_updated_at?: string;
@@ -20,8 +21,20 @@ interface UsageLimitsPayload {
   stale?: boolean;
   refreshed?: boolean;
   refresh_error?: string;
+  error?: string;
+  model?: string;
   primary?: UsageLimitWindow;
   secondary?: UsageLimitWindow;
+  accounts?: Array<{
+    account: string;
+    limit: UsageLimitWindow;
+  }>;
+  limits?: Array<{
+    key: string;
+    label: string;
+    limit: UsageLimitWindow;
+  }>;
+  usage_url?: string;
 }
 
 interface UsageLimitsPopoverProps {
@@ -35,10 +48,9 @@ interface UsageLimitsPopoverProps {
   onOpenChange?: (open: boolean) => void;
   showBackdrop?: boolean;
   /**
-   * The model currently in use. These windows are the *ChatGPT* plan's, tracked
-   * from that upstream's rate-limit headers, so they say nothing about a model
-   * served by another provider — showing them regardless would imply a budget
-   * that is not the one being spent.
+   * The model currently in use. ChatGPT windows come from rate-limit headers;
+   * Google subscriptions are read from Antigravity's quota report; Claude
+   * subscriptions use Anthropic's read-only utilization report.
    */
   activeModel?: string;
   modelFailover?: ModelFailoverNotice | null;
@@ -47,6 +59,20 @@ interface UsageLimitsPopoverProps {
 /** ChatGPT ids are bare; every other provider's are `provider/model`. */
 function isChatgptModel(modelId: string | undefined): boolean {
   return typeof modelId === "string" && modelId.trim() !== "" && !modelId.includes("/");
+}
+
+function isGoogleSubscriptionModel(modelId: string | undefined): boolean {
+  if (typeof modelId !== "string") return false;
+  const normalized = modelId.trim();
+  return (
+    normalized.toLowerCase().startsWith("cliproxy/") &&
+    assistantModelVendor(normalized).id === "google"
+  );
+}
+
+function isClaudeSubscriptionModel(modelId: string | undefined): boolean {
+  if (typeof modelId !== "string") return false;
+  return /^cliproxy\/claude-[a-z0-9._-]+$/i.test(modelId.trim());
 }
 
 function providerLabel(modelId: string): string {
@@ -128,6 +154,55 @@ function formatResetAt(date: Date): string {
   });
 }
 
+function UsageLimitMeter({
+  label,
+  windowData,
+  reported,
+  capturedAt,
+  now,
+  light,
+}: {
+  label: string;
+  windowData: UsageLimitWindow;
+  reported: boolean;
+  capturedAt?: string;
+  now: number;
+  light: boolean;
+}) {
+  const used = clampPercent(windowData.used_percent);
+  const left = Math.max(0, 100 - used);
+  const resetSeconds = remainingResetSeconds(capturedAt, windowData, now);
+  const resetAt = resetAtDate(capturedAt, windowData, now);
+  const color =
+    used >= 90 ? "bg-red-500" : used >= 60 ? "bg-yellow-500" : "bg-green-500";
+
+  return (
+    <div>
+      <div className={`mb-1 flex justify-between gap-3 ${light ? "text-[var(--ink-muted)]" : "text-gray-400"}`}>
+        <span className="min-w-0 truncate" title={label}>{label}</span>
+        <span className="shrink-0">
+          {reported ? `${used.toFixed(1)}% used, ${left.toFixed(1)}% left` : "Not reported"}
+        </span>
+      </div>
+      {reported ? (
+        <div className={`neu-progress-track h-1.5 overflow-hidden rounded-full ${light ? "bg-[var(--line)]" : "bg-gray-800"}`}>
+          <div className={`h-full rounded-full ${color}`} style={{ width: `${used}%` }} />
+        </div>
+      ) : (
+        <p className={light ? "text-[var(--ink-muted)]" : "text-gray-600"}>
+          The current usage snapshot did not include this window.
+        </p>
+      )}
+      {reported && resetSeconds !== null ? (
+        <p className={`mt-1 ${light ? "text-[var(--ink-muted)]" : "text-gray-600"}`}>
+          Resets in {formatDuration(resetSeconds)}
+          {resetAt ? ` · ${formatResetAt(resetAt)}` : ""}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export default function UsageLimitsPopover({
   buttonClassName = "flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors",
   activeButtonClassName = "border-blue-800/60 bg-blue-950/30 text-blue-400",
@@ -158,7 +233,10 @@ export default function UsageLimitsPopover({
       ? modelFailover
       : null;
   const effectiveModel = visibleFailover?.servingModel ?? activeModel;
-  const externalUsage = visibleFailover ? null : providerUsageLink(activeModel);
+  const googleUsageActive = isGoogleSubscriptionModel(activeModel);
+  const claudeUsageActive = isClaudeSubscriptionModel(activeModel);
+  const externalUsage =
+    visibleFailover || claudeUsageActive ? null : providerUsageLink(activeModel);
   const effectiveExternalUsage = providerUsageLink(effectiveModel);
 
   const setOpen = useCallback((next: boolean) => {
@@ -170,8 +248,13 @@ export default function UsageLimitsPopover({
     if (!quiet) setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/usage-limits?ts=${Date.now()}`, {
-        method: probe ? "POST" : "GET",
+      const query = new URLSearchParams({ ts: String(Date.now()) });
+      if (activeModel) query.set("model", activeModel);
+      // A ChatGPT refresh needs a tiny probe request so fresh limit headers
+      // exist. Google and Anthropic expose read-only usage calls of their own.
+      const useProbe = probe && !googleUsageActive && !claudeUsageActive;
+      const response = await fetch(`/api/usage-limits?${query.toString()}`, {
+        method: useProbe ? "POST" : "GET",
         cache: "no-store",
         headers: { "Cache-Control": "no-cache" },
       });
@@ -179,7 +262,7 @@ export default function UsageLimitsPopover({
       setUsageData(data);
       if (!response.ok) {
         throw new Error(
-          data.refresh_error || (probe ? "Could not refresh usage limits" : "Could not load usage limits"),
+          data.refresh_error || data.error || (useProbe ? "Could not refresh usage limits" : "Could not load usage limits"),
         );
       }
       setNow(Date.now());
@@ -190,26 +273,35 @@ export default function UsageLimitsPopover({
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, []);
+  }, [activeModel, googleUsageActive, claudeUsageActive]);
 
   useEffect(() => {
     if (!open) return;
-    // Nothing to poll when another provider is serving the model: the refresh
-    // probe is a real ChatGPT request, so it would spend the very quota it is
-    // supposed to be reporting on.
-    if (effectiveModel && !isChatgptModel(effectiveModel)) return;
+    // Only providers with an embedded live limit snapshot are polled here.
+    if (
+      activeModel &&
+      !isChatgptModel(activeModel) &&
+      !googleUsageActive &&
+      !claudeUsageActive
+    ) return;
     void refreshUsage(false);
     const id = window.setInterval(() => {
       setNow(Date.now());
       void refreshUsage(true);
     }, 30000);
     return () => window.clearInterval(id);
-  }, [open, refreshUsage, effectiveModel]);
+  }, [open, refreshUsage, activeModel, googleUsageActive, claudeUsageActive]);
 
   const updatedAt = formatUpdated(usageData?.captured_at);
-  const limitRows = usageData?.available
-    ? usageLimitRowsWithFiveHour(usageData)
-    : [];
+  const limitRows =
+    usageData?.available &&
+    usageData.provider !== "google" &&
+    usageData.provider !== "anthropic"
+      ? usageLimitRowsWithFiveHour(usageData)
+      : [];
+  const googleAccounts = usageData?.provider === "google" ? usageData.accounts ?? [] : [];
+  const claudeLimits = usageData?.provider === "anthropic" ? usageData.limits ?? [] : [];
+  const googleModelLabel = formatAssistantModelName(usageData?.model ?? activeModel ?? "Google");
   const triggerClassName = [
     buttonClassName,
     open && !externalUsage ? activeButtonClassName : inactiveButtonClassName,
@@ -267,7 +359,10 @@ export default function UsageLimitsPopover({
           <div className={popoverClassName}>
             <div className="mb-3 flex items-center justify-between gap-3">
               <p className={`font-medium ${light ? "text-[var(--ink-heading)]" : "text-gray-300"}`}>Usage Limits</p>
-              {!effectiveModel || isChatgptModel(effectiveModel) ? (
+              {!activeModel ||
+              isChatgptModel(activeModel) ||
+              googleUsageActive ||
+              claudeUsageActive ? (
                 <button
                   type="button"
                   onClick={() => void refreshUsage(false, true)}
@@ -291,11 +386,14 @@ export default function UsageLimitsPopover({
               </div>
             ) : null}
             {/*
-              These windows come from the ChatGPT upstream's rate-limit headers.
-              When another provider is serving the model, say so plainly instead
-              of presenting a budget that is not the one being spent.
+              ChatGPT, Google, and Anthropic each provide their own live
+              snapshot. For any other provider, say so plainly instead of
+              presenting the wrong provider's budget.
             */}
-            {effectiveModel && !isChatgptModel(effectiveModel) ? (
+            {effectiveModel &&
+            !isChatgptModel(effectiveModel) &&
+            !googleUsageActive &&
+            !claudeUsageActive ? (
               <div className="space-y-2">
                 <p className={light ? "text-[var(--ink-muted)]" : "text-gray-400"}>
                   These limits track your <span className="font-medium">ChatGPT</span> plan.
@@ -321,9 +419,80 @@ export default function UsageLimitsPopover({
             ) : loading ? (
               <p className="text-gray-500">Loading...</p>
             ) : error ? (
-              <p className={light ? "text-[var(--danger)]" : "text-red-300"}>{error}</p>
+              <div className="space-y-2">
+                <p className={light ? "text-[var(--danger)]" : "text-red-300"}>{error}</p>
+                {claudeUsageActive && effectiveExternalUsage ? (
+                  <a
+                    href={effectiveExternalUsage.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={light ? "text-[var(--botanical)] underline underline-offset-2" : "text-blue-300 underline underline-offset-2"}
+                  >
+                    Open Claude usage
+                  </a>
+                ) : null}
+              </div>
             ) : !usageData?.available ? (
-              <p className="text-gray-500">No data yet. Send a message first.</p>
+              <p className={light ? "text-[var(--ink-muted)]" : "text-gray-500"}>
+                {usageData?.error ?? "No data yet. Send a message first."}
+              </p>
+            ) : usageData.provider === "google" ? (
+              <div className="space-y-3">
+                {updatedAt ? (
+                  <p className={light ? "text-[var(--ink-muted)]" : "text-gray-600"}>
+                    Updated: {updatedAt}
+                  </p>
+                ) : null}
+                {googleAccounts.map((account, index) => (
+                  <UsageLimitMeter
+                    key={`${account.account}-${index}`}
+                    label={googleAccounts.length === 1 ? `${googleModelLabel} limit` : account.account}
+                    windowData={account.limit}
+                    reported
+                    capturedAt={usageData.captured_at}
+                    now={now}
+                    light={light}
+                  />
+                ))}
+                <p className={light ? "text-[var(--ink-muted)]" : "text-gray-600"}>
+                  Google-reported model quota. Short-term throttles may be separate.
+                </p>
+              </div>
+            ) : usageData.provider === "anthropic" ? (
+              <div className="space-y-3">
+                {updatedAt ? (
+                  <p className={light ? "text-[var(--ink-muted)]" : "text-gray-600"}>
+                    Updated: {updatedAt}
+                  </p>
+                ) : null}
+                {claudeLimits.map(({ key, label, limit }) => (
+                  <UsageLimitMeter
+                    key={key}
+                    label={label}
+                    windowData={limit}
+                    reported
+                    capturedAt={usageData.captured_at}
+                    now={now}
+                    light={light}
+                  />
+                ))}
+                <p className={light ? "text-[var(--ink-muted)]" : "text-gray-600"}>
+                  Anthropic-reported subscription usage.
+                  {usageData.usage_url ? (
+                    <>
+                      {" "}
+                      <a
+                        href={usageData.usage_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className={light ? "text-[var(--botanical)] underline underline-offset-2" : "text-blue-300 underline underline-offset-2"}
+                      >
+                        View details
+                      </a>
+                    </>
+                  ) : null}
+                </p>
+              </div>
             ) : (
               <div className="space-y-3">
                 {updatedAt ? (
@@ -341,41 +510,17 @@ export default function UsageLimitsPopover({
                     No usage windows reported yet.
                   </p>
                 ) : null}
-                {limitRows.map(({ key, label, window: windowData, reported }) => {
-                  const used = clampPercent(windowData.used_percent);
-                  const left = Math.max(0, 100 - used);
-                  const resetSeconds = remainingResetSeconds(
-                    usageData.captured_at,
-                    windowData,
-                    now,
-                  );
-                  const resetAt = resetAtDate(usageData.captured_at, windowData, now);
-                  const color =
-                    used >= 90 ? "bg-red-500" : used >= 60 ? "bg-yellow-500" : "bg-green-500";
-                  return (
-                    <div key={key}>
-                      <div className={`mb-1 flex justify-between gap-3 ${light ? "text-[var(--ink-muted)]" : "text-gray-400"}`}>
-                        <span>{label}</span>
-                        <span>{reported ? `${used.toFixed(1)}% used, ${left.toFixed(1)}% left` : "Not reported"}</span>
-                      </div>
-                      {reported ? (
-                        <div className={`neu-progress-track h-1.5 overflow-hidden rounded-full ${light ? "bg-[var(--line)]" : "bg-gray-800"}`}>
-                          <div className={`h-full rounded-full ${color}`} style={{ width: `${used}%` }} />
-                        </div>
-                      ) : (
-                        <p className={light ? "text-[var(--ink-muted)]" : "text-gray-600"}>
-                          The current usage snapshot did not include this window.
-                        </p>
-                      )}
-                      {reported && resetSeconds !== null ? (
-                        <p className={`mt-1 ${light ? "text-[var(--ink-muted)]" : "text-gray-600"}`}>
-                          Resets in {formatDuration(resetSeconds)}
-                          {resetAt ? ` · ${formatResetAt(resetAt)}` : ""}
-                        </p>
-                      ) : null}
-                    </div>
-                  );
-                })}
+                {limitRows.map(({ key, label, window: windowData, reported }) => (
+                  <UsageLimitMeter
+                    key={key}
+                    label={label}
+                    windowData={windowData}
+                    reported={reported}
+                    capturedAt={usageData.captured_at}
+                    now={now}
+                    light={light}
+                  />
+                ))}
               </div>
             )}
           </div>

@@ -166,6 +166,59 @@ test("a route answer carries the router's own distance and duration", async () =
   assert.equal(outcome.data.provenance.provider, "Valhalla/OpenStreetMap");
 });
 
+test("Auto retries an unexpectedly long walking route as driving", async () => {
+  const database = createDatabase();
+  await run("map_search", { query: "Kucukyali" }, {
+    database,
+    providers: providers({ geocoder: { async search() { return [KUCUKYALI]; } } }),
+  });
+  await run("map_search", { query: "Metropol" }, {
+    database,
+    providers: providers({ geocoder: { async search() { return [METROPOL]; } } }),
+  });
+  const requestedModes = [];
+  const router = providers({
+    router: {
+      async route({ origin, destination, mode }) {
+        requestedModes.push(mode);
+        return {
+          id: `route:${mode}:${origin.id}:${destination.id}`,
+          origin,
+          destination,
+          mode,
+          distanceMeters: mode === "walking" ? 5_500 : 4_200,
+          durationSeconds: mode === "walking" ? 4_000 : 700,
+          geometry: ROUTE_GEOMETRY,
+          bounds: {
+            north: 40.9558,
+            south: 40.9469,
+            east: 29.1224,
+            west: 29.1206,
+          },
+          provenance: {
+            provider: "Valhalla/OpenStreetMap",
+            retrievedAt: RETRIEVED_AT,
+          },
+        };
+      },
+    },
+  });
+
+  const outcome = await run(
+    "map_route",
+    {
+      origin: { placeId: KUCUKYALI.id },
+      destination: { placeId: METROPOL.id },
+      // Omitted on purpose: the schema defaults ordinary directions to Auto.
+    },
+    { database, providers: router },
+  );
+
+  assert.deepEqual(requestedModes, ["walking", "driving"]);
+  assert.equal(outcome.data.mode, "driving");
+  assert.equal(outcome.data.distanceMeters, 4_200);
+});
+
 test("a distance or travel-time question cannot be answered without routing", async () => {
   const database = createDatabase();
   // Nothing has been resolved, so there is no id to route between and no

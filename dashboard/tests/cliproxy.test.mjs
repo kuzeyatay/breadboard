@@ -293,9 +293,10 @@ test("pay-per-token providers stay hidden except explicit setup integrations", (
   const settings = source("src/app/components/settings-providers.tsx");
   // Breadboard runs on subscriptions; a pay-per-token provider only appears
   // when a key was explicitly stored, never from a stray environment variable.
-  // Google is the one exception, so a quota-limited subscription user can
-  // configure the documented API-key recovery path.
+  // Google and OpenRouter are the setup-first exceptions, so a quota-limited
+  // subscription user can configure either API-key recovery path.
   assert.match(settings, /provider\.id === "google"/);
+  assert.match(settings, /provider\.id === "openrouter"/);
   assert.match(settings, /!provider\.requiresApiKey/);
   assert.match(settings, /provider\.hasStoredKey/);
   assert.match(settings, /visibleProviders\.map/);
@@ -333,6 +334,7 @@ test("environment API keys do not configure pay-per-token providers", () => {
   const settings = source("src/app/components/settings-providers.tsx");
   assert.match(settings, /provider\.hasStoredKey/);
   assert.match(settings, /provider\.id === "google"/);
+  assert.match(settings, /provider\.id === "openrouter"/);
 });
 
 test("model labels drop the routing prefix", async () => {

@@ -223,9 +223,9 @@ test("directions and place recommendations render the native map in chat", () =>
   assert.match(runtimePanel, /requestedAt=\{inlineMapRequestStartedAt\}/);
   assert.match(mapClient, /useState<RouteModePreference>\("auto"\)/);
   assert.match(mapClient, /automaticTravelMode\(context\.currentLocation, selectedPlace\)/);
-  assert.match(inlineMap, /attributionControl: \{ compact: false \}/);
+  assert.match(inlineMap, /attributionControl: \{ compact: true \}/);
+  assert.match(inlineMap, /classList\.remove\("maplibregl-compact-show"\)/);
   assert.match(mapClient, /attributionControl: \{ compact: false \}/);
-  assert.doesNotMatch(inlineMap, /attributionControl: \{ compact: true \}/);
   assert.match(inlineMap, /route\.origin\.name\} to \{route\.destination\.name/);
   assert.match(mapClient, /route\.origin\.name\} to \{route\.destination\.name/);
   assert.match(

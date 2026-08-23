@@ -42,7 +42,7 @@ import {
 import { getResearchState } from "../research/store.ts";
 import { finishActiveRuntimeRun } from "./run-store.ts";
 import { scheduleLoopxTickForConversation } from "../loopx/conversation-tick.ts";
-import { accountGoalModeTurn } from "../goal-mode.ts";
+import { accountGoalModeTurn, readGoalModeState } from "../goal-mode.ts";
 import { scheduleDurableExtractionForConversation } from "../mem0/conversation-extraction.ts";
 import { scheduleMemoryProfileSynthesisForConversation } from "../conversations/memory-profile.ts";
 import {
@@ -733,15 +733,25 @@ function driveSessionEventPump(
         // is complete and the helper intentionally leaves it untouched.
         if (session.row.conversation_id !== null && streamRun) {
           const goalMode = parseRuntimeRunDispatch(streamRun).goalMode;
-          if (goalMode?.enabled && goalMode.goalId) {
+          if (goalMode?.enabled) {
             const conversation = db
               .prepare("SELECT public_id FROM conversations WHERE id = ?")
               .get(session.row.conversation_id) as { public_id: string } | undefined;
-            if (conversation?.public_id) {
+            // The turn that starts a goal dispatches without an id, because the
+            // model writes the objective during it. Reading the state back here
+            // is what lets that first turn be accounted like every other one;
+            // when the goal was already running the dispatched id still wins,
+            // so a goal replaced mid-conversation cannot inherit its counters.
+            const goalId =
+              goalMode.goalId ??
+              (conversation?.public_id
+                ? readGoalModeState(conversation.public_id)?.goal_id ?? null
+                : null);
+            if (conversation?.public_id && goalId) {
               try {
                 accountGoalModeTurn({
                   conversationPublicId: conversation.public_id,
-                  goalId: goalMode.goalId,
+                  goalId,
                   startedAt: streamRun.started_at,
                 });
               } catch {

@@ -13,6 +13,16 @@ interface StoredHighlight {
   createdAt: number
 }
 
+interface StoredInlineAnswer {
+  requestId: string
+  highlightId: string
+  question: string
+  answer: string
+  state: "pending" | "streaming" | "complete" | "error"
+  responseDurationMs?: number
+  updatedAt: number
+}
+
 interface TextEntry {
   node: Text
   start: number
@@ -31,10 +41,15 @@ interface Span {
 }
 
 const STORAGE_PREFIX = "breadboard:garden-highlights:v1:"
+const ANSWER_STORAGE_PREFIX = "breadboard:garden-highlight-answers:v1:"
 const COLOR_KEY = "breadboard:garden-highlight-color:v1"
 // How much text either side of a highlight is kept so it can be found again
 // after the page around it changes.
 const CONTEXT = 48
+// Questions need enough of the page to disambiguate a tiny phrase. This is
+// intentionally much wider than the relocation context above, which only has
+// to find a mark after an edit.
+const QUESTION_CONTEXT = 4_000
 
 // Widgets, media, and rendered math own their DOM: wrapping their text in a
 // <mark> would fight their layout, so they are invisible to the highlighter and
@@ -61,6 +76,9 @@ const articleRoot = (): HTMLElement | null => document.querySelector("article.po
 
 const storageKey = () => STORAGE_PREFIX + (document.body.dataset.slug ?? window.location.pathname)
 
+const answerStorageKey = () =>
+  ANSWER_STORAGE_PREFIX + (document.body.dataset.slug ?? window.location.pathname)
+
 function readStored(): StoredHighlight[] {
   try {
     const raw = localStorage.getItem(storageKey())
@@ -86,6 +104,35 @@ function writeStored(list: StoredHighlight[]) {
     else localStorage.setItem(storageKey(), JSON.stringify(list))
   } catch {
     // A full or blocked store only costs this page's highlights, never the page.
+  }
+}
+
+function readInlineAnswers(): StoredInlineAnswer[] {
+  try {
+    const raw = localStorage.getItem(answerStorageKey())
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (entry: StoredInlineAnswer) =>
+        entry &&
+        typeof entry.requestId === "string" &&
+        typeof entry.highlightId === "string" &&
+        typeof entry.question === "string" &&
+        typeof entry.answer === "string" &&
+        ["pending", "streaming", "complete", "error"].includes(entry.state),
+    )
+  } catch {
+    return []
+  }
+}
+
+function writeInlineAnswers(list: StoredInlineAnswer[]) {
+  try {
+    if (list.length === 0) localStorage.removeItem(answerStorageKey())
+    else localStorage.setItem(answerStorageKey(), JSON.stringify(list.slice(-100)))
+  } catch {
+    // Answers remain available for this page load when storage is unavailable.
   }
 }
 
@@ -433,14 +480,21 @@ document.addEventListener("nav", () => {
   const trigger = container.querySelector<HTMLElement>('[data-highlight-action="palette"]')!
   const triggerSwatch = trigger.querySelector<HTMLElement>(".bb-highlight-swatch")!
   const copyButton = container.querySelector<HTMLElement>('[data-highlight-action="copy"]')!
-  const askButton = container.querySelector<HTMLButtonElement>('[data-highlight-action="ask"]')!
+  const askButtons = Array.from(
+    container.querySelectorAll<HTMLButtonElement>(
+      '[data-highlight-action="ask-chat"], [data-highlight-action="ask-inline"]',
+    ),
+  )
   const eraseButton = container.querySelector<HTMLElement>(
     '.bb-highlight-menu [data-highlight-action="erase"]',
   )!
 
   let highlights = render(root)
+  let inlineAnswers = readInlineAnswers()
   let activeColor = readColor()
   let copyResetTimer = 0
+  let openAnswerHighlightId: string | null = null
+  const autoOpenedAnswerRequests = new Set<string>()
   // Escape means "leave me alone with this selection": without it the next
   // keyup would put the menu straight back.
   let dismissed = false
@@ -448,7 +502,7 @@ document.addEventListener("nav", () => {
   // The Garden dashboard owns the one visible Assistant. A directly opened
   // standalone Quartz page has no receiving composer, so do not offer an action
   // that cannot complete there.
-  askButton.hidden = window.parent === window
+  for (const button of askButtons) button.hidden = window.parent === window
 
   const syncColorUi = () => {
     triggerSwatch.dataset.hlColor = activeColor
@@ -469,6 +523,101 @@ document.addEventListener("nav", () => {
     container.hidden = true
     closePalette()
   }
+
+  const answerPopover = document.createElement("section")
+  answerPopover.className = "bb-highlight-answer"
+  answerPopover.hidden = true
+  answerPopover.setAttribute("role", "dialog")
+  answerPopover.setAttribute("aria-label", "Answer about highlighted text")
+  answerPopover.innerHTML = `
+    <header class="bb-highlight-answer-header">
+      <div class="bb-highlight-answer-question"></div>
+      <button type="button" class="bb-highlight-answer-close" aria-label="Close answer" title="Close">&times;</button>
+    </header>
+    <div class="bb-highlight-answer-status" aria-live="polite"></div>
+    <div class="bb-highlight-answer-body"></div>
+    <footer class="bb-highlight-answer-actions">
+      <button type="button" data-answer-action="retry">Ask again</button>
+      <button type="button" data-answer-action="delete">Delete highlight</button>
+    </footer>
+  `
+  document.body.appendChild(answerPopover)
+  const answerQuestion = answerPopover.querySelector<HTMLElement>(".bb-highlight-answer-question")!
+  const answerStatus = answerPopover.querySelector<HTMLElement>(".bb-highlight-answer-status")!
+  const answerBody = answerPopover.querySelector<HTMLElement>(".bb-highlight-answer-body")!
+
+  const answerForHighlight = (highlightId: string) =>
+    [...inlineAnswers].reverse().find((answer) => answer.highlightId === highlightId)
+
+  const syncAnswerMarks = () => {
+    const answered = new Map(inlineAnswers.map((answer) => [answer.highlightId, answer.state]))
+    for (const mark of root.querySelectorAll<HTMLElement>("mark.bb-hl")) {
+      const state = mark.dataset.hlId ? answered.get(mark.dataset.hlId) : undefined
+      if (state) mark.dataset.hlAnswer = state
+      else delete mark.dataset.hlAnswer
+    }
+  }
+
+  const highlightRect = (highlightId: string): DOMRect | null => {
+    const pieces = Array.from(
+      root.querySelectorAll<HTMLElement>(`mark.bb-hl[data-hl-id="${CSS.escape(highlightId)}"]`),
+    )
+    if (pieces.length === 0) return null
+    const range = document.createRange()
+    range.setStartBefore(pieces[0])
+    range.setEndAfter(pieces[pieces.length - 1])
+    return range.getBoundingClientRect()
+  }
+
+  const closeAnswer = () => {
+    openAnswerHighlightId = null
+    answerPopover.hidden = true
+  }
+
+  const placeAnswer = (rect: DOMRect) => {
+    answerPopover.hidden = false
+    answerPopover.style.visibility = "hidden"
+    const width = Math.min(560, window.innerWidth - 32)
+    answerPopover.style.width = `${width}px`
+    const gap = 12
+    let left = rect.left + rect.width / 2 - width / 2
+    left = Math.max(16, Math.min(left, window.innerWidth - width - 16))
+    const height = Math.min(answerPopover.offsetHeight, window.innerHeight - 32)
+    let top = rect.bottom + gap
+    if (top + height > window.innerHeight - 16) top = rect.top - height - gap
+    top = Math.max(16, top)
+    answerPopover.style.left = `${left + window.scrollX}px`
+    answerPopover.style.top = `${top + window.scrollY}px`
+    answerPopover.style.maxHeight = `${Math.max(220, window.innerHeight - 32)}px`
+    answerPopover.style.visibility = ""
+  }
+
+  const renderAnswer = (highlightId: string, open = false) => {
+    const answer = answerForHighlight(highlightId)
+    const rect = highlightRect(highlightId)
+    if (!answer || !rect) {
+      if (openAnswerHighlightId === highlightId) closeAnswer()
+      return
+    }
+    if (open) openAnswerHighlightId = highlightId
+    if (openAnswerHighlightId !== highlightId) return
+    answerQuestion.textContent = answer.question
+    answerBody.textContent = answer.answer
+    answerStatus.textContent =
+      answer.state === "pending"
+        ? "Thinking…"
+        : answer.state === "streaming"
+          ? "Answering…"
+          : answer.state === "error"
+            ? "The answer could not be completed."
+            : answer.responseDurationMs !== undefined
+              ? `Answered in ${(answer.responseDurationMs / 1000).toFixed(1)}s`
+              : ""
+    answerBody.hidden = !answer.answer
+    placeAnswer(rect)
+  }
+
+  syncAnswerMarks()
 
   const place = (rect: DOMRect) => {
     container.hidden = false
@@ -519,6 +668,7 @@ document.addEventListener("nav", () => {
 
   const finish = () => {
     highlights = render(root)
+    syncAnswerMarks()
     window.getSelection()?.removeAllRanges()
     hide()
   }
@@ -534,23 +684,44 @@ document.addEventListener("nav", () => {
     finish()
   }
 
-  const askHere = () => {
-    const current = currentSpan()
+  const askSelection = (
+    mode: "chat" | "inline",
+    supplied?: { map: TextMap; span: Span; highlightId?: string },
+  ) => {
+    const current = supplied ?? currentSpan()
     if (!current) return
-    const text = current.map.text.slice(current.span.start, current.span.end).trim().slice(0, 2_000)
+    const text = current.map.text.slice(current.span.start, current.span.end).trim().slice(0, 4_000)
     if (!text) return
 
     // Asking is also a highlighting action. Keep the selected passage visibly
     // anchored while focus moves into Assistant's composer.
     highlights = addSpan(highlights, current.map.text, current.span, DEFAULT_HIGHLIGHT_COLOR)
+    const painted =
+      (supplied?.highlightId
+        ? highlights.find((highlight) => highlight.id === supplied.highlightId)
+        : undefined) ??
+      highlights.find(
+        (highlight) => highlight.start <= current.span.start && highlight.end >= current.span.end,
+      )
+    const requestId = newId()
+    const highlightId = painted?.id ?? requestId
+    const prefix = current.map.text.slice(
+      Math.max(0, current.span.start - QUESTION_CONTEXT),
+      current.span.start,
+    )
+    const suffix = current.map.text.slice(current.span.end, current.span.end + QUESTION_CONTEXT)
     writeStored(highlights)
     finish()
     if (window.parent !== window) {
       window.parent.postMessage(
         {
           type: "second-brain:assistant-ask-here",
-          requestId: newId(),
+          requestId,
+          highlightId,
+          mode,
           text,
+          prefix,
+          suffix,
           pageSlug: document.body.dataset.slug ?? window.location.pathname,
         },
         "*",
@@ -558,7 +729,7 @@ document.addEventListener("nav", () => {
     } else {
       window.dispatchEvent(
         new CustomEvent("breadboard:assistant-ask-here", {
-          detail: { text },
+          detail: { requestId, highlightId, mode, text, prefix, suffix },
         }),
       )
     }
@@ -605,8 +776,11 @@ document.addEventListener("nav", () => {
     }
 
     switch (target.dataset.highlightAction) {
-      case "ask":
-        askHere()
+      case "ask-chat":
+        askSelection("chat")
+        break
+      case "ask-inline":
+        askSelection("inline")
         break
       case "apply":
         applyColor(activeColor)
@@ -635,9 +809,12 @@ document.addEventListener("nav", () => {
   document.addEventListener("pointerup", onPointerUp)
 
   const onPointerDown = (event: PointerEvent) => {
-    if (container.contains(event.target as Node)) return
+    if (container.contains(event.target as Node) || answerPopover.contains(event.target as Node)) {
+      return
+    }
     dismissed = false
     hide()
+    closeAnswer()
   }
   document.addEventListener("pointerdown", onPointerDown)
 
@@ -654,7 +831,12 @@ document.addEventListener("nav", () => {
   document.addEventListener("keyup", onKeyUp)
 
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key !== "Escape" || container.hidden) return
+    if (event.key !== "Escape") return
+    if (!answerPopover.hidden) {
+      closeAnswer()
+      return
+    }
+    if (container.hidden) return
     if (!palette.hidden) {
       closePalette()
       return
@@ -672,6 +854,89 @@ document.addEventListener("nav", () => {
   }
   document.addEventListener("selectionchange", onSelectionChange)
 
+  const onInlineAnswer = (event: MessageEvent) => {
+    if (event.source !== window.parent) return
+    const data = event.data as Record<string, unknown> | null
+    if (!data || data.type !== "second-brain:assistant-inline-answer") return
+    const requestId = typeof data.requestId === "string" ? data.requestId : ""
+    const highlightId = typeof data.highlightId === "string" ? data.highlightId : ""
+    const question = typeof data.question === "string" ? data.question.slice(0, 8_000) : ""
+    const answer = typeof data.answer === "string" ? data.answer.slice(0, 100_000) : ""
+    const state = data.state
+    if (
+      !requestId ||
+      !highlightId ||
+      !question.trim() ||
+      !["pending", "streaming", "complete", "error"].includes(String(state))
+    ) {
+      return
+    }
+    const currentSlug = document.body.dataset.slug ?? window.location.pathname
+    if (typeof data.pageSlug === "string" && data.pageSlug && data.pageSlug !== currentSlug) {
+      return
+    }
+    const duration = Number(data.responseDurationMs)
+    const next: StoredInlineAnswer = {
+      requestId,
+      highlightId,
+      question,
+      answer,
+      state: state as StoredInlineAnswer["state"],
+      ...(Number.isFinite(duration) && duration >= 0
+        ? { responseDurationMs: Math.trunc(duration) }
+        : {}),
+      updatedAt: Date.now(),
+    }
+    inlineAnswers = [
+      ...inlineAnswers.filter(
+        (candidate) => candidate.requestId !== requestId && candidate.highlightId !== highlightId,
+      ),
+      next,
+    ]
+    writeInlineAnswers(inlineAnswers)
+    syncAnswerMarks()
+    // The first pending event is the handoff from the side composer. Put the
+    // working answer next to its passage immediately; closing it is respected
+    // for the rest of the stream, and clicking the mark opens it again.
+    const shouldOpen = state === "pending" && !autoOpenedAnswerRequests.has(requestId)
+    if (shouldOpen) autoOpenedAnswerRequests.add(requestId)
+    renderAnswer(highlightId, shouldOpen)
+  }
+  window.addEventListener("message", onInlineAnswer)
+
+  const onAnswerClick = (event: MouseEvent) => {
+    const target = (event.target as HTMLElement).closest<HTMLElement>(
+      "button[data-answer-action], .bb-highlight-answer-close",
+    )
+    if (!target) return
+    if (target.classList.contains("bb-highlight-answer-close")) {
+      closeAnswer()
+      return
+    }
+    const highlightId = openAnswerHighlightId
+    if (!highlightId) return
+    if (target.dataset.answerAction === "delete") {
+      highlights = highlights.filter((highlight) => highlight.id !== highlightId)
+      inlineAnswers = inlineAnswers.filter((answer) => answer.highlightId !== highlightId)
+      writeStored(highlights)
+      writeInlineAnswers(inlineAnswers)
+      closeAnswer()
+      highlights = render(root)
+      syncAnswerMarks()
+      return
+    }
+    if (target.dataset.answerAction === "retry") {
+      const highlight = highlights.find((candidate) => candidate.id === highlightId)
+      if (!highlight) return
+      const map = buildTextMap(root)
+      const span = resolveHighlight(map.text, highlight)
+      if (!span) return
+      closeAnswer()
+      askSelection("inline", { map, span, highlightId })
+    }
+  }
+  answerPopover.addEventListener("click", onAnswerClick)
+
   // Clicking a highlight selects it whole, so the menu can recolour or lift it.
   const onArticleClick = (event: MouseEvent) => {
     const target = event.target as HTMLElement
@@ -679,6 +944,15 @@ document.addEventListener("nav", () => {
     const mark = target.closest<HTMLElement>("mark.bb-hl")
     const id = mark?.dataset.hlId
     if (!id) return
+
+    if (answerForHighlight(id)) {
+      event.preventDefault()
+      event.stopPropagation()
+      window.getSelection()?.removeAllRanges()
+      hide()
+      renderAnswer(id, true)
+      return
+    }
 
     const pieces = Array.from(
       root.querySelectorAll<HTMLElement>(`mark.bb-hl[data-hl-id="${CSS.escape(id)}"]`),
@@ -704,6 +978,9 @@ document.addEventListener("nav", () => {
     document.removeEventListener("keyup", onKeyUp)
     document.removeEventListener("keydown", onKeyDown)
     document.removeEventListener("selectionchange", onSelectionChange)
+    window.removeEventListener("message", onInlineAnswer)
+    answerPopover.removeEventListener("click", onAnswerClick)
+    answerPopover.remove()
     root.removeEventListener("click", onArticleClick)
     delete container.dataset.bound
   })

@@ -3,6 +3,7 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "agent_browser",
   "agent_reach",
   "career_ops",
+  "open_gym",
   "trading_agents",
   "vibe_trading",
   "stock_analyst",
@@ -35,6 +36,7 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "legal_agent",
   "wardrobe",
   "matraix",
+  "bolt_slides",
 ] as const;
 
 export type ExternalAgentRunKind = (typeof EXTERNAL_AGENT_RUN_KINDS)[number];
@@ -46,6 +48,7 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   agent_browser: "Agent Browser",
   agent_reach: "Agent Reach",
   career_ops: "Career Ops",
+  open_gym: "openGym",
   trading_agents: "TradingAgents",
   vibe_trading: "Vibe Trading",
   stock_analyst: "Stock Analyst",
@@ -78,6 +81,7 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   legal_agent: "Legal Agent",
   wardrobe: "Wardrobe",
   matraix: "MatrAIx",
+  bolt_slides: "Bolt Slides",
 } as const satisfies Record<ExternalAgentRunKind, string>;
 
 export function externalAgentDisplayName(kind: ExternalAgentRunKind): string {
@@ -95,6 +99,7 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   agent_browser: "agent-browser",
   agent_reach: "agent-reach",
   career_ops: "career-ops",
+  open_gym: "open-gym",
   trading_agents: "tradingagents",
   vibe_trading: "vibe-trading",
   stock_analyst: "stock-analyst",
@@ -127,6 +132,7 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   legal_agent: "legal",
   wardrobe: "wardrobe",
   matraix: "matraix",
+  bolt_slides: "bolt-slides",
 } as const satisfies Record<ExternalAgentRunKind, string>;
 
 /**
@@ -351,6 +357,11 @@ export type ExternalAgentRun =
       task: string;
     }
   | {
+      kind: "open_gym";
+      runId: string;
+      task: string;
+    }
+  | {
       kind: "trading_agents";
       runId: string;
       /** The run's label — "NVDA · 2026-08-04" — not a prompt. */
@@ -546,6 +557,12 @@ export type ExternalAgentRun =
       brief: string;
     }
   | {
+      kind: "bolt_slides";
+      runId: string;
+      /** The deck brief, including any flags typed with it. */
+      brief: string;
+    }
+  | {
       kind: "codex";
       runId: string;
       task: string;
@@ -613,6 +630,12 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     const task = boundedString(candidate.task, MAX_TASK_LENGTH);
     if (!task) return null;
     return { kind: "career_ops", runId, task };
+  }
+
+  if (candidate.kind === "open_gym") {
+    const task = boundedString(candidate.task, MAX_TASK_LENGTH);
+    if (!task) return null;
+    return { kind: "open_gym", runId, task };
   }
 
   if (candidate.kind === "trading_agents") {
@@ -816,6 +839,12 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     return { kind: "matraix", runId, brief };
   }
 
+  if (candidate.kind === "bolt_slides") {
+    const brief = boundedString(candidate.brief, MAX_TASK_LENGTH);
+    if (!brief) return null;
+    return { kind: "bolt_slides", runId, brief };
+  }
+
   if (
     candidate.kind === "codex" ||
     candidate.kind === "opencode" ||
@@ -843,6 +872,7 @@ interface ExternalAgentRunFields {
   agentBrowserRun?: { runId: string } | null;
   agentReachRun?: { runId: string } | null;
   careerOpsRun?: { runId: string } | null;
+  openGymRun?: { runId: string } | null;
   tradingAgentsRun?: { runId: string } | null;
   vibeTradingRun?: { runId: string } | null;
   stockAnalystRun?: { runId: string } | null;
@@ -872,6 +902,7 @@ interface ExternalAgentRunFields {
   legalRun?: { runId: string } | null;
   wardrobeRun?: { runId: string } | null;
   matraixRun?: { runId: string } | null;
+  boltSlidesRun?: { runId: string } | null;
   openCodeRun?: { runId: string } | null;
   codexRun?: { runId: string } | null;
   rufloRun?: { runId: string } | null;
@@ -895,6 +926,7 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   agent_browser: "agentBrowserRun",
   agent_reach: "agentReachRun",
   career_ops: "careerOpsRun",
+  open_gym: "openGymRun",
   trading_agents: "tradingAgentsRun",
   vibe_trading: "vibeTradingRun",
   stock_analyst: "stockAnalystRun",
@@ -927,6 +959,7 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   legal_agent: "legalRun",
   wardrobe: "wardrobeRun",
   matraix: "matraixRun",
+  bolt_slides: "boltSlidesRun",
 } as const satisfies Record<ExternalAgentRunKind, keyof ExternalAgentRunFields>;
 
 const EXTERNAL_AGENT_RUN_FIELDS = EXTERNAL_AGENT_RUN_KINDS.map(
@@ -991,6 +1024,7 @@ export function externalAgentMessageFields(
   agentBrowserRun?: { agentId: string; runId: string; task: string };
   agentReachRun?: { runId: string; task: string };
   careerOpsRun?: { runId: string; task: string };
+  openGymRun?: { runId: string; task: string };
   tradingAgentsRun?: { runId: string; task: string };
   vibeTradingRun?: { runId: string; task: string };
   stockAnalystRun?: { runId: string; task: string };
@@ -1020,6 +1054,7 @@ export function externalAgentMessageFields(
   legalRun?: { runId: string; task: string };
   wardrobeRun?: { runId: string; task: string };
   matraixRun?: { runId: string; brief: string };
+  boltSlidesRun?: { runId: string; brief: string };
   openCodeRun?: {
     runId: string;
     task: string;
@@ -1113,6 +1148,12 @@ export function externalAgentMessageFields(
   if (run.kind === "career_ops") {
     return {
       careerOpsRun: { runId: run.runId, task: run.task },
+      ...outcomeField,
+    };
+  }
+  if (run.kind === "open_gym") {
+    return {
+      openGymRun: { runId: run.runId, task: run.task },
       ...outcomeField,
     };
   }
@@ -1298,6 +1339,12 @@ export function externalAgentMessageFields(
   if (run.kind === "matraix") {
     return {
       matraixRun: { runId: run.runId, brief: run.brief },
+      ...outcomeField,
+    };
+  }
+  if (run.kind === "bolt_slides") {
+    return {
+      boltSlidesRun: { runId: run.runId, brief: run.brief },
       ...outcomeField,
     };
   }

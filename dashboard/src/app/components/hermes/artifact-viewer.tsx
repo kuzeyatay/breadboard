@@ -860,10 +860,17 @@ export default function ArtifactViewer({
       ((artifact.kind === "presentation" || artifact.kind === "spreadsheet") &&
         artifact.previewAvailable)
     ) {
+      // A Bolt Slides deck is a React app rather than a static page: framed
+      // with scripts off it renders an empty document, which reads as a broken
+      // artifact. It gets the same frame every other generated interactive page
+      // here gets — scripts on, same-origin off — and nothing else does, so a
+      // plain HTML artifact stays inert.
+      const liveDeck = artifact.metadata?.boltSlidesDeck === true;
       return (
         <iframe
           title={`${artifact.title} preview`}
-          sandbox=""
+          sandbox={liveDeck ? "allow-scripts" : ""}
+          allow=""
           referrerPolicy="no-referrer"
           src={previewUrl}
           className="h-full min-h-[26rem] w-full rounded-lg border border-[var(--line)]"

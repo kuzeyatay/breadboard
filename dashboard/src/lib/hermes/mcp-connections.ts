@@ -2,6 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import db from "../db.ts";
+import {
+  createMcpOAuthProvider,
+  mcpOAuthRevision,
+} from "./mcp-oauth.ts";
 import { ApiError } from "./route-core.ts";
 
 export type StoredMcpConfig =
@@ -60,6 +64,7 @@ type McpRow = {
 
 export interface McpConnectionRecord {
   id: number;
+  userId: number;
   slug: string;
   displayName: string;
   transport: "local" | "remote";
@@ -107,6 +112,7 @@ export function mcpSlug(value: string): string {
 function fromRow(row: McpRow): McpConnectionRecord {
   return {
     id: row.id,
+    userId: row.user_id,
     slug: row.slug,
     displayName: row.display_name,
     transport: row.transport,
@@ -139,6 +145,18 @@ export function getMcpConnection(
       "SELECT * FROM hermes_mcp_connections WHERE user_id = ? AND id = ?",
     )
     .get(userId, id) as McpRow | undefined;
+  return row ? fromRow(row) : null;
+}
+
+export function getMcpConnectionBySlug(
+  userId: number,
+  slug: string,
+): McpConnectionRecord | null {
+  const row = db
+    .prepare(
+      "SELECT * FROM hermes_mcp_connections WHERE user_id = ? AND slug = ?",
+    )
+    .get(userId, mcpSlug(slug)) as McpRow | undefined;
   return row ? fromRow(row) : null;
 }
 
@@ -317,6 +335,7 @@ export function saveMcpConnection(
     )
     .get(userId, parsed.slug) as { id: number } | undefined;
   if (existing) {
+    const previous = getMcpConnection(userId, existing.id);
     db.prepare(
       `UPDATE hermes_mcp_connections SET display_name = ?, transport = ?, config_json = ?, enabled = 1, approved_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND user_id = ?`,
     ).run(
@@ -326,6 +345,25 @@ export function saveMcpConnection(
       existing.id,
       userId,
     );
+    const previousRemote = previous?.config.transport === "remote"
+      ? previous.config
+      : null;
+    const nextRemote = parsed.config.transport === "remote"
+      ? parsed.config
+      : null;
+    if (
+      !previousRemote ||
+      !nextRemote ||
+      previousRemote.url !== nextRemote.url ||
+      !nextRemote.oauth
+    ) {
+      db.prepare(
+        "DELETE FROM hermes_mcp_oauth_credentials WHERE connection_id = ? AND user_id = ?",
+      ).run(existing.id, userId);
+      db.prepare(
+        "DELETE FROM hermes_mcp_oauth_states WHERE connection_id = ? AND user_id = ?",
+      ).run(existing.id, userId);
+    }
     return getMcpConnection(userId, existing.id)!;
   }
   const result = db
@@ -400,6 +438,12 @@ export function runtimeMcpConfig(
     url: connection.config.url,
     ...(Object.keys(headers).length ? { headers } : {}),
     oauth: connection.config.oauth ? {} : false,
+    ...(connection.config.oauth
+      ? {
+          authProvider: createMcpOAuthProvider(connection),
+          oauthRevision: mcpOAuthRevision(connection.userId, connection.id),
+        }
+      : {}),
     enabled: connection.enabled,
     timeout: connection.config.timeout,
   };

@@ -26,6 +26,12 @@ test('the Quartz preview preserves the browser host and reports real canvas read
   assert.match(route, /browserRequestOrigin\(request\)/);
   assert.match(route, /graph\.home-knowledge-graph > \.graph-outer canvas/);
   assert.match(route, /breadboard:quartz-graph-preview/);
+  assert.match(
+    route,
+    /window\.parent\.document\.documentElement\.dataset\.theme/,
+  );
+  assert.match(route, /window\.localStorage\.setItem\("theme", theme\)/);
+  assert.match(route, /const headInjection = \[\s*PREVIEW_THEME_SCRIPT,/);
   assert.match(graph, /event\.source !== previewFrameRef\.current\?\.contentWindow/);
   assert.match(graph, /previewStatus === 'ready' \? 'opacity-100' : 'opacity-0'/);
   assert.match(graph, /Preview unavailable\./);

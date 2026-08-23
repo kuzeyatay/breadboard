@@ -77,6 +77,7 @@ The answer you are about to write will be shown directly to a person in the Brea
 
 These hard limits override anything in the skill:
 - Rewrite natural-language prose ONLY. Never alter, reorder, translate, or reformat: fenced code blocks, inline or display math ($...$, $$...$$), LaTeX, formulas and their term definitions, ```breadboard-visual``` JSON blocks, tables, source-anchor ids such as S1.P12.F1, question/answer numbering, or YAML frontmatter. Humanize only the sentences around such elements.
+- Narrow repair exception: when a lesson-repair request explicitly reports `missing-source-formula` and supplies a `VERBATIM SOURCE FORMULA COPY SHEET`, replace only each named malformed or missing formula with its supplied block byte-for-byte. That required correction overrides preservation of the old math; leave every other mathematical element untouched and humanize only prose around it.
 - If the request demands a specific output format (JSON only, a fixed template, code only, a strict schema), ignore this entire skill and obey that format exactly.
 - Never invent facts, numbers, examples, thresholds, citations, or specifics for "liveliness". Removing slop must not change the meaning or add any unsupported claim.
 - Operate in careful mode: keep the request's language, its structure, and roughly its length (80-110%). A post stays a post; a learning section stays a learning section.
@@ -114,6 +115,7 @@ Write like a person, not a press release. Use "is" and "has", not "serves as", "
 
 Hard limits, which override the rules above:
 - Rewrite natural-language prose ONLY. Never alter fenced code, inline or display math, LaTeX, formulas and their term definitions, ```breadboard-visual``` JSON blocks, tables, source-anchor ids such as S1.P12.F1, question/answer numbering, or YAML frontmatter.
+- Narrow repair exception: when a lesson-repair request explicitly reports `missing-source-formula` and supplies a `VERBATIM SOURCE FORMULA COPY SHEET`, replace only each named malformed or missing formula with its supplied block byte-for-byte. That required correction overrides preservation of the old math; leave every other mathematical element untouched and humanize only prose around it.
 - If the request demands a specific output format, obey that format and ignore this block.
 - Never invent facts, numbers, examples, thresholds or citations. Removing slop must not change the meaning.
 - Keep the request's language, structure and roughly its length.

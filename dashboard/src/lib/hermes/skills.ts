@@ -73,6 +73,12 @@ const DEDICATED_RUNTIME_FIRST_PARTY_SKILLS = new Set([
   // commands reads to the classifier as implementation work — which would
   // confine "humanize this" to scoped implementation mode.
   "humanize",
+  // A goal is a commitment about when the work may stop, not work of its own.
+  // Its guidance is dense with mcp_call syntax because that is how an objective
+  // gets recorded, and reading that as implementation would confine "keep going
+  // until the tests pass" to scoped implementation mode — leaving the one
+  // sentence that most needs a goal unable to start one.
+  "goal",
 ]);
 
 export type SkillEligibility =

@@ -462,6 +462,28 @@ describe("contract-driven semantic repair loop", () => {
       fs.mkdirSync(path.join(dir, ".breadboard", "visuals"), { recursive: true });
       fs.mkdirSync(path.join(dir, "learning", "3. The Metrics That Make SNNs Measurable"), { recursive: true });
       fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      const structuralTextEvidence = {
+        id: "text-source-metric-definition",
+        kind: "guidance",
+        sourceId: "source",
+        page: 1,
+        title: "Metric definition",
+        exactText: "The metric definition for spike count treats spike count as the number of spike events accumulated across neurons and time steps, so the formula explains activity cost.",
+        provenance: {
+          origin: "selected_source_markdown_page",
+          sourceRelPath: "sources/source.md",
+          extraction: "exact_markdown_page_block",
+        },
+      };
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "source-anchors.json"),
+        `${JSON.stringify({
+          schemaVersion: 7,
+          customMetadata: { retain: true },
+          sourceTextConceptAnchors: [],
+          sourceStructuralAnchors: [structuralTextEvidence],
+        }, null, 2)}\n`,
+      );
       fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
       fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
       fs.writeFileSync(
@@ -527,6 +549,9 @@ describe("contract-driven semantic repair loop", () => {
       );
       assert.match(out, /text-source-metric-definition/);
       assert.match(out, /"textAnchorId": "text-source-metric-definition"/);
+      const ledger = JSON.parse(fs.readFileSync(path.join(dir, ".breadboard", "source-anchors.json"), "utf-8"));
+      assert.deepEqual(ledger.customMetadata, { retain: true });
+      assert.deepEqual(ledger.sourceStructuralAnchors, [structuralTextEvidence]);
       assert.match(out, /sourceAnchors: \["S1.P6.E3", "text-source-metric-definition"\]/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

@@ -121,13 +121,17 @@ export default function InlineConversationMap({
         style: styleUrl,
         center: [28.9784, 41.0082],
         zoom: 11,
-        attributionControl: { compact: false },
+        attributionControl: { compact: true },
       });
       map.addControl(
         new maplibre.NavigationControl({ visualizePitch: false }),
         "top-right",
       );
       map.on("load", () => {
+        map
+          .getContainer()
+          .querySelector(".maplibregl-ctrl-attrib")
+          ?.classList.remove("maplibregl-compact-show");
         map.addSource(ROUTE_SOURCE_ID, {
           type: "geojson",
           data: { type: "FeatureCollection", features: [] },
@@ -256,7 +260,7 @@ export default function InlineConversationMap({
           Open map
         </a>
         {route ? (
-          <div className="absolute right-3 bottom-8 left-3 rounded-xl border border-white/10 bg-black/80 px-3 py-2.5 text-white shadow-xl backdrop-blur">
+          <div className="absolute right-3 bottom-3 left-3 rounded-xl border border-white/10 bg-black/80 px-3 py-2.5 text-white shadow-xl backdrop-blur">
             <p className="truncate text-xs font-medium">
               {route.origin.name} to {route.destination.name}
             </p>

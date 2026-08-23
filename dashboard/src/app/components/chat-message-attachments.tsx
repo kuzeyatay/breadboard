@@ -278,7 +278,7 @@ export default function ChatMessageAttachments({
 
       {openImageIndex !== null && images[openImageIndex] && typeof document !== "undefined" ? createPortal(
         <div
-          className="fixed inset-0 z-[200] flex items-center justify-center bg-black p-4 sm:p-8"
+          className="bb-viewer-overlay fixed z-[200] flex items-center justify-center bg-black p-4 sm:p-8"
           role="dialog"
           aria-modal="true"
           aria-label={`Image preview: ${images[openImageIndex].name}`}

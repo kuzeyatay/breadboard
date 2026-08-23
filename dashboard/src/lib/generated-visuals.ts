@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
 import { spawnSync } from "child_process";
@@ -34,6 +35,12 @@ export const GENERATED_VISUAL_SCHEMA_VERSION =
 export const GENERATED_VISUAL_MAX_SOURCE_CHARS =
   GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.sourceCharacters;
 export const GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS = 3;
+/** A transient multimodal critic outage must not discard a model-authored
+ * candidate that has already compiled and passed its runtime preview matrix.
+ * Keep one additional, deliberately cooled-down identical-request session
+ * before failing closed; this is availability recovery, never semantic repair. */
+export const GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_MAX_ATTEMPTS = 2;
+export const GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_COOLDOWN_MS = 300_000;
 /** Spatial visuals can require several critic-guided, model-authored revisions
  * across independent geometry, runtime, and accessibility gates. Keep that
  * semantic loop finite and distinct from identical-request transport replay. */
@@ -51,6 +58,19 @@ export const GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES = 4;
 export const GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS = 3;
 const GENERATED_VISUAL_PREVIEW_CAPTURE_RETRY_BASE_DELAY_MS = 125;
 const GENERATED_VISUAL_PREVIEW_CAPTURE_DIAGNOSTIC_MAX_LENGTH = 512;
+/** A browser mount is infrastructure evidence, never a semantic candidate
+ * revision. Retry one fresh-profile process only when its failure has an
+ * explicit transient launch/mount error code. */
+export const GENERATED_VISUAL_BROWSER_MOUNT_MAX_ATTEMPTS = 2;
+const GENERATED_VISUAL_BROWSER_MOUNT_RETRY_BASE_DELAY_MS = 125;
+const GENERATED_VISUAL_TRANSIENT_BROWSER_MOUNT_ERROR_CODES = new Set([
+  "ETIMEDOUT",
+  "EAGAIN",
+  "EBUSY",
+  "EMFILE",
+  "ENFILE",
+  "ERROR_SHARING_VIOLATION",
+]);
 /** Complex declarative visual generation can legitimately take longer than a
  * general chat request. Keep one explicit, bounded per-request deadline while
  * preserving the separate three-replay transport ladder. */
@@ -103,6 +123,7 @@ const MAX_LITERAL_DEPTH =
   GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.literalDepth;
 const MAX_EXPRESSION_NODES =
   GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.expressionNodes;
+const MAX_EXPRESSION_DEPTH = 16;
 const MAX_SCENES = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.scenes;
 const MAX_CONTROLS = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.controls;
 const MAX_OUTPUTS = GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.outputs;
@@ -126,6 +147,9 @@ const SPATIAL_PALETTE = new Set<string>(
 );
 const SPATIAL_PATTERNS = new Set<string>(
   GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.patterns,
+);
+const SPATIAL_LABEL_MODES = new Set<string>(
+  GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.labelModes,
 );
 const SPATIAL_PROJECTIONS = new Set<string>(
   GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.projections,
@@ -246,6 +270,9 @@ export interface GeneratedVisualPreviewCaptureAttempt {
   signal: string | null;
   screenshotCreated: boolean;
   screenshotBytes?: number;
+  /** Mobile spatial previews must prove that their first spatial SVG fits the
+   * initial document viewport, not merely that a PNG file was emitted. */
+  previewPrimarySpatialFrameValidated?: boolean;
   /** Bounded process diagnostic, retained only when the capture failed. */
   detail?: string;
   /** The bounded delay inserted before the next fresh-profile attempt. */
@@ -265,6 +292,30 @@ export interface GeneratedVisualPreviewMatrixReceipt {
   expectedCount: number;
   capturedCount: number;
   cells: GeneratedVisualPreviewCaptureReceipt[];
+}
+
+/** One isolated browser mount attempt for a runtime viewport scenario. The
+ * receipt deliberately excludes machine-local profile paths. */
+export interface GeneratedVisualBrowserMountAttempt {
+  attempt: number;
+  status: number | null;
+  signal: string | null;
+  mounted: boolean;
+  /** Present only for an explicitly classified transient process failure. */
+  transientFailureCode?: string;
+  /** Bounded, path-sanitized process or runtime diagnostic on failure. */
+  detail?: string;
+  /** The bounded delay inserted before the next fresh-profile attempt. */
+  retryDelayMs?: number;
+}
+
+/** Durable diagnostic receipt for one labelled browser runtime scenario. */
+export interface GeneratedVisualBrowserMountReceipt {
+  scenario: string;
+  viewport: string;
+  theme: "light" | "dark";
+  mounted: boolean;
+  attempts: GeneratedVisualBrowserMountAttempt[];
 }
 
 export type GeneratedVisualizationStatus =
@@ -329,6 +380,7 @@ export interface GeneratedVisualTestsRecord {
     selectStateCoverageTruncated?: boolean;
     previewMatrixComplete?: boolean;
     previewMatrixReceipt?: GeneratedVisualPreviewMatrixReceipt;
+    mountReceipts?: GeneratedVisualBrowserMountReceipt[];
   };
 }
 
@@ -487,6 +539,197 @@ function generatedVisualRepairHistorySnapshot(
   }));
 }
 
+/**
+ * Turns a structural compiler rejection into a short, front-loaded authoring
+ * instruction. The complete prior model candidate and exact gate history stay
+ * in repairContext below; this does not patch, summarize, or otherwise alter
+ * the model-authored visual. It only makes a known class of structural repair
+ * hard to overlook when a full candidate snapshot is necessarily large.
+ */
+function generatedVisualHighPriorityRepairInstructions(
+  errors: readonly string[] | undefined,
+): string[] | undefined {
+  const feedback = (errors ?? []).join("\n");
+  const instructions: string[] = [];
+  const astTarget = Math.floor(MAX_AST_NODES * 0.64);
+  if (
+    /\breviewed_spatial_representation\.(?:missing_spatial_scene|missing_surface_primitive|missing_vector_primitive)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The reviewed route explicitly requires source-grounded spatial topology. Replace any diagram node-link graph, flowchart, state-transition graph, or plot substitute with a spatial scene containing the actual physical primitives. When the reviewed route names a boundary, interface, pillbox, or surface, include an honest spatial surface primitive; when it names a field, flux, normal, tangential direction, or vector, include an actual spatial vector. Preserve the model-authored contract and source relationship, but do not solve this by relabelling a 2D graph or by changing only explanation text.",
+    );
+  }
+  if (
+    /\bplot\.(?:default|after_control_change|after_reset)\.scene\[\d+\]\.axis_label_(?:out_of_frame|box)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The browser found a plot-axis label outside its SVG frame. Replace the affected source-authored xLabel or yLabel with a concise, source-grounded label that remains fully legible in the exact mobile and desktop previews. Do not solve this with CSS, clipping, truncation, or an unexplained abbreviation; move supplementary formula detail to an annotation or formula scene when necessary.",
+    );
+  }
+  if (/\bAST exceeds\b/i.test(feedback)) {
+    instructions.push(
+      `The previous module exceeded the ${MAX_AST_NODES}-node AST hard cap. Return a compact complete replacement targeted below ${astTarget} AST nodes; do not retain repeated expression-heavy geometry from the rejected module.`,
+    );
+    instructions.push(
+      "For a changing axis-aligned rectangular volume, use compact plane faces with literal normals, one dynamic center component, and a dynamic scalar size instead of repeating four expression-backed polygon vertices for every face. Do not claim a full closed boundary unless the replacement actually renders it.",
+    );
+  }
+  if (/must contain exactly three spatial scalars/i.test(feedback)) {
+    instructions.push(
+      "Audit every spatial coordinate before returning: each point position, plane center/normal, vector from, and vector to must be an exactly three-item [x, y, z] array, including literal zero components.",
+    );
+  }
+  if (
+    /',' expected\.|Argument expression expected\.|Expression expected\.|default export must be defineVisualization\(|definition must be an object|executable syntax is not allowed|unterminated|unexpected token/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The previous sourceCode did not parse as a complete visualization module or used executable syntax. Replace sourceCode with one fresh, compact, standalone module instead of editing a fragment or reusing an unbalanced expression. It must have exactly two top-level statements: the required import and export default defineVisualization({ ...literal definition... }). Do not declare const/let/var, helpers, aliases, template interpolation, property shorthand, spread, callbacks, or any bare identifier as a value. Every label, id, title, string, and operator must be quoted; every computed quantity must be a nested SDK expression object such as {kind:\"input\",id:\"gain\"}, never JavaScript like gain, x, t, result, config, or definition. Before returning it, audit every object/array delimiter and comma.",
+    );
+    instructions.push(
+      `For spatial coordinate entries, use a literal, an input, or at most a one-operation expression; never paste a long derived calculation into one coordinate. Use only supported binary operators (${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.binaryOperators.join("/")}), never min or max, and put longer calculations in an output, plot, status, or formula scene.`,
+    );
+  }
+  if (/expression is invalid or too deeply nested|expression exceeds \d+ nodes/i.test(feedback)) {
+    instructions.push(
+      `The previous module used an invalid expression. Replace the affected value with a shallow expression targeted to at most 6 nested levels and 40 nodes (the hard limits are ${MAX_EXPRESSION_DEPTH} levels and ${MAX_EXPRESSION_NODES} nodes). When the failed path is a diagram node value, omit that value unless a literal {kind:"constant",value:<finite>}, {kind:"input",id:<known control>}, or one-operation numeric expression is genuinely needed; never write a bare numeric value such as value: 1. Put longer derivations in an output, plot, status, or formula scene instead.`,
+    );
+  }
+  if (
+    /\b(?:overlap(?:ping)?|collid(?:e|es|ed|ing)|clip(?:s|ped|ping)|container edge|spatial frame)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The prior rendered layout is not legible. Replace the affected diagram, status, or spatial scene structure rather than merely renaming labels. For a diagram, give node footprints generous separation, keep every edge-label midpoint clear of every node footprint and other label, and never author parallel or reverse labelled edges that share an endpoint pair because their labels render at that exact same midpoint. Use at most one short conceptual relationship label per endpoint pair; put equations, ratios, and other wide formula text in an annotation or formula scene. For a status scene, use a short natural-language title and state label with ordinary word-break opportunities that fit a 375px panel; move formulas and long technical tokens into its description or a formula scene. For a spatial scene, use concise labels and set labelMode:\"legend_only\" on dense supporting primitives when their required legend and ARIA label communicate more clearly; then choose a conservative authored view and geometry envelope so every remaining inline label stays fully inside both desktop and narrow mobile preview frames.",
+    );
+  }
+  if (
+    /\bdiagram\.(?:after_control_change|after_reset|default)[\s\S]{0,260}\bnode_label_(?:footprint|line_overlap|line_overflow)\b|\bnode_label_(?:footprint|line_overlap|line_overflow)\b[\s\S]{0,260}\b(?:after_control_change|after_reset)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The browser found a diagram node label overflowing its measured SVG footprint after a state transition or Reset. Replace the literal scene.nodes entry identified by node= in the exact feedback, not merely prose: use one compact 1-6-character identifier, omit node.value unless it is indispensable to a reviewed output, and move full phrases, equations, step descriptions, and dynamic numbers into an annotation, formula, status, value, or plot scene. Rebuild any affected edge layout around that shorter node. Verify the rendered label and every tspan fit inside the actual node footprint in the default, changed-control, and reset states on all supplied desktop and mobile previews. Do not change CSS, rely on renderer expansion or capping, or leave the long text on a different line.",
+    );
+  }
+  if (
+    /\bdiagram\b[\s\S]{0,220}\b(?:overflow|cropp(?:ed|ing)?|clip(?:s|ped|ping)|cut[ -]?off|right[ -]?edge|mobile|out[_ -]?of[_ -]?bounds|footprint|label[_ -]?overlap)\b|\bnode(?:s| labels?| values?)?\b[\s\S]{0,180}\b(?:overlap(?:ping)?|collid(?:e|es|ed|ing)|cropp(?:ed|ing)?|clip(?:s|ped|ping)|out[_ -]?of[_ -]?bounds|footprint)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The previous diagram does not fit its labelled narrow-mobile preview. Replace it with a compact representative graph, not a dense physical grid: use at most three text-bearing nodes in one horizontal or vertical band, keep every text-bearing node center at least 80 SVG units from the frame edge (normally x=112-528 and y=72-288), and leave clear space around every circle or rectangle for its full label footprint. Do not put an edge label in the same lane as node values. A node that has both a symbol and a changing numeric value needs a short identifier and one concise value readout; if both cannot fit distinctly, omit node.value and show the changing quantity in a value, status, plot, formula, or annotation scene. Move repeated step labels, ratios, and equations out of diagram nodes and edges. Recheck the exact 375px default and alternate previews after replacing the layout, not merely the source coordinate bounds.",
+    );
+  }
+  if (
+    /\b(?:diagram|node)\b[\s\S]{0,280}\b(?:cropp(?:ed|ing)?|cut[ -]?off|right[ -]?edge|viewport|coordinate)\b|\b(?:coordinate|viewport|right[ -]?edge)\b[\s\S]{0,280}\b(?:diagram|node)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The critic found a source-authored diagram coordinate outside its readable mobile layout. Rebuild the affected scene.nodes literal x/y values and their edge layout; do not leave an old coordinate for runtime clamping, change only labels, or rely on CSS. The non-clamped source range is x=72-568 and y=48-312, while every text-bearing narrow-mobile node should sit inside x=112-528 and y=72-288 with a short label and clearance for its measured footprint. For a compact three-node row, use materially interior positions such as x=140,320,500 rather than placing the final node near the right edge, then recheck all exact supplied previews.",
+    );
+  }
+  if (
+    /\b(?:spatial\s+camera|camera|azimuth|elevation|projection|foreshorten(?:s|ed|ing)?)\b[\s\S]{0,320}\b(?:overlap(?:ping)?|cluster(?:ed|ing)?|collapse(?:d|s|ing)?|superimpos(?:e|ed|ing)|adjacent)\b|\b(?:overlap(?:ping)?|cluster(?:ed|ing)?|collapse(?:d|s|ing)?|superimpos(?:e|ed|ing)|adjacent)\b[\s\S]{0,320}\b(?:spatial\s+camera|camera|azimuth|elevation|projection|foreshorten(?:s|ed|ing)?)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The critic found a spatial-camera projection collision: distinct source-essential primitives collapse or crowd in the rendered 2D view. Preserve their literal physical coordinates, endpoints, topology, and source relationship; replace the affected literal scene.view azimuthDegrees, elevationDegrees, scale, and projection when useful so named points, vector arrowheads, and endpoints are visibly separated and centered in every exact desktop and narrow-mobile state. For a supporting vector whose inline label still crowds, use literal labelMode:\"legend_only\" so its required legend and ARIA name remain available; only change a vector display envelope when the source explicitly supports an illustrative or normalized representation. Do not hide the collision with CSS, runtime auto-fit, prose, or relabelling, and recheck default, changed-control, and Reset states.",
+    );
+  }
+  if (
+    /\b(?:mobile|narrow|375\s*(?:x|by)\s*667|viewport|initial\s+(?:preview|frame))\b[\s\S]{0,360}\b(?:spatial|scene|primitive|projection|vector|plane|point)\b[\s\S]{0,360}\b(?:bottom|below|cropp(?:ed|ing)?|clip(?:s|ped|ping)|cut[ -]?off|out[_ -]?of[_ -]?frame|push(?:ed|ing)?)\b|\b(?:spatial|scene|primitive|projection|vector|plane|point)\b[\s\S]{0,360}\b(?:bottom|below|cropp(?:ed|ing)?|clip(?:s|ped|ping)|cut[ -]?off|out[_ -]?of[_ -]?frame|push(?:ed|ing)?)\b[\s\S]{0,360}\b(?:mobile|narrow|375\s*(?:x|by)\s*667|viewport|initial\s+(?:preview|frame))\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The critic found that the spatial scene missed the initial narrow-mobile preview viewport, even if individual SVG coordinates fit their local frame. Rebuild the scene ordering and compact vertical footprint before changing only labels: put the first source-essential spatial scene ahead of supporting plot, formula, annotation, status, or secondary-scene content that pushes it below the 375x667 initial viewport, keep its title and surrounding preamble concise, and then set literal scene.view azimuthDegrees, elevationDegrees, scale, and projection plus the geometry envelope so the full projection and every source-essential primitive are centered with clearance. Preserve the literal physical relationship and topology; do not hide it with CSS, scrolling instructions, runtime auto-fit, or a local SVG-only frame claim. Recheck every exact desktop, mobile, changed-control, and Reset preview.",
+    );
+  }
+  if (
+    /\b(?:camera|view|azimuth|elevation|scale|projection)\b[\s\S]{0,160}\b(?:off[ -]?center|clip(?:s|ped|ping)|cropp(?:ed|ing)|cut[ -]?off|out[_ -]?of[_ -]?frame)\b|\b(?:off[ -]?center|clip(?:s|ped|ping)|cropp(?:ed|ing)|cut[ -]?off|out[_ -]?of[_ -]?frame)\b[\s\S]{0,160}\b(?:camera|view|azimuth|elevation|scale|projection)\b|\b(?:geometry|label)_out_of_frame\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The prior spatial camera framing is not usable in the labelled previews. Replace the affected spatial scene's authored view (azimuthDegrees, elevationDegrees, scale, and projection when applicable) and/or geometry envelope so every source-essential plane, vector, endpoint, and inline label is centered with clearance in every exact supplied desktop and narrow-mobile state. Treat the mobile preview as a hard constraint; do not solve camera clipping by relabelling, relying on CSS or runtime auto-fit, or moving only the label. Preserve the literal primitive topology and domain while reframing it.",
+    );
+    if (/\b(?:geometry|label)_out_of_frame\b/i.test(feedback)) {
+      instructions.push(
+        "The browser self-test reported a spatial geometry_out_of_frame or label_out_of_frame diagnostic. Preserve the primitive coordinates, topology, and labels; first lower the literal affected scene.view.scale to the reported scaleAtMost or lower (and revise azimuth/elevation only when separately necessary) until every vector endpoint, arrowhead, primitive envelope, and inline-label box fits the safe frame in every supplied state. If scaleAtMost is below the schema minimum, reduce the literal geometry envelope instead. Do not hide or relabel the failure, change CSS, or rely on runtime auto-fit.",
+      );
+    }
+  }
+  if (
+    /\b(?:named|intersection)?\s*point\b[\s\S]{0,260}\b(?:edge|vertex|seam|cap|relative interior|facet)\b[\s\S]{0,260}\b(?:normal|tangent|basis)\b|\b(?:face|facet)\b[\s\S]{0,260}\b(?:normal|tangent|basis)\b[\s\S]{0,260}\b(?:edge|vertex|seam|cap|relative interior|point)\b|\b(?:normal|tangent|basis|radial)\b[\s\S]{0,320}\b(?:edge|vertex|seam|cap|relative interior|facet)\b|\b(?:edge|vertex|seam|cap|relative interior|facet)\b[\s\S]{0,320}\b(?:normal|tangent|basis|radial)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The prior spatial named-point normal claim is geometrically invalid. Rebuild the owning literal plane or polygon geometry before changing prose: in every relevant control state, the critic-named point must be strictly in the relative interior of one face, with positive separation from every vertex, edge, seam, and cap. For a polygon, calculate the cross product (p1-p0) x (p2-p0) from its ordered literal vertices and make that face normal parallel or antiparallel to the displayed normal/tangent/basis vector. For a curved cylindrical or spherical concept at such a point, use a literal tangent plane or bounded tangent polygon that contains the point in its interior and call it a local/tangent approximation when needed; do not claim a curved normal from an off-point chord facet or let a shared facet boundary pass through the point. Preserve the source-grounded relationship, but do not solve this by relabelling a mismatched primitive.",
+    );
+  }
+  if (
+    /\b(?:output|plot|marker|status|formula)\b[\s\S]{0,360}\b(?:mathematically inconsistent|inconsistent|mismatch|does not match|incorrect)\b[\s\S]{0,360}\b(?:vector|component|resultant|magnitude|aggregate)\b|\b(?:vector|component|resultant|magnitude|aggregate)\b[\s\S]{0,360}\b(?:mathematically inconsistent|inconsistent|mismatch|does not match|incorrect)\b[\s\S]{0,360}\b(?:output|plot|marker|status|formula)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The critic found a literal mathematical mismatch between a rendered vector/resultant and a scalar representation. Recompute the actual to-from endpoint deltas, components, sum, and magnitude in every relevant state, then make one coupled sourceCode correction: replace the affected required output.expression, every matching plot series expression and plot marker coordinate, and any formula/status/annotation using that result so they all use the recomputed relationship. When exact feedback supplies a corrected expression, use it in every cited field rather than leaving an old scaled, rounded, or half-magnitude expression. Do not change only prose or labels, or alter vector geometry merely to hide the mismatch; preserve the reviewed contract and source-grounded relationship.",
+    );
+  }
+  if (
+    /\b(?:spatial|field|vector|arrow)\b[\s\S]{0,320}\b(?:scale\s*factor|display\s*scale|arbitrary|unmentioned|numerical\s+mismatch|does\s+not\s+match|magnitude)\b|\b(?:scale\s*factor|display\s*scale|arbitrary|unmentioned|numerical\s+mismatch|does\s+not\s+match|magnitude)\b[\s\S]{0,320}\b(?:spatial|field|vector|arrow)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The critic found an ungrounded spatial-vector display scale. Treat each literal vector to-from delta as a quantitative representation: either derive it from the same source-grounded relationship used by the required output, plot series, markers, formula, and status, or explicitly label a unitless display-scale factor with its value and role in a formula or annotation and state that the vector is illustrative/normalized. Do not silently multiply a field vector by an arbitrary fit factor, leave a plotted physical magnitude unmatched, or change only prose. Recompute all affected states and keep the source-supported direction, sign, units, and topology intact.",
+    );
+  }
+  if (
+    /\b(?:hard[ -]?coded|unexplained|undefined|unintroduced)\b[\s\S]{0,160}\b(?:constant|literal|number|value|interval|variable|symbol)\b|\b(?:define|label|introduce|explain)\b[\s\S]{0,160}\b(?:variable|constant|symbol|unit|interval)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The prior candidate used an unexplained learner-facing constant or symbol. Treat every non-structural numeric literal or symbol that represents a physical or conceptual quantity as source-grounded: visibly define its symbol, value, unit when applicable, and role in a formula/annotation, diagram, plot, or status scene, and name that relationship in the accessibility description. If the evidence cannot define it, remove it or use an explicitly qualitative or normalized representation. Do not add planner-owned controls or outputs merely to name a quantity; pure rendering coordinates may remain unlabelled only when they carry no physical or conceptual claim. Keep the primitive topology and domain faithful while making the corresponding interval or scale visible to the learner.",
+    );
+  }
+  if (
+    /\b(?:static|closed[ -]?form|direct)\b[\s\S]{0,200}\b(?:iterat(?:e|es|ed|ing|ion|ive)|relax(?:ation|ing)?|converg(?:e|es|ed|ing|ence)|simulation)\b|\b(?:iterat(?:e|es|ed|ing|ion|ive)|relax(?:ation|ing)?|converg(?:e|es|ed|ing|ence)|simulation)\b[\s\S]{0,200}\b(?:static|closed[ -]?form|direct)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The prior artifact showed a static closed-form result where the reviewed learner action requires an iterative or converging process. Replace the static ratio-only structure with a bounded source-grounded intermediate-to-settled state: use definition.animation {durationMs, loop, autoplay} and the reserved runtime expression {kind:\"input\",id:\"t\"} in an actual numeric output or scene expression, or use an already-declared reviewed process-position control when it genuinely represents the process. The default, a Step state, and the settled state must visibly differ and teach the stated update or residual relationship. Preserve the reviewed controls and outputs exactly, do not invent a solver or hidden state, and call stages illustrative or normalized when the evidence does not support a literal numerical iteration.",
+    );
+  }
+  if (
+    /\b(?:non-visual explanation|keyboard-readable|explicitly labelled|accessib(?:ility|le))\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "Make both the candidate accessibilityDescription and definition.accessibilityDescription a standalone, specific non-visual walkthrough: name the labelled learner controls and action, the observable output or state change, each diagram or spatial object's legend/ARIA representation, the default and alternate states, and keyboard navigation plus Reset behavior. Do not merely assert that the visual is accessible.",
+    );
+  }
+  if (/candidate is not valid JSON|candidate envelope is invalid/i.test(feedback)) {
+    instructions.push(
+      "Return one raw JSON envelope with the required six fields and no Markdown fence or prose outside that object.",
+    );
+  }
+  return instructions.length > 0 ? instructions : undefined;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -513,6 +756,19 @@ function generatedVisualTokenUsage(
     asFiniteNumber(value.total_tokens) ?? inputTokens + outputTokens;
   if (inputTokens + outputTokens + totalTokens === 0) return undefined;
   return { inputTokens, outputTokens, reasoningTokens, totalTokens };
+}
+
+/**
+ * A few OpenAI-compatible gateways ignore response_format and wrap an otherwise
+ * complete JSON reply in one Markdown fence. Accept only that exact, bounded
+ * transport artifact: prose before or after the fence still fails closed.
+ */
+function unwrapGeneratedVisualJsonFence(content: string): string {
+  const trimmed = content.trim();
+  const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n?```[ \t]*$/i.exec(
+    trimmed,
+  );
+  return fenced ? fenced[1].trim() : content;
 }
 
 function boundedGeneratedVisualEvidence(
@@ -762,7 +1018,7 @@ function validateExpression(
     );
     return false;
   }
-  if (depth > 16 || !isRecord(expression)) {
+  if (depth > MAX_EXPRESSION_DEPTH || !isRecord(expression)) {
     errors.push(`${pathLabel}: expression is invalid or too deeply nested`);
     return false;
   }
@@ -1247,6 +1503,12 @@ function validateSpatialPrimitive(
       `${pathLabel}.pattern must be solid, striped, dotted, or crosshatch`,
     );
   }
+  if (
+    value.labelMode !== undefined &&
+    !SPATIAL_LABEL_MODES.has(String(value.labelMode))
+  ) {
+    errors.push(`${pathLabel}.labelMode must be inline or legend_only`);
+  }
   if (value.opacity !== undefined) {
     const opacity = asFiniteNumber(value.opacity);
     if (opacity === undefined || opacity < 0.1 || opacity > 1) {
@@ -1268,6 +1530,7 @@ function validateSpatialPrimitive(
     "label",
     "color",
     "pattern",
+    "labelMode",
     "opacity",
     "visibleWhen",
   ];
@@ -1718,6 +1981,58 @@ function expressionFieldsFromScene(
   return fields;
 }
 
+type GeneratedVisualSpatialRepresentationRequirement = {
+  required: boolean;
+  requiresSurfacePrimitive: boolean;
+  requiresVectorPrimitive: boolean;
+};
+
+/**
+ * The reviewed visual-necessity route can explicitly establish that an
+ * interaction must teach through physical geometry. Preserve that
+ * model-authored constraint at compilation time so a node-link flowchart
+ * cannot silently replace a required spatial construction.
+ */
+function reviewedSpatialRepresentationRequirement(
+  opportunity?: VisualizationOpportunity,
+): GeneratedVisualSpatialRepresentationRequirement {
+  const spatialValue = opportunity?.necessityDecision?.spatialValue;
+  const required =
+    typeof spatialValue === "number" &&
+    Number.isFinite(spatialValue) &&
+    spatialValue >= 0.85;
+  if (!required) {
+    return {
+      required: false,
+      requiresSurfacePrimitive: false,
+      requiresVectorPrimitive: false,
+    };
+  }
+  const reviewText = [
+    opportunity?.learningObjective,
+    opportunity?.learnerQuestion,
+    opportunity?.pedagogicalReason,
+    opportunity?.learnerAction,
+    opportunity?.necessityDecision?.learningGoal,
+    opportunity?.necessityDecision?.reason,
+    opportunity?.necessityDecision?.teachingMediumReason,
+    opportunity?.necessityDecision?.interaction?.uniqueConcept,
+    opportunity?.necessityDecision?.interaction?.whyStaticSourceFigureIsNotEnough,
+    opportunity?.necessityDecision?.interaction?.learnerAction,
+  ]
+    .filter((entry): entry is string => typeof entry === "string")
+    .join(" ");
+  return {
+    required: true,
+    requiresSurfacePrimitive:
+      /\b(?:boundary|interface|pillbox|surface|conductor|dielectric)\b/i.test(
+        reviewText,
+      ),
+    requiresVectorPrimitive:
+      /\b(?:field|flux|normal|tangential|direction|vector)\b/i.test(reviewText),
+  };
+}
+
 export function validateGeneratedVisualizationDefinition(
   value: unknown,
   opportunity?: VisualizationOpportunity,
@@ -1769,6 +2084,7 @@ export function validateGeneratedVisualizationDefinition(
       controlIds.add(id);
     }
   });
+  const declaredControlIds = new Set(controlIds);
   controlIds.add("x");
   controlIds.add("t");
 
@@ -1850,14 +2166,14 @@ export function validateGeneratedVisualizationDefinition(
           const y = asFiniteNumber(node.y);
           if (
             x === undefined ||
-            x < 40 ||
-            x > 600 ||
+            x < 72 ||
+            x > 568 ||
             y === undefined ||
-            y < 40 ||
-            y > 320
+            y < 48 ||
+            y > 312
           ) {
             errors.push(
-              `scenes[${index}].nodes[${nodeIndex}] must stay inside x=40-600 and y=40-320`,
+              `scenes[${index}].nodes[${nodeIndex}] must use runtime-safe source coordinates inside x=72-568 and y=48-312`,
             );
           }
           if (
@@ -1880,8 +2196,10 @@ export function validateGeneratedVisualizationDefinition(
       ) {
         errors.push(`scenes[${index}] timeline needs 2-30 steps`);
       }
-      if (!controlIds.has(String(scene.progressInput))) {
-        errors.push(`scenes[${index}] timeline progressInput is unknown`);
+      if (!declaredControlIds.has(String(scene.progressInput))) {
+        errors.push(
+          `scenes[${index}] timeline progressInput ${JSON.stringify(String(scene.progressInput))} must name one declared control id (${[...declaredControlIds].join(", ") || "none declared"})`,
+        );
       }
     }
     if (scene.kind === "value" && !outputIds.has(String(scene.outputId))) {
@@ -1907,6 +2225,62 @@ export function validateGeneratedVisualizationDefinition(
       );
     }
   });
+
+  if (opportunity) {
+    const spatialRequirement =
+      reviewedSpatialRepresentationRequirement(opportunity);
+    if (spatialRequirement.required) {
+      let spatialSceneCount = 0;
+      const primitiveKinds = new Set<string>();
+      for (const scene of scenes) {
+        if (
+          !isRecord(scene) ||
+          scene.kind !== "spatial" ||
+          !Array.isArray(scene.groups)
+        ) {
+          continue;
+        }
+        spatialSceneCount += 1;
+        for (const group of scene.groups) {
+          if (!isRecord(group) || !Array.isArray(group.primitives)) continue;
+          for (const primitive of group.primitives) {
+            if (isRecord(primitive) && typeof primitive.kind === "string") {
+              primitiveKinds.add(primitive.kind);
+            }
+          }
+        }
+      }
+      if (spatialSceneCount === 0) {
+        errors.push(
+          "reviewed_spatial_representation.missing_spatial_scene: the reviewed route requires a source-grounded spatial scene; a diagram node-link graph, flowchart, or plot cannot substitute for physical geometry",
+        );
+      } else {
+        const surfaceKinds = new Set([
+          "plane",
+          "polygon",
+          "sphere",
+          "cylinder",
+          "cone",
+        ]);
+        if (
+          spatialRequirement.requiresSurfacePrimitive &&
+          ![...primitiveKinds].some((kind) => surfaceKinds.has(kind))
+        ) {
+          errors.push(
+            "reviewed_spatial_representation.missing_surface_primitive: the reviewed boundary or surface route requires a spatial surface primitive, not only points or vectors",
+          );
+        }
+        if (
+          spatialRequirement.requiresVectorPrimitive &&
+          !primitiveKinds.has("vector")
+        ) {
+          errors.push(
+            "reviewed_spatial_representation.missing_vector_primitive: the reviewed field or directional route requires a spatial vector primitive",
+          );
+        }
+      }
+    }
+  }
 
   if (isRecord(value.animation)) {
     const duration = asFiniteNumber(value.animation.durationMs);
@@ -2038,6 +2412,15 @@ export function validateGeneratedVisualizationDefinition(
       );
     }
   }
+  if (opportunity && errors.length === 0) {
+    const process = timeDrivenProcessDiagnostics(
+      value as unknown as GeneratedVisualizationDefinition,
+      opportunity,
+    );
+    if (process && !process.passed) {
+      errors.push(`simulate_system process is not executable: ${process.detail}`);
+    }
+  }
   return {
     definition:
       errors.length === 0
@@ -2058,6 +2441,8 @@ export function compileGeneratedVisualization(
         JSON.stringify({
           requiredInputs: opportunity.requiredInputs,
           requiredOutputs: opportunity.requiredOutputs,
+          spatialRepresentationRequirement:
+            reviewedSpatialRepresentationRequirement(opportunity),
         }),
       )
     : "unscoped";
@@ -2190,6 +2575,19 @@ function numericDefaults(
   state.x = 0;
   state.t = 0;
   return state;
+}
+
+function numericCandidateTestInputValue(
+  control: GeneratedVisualControl | undefined,
+  value: unknown,
+): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "boolean") return value ? 1 : 0;
+  if (typeof value === "string" && control?.type === "select") {
+    const optionIndex = control.options?.indexOf(value) ?? -1;
+    return optionIndex >= 0 ? optionIndex : null;
+  }
+  return null;
 }
 
 function alternateControlStates(
@@ -2594,6 +2992,71 @@ function visualExpressionReferencesInput(
   );
 }
 
+const TIME_DRIVEN_PROCESS_ACTION_RE =
+  /\b(?:iterat(?:e|es|ed|ing|ion|ive)|relax(?:ation|ing)?|converg(?:e|es|ed|ing|ence)|settle(?:s|d|ment)?|time[ -]?step(?:s)?|successive(?:ly)?|evolv(?:e|es|ed|ing))\b/i;
+
+function requiresTimeDrivenProcess(
+  opportunity: Pick<VisualizationOpportunity, "interactionGoal" | "learnerAction">,
+): boolean {
+  return (
+    opportunity.interactionGoal === "simulate_system" &&
+    TIME_DRIVEN_PROCESS_ACTION_RE.test(opportunity.learnerAction ?? "")
+  );
+}
+
+function timeDrivenProcessDiagnostics(
+  definition: GeneratedVisualizationDefinition,
+  opportunity: Pick<VisualizationOpportunity, "interactionGoal" | "learnerAction">,
+): { passed: boolean; detail: string } | undefined {
+  if (!requiresTimeDrivenProcess(opportunity)) return undefined;
+  if (!definition.animation) {
+    return {
+      passed: false,
+      detail:
+        "the reviewed iterative/converging simulate_system action cannot be a static definition: add animation and a t-dependent numeric output or scene expression",
+    };
+  }
+  const expressions = [
+    ...definition.outputs.flatMap((output) =>
+      output.expression ? [output.expression] : [],
+    ),
+    ...definition.scenes.flatMap((scene) =>
+      expressionFieldsFromScene(scene as unknown as Record<string, unknown>).map(
+        ([, expression]) => expression as VisualExpression,
+      ),
+    ),
+  ];
+  const timeExpressions = expressions.filter((expression) =>
+    visualExpressionReferencesInput(expression, "t"),
+  );
+  if (timeExpressions.length === 0) {
+    return {
+      passed: false,
+      detail:
+        "the reviewed iterative/converging simulate_system action cannot be a static definition: no numeric output or scene expression references the reserved runtime t clock",
+    };
+  }
+  const defaults = numericDefaults(definition);
+  const initial = { ...defaults, x: 0, t: 0 };
+  const settled = { ...defaults, x: 0, t: 1 };
+  const changesAcrossClock = timeExpressions.some((expression) => {
+    const initialValue = evaluateVisualExpression(expression, initial);
+    const settledValue = evaluateVisualExpression(expression, settled);
+    return (
+      Number.isFinite(initialValue) &&
+      Number.isFinite(settledValue) &&
+      Math.abs(initialValue - settledValue) > 1e-9
+    );
+  });
+  return changesAcrossClock
+    ? { passed: true, detail: "" }
+    : {
+        passed: false,
+        detail:
+          "the reviewed iterative/converging simulate_system action cannot be a static definition: t-dependent expressions do not change from the initial to settled clock state",
+      };
+}
+
 function protocolOutcomeExpressions(
   definition: GeneratedVisualizationDefinition,
   opportunity: VisualizationOpportunity,
@@ -2901,12 +3364,25 @@ export function runGeneratedVisualDeterministicTests(input: {
     });
   }
 
+  const timeDrivenProcess = timeDrivenProcessDiagnostics(
+    input.definition,
+    input.opportunity,
+  );
+  if (timeDrivenProcess) {
+    semanticTests.push({
+      name: "simulate_system iterative/converging action changes across the runtime clock",
+      ...timeDrivenProcess,
+    });
+  }
+
   for (const testCase of input.testCases.slice(0, 20)) {
     const state = { ...defaults };
     for (const [id, value] of Object.entries(testCase.inputs)) {
-      if (typeof value === "number" && Number.isFinite(value))
-        state[id] = value;
-      else if (typeof value === "boolean") state[id] = value ? 1 : 0;
+      const numericValue = numericCandidateTestInputValue(
+        controlsById.get(id),
+        value,
+      );
+      if (numericValue !== null) state[id] = numericValue;
     }
     const actual = outputValues(input.definition, state);
     const tolerance = Number.isFinite(testCase.tolerance)
@@ -3117,7 +3593,7 @@ function previewHtml(
     id: "default",
     selectState: [],
   }).replace(/</g, "\\u003c");
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><style>html,body{margin:0;padding:0;background:#f8f6ef;color:#10251c;font-family:system-ui,sans-serif}</style></head><body><div id="breadboard-generated-visual-root"></div><script>window.__BREADBOARD_VISUAL_TEST_MODE__=true;</script><script>${runtime.replace(/<\/script/gi, "<\\/script")}</script><script>window.postMessage({type:"breadboard-generated-visual:init",definition:${serialized},theme:${JSON.stringify(theme)}},"*");const previewState=${serializedPreviewState};let previewStateRetries=0;const applyPreviewState=()=>{const selects=Array.from(document.querySelectorAll("select[data-control-id]"));const missing=(previewState.selectState||[]).some((entry)=>!selects.some((node)=>node.dataset.controlId===entry.controlId));if(missing&&previewStateRetries<12){previewStateRetries+=1;window.setTimeout(applyPreviewState,25);return;}(previewState.selectState||[]).forEach((entry)=>{const input=selects.find((node)=>node.dataset.controlId===entry.controlId);if(!input||input.value===entry.optionLabel)return;input.value=entry.optionLabel;input.dispatchEvent(new Event("change",{bubbles:true}));});document.body.dataset.breadboardPreviewState=previewState.id;};window.setTimeout(applyPreviewState,25);</script></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><style>html,body{margin:0;padding:0;background:#f8f6ef;color:#10251c;font-family:system-ui,sans-serif}</style></head><body><div id="breadboard-generated-visual-root"></div><script>window.__BREADBOARD_VISUAL_TEST_MODE__=true;</script><script>${runtime.replace(/<\/script/gi, "<\\/script")}</script><script>window.postMessage({type:"breadboard-generated-visual:init",definition:${serialized},theme:${JSON.stringify(theme)}},"*");const previewState=${serializedPreviewState};let previewStateRetries=0;const applyPreviewState=()=>{const selects=Array.from(document.querySelectorAll("select[data-control-id]"));const missing=(previewState.selectState||[]).some((entry)=>!selects.some((node)=>node.dataset.controlId===entry.controlId));if(missing&&previewStateRetries<12){previewStateRetries+=1;window.setTimeout(applyPreviewState,25);return;}(previewState.selectState||[]).forEach((entry)=>{const input=selects.find((node)=>node.dataset.controlId===entry.controlId);if(!input||input.value===entry.optionLabel)return;input.value=entry.optionLabel;input.dispatchEvent(new Event("change",{bubbles:true}));});document.body.dataset.breadboardPreviewState=previewState.id;window.scrollTo(0,0);window.setTimeout(()=>{window.scrollTo(0,0);window.postMessage({type:"breadboard-generated-visual:preview-primary-spatial-frame"},"*")},0);};window.setTimeout(applyPreviewState,25);</script></body></html>`;
 }
 
 const GENERATED_VISUAL_BROWSER_DIAGNOSTIC_MAX_ENTRIES = 12;
@@ -3154,6 +3630,29 @@ function browserRuntimeFailureDetail(output: string): string {
   return output.match(/<body[^>]*>/i)?.[0] ?? output.slice(-500);
 }
 
+function previewPrimarySpatialFrameRequired(
+  definition: GeneratedVisualizationDefinition,
+  viewport: { width: number; height: number },
+): boolean {
+  return viewport.width <= 640 &&
+    definition.scenes.some((scene) => scene.kind === "spatial");
+}
+
+function browserPreviewPrimarySpatialFramePassed(output: string): boolean {
+  return /\bdata-breadboard-preview-primary-spatial-frame="passed"/i.test(
+    output,
+  );
+}
+
+function browserPreviewPrimarySpatialFrameFailureDetail(output: string): string {
+  const diagnostics = browserRuntimeDiagnostics(output).filter((entry) =>
+    /\bspatial\.preview_primary_viewport_out_of_frame\b/i.test(entry),
+  );
+  if (diagnostics.length > 0)
+    return `runtime preview-frame failures: ${diagnostics.join("; ")}`;
+  return "mobile spatial preview-frame validation did not complete";
+}
+
 /** Narrow test seam for the otherwise isolated browser process. Production
  * callers leave this unset and always use the configured Chromium/Edge binary. */
 export interface GeneratedVisualBrowserInvocation {
@@ -3168,22 +3667,51 @@ export interface GeneratedVisualBrowserRunResult {
   signal?: string | null;
   stdout?: string | Buffer | null;
   stderr?: string | Buffer | null;
-  error?: { message?: string } | null;
+  error?: { message?: string; code?: string | number } | null;
 }
 
 export type GeneratedVisualBrowserRunner = (
   invocation: GeneratedVisualBrowserInvocation,
 ) => GeneratedVisualBrowserRunResult;
 
+/**
+ * Chromium extends its user-data directory with several nested cache paths.
+ * A generated visual's staging directory can itself be deeply nested under a
+ * garden build workspace, which can exceed Windows' legacy path limit before
+ * the browser reaches its first page. Keep the disposable browser state in a
+ * short, separately-created OS-temp root. Each invocation still receives its
+ * own child directory and the whole root is removed after this test run.
+ */
+function createGeneratedVisualBrowserProfileRoot(): string {
+  const tempRoot = path.resolve(os.tmpdir());
+  const profileRoot = path.resolve(
+    fs.mkdtempSync(path.join(tempRoot, "bb-vp-")),
+  );
+  if (!profileRoot.startsWith(`${tempRoot}${path.sep}`)) {
+    try {
+      fs.rmSync(profileRoot, { recursive: true, force: true });
+    } catch {
+      // The path has not been trusted, so cleanup is best effort only.
+    }
+    throw new Error("Generated visual browser profile escaped the OS temporary directory");
+  }
+  return profileRoot;
+}
+
 function generatedVisualPreviewCaptureRetryDelay(attempt: number): number {
   return GENERATED_VISUAL_PREVIEW_CAPTURE_RETRY_BASE_DELAY_MS *
     2 ** Math.max(0, attempt - 1);
 }
 
-/** Browser capture is already synchronous. A very small bounded pause gives a
- * transient Edge teardown/write race time to settle before using a brand-new
- * disposable profile, without turning the retry into a semantic model action. */
-function waitForGeneratedVisualPreviewCaptureRetry(delayMs: number): void {
+function generatedVisualBrowserMountRetryDelay(attempt: number): number {
+  return GENERATED_VISUAL_BROWSER_MOUNT_RETRY_BASE_DELAY_MS *
+    2 ** Math.max(0, attempt - 1);
+}
+
+/** Browser work is synchronous. A very small bounded pause gives a transient
+ * Edge teardown/write race time to settle before using a brand-new disposable
+ * profile, without turning the retry into a semantic model action. */
+function waitForGeneratedVisualBrowserRetry(delayMs: number): void {
   if (delayMs <= 0) return;
   const sleeper = new Int32Array(
     new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
@@ -3204,6 +3732,13 @@ function boundedGeneratedVisualBrowserCaptureText(value: unknown): string {
   // replacing path-shaped tokens generically.
   const redacted = raw
     .replace(/file:\/\/\/[^\s"'<>]+/gi, "<file-path>")
+    // Error messages such as `spawnSync C:\\Program Files\\...\\msedge.exe
+    // ETIMEDOUT` have a space inside the Windows path, so redact that full
+    // executable token before the generic no-whitespace path rule below.
+    .replace(
+      /[A-Za-z]:[\\/][^<>:"'|?*\r\n]*?(?=\s+(?:ETIMEDOUT|EAGAIN|EBUSY|EMFILE|ENFILE|ERROR_SHARING_VIOLATION)\b|$)/gi,
+      "<path>",
+    )
     .replace(
       /(^|[\s("'=])(?:[A-Za-z]:[\\/]|\/)[^\s"'<>]*/g,
       (_match, prefix: string) => `${prefix}<path>`,
@@ -3219,10 +3754,11 @@ function boundedGeneratedVisualBrowserCaptureText(value: unknown): string {
   )}`;
 }
 
-function generatedVisualPreviewCaptureFailureDetail(
+function generatedVisualBrowserProcessFailureDetail(
   result: GeneratedVisualBrowserRunResult,
 ): string | undefined {
   const parts = [
+    result.error?.code ? `code: ${result.error.code}` : "",
     result.error?.message ? `error: ${result.error.message}` : "",
     result.stderr ? `stderr: ${boundedGeneratedVisualBrowserCaptureText(result.stderr)}` : "",
     result.stdout ? `stdout: ${boundedGeneratedVisualBrowserCaptureText(result.stdout)}` : "",
@@ -3231,6 +3767,49 @@ function generatedVisualPreviewCaptureFailureDetail(
   return detail
     ? boundedGeneratedVisualBrowserCaptureText(detail)
     : undefined;
+}
+
+/** Restrict retries to process-level, explicitly transient failures. A browser
+ * that reached the sandbox body is evidence of a real candidate/runtime result
+ * and must remain a single semantic gate result, even if its logs mention a
+ * transient-looking word. */
+function generatedVisualTransientBrowserMountFailureCode(
+  result: GeneratedVisualBrowserRunResult,
+  output: string,
+): string | undefined {
+  if (
+    /\bdata-breadboard-runtime-(?:tests|diagnostics)\b/i.test(output) ||
+    (result.status === 0 && !result.signal && !result.error)
+  ) {
+    return undefined;
+  }
+  const failureText = [
+    result.error?.code,
+    result.error?.message,
+    result.stderr,
+  ]
+    .filter((value) => value !== undefined && value !== null)
+    .map((value) => Buffer.isBuffer(value) ? value.toString("utf-8") : String(value))
+    .join("\n");
+  const code = failureText.match(
+    /\b(?:ETIMEDOUT|EAGAIN|EBUSY|EMFILE|ENFILE|ERROR_SHARING_VIOLATION)\b/i,
+  )?.[0]?.toUpperCase();
+  return code && GENERATED_VISUAL_TRANSIENT_BROWSER_MOUNT_ERROR_CODES.has(code)
+    ? code
+    : undefined;
+}
+
+function generatedVisualBrowserMountFailureDetail(
+  result: GeneratedVisualBrowserRunResult,
+  output: string,
+): string {
+  if (/\bdata-breadboard-runtime-(?:tests|diagnostics)\b/i.test(output)) {
+    // Keep the runtime's own bounded, primary-cause-first diagnostic intact.
+    // It is model-facing semantic evidence, unlike an OS process error.
+    return browserRuntimeFailureDetail(output);
+  }
+  return generatedVisualBrowserProcessFailureDetail(result) ??
+    boundedGeneratedVisualBrowserCaptureText(browserRuntimeFailureDetail(output));
 }
 
 function generatedVisualPreviewScreenshotBytes(filePath: string): number | undefined {
@@ -3250,6 +3829,8 @@ export function runGeneratedVisualBrowserTests(input: {
   browserExecutable?: string;
   /** Test-only override for the isolated browser process. */
   browserRunner?: GeneratedVisualBrowserRunner;
+  /** Test-only override for bounded transient browser-mount retry sleeps. */
+  browserMountRetryBackoff?: (delayMs: number) => void;
   /** Test-only override for bounded retry sleeps. */
   previewCaptureRetryBackoff?: (delayMs: number) => void;
 }): {
@@ -3309,19 +3890,39 @@ export function runGeneratedVisualBrowserTests(input: {
   const viewports = scenarios.map((scenario) => scenario.name);
   const tests: GeneratedVisualTestsRecord["runtimeTests"] = [];
   const htmlPaths: string[] = [];
-  const browserProfileRoot = path.resolve(input.outputDir);
+  let browserProfileRoot: string;
+  try {
+    browserProfileRoot = createGeneratedVisualBrowserProfileRoot();
+  } catch (error) {
+    return {
+      tests: [
+        {
+          name: "browser mount",
+          passed: false,
+          detail: error instanceof Error
+            ? `Could not create a disposable browser profile: ${error.message}`
+            : "Could not create a disposable browser profile",
+        },
+      ],
+      browser: { executable, viewports: [], screenshotCreated: false },
+    };
+  }
+  try {
   const browserRunner: GeneratedVisualBrowserRunner = input.browserRunner ??
     ((invocation) => spawnSync(
       invocation.executable,
       invocation.args,
       { encoding: "utf-8", timeout, windowsHide: true },
     ));
+  const retryBrowserMount =
+    input.browserMountRetryBackoff ??
+    waitForGeneratedVisualBrowserRetry;
   let browserProfileCounter = 0;
   const spawnIsolatedBrowser = (slug: string, args: string[]) => {
     browserProfileCounter += 1;
     const profilePath = path.resolve(
       browserProfileRoot,
-      `.browser-profile-${slug}-${process.pid}-${browserProfileCounter}`,
+      `p-${browserProfileCounter}`,
     );
     if (!profilePath.startsWith(`${browserProfileRoot}${path.sep}`)) {
       throw new Error(
@@ -3356,6 +3957,7 @@ export function runGeneratedVisualBrowserTests(input: {
       }
     }
   };
+  const browserMountReceipts: GeneratedVisualBrowserMountReceipt[] = [];
   for (const scenario of scenarios) {
     const [width, height] = scenario.viewport.split("x");
     const scenarioSlug = scenario.name
@@ -3369,31 +3971,82 @@ export function runGeneratedVisualBrowserTests(input: {
       "utf-8",
     );
     const url = pathToFileURL(htmlPath).href;
-    const result = spawnIsolatedBrowser(scenarioSlug, [
-      "--headless=new",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--disable-background-networking",
-      "--no-first-run",
-      ...scenario.flags,
-      `--window-size=${width},${height}`,
-      "--virtual-time-budget=2500",
-      "--dump-dom",
-      url,
-    ]);
-    const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-    const browserPassed =
-      result.status === 0 &&
-      output.includes('data-breadboard-runtime-tests="passed"') &&
-      !output.includes('data-breadboard-overflow="true"');
+    const receipt: GeneratedVisualBrowserMountReceipt = {
+      scenario: scenario.name,
+      viewport: scenario.viewport,
+      theme: scenario.theme,
+      mounted: false,
+      attempts: [],
+    };
+    for (
+      let mountAttempt = 1;
+      mountAttempt <= GENERATED_VISUAL_BROWSER_MOUNT_MAX_ATTEMPTS;
+      mountAttempt += 1
+    ) {
+      // This creates a new profile path for every retry. Do not reuse the
+      // profile from an interrupted Edge process, even when its cleanup was
+      // delayed by the OS.
+      const result = spawnIsolatedBrowser(scenarioSlug, [
+        "--headless=new",
+        "--disable-gpu",
+        "--disable-gpu-shader-disk-cache",
+        "--disable-skia-graphite",
+        "--disable-features=SkiaGraphiteUsePersistentCache",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--no-first-run",
+        ...scenario.flags,
+        `--window-size=${width},${height}`,
+        "--virtual-time-budget=2500",
+        "--dump-dom",
+        url,
+      ]);
+      const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+      const mounted =
+        result.status === 0 &&
+        output.includes('data-breadboard-runtime-tests="passed"') &&
+        !output.includes('data-breadboard-overflow="true"');
+      const transientFailureCode = mounted
+        ? undefined
+        : generatedVisualTransientBrowserMountFailureCode(result, output);
+      const retryDelayMs =
+        transientFailureCode &&
+        mountAttempt < GENERATED_VISUAL_BROWSER_MOUNT_MAX_ATTEMPTS
+          ? generatedVisualBrowserMountRetryDelay(mountAttempt)
+          : undefined;
+      receipt.attempts.push({
+        attempt: mountAttempt,
+        status: result.status ?? null,
+        signal: result.signal ?? null,
+        mounted,
+        ...(transientFailureCode === undefined
+          ? {}
+          : { transientFailureCode }),
+        ...(!mounted
+          ? { detail: generatedVisualBrowserMountFailureDetail(result, output) }
+          : {}),
+        ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
+      });
+      if (mounted) {
+        receipt.mounted = true;
+        break;
+      }
+      if (retryDelayMs === undefined) break;
+      retryBrowserMount(retryDelayMs);
+    }
+    browserMountReceipts.push(receipt);
+    const lastMountAttempt = receipt.attempts.at(-1);
+    const retryCodes = receipt.attempts
+      .map((attempt) => attempt.transientFailureCode)
+      .filter((code): code is string => Boolean(code));
     tests.push({
       name: `browser mount ${scenario.name}`,
-      passed: browserPassed,
-      detail:
-        result.error?.message ||
-        (browserPassed
+      passed: receipt.mounted,
+      detail: receipt.mounted
+        ? receipt.attempts.length === 1
           ? "mounted and self-tested"
-          : browserRuntimeFailureDetail(output)),
+          : `mounted and self-tested after transient browser retry ${receipt.attempts.length}/${GENERATED_VISUAL_BROWSER_MOUNT_MAX_ATTEMPTS} (${retryCodes.join(", ") || "unknown"})`
+        : lastMountAttempt?.detail ?? "browser mount did not complete",
     });
   }
   const previewViewports = [
@@ -3415,9 +4068,10 @@ export function runGeneratedVisualBrowserTests(input: {
   const previewCaptureReceipts: GeneratedVisualPreviewCaptureReceipt[] = [];
   const retryPreviewCapture =
     input.previewCaptureRetryBackoff ??
-    waitForGeneratedVisualPreviewCaptureRetry;
+    waitForGeneratedVisualBrowserRetry;
   let screenshotCreated = false;
   let screenshotFailureDetail = "Screenshot was not created";
+  const previewPrimarySpatialFrameFailures: string[] = [];
   for (const previewState of previewStates) {
     for (const previewViewport of previewViewports) {
       const isDefaultDesktop =
@@ -3444,12 +4098,16 @@ export function runGeneratedVisualBrowserTests(input: {
         spawnIsolatedBrowser(`screenshot-${previewViewport.id}-${previewState.id}`, [
           "--headless=new",
           "--disable-gpu",
+          "--disable-gpu-shader-disk-cache",
+          "--disable-skia-graphite",
+          "--disable-features=SkiaGraphiteUsePersistentCache",
           "--disable-extensions",
           "--disable-background-networking",
           "--disable-dev-shm-usage",
           "--no-first-run",
           `--window-size=${previewViewport.width},${previewViewport.height}`,
           "--virtual-time-budget=2500",
+          "--dump-dom",
           `--screenshot=${screenshotPath}`,
           screenshotUrl,
         ]);
@@ -3514,6 +4172,13 @@ export function runGeneratedVisualBrowserTests(input: {
         const created =
           screenshot.status === 0 &&
           isReadableGeneratedVisualPreviewFile(screenshotPath);
+        const output = `${screenshot.stdout ?? ""}\n${screenshot.stderr ?? ""}`;
+        const requiresPreviewPrimarySpatialFrame =
+          previewPrimarySpatialFrameRequired(input.definition, previewViewport);
+        const previewPrimarySpatialFrameValidated =
+          !requiresPreviewPrimarySpatialFrame ||
+          browserPreviewPrimarySpatialFramePassed(output);
+        const captured = created && previewPrimarySpatialFrameValidated;
         const retryDelayMs =
           !created &&
           captureAttempt < GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS
@@ -3527,18 +4192,28 @@ export function runGeneratedVisualBrowserTests(input: {
           status: screenshot.status ?? null,
           signal: screenshot.signal ?? null,
           screenshotCreated: created,
+          ...(requiresPreviewPrimarySpatialFrame
+            ? { previewPrimarySpatialFrameValidated }
+            : {}),
           ...(screenshotBytes === undefined ? {} : { screenshotBytes }),
-          ...(!created
+          ...(!captured
             ? {
-                detail:
-                  generatedVisualPreviewCaptureFailureDetail(screenshot) ??
-                  "screenshot file was not created",
+                detail: created
+                  ? browserPreviewPrimarySpatialFrameFailureDetail(output)
+                  : generatedVisualBrowserProcessFailureDetail(screenshot) ??
+                    "screenshot file was not created",
               }
             : {}),
           ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
         });
-        if (created) {
+        if (captured) {
           receipt.captured = true;
+          break;
+        }
+        if (created && !previewPrimarySpatialFrameValidated) {
+          previewPrimarySpatialFrameFailures.push(
+            `${receipt.id}: ${browserPreviewPrimarySpatialFrameFailureDetail(output)}`,
+          );
           break;
         }
         if (retryDelayMs !== undefined) retryPreviewCapture(retryDelayMs);
@@ -3568,6 +4243,13 @@ export function runGeneratedVisualBrowserTests(input: {
     detail: screenshotCreated
       ? "created"
       : screenshotFailureDetail,
+  });
+  tests.push({
+    name: "mobile primary spatial preview frame",
+    passed: previewPrimarySpatialFrameFailures.length === 0,
+    detail: previewPrimarySpatialFrameFailures.length === 0
+      ? "validated where required"
+      : previewPrimarySpatialFrameFailures.join("; "),
   });
   const expectedPreviewCount = previewStates.length * previewViewports.length;
   const previewMatrixComplete = previews.length === expectedPreviewCount;
@@ -3601,9 +4283,17 @@ export function runGeneratedVisualBrowserTests(input: {
       ),
       previewMatrixComplete,
       previewMatrixReceipt,
+      mountReceipts: browserMountReceipts,
     },
     previews,
   };
+  } finally {
+    try {
+      fs.rmSync(browserProfileRoot, { recursive: true, force: true });
+    } catch {
+      // A timed-out browser may still hold its disposable profile root briefly.
+    }
+  }
 }
 
 function isReadableGeneratedVisualPreviewFile(filePath: string): boolean {
@@ -4237,7 +4927,7 @@ export default defineVisualization({
     groups: [
       { id: "fixed-items", label: "Common", primitives: [
         { kind: "point", id: "fixed-point", label: "Fixed point", position: [1, 1, 1], color: "red" },
-        { kind: "vector", id: "direction-vector", label: "Direction", from: [0, 0, 0], to: [1, 1, 1], color: "gray" }
+        { kind: "vector", id: "unit-x-direction", label: "Unit x direction", from: [0, 0, 0], to: [1, 0, 0], color: "gray" }
       ] },
       { id: "case-a", label: "Case A", visibleWhen: { kind: "conditional", comparison: "eq", left: { kind: "input", id: "case_mode" }, right: { kind: "constant", value: 0 }, whenTrue: { kind: "constant", value: 1 }, whenFalse: { kind: "constant", value: 0 } }, primitives: [
         { kind: "plane", id: "sample-plane", label: "Plane", center: [0, 0, 0], normal: [0, 0, 1], size: 4, color: "blue", pattern: "striped" },
@@ -4255,35 +4945,43 @@ export default defineVisualization({
     `Create one declarative Breadboard generated visualization using SDK ${VISUAL_SDK_VERSION}. ` +
     "Reply with one JSON object and nothing else. It must have exactly these six fields: " +
     '{"title":<non-empty string>,"explanation":<non-empty string>,"sourceCode":<complete module string>,"testCases":[{"name":<non-empty string>,"inputs":[{"id":<string>,"value":<number|string|boolean>}],"expected":[{"id":<string>,"value":<number|string|boolean>}],"tolerance":<finite number|null>}],"accessibilityDescription":<non-empty string>,"pedagogicalClaims":[<non-empty string>,...]}. ' +
-    "Do not omit title, explanation, accessibilityDescription, or pedagogicalClaims even when a Council wrapper does not enforce response_format. " +
+    "Do not omit title, explanation, accessibilityDescription, or pedagogicalClaims even when a Council wrapper does not enforce response_format. The top-level accessibilityDescription and definition.accessibilityDescription must agree on a concrete non-visual walkthrough rather than merely asserting accessibility. " +
     `sourceCode must contain exactly ` +
     `import { defineVisualization } from "${SDK_IMPORT}"; followed by export default defineVisualization({...}). ` +
     "The argument must be one JSON-compatible object literal: no functions, variables, JSX, spreads, computed properties, callbacks, loops, classes, timers, browser globals, HTML, URLs, or package imports. " +
-    `Use schemaVersion ${GENERATED_VISUAL_CAPABILITY_MANIFEST.definitionSchemaVersion} and sdkVersion ${GENERATED_VISUAL_CAPABILITY_MANIFEST.sdkVersion}. The definition needs title, description, accessibilityDescription, controls, outputs, and scenes. ` +
+    `Use schemaVersion ${GENERATED_VISUAL_CAPABILITY_MANIFEST.definitionSchemaVersion} and sdkVersion ${GENERATED_VISUAL_CAPABILITY_MANIFEST.sdkVersion}. The definition needs title, description, accessibilityDescription, controls, outputs, and scenes. Its accessibilityDescription must be a standalone non-visual walkthrough that names the labelled learner action, observable result, default and alternate states, and each scene's legend or ARIA representation; when spatial orbit is authored, include its keyboard navigation and Reset behavior. ` +
     "Every expression uses the field kind (never type); binary and unary expressions use op (never operator), and a unary expression stores its child in argument (never value). " +
     `Every output uses representation (never type or value). Its optional expression is the derived value. output.representation is metadata and does not force scene.kind: a spatial scene may satisfy a diagram or animation output. ${GENERATED_VISUAL_CAPABILITY_MANIFEST.outputs.numericExpressionOptionalFor.join(", ")} outputs may omit output.expression when their observable is nonnumeric; never expose a select option index as an output merely to satisfy influence. ` +
-    "A plot uses xMin, xMax, samples, xLabel, yLabel and series[].expression; it never uses axes or explicit point arrays. " +
-    "A diagram is only a 2D node-link graph. A diagram node requires id, label, x, and y; node.value is omitted unless it represents a genuinely meaningful numeric quantity. Never use node.value for selection styling or visibility, and never use diagram nodes as substitutes for physical surfaces or solids. " +
-    "A value scene contains kind and outputId. A formula/annotation scene contains kind, title, and text. " +
-    `Expression kinds are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.kinds.join(", ")}. Binary operators are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.binaryOperators.join("/")}; unary operators are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.unaryOperators.join("/")}. A conditional is exactly {kind, comparison, left, right, whenTrue, whenFalse}; comparison is one of ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.comparisons.join("/")}. Never use condition/then/else. ` +
+    "A plot uses xMin, xMax, samples, xLabel, yLabel and series[].expression; it never uses axes or explicit point arrays. Its source-authored xLabel and yLabel are visible SVG text, so each must be concise, source-grounded, and fully legible inside every supplied mobile and desktop plot frame; put supplementary equation detail in an annotation or formula scene instead of clipping or truncating an axis label. " +
+    "A diagram is only a 2D node-link graph. A diagram node requires id, label, x, and y; node.value is omitted unless it represents a genuinely meaningful numeric quantity. Never use node.value for selection styling or visibility, and never use diagram nodes as substitutes for physical surfaces or solids. A diagram renders in a 640 by 360 frame: keep a sparse, generously separated layout, use short edge labels, and remember that each edge label appears at its edge midpoint. Do not place another node or label near that midpoint, and never author parallel or reverse labelled edges that share an endpoint pair because their labels stack at the same midpoint. Use at most one short conceptual relationship label per endpoint pair; put equations, ratios, equality signs, and other wide formula text in an annotation or formula scene so every node and edge label remains legible on desktop and narrow mobile previews. For a text-bearing mobile diagram, design inside the conservative interior x=112-528 and y=72-288 rather than merely satisfying the wider schema bounds, keep at most three text-bearing nodes in a shared horizontal or vertical band, and reserve at least 80 SVG units from every text-bearing node center to a frame edge. Do not pack a long symbolic label, a numeric value, and edge prose into one small node: use one short identifier plus at most one concise numeric readout, or move the number to a value, status, plot, formula, or annotation scene. At every default, changed-control, and Reset state, each rendered node label and tspan must fit inside its actual SVG node footprint; prefer a 1-6-character identifier in a node and move full phrases, equations, step descriptions, and live values outside the graph when they cannot fit. Do not encode a dense physical grid as a diagram; show a compact representative stencil and explain repeated steps or ratios outside the graph. " +
+    "Diagram source coordinates are strictly validated at x=72-568 and y=48-312 because those are the renderer's non-clamped limits. The renderer will not repair an out-of-range authored coordinate for publication; for text-bearing mobile diagrams, use the conservative x=112-528 and y=72-288 interior already specified above. " +
+    "A value scene contains kind and outputId. A formula/annotation scene contains kind, title, and text. A timeline scene is exactly {kind:\"timeline\",title,progressInput,steps:[{id,label,description,at},...]}; it needs 2-30 ordered steps, and progressInput must exactly equal one of the declared reviewed control ids. There is no implicit progress, time, step, or output input: when the reviewed controls do not provide an appropriate progress control, use another supported scene instead of inventing one. " +
+    `Expression kinds are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.kinds.join(", ")}. Binary operators are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.binaryOperators.join("/")}; unary operators are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.unaryOperators.join("/")}. A conditional is exactly {kind, comparison, left, right, whenTrue, whenFalse}; comparison is one of ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.comparisons.join("/")}. Never use condition/then/else or min/max as a binary op. Every expression has hard limits of ${MAX_EXPRESSION_DEPTH} nested levels and ${MAX_EXPRESSION_NODES} nodes; target at most 6 nested levels and 40 nodes. In a spatial coordinate, use a literal, an input, or a one-operation expression only; never paste a full derived calculation into from, to, position, center, normal, axis, or polygon points. Put longer calculations in an output, plot, status, or formula scene and use simple geometry to illustrate their result. Before returning sourceCode, check it as one complete module: every object/array delimiter is balanced, every property and array item has its comma, and the default export is exactly defineVisualization({ ...literal definition... }). Diagram node.value is normally omitted; when it represents a genuinely meaningful numeric quantity, use only {kind:"constant",value:<finite>}, {kind:"input",id:<known control>}, or a one-operation expression, never a bare numeric value such as value: 1. Put longer derivations in an output, plot, status, or formula scene, never in a diagram node value. ` +
     `Scene kinds are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.kinds.join(", ")}. Use only these exact field names. ` +
-    `Use spatial for physical geometry. A spatial scene is exactly {kind:"spatial",title,view?:{azimuthDegrees?,elevationDegrees?,scale?,projection?:"orthographic"|"perspective",interaction?:"fixed"|"orbit"},groups:[{id,label,visibleWhen?,primitives:[...]}]}; it supports 1-${MAX_SPATIAL_GROUPS} groups, 1-${MAX_SPATIAL_PRIMITIVES_PER_GROUP} primitives per group, and ${MAX_SPATIAL_PRIMITIVES} total. ` +
-    `A spatial primitive has kind,id,label,color?,pattern?,opacity?,visibleWhen? plus kind fields: plane(center,normal,size), polygon(points with 3-${MAX_SPATIAL_POLYGON_POINTS} coplanar non-collinear SpatialVectors in boundary order), sphere(center,radius), cylinder(center,axis,radius,height), cone(apex,axis,radius,height), point(position,size?), or vector(from,to,headSize?). ` +
-    "A plane is a centered full rectangular patch extending to both sides of its center. A polygon is a bounded filled surface patch whose points trace one non-self-intersecting boundary. Use ordered polygon vertices, not plane, whenever the visible surface must be clipped, sector-shaped, one-sided, triangular, or a half-plane patch; never describe a plane primitive as a half-plane or clipped patch. " +
-    "Every spatial vector is exactly three SpatialScalars. A SpatialScalar is a finite number or any valid expression, including input or t for dynamic geometry. visibleWhen is an expression; the group or primitive is visible only when it evaluates above zero. Normals, axes, and vectors must be non-zero; sizes, radii, heights, point sizes, and head sizes must stay positive. " +
-    `Spatial colors are only ${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.palette.join(", ")}. Patterns are only ${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.patterns.join(", ")}. projection and interaction are model-authored presentation fields, never inferred semantics or additional learner controls. If either is omitted, the legacy default is projection:"${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.defaults.projection}" and interaction:"${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.defaults.interaction}". Author perspective when depth foreshortening materially clarifies the source-grounded geometry; author orbit only when changing viewpoint improves the stated learning action, and describe its drag, wheel, keyboard, Home, and Reset operation in accessibilityDescription. The runtime supplies stable full-domain world framing, deterministic depth ordering, safe patterns, object labels, and an accessible text legend; author the actual geometry, camera mode, and relationships in the module. Use group visibleWhen for selector cases so all cases share one stable authored-world frame. ` +
-    'A status scene is exactly {kind:"status",title,value,threshold,belowLabel,equalLabel,aboveLabel,description?}; use it for a current textual state instead of numeric status codes. ' +
+    `Use spatial for physical geometry. A spatial scene is exactly {kind:"spatial",title,view?:{azimuthDegrees?,elevationDegrees?,scale?,projection?:"orthographic"|"perspective",interaction?:"fixed"|"orbit"},groups:[{id,label,visibleWhen?,primitives:[...]}]}; authored view values must be literal finite numbers within azimuthDegrees -180..180, elevationDegrees -85..85, and scale 0.25..2. Every spatial group and primitive label must be a concise nonempty 1-72-character string. It supports 1-${MAX_SPATIAL_GROUPS} groups, 1-${MAX_SPATIAL_PRIMITIVES_PER_GROUP} primitives per group, and ${MAX_SPATIAL_PRIMITIVES} total. ` +
+    `A spatial primitive has kind,id,label,color?,pattern?,labelMode?,opacity?,visibleWhen? plus kind fields: plane(center,normal,size), polygon(points with 3-${MAX_SPATIAL_POLYGON_POINTS} coplanar non-collinear SpatialVectors in boundary order), sphere(center,radius), cylinder(center,axis,radius,height), cone(apex,axis,radius,height), point(position,size?), or vector(from,to,headSize?). labelMode defaults to "inline"; use "legend_only" for dense supporting primitives when the required visible legend and accessible object description are clearer than an on-canvas label. The label remains required and is still rendered in the legend and ARIA. Authored opacity, when present, must be a literal finite number between 0.1 and 1. A vector primitive is a finite directed segment from from to to; its label, explanation, and accessibility description must not call it an unbounded line, ray, or axis. ` +
+    "authorEvidence.spatialRepresentationRequirement is a reviewed, immutable route constraint. When its required field is true, include an actual spatial scene with source-grounded physical primitives; do not replace that geometry with a diagram node-link graph, flowchart, state-transition graph, or plot. When requiresSurfacePrimitive is true, include a spatial surface primitive; when requiresVectorPrimitive is true, include a spatial vector primitive. Those primitives must teach the reviewed relationship itself, not serve as decorative additions. " +
+    "A plane is a centered full rectangular patch extending to both sides of its center. A polygon is a bounded filled surface patch whose points trace one non-self-intersecting boundary. Use ordered polygon vertices, not plane, whenever the visible surface must be clipped, sector-shaped, one-sided, triangular, or a half-plane patch; never describe a plane primitive as a half-plane or clipped patch. Cylinder and cone primitives are bounded capped closed solids; never use either when the claim requires an open, uncapped, clipped, one-sided, or sector surface. For those claims, use one or more ordered polygon facets and describe the result honestly as a bounded faceted, local, or tangent approximation when appropriate. Whenever a named-point normal, tangent, or basis-direction claim refers to a displayed planar, faceted, or local surface patch, audit the literal plane or polygon geometry: the named point must be in the relative interior of its face, never on an edge, vertex, seam, or cap, and its actual face normal must be parallel or antiparallel to the claimed vector. A label never corrects a geometric mismatch. " +
+    "For any named-point normal/tangent/basis claim, do the literal geometry calculation before authoring prose: a point must be strictly inside one displayed face, and for a polygon its ordered-vertex cross product (p1-p0) x (p2-p0) must be parallel or antiparallel to the claimed vector. A shared facet edge, seam, vertex, cap, or an off-point chord is never evidence for a local curved-surface normal. When the source calls for a local curved normal, render a tangent plane or bounded tangent polygon containing the named point in its interior and describe it honestly as a local/tangent approximation. " +
+    "Every spatial vector is exactly three SpatialScalars. A SpatialScalar is a finite number or any valid expression, including input or t for dynamic geometry. visibleWhen is an expression; the group or primitive is visible only when it evaluates above zero. Normals, axes, and vectors must be non-zero; sizes, radii, heights, point sizes, and head sizes must stay positive. Do not call a direction vector unit or normalized by implication: from:[0,0,0] to:[1,0,0] has magnitude 1, while to:[1,1,1] has magnitude sqrt(3); evaluate the actual endpoint delta in every rendered state. " +
+    `Hard compilation budget: AST node count must not exceed ${MAX_AST_NODES}; target at most ${Math.floor(MAX_AST_NODES * 0.64)} nodes and roughly 10,000 sourceCode bytes so later edits retain margin. Repeated expression-backed polygon vertices and vectors consume this budget quickly. For a changing axis-aligned rectangular volume, six plane faces (literal normal, one dynamic center component, dynamic scalar size) are the compact faithful representation; do not build the same box from six four-vertex expression-heavy polygons unless you have verified the literal source stays within the AST target. Every vector from and to must be written as exactly three [x, y, z] entries, including zero components. ` +
+    `Spatial colors are only ${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.palette.join(", ")}. Patterns are only ${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.patterns.join(", ")}. projection and interaction are model-authored presentation fields, never inferred semantics or additional learner controls. If either is omitted, the legacy default is projection:"${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.defaults.projection}" and interaction:"${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.defaults.interaction}". Author perspective when depth foreshortening materially clarifies the source-grounded geometry; author orbit only when changing viewpoint improves the stated learning action, and describe its drag, wheel, keyboard, Home, and Reset operation in accessibilityDescription. The runtime supplies stable full-domain world framing, deterministic depth ordering, safe patterns, object labels, and an accessible text legend; author the actual geometry, camera mode, and relationships in the module. A spatial primitive label must name that rendered primitive itself: distinguish scalar values, basis/reference vectors, and component-displacement vectors in labels, legend, explanation, and accessibility description. Every non-structural scalar or symbol that represents a physical or conceptual quantity in a scene, output, formula, label, or explanation must be source-grounded and visibly introduced with its symbol, value, unit when applicable, and role; only pure rendering coordinates with no physical or conceptual claim may remain unlabelled. Do not hide a learner-relevant interval or scale as a bare coordinate or expression literal: give it a named display in a formula/annotation, diagram, plot, or status scene without adding planner-owned controls or outputs. Screen-left/right/top/bottom are presentation-dependent, not world geometry: do not make a screen-relative placement claim in a label, explanation, accessibility description, or pedagogical claim unless every relevant labelled preview for its exact viewport and select state proves it. When placement is not source-essential, name the geometry, selector case, or world-coordinate relationship instead. Choose geometry, view, and concise labels so every required object, endpoint, and label remains fully visible and non-overlapping in ordinary desktop and narrow mobile previews; use only sourceCode-controlled fields to achieve that fit. Use group visibleWhen for selector cases so all cases share one stable authored-world frame. ` +
+    "Projection overlap is a hard failure even when world coordinates differ: choose the authored camera so named source-essential points, vector arrowheads, endpoints, and inline labels remain visibly separated in every exact desktop and narrow-mobile state. Adjust camera before physical geometry; for a crowded supporting primitive use labelMode:\"legend_only\" rather than CSS, and only alter an illustrative/normalized display envelope when the source supports it. " +
+    "For a spatial visual, its first rendered spatial scene with primitives is the primary narrow-mobile preview scene: place it ahead of supporting plot, formula, annotation, status, or secondary-scene content and keep its full projection SVG in the initial 375x667 document viewport. An SVG-local safe frame is not sufficient when document ordering or vertical footprint pushes the scene below the preview; correct scene order, preamble, camera, or geometry in sourceCode rather than CSS, scrolling instructions, or runtime auto-fit. A spatial vector endpoint delta is quantitative, not a silent fit transform: either derive it from the same source-grounded relationship represented by required outputs, plots, markers, formulas, and statuses, or visibly define a unitless display-scale factor and state that the vector is illustrative/normalized. Never leave an arbitrary unmentioned multiplier to make an on-canvas field length look like a plotted physical magnitude. " +
+    "The sandbox rejects a spatial primitive or inline label whose actual projected box leaves the safe SVG frame, including vector arrowheads and label strokes. Fit this by choosing a conservative literal scene.view.scale (and, only when needed, azimuth/elevation or literal geometry); do not expect runtime auto-fit, CSS, or a label rename to repair a camera-frame failure. " +
+    'A status scene is exactly {kind:"status",title,value,threshold,belowLabel,equalLabel,aboveLabel,description?}; threshold is required and must be a literal finite number in sourceCode (for example threshold: 0), never an expression, string, null, NaN, or Infinity; value may be an expression. Use it for a current textual state instead of numeric status codes. Its title and state labels render in a narrow text panel: keep them short natural-language strings with ordinary word-break opportunities that fit at 375px, and put equations, ratios, or long technical tokens in description or a formula scene. ' +
     "A plot may include markers:[{id,label,x,y,color?}] with expression-valued x/y; use a marker for the selected point and never fake a point as a sparse line series. " +
-    "Diagram node coordinates must remain within x=40-600 and y=40-320 and labels must be concise. " +
+    "Diagram node coordinates must remain within x=72-568 and y=48-312 and labels must be concise; the narrower mobile-safe authoring envelope above is the expected layout target for text-bearing nodes. " +
     "Each testCases item represents inputs and expected as arrays of {id,value} pairs and includes tolerance (number or null). " +
     `Every control id must match ${CONTROL_ID_PATTERN.source}; ${[...RESERVED_CONTROL_IDS].join(", ")} are reserved runtime expression variables and cannot be learner controls. ` +
-    "Implement opportunity.interactionGoal and opportunity.learnerAction as the artifact's actual interaction sequence, not merely as labels or explanatory prose. For test_prediction, require the learner to commit a prediction before the artifact reveals or evaluates the outcome; use the exact protocolRole fields from the reviewed controls and author the required outcome expression or scene visibleWhen so it is unchanged initially, after prediction input, after unauthorized reveal/evaluate without commitment, and after commit alone; it must change only after valid commit_prediction then reveal_outcome/evaluate_prediction. Gate that observable with both authored action controls, not commit alone or reveal alone. The trusted runtime derives sequencing only from protocolRole: prediction_input stays editable until commit, commitment locks it, reveal/evaluate stays disabled and mutation-guarded until commit, and Reset clears and unlocks the sequence. Every decisive condition named by the reviewed interaction contract must be directly manipulable or evaluated by the artifact. " +
-    "Copy the opportunity.requiredInputs array exactly and in order: same control count, id, kind, label, type, protocolRole, unit, min, max, step, options, and defaultValue. Do not add a control or a field the reviewed contract omits. Copy opportunity.requiredOutputs exactly and in order: same output count, id, label, and representation; never add or reorder learner-visible outputs. Keep any runtime-internal derived values inside scene or output expressions rather than declaring extra outputs. Use only source-backed relationships. Label illustrative or normalized values clearly. Every required control must materially change a numeric output or scene expression. " +
-    "Before returning, perform a complete model-authored consistency check against the supplied evidence and the literal definition. Independently recompute every evaluable numeric or geometric relationship you authored: scalar values, signed directions, units and conversions, vector endpoint deltas and magnitudes, component-wise sums, resultants, and other aggregates. Make every coordinate, label, annotation, explanation, and accessibility statement agree at the authored precision. If a total is claimed to be the sum of displayed contributions, its components must equal that displayed sum; do not hide a discrepancy behind rounding or prose. If displayed elements are representative samples of a larger or continuous domain, do not construct or imply the whole-domain aggregate as their exact finite subtotal unless the supplied evidence explicitly establishes that equality; distinguish the sample contribution and whole-domain result in the geometry as well as the labels and non-visual explanation. When the evidence does not supply enough information to evaluate a sign, magnitude, scale, or aggregate, use explicitly qualitative or normalized encoding and do not invent or claim an evaluated value. The compiler and renderer will not infer or repair any of these relationships for you. " +
+    "Implement opportunity.interactionGoal and opportunity.learnerAction as the artifact's actual interaction sequence, not merely as labels or explanatory prose. When the reviewed action asks to simulate, iterate, relax, converge, evolve, or step through a process, a static closed-form ratio is not the interaction: author definition.animation:{durationMs,loop,autoplay} and use the reserved runtime expression {kind:\"input\",id:\"t\"} in at least one actual numeric output or scene expression so Play and Step reveal distinct source-grounded initial, intermediate, and settled stages. Do not add t as a learner control, invent a solver or hidden history, or claim literal numerical iteration when only illustrative or normalized stages are evidence-supported. For test_prediction, require the learner to commit a prediction before the artifact reveals or evaluates the outcome; use the exact protocolRole fields from the reviewed controls and author the required outcome expression or scene visibleWhen so it is unchanged initially, after prediction input, after unauthorized reveal/evaluate without commitment, and after commit alone; it must change only after valid commit_prediction then reveal_outcome/evaluate_prediction. Gate that observable with both authored action controls, not commit alone or reveal alone. The trusted runtime derives sequencing only from protocolRole: prediction_input stays editable until commit, commitment locks it, reveal/evaluate stays disabled and mutation-guarded until commit, and Reset clears and unlocks the sequence. Every decisive condition named by the reviewed interaction contract must be directly manipulable or evaluated by the artifact. " +
+    "Copy the opportunity.requiredInputs array exactly and in order: same control count, id, kind, label, type, protocolRole, unit, min, max, step, options, and defaultValue. Do not add a control or a field the reviewed contract omits. Copy opportunity.requiredOutputs exactly and in order: same output count, id, label, and representation; never add or reorder learner-visible outputs. Keep any runtime-internal derived values inside scene or output expressions rather than declaring extra outputs. Use only source-backed relationships. Label illustrative or normalized values clearly. Every required control must materially change a numeric output or scene expression. Before returning, verify this executable condition for each reviewed required control: from its default protocol-aware state, at least one allowed alternate control state must change by more than 1e-9 the evaluated value of an output.expression or numeric scene expression in sourceCode. A control that only changes labels, diagram display, output representation, prose, metadata, accessibility text, or an otherwise constant expression fails; for select controls, use the declared zero-based option index in a numeric scene/output expression, including spatial group or primitive visibleWhen. " +
+    "Before returning, perform a complete model-authored consistency check against the supplied evidence and the literal definition. Independently recompute every evaluable numeric or geometric relationship you authored: scalar values, signed directions, units and conversions, vector endpoint deltas and magnitudes, component-wise sums, resultants, and other aggregates. Make every coordinate, label, annotation, explanation, and accessibility statement agree at the authored precision. When a required output, plot series, plot marker, status, formula, or annotation displays a component, resultant, or magnitude of rendered vector contributions, derive it from those same literal endpoint deltas and carry the identical relationship through every representation; never leave a stale scaled or half-magnitude expression in one view. Perform a claim-to-primitive audit: whenever a label, explanation, or accessibility text calls a vector unit or normalized, its evaluated to-from Euclidean norm must be exactly 1 in every rendered state; whenever text identifies a primitive as a named point with coordinates, that primitive's evaluated position and any vector origin explicitly claimed at that point must equal those coordinates in every rendered state. For every named-point normal, tangent, or basis-direction claim about a displayed planar, faceted, or local surface patch, inspect the literal plane or polygon face rather than prose: the point must be in its relative interior, not an edge, vertex, seam, or cap, and the face normal must be parallel or antiparallel to the claimed vector. For every screen-relative left/right/top/bottom claim, perform a projection audit against the exact authored camera and each relevant labelled preview; if it is not proven in every claimed state and viewport, remove it or state a world-coordinate relationship instead. Do not solve a topology, geometry, or projection defect only by relabeling it. If a display vector or anchor is qualitative, do not call it unit/normalized or present it as a named source coordinate. If a total is claimed to be the sum of displayed contributions, its components must equal that displayed sum; do not hide a discrepancy behind rounding or prose. If displayed elements are representative samples of a larger or continuous domain, do not construct or imply the whole-domain aggregate as their exact finite subtotal unless the supplied evidence explicitly establishes that equality; distinguish the sample contribution and whole-domain result in the geometry as well as the labels and non-visual explanation. When the evidence does not supply enough information to evaluate a sign, magnitude, scale, or aggregate, use explicitly qualitative or normalized encoding and do not invent or claim an evaluated value. The compiler and renderer will not infer or repair any of these relationships for you. " +
     "A select control is exposed to expressions as the stable zero-based index of its option in the declared options array (0 for the first option, 1 for the second, and so on), while the interface displays the option label; use conditional expressions against those numeric indices. Group or primitive visibleWhen counts as scene influence, so do not add a meaningless numeric output for the select. " +
-    "When repairContext is supplied, return a complete replacement candidate that addresses every exact history entry using only this candidate's six authored fields and the declared SDK. Its immutableContract controls and outputs are fixed by the reviewed planner: do not add, remove, rename, reorder, or request mutation of them, and do not rely on renderer, runtime, CSS, route, lesson, or planner changes. Use the labelled rendered previews only for the viewport and select state they identify; do not infer an unshown state or viewport. If previewCoverage.selectStateCoverageTruncated is true, the bounded matrix is not proof of complete or unshown select-state coverage. " +
+    "When repairContext is supplied, return a complete replacement candidate that addresses every exact history entry using only this candidate's six authored fields and the declared SDK. When authorEvidence.highPriorityRepairInstructions is present, follow every instruction by replacing the affected sourceCode structure, not by merely relabelling, describing, or partially editing the rejected module. Before returning, make an internal checklist from every exactErrors and exactHistory entry: revise the actual sourceCode fields implicated by all entries, not merely their labels, explanation, or the newest entry, and re-run the claim-to-primitive audit after those revisions. Its immutableContract controls and outputs are fixed by the reviewed planner: do not add, remove, rename, reorder, or request mutation of them, and do not rely on renderer, runtime, CSS, route, lesson, or planner changes. Use the labelled rendered previews only for the viewport and select state they identify; do not infer an unshown state or viewport. A preview that contradicts a screen-relative placement claim requires an authored geometry or claim correction, never a camera assumption. If previewCoverage.selectStateCoverageTruncated is true, the bounded matrix is not proof of complete or unshown select-state coverage. " +
     "Keep sourceCode below 16,000 bytes and use at most five scenes; prefer the smallest expression tree that teaches the objective. testCases should cover only simple derived outputs with numeric expectations you can compute exactly (an empty testCases array is allowed because Breadboard adds deterministic tests). " +
     "sourceCode must end immediately after the final ASCII semicolon; do not append Markdown fences, commentary, or non-ASCII punctuation. " +
+    "FINAL NON-NEGOTIABLE SELF-CHECK BEFORE THE JSON RESPONSE: verify the literal sourceCode, not just its prose. sourceCode has exactly two top-level statements—the required import and export default defineVisualization({ ...literal definition... })—with no const/let/var/helper/config aliases, property shorthand, or bare JavaScript identifiers as values. Quote every string; represent a variable only through a literal SDK expression object such as {kind:\"input\",id:\"gain\"}. Recheck every authored numeric schema bound, every required control's alternate-state numeric influence, and every textual spatial claim against its evaluated primitive. When repairContext exists, close every exactErrors and exactHistory item by editing the actual sourceCode fields, then repeat this check. " +
     `This is a complete syntactically valid scalar/plot module template; follow its schema exactly:\n${validModuleTemplate}\n` +
     `This is a complete syntactically valid spatial module template; replace its generic labels and geometry with source-grounded content:\n${spatialModuleTemplate}`;
   if (
@@ -4326,6 +5024,8 @@ export default defineVisualization({
         }
       : undefined;
   const authorEvidence = {
+    highPriorityRepairInstructions:
+      generatedVisualHighPriorityRepairInstructions(input.errors),
     opportunity: input.opportunity,
     immutableContract: {
       requiredInputs: input.opportunity.requiredInputs,
@@ -4341,6 +5041,8 @@ export default defineVisualization({
       input.formulaDefinitions?.slice(0, 12),
       6_000,
     ),
+    spatialRepresentationRequirement:
+      reviewedSpatialRepresentationRequirement(input.opportunity),
     sdkDocumentation: {
       version: GENERATED_VISUAL_CAPABILITY_MANIFEST.sdkVersion,
       controlTypes: [
@@ -4364,6 +5066,9 @@ export default defineVisualization({
       sceneTypes: [...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.kinds],
       spatialPrimitiveTypes: [
         ...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.primitiveKinds,
+      ],
+      spatialLabelModes: [
+        ...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.labelModes,
       ],
       spatialProjectionTypes: [
         ...GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.spatial.projections,
@@ -4430,7 +5135,7 @@ export default defineVisualization({
   const tokenUsage = generatedVisualTokenUsage(response.usage);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(content);
+    parsed = JSON.parse(unwrapGeneratedVisualJsonFence(content));
   } catch (error) {
     throw new Error(
       `generated visualization candidate is not valid JSON: ${error instanceof Error ? error.message : "parse failed"}`,
@@ -4887,9 +5592,9 @@ async function reviewGeneratedVisualization(input: {
               `{"approved": <boolean>, "reason": <string>, "requestedChanges": [<string>, ...], "scores": {${CRITIC_RUBRIC_KEYS.map((key) => `"${key}": <0-1 number>`).join(", ")}}}\n` +
               "Score every one of those dimensions as a number from 0 to 1 — an approval that leaves any dimension unscored is discarded. " +
               "Leave requestedChanges empty when you approve; otherwise list the complete bounded inventory of every blocking revision visible in the supplied evidence, not only the first issue discovered. " +
-              "Compare every rendered primitive's actual topology and domain against its labels, explanation, interaction contract, and source evidence. Explicitly distinguish centered/full from bounded/clipped/one-sided/sector geometry and open from closed geometry. Reject any mismatch even when a label or prose renames the rendered shape; relabeling does not change topology or domain. " +
+              "Compare every rendered primitive's actual topology and domain against its labels, explanation, interaction contract, and source evidence. Explicitly distinguish centered/full from bounded/clipped/one-sided/sector geometry and open from closed geometry. plane(center,normal,size) is a finite centered full rectangular patch and is valid for a full rectangular box face; do not require a polygon merely because that face is finite. Require a polygon only for clipped, one-sided, sector, or non-rectangular boundaries. Cylinder and cone primitives are bounded capped closed solids, so require ordered polygon facets for a claimed open, uncapped, clipped, one-sided, or sector surface. Diagram node.value is optional and must remain an expression object (a constant, input, or shallow one-operation expression), never a bare numeric value; do not request a derived formula or deep expression tree inside a diagram node value. Do not request a long derived formula inside any spatial coordinate either: request simple literal/input/one-operation geometry and put the calculation in an output, plot, status, or formula scene. Never request min or max as a binary expression operator. If the visual needs a longer derivation, request an output, plot, status, or formula scene instead. For every named-point normal, tangent, or basis-direction claim about a displayed planar, faceted, or local surface patch, inspect the literal face: reject a point on an edge, vertex, seam, or cap, and reject a face normal that is not parallel or antiparallel to the claimed vector. A faceted or local tangent approximation is acceptable only when the artifact says so. Reject any mismatch even when a label or prose renames the rendered shape; relabeling does not change topology or domain. " +
               "Independently recompute every evaluable relationship from the literal definition rather than trusting its labels, explanation, pedagogical claims, or screenshot. Check scalar values, signs, directions, units and conversions, every vector's endpoint delta and magnitude, component-wise sums, resultants, rounding, and other aggregates. A claimed sum must equal the displayed contributions at the authored precision. If displayed elements are representative samples of a larger or continuous domain, reject a whole-domain aggregate that is constructed or implied as their exact finite subtotal unless the source evidence explicitly establishes that equality; require the distinction in geometry, labels, and the non-visual explanation. If source evidence does not establish a sign, magnitude, scale, or aggregate, require explicitly qualitative or normalized encoding and reject unsupported evaluated claims. Treat every such check as part of both sourceClaimsAndUnits and primitiveTopologyAndDomain, and score either below its publication threshold when any check fails. " +
-              "For a spatial scene, verify that its explicitly authored orthographic/perspective and fixed/orbit view is pedagogically useful rather than decorative, preserves legibility and truthful geometry, and is explained accessibly when orbit navigation is enabled. Omitted camera fields are the fixed orthographic legacy default; never infer a different mode from the screenshot or subject matter. " +
+              "For a spatial scene, verify that its explicitly authored orthographic/perspective and fixed/orbit view is pedagogically useful rather than decorative, preserves legibility and truthful geometry, and is explained accessibly when orbit navigation is enabled. Omitted camera fields are the fixed orthographic legacy default; never infer a different mode from the screenshot or subject matter. Treat the supplied narrow mobile preview as a hard camera-framing check: reject a source-essential plane, vector, endpoint, or inline label that is off-center, cropped, or too close to a frame edge because its azimuth, elevation, scale, projection, or geometry envelope is unsuitable, and request an authored view/geometry correction rather than CSS or runtime auto-fit. Trace every learner-facing non-structural numeric literal or symbol in spatial coordinates and formula/output expressions: reject an unexplained physical interval, scale, or constant unless its symbol, value, unit when applicable, and role are visibly defined in a formula/annotation, diagram, plot, or status scene and described non-visually; do not demand labels for pure rendering-only coordinates. Treat every screen-relative left/right/top/bottom statement as a literal rendered claim: reject it when the exact supplied preview for that state and viewport contradicts it, and when such placement is not source-grounded request removal or a world-coordinate relationship rather than a camera assumption. " +
               "For test_prediction, verify the actual control and output behavior follows the reviewed input, then commit, then reveal/evaluate order; reject an artifact that reveals or evaluates the outcome before commitment, whose outcome changes initially, during prediction, or at commit alone, ignores any protocol stage, or merely describes the sequence in prose. The trusted runtime uses exact protocolRole values (never labels or subject inference) to keep prediction inputs editable until commit, lock them after commit, mutation-guard reveal/evaluate until commitment, and clear/unlock on Reset. There is no retained hidden-state snapshot; the mechanism is a UI/state lock and guard, not a semantic prediction snapshot invented by the runtime. Require the authored outcome expression or visibility to be gated by both commit and reveal/evaluate. " +
               "The immutableContract controls and outputs are planner-owned and cannot be changed in this candidate loop. Reject only with requestedChanges that a complete replacement candidate can make through its six authored fields and sourceCode using the supplied capabilityManifest. Requested changes must be sourceCode/SDK-feasible: never request a contract, planner, lesson, route, renderer, runtime, CSS, or unavailable SDK mutation. Use each labelled rendered preview only as evidence for its stated viewport and select state; do not claim a mobile or alternate-state defect from a different or unshown preview. When previewCoverage.selectStateCoverageTruncated is true, it is bounded representative evidence rather than proof of complete or unshown select-state coverage. Approve only if interaction improves understanding, belongs in this subsection, uses meaningful controls, has a useful default state, introduces every variable, preserves source claims and units, matches primitive topology and domain, avoids duplication and unnecessary complexity, and is accessible.",
           },
@@ -4979,7 +5684,7 @@ async function reviewGeneratedVisualization(input: {
   const tokenUsage = generatedVisualTokenUsage(response.usage);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(content);
+    parsed = JSON.parse(unwrapGeneratedVisualJsonFence(content));
   } catch {
     throw new Error(
       `critic returned invalid JSON: ${content.slice(0, 500) || "(empty response)"}`,
@@ -5212,6 +5917,46 @@ async function withGeneratedVisualTimeout<T>(input: {
   }
 }
 
+async function waitForGeneratedVisualCriticTransportSession(input: {
+  cooldownMs: number;
+  externalSignal?: AbortSignal;
+  checkCancelled?: () => void;
+  waiter?: (input: {
+    cooldownMs: number;
+    signal?: AbortSignal;
+  }) => Promise<void>;
+}): Promise<void> {
+  input.checkCancelled?.();
+  if (input.externalSignal?.aborted)
+    throw generatedVisualAbortReason(input.externalSignal);
+  if (input.cooldownMs <= 0 && !input.waiter) return;
+  if (input.waiter) {
+    await input.waiter({
+      cooldownMs: input.cooldownMs,
+      signal: input.externalSignal,
+    });
+  } else {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        input.externalSignal?.removeEventListener("abort", abort);
+        if (error !== undefined) reject(error);
+        else resolve();
+      };
+      const abort = () =>
+        finish(generatedVisualAbortReason(input.externalSignal!));
+      const timer = setTimeout(() => finish(), input.cooldownMs);
+      input.externalSignal?.addEventListener("abort", abort, { once: true });
+    });
+  }
+  if (input.externalSignal?.aborted)
+    throw generatedVisualAbortReason(input.externalSignal);
+  input.checkCancelled?.();
+}
+
 export async function retryGeneratedVisualProviderRequest<T>(input: {
   timeoutMs: number;
   /** The built-in OpenAI provider applies `timeoutMs` to each raw SDK call so
@@ -5367,6 +6112,15 @@ export type CreateGeneratedVisualizationInput = {
   /** Test-only override for deterministic runtime-gate simulations. */
   browserTestRunner?: typeof runGeneratedVisualBrowserTests;
   timeoutMs?: number;
+  /** Availability-only outer retry sessions around one identical multimodal
+   * critic request. This never creates or repairs a candidate. */
+  criticTransportSessionMaxAttempts?: number;
+  criticTransportSessionCooldownMs?: number;
+  /** Test seam for the cancellable availability cooldown. */
+  criticTransportSessionWaiter?: (input: {
+    cooldownMs: number;
+    signal?: AbortSignal;
+  }) => Promise<void>;
   abortSignal?: AbortSignal;
   checkCancelled?: () => void;
 };
@@ -5478,6 +6232,34 @@ async function createGeneratedVisualizationWithSlot(
           process.env.LEARN_GENERATED_VISUAL_TIMEOUT_MS ??
             GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS,
         ) || GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS),
+    ),
+  );
+  const configuredCriticTransportSessions =
+    input.criticTransportSessionMaxAttempts ??
+    Number(
+      process.env.LEARN_GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_ATTEMPTS,
+    );
+  const criticTransportSessionMaxAttempts = Math.max(
+    1,
+    Math.min(
+      GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_MAX_ATTEMPTS,
+      Number.isFinite(configuredCriticTransportSessions)
+        ? Math.floor(configuredCriticTransportSessions)
+        : GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_MAX_ATTEMPTS,
+    ),
+  );
+  const configuredCriticTransportCooldownMs =
+    input.criticTransportSessionCooldownMs ??
+    Number(
+      process.env.LEARN_GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_COOLDOWN_MS,
+    );
+  const criticTransportSessionCooldownMs = Math.max(
+    0,
+    Math.min(
+      900_000,
+      Number.isFinite(configuredCriticTransportCooldownMs)
+        ? Math.floor(configuredCriticTransportCooldownMs)
+        : GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_COOLDOWN_MS,
     ),
   );
   let currentRepairAttempt = 0;
@@ -5808,87 +6590,133 @@ async function createGeneratedVisualizationWithSlot(
     let criticTransportExhausted:
       | GeneratedVisualProviderTransportExhaustedError
       | undefined;
+    const criticModel = String(
+      process.env.LEARN_GENERATED_VISUAL_CRITIC_MODEL ?? input.model,
+    );
     for (
-      let criticAttempt = 1;
-      criticAttempt <= criticAttempts;
-      criticAttempt += 1
+      let criticTransportSession = 1;
+      criticTransportSession <= criticTransportSessionMaxAttempts;
+      criticTransportSession += 1
     ) {
-      const criticRequest = {
-        client: input.client,
-        model: String(
-          process.env.LEARN_GENERATED_VISUAL_CRITIC_MODEL ?? input.model,
-        ),
-        opportunity: input.opportunity,
-        candidate,
-        definition,
-        sourceContext: input.sourceContext,
-        sourceFigureSummaries: input.sourceFigureSummaries,
-        formulaDefinitions: input.formulaDefinitions,
-        previewPath: browser.browser?.screenshotCreated
-          ? path.join(stagingDir, "preview.png")
-          : undefined,
-        previews: browser.previews,
-        tests: deterministicTests,
-        priorCriticFailure,
-        timeoutMs: requestTimeoutMs,
-      };
-      try {
-        critic = await retryGeneratedVisualProviderRequest({
+      criticTransportExhausted = undefined;
+      for (
+        let criticAttempt = 1;
+        criticAttempt <= criticAttempts;
+        criticAttempt += 1
+      ) {
+        const criticRequest = {
+          client: input.client,
+          model: criticModel,
+          opportunity: input.opportunity,
+          candidate,
+          definition,
+          sourceContext: input.sourceContext,
+          sourceFigureSummaries: input.sourceFigureSummaries,
+          formulaDefinitions: input.formulaDefinitions,
+          previewPath: browser.browser?.screenshotCreated
+            ? path.join(stagingDir, "preview.png")
+            : undefined,
+          previews: browser.previews,
+          tests: deterministicTests,
+          priorCriticFailure,
           timeoutMs: requestTimeoutMs,
-          timeoutOwner:
-            criticProvider === reviewGeneratedVisualization
-              ? "provider"
-              : "boundary",
-          externalSignal: input.abortSignal,
-          checkCancelled: input.checkCancelled,
-          work: (signal) => criticProvider({ ...criticRequest, signal }),
-          onRetry: ({ error, transportAttempt, transportMaxAttempts }) => {
-            emit(input.onEvent, "visual_critic_transport_retry", {
+        };
+        try {
+          critic = await retryGeneratedVisualProviderRequest({
+            timeoutMs: requestTimeoutMs,
+            timeoutOwner:
+              criticProvider === reviewGeneratedVisualization
+                ? "provider"
+                : "boundary",
+            externalSignal: input.abortSignal,
+            checkCancelled: input.checkCancelled,
+            work: (signal) => criticProvider({ ...criticRequest, signal }),
+            onRetry: ({ error, transportAttempt, transportMaxAttempts }) => {
+              emit(input.onEvent, "visual_critic_transport_retry", {
+                visualizationId: id,
+                attempt,
+                criticAttempt,
+                criticTransportSession,
+                criticTransportSessionMaxAttempts,
+                transportAttempt,
+                transportMaxAttempts,
+                reason:
+                  error instanceof Error
+                    ? error.message
+                    : "provider transport failed",
+              });
+            },
+          },
+          );
+          break;
+        } catch (error) {
+          if (input.abortSignal?.aborted)
+            throw generatedVisualAbortReason(input.abortSignal);
+          input.checkCancelled?.();
+          if (error instanceof GeneratedVisualProviderTransportExhaustedError) {
+            criticTransportExhausted = error;
+            criticFailure = error.message;
+            emit(input.onEvent, "visual_critic_transport_exhausted", {
               visualizationId: id,
               attempt,
               criticAttempt,
-              transportAttempt,
-              transportMaxAttempts,
-              reason:
-                error instanceof Error
-                  ? error.message
-                  : "provider transport failed",
+              criticTransportSession,
+              criticTransportSessionMaxAttempts,
+              transportAttempts: error.transportAttempts,
+              transportRetryOwner: error.retryOwner,
+              failureCategory: "critic",
+              reason: error.message,
+              durationMs: Date.now() - criticStartedAt,
             });
-          },
-        });
-        break;
-      } catch (error) {
-        if (input.abortSignal?.aborted)
-          throw generatedVisualAbortReason(input.abortSignal);
-        input.checkCancelled?.();
-        if (error instanceof GeneratedVisualProviderTransportExhaustedError) {
-          criticTransportExhausted = error;
-          criticFailure = error.message;
-          emit(input.onEvent, "visual_critic_transport_exhausted", {
-            visualizationId: id,
-            attempt,
-            criticAttempt,
-            transportAttempts: error.transportAttempts,
-            transportRetryOwner: error.retryOwner,
-            failureCategory: "critic",
-            reason: error.message,
-            durationMs: Date.now() - criticStartedAt,
-          });
-          break;
-        }
-        if (isGeneratedVisualProviderCancellation(error)) throw error;
-        criticFailure =
-          error instanceof Error ? error.message : "critic failed";
-        priorCriticFailure = criticFailure;
-        if (criticAttempt < criticAttempts) {
-          emit(input.onEvent, "visual_critic_retry", {
-            visualizationId: id,
-            attempt,
-            criticAttempt,
-            reason: criticFailure,
-          });
+            break;
+          }
+          if (isGeneratedVisualProviderCancellation(error)) throw error;
+          criticFailure =
+            error instanceof Error ? error.message : "critic failed";
+          priorCriticFailure = criticFailure;
+          if (criticAttempt < criticAttempts) {
+            emit(input.onEvent, "visual_critic_retry", {
+              visualizationId: id,
+              attempt,
+              criticAttempt,
+              reason: criticFailure,
+            });
+          }
         }
       }
+      if (critic || !criticTransportExhausted) break;
+      if (
+        criticTransportSession === criticTransportSessionMaxAttempts
+      )
+        break;
+      emit(input.onEvent, "visual_critic_transport_session_retry", {
+        visualizationId: id,
+        attempt,
+        criticTransportSession,
+        criticTransportSessionMaxAttempts,
+        nextCriticTransportSession: criticTransportSession + 1,
+        cooldownMs: criticTransportSessionCooldownMs,
+        criticModel,
+        transportAttempts: criticTransportExhausted.transportAttempts,
+        transportRetryOwner: criticTransportExhausted.retryOwner,
+        failureCategory: "critic",
+        reason: criticTransportExhausted.message,
+        durationMs: Date.now() - criticStartedAt,
+      });
+      await waitForGeneratedVisualCriticTransportSession({
+        cooldownMs: criticTransportSessionCooldownMs,
+        externalSignal: input.abortSignal,
+        checkCancelled: input.checkCancelled,
+        waiter: input.criticTransportSessionWaiter,
+      });
+      emit(input.onEvent, "visual_critic_transport_session_resumed", {
+        visualizationId: id,
+        attempt,
+        criticTransportSession: criticTransportSession + 1,
+        criticTransportSessionMaxAttempts,
+        criticModel,
+        durationMs: Date.now() - criticStartedAt,
+      });
     }
     if (!critic) {
       lastFailure = "critic";

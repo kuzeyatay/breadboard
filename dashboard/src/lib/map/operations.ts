@@ -50,7 +50,17 @@ import {
   type GeographicContextKey,
 } from "./store.ts";
 import type DatabaseType from "better-sqlite3";
-import { placesForIds, type GeographicContext, type MapPlace } from "./types.ts";
+import {
+  placesForIds,
+  type GeographicContext,
+  type MapPlace,
+  type MapRoute,
+  type TravelMode,
+} from "./types.ts";
+import {
+  automaticTravelMode,
+  automaticWalkingRouteIsTooLong,
+} from "./travel-mode.ts";
 
 export const MAP_OPERATIONS = [
   "map_search",
@@ -356,17 +366,36 @@ export async function executeMapOperation(
       if (origin.place.id === destination.place.id) {
         throw invalid("The origin and the destination are the same place.");
       }
-      const route = await mapRoute(
-        {
-          origin: origin.place,
-          destination: destination.place,
-          mode: input.mode,
-          includeSteps: input.includeSteps === true,
-          ...(options.signal ? { signal: options.signal } : {}),
-        },
-        providers,
-        config,
-      );
+      const automatic = input.mode === "auto";
+      const initialMode: TravelMode = input.mode === "auto"
+        ? automaticTravelMode(origin.place, destination.place)
+        : input.mode;
+      const requestRoute = (mode: TravelMode) =>
+        mapRoute(
+          {
+            origin: origin.place,
+            destination: destination.place,
+            mode,
+            includeSteps: input.includeSteps === true,
+            ...(options.signal ? { signal: options.signal } : {}),
+          },
+          providers,
+          config,
+        );
+
+      let route: MapRoute;
+      try {
+        route = await requestRoute(initialMode);
+      } catch (error) {
+        // In Auto, a short point-to-point distance may hide a body of water or
+        // pedestrian restriction. If walking cannot route it, try a verified
+        // driving route instead. Explicit Walking never falls back silently.
+        if (!automatic || initialMode !== "walking") throw error;
+        route = await requestRoute("driving");
+      }
+      if (automaticWalkingRouteIsTooLong(input.mode, route)) {
+        route = await requestRoute("driving");
+      }
       const nextContext = recordRoute(key, route, database);
       return {
         operation,

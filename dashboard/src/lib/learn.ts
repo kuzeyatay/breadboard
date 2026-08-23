@@ -86,6 +86,7 @@ import {
 import {
   MAX_SOURCE_MAP_EVIDENCE_REAUTHORS,
   selectedSourceArtifactInventorySnapshot,
+  sourceMapArtifactKind,
   sourceMapPlanningEvidenceTransition,
 } from "@/lib/learn-source-artifact-inventory";
 import {
@@ -177,7 +178,14 @@ import {
 } from "@/lib/model-source-anchor-ledger";
 import { learnBuildStateMode } from "@/lib/garden-build/mode";
 import { runCanonicalGardenShadowBuild } from "@/lib/garden-build/shadow";
-import { humanizeFinishedLearnBuild } from "@/lib/learn-humanizer";
+import {
+  humanizeFinishedLearnBuild,
+  readLearnHumanizerVersionState,
+  resetLearnTreeToAiCopy,
+  restoreLearnAiCopy,
+  writeLearnHumanizerVersionState,
+  type LearnHumanizerVersionState,
+} from "@/lib/learn-humanizer";
 import {
   buildVisualizationCoverageReport,
   applyVisualizationRoutesToLearningUnits,
@@ -345,6 +353,7 @@ export interface LearnStatusSnapshot {
   proposedLearningMap: ProposedLearningMap | null;
   confirmedLearningMapId?: string;
   latestTextbookVersionId?: string;
+  humanizer: LearnHumanizerVersionState | null;
   hasSources: boolean;
   sourceCount: number;
   selectedSourceIds: string[];
@@ -706,7 +715,7 @@ Return ONLY JSON with this exact top-level shape:
   "missingOrUnclear": ["only genuinely missing or unclear content"]
 }
 Return exactly one sources entry for every supplied source id and no unknown source. Keep the map concise: at most 30 central concepts, at most 40 selected sourceAnchors per source, and at most 20 entries in each other per-source list.
-Every figures id must be copied from supplied sourceVisuals; prose mentions do not create registered artifacts.
+sourceContext.sourceVisuals is the authoritative normalized Source Map artifact catalog. The figures array is its complete registry projection: return exactly one entry for every supplied sourceVisuals record, and copy each id, sourceId, and kind verbatim. figures is exempt from the 20-entry concision cap. Its only valid kinds are figure, graph, table, and formula; never return detector labels such as diagram, photo, unknown, or equation.
 Every sourceAnchors id must be copied verbatim from supplied canonicalSourceAnchors and must retain its matching sourceId. The catalog records structural Markdown pages and registered source artifacts; you decide which evidence matters, while code only verifies and projects your choices. Never invent, rewrite, or fuzzy-match an anchor id.
 Availability rule (hard): any formula, equation, figure, table, or graph that has an extracted anchor or caption IS available source material. Never place it in missingOrUnclear, and never write caveats saying formulas/equations/notation/definitions/tables/figures are unavailable, "caption-only", "captions but not exact", or "not present" — pages will ground on those anchors. Caveat ONLY about content that has no extracted anchor at all.
 Stay source-aware. If source-only mode is true, do not add outside facts.`;
@@ -959,7 +968,7 @@ Strong: "Imagine a sensor watching a mostly still scene. A dense network keeps r
 
 const PLACEHOLDER_FREE_PROSE_RULES = `Final-prose rules (hard requirements):
 - Every line must be finished learner-facing prose, not a note about what someone should write later.
-- Never include scaffold commands such as insert, add the example here, write the details here, fill in, expand this later, TODO, placeholder, lorem ipsum, or to be written.
+- Never include scaffold commands such as insert, add the example here, write the details here, fill in, expand this later, TODO, placeholder, or lorem ipsum. Never leave a marker saying that content is unfinished or reserved for a future writer.
 - Never leave empty bullets, ellipsis-only bullets, bracketed instructions, or notes to yourself.
 - If a source detail is thin or missing, write the supported explanation plainly instead of describing what should be added later.`;
 
@@ -974,7 +983,8 @@ Mechanics:
 - Treat dossier.learningUnit as the contract for this page: answer its learningQuestion, introduce its newConcepts, respect mustNotRepeat, use only its planned source artifacts, and use its zettelNotes as conceptual anchors.
 - The first paragraph must connect to prior ideas unless this is the first unit; later pages must not restart the whole motivation.
 - If assignedSourceVisuals are provided, embed EACH one inline exactly where it supports the prose using its provided markdown snippet, with an interpretation of what the figure shows directly beside it. Never dump images at the end and never repeat a caption without interpreting it.
-- For every source formula in dossier.learningUnit.sourceFormulaContracts, reproduce the canonical equation transcription from relevantSourceSnippets verbatim as a displayed equation, then teach the model-authored teachingGoal and define every listed term. Do not substitute an equivalent formula or invent a different notation.
+- dossier.requiredSourceFormulas is an exact-copy checklist. For every entry, reproduce its exactText verbatim in its own visible $$...$$ displayed equation; preserve every command, sign, bound, term, and aligned-row separator. Do not substitute an equivalent formula, combine equations, or invent different notation. Then teach the model-authored teachingGoal and define every listed term.
+- The user message begins with a VERBATIM SOURCE FORMULA COPY SHEET when formulas are required. Those are literal Markdown display blocks, not JSON-escaped examples: copy every complete block character-for-character into the final lesson. Use that sheet rather than trying to reconstruct LaTex from escaped JSON.
 - Never create a generic "## Source Figures" section. Every source figure/table/formula belongs inside the explanation where the contract placed it.
 - Do NOT write any \`\`\`breadboard-visual code block yourself — interactive visuals are attached by the pipeline afterwards.
 - Never leave [Interactive visual: ...] or any bracketed placeholder, and never write instructions to yourself (e.g. "use the page 10 materials").
@@ -1001,8 +1011,11 @@ Task:
 - Fix ONLY the listed hard failures (failedProblems). Leave everything that already works untouched.
 - Preserve correct existing content: explanations, examples, formulas, structure, and the Question./Answer. section.
 - Do not restart from scratch unless the page is genuinely unusable.
+- When a failedProblems entry includes \`offending text\`, treat that quote as diagnostic material from the rejected draft, not prose to preserve, discuss, or quote. Replace the whole sentence or bullet containing it with a finished learner explanation, then silently scan the completed Markdown before returning it.
 - If a failure says the page is too short, lacks a concrete example, or lacks a **Question.** / **Answer.** pair, add the missing depth in the same flowing, beginner-friendly voice: motivate before mechanism, define terms as they appear, put a concrete example right after the idea it illustrates, and keep at least ~700 words of real explanatory prose.
 - If failedProblems includes placeholder or empty-bullet-scaffold, replace the offending scaffold with finished explanatory sentences. Do not merely delete it unless the surrounding paragraph remains coherent and complete.
+- If failedProblems includes missing-source-formula, copy each matching exactText from dossier.requiredSourceFormulas into its own visible $$...$$ displayed equation verbatim. Preserve every command, sign, bound, term, and aligned-row separator; do not substitute, shorten, combine, or restyle the equation. The literal replacement block overrides any instruction to preserve the old malformed formula: replace it rather than retaining or duplicating an equivalent variant.
+- The user message begins with a VERBATIM SOURCE FORMULA COPY SHEET when formulas are required. Those blocks are literal Markdown, not JSON-escaped examples. Copy every required block character-for-character into the repaired lesson.
 - Rewrite any sentence that comments on "the paper", "the source", "source-derived", or similar document framing so it teaches the concept directly.
 - Keep every embedded image markdown where it is and keep any \`\`\`breadboard-visual block byte-for-byte unchanged.
 - Remove placeholder or self-instruction text.
@@ -2289,14 +2302,27 @@ function stableSourceVisualIndex(
 function registeredArtifactsFromFigures(sourceFigures: SourceFigure[]): RegisteredSourceArtifact[] {
   return sourceFigures.map((figure) => ({
     id: figure.figureId,
-    kind:
-      figure.kind === "table"
-        ? ("table" as const)
-        : figure.kind === "formula"
-          ? ("formula" as const)
-          : figure.kind === "graph"
-            ? ("graph" as const)
-            : ("figure" as const),
+    kind: sourceMapArtifactKind(figure.kind),
+  }));
+}
+
+/** Normalize detector labels only at the Source Map prompt boundary. The raw
+ * source-visual ledger retains its richer detector taxonomy for all other
+ * consumers. */
+function sourceMapPromptFigures(sourceFigures: readonly SourceFigure[]) {
+  return sourceFigures.map((figure) => ({
+    ...figure,
+    kind: sourceMapArtifactKind(figure.kind),
+  }));
+}
+
+function sourceMapFigureAnchorPromptCatalog(sourceFigures: readonly SourceFigure[]) {
+  return sourceFigures.map((figure) => ({
+    id: figure.figureId,
+    sourceId: figure.sourceId,
+    page: figure.page,
+    title: figure.caption,
+    kind: sourceMapArtifactKind(figure.kind),
   }));
 }
 
@@ -2795,7 +2821,7 @@ async function reviewAndBindSourceFormulas({
   );
   saveSourceFormulaReviewSetManifest(contentPath, gardenId, {
     schemaVersion: 1,
-    promptVersion: 1,
+    promptVersion: 2,
     model,
     sourceIds: selectedSourceIds,
     sourceIdentityMap: [...sourceIdentityMap],
@@ -3056,11 +3082,17 @@ function sourcePlanningIndex(body: string | undefined, maxChars: number): string
   return truncate(boundary > 0 ? text.slice(0, boundary) : text, maxChars);
 }
 
-function promptSources(context: LearnSourceContext): unknown {
+function promptSources(
+  context: LearnSourceContext,
+  options: { sourceMapArtifactKinds?: boolean } = {},
+): unknown {
   const maxIndexCharsPerSource = Math.max(
     18_000,
     Math.floor(120_000 / Math.max(1, context.sources.length)),
   );
+  const sourceFigures = options.sourceMapArtifactKinds
+    ? sourceMapPromptFigures(context.sourceFigures)
+    : context.sourceFigures;
   return {
     gardenId: context.gardenId,
     gardenTitle: context.gardenTitle,
@@ -3079,9 +3111,9 @@ function promptSources(context: LearnSourceContext): unknown {
       content: sourcePlanningIndex(source.body, maxIndexCharsPerSource),
     })),
     conceptNodes: context.conceptNodes.slice(0, 80),
-    sourceFigures: context.sourceFigures,
+    sourceFigures,
     // Stage-2 extracted visuals, in the shape the planner assigns from.
-    sourceVisuals: context.sourceFigures.map((figure) => ({
+    sourceVisuals: sourceFigures.map((figure) => ({
       sourceVisualId: figure.figureId,
       sourceId: figure.sourceId,
       page: figure.page,
@@ -3626,13 +3658,7 @@ function sourceMapPlanProblems(input: {
       problems.push(`registered source artifact ${artifact.figureId} appears more than once`);
       continue;
     }
-    const kind = artifact.kind === "table"
-      ? "table"
-      : artifact.kind === "formula"
-        ? "formula"
-        : artifact.kind === "graph"
-          ? "graph"
-          : "figure";
+    const kind = sourceMapArtifactKind(artifact.kind);
     registeredArtifactById.set(artifact.figureId, { sourceId, kind });
   }
   const registeredArtifactIds = new Set(registeredArtifactById.keys());
@@ -3664,7 +3690,9 @@ function sourceMapPlanProblems(input: {
     if (!registered) {
       problems.push(`figures[${index}].kind must copy the registered artifact kind`);
     } else if (rawKind !== registered.kind) {
-      problems.push(`figures[${index}].kind must match registered artifact ${id}`);
+      problems.push(
+        `figures[${index}].kind must match registered artifact ${id} (expected ${registered.kind}, received ${rawKind || "missing"})`,
+      );
     }
   });
   for (const artifactId of registeredArtifactIds) {
@@ -5078,15 +5106,9 @@ export async function runLearnPlanning({
     let structuralSourceAnchors = structuralSourceTextAnchorCatalog(context);
     let canonicalSourceAnchorCatalog = [
       ...structuralSourceAnchorPromptCatalog(structuralSourceAnchors),
-      ...context.sourceFigures.map((figure) => ({
-        id: figure.figureId,
-        sourceId: figure.sourceId,
-        page: figure.page,
-        title: figure.caption,
-        kind: figure.kind,
-      })),
+      ...sourceMapFigureAnchorPromptCatalog(context.sourceFigures),
     ];
-    let promptSourceContext = promptSources(context);
+    let promptSourceContext = promptSources(context, { sourceMapArtifactKinds: true });
     const hasSyllabus = Boolean(context.syllabus);
     let syllabusPayload = promptSyllabus(context);
     if (context.syllabus) {
@@ -5553,15 +5575,9 @@ export async function runLearnPlanning({
       const sourceSetHash = context.sourceSetHash;
       canonicalSourceAnchorCatalog = [
         ...structuralSourceAnchorPromptCatalog(structuralSourceAnchors),
-        ...context.sourceFigures.map((figure) => ({
-          id: figure.figureId,
-          sourceId: figure.sourceId,
-          page: figure.page,
-          title: figure.caption,
-          kind: figure.kind,
-        })),
+        ...sourceMapFigureAnchorPromptCatalog(context.sourceFigures),
       ];
-      promptSourceContext = promptSources(context);
+      promptSourceContext = promptSources(context, { sourceMapArtifactKinds: true });
       planningSourceMeta.sourceSetHash = context.sourceSetHash;
       planningSourceMeta.sourceArtifactInventoryHash = context.sourceArtifactInventoryHash;
       const call = await callValidatedPlanningJson({
@@ -5682,15 +5698,9 @@ export async function runLearnPlanning({
       structuralSourceAnchors = structuralSourceTextAnchorCatalog(context);
       canonicalSourceAnchorCatalog = [
         ...structuralSourceAnchorPromptCatalog(structuralSourceAnchors),
-        ...context.sourceFigures.map((figure) => ({
-          id: figure.figureId,
-          sourceId: figure.sourceId,
-          page: figure.page,
-          title: figure.caption,
-          kind: figure.kind,
-        })),
+        ...sourceMapFigureAnchorPromptCatalog(context.sourceFigures),
       ];
-      promptSourceContext = promptSources(context);
+      promptSourceContext = promptSources(context, { sourceMapArtifactKinds: true });
       syllabusPayload = promptSyllabus(context);
       planningSourceMeta.sourceIds = context.sources.map((source) => source.slug);
       planningSourceMeta.sourceSetHash = context.sourceSetHash;
@@ -7020,7 +7030,7 @@ function assessModelAuthoredLessonQuality(
     })
     .map((formula) => ({
       code: "missing-source-formula",
-      message: `required source formula ${formula.id} is not reproduced verbatim as a displayed equation in the lesson`,
+      message: `required source formula ${formula.id} has no verbatim matching displayed equation in the lesson; a non-identical variant may be present`,
       hard: true,
       evidence: [
         options.canonicalSourceAnchors[formula.id]?.exactText ?? "canonical equation transcription unavailable",
@@ -8269,6 +8279,16 @@ type PageDossier = {
     expectedWordRange?: [number, number];
   };
 
+  /** Exact source-formula strings required as visible display equations on this
+   * page. This is a transport projection, not a code-authored lesson edit. */
+  requiredSourceFormulas: Array<{
+    id: string;
+    exactText: string;
+    teachingGoal: string;
+    termsToDefine: string[];
+    placement: string;
+  }>;
+
   mustCover: string[];
   avoid: string[];
 
@@ -8346,6 +8366,28 @@ function exactSourceSnippetsForAnchors(input: {
     snippets.push({ sourceId: source.slug, title: source.title, excerpt });
   }
   return snippets;
+}
+
+function requiredSourceFormulaDossierEntries(
+  contracts: readonly NonNullable<LearningSubsectionPlan["sourceFormulaContracts"]>[number][],
+  canonicalSourceAnchors: Readonly<Record<string, CanonicalSourceAnchor>>,
+): PageDossier["requiredSourceFormulas"] {
+  return contracts.map((contract) => {
+    const anchor = canonicalSourceAnchors[contract.id];
+    const exactText = anchor?.kind === "formula" ? anchor.exactText?.trim() : "";
+    if (!exactText) {
+      throw new Error(
+        `Page dossier cannot project required source formula ${contract.id} without its verbatim canonical equation transcription.`,
+      );
+    }
+    return {
+      id: contract.id,
+      exactText,
+      teachingGoal: contract.teachingGoal,
+      termsToDefine: [...contract.termsToDefine],
+      placement: contract.placement,
+    };
+  });
 }
 
 function buildPageDossier({
@@ -8427,6 +8469,10 @@ function buildPageDossier({
           expectedWordRange: subsection.expectedWordRange,
         }
       : undefined,
+    requiredSourceFormulas: requiredSourceFormulaDossierEntries(
+      subsection.sourceFormulaContracts ?? [],
+      canonicalSourceAnchors,
+    ),
     mustCover: (subsection.conceptTags ?? [])
       .map((tag) => tag.split("/").at(-1)?.replace(/-/g, " ") ?? "")
       .filter(Boolean)
@@ -8466,6 +8512,54 @@ function buildPageDossier({
     localAnchors: anchors.slice(0, 8),
     sourceOnly,
   };
+}
+
+/**
+ * Prompt JSON necessarily escapes backslashes and newlines. For a source
+ * formula that must be copied character-for-character, give the writing model
+ * a second, literal transport channel before the JSON packet. This only carries
+ * canonical source evidence into a model request; it never inserts or changes
+ * learner Markdown in code.
+ */
+function withVerbatimSourceFormulaCopySheet(
+  payload: string,
+  formulas: readonly PageDossier["requiredSourceFormulas"][number][],
+): string {
+  if (formulas.length === 0) return payload;
+  const blocks = formulas.map(({ id, exactText }) => [
+    `Formula ${id}: copy this complete display block character-for-character.`,
+    "$$",
+    exactText,
+    "$$",
+  ].join("\n")).join("\n\n");
+  return [
+    "VERBATIM SOURCE FORMULA COPY SHEET",
+    "The following are literal Markdown display blocks, not JSON strings. Copy every block into the final lesson exactly as printed, including every backslash and aligned-row separator. When an aligned row shows two ASCII backslashes before &, keep exactly two; never add or remove a backslash.",
+    blocks,
+    payload,
+  ].join("\n\n");
+}
+
+function sourceFormulasNeedingVerbatimRepair(
+  formulas: readonly PageDossier["requiredSourceFormulas"][number][],
+  problems: readonly Parameters<typeof formatQualityProblemForRepair>[0][],
+): PageDossier["requiredSourceFormulas"] {
+  const missingFormulaIds = new Set(
+    problems
+      .filter((problem) => problem.code === "missing-source-formula")
+      .map((problem) => problem.message.match(/^required source formula (\S+)\b/)?.[1])
+      .filter((id): id is string => Boolean(id)),
+  );
+  return formulas.filter((formula) => missingFormulaIds.has(formula.id));
+}
+
+function formatModelAuthoredLessonQualityProblemForRepair(
+  problem: Parameters<typeof formatQualityProblemForRepair>[0],
+): string {
+  if (problem.code === "missing-source-formula") {
+    return `${problem.code}: ${problem.message}; copy the named replacement from the VERBATIM SOURCE FORMULA COPY SHEET exactly.`;
+  }
+  return formatQualityProblemForRepair(problem);
 }
 
 function snapshotSourceContext({
@@ -9594,7 +9688,7 @@ export async function runTextbookGeneration({
               : [
                   `This is retry ${attempt}. The previous draft failed hard quality checks (${failedProblemCodes.join(", ") || "unknown"}).`,
                   placeholderFailure
-                    ? "The previous draft contained scaffold/meta-instruction text. Replace it with final learner-facing explanation; do not include notes about what to insert, add, fill in, expand, cover, or explain later."
+                    ? "The previous draft contained unfinished author-facing wording. Return a self-contained final lesson and silently check that every line teaches the concept rather than directing a future writer or commenting on the draft."
                     : "",
                   'Write a longer, deeper, fully-written lesson (at least 700 words) with a concrete example and a real Question./Answer. Teach the concept directly; never comment on "the paper" or "the source".',
                 ]
@@ -9614,17 +9708,20 @@ export async function runTextbookGeneration({
                 SYLLABUS_PAGE_RULES,
                 Boolean(context.syllabus),
               ),
-              user: compactJson({
-                task: "write_subsection",
-                dossier: pageDossier,
-                instructions: {
-                  style: "flowing beginner-friendly textbook subsection",
-                  sourceAware: true,
-                  includeQuestions: true,
-                  includeVisualsWhereRelevant: true,
-                },
-                ...(retryNote ? { retryNote } : {}),
-              }),
+              user: withVerbatimSourceFormulaCopySheet(
+                compactJson({
+                  task: "write_subsection",
+                  dossier: pageDossier,
+                  instructions: {
+                    style: "flowing beginner-friendly textbook subsection",
+                    sourceAware: true,
+                    includeQuestions: true,
+                    includeVisualsWhereRelevant: true,
+                  },
+                  ...(retryNote ? { retryNote } : {}),
+                }),
+                pageDossier.requiredSourceFormulas,
+              ),
               sourceContext: { ...pageSourceMeta, taskType: "subsection_generation" },
               councilModeOverride: LEARN_GENERATION_COUNCIL_MODE,
             });
@@ -9669,6 +9766,11 @@ export async function runTextbookGeneration({
           // Hard-fail-only repair: one focused call that fixes the listed
           // problems in place. Minor style issues never trigger a rewrite.
           if (quality.hardFail) {
+            const hardQualityProblems = quality.problems.filter((problem) => problem.hard);
+            const formulasNeedingRepair = sourceFormulasNeedingVerbatimRepair(
+              pageDossier.requiredSourceFormulas,
+              hardQualityProblems,
+            );
             try {
               const repaired = await callCouncilText({
                 client,
@@ -9677,18 +9779,23 @@ export async function runTextbookGeneration({
                 gardenId,
                 pageId,
                 system: SUBSECTION_REPAIR_PROMPT,
-                user: compactJson({
+                user: withVerbatimSourceFormulaCopySheet(
+                  compactJson({
                   pageMarkdown: attemptBody,
-                  failedProblems: quality.problems
-                    .filter((problem) => problem.hard)
-                    .map(formatQualityProblemForRepair),
+                  failedProblems: hardQualityProblems
+                    .map(formatModelAuthoredLessonQualityProblemForRepair),
                   dossier: pageDossier,
                   repairRules: [
                     "Fix only the listed hard failures.",
                     "Preserve correct existing content.",
+                    ...(formulasNeedingRepair.length > 0
+                      ? [
+                          "For each missing source formula, the literal copy-sheet replacement overrides preserving the malformed draft math. Replace the variant; do not retain or duplicate it.",
+                        ]
+                      : []),
                     "Do not restart from scratch unless the page is unusable.",
                     "Keep the section flowing and beginner-friendly.",
-                    "Replace placeholder/meta-instruction text with finished learner-facing prose.",
+                    "Turn every unfinished or author-facing line into a self-contained learner explanation; do not reproduce diagnostic wording.",
                     "Remove empty or ellipsis-only bullets instead of returning scaffold bullets.",
                     "Keep source-only constraints.",
                     "Keep assigned visuals embedded where relevant.",
@@ -9698,8 +9805,10 @@ export async function runTextbookGeneration({
                         ]
                       : []),
                     "Return only the final markdown.",
-                  ],
-                }),
+                    ],
+                  }),
+                  formulasNeedingRepair,
+                ),
                 sourceContext: {
                   ...pageSourceMeta,
                   taskType: "subsection_repair",
@@ -10373,6 +10482,7 @@ export async function runTextbookGeneration({
     const humanizerRun = await humanizeFinishedLearnBuild({
       userId,
       gardenDir: clusterDir,
+      versionId: textbookVersionId,
       checkCancelled: () => throwIfLearnCancelled(job.id),
       onStart: (fileCount) =>
         updateLearnJob(job.id, {
@@ -10416,6 +10526,41 @@ export async function runTextbookGeneration({
       });
     }
 
+    // The critic and optional humanizer run after the earlier finalizer. Refresh
+    // the deterministic report and re-verify their final tree immediately before
+    // promotion so the copied candidate cannot carry a stale state fingerprint.
+    const prePublicationFinalizeReport = finalizeGardenExport({
+      gardenDir: clusterDir,
+      gardenSlug: gardenId,
+      preserveModelAuthoredContent: true,
+      expectedVisualContractExecutabilityContext: generationExecutabilityContext,
+      expectedSourceFormulaReviewContext: sourceFormulaReviewFinalizationContext,
+    });
+    if (prePublicationFinalizeReport.criticalProblems.length > 0) {
+      throw new Error(
+        `Pre-publication export finalize failed for ${gardenId}: ${prePublicationFinalizeReport.criticalProblems.join("; ")}.`,
+      );
+    }
+    const prePublicationVerification = verifyFinalArtifactNoMutation({
+      gardenDir: clusterDir,
+      gardenSlug: gardenId,
+      updateRepairReport: false,
+      strictModelApprovedVisuals: true,
+      expectedVisualContractExecutabilityContext: generationExecutabilityContext,
+      expectedSourceFormulaReviewContext: sourceFormulaReviewFinalizationContext,
+    });
+    if (!prePublicationVerification.accepted) {
+      throw new Error(
+        `Pre-publication verification failed for ${gardenId}: ${[
+          ...prePublicationVerification.validationFailures,
+          ...prePublicationVerification.unresolvedRepairFailures,
+          ...prePublicationVerification.mutatedFiles.map(
+            (file) => `mutated during verification: ${file}`,
+          ),
+        ].join("; ") || "final artifact was not accepted"}.`,
+      );
+    }
+
     throwIfLearnCancelled(job.id);
     mergeLearnEventLedgers(repositoryGardenDir, clusterDir);
     updateLearnJobExpectStatus(job.id, {
@@ -10440,6 +10585,7 @@ export async function runTextbookGeneration({
         verifyFinalArtifactNoMutation({
           gardenDir: candidateDir,
           gardenSlug: gardenId,
+          updateRepairReport: false,
           strictModelApprovedVisuals: true,
           expectedVisualContractExecutabilityContext: generationExecutabilityContext,
           expectedSourceFormulaReviewContext: sourceFormulaReviewFinalizationContext,
@@ -10774,6 +10920,307 @@ export class LearnPipelineConflictError extends Error {
     super(message);
     this.name = "LearnPipelineConflictError";
     this.requiresReplan = options?.requiresReplan === true;
+  }
+}
+
+export interface LearnHumanizerSwitchResult {
+  versionId: string;
+  changed: boolean;
+  state: LearnHumanizerVersionState;
+}
+
+function finishedLearnHumanizerValidation(
+  gardenDir: string,
+  gardenId: string,
+): { accepted: boolean; problems: string[] } {
+  const verification = verifyFinalArtifactNoMutation({
+    gardenDir,
+    gardenSlug: gardenId,
+    updateRepairReport: false,
+    strictModelApprovedVisuals: true,
+  });
+  return {
+    accepted: verification.accepted,
+    problems: [
+      ...verification.validationFailures,
+      ...verification.unresolvedRepairFailures,
+      ...verification.mutatedFiles.map(
+        (file) => `mutated during verification: ${file}`,
+      ),
+    ],
+  };
+}
+
+/**
+ * Apply a Rewrite naturally toggle to the latest already-published Learn
+ * version. The complete garden is staged, verified, and atomically promoted;
+ * the published tree is never rewritten page-by-page in place.
+ */
+export async function switchFinishedLearnHumanizer({
+  gardenId,
+  userId,
+  contentPath,
+  enabled,
+  expectedVersionId,
+}: {
+  gardenId: string;
+  userId: number;
+  contentPath: string;
+  enabled: boolean;
+  expectedVersionId?: string;
+}): Promise<LearnHumanizerSwitchResult> {
+  ensureLearnTables();
+  const version = getLatestLearnVersion(gardenId);
+  if (!version) {
+    throw new LearnPipelineConflictError(
+      "Rewrite naturally needs a completed Learn version.",
+    );
+  }
+  if (expectedVersionId && version.id !== expectedVersionId) {
+    throw new LearnPipelineConflictError(
+      "The completed Learn version changed before its prose could be switched.",
+    );
+  }
+  const latestJob = getLatestLearnJob(gardenId);
+  if (
+    latestJob &&
+    (activeStatus(latestJob.status) ||
+      latestJob.status === "awaiting_confirmation")
+  ) {
+    throw new LearnPipelineConflictError(
+      "Wait for the active Learn job to finish before switching its prose copy.",
+    );
+  }
+
+  const repositoryGardenDir = clusterPath(contentPath, gardenId);
+  if (!fs.existsSync(repositoryGardenDir)) {
+    throw new LearnPipelineConflictError("The completed Learn garden is missing.");
+  }
+  const priorState = readLearnHumanizerVersionState(
+    repositoryGardenDir,
+    version.id,
+  );
+  const targetCopy = enabled ? "humanized" : "ai";
+  if (
+    priorState.activeCopy === targetCopy &&
+    priorState.status !== "running" &&
+    priorState.status !== "restoring_ai" &&
+    priorState.status !== "failed"
+  ) {
+    return { versionId: version.id, changed: false, state: priorState };
+  }
+
+  const operationId = makeId("learn_humanizer");
+  const acquired = acquireGardenLearnLease(repositoryGardenDir, {
+    gardenSlug: gardenId,
+    jobId: operationId,
+    buildId: operationId,
+  });
+  if (!acquired.acquired) {
+    throw new LearnPipelineConflictError(
+      "Another Learn operation is already changing this garden.",
+    );
+  }
+  const lease = acquired.lease;
+  let temporaryRoot: string | undefined;
+  let previousPromotedGardenDir: string | undefined;
+  let promotionCommitted = false;
+  try {
+    writeLearnHumanizerVersionState(repositoryGardenDir, {
+      versionId: version.id,
+      requested: enabled,
+      activeCopy: priorState.activeCopy,
+      status: enabled ? "running" : "restoring_ai",
+    });
+
+    // Give the route's short background handoff a chance to return its 202
+    // before copying or model inference begins.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "The humanizer lost ownership before it could stage the garden.",
+      );
+    }
+
+    const durableFingerprintBefore = fingerprintDurableGardenState(
+      repositoryGardenDir,
+    );
+    temporaryRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "breadboard-learn-humanizer-"),
+    );
+    const stagingGardenDir = path.join(temporaryRoot, gardenId);
+    fs.cpSync(repositoryGardenDir, stagingGardenDir, {
+      recursive: true,
+      force: true,
+    });
+    if (
+      fingerprintDurableGardenState(stagingGardenDir) !==
+      durableFingerprintBefore
+    ) {
+      throw new LearnPipelineConflictError(
+        "The garden changed while the humanizer prepared its staging copy.",
+      );
+    }
+
+    let changed = false;
+    let reason = "";
+    let validationProblems: string[] = [];
+    if (enabled) {
+      // Repeat passes always begin from the preserved AI version, never from a
+      // humanizer's previous output.
+      resetLearnTreeToAiCopy(stagingGardenDir, version.id);
+      const outcome = await humanizeFinishedLearnBuild({
+        userId,
+        gardenDir: stagingGardenDir,
+        versionId: version.id,
+        force: true,
+        strictStatePersistence: true,
+        checkCancelled: () => {
+          if (!lease.heartbeat()) {
+            throw new LearnPipelineConflictError(
+              "The humanizer lost ownership while rewriting the garden.",
+            );
+          }
+        },
+        validate: () =>
+          finishedLearnHumanizerValidation(stagingGardenDir, gardenId),
+      });
+      changed = outcome.adopted;
+      reason = outcome.reason;
+      validationProblems = outcome.validationProblems;
+    } else {
+      const outcome = restoreLearnAiCopy({
+        gardenDir: stagingGardenDir,
+        versionId: version.id,
+        validate: () =>
+          finishedLearnHumanizerValidation(stagingGardenDir, gardenId),
+      });
+      changed = outcome.restored;
+      reason = outcome.reason;
+      validationProblems = outcome.validationProblems;
+      if (outcome.reason === "original_copy_missing") {
+        throw new Error(
+          "The saved AI copy for this Learn version is missing; the humanized lessons were left unchanged.",
+        );
+      }
+      if (outcome.reason === "validation_failed") {
+        throw new Error(
+          `The saved AI copy did not pass final validation: ${validationProblems.join("; ")}`,
+        );
+      }
+    }
+
+    appendLearnEvent(
+      contentPath,
+      gardenId,
+      enabled ? "learn_humanizer_enabled" : "learn_humanizer_disabled",
+      {
+        operationId,
+        userId,
+        textbookVersionId: version.id,
+        changed,
+        reason,
+        validationProblems,
+      },
+    );
+    mergeLearnEventLedgers(repositoryGardenDir, stagingGardenDir);
+    const promotion = await promoteStagingGarden({
+      stagingGardenDir,
+      destinationGardenDir: repositoryGardenDir,
+      retainPreviousUntilCallerCommit: true,
+      recoveryOwnerId: operationId,
+      verifyCurrentDestination: (destinationDir) =>
+        lease.heartbeat() &&
+        fingerprintDurableGardenState(destinationDir) ===
+          durableFingerprintBefore,
+      prepareIncomingForCommit: (incomingDir, destinationDir) => {
+        mergeLearnEventLedgers(destinationDir, incomingDir);
+        return true;
+      },
+      verifyManifest: (candidateDir) =>
+        finishedLearnHumanizerValidation(candidateDir, gardenId).accepted,
+    });
+    previousPromotedGardenDir = promotion.previousPreservedAt;
+    if (!promotion.promoted) {
+      throw new LearnPipelineConflictError(
+        `The finished Learn prose was not switched: ${promotion.reason}`,
+      );
+    }
+    if (changed) {
+      await publishQuartzAfterMutation(
+        `${enabled ? "humanized" : "restored AI"} Learn copy in ${gardenId}`,
+        { requireSuccess: true },
+      );
+    }
+    promotionCommitted = true;
+    if (previousPromotedGardenDir && lease.heartbeat()) {
+      try {
+        fs.rmSync(previousPromotedGardenDir, { recursive: true, force: true });
+        previousPromotedGardenDir = undefined;
+      } catch (cleanupError) {
+        console.warn(
+          `[learn] Previous humanizer garden remains at ${previousPromotedGardenDir}:`,
+          cleanupError,
+        );
+      }
+    }
+    return {
+      versionId: version.id,
+      changed,
+      state: readLearnHumanizerVersionState(repositoryGardenDir, version.id),
+    };
+  } catch (error) {
+    if (previousPromotedGardenDir && !promotionCommitted) {
+      await restorePreviousPromotedGarden(
+        repositoryGardenDir,
+        previousPromotedGardenDir,
+        () => !lease.lost && lease.heartbeat(),
+      );
+      previousPromotedGardenDir = undefined;
+      const publicationToken = queueLearnPublicationRetry(
+        gardenId,
+        "restored failed Learn humanizer switch",
+        new Error("Publication pending"),
+      );
+      try {
+        await publishQuartzAfterMutation(
+          `rolled back failed Learn humanizer switch in ${gardenId}`,
+          { requireSuccess: true },
+        );
+        clearLearnPublicationRetry(gardenId, publicationToken);
+      } catch (republishError) {
+        queueLearnPublicationRetry(
+          gardenId,
+          "restored failed Learn humanizer switch",
+          republishError,
+        );
+        appendLearnEvent(
+          contentPath,
+          gardenId,
+          "learn_humanizer_republish_queued",
+          { operationId, error: errorMessage(republishError) },
+        );
+      }
+    }
+    try {
+      writeLearnHumanizerVersionState(repositoryGardenDir, {
+        versionId: version.id,
+        requested: enabled,
+        activeCopy: priorState.activeCopy,
+        status: "failed",
+        reason: "switch_failed",
+        error: errorMessage(error),
+      });
+    } catch {
+      // The original published copy remains authoritative even when writing the
+      // diagnostic marker itself fails.
+    }
+    throw error;
+  } finally {
+    if (temporaryRoot) {
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+    lease.release();
   }
 }
 
@@ -11642,6 +12089,7 @@ const STATIC_LEARN_CLEAR_REMOVAL_ROOTS = [
   ".breadboard/canonical-shadow",
   ".breadboard/debug/failed-pages",
   ".breadboard/debug/failed-repairs",
+  ".breadboard/humanizer",
   ".breadboard/learn-run-snapshots",
   ".breadboard/planning",
   ".breadboard/quarantine",
@@ -13066,6 +13514,12 @@ export function getLearnStatusSnapshot({
         : null,
     confirmedLearningMapId: confirmedMap?.id,
     latestTextbookVersionId: latestVersion?.id,
+    humanizer: latestVersion
+      ? readLearnHumanizerVersionState(
+          clusterPath(contentPath, gardenId),
+          latestVersion.id,
+        )
+      : null,
     hasSources: context.sources.length > 0,
     sourceCount: context.sources.length,
     selectedSourceIds,

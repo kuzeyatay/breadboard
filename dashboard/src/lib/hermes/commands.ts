@@ -45,6 +45,8 @@ import {
   loadArisAgentDefinition,
 } from "../aris/agent.ts";
 import { ARIS_AGENT_SLUG } from "../aris/identity.ts";
+import { loadSpotifyAgentDefinition } from "../spotify-agent/agent.ts";
+import { SPOTIFY_AGENT_SLUG } from "../spotify-agent/identity.ts";
 import {
   listSkillLessons,
   markSkillLessonsUsed,
@@ -265,12 +267,15 @@ export function registryItemsForUser(
     favorite: prompt.favorite,
   }));
   const agentDefinitions = context.surface === "quartz_ai"
-    ? []
-    : [
+      ? []
+      : [
         loadArisAgentDefinition(),
+        loadSpotifyAgentDefinition(),
         ...(options.includeAgencyAgents === false
           ? []
-          : loadAgencyAgentsCatalog().agents.filter((agent) => agent.slug !== ARIS_AGENT_SLUG)),
+          : loadAgencyAgentsCatalog().agents.filter(
+              (agent) => agent.slug !== ARIS_AGENT_SLUG && agent.slug !== SPOTIFY_AGENT_SLUG,
+            )),
       ].filter((agent): agent is NonNullable<typeof agent> => Boolean(agent));
   const agents: Omit<CommandHubItem, "token">[] = agentDefinitions.map((agent) => ({
           id: agent.id,
@@ -279,12 +284,20 @@ export function registryItemsForUser(
           name: agent.name,
           description: agent.description,
           category: agent.divisionLabel,
-          source: agent.slug === ARIS_AGENT_SLUG ? "Cloned ARIS" : "Agency Agents",
+          source: agent.slug === ARIS_AGENT_SLUG
+            ? "Cloned ARIS"
+            : agent.slug === SPOTIFY_AGENT_SLUG
+              ? "Breadboard"
+              : "Agency Agents",
           installed: true,
           enabled: true,
           healthy: true,
           requiredCapabilityMode: "knowledge",
-          trustLabel: agent.slug === ARIS_AGENT_SLUG ? "Local research harness" : "Local persona",
+          trustLabel: agent.slug === ARIS_AGENT_SLUG
+            ? "Local research harness"
+            : agent.slug === SPOTIFY_AGENT_SLUG
+              ? "Spotify playback agent"
+              : "Local persona",
           division: agent.division,
           divisionLabel: agent.divisionLabel,
           divisionIcon: agent.divisionIcon,

@@ -9,7 +9,7 @@
 import { z } from "zod";
 import { POI_CATEGORY_IDS } from "./categories.ts";
 import { isMapPlaceId } from "./identity.ts";
-import { TRAVEL_MODES } from "./types.ts";
+import { ROUTE_MODE_PREFERENCES } from "./travel-mode.ts";
 
 export const latitudeSchema = z
   .number()
@@ -86,7 +86,8 @@ export const mapReverseArgsSchema = z.strictObject({
 export const mapRouteArgsSchema = z.strictObject({
   origin: resolvedPlaceRefSchema,
   destination: resolvedPlaceRefSchema,
-  mode: z.enum(TRAVEL_MODES),
+  // Unless the person chose a mode, short routes walk and longer ones drive.
+  mode: z.enum(ROUTE_MODE_PREFERENCES).default("auto"),
   includeSteps: z.boolean().optional(),
 });
 

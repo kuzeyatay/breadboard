@@ -296,8 +296,9 @@ describe("learn route and council wiring", () => {
     assert.match(learnSource, /envPositiveInt\("LEARN_MAX_PAGE_ATTEMPTS", 2\)/);
     assert.match(learnSource, /Final-prose rules \(hard requirements\)/);
     assert.match(learnSource, /placeholderFailure/);
-    assert.match(learnSource, /scaffold\/meta-instruction text/);
-    assert.match(learnSource, /Replace placeholder\/meta-instruction text with finished learner-facing prose/);
+    assert.match(learnSource, /unfinished author-facing wording/);
+    assert.match(learnSource, /diagnostic material from the rejected draft/);
+    assert.match(learnSource, /Turn every unfinished or author-facing line into a self-contained learner explanation/);
   });
 
   test("page generation is gated behind confirmation, including automatic retained-lease handoff", () => {

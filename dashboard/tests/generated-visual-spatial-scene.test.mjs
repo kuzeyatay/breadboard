@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
+  GENERATED_VISUAL_BROWSER_MOUNT_MAX_ATTEMPTS,
   GENERATED_VISUAL_PREVIEW_CAPTURE_MAX_ATTEMPTS,
   GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES,
   compileGeneratedVisualization,
@@ -130,6 +131,153 @@ function denseIntersectingSpatialDefinition() {
   };
 }
 
+function spatialCameraFrameDefinition(scale) {
+  const definition = spatialDefinition();
+  definition.scenes[0] = {
+    kind: "spatial",
+    title: "Camera-frame vector",
+    view: { azimuthDegrees: 0, elevationDegrees: 0, scale },
+    groups: [{
+      id: "field-vectors",
+      label: "Field vectors",
+      primitives: [{
+        kind: "vector",
+        id: "e_field_bot",
+        label: "Bottom field vector",
+        from: [0, 0, 0],
+        to: [0, 0, -4],
+        headSize: 20,
+        color: "blue",
+      }],
+    }],
+  };
+  return definition;
+}
+
+function mobilePrimarySpatialViewportDefinition({ spatialFirst = false } = {}) {
+  const definition = spatialCameraFrameDefinition(0.55);
+  const spatial = definition.scenes[0];
+  spatial.groups.unshift({
+    id: "always-visible-reference",
+    label: "Reference",
+    primitives: [{
+      kind: "point",
+      id: "reference-point",
+      label: "Reference point",
+      position: [0, 0, 0],
+      size: 8,
+      color: "red",
+    }],
+  });
+  spatial.groups[1].visibleWhen = visibleCase(1);
+  const precedingPlot = {
+    kind: "plot",
+    title: "Reference curve",
+    xLabel: "Position",
+    yLabel: "Reference value",
+    xMin: 0,
+    xMax: 1,
+    samples: 20,
+    series: [{
+      id: "reference",
+      label: "Reference",
+      expression: { kind: "constant", value: 1 },
+    }],
+  };
+  definition.scenes = spatialFirst
+    ? [spatial, precedingPlot]
+    : [precedingPlot, spatial];
+  return definition;
+}
+
+function diagramLayoutDefinition({
+  crowded = false,
+  capped = false,
+  targetLabel = false,
+  valueBearingLabels = false,
+} = {}) {
+  const nodes = crowded
+    ? [80, 200, 320, 440, 560].map((x, index) => ({
+      id: `stencil-${index}`,
+      // A deliberately unbreakable first label proves the renderer keeps its
+      // bounded cap visible to the runtime diagnostic instead of silently
+      // shrinking or truncating source text.
+      label: capped && index === 0
+        ? "Unbreakable-supercalifragilisticexpialidocious-identifier"
+        : "Potential V(d/4)",
+      x,
+      y: 180,
+      value: { kind: "input", id: "iteration" },
+    }))
+    : [170, 320, 470].map((x, index) => ({
+      id: `state-${index}`,
+      label: valueBearingLabels
+        ? ["q2", "P target", "E total"][index]
+        : targetLabel && index === 1
+          ? "P target"
+          : `V${index}`,
+      x,
+      y: 180,
+      ...(valueBearingLabels
+        ? { value: { kind: "input", id: "iteration" } }
+        : {}),
+    }));
+  return {
+    schemaVersion: 1,
+    sdkVersion: "1.0.0",
+    title: crowded ? "Crowded stencil" : "Compact stencil",
+    description: "A generic diagram layout fixture.",
+    accessibilityDescription: "A labelled iteration control changes the shown value. Reset restores the documented default state.",
+    controls: [{
+      id: "iteration",
+      kind: "process_position",
+      label: "Iteration",
+      type: "slider",
+      min: 0,
+      max: 1,
+      step: 1,
+      defaultValue: 0,
+    }],
+    outputs: [{
+      id: "iteration_value",
+      label: "Iteration value",
+      representation: "value",
+      expression: { kind: "input", id: "iteration" },
+    }],
+    scenes: [{
+      kind: "diagram",
+      title: crowded ? "Crowded horizontal stencil" : "Compact representative stencil",
+      nodes,
+      edges: crowded
+        ? nodes.slice(0, -1).map((node, index) => ({
+          from: node.id,
+          to: nodes[index + 1].id,
+          label: "step h",
+          directed: true,
+        }))
+        : [],
+    }],
+  };
+}
+
+function offscreenDiagramFootprintDefinition() {
+  const definition = diagramLayoutDefinition();
+  // The self-test focuses the only slider after these scenes, intentionally
+  // scrolling this SVG above the viewport before it checks control and Reset.
+  definition.scenes.unshift(spatialCameraFrameDefinition(0.55).scenes[0]);
+  definition.scenes[1] = {
+    ...definition.scenes[1],
+    title: "Measured node footprint",
+    nodes: [
+      { id: "v_step", label: "V surface", x: 140, y: 180 },
+      { id: "grad_v", label: "Grad V", x: 320, y: 180 },
+      { id: "field_e", label: "Vector E", x: 500, y: 180 },
+    ],
+    edges: [],
+  };
+  return definition;
+}
+
 const opportunity = {
   id: "visual-spatial-fixture",
   gardenId: "test-garden",
@@ -189,6 +337,157 @@ test("compiler accepts bounded model-authored spatial groups and every primitive
   );
 });
 
+test("a high-spatial reviewed route rejects a flowchart substitute and requires its physical primitives", () => {
+  const boundaryOpportunity = {
+    ...opportunity,
+    id: "visual-boundary-fixture",
+    similarityFingerprint: "boundary-fixture",
+    necessityDecision: {
+      spatialValue: 0.95,
+      learningGoal: "Relate an electric field to a conductor boundary.",
+      reason: "A boundary interface needs physical geometry.",
+      teachingMediumReason:
+        "Interactive surface pillbox manipulation clarifies boundary component behavior.",
+      interaction: {
+        uniqueConcept: "Conductor boundary conditions",
+        whyStaticSourceFigureIsNotEnough:
+          "Static vectors do not show the pillbox crossing the interface.",
+        learnerAction:
+          "Apply an external electric field to a conductor boundary.",
+      },
+    },
+  };
+  const flowchart = spatialDefinition();
+  flowchart.scenes = [{
+    kind: "diagram",
+    title: "Free to metal path",
+    nodes: [
+      { id: "free", label: "Free", x: 140, y: 180 },
+      { id: "bound", label: "Bound", x: 320, y: 180 },
+      { id: "metal", label: "Metal", x: 500, y: 180 },
+    ],
+    edges: [
+      { from: "free", to: "bound", label: "changes", directed: true },
+      { from: "bound", to: "metal", label: "changes", directed: true },
+    ],
+  }];
+  const source = moduleSource(flowchart);
+  assert.ok(
+    compileGeneratedVisualization(source, opportunity).definition,
+    "the identical source remains valid when no reviewed spatial route exists",
+  );
+  const missingScene = compileGeneratedVisualization(source, boundaryOpportunity);
+  assert.equal(missingScene.definition, null);
+  assert.match(
+    missingScene.validation.errors.join("; "),
+    /reviewed_spatial_representation\.missing_spatial_scene/,
+  );
+
+  const vectorOnly = spatialDefinition();
+  vectorOnly.scenes[0].groups = [{
+    id: "field-only",
+    label: "Field only",
+    primitives: [{
+      kind: "vector",
+      id: "external-field",
+      label: "External field",
+      from: [0, 0, 0],
+      to: [0, 1, 0],
+      color: "blue",
+    }],
+  }];
+  const missingSurface = compileGeneratedVisualization(
+    moduleSource(vectorOnly),
+    boundaryOpportunity,
+  );
+  assert.equal(missingSurface.definition, null);
+  assert.match(
+    missingSurface.validation.errors.join("; "),
+    /reviewed_spatial_representation\.missing_surface_primitive/,
+  );
+
+  const surfaceOnly = spatialDefinition();
+  surfaceOnly.scenes[0].groups = [{
+    id: "surface-only",
+    label: "Surface only",
+    primitives: [{
+      kind: "plane",
+      id: "interface",
+      label: "Conductor interface",
+      center: [0, 0, 0],
+      normal: [0, 1, 0],
+      size: 4,
+      color: "gray",
+    }],
+  }];
+  const missingVector = compileGeneratedVisualization(
+    moduleSource(surfaceOnly),
+    boundaryOpportunity,
+  );
+  assert.equal(missingVector.definition, null);
+  assert.match(
+    missingVector.validation.errors.join("; "),
+    /reviewed_spatial_representation\.missing_vector_primitive/,
+  );
+
+  const valid = compileGeneratedVisualization(
+    moduleSource(spatialDefinition()),
+    boundaryOpportunity,
+  );
+  assert.ok(valid.definition, valid.validation.errors.join("; "));
+});
+
+test("browser runtime keeps a long plot axis label inside the mobile SVG frame", (t) => {
+  if (!browserPath()) {
+    t.skip("no supported browser binary is available");
+    return;
+  }
+  const outputDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "breadboard-plot-axis-frame-"),
+  );
+  try {
+    const definition = {
+      schemaVersion: 1,
+      sdkVersion: "1.0.0",
+      title: "Normal flux density",
+      description: "Inspect a source-grounded normal flux density profile.",
+      accessibilityDescription:
+        "A chart shows normal flux density over normal distance, with both axes explicitly labelled.",
+      controls: [],
+      outputs: [{
+        id: "normal_flux_density",
+        label: "Normal flux density",
+        representation: "chart",
+      }],
+      scenes: [{
+        kind: "plot",
+        title: "Normal flux density profile",
+        xMin: 0,
+        xMax: 1,
+        samples: 24,
+        xLabel: "Normal distance",
+        yLabel: "Normal Flux Density D_N (C/m²)",
+        series: [{
+          id: "normal-flux",
+          label: "Normal flux density",
+          expression: { kind: "input", id: "x" },
+        }],
+      }],
+    };
+    const browser = runGeneratedVisualBrowserTests({ definition, outputDir });
+    assert.ok(
+      browser.tests.every((entry) => entry.passed),
+      JSON.stringify(browser.tests, null, 2),
+    );
+    assert.ok(
+      !browser.tests.some((entry) => /axis_label_out_of_frame/.test(entry.detail)),
+      JSON.stringify(browser.tests, null, 2),
+    );
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
 test("spatial validation rejects unsafe bounds, malformed vectors, and degenerate geometry", () => {
   const invalid = spatialDefinition();
   invalid.scenes[0].view = { azimuthDegrees: 181, elevationDegrees: 86, scale: 3 };
@@ -197,6 +496,7 @@ test("spatial validation rejects unsafe bounds, malformed vectors, and degenerat
     normal: [0, 0, 0],
     color: "#00ff00",
     pattern: "gradient",
+    labelMode: "outside",
     opacity: 0.01,
   };
   invalid.scenes[0].groups[2].primitives[0].axis = [0, 0];
@@ -251,6 +551,7 @@ test("spatial validation rejects unsafe bounds, malformed vectors, and degenerat
   assert.match(messages, /normal must be non-zero/);
   assert.match(messages, /safe spatial palette token/);
   assert.match(messages, /pattern must be solid, striped, dotted, or crosshatch/);
+  assert.match(messages, /labelMode must be inline or legend_only/);
   assert.match(messages, /opacity must be between 0\.1 and 1/);
   assert.match(messages, /axis must contain exactly three spatial scalars/);
   assert.match(messages, /distinct from and to points/);
@@ -269,6 +570,38 @@ test("spatial validation rejects unsafe bounds, malformed vectors, and degenerat
   assert.match(
     validateGeneratedVisualizationDefinition(tooMany).errors.join("; "),
     /spatial scene needs 1-12 groups/,
+  );
+});
+
+test("diagram source coordinates reject values the renderer would otherwise clamp", () => {
+  const rendererBounds = diagramLayoutDefinition();
+  Object.assign(rendererBounds.scenes[0].nodes[0], { x: 72, y: 48 });
+  Object.assign(rendererBounds.scenes[0].nodes[2], { x: 568, y: 312 });
+  assert.deepEqual(
+    validateGeneratedVisualizationDefinition(rendererBounds).errors,
+    [],
+  );
+
+  const compactMobileLayout = diagramLayoutDefinition();
+  compactMobileLayout.scenes[0].nodes[0].x = 100;
+  compactMobileLayout.scenes[0].nodes[2].x = 500;
+  assert.deepEqual(
+    validateGeneratedVisualizationDefinition(compactMobileLayout).errors,
+    [],
+    "the conservative text-bearing mobile interior is advisory, not a hard schema bound",
+  );
+
+  const silentlyClamped = diagramLayoutDefinition();
+  Object.assign(silentlyClamped.scenes[0].nodes[0], { x: 71, y: 47 });
+  Object.assign(silentlyClamped.scenes[0].nodes[1], { x: 569, y: 313 });
+  const errors = validateGeneratedVisualizationDefinition(silentlyClamped).errors.join("; ");
+  assert.match(
+    errors,
+    /scenes\[0\]\.nodes\[0\] must use runtime-safe source coordinates inside x=72-568 and y=48-312/,
+  );
+  assert.match(
+    errors,
+    /scenes\[0\]\.nodes\[1\] must use runtime-safe source coordinates inside x=72-568 and y=48-312/,
   );
 });
 
@@ -322,6 +655,98 @@ test("expression-backed polygon geometry is checked across authored control stat
   assert.match(spatial?.detail ?? "", /points must be coplanar/);
 });
 
+test("iterative simulate-system opportunities require a changing runtime clock instead of a static definition", () => {
+  const iterativeOpportunity = {
+    ...opportunity,
+    id: "visual-iterative-fixture",
+    interactionGoal: "simulate_system",
+    learnerAction: "Run iterative relaxation and observe numerical convergence.",
+    requiredInputs: [{
+      id: "iteration",
+      kind: "process_position",
+      label: "Iteration",
+      type: "slider",
+      min: 0,
+      max: 1,
+      step: 1,
+      defaultValue: 0,
+    }],
+    requiredOutputs: [{
+      id: "iteration_value",
+      label: "Iteration value",
+      representation: "value",
+    }],
+  };
+  const staticDefinition = diagramLayoutDefinition();
+  const staticValidation = validateGeneratedVisualizationDefinition(
+    staticDefinition,
+    iterativeOpportunity,
+  );
+  assert.match(
+    staticValidation.errors.join("; "),
+    /simulate_system process is not executable:.*cannot be a static definition: add animation and a t-dependent numeric output or scene expression/,
+  );
+
+  const dynamicDefinition = structuredClone(staticDefinition);
+  dynamicDefinition.animation = { durationMs: 2000, loop: false, autoplay: false };
+  dynamicDefinition.outputs[0].expression = {
+    kind: "binary",
+    op: "add",
+    left: { kind: "input", id: "iteration" },
+    right: { kind: "input", id: "t" },
+  };
+  const dynamicValidation = validateGeneratedVisualizationDefinition(
+    dynamicDefinition,
+    iterativeOpportunity,
+  );
+  assert.ok(dynamicValidation.definition, dynamicValidation.errors.join("; "));
+  const deterministic = runGeneratedVisualDeterministicTests({
+    definition: dynamicValidation.definition,
+    opportunity: iterativeOpportunity,
+    testCases: [],
+  });
+  assert.equal(deterministic.passed, true, JSON.stringify(deterministic));
+  assert.equal(
+    deterministic.semanticTests.find((entry) => /runtime clock/.test(entry.name))?.passed,
+    true,
+  );
+});
+
+test("candidate parser accepts a sole fenced JSON envelope", async () => {
+  const definition = spatialDefinition();
+  const expected = {
+    title: "Spatial construction",
+    explanation: "The selector compares source-grounded geometry.",
+    sourceCode: moduleSource(definition),
+    testCases: [],
+    accessibilityDescription: definition.accessibilityDescription,
+    pedagogicalClaims: ["The interaction compares the declared cases."],
+  };
+  const client = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [{ message: { content: `\`\`\`json\n${JSON.stringify(expected)}\n\`\`\`` } }],
+          usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+        }),
+      },
+    },
+  };
+
+  const candidate = await generateVisualizationCandidate({
+    client,
+    model: "test-model",
+    opportunity,
+    pageMarkdown: "Local teaching text.",
+  });
+  assert.deepEqual(candidate, { ...expected, tokenUsage: {
+    inputTokens: 10,
+    outputTokens: 10,
+    reasoningTokens: 0,
+    totalTokens: 20,
+  } });
+});
+
 test("candidate envelope fails closed and the Council-visible prompt discloses the exact shape and spatial schema", async () => {
   const definition = spatialDefinition();
   const valid = validateGeneratedVisualizationCandidateEnvelope({
@@ -354,6 +779,30 @@ test("candidate envelope fails closed and the Council-visible prompt discloses t
     },
   };
   const previousSourceCode = `${"x".repeat(12_050)}END`;
+  const repairErrors = [
+    "AST exceeds 2500 nodes",
+    "reviewed_spatial_representation.missing_spatial_scene: the reviewed route requires a source-grounded spatial scene; a diagram node-link graph, flowchart, or plot cannot substitute for physical geometry",
+    "plot.default.scene[0].axis_label_out_of_frame: axis=y; overflow=top=38",
+    "scenes[2].groups[0].primitives[8].to must contain exactly three spatial scalars",
+    "scenes[1].nodes[0].value: expression is invalid or too deeply nested",
+    "',' expected.",
+    "Argument expression expected.",
+    "Expression expected.",
+    "executable syntax is not allowed (Identifier)",
+    "default export must be defineVisualization({ ...literal definition... })",
+    "Diagram edge labels H_N2/H_N1=mu1/mu2 and B_N2/B_N1=1 collide with the Interface node and arrow; the status panel heading clips on 375px mobile.",
+    "The spatial camera scale and orientation leave the source-essential plane and vectors off-center and clipped at the bottom of the narrow mobile preview.",
+    "The 3D spatial camera view (azimuth 35°, elevation 20°) causes severe perspective projection foreshortening, placing a source point directly adjacent to its target and clustering field vectors with overlapping inline labels on mobile.",
+    "spatial.after_control_change.host[0].geometry_out_of_frame: primitive=e_field_bot; overflow=bottom=41; authoredScale=0.85; scaleAtMost=0.55",
+    "In the circular cylindrical coordinate mode, the intersection point P(2, 0, 1) lies directly on the boundary edge/seam between cyl_facet_1 and cyl_facet_6, and neither facet's face normal is parallel to the displayed radial normal unit vector a_rho ([1, 0, 0]).",
+    "The gradient expression uses a hardcoded unexplained distance interval; explicitly define and label the symbol, value, and unit, and introduce every variable.",
+    "The required output expression, plot series, and plot marker are mathematically inconsistent with the rendered spatial field vectors; the scalar is half the vector magnitude.",
+    "The diagram nodes overflow and get cropped off on mobile viewports, node labels collide with node value readouts inside the node circles, and the visual calculates static closed-form ratios rather than showing numerical relaxation convergence.",
+    "browser mount 1280x800 reduced-motion: runtime self-check failures: diagram.after_control_change.scene[0].node_label_footprint: node=v_step; label=x=348,y=-492.6,width=113.1,height=27; footprint=x=361.5,y=-513.6,width=86,height=86; diagram.after_reset.scene[0].node_label_footprint: node=v_step; label=x=348,y=-492.6,width=113.1,height=27; footprint=x=361.5,y=-513.6,width=86,height=86.",
+    "Adjust diagram node horizontal coordinates so all grid stencil nodes fit within a 375px mobile viewport without right-edge cropping.",
+    "In the narrow mobile viewport (375x667), node Q2 in the Point Charge Arrangement diagram is cropped on the right edge due to node coordinates exceeding the readable viewport width.",
+    "Add a complete non-visual explanation and ensure every control is keyboard-readable and explicitly labelled.",
+  ];
   await assert.rejects(
     generateVisualizationCandidate({
       client,
@@ -361,19 +810,49 @@ test("candidate envelope fails closed and the Council-visible prompt discloses t
       opportunity,
       pageMarkdown: "Local teaching text.",
       previousSourceCode,
-      errors: ["prior candidate needs repair"],
+      errors: repairErrors,
     }),
     /candidate envelope is invalid:.*candidate\.title is required.*candidate\.pedagogicalClaims must be an array/,
   );
   const system = request.messages.find((message) => message.role === "system").content;
   assert.match(system, /exactly these six fields/);
   assert.match(system, /diagram is only a 2D node-link graph/i);
+  assert.match(system, /never author parallel or reverse labelled edges that share an endpoint pair.*labels stack at the same midpoint/i);
+  assert.match(system, /Use at most one short conceptual relationship label per endpoint pair; put equations, ratios, equality signs, and other wide formula text in an annotation or formula scene/i);
+  assert.match(system, /status scene.*title and state labels render in a narrow text panel.*fit at 375px/i);
   assert.match(system, /output\.representation is metadata and does not force scene\.kind/);
+  assert.match(system, /source-authored xLabel and yLabel are visible SVG text.*concise, source-grounded, and fully legible.*mobile and desktop plot frame.*annotation or formula scene/i);
   assert.match(system, /A spatial scene is exactly/);
+  assert.match(system, /spatialRepresentationRequirement is a reviewed, immutable route constraint.*actual spatial scene.*diagram node-link graph, flowchart, state-transition graph, or plot.*requiresSurfacePrimitive.*requiresVectorPrimitive/i);
+  assert.match(system, /labelMode\?.*legend_only/);
+  assert.match(system, /Projection overlap is a hard failure even when world coordinates differ.*named source-essential points, vector arrowheads, endpoints, and inline labels.*every exact desktop and narrow-mobile state.*labelMode:"legend_only"/i);
+  assert.match(system, /first rendered spatial scene with primitives.*primary narrow-mobile preview scene.*ahead of supporting plot, formula, annotation, status, or secondary-scene content.*initial 375x667 document viewport.*SVG-local safe frame is not sufficient.*unitless display-scale factor.*arbitrary unmentioned multiplier/i);
+  assert.match(system, /Every non-structural scalar or symbol that represents a physical or conceptual quantity.*source-grounded and visibly introduced with its symbol, value, unit when applicable, and role/i);
+  assert.match(system, /Do not hide a learner-relevant interval or scale as a bare coordinate or expression literal/i);
+  assert.match(system, /When a required output, plot series, plot marker, status, formula, or annotation displays a component, resultant, or magnitude of rendered vector contributions.*identical relationship through every representation.*stale scaled or half-magnitude expression/i);
   assert.match(system, /plane\(center,normal,size\).*polygon\(points with 3-12 coplanar non-collinear SpatialVectors in boundary order\).*sphere\(center,radius\).*cylinder\(center,axis,radius,height\).*cone\(apex,axis,radius,height\).*point\(position,size\?\).*vector\(from,to,headSize\?\)/);
   assert.match(system, /plane is a centered full rectangular patch extending to both sides of its center/);
   assert.match(system, /Use ordered polygon vertices, not plane, whenever the visible surface must be clipped, sector-shaped, one-sided, triangular, or a half-plane patch/);
   assert.match(system, /Group or primitive visibleWhen counts as scene influence/);
+  assert.match(system, /at least one allowed alternate control state must change by more than 1e-9 the evaluated value of an output\.expression or numeric scene expression/i);
+  assert.match(system, /claim-to-primitive audit.*vector unit or normalized.*Euclidean norm must be exactly 1/i);
+  assert.match(system, /named-point normal\/tangent\/basis claim.*strictly inside one displayed face.*ordered-vertex cross product.*shared facet edge, seam, vertex, cap, or an off-point chord/i);
+  assert.match(system, /Do not call a direction vector unit or normalized by implication: from:\[0,0,0\] to:\[1,0,0\] has magnitude 1, while to:\[1,1,1\] has magnitude sqrt\(3\)/i);
+  assert.match(system, /Hard compilation budget: AST node count must not exceed 2500; target at most 1600 nodes/i);
+  assert.match(system, /six plane faces \(literal normal, one dynamic center component, dynamic scalar size\) are the compact faithful representation/i);
+  assert.match(system, /Every vector from and to must be written as exactly three \[x, y, z\] entries/i);
+  assert.match(system, /Every expression has hard limits of 16 nested levels and 300 nodes; target at most 6 nested levels and 40 nodes/i);
+  assert.match(system, /In a spatial coordinate, use a literal, an input, or a one-operation expression only; never paste a full derived calculation/i);
+  assert.match(system, /Never use condition\/then\/else or min\/max as a binary op/i);
+  assert.match(system, /Before returning sourceCode, check it as one complete module: every object\/array delimiter is balanced/i);
+  assert.match(system, /Diagram node\.value is normally omitted.*\{kind:"constant",value:<finite>\}.*never a bare numeric value such as value: 1/i);
+  assert.match(system, /text-bearing mobile diagram.*conservative interior x=112-528 and y=72-288.*at most three text-bearing nodes/i);
+  assert.match(system, /At every default, changed-control, and Reset state, each rendered node label and tspan must fit inside its actual SVG node footprint; prefer a 1-6-character identifier.*full phrases, equations, step descriptions, and live values outside the graph/i);
+  assert.match(system, /Diagram source coordinates are strictly validated at x=72-568 and y=48-312.*renderer's non-clamped limits.*will not repair an out-of-range authored coordinate.*x=112-528 and y=72-288/i);
+  assert.match(system, /simulate, iterate, relax, converge, evolve, or step through a process.*definition\.animation.*reserved runtime expression \{kind:"input",id:"t"\}/i);
+  assert.match(system, /make an internal checklist from every exactErrors and exactHistory entry/i);
+  assert.match(system, /highPriorityRepairInstructions.*replacing the affected sourceCode structure/i);
+  assert.match(system, /FINAL NON-NEGOTIABLE SELF-CHECK BEFORE THE JSON RESPONSE/i);
   assert.match(system, /below 16,000 bytes/);
   assert.match(system, /complete syntactically valid spatial module template/);
   const spatialTemplateMarker = "complete syntactically valid spatial module template; replace its generic labels and geometry with source-grounded content:\n";
@@ -381,9 +860,98 @@ test("candidate envelope fails closed and the Council-visible prompt discloses t
   const promptedSpatialCompilation = compileGeneratedVisualization(promptedSpatialSource);
   assert.ok(promptedSpatialCompilation.definition, promptedSpatialCompilation.validation.errors.join("; "));
   assert.ok(Buffer.byteLength(promptedSpatialSource) < 16_000);
+  assert.match(promptedSpatialSource, /label: "Unit x direction", from: \[0, 0, 0\], to: \[1, 0, 0\]/);
   const userPacket = JSON.parse(request.messages.find((message) => message.role === "user").content);
   assert.equal(userPacket.repairContext.previousSourceCode, previousSourceCode);
-  assert.deepEqual(userPacket.repairContext.exactErrors, ["prior candidate needs repair"]);
+  assert.deepEqual(userPacket.repairContext.exactErrors, repairErrors);
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /reviewed route explicitly requires source-grounded spatial topology.*diagram node-link graph, flowchart, state-transition graph, or plot substitute.*boundary, interface, pillbox, or surface.*field, flux, normal, tangential direction, or vector.*not solve this by relabelling a 2D graph/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /browser found a plot-axis label outside its SVG frame.*source-authored xLabel or yLabel.*mobile and desktop previews.*CSS, clipping, truncation, or an unexplained abbreviation.*annotation or formula scene/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /complete replacement targeted below 1600 AST nodes/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /exactly three-item \[x, y, z\] array/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /at most 6 nested levels and 40 nodes/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /never write a bare numeric value such as value: 1/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /sourceCode did not parse as a complete visualization module or used executable syntax.*fresh, compact, standalone module.*exactly two top-level statements.*Do not declare const\/let\/var.*never JavaScript like gain, x, t, result, config, or definition/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /spatial coordinate entries.*at most a one-operation expression.*never min or max/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /prior rendered layout is not legible.*parallel or reverse labelled edges.*exact same midpoint.*short natural-language title and state label.*375px panel.*labelMode:"legend_only"/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /previous diagram does not fit.*at most three text-bearing nodes.*x=112-528 and y=72-288.*node\.value.*value, status, plot, formula, or annotation scene/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /browser found a diagram node label overflowing its measured SVG footprint after a state transition or Reset.*literal scene\.nodes entry identified by node=.*compact 1-6-character identifier.*omit node\.value.*annotation, formula, status, value, or plot scene.*every tspan fit inside.*default, changed-control, and reset.*all supplied desktop and mobile.*Do not change CSS.*renderer expansion or capping.*different line/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /critic found a source-authored diagram coordinate.*scene\.nodes literal x\/y.*runtime clamping.*x=72-568 and y=48-312.*text-bearing narrow-mobile node.*x=112-528 and y=72-288.*x=140,320,500/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /critic found a spatial-camera projection collision.*literal physical coordinates, endpoints, topology.*scene\.view azimuthDegrees, elevationDegrees, scale, and projection.*named points, vector arrowheads, and endpoints.*desktop and narrow-mobile.*labelMode:"legend_only".*illustrative or normalized.*CSS, runtime auto-fit, prose, or relabelling.*default, changed-control, and Reset/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /critic found that the spatial scene missed the initial narrow-mobile preview viewport.*first source-essential spatial scene.*ahead of supporting plot, formula, annotation, status, or secondary-scene content.*375x667 initial viewport.*CSS, scrolling instructions, runtime auto-fit, or a local SVG-only frame claim.*desktop, mobile, changed-control, and Reset/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /prior spatial camera framing is not usable.*authored view.*azimuthDegrees, elevationDegrees, scale.*narrow-mobile state.*Preserve the literal primitive topology and domain/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /geometry_out_of_frame or label_out_of_frame.*lower the literal affected scene\.view\.scale to the reported scaleAtMost or lower.*vector endpoint, arrowhead, primitive envelope, and inline-label box.*runtime auto-fit/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /named-point normal claim is geometrically invalid.*strictly in the relative interior of one face.*cross product \(p1-p0\) x \(p2-p0\).*curved cylindrical or spherical concept.*tangent plane or bounded tangent polygon.*shared facet boundary pass through the point/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /critic found a literal mathematical mismatch.*actual to-from endpoint deltas, components, sum, and magnitude.*affected required output\.expression.*matching plot series expression and plot marker coordinate.*exact feedback supplies a corrected expression.*old scaled, rounded, or half-magnitude expression.*Do not change only prose or labels/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /critic found an ungrounded spatial-vector display scale.*same source-grounded relationship.*required output, plot series, markers, formula, and status.*unitless display-scale factor.*illustrative\/normalized.*arbitrary fit factor.*direction, sign, units, and topology/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /unexplained learner-facing constant or symbol.*visibly define its symbol, value, unit when applicable, and role.*formula\/annotation, diagram, plot, or status scene.*pure rendering coordinates/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /static closed-form result.*iterative or converging process.*definition\.animation.*\{kind:"input",id:"t"\}.*default, a Step state, and the settled state/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /candidate accessibilityDescription and definition\.accessibilityDescription.*standalone, specific non-visual walkthrough.*keyboard navigation plus Reset behavior/i,
+  );
 });
 
 test("select preview planning covers mixed reviewed select kinds, remains bounded, and marks unrendered combinations explicitly", () => {
@@ -473,6 +1041,311 @@ test("spatial runtime mounts accessibly at browser viewports and captures every 
   }
 });
 
+test("browser self-test rejects unsafe authored spatial camera framing with a scale repair hint", (t) => {
+  if (!browserPath()) return t.skip("Chromium or Edge is not installed");
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-spatial-camera-frame-"));
+  try {
+    const unsafe = runGeneratedVisualBrowserTests({
+      definition: spatialCameraFrameDefinition(2),
+      outputDir: path.join(outputDir, "unsafe"),
+      timeoutMs: 25_000,
+    });
+    const unsafeMobile = unsafe.tests.find(
+      (entry) => entry.name === "browser mount 375x667 light",
+    );
+    assert.equal(unsafeMobile?.passed, false, JSON.stringify(unsafe.tests));
+    assert.match(
+      unsafeMobile?.detail ?? "",
+      /runtime self-check failures: spatial\.after_control_change\.host\[0\]\.geometry_out_of_frame: primitive=e_field_bot; overflow=.*(?:top|bottom)=.*; authoredScale=2; scaleAtMost=/,
+    );
+
+    const repaired = runGeneratedVisualBrowserTests({
+      definition: spatialCameraFrameDefinition(0.55),
+      outputDir: path.join(outputDir, "repaired"),
+      timeoutMs: 25_000,
+    });
+    assert.ok(repaired.tests.every((entry) => entry.passed), JSON.stringify(repaired.tests));
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("mobile preview rejects a primary spatial scene below the document viewport and accepts source ordering repair", (t) => {
+  if (!browserPath()) return t.skip("Chromium or Edge is not installed");
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-spatial-preview-viewport-"));
+  try {
+    const belowFold = runGeneratedVisualBrowserTests({
+      definition: mobilePrimarySpatialViewportDefinition(),
+      outputDir: path.join(outputDir, "below-fold"),
+      timeoutMs: 25_000,
+    });
+    const frameGate = belowFold.tests.find(
+      (entry) => entry.name === "mobile primary spatial preview frame",
+    );
+    assert.equal(frameGate?.passed, false, JSON.stringify(belowFold.tests));
+    assert.match(
+      frameGate?.detail ?? "",
+      /mobile-375x667-light--case_mode-1: runtime preview-frame failures: spatial\.preview_primary_viewport_out_of_frame: scene=\d+; overflow=bottom=.*; viewport=\d+x\d+/,
+    );
+    const axialMobile = belowFold.browser?.previewMatrixReceipt?.cells.find(
+      (entry) => entry.id === "mobile-375x667-light--case_mode-1",
+    );
+    assert.equal(axialMobile?.captured, false, JSON.stringify(axialMobile));
+    assert.equal(
+      axialMobile?.attempts.at(-1)?.previewPrimarySpatialFrameValidated,
+      false,
+      JSON.stringify(axialMobile),
+    );
+    const axialDesktop = belowFold.browser?.previewMatrixReceipt?.cells.find(
+      (entry) => entry.id === "desktop-1000x720-light--case_mode-1",
+    );
+    assert.equal(axialDesktop?.captured, true, JSON.stringify(axialDesktop));
+
+    const repaired = runGeneratedVisualBrowserTests({
+      definition: mobilePrimarySpatialViewportDefinition({ spatialFirst: true }),
+      outputDir: path.join(outputDir, "reordered"),
+      timeoutMs: 25_000,
+    });
+    assert.ok(
+      repaired.tests.every((entry) => entry.passed),
+      JSON.stringify(repaired.tests),
+    );
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("browser self-test rejects crowded diagram labels before critic review and accepts a compact mobile stencil", (t) => {
+  if (!browserPath()) return t.skip("Chromium or Edge is not installed");
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-diagram-layout-"));
+  try {
+    const crowdedDom = [];
+    const crowded = runGeneratedVisualBrowserTests({
+      definition: diagramLayoutDefinition({ crowded: true, capped: true }),
+      outputDir: path.join(outputDir, "crowded"),
+      timeoutMs: 25_000,
+      browserRunner: ({ executable, args }) => {
+        const result = spawnSync(executable, args, {
+          encoding: "utf8",
+          timeout: 25_000,
+          windowsHide: true,
+        });
+        if (args.includes("--dump-dom")) crowdedDom.push(result.stdout ?? "");
+        return result;
+      },
+    });
+    assert.match(crowdedDom[0] ?? "", /data-diagram-scene="true"/);
+    assert.match(
+      crowdedDom[0] ?? "",
+      /data-diagram-node-footprint="capped"/,
+      "a cap-exceeding source label must remain observable as a runtime failure",
+    );
+    const crowdedMobile = crowded.tests.find(
+      (entry) => entry.name === "browser mount 375x667 light",
+    );
+    assert.equal(crowdedMobile?.passed, false, JSON.stringify(crowded.tests));
+    assert.match(
+      crowdedMobile?.detail ?? "",
+      /runtime self-check failures: diagram\.after_control_change\.scene\[0\]\.(?:node_label_footprint|node_label_line_overlap|label_out_of_bounds|label_overlap|edge_label_node_overlap|node_overlap)/,
+    );
+
+    const compact = runGeneratedVisualBrowserTests({
+      // Regression: source labels and meaningful live values must remain
+      // visible in their measured, expanded authored footprints.
+      definition: diagramLayoutDefinition({
+        targetLabel: true,
+        valueBearingLabels: true,
+      }),
+      outputDir: path.join(outputDir, "compact"),
+      timeoutMs: 25_000,
+    });
+    assert.ok(compact.tests.every((entry) => entry.passed), JSON.stringify(compact.tests));
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("browser self-test fits an offscreen V surface node after focused control and Reset", (t) => {
+  if (!browserPath()) return t.skip("Chromium or Edge is not installed");
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-diagram-offscreen-layout-"));
+  try {
+    const domByScenario = new Map();
+    const result = runGeneratedVisualBrowserTests({
+      definition: offscreenDiagramFootprintDefinition(),
+      outputDir,
+      timeoutMs: 25_000,
+      browserRunner: ({ executable, args, slug }) => {
+        const browser = spawnSync(executable, args, {
+          encoding: "utf8",
+          timeout: 25_000,
+          windowsHide: true,
+        });
+        if (args.includes("--dump-dom")) domByScenario.set(slug, browser.stdout ?? "");
+        return browser;
+      },
+    });
+    const reducedMotion = result.tests.find(
+      (entry) => entry.name === "browser mount 1280x800 reduced-motion",
+    );
+    // The sandbox self-test diagnoses both after_control_change and
+    // after_reset; passing here proves the offscreen focused path settled.
+    assert.equal(reducedMotion?.passed, true, JSON.stringify(result.tests));
+    const reducedMotionDom = domByScenario.get("1280x800-reduced-motion") ?? "";
+    const vStep = [...reducedMotionDom.matchAll(/<circle\b[^>]*>/g)]
+      .map((match) => match[0])
+      .find((markup) => markup.includes('data-diagram-node="v_step"'));
+    assert.ok(vStep, reducedMotionDom);
+    const radius = Number(/\br="([^"]+)"/.exec(vStep)?.[1]);
+    assert.ok(
+      Number.isFinite(radius) && radius > 32.1,
+      `V surface should receive a measured adaptive footprint, got ${String(radius)}`,
+    );
+    assert.match(vStep, /data-diagram-node-footprint="expanded"/);
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("browser mount retries a transient Edge launch timeout with a fresh profile and bounded receipt", () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-mount-retry-"));
+  const mountProfilesByScenario = new Map();
+  const mountAttemptsByScenario = new Map();
+  const retryDelays = [];
+  try {
+    const result = runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir,
+      browserExecutable: "fake-edge",
+      browserMountRetryBackoff: (delayMs) => retryDelays.push(delayMs),
+      browserRunner: ({ args, profilePath, slug }) => {
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (screenshotArg) {
+          fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "fake png");
+          return {
+            status: 0,
+            stdout: '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+          };
+        }
+        if (args.includes("--dump-dom")) {
+          assert.ok(args.includes("--disable-gpu-shader-disk-cache"), JSON.stringify(args));
+          assert.ok(args.includes("--disable-skia-graphite"), JSON.stringify(args));
+          assert.ok(args.includes("--disable-features=SkiaGraphiteUsePersistentCache"), JSON.stringify(args));
+          const attempts = (mountAttemptsByScenario.get(slug) ?? 0) + 1;
+          mountAttemptsByScenario.set(slug, attempts);
+          const profiles = mountProfilesByScenario.get(slug) ?? [];
+          profiles.push(profilePath);
+          mountProfilesByScenario.set(slug, profiles);
+          if (slug === "375x667-light" && attempts === 1) {
+            return {
+              status: null,
+              signal: "SIGTERM",
+              error: {
+                code: "ETIMEDOUT",
+                message: "spawnSync C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe ETIMEDOUT",
+              },
+            };
+          }
+          return {
+            status: 0,
+            stdout: '<body data-breadboard-runtime-tests="passed"></body>',
+          };
+        }
+        assert.fail(JSON.stringify(args));
+      },
+    });
+
+    assert.ok(result.tests.every((entry) => entry.passed), JSON.stringify(result.tests));
+    assert.deepEqual(retryDelays, [125]);
+    const receipt = result.browser?.mountReceipts?.find(
+      (entry) => entry.scenario === "375x667 light",
+    );
+    assert.ok(receipt, JSON.stringify(result.browser?.mountReceipts));
+    assert.equal(receipt.mounted, true);
+    assert.equal(receipt.attempts.length, GENERATED_VISUAL_BROWSER_MOUNT_MAX_ATTEMPTS);
+    assert.equal(receipt.attempts[0].status, null);
+    assert.equal(receipt.attempts[0].signal, "SIGTERM");
+    assert.equal(receipt.attempts[0].mounted, false);
+    assert.equal(receipt.attempts[0].transientFailureCode, "ETIMEDOUT");
+    assert.equal(receipt.attempts[0].retryDelayMs, 125);
+    assert.match(receipt.attempts[0].detail ?? "", /ETIMEDOUT/);
+    assert.doesNotMatch(JSON.stringify(receipt), /C:\\Program Files|msedge\.exe/i);
+    assert.match(JSON.stringify(receipt), /<path>/);
+    assert.equal(receipt.attempts[1].status, 0);
+    assert.equal(receipt.attempts[1].mounted, true);
+    assert.match(
+      result.tests.find((entry) => entry.name === "browser mount 375x667 light")?.detail ?? "",
+      /mounted and self-tested after transient browser retry 2\/2 \(ETIMEDOUT\)/,
+    );
+    const retryProfiles = mountProfilesByScenario.get("375x667-light");
+    assert.equal(retryProfiles.length, GENERATED_VISUAL_BROWSER_MOUNT_MAX_ATTEMPTS);
+    assert.notEqual(retryProfiles[0], retryProfiles[1]);
+    for (const profilePath of retryProfiles) {
+      assert.equal(
+        fs.existsSync(path.dirname(profilePath)),
+        false,
+        "retry profiles must be cleaned with the disposable root",
+      );
+    }
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("browser mount does not retry a sandbox runtime self-check failure", () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-mount-semantic-"));
+  let failedScenarioInvocations = 0;
+  const retryDelays = [];
+  try {
+    const result = runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir,
+      browserExecutable: "fake-edge",
+      browserMountRetryBackoff: (delayMs) => retryDelays.push(delayMs),
+      browserRunner: ({ args, slug }) => {
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (screenshotArg) {
+          fs.writeFileSync(screenshotArg.slice("--screenshot=".length), "fake png");
+          return {
+            status: 0,
+            stdout: '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+          };
+        }
+        if (args.includes("--dump-dom")) {
+          if (slug === "375x667-light") {
+            failedScenarioInvocations += 1;
+            return {
+              status: 0,
+              stdout: '<body data-breadboard-runtime-tests="failed" data-breadboard-runtime-diagnostics="%5B%22semantic%20ETIMEDOUT%20must%20not%20retry%22%5D"></body>',
+            };
+          }
+          return {
+            status: 0,
+            stdout: '<body data-breadboard-runtime-tests="passed"></body>',
+          };
+        }
+        assert.fail(JSON.stringify(args));
+      },
+    });
+
+    assert.equal(
+      failedScenarioInvocations,
+      1,
+      JSON.stringify({ retryDelays, mountReceipts: result.browser?.mountReceipts }),
+    );
+    assert.deepEqual(retryDelays, []);
+    const receipt = result.browser?.mountReceipts?.find(
+      (entry) => entry.scenario === "375x667 light",
+    );
+    assert.ok(receipt, JSON.stringify(result.browser?.mountReceipts));
+    assert.equal(receipt.mounted, false);
+    assert.equal(receipt.attempts.length, 1);
+    assert.equal(receipt.attempts[0].transientFailureCode, undefined);
+    assert.match(receipt.attempts[0].detail ?? "", /semantic ETIMEDOUT must not retry/);
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
 test("preview capture retries transient Edge-style failures with fresh profiles and a bounded backoff", () => {
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-preview-retry-"));
   const captureProfiles = new Map();
@@ -485,27 +1358,40 @@ test("preview capture retries transient Edge-style failures with fresh profiles 
       browserExecutable: "fake-edge",
       previewCaptureRetryBackoff: (delayMs) => retryDelays.push(delayMs),
       browserRunner: ({ args, profilePath }) => {
+        assert.ok(args.includes("--disable-gpu-shader-disk-cache"), JSON.stringify(args));
+        assert.ok(args.includes("--disable-skia-graphite"), JSON.stringify(args));
+        assert.ok(args.includes("--disable-features=SkiaGraphiteUsePersistentCache"), JSON.stringify(args));
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (screenshotArg) {
+          const screenshotPath = screenshotArg.slice("--screenshot=".length);
+          const attempts = (captureAttempts.get(screenshotPath) ?? 0) + 1;
+          captureAttempts.set(screenshotPath, attempts);
+          const profiles = captureProfiles.get(screenshotPath) ?? [];
+          profiles.push(profilePath);
+          captureProfiles.set(screenshotPath, profiles);
+          assert.ok(profilePath.startsWith(`${path.resolve(os.tmpdir())}${path.sep}`));
+          assert.equal(
+            profilePath.startsWith(`${path.resolve(outputDir)}${path.sep}`),
+            false,
+            "browser profiles must stay out of a potentially deep visual staging directory",
+          );
+          if (attempts === 1) {
+            fs.writeFileSync(screenshotPath, "");
+            return { status: 1, stderr: "simulated Edge EBUSY" };
+          }
+          fs.writeFileSync(screenshotPath, "fake png");
+          return {
+            status: 0,
+            stdout: '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+          };
+        }
         if (args.includes("--dump-dom")) {
           return {
             status: 0,
             stdout: '<body data-breadboard-runtime-tests="passed"></body>',
           };
         }
-        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
-        assert.ok(screenshotArg, JSON.stringify(args));
-        const screenshotPath = screenshotArg.slice("--screenshot=".length);
-        const attempts = (captureAttempts.get(screenshotPath) ?? 0) + 1;
-        captureAttempts.set(screenshotPath, attempts);
-        const profiles = captureProfiles.get(screenshotPath) ?? [];
-        profiles.push(profilePath);
-        captureProfiles.set(screenshotPath, profiles);
-        assert.ok(profilePath.startsWith(`${path.resolve(outputDir)}${path.sep}`));
-        if (attempts === 1) {
-          fs.writeFileSync(screenshotPath, "");
-          return { status: 1, stderr: "simulated Edge EBUSY" };
-        }
-        fs.writeFileSync(screenshotPath, "fake png");
-        return { status: 0 };
+        assert.fail(JSON.stringify(args));
       },
     });
 
@@ -530,6 +1416,13 @@ test("preview capture retries transient Edge-style failures with fresh profiles 
     for (const profiles of captureProfiles.values()) {
       assert.equal(profiles?.length, 2);
       assert.notEqual(profiles?.[0], profiles?.[1]);
+      for (const profilePath of profiles ?? []) {
+        assert.equal(
+          fs.existsSync(path.dirname(profilePath)),
+          false,
+          "the short-lived browser profile root must be removed after the run",
+        );
+      }
     }
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
@@ -547,25 +1440,30 @@ test("a permanently failed labelled preview remains a complete-or-fail matrix re
       browserExecutable: "fake-edge",
       previewCaptureRetryBackoff: (delayMs) => retryDelays.push(delayMs),
       browserRunner: ({ args, profilePath }) => {
+        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
+        if (screenshotArg) {
+          const screenshotPath = screenshotArg.slice("--screenshot=".length);
+          if (screenshotPath.endsWith("preview-mobile-375x667-light-case_mode-1.png")) {
+            failedCellProfiles.push(profilePath);
+            return {
+              status: 1,
+              stderr:
+                "simulated persistent Edge EBUSY at C:\\Users\\agent\\AppData\\Local\\Temp\\profile; file:///C:/Users/agent/preview.html",
+            };
+          }
+          fs.writeFileSync(screenshotPath, "fake png");
+          return {
+            status: 0,
+            stdout: '<body data-breadboard-preview-primary-spatial-frame="passed"></body>',
+          };
+        }
         if (args.includes("--dump-dom")) {
           return {
             status: 0,
             stdout: '<body data-breadboard-runtime-tests="passed"></body>',
           };
         }
-        const screenshotArg = args.find((arg) => arg.startsWith("--screenshot="));
-        assert.ok(screenshotArg, JSON.stringify(args));
-        const screenshotPath = screenshotArg.slice("--screenshot=".length);
-        if (screenshotPath.endsWith("preview-mobile-375x667-light-case_mode-1.png")) {
-          failedCellProfiles.push(profilePath);
-          return {
-            status: 1,
-            stderr:
-              "simulated persistent Edge EBUSY at C:\\Users\\agent\\AppData\\Local\\Temp\\profile; file:///C:/Users/agent/preview.html",
-          };
-        }
-        fs.writeFileSync(screenshotPath, "fake png");
-        return { status: 0 };
+        assert.fail(JSON.stringify(args));
       },
     });
 
@@ -781,6 +1679,63 @@ setTimeout(() => {
       const leaderCount = Number(output.match(/data-spatial-leader-count="(\d+)"/)?.[1] ?? 0);
       assert.ok(leaderCount >= 4, `expected at least four leaders at ${width}x${height}, saw ${leaderCount}`);
     }
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("legend-only spatial labels retain their legend and ARIA name", (t) => {
+  const executable = browserPath();
+  if (!executable) return t.skip("Chromium or Edge is not installed");
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-spatial-legend-only-"));
+  const htmlPath = path.join(outputDir, "legend-only.html");
+  try {
+    const definition = denseIntersectingSpatialDefinition();
+    const legendOnly = definition.scenes[0].groups[0].primitives[0];
+    legendOnly.labelMode = "legend_only";
+    const validation = validateGeneratedVisualizationDefinition(definition);
+    assert.equal(validation.errors.length, 0, validation.errors.join("; "));
+    const runtime = fs.readFileSync(
+      path.resolve("../quartz/quartz/components/scripts/generatedVisualSandbox.inline.js"),
+      "utf8",
+    );
+    const serialized = JSON.stringify(definition).replace(/</g, "\\u003c");
+    const html = `<!doctype html><html><body><div id="breadboard-generated-visual-root"></div><script>window.__BREADBOARD_VISUAL_TEST_MODE__=true;</script><script>${runtime.replace(/<\/script/gi, "<\\/script")}</script><script>
+window.postMessage({type:"breadboard-generated-visual:init",definition:${serialized},theme:"light"},"*");
+setTimeout(() => {
+  const object = document.querySelector('[data-spatial-id="${legendOnly.id}"]');
+  const legend = document.querySelector('[data-spatial-legend-id="${legendOnly.id}"]');
+  const inlineLabel = document.querySelector('[data-spatial-label-for="${legendOnly.id}"]');
+  const defaultInlineLabel = document.querySelector('[data-spatial-label-for="y-surface"]');
+  document.body.dataset.spatialLegendOnlyAccessible = String(
+    object?.dataset.spatialLabelMode === "legend_only" &&
+    !inlineLabel &&
+    Boolean(legend?.textContent?.includes("${legendOnly.label}")) &&
+    Boolean(object?.getAttribute("aria-label")?.includes("${legendOnly.label}")) &&
+    object?.getAttribute("tabindex") === "0",
+  );
+  document.body.dataset.spatialDefaultInlinePreserved = String(Boolean(defaultInlineLabel));
+}, 25);
+</script></body></html>`;
+    fs.writeFileSync(htmlPath, html, "utf8");
+    const profilePath = path.join(outputDir, `edge-profile-${process.pid}-${Date.now()}`);
+    const result = spawnSync(executable, [
+      `--user-data-dir=${profilePath}`,
+      "--headless=new",
+      "--disable-gpu",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--no-first-run",
+      "--window-size=375,667",
+      "--virtual-time-budget=1500",
+      "--dump-dom",
+      pathToFileURL(htmlPath).href,
+    ], { encoding: "utf8", timeout: 25_000, windowsHide: true });
+    const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    assert.equal(result.status, 0, result.error?.message ?? output.slice(-500));
+    assert.match(output, /data-spatial-legend-only-accessible="true"/);
+    assert.match(output, /data-spatial-default-inline-preserved="true"/);
+    assert.match(output, /data-breadboard-runtime-tests="passed"/);
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
   }

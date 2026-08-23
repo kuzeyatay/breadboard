@@ -47,7 +47,7 @@ import {
 } from "./learning-unit-contract.ts";
 import { buildGardenTopicProfile, generateSectionTitle, type GardenTopicProfile } from "./section-title.ts";
 import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment, stripMarkdownFrontmatter } from "./learn-utils.ts";
-import { auditFinalGardenState, auditLegacyMigrationPersistence, buildCanonicalSourceAnchors, buildFinalGardenState, reconcileFinalGardenState } from "./final-garden-state.ts";
+import { auditFinalGardenState, auditLegacyMigrationPersistence, buildCanonicalSourceAnchors, buildFinalGardenState, projectSourceCoverage, reconcileFinalGardenState } from "./final-garden-state.ts";
 import { assertFormulaAssignmentCompatible, buildFormulaIdentityRegistry, legacyFormulaFamily } from "./formula-identity.ts";
 import { deriveUnitFormulaRequirement, validateFormulaAssignment } from "./formula-assignment.ts";
 import {
@@ -700,6 +700,41 @@ function readSourceAnchorLedger(gardenDir: string): SourceTextConceptAnchor[] {
   return anchors;
 }
 
+/**
+ * Active Learn records selected source-page boundaries as immutable structural
+ * evidence. A `text-*` reference may point to one of those records directly;
+ * it is not a missing semantic decision merely because it has no separately
+ * authored text-concept summary. Keep this read-only so strict finalization
+ * never invents source meaning or mutates model-authored evidence.
+ */
+interface StructuralTextAnchorRecord {
+  id: string;
+  sourceId: string;
+  title: string;
+  exactText: string;
+}
+
+function readStructuralTextAnchorLedger(gardenDir: string): StructuralTextAnchorRecord[] {
+  const parsed = readJson<unknown>(sourceAnchorLedgerPath(gardenDir), []);
+  const record = asObject(parsed);
+  const raw = Array.isArray(record.sourceStructuralAnchors)
+    ? record.sourceStructuralAnchors
+    : [];
+  const anchors: StructuralTextAnchorRecord[] = [];
+  for (const item of raw) {
+    const row = asObject(item);
+    const id = stringField(row.id ?? row.textAnchorId);
+    if (!/^text-/i.test(id)) continue;
+    anchors.push({
+      id,
+      sourceId: stringField(row.sourceId),
+      title: stringField(row.title),
+      exactText: stringField(row.exactText),
+    });
+  }
+  return anchors;
+}
+
 /** A record is "modern" (evidence-backed / migrated / critic-confirmed) and must
  *  never be replaced by a legacy numeric-confidence record with the same id. */
 function isModernTextAnchor(a: SourceTextConceptAnchor): boolean {
@@ -716,8 +751,14 @@ function writeSourceAnchorLedger(gardenDir: string, anchors: SourceTextConceptAn
     if (prior && isModernTextAnchor(prior) && !isModernTextAnchor(normalized)) continue;
     deduped.set(normalized.id, normalized);
   }
-  const content = `${JSON.stringify({ sourceTextConceptAnchors: [...deduped.values()].sort((a, b) => a.id.localeCompare(b.id)) }, null, 2)}\n`;
   const target = sourceAnchorLedgerPath(gardenDir);
+  // This writer owns only the text-concept projection. Preserve structural
+  // evidence and unknown envelope fields verbatim rather than erasing them.
+  const envelope = asObject(readJson<unknown>(target, {}));
+  const content = `${JSON.stringify({
+    ...envelope,
+    sourceTextConceptAnchors: [...deduped.values()].sort((a, b) => a.id.localeCompare(b.id)),
+  }, null, 2)}\n`;
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const existing = fs.existsSync(target) ? readFileSyncWithRetry(target, "utf-8") : "";
   if (existing === content) return;
@@ -2203,6 +2244,13 @@ export function finalizeGardenExport({
     }
   }
 
+  // Source Coverage is a pure read-model projection, not a semantic repair.
+  // Active Learn keeps source/page meaning model-authored, but its final export
+  // must still describe the files it is about to validate and publish.
+  if (preserveModelAuthoredContent) {
+    regenerateSourceCoverageFromFinalState(gardenDir, gardenSlug, report);
+  }
+
   // --- Pass K: canonical final-state reconciliation --------------------------
   // Build one FinalGardenState from the final files and bring every derived
   // artifact (Source Coverage, section indexes, contract handles, anchor
@@ -3475,6 +3523,9 @@ export async function repairLearningUnitsFromContract({
   if (!preserveModelAuthoredContent && !preserveModelAuthoredVisuals) {
     replanContractVisualNecessity(gardenDir, gardenSlug, preservedVisualPlans);
   }
+  // Keep the derived coverage view synchronized before model candidates are
+  // graded. This does not choose anchors or alter learner/model content.
+  regenerateSourceCoverageFromFinalState(gardenDir, gardenSlug, preflightRepairReport);
   const reportForChecks = emptyFinalizeReport();
   const firstChecks = collectFinalizeChecks({
     gardenDir,
@@ -3636,11 +3687,7 @@ export async function repairLearningUnitsFromContract({
     registerExistingTextAnchors(gardenDir, pagesForAnchorSync, unitsForAnchorSync, repairReport);
     synchronizeContractSourceAnchors(gardenDir, contractForAnchorSync, pagesForAnchorSync, repairReport);
   }
-  regenerateSourceCoverageFromFinalState(
-    gardenDir,
-    readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []),
-    repairReport,
-  );
+  regenerateSourceCoverageFromFinalState(gardenDir, gardenSlug, repairReport);
   if (!preserveModelAuthoredContent) {
     // Preserve rejected-candidate dumps under debug/failed-repairs/ through the
     // repair loop; only the final EXPORT (finalizeGardenExport) strips them.
@@ -4766,27 +4813,18 @@ function writeSourceCoverage({
   }
 }
 
-function regenerateSourceCoverageFromFinalState(gardenDir: string, ledger: LedgerVisual[], report: FinalizeReport): void {
-  const learnerPages = loadLearnerPages(gardenDir);
-  const interactiveIds = collectInteractiveAnchorIds(learnerPages);
-  const reconciliation: ReconciledAnchorUsage[] = ledger.map((visual) => {
-    const id = visual.sourceVisualId;
-    const embeddedPages = learnerPages
-      .filter((page) => fmGetArray(page.rawFm, "sourceVisualIds").includes(id) || page.body.includes(String(visual.croppedImagePath ?? "__never__")))
-      .map((page) => page.pageId);
-    const embeddedAsImage = embeddedPages.length > 0;
-    const usedAsInteractiveAnchor = interactiveIds.has(id);
-    const skipped = /^(?:intentionally_skipped|skipped|unused)$/i.test(String(visual.usageStatus ?? ""));
-    return {
-      id,
-      status: embeddedAsImage || usedAsInteractiveAnchor ? "used" : skipped ? "intentionally_skipped" : "unused",
-      usedInPages: embeddedPages,
-      embeddedAsImage,
-      usedAsInteractiveAnchor,
-      skipReason: String(visual.skipReason ?? visual.notUsedReason ?? ""),
-    };
-  });
-  writeSourceCoverage({ gardenDir, ledger, reconciliation, learnerPages, report });
+function regenerateSourceCoverageFromFinalState(gardenDir: string, gardenSlug: string, report: FinalizeReport): void {
+  const target = path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md");
+  const existing = fs.existsSync(target) ? readFileSyncWithRetry(target, "utf-8") : "";
+  const { rawFrontmatter } = parseFrontmatter(existing);
+  const body = projectSourceCoverage(buildFinalGardenState(gardenDir, gardenSlug));
+  const content = rawFrontmatter ? joinFrontmatter(rawFrontmatter, body) : body;
+  if (content === existing) return;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, content, "utf-8");
+  if (!report.changed.includes(".breadboard/planning/Source Coverage.md")) {
+    report.changed.push(".breadboard/planning/Source Coverage.md");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -5100,7 +5138,10 @@ export function groundLearnerFormula(
   return { groundingStatus: "conceptual-helper" };
 }
 
-// Hard ceiling shared with the finalize noise gate (`entries.length > 10`).
+// Default ceiling shared with the finalize noise gate. A page may exceed it
+// only when its immutable source-formula contract requires a one-to-one set of
+// exact reviewed projections; those entries are source evidence, not metadata
+// noise.
 const MAX_FORMULA_METADATA_ENTRIES = 10;
 
 /** Rank a formula entry by how much it belongs in the metadata block. Lower is
@@ -5152,7 +5193,12 @@ function parsedEntryFamily(entry: ParsedFormulaEntry): string | null {
 /** A worked example is grounded when it applies a definition the page (or a
  * source anchor it names) actually establishes — explicitly via basedOnFormula,
  * or implicitly by sharing a formula family with an on-page source definition. */
-export function auditFormulaMetadata(entries: ParsedFormulaEntry[]): FormulaMetadataAuditResult {
+export function auditFormulaMetadata(
+  entries: ParsedFormulaEntry[],
+  options: {
+    isExactReviewedSourceProjection?: (entry: ParsedFormulaEntry) => boolean;
+  } = {},
+): FormulaMetadataAuditResult {
   const problems: string[] = [];
   const warnings: string[] = [];
   const orphanWorkedExamples: { index: number; text: string; reason: string }[] = [];
@@ -5201,7 +5247,11 @@ export function auditFormulaMetadata(entries: ParsedFormulaEntry[]): FormulaMeta
     if (kind === "source_definition" || kind === "source_derived_definition") {
       sourceDefinitions += 1;
       // A numeric substitution mislabeled as a definition (condition 6).
-      if (isWorkedExampleFormula(text)) {
+      // A reviewed source equation can legitimately contain indices, equation
+      // numbers, or chained symbolic identities that resemble arithmetic. An
+      // identity-proven, exact source projection remains a definition; all
+      // unmatched equations keep the conservative worked-example check.
+      if (isWorkedExampleFormula(text) && !options.isExactReviewedSourceProjection?.(entry)) {
         invalidDefinitions.push(index);
         problems.push(`formulas[${index}] stores worked-example arithmetic as ${kind}`);
       }
@@ -7322,16 +7372,29 @@ function sourceAnchorLedgerProblems(gardenDir: string, learnerPages: LearnerPage
   if (used.size === 0) return [];
   const ledger = readSourceAnchorLedger(gardenDir);
   const known = new Map(ledger.map((anchor) => [anchor.id, anchor]));
+  const structural = new Map(readStructuralTextAnchorLedger(gardenDir).map((anchor) => [anchor.id, anchor]));
   const problems: string[] = [];
-  if (ledger.length === 0) problems.push(".breadboard/source-anchors.json missing or empty while text anchors are used");
+  if (ledger.length === 0 && structural.size === 0) {
+    problems.push(".breadboard/source-anchors.json missing or empty while text anchors are used");
+  }
   for (const [id, refs] of used) {
     const anchor = known.get(id);
-    if (!anchor) {
+    const structuralAnchor = structural.get(id);
+    if (!anchor && !structuralAnchor) {
       problems.push(`${[...new Set(refs)].join(", ")}: text anchor ${id} is not registered in .breadboard/source-anchors.json`);
       continue;
     }
-    if (!anchor.semanticSummary) problems.push(`${id}: source-anchor ledger entry missing semanticSummary`);
-    if (!anchor.conceptKeywords || anchor.conceptKeywords.length === 0) problems.push(`${id}: source-anchor ledger entry missing conceptKeywords`);
+    if (anchor) {
+      if (!anchor.semanticSummary) problems.push(`${id}: source-anchor ledger entry missing semanticSummary`);
+      if (!anchor.conceptKeywords || anchor.conceptKeywords.length === 0) problems.push(`${id}: source-anchor ledger entry missing conceptKeywords`);
+      continue;
+    }
+    // A selected structural page record already carries exact source evidence.
+    // Unlike a text-concept record it intentionally has no inferred summary or
+    // keywords, so validate the immutable evidence fields instead.
+    if (!structuralAnchor?.sourceId) problems.push(`${id}: structural text anchor is missing sourceId`);
+    if (!structuralAnchor?.title) problems.push(`${id}: structural text anchor is missing title`);
+    if (!structuralAnchor?.exactText) problems.push(`${id}: structural text anchor is missing exactText`);
   }
   return [...new Set(problems)];
 }
@@ -7485,7 +7548,10 @@ function sectionTitleNaturalnessAllProblems(sectionInputs: ReturnType<typeof sec
   return [...new Set(problems)];
 }
 
-function formulaMetadataNoiseProblems(learnerPages: LearnerPage[]): string[] {
+function formulaMetadataNoiseProblems(
+  learnerPages: LearnerPage[],
+  exactTextByFormulaAnchor: ReadonlyMap<string, string>,
+): string[] {
   const problems: string[] = [];
   for (const page of learnerPages) {
     const entries = formulaEntriesFromFrontmatter(page.rawFm);
@@ -7495,12 +7561,28 @@ function formulaMetadataNoiseProblems(learnerPages: LearnerPage[]): string[] {
       return isTrivialFormulaFragment(text) || !isFormulaExpression(text);
     });
     // Structural noise: an inline-fragment dump or a mostly-trivial block.
-    if (entries.length > 10) problems.push(`${page.rel}: formulas: contains ${entries.length} entries; expected focused metric/source relationships`);
+    // Exact reviewed source definitions are mandatory contract projections, so
+    // a math-dense source page can legitimately exceed the normal focused
+    // metadata ceiling. Keep the exemption deliberately narrow: every entry
+    // must be an exact reviewed source projection and each source anchor can
+    // appear only once. Any extra helper, drifted equation, or duplicate still
+    // triggers the cap.
+    const sourceAnchors = entries.map((entry) => String(entry.sourceAnchor ?? "").trim());
+    const hasOneToOneExactReviewedSourceProjections =
+      entries.every((entry) => isExactReviewedSourceFormulaProjection(entry, exactTextByFormulaAnchor)) &&
+      sourceAnchors.every(Boolean) &&
+      new Set(sourceAnchors).size === entries.length;
+    if (entries.length > MAX_FORMULA_METADATA_ENTRIES && !hasOneToOneExactReviewedSourceProjections) {
+      problems.push(`${page.rel}: formulas: contains ${entries.length} entries; expected focused metric/source relationships`);
+    }
     if (trivial.length > 0 && trivial.length / entries.length > 0.3) problems.push(`${page.rel}: ${trivial.length}/${entries.length} formulas: entries are trivial fragments`);
     // Relationship-based validation (replaces the worked-example count ratio):
     // one definition may be applied by many worked examples. Only truly orphan
     // examples, mislabeled definitions, or unsupported source claims are flagged.
-    const audit = auditFormulaMetadata(entries);
+    const audit = auditFormulaMetadata(entries, {
+      isExactReviewedSourceProjection: (entry) =>
+        isExactReviewedSourceFormulaProjection(entry, exactTextByFormulaAnchor),
+    });
     for (const problem of audit.problems) problems.push(`${page.rel}: ${problem}`);
     for (const [index, entry] of entries.entries()) {
       const text = String(entry.text ?? "");
@@ -7699,6 +7781,28 @@ function exactFormulaProjectionKey(value: unknown): string {
     .replace(/\r/g, "\n")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * Source-formula reviews publish the canonical equation text separately from
+ * learner metadata. A source definition is exempt from arithmetic heuristics
+ * only when its declared anchor and exact transcription prove that it is that
+ * reviewed source equation. This is deliberately not an algebraic match.
+ */
+function isExactReviewedSourceFormulaProjection(
+  entry: ParsedFormulaEntry,
+  exactTextByFormulaAnchor: ReadonlyMap<string, string>,
+): boolean {
+  const kind = formulaEntryKind(entry);
+  const status = String(entry.groundingStatus ?? "").trim();
+  const anchor = String(entry.sourceAnchor ?? "").trim();
+  const exactText = exactTextByFormulaAnchor.get(anchor);
+  return (
+    (kind === "source_definition" || kind === "source_derived_definition") &&
+    (status === "source-anchored" || status === "source-derived") &&
+    exactText !== undefined &&
+    exactFormulaProjectionKey(entry.text) === exactFormulaProjectionKey(exactText)
+  );
 }
 
 /** Apply the same renderer-facing lowering to both sides of an exact display
@@ -7974,7 +8078,11 @@ function sourceFormulaReviewManifestBindingProblems({
   if (manifest.schemaVersion !== 1) {
     problems.push("source-formula review manifest has an invalid schemaVersion");
   }
-  if (manifest.promptVersion !== 1) {
+  // Formula-review prompt V2 retains the V1 manifest envelope and all of its
+  // signed source/review hashes; it only strengthens the model instruction for
+  // exact source transcription.  Accept both durable prompt contracts while
+  // continuing to fail closed on every other version.
+  if (manifest.promptVersion !== 1 && manifest.promptVersion !== 2) {
     problems.push("source-formula review manifest has an invalid promptVersion");
   }
   if (!Array.isArray(manifest.formulaIds) || manifest.formulaIds.some((id) => !stringField(id))) {
@@ -8768,6 +8876,10 @@ function collectFinalizeChecks({
       const text = String(entry.text ?? "");
       const status = String(entry.groundingStatus ?? "");
       const kind = formulaEntryKind(entry);
+      const exactReviewedSourceProjection = isExactReviewedSourceFormulaProjection(
+        entry,
+        exactTextByFormulaAnchor,
+      );
       if (!text.trim()) {
         formulaExpressionProblems.push(`${label} missing text`);
         continue;
@@ -8787,7 +8899,11 @@ function collectFinalizeChecks({
       if (kind === "worked_example") {
         continue;
       }
-      if ((kind === "source_definition" || kind === "source_derived_definition") && isWorkedExampleFormula(text)) {
+      if (
+        (kind === "source_definition" || kind === "source_derived_definition") &&
+        isWorkedExampleFormula(text) &&
+        !exactReviewedSourceProjection
+      ) {
         formulaSourceProblems.push(`${label} is numeric worked-example arithmetic but is marked ${kind}`);
       }
       if ((status === "source-anchored" || status === "source-derived") && !String(entry.sourceAnchor ?? "").trim()) {
@@ -8822,7 +8938,7 @@ function collectFinalizeChecks({
       if ((status === "source-anchored" || status === "source-derived") && entry.sourceAnchor) {
         const anchor = sourceFormulaCaptions.find((source) => source.id === entry.sourceAnchor);
         const meaning = formulaMeaningMatch(text, anchor?.caption ?? "");
-        if (anchor?.caption && !meaning.ok) {
+        if (anchor?.caption && !meaning.ok && !exactReviewedSourceProjection) {
           formulaSourceProblems.push(`${label} is grounded to ${entry.sourceAnchor}, but content does not match (${meaning.reason})`);
         }
       }
@@ -8832,7 +8948,7 @@ function collectFinalizeChecks({
   push("Formula expression validation", formulaExpressionProblems);
   push("Formula Meaning Match", formulaSourceProblems);
   push("Formula Family Match", formulaSourceProblems.filter((problem) => /family|source formula|content does not match|grounded to/.test(problem)));
-  push("Formula Metadata Noise", formulaMetadataNoiseProblems(learnerPages));
+  push("Formula Metadata Noise", formulaMetadataNoiseProblems(learnerPages, exactTextByFormulaAnchor));
 
   // Source Coverage from contract.
   const coverageProblems: string[] = [];
