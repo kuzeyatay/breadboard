@@ -9,6 +9,7 @@ import type {
   ExternalAgentTerminalOutcome,
 } from "@/lib/conversations/external-agent-runs";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
+import { resolveAgentRunStreamError } from "@/lib/agent-run-stream";
 
 interface RunEvent {
   sequenceNumber: number;
@@ -364,17 +365,19 @@ export default function InlineOpenPlanterRun({
       source.addEventListener(type, handle as EventListener),
     );
     source.onerror = () => {
-      void fetch(`${base}/events?since=0`).then(async (response) => {
-        if (response.ok) return;
-        const data = (await response.json().catch(() => ({}))) as { error?: string };
-        source.close();
-        const message =
-          data.error === "run_not_found"
-            ? "This OpenPlanter run is no longer live, but its saved result remains below."
-            : "The OpenPlanter event stream is unavailable.";
-        setStatus("failed");
-        setFailure(message);
-      }).catch(() => undefined);
+      resolveAgentRunStreamError({
+        source,
+        base,
+        replayEnding: applyEvent,
+        onUnavailable: (reason) => {
+          setStatus("failed");
+          setFailure(
+            reason === "run_not_found"
+              ? "This OpenPlanter run is no longer live, but its saved result remains below."
+              : "The OpenPlanter event stream is unavailable.",
+          );
+        },
+      });
     };
     return () => source.close();
   }, [applyEvent, base, persistedContent, persistedOutcome]);

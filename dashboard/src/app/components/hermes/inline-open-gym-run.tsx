@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import AssistantResponseMeta from "@/app/components/assistant-response-meta";
 import ChatMarkdown from "@/app/components/chat-markdown";
+import { resolveAgentRunStreamError } from "@/lib/agent-run-stream";
 import type { ExternalAgentOutcome, ExternalAgentTerminalOutcome } from "@/lib/conversations/external-agent-runs";
+import { isFitnessProgramRequest } from "@/lib/open-gym/identity.ts";
 import { parseOpenGymResult, type OpenGymAnimationReference } from "@/lib/open-gym/result.ts";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
 
@@ -33,6 +35,7 @@ function number(value: unknown): number {
 export default function InlineOpenGymRun({
   runId,
   task,
+  quiet = false,
   persistedContent = "",
   persistedOutcome,
   onTerminal,
@@ -40,6 +43,8 @@ export default function InlineOpenGymRun({
 }: {
   runId: string;
   task: string;
+  /** Super Agent selected openGym, so its internal run UI stays invisible. */
+  quiet?: boolean;
   persistedContent?: string;
   persistedOutcome?: ExternalAgentOutcome;
   onTerminal?: (result: { outcome: ExternalAgentTerminalOutcome; content: string }) => void;
@@ -133,15 +138,26 @@ export default function InlineOpenGymRun({
     };
     STREAMED_EVENT_TYPES.forEach((type) => source.addEventListener(type, handle as EventListener));
     source.onerror = () => {
-      void fetch(`${base}/events?since=0`).then(async (response) => {
-        if (response.ok) return;
-        const data = await response.json().catch(() => ({})) as { error?: string };
-        source.close();
-        setStatus("failed");
-        setFailure(data.error === "run_not_found"
-          ? "This openGym run is no longer live, but its saved result remains below."
-          : "The openGym event stream is unavailable.");
-      }).catch(() => undefined);
+      resolveAgentRunStreamError({
+        source,
+        base,
+        replayEnding: applyEvent,
+        onUnavailable: (reason) => {
+          // A turn that already carries its answer is not made truthful by
+          // replacing it with a note about the stream. The run manager forgets
+          // a run half an hour after it ends, so every openGym card older than
+          // that reaches this line — and in the quiet presentation the guidance
+          // and animation are the whole message, with no card left below to
+          // "remain".
+          if (persistedOutcome && persistedOutcome !== "running") return;
+          setStatus("failed");
+          setFailure(
+            reason === "run_not_found"
+              ? "This openGym run is no longer live, but its saved result remains below."
+              : "The openGym event stream is unavailable.",
+          );
+        },
+      });
     };
     return () => source.close();
   }, [applyEvent, base, persistedContent, persistedOutcome]);
@@ -154,6 +170,74 @@ export default function InlineOpenGymRun({
 
   const terminal = TERMINAL.has(status);
   const terminalContent = result.trim() || failure.trim() || "openGym finished.";
+  const hasExerciseDemonstration =
+    status === "completed" &&
+    animations.length > 0 &&
+    !isFitnessProgramRequest(task);
+
+  if (quiet) {
+    return (
+      <>
+        <AssistantResponseMeta
+          active={!terminal}
+          failed={terminal && status !== "completed"}
+          totalTokens={usage.inputTokens + usage.outputTokens || undefined}
+          responseDurationMs={!terminal || elapsed > 0 ? elapsed * 1_000 : undefined}
+        />
+        {status === "completed" && (result || hasExerciseDemonstration) ? (
+          <div className="space-y-[17px]">
+            {result ? <ChatMarkdown content={result} compact /> : null}
+            {hasExerciseDemonstration ? (
+              <div className="grid max-w-[424px] gap-3">
+                {animations.map((exercise) => (
+                  <figure
+                    key={exercise.id}
+                    className="overflow-hidden rounded-[12px] border border-[var(--line)] bg-[var(--paper-raised)]"
+                  >
+                    {reducedMotion === false || manuallyPlaying.has(exercise.id) ? (
+                      /* The authenticated source is an animated GIF. Next/Image's
+                         optimizer is deliberately bypassed so motion is preserved. */
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img
+                        src={`/api/open-gym/exercises/${encodeURIComponent(exercise.id)}/animation`}
+                        alt={`${exercise.name} exercise demonstration`}
+                        className="block aspect-square w-full object-contain"
+                        loading="eager"
+                      />
+                    ) : (
+                      <div className="flex aspect-square w-full items-center justify-center">
+                        {reducedMotion === true ? (
+                          <button
+                            type="button"
+                            className="bb-agent-run-action active:scale-[0.97]"
+                            onClick={() =>
+                              setManuallyPlaying((current) =>
+                                new Set(current).add(exercise.id),
+                              )
+                            }
+                          >
+                            Play animation
+                          </button>
+                        ) : null}
+                      </div>
+                    )}
+                  </figure>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {failure ? (
+          <div role="alert">
+            <ChatMarkdown content={failure} compact />
+          </div>
+        ) : null}
+        {terminal ? (
+          <AssistantMessageActions content={terminalContent} onRetry={onRetry} />
+        ) : null}
+      </>
+    );
+  }
 
   return (
     <>

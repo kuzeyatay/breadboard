@@ -1337,9 +1337,15 @@ export default function TerminalSidebar({
               loading ? (
                 <ChatHistoryLoading />
               ) : recents.length === 0 ? (
-                <p className="px-2 py-6 text-center text-xs text-[var(--ink-muted)]">
-                  {pinned.length > 0 ? "Everything is pinned" : "No chats yet"}
-                </p>
+                // "No chats yet" is a claim about the account, so it is only
+                // made when a refresh actually came back saying so. A list that
+                // is empty because the request failed says nothing of the kind,
+                // and the error above the section is already carrying that.
+                error ? null : (
+                  <p className="px-2 py-6 text-center text-xs text-[var(--ink-muted)]">
+                    {pinned.length > 0 ? "Everything is pinned" : "No chats yet"}
+                  </p>
+                )
               ) : (
                 <>
                   {mode === "selecting" ? (

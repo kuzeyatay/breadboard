@@ -741,7 +741,15 @@ export class ServiceManager extends EventEmitter {
     const groups = new Set<HeavyConcurrencyGroup>();
     for (const [id, managed] of this.services) {
       if (id === excludeServiceId) continue;
-      if (["starting", "healthy", "degraded"].includes(managed.state)) {
+      // A warm but idle service is not heavyweight work. Counting every
+      // healthy tree made an eager Hermes runtime occupy `large-generation`
+      // forever and could deny unrelated browser, media, or model work even
+      // when no agent turn held a lease. Starting trees still count, as do
+      // healthy/degraded trees for the exact lifetime of an active lease.
+      const occupiesGroup =
+        managed.state === "starting" ||
+        (["healthy", "degraded"].includes(managed.state) && managed.leases.size > 0);
+      if (occupiesGroup) {
         if (managed.definition.concurrencyGroup) groups.add(managed.definition.concurrencyGroup);
       }
     }

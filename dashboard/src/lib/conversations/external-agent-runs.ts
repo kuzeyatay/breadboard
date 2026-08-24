@@ -7,7 +7,6 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "trading_agents",
   "vibe_trading",
   "stock_analyst",
-  "paper_trader",
   "deer_flow",
   "deep_research",
   "max_research",
@@ -52,7 +51,6 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   trading_agents: "TradingAgents",
   vibe_trading: "Vibe Trading",
   stock_analyst: "Stock Analyst",
-  paper_trader: "Paper Trader",
   deer_flow: "DeerFlow",
   deep_research: "Deep Research",
   max_research: "Max Research",
@@ -103,7 +101,6 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   trading_agents: "tradingagents",
   vibe_trading: "vibe-trading",
   stock_analyst: "stock-analyst",
-  paper_trader: "paper-trader",
   deer_flow: "deer-flow",
   deep_research: "deep-research",
   max_research: "max-research",
@@ -360,6 +357,8 @@ export type ExternalAgentRun =
       kind: "open_gym";
       runId: string;
       task: string;
+      /** Super Agent chose the capability, so present the result without agent chrome. */
+      quiet?: boolean;
     }
   | {
       kind: "trading_agents";
@@ -377,16 +376,6 @@ export type ExternalAgentRun =
       kind: "stock_analyst";
       runId: string;
       /** The question about a stock, minus the slash token. */
-      task: string;
-    }
-  | {
-      kind: "paper_trader";
-      runId: string;
-      /**
-       * The instruction to the desk — start, stop or show. Unlike every other
-       * agent's, this one is allowed to be a bare command with nothing after it,
-       * which is what "start the desk" reads as.
-       */
       task: string;
     }
   | {
@@ -635,7 +624,12 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
   if (candidate.kind === "open_gym") {
     const task = boundedString(candidate.task, MAX_TASK_LENGTH);
     if (!task) return null;
-    return { kind: "open_gym", runId, task };
+    return {
+      kind: "open_gym",
+      runId,
+      task,
+      ...(candidate.quiet === true ? { quiet: true } : {}),
+    };
   }
 
   if (candidate.kind === "trading_agents") {
@@ -654,17 +648,6 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     const task = boundedString(candidate.task, MAX_TASK_LENGTH);
     if (!task) return null;
     return { kind: "stock_analyst", runId, task };
-  }
-
-  if (candidate.kind === "paper_trader") {
-    // No `if (!task) return null` here: a bare `/agents:paper-trader` is the
-    // ordinary way to open the desk, and dropping the descriptor would lose the
-    // card on reload for the most common instruction there is.
-    return {
-      kind: "paper_trader",
-      runId,
-      task: boundedString(candidate.task, MAX_TASK_LENGTH) ?? "",
-    };
   }
 
   if (candidate.kind === "deer_flow") {
@@ -872,11 +855,10 @@ interface ExternalAgentRunFields {
   agentBrowserRun?: { runId: string } | null;
   agentReachRun?: { runId: string } | null;
   careerOpsRun?: { runId: string } | null;
-  openGymRun?: { runId: string } | null;
+  openGymRun?: { runId: string; quiet?: boolean } | null;
   tradingAgentsRun?: { runId: string } | null;
   vibeTradingRun?: { runId: string } | null;
   stockAnalystRun?: { runId: string } | null;
-  paperTraderRun?: { runId: string } | null;
   deerFlowRun?: { runId: string } | null;
   deepResearchRun?: { runId: string } | null;
   maxResearchRun?: { runId: string } | null;
@@ -930,7 +912,6 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   trading_agents: "tradingAgentsRun",
   vibe_trading: "vibeTradingRun",
   stock_analyst: "stockAnalystRun",
-  paper_trader: "paperTraderRun",
   deer_flow: "deerFlowRun",
   deep_research: "deepResearchRun",
   max_research: "maxResearchRun",
@@ -1024,11 +1005,10 @@ export function externalAgentMessageFields(
   agentBrowserRun?: { agentId: string; runId: string; task: string };
   agentReachRun?: { runId: string; task: string };
   careerOpsRun?: { runId: string; task: string };
-  openGymRun?: { runId: string; task: string };
+  openGymRun?: { runId: string; task: string; quiet?: boolean };
   tradingAgentsRun?: { runId: string; task: string };
   vibeTradingRun?: { runId: string; task: string };
   stockAnalystRun?: { runId: string; task: string };
-  paperTraderRun?: { runId: string; task: string };
   deerFlowRun?: { runId: string; task: string };
   deepResearchRun?: { runId: string; query: string; output: "report" | "answer" };
   maxResearchRun?: { runId: string; query: string };
@@ -1153,7 +1133,11 @@ export function externalAgentMessageFields(
   }
   if (run.kind === "open_gym") {
     return {
-      openGymRun: { runId: run.runId, task: run.task },
+      openGymRun: {
+        runId: run.runId,
+        task: run.task,
+        ...(run.quiet === true ? { quiet: true } : {}),
+      },
       ...outcomeField,
     };
   }
@@ -1172,12 +1156,6 @@ export function externalAgentMessageFields(
   if (run.kind === "stock_analyst") {
     return {
       stockAnalystRun: { runId: run.runId, task: run.task },
-      ...outcomeField,
-    };
-  }
-  if (run.kind === "paper_trader") {
-    return {
-      paperTraderRun: { runId: run.runId, task: run.task },
       ...outcomeField,
     };
   }

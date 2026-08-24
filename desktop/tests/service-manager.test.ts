@@ -111,6 +111,42 @@ test("startPlan orders dependencies into waves and rejects cycles", () => {
   assert.throws(() => unknown.startPlan(), /unknown service/i);
 });
 
+test("an eager but idle runtime does not occupy a heavyweight concurrency group", async () => {
+  const { manager, logsDir } = governedManager(15_000);
+  manager.register(
+    nodeService("runtime", "setInterval(()=>{},1000)", {
+      startPolicy: "eager",
+      estimatedColdStartCommitMb: 0,
+      concurrencyGroup: "large-generation",
+    }),
+  );
+  manager.register(
+    nodeService("browser", "setInterval(()=>{},1000)", {
+      required: false,
+      startPolicy: "on-demand",
+      estimatedColdStartCommitMb: 4_000,
+      priority: 90,
+      concurrencyGroup: "browser-automation",
+    }),
+  );
+
+  try {
+    await manager.startAll();
+    assert.equal(manager.status("runtime").state, "healthy");
+    assert.equal(manager.status("runtime").activeLeases, 0);
+
+    // 15 GiB is enough for the browser's reserve + one estimate, but not the
+    // doubled overlap requirement. This can pass only if the idle runtime is
+    // correctly excluded from active heavyweight work.
+    const lease = await manager.acquireServiceLease("browser", "test-browser-run");
+    assert.equal(manager.status("browser").state, "healthy");
+    lease.release();
+  } finally {
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
 test("a service with an http health check becomes healthy and is tree-killed on stopAll", async () => {
   const { manager } = newManager();
   const port = await freePort();

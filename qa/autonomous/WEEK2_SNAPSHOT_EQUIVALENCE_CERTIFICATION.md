@@ -62,8 +62,8 @@ The 62 environment-divergent tests name their own cause. Top signatures:
 | 1 | `the DeepTutor clone should be found next to the dashboard` |
 | 1 | `AudioAnalyzerError: The audio analyzer is not installed on this machine` |
 
-Concentrated in `watermark-tools` (8), `paper-trader-agent` (6),
-`document-skills` (4), `vibe-trading-agent` (4), `audio-analysis` (3). These are
+Concentrated in `watermark-tools` (8), `document-skills` (4),
+`vibe-trading-agent` (4), and `audio-analysis` (3). These are
 `GITIGNORED_REPO_DEPENDENCY`: git never carries them, so no worktree can.
 
 ---

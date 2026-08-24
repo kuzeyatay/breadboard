@@ -87,7 +87,7 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.match(composer, /const canSend = formAgent \? formRequestReady : canSubmit/);
   assert.match(
     composer,
-    /const formAgent = tradingAgentsAgent \?\? shortsAgent \?\? formsmithAgent \?\? paperTraderSelection \?\? null/,
+    /const formAgent = tradingAgentsAgent \?\? shortsAgent \?\? formsmithAgent \?\? null/,
   );
   assert.match(composer, /Boolean\(tradingAgentsRequest\)/);
   assert.match(composer, /Boolean\(shortsRequest\)/);

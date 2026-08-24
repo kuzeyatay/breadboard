@@ -108,10 +108,7 @@ test("agents that share a domain are separated by input shape, not topic", () =>
     );
   }
 
-  // Paper Trader is the one in its domain that acts and keeps acting, and that
-  // is the fact a chooser needs most.
-  assert.match(runtimeAgentBrief("paper-trader").choose, /standing commitment/);
-  // The three read-only market agents must each say they cannot trade, or the
+  // The read-only market agents must each say they cannot trade, or the
   // model can offer to place an order through one.
   for (const id of ["vibe-trading", "stock-analyst"]) {
     assert.match(runtimeAgentBrief(id).does, /cannot place a trade/);

@@ -136,7 +136,7 @@ Three rules:
   returns `null` for a chat it cannot resolve and the run starts with a bare
   task, exactly as before.
 - **A runtime that takes a structured request gets nothing.** Shorts,
-  TradingAgents, Paper Trader, Formsmith and Money Printer never send free text
+  TradingAgents, Formsmith and Money Printer never send free text
   to a model on the user's behalf, so there is nowhere to put a conversation
   that would not corrupt the request. `tests/agent-conversation-context-coverage.test.mjs`
   names them, so excluding a new agent is a decision rather than an oversight.

@@ -25,6 +25,7 @@ import type {
   ExternalAgentTerminalResult,
 } from "@/lib/conversations/external-agent-runs";
 import { notifyTaskCompleted } from "@/lib/task-completion-notification";
+import { resolveAgentRunStreamError } from "@/lib/agent-run-stream";
 
 interface RunEvent {
   sequenceNumber: number;
@@ -214,19 +215,19 @@ export default function InlineInboxZeroRun({
     // EventSource reconnects on error by default, forever. Closing here is what
     // keeps a restored turn from hammering a dead endpoint.
     source.onerror = () => {
-      void fetch(`${base}/events?since=0`)
-        .then(async (response) => {
-          if (response.ok) return;
-          source.close();
-          const data = (await response.json().catch(() => ({}))) as { error?: string };
+      resolveAgentRunStreamError({
+        source,
+        base,
+        replayEnding: applyEvent,
+        onUnavailable: (reason) => {
           setStatus("failed");
           setFailure(
-            data.error === "run_not_found"
+            reason === "run_not_found"
               ? "This run is no longer live, but its saved result remains below."
               : "The Inbox Zero event stream is unavailable.",
           );
-        })
-        .catch(() => undefined);
+        },
+      });
     };
     return () => source.close();
   }, [applyEvent, base, replaying]);

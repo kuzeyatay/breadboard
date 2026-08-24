@@ -130,11 +130,6 @@ def build_config(job: dict, default_config: dict) -> dict:
     config["max_debate_rounds"] = int(job.get("researchDepth", 1))
     config["max_risk_discuss_rounds"] = int(job.get("riskRounds", 1))
     config["output_language"] = job.get("outputLanguage") or "English"
-    # This is deliberately strict rather than truthy: only Paper Trader's JSON
-    # boolean may opt the upstream Portfolio Manager into short-entry language.
-    # Standalone TradingAgents runs and older bridge callers keep their original
-    # long-only decision context when the field is absent.
-    config["paper_trader_allow_shorts"] = job.get("paperTraderAllowShorts") is True
     # Reasoning effort is forwarded only when the caller asked for one; the
     # provider drops it for models that do not take it.
     if job.get("reasoningEffort"):

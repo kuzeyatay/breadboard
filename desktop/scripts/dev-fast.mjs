@@ -14,9 +14,60 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const forceRebuild = process.argv.includes("--rebuild");
+const rawBuildEstimate = process.env.BREADBOARD_LEAN_BUILD_ESTIMATE_MB?.trim();
+if (rawBuildEstimate && !/^\d+$/.test(rawBuildEstimate)) {
+  process.stderr.write("[desktop] BREADBOARD_LEAN_BUILD_ESTIMATE_MB must be a whole number.\n");
+  process.exit(2);
+}
+const buildEstimateMb = rawBuildEstimate ? Number(rawBuildEstimate) : 11_264;
+if (!Number.isSafeInteger(buildEstimateMb) || buildEstimateMb < 4_096 || buildEstimateMb > 16_384) {
+  process.stderr.write("[desktop] BREADBOARD_LEAN_BUILD_ESTIMATE_MB must be between 4096 and 16384.\n");
+  process.exit(2);
+}
+
+async function runDashboardBuild() {
+  const build = spawn(
+    process.execPath,
+    [path.join(repoRoot, "desktop", "scripts", "build-dashboard.mjs")],
+    { cwd: repoRoot, stdio: "inherit", env: process.env, windowsHide: true },
+  );
+  let reserveCrossed = false;
+  let sampling = false;
+  const monitor = setInterval(() => {
+    if (sampling || reserveCrossed || build.exitCode !== null) return;
+    sampling = true;
+    try {
+      assertWindowsCommitHeadroom({ operation: "lean dashboard build", estimateMb: 0 });
+    } catch (error) {
+      reserveCrossed = true;
+      process.stderr.write(
+        `[desktop] ${error instanceof Error ? error.message : String(error)} Stopping the build tree; no retry.\n`,
+      );
+      if (process.platform === "win32" && build.pid) {
+        spawnSync("taskkill.exe", ["/PID", String(build.pid), "/T", "/F"], {
+          windowsHide: true,
+          stdio: "ignore",
+        });
+      } else {
+        build.kill("SIGTERM");
+      }
+    } finally {
+      sampling = false;
+    }
+  }, 3_000);
+
+  const status = await new Promise((resolve) => {
+    build.once("error", () => resolve(1));
+    build.once("exit", (code) => resolve(code ?? 1));
+  });
+  clearInterval(monitor);
+  return reserveCrossed ? 2 : status;
+}
+
 const cached = forceRebuild
   ? { reusable: false, reason: "a rebuild was requested" }
   : reusableDashboardBuild(repoRoot);
+let dashboardMode = "standalone";
 if (cached.reusable) {
   process.stdout.write("[desktop] reusing unchanged standalone dashboard build\n");
   // Public assets do not alter the server graph, so keep them current without
@@ -24,28 +75,55 @@ if (cached.reusable) {
   refreshStandaloneDashboardAssets(repoRoot);
 } else {
   process.stdout.write(`[desktop] standalone dashboard rebuild required: ${cached.reason}\n`);
+  let admitted = true;
   try {
-    assertWindowsCommitHeadroom({ operation: "lean dashboard build", estimateMb: 6_144 });
+    assertWindowsCommitHeadroom({ operation: "lean dashboard build", estimateMb: buildEstimateMb });
   } catch (error) {
-    process.stderr.write(`[desktop] ${error instanceof Error ? error.message : String(error)}\n`);
-    process.exit(2);
+    if (forceRebuild) {
+      process.stderr.write(`[desktop] ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(2);
+    }
+    admitted = false;
+    dashboardMode = "bounded-hot";
+    process.stderr.write(
+      `[desktop] ${error instanceof Error ? error.message : String(error)} ` +
+      "Starting the bounded on-demand dashboard instead; no full build was launched.\n",
+    );
   }
-  const build = spawnSync(
-    process.execPath,
-    [path.join(repoRoot, "desktop", "scripts", "build-dashboard.mjs")],
-    { cwd: repoRoot, stdio: "inherit", env: process.env },
-  );
-  if (build.status !== 0) process.exit(build.status ?? 1);
+  if (admitted) {
+    const buildStatus = await runDashboardBuild();
+    if (buildStatus !== 0) process.exit(buildStatus);
+  }
 }
 
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const child = spawn(npm, ["--prefix", "desktop", "run", "dev"], {
+const npmCli = process.env.npm_execpath?.trim();
+if (!npmCli) {
+  process.stderr.write("[desktop] npm did not provide npm_execpath; cannot launch the desktop supervisor.\n");
+  process.exit(1);
+}
+const explicitDashboardBudget = [
+  "BREADBOARD_DASHBOARD_DEV_HEAP_MB",
+  "BREADBOARD_DASHBOARD_TREE_SOFT_LIMIT_MB",
+  "BREADBOARD_DASHBOARD_TREE_HARD_LIMIT_MB",
+].some((key) => process.env[key]?.trim());
+const boundedHotBudget = dashboardMode === "bounded-hot" && !explicitDashboardBudget
+  ? {
+      BREADBOARD_DASHBOARD_DEV_HEAP_MB: "4096",
+      BREADBOARD_DASHBOARD_TREE_SOFT_LIMIT_MB: "6144",
+      BREADBOARD_DASHBOARD_TREE_HARD_LIMIT_MB: "7168",
+    }
+  : {};
+// Node 24 on Windows rejects direct `.cmd` execution with `shell:false` as
+// EINVAL. Invoke npm's JavaScript entry through the current Node executable so
+// the child remains shell-free, hidden, and owned by this exact process tree.
+const child = spawn(process.execPath, [npmCli, "--prefix", "desktop", "run", "dev"], {
   cwd: repoRoot,
   stdio: "inherit",
   shell: false,
   env: {
     ...process.env,
-    BREADBOARD_DESKTOP_DASHBOARD_MODE: "standalone",
+    ...boundedHotBudget,
+    BREADBOARD_DESKTOP_DASHBOARD_MODE: dashboardMode,
   },
 });
 child.once("error", (error) => {

@@ -53,7 +53,6 @@ import { VIDEO_USE_COMMAND } from "../video-use/identity.ts";
 import { AGENT_TARS_SLASH_COMMAND } from "../ui-tars/identity.ts";
 import { VIBE_TRADING_COMMAND } from "../vibe-trading/identity.ts";
 import { STOCK_ANALYST_COMMAND } from "../stock-analyst/identity.ts";
-import { PAPER_TRADER_COMMAND } from "../paper-trader/identity.ts";
 import { VIMAX_COMMAND } from "../vimax/identity.ts";
 import { VOX_DIRECTOR_COMMAND } from "../vox-director/identity.ts";
 import { BOLT_SLIDES_COMMAND } from "../bolt-slides/identity.ts";
@@ -215,12 +214,6 @@ export const RUNTIME_AGENT_PROFILES: readonly RuntimeAgentProfile[] = [
   profile("stock-analyst", STOCK_ANALYST_COMMAND, "Stock Analyst", {
     requiresLaunchApproval: false,
   }),
-  // The fourth, and the only one in the domain that acts rather than reports:
-  // it opens and closes positions on its own schedule and keeps doing so after
-  // the turn ends. Paper positions against live prices — no real money moves —
-  // but a delegation still asks first, because starting it is a standing
-  // commitment rather than a question with an answer.
-  profile("paper-trader", PAPER_TRADER_COMMAND, "Paper Trader"),
   // DeerFlow hands the message to the cloned harness's own lead agent, which
   // owns its skills and its workspace, so a stacked Breadboard skill would
   // arrive as prose rather than as a capability.

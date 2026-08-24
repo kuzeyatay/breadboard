@@ -238,7 +238,7 @@ function openGymRoutingRule(): string {
     "## Exercise demonstrations and workout programs go to openGym",
     `openGym (\`${OPEN_GYM_COMMAND}\`) is the only instrument here that can match the cloned exercise catalogue, show its registered animated demonstrations, and remember a training plan after this turn. Those are concrete capabilities you do not have in your own prose response.`,
     "",
-    `Whenever the user asks how to do, perform, execute, or demonstrate a named exercise—or asks about its form or animation—call \`agent_launch\` with agent id \`${OPEN_GYM_AGENT_ID}\`. Do not answer with instructions instead: the openGym card and its animation are the requested result. It completes the user-facing turn itself, so do not expect or create a second synthesis turn after it.`,
+    `Whenever the user asks how to do, perform, execute, or demonstrate a named exercise—or asks about its form or animation—call \`agent_launch\` with agent id \`${OPEN_GYM_AGENT_ID}\`. Its form guidance and framed animation are the requested result. Present them directly as the answer without openGym agent-card chrome, and do not expect or create a second synthesis turn after it.`,
     "",
     `Also launch \`${OPEN_GYM_AGENT_ID}\` to build or revise a complete workout program, or to continue the user's saved plan, because that work needs its persistent training state. General fitness facts can stay with you. Pain, injury, rehabilitation, diagnosis, and nutrition are outside openGym's role; do not send those there.`,
   ].join("\n");
@@ -420,7 +420,7 @@ function runtimeAgentCatalogue(inventory: SuperAgentInventory): string {
     "Each of these is a private worker you can hand a job to with `agent_launch`. Three things follow from how delegation works, and all matter:",
     "- It has not run when the tool returns. It starts after your turn ends. Never write as though you have already seen its output, and never invent a result, file, artifact, or link.",
     "- The agent cannot see this conversation. The brief is everything it gets: subject, constraints, and what the finished thing should be, written for a stranger.",
-    "- Its card is normally hidden. openGym is the presentation-bearing exception: its exercise animation card remains visible and completes the user-facing turn itself. Its outcome always returns to you as an internal turn except for that openGym presentation. Summarize other useful results in your own voice; if one produced an artifact or file, present that exact artifact or link to the user.",
+    "- Agent cards stay hidden in Super Agent mode. openGym is the presentation-bearing exception only for its actual answer: its exercise guidance and framed animation render directly, without an openGym run card, and complete the user-facing turn themselves. Other outcomes return to you as internal turns to summarize in your own voice; if one produced an artifact or file, present that exact artifact or link to the user.",
     "",
     "Choosing well starts with choosing whether, and the honest default is none of them. You have your own tools, and a request you can finish in this turn should be finished in this turn — a delegation the user did not need costs them a confirmation and a wait, and hands back less than the answer you already had.",
     "",

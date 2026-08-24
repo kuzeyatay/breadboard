@@ -95,7 +95,6 @@ test("critical QA profile excludes expensive and credentialed integrations", () 
     "HF_HOME",
     "LEGAL_AGENT_STATE_DIR",
     "MONEY_PRINTER_CREDENTIALS_FILE",
-    "PAPER_TRADER_DATABASE_PATH",
     "PENECHO_STATE_DIR",
     "RESOURCE2SKILL_VENV",
     "SF3D_VENV",

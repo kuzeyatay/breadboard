@@ -146,12 +146,6 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
     choose:
       "Choose it when the question is about specific tickers or a named sector. General market commentary belongs to Vibe Trading.",
   },
-  "paper-trader": {
-    group: "markets",
-    does: "A standing desk that opens and closes paper positions in crypto and stocks on its own schedule against live prices, and keeps doing so long after this turn ends. No real money moves.",
-    choose:
-      "The one agent in this domain that acts rather than reports. Launch it only when the user asked for a desk to be run: starting it is a standing commitment, not the answer to what should I buy.",
-  },
   "trading-agent": {
     group: "markets",
     does: "The LangGraph analyst firm — a multi-analyst debate over one ticker, ending in a research report. Its composer refuses free typing, so the request is a form rather than a sentence.",
@@ -179,7 +173,7 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
 
   "open-gym": {
     group: "fitness",
-    does: "Uses openGym's 1,324-exercise catalogue to plan and remember workouts, persist preferences and programs, and show the registered animation with exercise-form answers. Its animation card is part of the user-facing result and remains visible when delegated.",
+    does: "Uses openGym's 1,324-exercise catalogue to plan and remember workouts, persist preferences and programs, and pair exercise-form answers with the registered animation. When delegated, that guidance and framed animation render directly without exposing the agent's run card.",
     choose:
       "Always choose it for a named exercise how-to, a full training program, or a saved-plan continuation: those need its animation catalogue or persistent state, not prose. Do not choose it for pain, injury, rehabilitation, nutrition, or a general fitness fact needing neither capability.",
   },

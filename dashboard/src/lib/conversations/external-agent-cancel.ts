@@ -57,8 +57,6 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../vibe-trading/run-manager.ts")).abortRun(userId, runId),
   stock_analyst: async (userId, runId) =>
     (await import("../stock-analyst/run-manager.ts")).abortRun(userId, runId),
-  paper_trader: async (userId, runId) =>
-    (await import("../paper-trader/run-manager.ts")).abortRun(userId, runId),
   deer_flow: async (userId, runId) =>
     (await import("../deer-flow/run-manager.ts")).abortRun(userId, runId),
   deep_research: async (userId, runId) =>

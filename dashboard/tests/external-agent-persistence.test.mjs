@@ -86,6 +86,24 @@ test("every agent's run descriptor round-trips into a transcript field", () => {
   }
 });
 
+test("openGym's quiet Super Agent presentation survives persistence", () => {
+  const parsed = parseExternalAgentRun({
+    ...descriptorFor("open_gym"),
+    quiet: true,
+  });
+  assert.ok(parsed);
+  assert.equal(parsed.kind, "open_gym");
+  assert.equal(parsed.quiet, true);
+
+  const fields = externalAgentMessageFields({
+    externalAgent: true,
+    externalAgentRun: parsed,
+    externalAgentOutcome: "completed",
+    externalAgentResult: "Exercise guidance and animation metadata.",
+  });
+  assert.equal(fields.openGymRun?.quiet, true);
+});
+
 test("legacy delegated rows restore the Super Agent text without losing the worker result", () => {
   const fields = externalAgentMessageFields({
     externalAgent: true,
