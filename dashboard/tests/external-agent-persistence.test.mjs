@@ -180,8 +180,8 @@ test("both chat surfaces render a card for every agent that can run there", () =
   }
   assert.match(terminal, /message\.delegatedAgentPreamble/);
   assert.match(garden, /msg\.delegatedAgentPreamble/);
-  assert.match(terminal, /message\.delegatedAgentRun \? "hidden" : "contents"/);
-  assert.match(garden, /msg\.delegatedAgentRun \? "hidden" : "contents"/);
+  assert.match(terminal, /message\.delegatedAgentRun && !message\.openGymRun/);
+  assert.match(garden, /msg\.delegatedAgentRun && !msg\.openGymRun/);
   assert.match(terminal, /externalAgentCardContent\(storedMessage\)/);
   assert.match(garden, /externalAgentCardContent\(storedMessage\)/);
 });

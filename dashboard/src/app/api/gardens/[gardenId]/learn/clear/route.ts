@@ -5,6 +5,10 @@ import {
   LearnPipelineConflictError,
 } from "@/lib/learn";
 import {
+  InvalidLearnRouteBodyError,
+  readLearnRouteJsonObject,
+} from "@/lib/learn-route-errors";
+import {
   requireOwnedClusterFromSlug,
   routeErrorResponse,
 } from "@/lib/server-auth";
@@ -26,7 +30,7 @@ export async function POST(
       );
     }
 
-    const body = await request.json().catch(() => ({})) as unknown;
+    const body = await readLearnRouteJsonObject(request);
     if (
       !body ||
       typeof body !== "object" ||
@@ -46,6 +50,9 @@ export async function POST(
     });
     return NextResponse.json({ success: true, result });
   } catch (error) {
+    if (error instanceof InvalidLearnRouteBodyError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     if (
       error instanceof LearnClearConflictError ||
       error instanceof LearnPipelineConflictError

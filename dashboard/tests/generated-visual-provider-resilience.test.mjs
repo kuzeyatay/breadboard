@@ -8,7 +8,7 @@ import {
   GENERATED_VISUAL_MAX_SOURCE_CHARS,
   GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES,
   GENERATED_VISUAL_REPAIR_HISTORY_MAX_ENTRIES,
-  GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_MAX_ATTEMPTS,
+  GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS,
   GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS,
   GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS,
   GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS,
@@ -103,6 +103,16 @@ function providerTimeout() {
   return Object.assign(new Error("Request timed out."), { name: "APIConnectionTimeoutError" });
 }
 
+function providerConnectionFailure() {
+  return Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
+}
+
+function providerConnectionRefusal() {
+  return Object.assign(new Error("listener refused request"), {
+    code: "ECONNREFUSED",
+  });
+}
+
 function providerAbortError() {
   return Object.assign(new Error("Provider stopped after its request signal aborted."), {
     name: "AbortError",
@@ -138,14 +148,62 @@ function baseInput(gardenDir, events, overrides = {}) {
     formulaDefinitions,
     maxAttempts: 5,
     criticMaxAttempts: 3,
-    criticTransportSessionCooldownMs: 0,
     runBrowserTests: false,
     onEvent: (event) => events.push(event),
     ...overrides,
   };
 }
 
+function passingBrowserPreview(outputDir) {
+  fs.mkdirSync(outputDir, { recursive: true });
+  const previewPath = path.join(outputDir, "preview.png");
+  fs.writeFileSync(
+    previewPath,
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  );
+  const identity = {
+    id: "mobile-375x667-light--default",
+    viewport: { width: 375, height: 667 },
+    theme: "light",
+    selectState: [],
+    defaultState: true,
+    selectStateCoverageTruncated: false,
+  };
+  return {
+    tests: [{ name: "browser preview fixture", passed: true, detail: "captured" }],
+    browser: {
+      executable: "fixture-browser",
+      viewports: ["375x667 light"],
+      screenshotCreated: true,
+      previewCount: 1,
+      selectStateCount: 1,
+      selectStateCoverageTruncated: false,
+      previewMatrixComplete: true,
+      previewMatrixReceipt: {
+        expectedCount: 1,
+        capturedCount: 1,
+        cells: [{
+          ...identity,
+          captured: true,
+          attempts: [{
+            attempt: 1,
+            status: 0,
+            signal: null,
+            screenshotCreated: true,
+            screenshotBytes: fs.statSync(previewPath).size,
+          }],
+        }],
+      },
+    },
+    previews: [{ ...identity, path: previewPath }],
+  };
+}
+
 test("Learn gives model-authored visual repair the bounded semantic ceiling", () => {
+  assert.equal(GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS, 1);
   assert.equal(GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS, 8);
   assert.equal(
     GENERATED_VISUAL_REPAIR_HISTORY_MAX_ENTRIES,
@@ -245,6 +303,78 @@ test("semantic repair reaches attempt eight with exact AI critic feedback and th
   }
 });
 
+test("rejected-attempt sink receives candidate and preview evidence at the rejection boundary", async () => {
+  const gardenDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "breadboard-visual-rejected-sink-"),
+  );
+  const events = [];
+  const rejected = [];
+  try {
+    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
+      maxAttempts: 1,
+      runBrowserTests: true,
+      candidateProvider: async () => candidate(),
+      browserTestRunner: ({ outputDir }) => {
+        const preview = passingBrowserPreview(outputDir);
+        preview.tests = [{ name: "runtime rejection fixture", passed: false, detail: "failed" }];
+        return preview;
+      },
+      criticProvider: async () => {
+        throw new Error("critic must not run after a failed runtime gate");
+      },
+      onRejectedAttempt: (receipt) => rejected.push(receipt),
+    }));
+
+    assert.equal(result.manifest, null);
+    assert.equal(result.failureCategory, "runtime");
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0].category, "runtime");
+    assert.equal(rejected[0].candidate.sourceCode, validSource);
+    assert.equal(
+      rejected[0].evidence.tests.browser.previewMatrixReceipt.capturedCount,
+      1,
+    );
+    assert.match(rejected[0].runId, /^[0-9]+-[0-9]+$/);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("null-candidate rejections reach the sink and sink failure preserves the original result", async () => {
+  const gardenDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "breadboard-visual-rejected-null-sink-"),
+  );
+  const events = [];
+  const rejected = [];
+  const providerFailure = new Error("candidate provider fixture failed");
+  try {
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        maxAttempts: 1,
+        candidateProvider: async () => {
+          throw providerFailure;
+        },
+        onRejectedAttempt: (receipt) => {
+          rejected.push(receipt);
+          throw new Error("audit destination fixture failed at C:\\private\\profile");
+        },
+      })),
+      (error) => error === providerFailure,
+    );
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0].candidate, null);
+    assert.equal(rejected[0].category, "generation");
+    const failureEvent = events.find(
+      ({ type }) => type === "learn_visual_rejected_attempt_audit_failed",
+    );
+    assert.ok(failureEvent);
+    assert.equal(failureEvent.data.reason, "rejected attempt audit could not be persisted");
+    assert.doesNotMatch(JSON.stringify(failureEvent), /private|profile/i);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
 test("repair history fingerprints all six candidate fields instead of sourceCode alone", async () => {
   const gardenDir = fs.mkdtempSync(
     path.join(os.tmpdir(), "breadboard-visual-snapshot-lineage-"),
@@ -286,24 +416,6 @@ test("repair history fingerprints all six candidate fields instead of sourceCode
   }
 });
 
-function assertSameCandidateRequest(left, right) {
-  assert.equal(left.client, right.client);
-  assert.equal(left.model, right.model);
-  assert.equal(left.opportunity, right.opportunity);
-  assert.equal(left.pageMarkdown, right.pageMarkdown);
-  assert.equal(left.sourceContext, right.sourceContext);
-  assert.equal(left.sourceFigureSummaries, right.sourceFigureSummaries);
-  assert.equal(left.formulaDefinitions, right.formulaDefinitions);
-  assert.equal(left.previousSourceCode, right.previousSourceCode);
-  assert.equal(left.previousCandidate, right.previousCandidate);
-  assert.equal(left.repairHistory, right.repairHistory);
-  assert.equal(left.previews, right.previews);
-  assert.equal(left.errors, right.errors);
-  assert.equal(left.timeoutMs, right.timeoutMs);
-  assert.ok(left.signal instanceof AbortSignal);
-  assert.ok(right.signal instanceof AbortSignal);
-}
-
 function detailedApproval(overrides = {}) {
   return {
     approved: true,
@@ -325,45 +437,199 @@ function detailedApproval(overrides = {}) {
   };
 }
 
-test("the local request deadline is a transport retry and the next identical request can succeed", async () => {
+test("the soft deadline adopts the original late result without starting an identical request", async () => {
   const transportAttempts = [];
-  const retries = [];
+  const waits = [];
+  const recoveries = [];
   const result = await retryGeneratedVisualProviderRequest({
     timeoutMs: 5,
+    lateResultGraceMs: 50,
     work: async (_signal, transportAttempt) => {
       transportAttempts.push(transportAttempt);
-      if (transportAttempt === 1) return new Promise(() => undefined);
-      return "recovered";
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      return "late original result";
     },
-    onRetry: (event) => retries.push(event),
+    onLateResultWait: (event) => waits.push(event),
+    onLateResultRecovered: (event) => recoveries.push(event),
   });
 
-  assert.equal(result, "recovered");
-  assert.deepEqual(transportAttempts, [1, 2]);
-  assert.equal(retries.length, 1);
-  assert.match(retries[0].error.message, /provider request timed out after 5ms/i);
+  assert.equal(result, "late original result");
+  assert.deepEqual(transportAttempts, [1]);
+  assert.deepEqual(waits, [{ timeoutMs: 5, lateResultGraceMs: 50, hardTimeoutMs: 55 }]);
+  assert.equal(recoveries.length, 1);
+  assert.equal(recoveries[0].timeoutMs, 5);
+  assert.equal(recoveries[0].lateResultGraceMs, 50);
+  assert.ok(recoveries[0].waitedMs >= 0);
 });
 
-test("provider-owned completion timeout does not wrap an upstream retry delay", async () => {
+test("an exhausted ambiguous deadline fails closed after one call", async () => {
   let calls = 0;
-  const retries = [];
+  await assert.rejects(
+    retryGeneratedVisualProviderRequest({
+      timeoutMs: 5,
+      lateResultGraceMs: 5,
+      work: async () => {
+        calls += 1;
+        return new Promise(() => undefined);
+      },
+    }),
+    (error) => {
+      assert.equal(error.code, "BREADBOARD_GENERATED_VISUAL_REQUEST_TIMEOUT");
+      assert.match(error.message, /ambiguous duplicate request was suppressed/i);
+      return true;
+    },
+  );
+  assert.equal(calls, 1);
+});
+
+test("the visual boundary never delegates replay eligibility to an outer session", async () => {
+  const receiptFailure = Object.assign(new Error("ChatMock verified pre-output failure"), {
+    status: 502,
+    body: {
+      chatmockTransportRecovery: {
+        retryable: true,
+        recovered: true,
+        phase: "pre_output",
+        recoveryId: "visual-request-receipt-generic",
+        evidence: "request_scoped_pre_output_receipt",
+      },
+    },
+  });
+  for (const failure of [
+    providerConnectionFailure(),
+    providerConnectionRefusal(),
+    receiptFailure,
+  ]) {
+    let calls = 0;
+    await assert.rejects(
+      retryGeneratedVisualProviderRequest({
+        timeoutMs: 50,
+        work: async () => {
+          calls += 1;
+          throw failure;
+        },
+      }),
+      (error) => error === failure,
+    );
+    assert.equal(calls, 1, "the boundary reports eligibility but never replays itself");
+  }
+});
+
+test("a throwing late-result wait observer cannot abandon the original result", async () => {
+  let calls = 0;
   const result = await retryGeneratedVisualProviderRequest({
     timeoutMs: 5,
-    timeoutOwner: "provider",
+    lateResultGraceMs: 50,
     work: async () => {
       calls += 1;
       await new Promise((resolve) => setTimeout(resolve, 15));
-      return "upstream ladder completed";
+      return "original result after broken wait telemetry";
     },
-    onRetry: (event) => retries.push(event),
+    onLateResultWait: () => {
+      throw new Error("wait event ledger fixture failed");
+    },
   });
 
-  assert.equal(result, "upstream ladder completed");
+  assert.equal(result, "original result after broken wait telemetry");
   assert.equal(calls, 1);
-  assert.deepEqual(retries, []);
 });
 
-test("built-in candidate transport retry uses the bounded complex-visual deadline and exact model body", async () => {
+test("a throwing late-result recovered observer cannot replace the adopted result", async () => {
+  let calls = 0;
+  const result = await retryGeneratedVisualProviderRequest({
+    timeoutMs: 5,
+    lateResultGraceMs: 50,
+    work: async () => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      return "adopted result before broken recovered telemetry";
+    },
+    onLateResultRecovered: () => {
+      throw new Error("recovered event ledger fixture failed");
+    },
+  });
+
+  assert.equal(result, "adopted result before broken recovered telemetry");
+  assert.equal(calls, 1);
+});
+
+test("hard ambiguity preserves its timeout when the wait observer also throws", async () => {
+  let calls = 0;
+  const observerFailure = new Error("wait event ledger fixture failed at hard timeout");
+  await assert.rejects(
+    retryGeneratedVisualProviderRequest({
+      timeoutMs: 5,
+      lateResultGraceMs: 5,
+      work: async () => {
+        calls += 1;
+        return new Promise(() => undefined);
+      },
+      onLateResultWait: () => {
+        throw observerFailure;
+      },
+    }),
+    (error) => {
+      assert.notEqual(error, observerFailure);
+      assert.match(error.message, /ambiguous duplicate request was suppressed/i);
+      return true;
+    },
+  );
+  assert.equal(calls, 1);
+});
+
+test("the hard-timeout race winner remains authoritative over later provider rejection and cancellation", async () => {
+  const controller = new AbortController();
+  const lateProviderFailure = new Error("provider rejected after hard timeout");
+  const lateCancellation = new Error("external cancellation arrived after hard timeout");
+  let rejectProvider;
+  let calls = 0;
+  const operation = retryGeneratedVisualProviderRequest({
+    timeoutMs: 5,
+    lateResultGraceMs: 5,
+    externalSignal: controller.signal,
+    work: async () => {
+      calls += 1;
+      return new Promise((_resolve, reject) => {
+        rejectProvider = reject;
+      });
+    },
+  });
+  setTimeout(() => rejectProvider?.(lateProviderFailure), 25);
+  setTimeout(() => controller.abort(lateCancellation), 30);
+  await assert.rejects(
+    operation,
+    (error) =>
+      error !== lateProviderFailure &&
+      error !== lateCancellation &&
+      error.code === "BREADBOARD_GENERATED_VISUAL_REQUEST_TIMEOUT" &&
+      /ambiguous duplicate request was suppressed/i.test(error.message),
+  );
+  assert.equal(calls, 1);
+});
+
+test("a provider rejection that wins the timeout race keeps exact identity despite a later external abort", async () => {
+  const controller = new AbortController();
+  const providerFailure = Object.assign(new Error("provider won first"), {
+    code: "ECONNRESET",
+  });
+  const laterCancellation = new Error("later cancellation must not replace provider result");
+  let calls = 0;
+  await assert.rejects(
+    retryGeneratedVisualProviderRequest({
+      timeoutMs: 50,
+      externalSignal: controller.signal,
+      work: async () => {
+        calls += 1;
+        setTimeout(() => controller.abort(laterCancellation), 5);
+        throw providerFailure;
+      },
+    }),
+    (error) => error === providerFailure,
+  );
+  assert.equal(calls, 1);
+});
+
+test("built-in candidate keeps its SDK request recoverable and sends the exact model body once", async () => {
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-provider-body-"));
   const events = [];
   const bodies = [];
@@ -374,7 +640,6 @@ test("built-in candidate transport retry uses the bounded complex-visual deadlin
         create: async (body, requestOptions) => {
           bodies.push(body);
           options.push(requestOptions);
-          if (bodies.length === 1) throw providerTimeout();
           return {
             choices: [{ message: { content: JSON.stringify(candidate()) } }],
             usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 },
@@ -390,14 +655,12 @@ test("built-in candidate transport retry uses the bounded complex-visual deadlin
     }));
 
     assert.equal(result.manifest?.generationAttempt, 1, result.errors.join("; "));
-    assert.equal(bodies.length, 2);
-    assert.deepEqual(bodies[1], bodies[0]);
-    assert.notEqual(options[1].signal, options[0].signal);
+    assert.equal(bodies.length, 1);
     assert.equal(GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS, 180_000);
-    assert.equal(options[0].timeout, GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS);
-    assert.equal(options[1].timeout, GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS);
+    assert.equal(GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS, 120_000);
+    assert.equal(options[0].timeout, undefined);
+    assert.ok(options[0].signal instanceof AbortSignal);
     assert.equal(options[0].maxRetries, 0);
-    assert.equal(options[1].maxRetries, 0);
     const system = bodies[0].messages.find(({ role }) => role === "system").content;
     assert.match(system, /implement opportunity\.interactionGoal and opportunity\.learnerAction as the artifact's actual interaction sequence/i);
     assert.match(system, /for test_prediction, require the learner to commit a prediction before the artifact reveals or evaluates the outcome/i);
@@ -436,6 +699,288 @@ test("built-in candidate transport retry uses the bounded complex-visual deadlin
     assert.equal(userPacket.sdkDocumentation.maxSpatialPolygonPoints, GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.spatialPolygonPoints);
     assert.equal(events.filter(({ type }) => type === "visual_model_generation_completed").length, 1);
     assert.equal(events.find(({ type }) => type === "visual_model_generation_completed").data.tokenUsage.totalTokens, 11);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("built-in author treats empty, missing, or literal-null fulfilled output as terminal after one raw call", async () => {
+  for (const [label, content] of [
+    ["missing", undefined],
+    ["null", null],
+    ["empty", ""],
+    ["whitespace", "  \n"],
+    ["literal-null", "null"],
+    ["fenced-null", "```json\nnull\n```"],
+  ]) {
+    const gardenDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), `breadboard-visual-empty-author-${label}-`),
+    );
+    const events = [];
+    let rawCalls = 0;
+    let criticCalls = 0;
+    const client = {
+      chat: {
+        completions: {
+          create: async () => {
+            rawCalls += 1;
+            return {
+              choices: [{
+                message: content === undefined ? {} : { content },
+              }],
+            };
+          },
+        },
+      },
+    };
+    try {
+      await assert.rejects(
+        createGeneratedVisualization(baseInput(gardenDir, events, {
+          client,
+          maxAttempts: 5,
+          criticProvider: async () => {
+            criticCalls += 1;
+            return approvedCritic();
+          },
+        })),
+        /generated visualization candidate returned (?:no nonempty content|literal JSON null)/,
+      );
+      assert.equal(rawCalls, 1, `${label} author output must not authorize another POST`);
+      assert.equal(criticCalls, 0);
+      assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
+    } finally {
+      fs.rmSync(gardenDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("built-in critic treats empty, missing, or literal-null fulfilled output as terminal after one raw call", async () => {
+  for (const [label, content] of [
+    ["missing", undefined],
+    ["null", null],
+    ["empty", ""],
+    ["whitespace", "  \n"],
+    ["literal-null", "null"],
+    ["fenced-null", "```json\nnull\n```"],
+  ]) {
+    const gardenDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), `breadboard-visual-empty-critic-${label}-`),
+    );
+    const events = [];
+    let candidateCalls = 0;
+    let rawCalls = 0;
+    const client = {
+      chat: {
+        completions: {
+          create: async () => {
+            rawCalls += 1;
+            return {
+              choices: [{
+                message: content === undefined ? {} : { content },
+              }],
+            };
+          },
+        },
+      },
+    };
+    try {
+      await assert.rejects(
+        createGeneratedVisualization(baseInput(gardenDir, events, {
+          client,
+          criticMaxAttempts: 3,
+          candidateProvider: async () => {
+            candidateCalls += 1;
+            return candidate();
+          },
+        })),
+        /critic returned (?:no nonempty content|literal JSON null)/,
+      );
+      assert.equal(candidateCalls, 1);
+      assert.equal(rawCalls, 1, `${label} critic output must not authorize another POST`);
+      assert.equal(events.some(({ type }) => type === "visual_critic_retry"), false);
+      assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
+    } finally {
+      fs.rmSync(gardenDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("nonempty malformed built-in author output permits one validation-targeted repair", async () => {
+  const gardenDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "breadboard-visual-author-semantic-repair-"),
+  );
+  const events = [];
+  const requests = [];
+  const client = {
+    chat: {
+      completions: {
+        create: async (request) => {
+          requests.push(request);
+          return {
+            choices: [{
+              message: {
+                content: requests.length === 1
+                  ? "{nonempty malformed candidate"
+                  : JSON.stringify(candidate()),
+              },
+            }],
+          };
+        },
+      },
+    },
+  };
+  try {
+    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
+      client,
+      maxAttempts: 2,
+      criticProvider: async () => approvedCritic(),
+    }));
+
+    assert.equal(result.manifest?.generationAttempt, 2, result.errors.join("; "));
+    assert.equal(requests.length, 2);
+    const repairPacket = JSON.parse(
+      requests[1].messages.find(({ role }) => role === "user").content,
+    );
+    assert.match(
+      repairPacket.repairContext.exactErrors.join("; "),
+      /candidate is not valid JSON/i,
+    );
+    assert.equal(events.filter(({ type }) => type === "visual_repair_started").length, 1);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("default author and critic adopt their original late council results and emit recovery evidence", async () => {
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-late-adoption-"));
+  const events = [];
+  const bodies = [];
+  const options = [];
+  const client = {
+    chat: {
+      completions: {
+        create: async (body, requestOptions) => {
+          bodies.push(body);
+          options.push(requestOptions);
+          await new Promise((resolve) => setTimeout(resolve, 15));
+          return {
+            choices: [{
+              message: {
+                content: JSON.stringify(
+                  body.taskType === "visualization_generation"
+                    ? candidate()
+                    : detailedApproval(),
+                ),
+              },
+            }],
+            usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 },
+          };
+        },
+      },
+    },
+  };
+  try {
+    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
+      client,
+      timeoutMs: 5,
+      lateResultGraceMs: 50,
+    }));
+
+    assert.equal(result.manifest?.generationAttempt, 1, result.errors.join("; "));
+    assert.equal(bodies.length, 2, "one author and one critic call must be sufficient");
+    assert.deepEqual(bodies.map(({ taskType }) => taskType), [
+      "visualization_generation",
+      "critique",
+    ]);
+    assert.ok(options.every(({ timeout }) => timeout === undefined));
+    assert.ok(options.every(({ signal }) => signal instanceof AbortSignal));
+    for (const eventType of [
+      "visual_generation_late_result_wait_started",
+      "visual_generation_late_result_adopted",
+      "visual_critic_late_result_wait_started",
+      "visual_critic_late_result_adopted",
+    ]) {
+      const matching = events.filter(({ type }) => type === eventType);
+      assert.equal(matching.length, 1, eventType);
+      assert.equal(matching[0].data.attempt, 1);
+      assert.equal(matching[0].data.duplicateRequestSuppressed, true);
+    }
+    assert.equal(events.some(({ type }) => type.includes("transport_retry")), false);
+    assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("default author hard ambiguity cannot consume a semantic attempt", async () => {
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-author-hard-timeout-"));
+  const events = [];
+  const bodies = [];
+  const client = {
+    chat: {
+      completions: {
+        create: async (body, { signal }) => {
+          bodies.push(body);
+          return rejectWithAbortWhenSignalled(signal);
+        },
+      },
+    },
+  };
+  try {
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        client,
+        timeoutMs: 5,
+        lateResultGraceMs: 5,
+        maxAttempts: 5,
+      })),
+      (error) => error.code === "BREADBOARD_GENERATED_VISUAL_REQUEST_TIMEOUT",
+    );
+    assert.equal(bodies.length, 1);
+    assert.equal(events.filter(({ type }) => type === "visual_generation_started").length, 1);
+    assert.equal(events.filter(({ type }) => type === "visual_repair_started").length, 0);
+    assert.equal(events.filter(({ type }) => type === "visual_generation_late_result_wait_started").length, 1);
+    assert.equal(events.filter(({ type }) => type === "visual_generation_provider_failed").length, 1);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("default critic hard ambiguity cannot consume a semantic critic attempt", async () => {
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-hard-timeout-"));
+  const events = [];
+  const bodies = [];
+  let candidateCalls = 0;
+  const client = {
+    chat: {
+      completions: {
+        create: async (body, { signal }) => {
+          bodies.push(body);
+          return rejectWithAbortWhenSignalled(signal);
+        },
+      },
+    },
+  };
+  try {
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        client,
+        timeoutMs: 5,
+        lateResultGraceMs: 5,
+        candidateProvider: async () => {
+          candidateCalls += 1;
+          return candidate();
+        },
+        criticMaxAttempts: 3,
+      })),
+      (error) => error.code === "BREADBOARD_GENERATED_VISUAL_REQUEST_TIMEOUT",
+    );
+    assert.equal(candidateCalls, 1);
+    assert.equal(bodies.length, 1);
+    assert.equal(events.filter(({ type }) => type === "visual_critic_late_result_wait_started").length, 1);
+    assert.equal(events.filter(({ type }) => type === "visual_critic_provider_failed").length, 1);
+    assert.equal(events.filter(({ type }) => type === "visual_critic_retry").length, 0);
+    assert.equal(events.filter(({ type }) => type === "visual_repair_started").length, 0);
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });
   }
@@ -616,42 +1161,33 @@ test("built-in model repair carries the complete prior candidate, cumulative exa
   }
 });
 
-test("provider timeout replays candidate generation without consuming a semantic attempt or usage event", async () => {
+test("provider timeout suppresses a duplicate candidate call and semantic attempt", async () => {
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-provider-retry-"));
   const events = [];
   const requests = [];
+  const failure = providerTimeout();
   let criticCalls = 0;
   try {
-    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
-      candidateProvider: async (input) => {
-        requests.push(input);
-        if (requests.length === 1) throw providerTimeout();
-        return candidate({ inputTokens: 7, outputTokens: 3, reasoningTokens: 1, totalTokens: 10 });
-      },
-      criticProvider: async () => {
-        criticCalls += 1;
-        return approvedCritic();
-      },
-    }));
-
-    assert.equal(result.manifest?.generationAttempt, 1, result.errors.join("; "));
-    assert.equal(requests.length, 2);
-    assertSameCandidateRequest(requests[0], requests[1]);
-    assert.equal(criticCalls, 1);
-    assert.deepEqual(
-      events.filter(({ type }) => type === "visual_generation_transport_retry").map(({ data }) => ({
-        attempt: data.attempt,
-        transportAttempt: data.transportAttempt,
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        candidateProvider: async (input) => {
+          requests.push(input);
+          throw failure;
+        },
+        criticProvider: async () => {
+          criticCalls += 1;
+          return approvedCritic();
+        },
       })),
-      [{ attempt: 1, transportAttempt: 1 }],
+      (error) => error === failure,
     );
+    assert.equal(requests.length, 1);
+    assert.equal(criticCalls, 0);
+    const failureEvent = events.find(({ type }) => type === "visual_generation_provider_failed");
+    assert.equal(failureEvent.data.providerInvocations, 1);
     assert.equal(events.filter(({ type }) => type === "visual_generation_started").length, 1);
     assert.equal(events.filter(({ type }) => type === "visual_repair_started").length, 0);
-    assert.equal(events.filter(({ type }) => type === "visual_model_generation_completed").length, 1);
-    assert.equal(
-      events.find(({ type }) => type === "visual_model_generation_completed").data.tokenUsage.totalTokens,
-      10,
-    );
+    assert.equal(events.filter(({ type }) => type === "visual_model_generation_completed").length, 0);
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });
   }
@@ -661,31 +1197,26 @@ test("candidate transport exhaustion fails closed at semantic attempt one", asyn
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-provider-exhaust-"));
   const events = [];
   const attempts = [];
+  const failure = providerTimeout();
   let criticCalls = 0;
   try {
-    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
-      candidateProvider: async (input) => {
-        attempts.push(input);
-        throw providerTimeout();
-      },
-      criticProvider: async () => {
-        criticCalls += 1;
-        return approvedCritic();
-      },
-    }));
-
-    assert.equal(result.manifest, null);
-    assert.equal(result.failureCategory, "generation");
-    assert.equal(attempts.length, GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS);
-    attempts.slice(1).forEach((request) => assertSameCandidateRequest(attempts[0], request));
-    assert.equal(criticCalls, 0);
-    assert.match(result.errors.join("; "), /transport exhausted 3 identical-request attempts/i);
-    assert.deepEqual(
-      events.filter(({ type }) => type === "visual_generation_transport_retry").map(({ data }) => data.attempt),
-      [1, 1],
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        candidateProvider: async (input) => {
+          attempts.push(input);
+          throw failure;
+        },
+        criticProvider: async () => {
+          criticCalls += 1;
+          return approvedCritic();
+        },
+      })),
+      (error) => error === failure,
     );
+    assert.equal(attempts.length, 1);
+    assert.equal(criticCalls, 0);
     assert.deepEqual(
-      events.filter(({ type }) => type === "visual_generation_transport_exhausted").map(({ data }) => data.attempt),
+      events.filter(({ type }) => type === "visual_generation_provider_failed").map(({ data }) => data.attempt),
       [1],
     );
     assert.equal(events.filter(({ type }) => type === "visual_generation_started").length, 1);
@@ -706,23 +1237,22 @@ test("custom candidate AbortError caused by the owned deadline returns a truthfu
   let candidateCalls = 0;
   let criticCalls = 0;
   try {
-    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
-      candidateProvider: async ({ signal }) => {
-        candidateCalls += 1;
-        return exhaustOwnedDeadlineWithNestedProviderAbort(signal);
-      },
-      criticProvider: async () => {
-        criticCalls += 1;
-        return approvedCritic();
-      },
-    }));
-
-    assert.equal(result.manifest, null);
-    assert.equal(result.failureCategory, "generation");
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        candidateProvider: async ({ signal }) => {
+          candidateCalls += 1;
+          return exhaustOwnedDeadlineWithNestedProviderAbort(signal);
+        },
+        criticProvider: async () => {
+          criticCalls += 1;
+          return approvedCritic();
+        },
+      })),
+      (error) => error.code === "BREADBOARD_GENERATED_VISUAL_REQUEST_TIMEOUT",
+    );
     assert.equal(candidateCalls, 1, "the exhausted logical request must not become a semantic retry");
     assert.equal(criticCalls, 0);
-    assert.match(result.errors.join("; "), /transport exhausted 3 identical-request attempts/i);
-    assert.equal(events.filter(({ type }) => type === "visual_generation_transport_exhausted").length, 1);
+    assert.equal(events.filter(({ type }) => type === "visual_generation_provider_failed").length, 1);
     assert.equal(events.some(({ type }) => type === "visual_generation_failed"), false);
     assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
     assert.equal(events.some(({ type }) => type === "visual_fallback_used"), false);
@@ -732,45 +1262,34 @@ test("custom candidate AbortError caused by the owned deadline returns a truthfu
   }
 });
 
-test("non-transport candidate failure remains a model-authored semantic repair attempt", async () => {
+test("a custom candidate callback failure remains exact and cannot become semantic repair", async () => {
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-provider-semantic-"));
   const events = [];
   const requests = [];
+  const failure = new Error("candidate envelope is invalid");
   try {
-    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
-      maxAttempts: 2,
-      candidateProvider: async (input) => {
-        requests.push(input);
-        if (requests.length === 1) throw new Error("candidate envelope is invalid");
-        return candidate();
-      },
-      criticProvider: async () => approvedCritic(),
-    }));
-
-    assert.equal(result.manifest?.generationAttempt, 2, result.errors.join("; "));
-    assert.equal(requests.length, 2);
-    assert.equal(requests[0].errors, undefined);
-    assert.deepEqual(requests[1].errors, ["candidate envelope is invalid"]);
-    assert.equal(requests[1].previousCandidate, undefined);
-    assert.deepEqual(requests[1].repairHistory, [{
-      attempt: 1,
-      failureCategory: "generation",
-      errors: ["candidate envelope is invalid"],
-    }]);
-    assert.equal(
-      "candidateSnapshotHash" in requests[1].repairHistory[0],
-      false,
-      "a failed generation must not be attributed to a prior candidate",
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        maxAttempts: 2,
+        candidateProvider: async (input) => {
+          requests.push(input);
+          throw failure;
+        },
+        criticProvider: async () => approvedCritic(),
+      })),
+      (error) => error === failure,
     );
-    assert.equal(events.filter(({ type }) => type === "visual_generation_failed").length, 1);
-    assert.equal(events.filter(({ type }) => type === "visual_repair_started").length, 1);
-    assert.equal(events.some(({ type }) => type.includes("transport_retry")), false);
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].errors, undefined);
+    assert.equal(events.filter(({ type }) => type === "visual_generation_provider_failed").length, 1);
+    assert.equal(events.filter(({ type }) => type === "visual_repair_started").length, 0);
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });
   }
 });
 
-test("external cancellation interrupts candidate transport replay immediately", async () => {
+test("external cancellation that settles first interrupts the candidate transport boundary immediately", async () => {
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-provider-cancel-"));
   const events = [];
   const controller = new AbortController();
@@ -853,144 +1372,161 @@ test("provider abort is never converted into a semantic generation retry", async
   }
 });
 
-test("critic transport retry preserves the validated artifact and critic protocol attempt", async () => {
+test("critic timeout preserves the validated artifact but suppresses a duplicate review", async () => {
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-provider-retry-"));
   const events = [];
   const criticRequests = [];
+  const failure = providerTimeout();
   let candidateCalls = 0;
   try {
-    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
-      candidateProvider: async () => {
-        candidateCalls += 1;
-        return candidate();
-      },
-      criticProvider: async (input) => {
-        criticRequests.push(input);
-        if (criticRequests.length === 1) throw providerTimeout();
-        return approvedCritic({ inputTokens: 5, outputTokens: 2, reasoningTokens: 0, totalTokens: 7 });
-      },
-    }));
-
-    assert.equal(result.manifest?.generationAttempt, 1, result.errors.join("; "));
-    assert.equal(candidateCalls, 1);
-    assert.equal(criticRequests.length, 2);
-    for (const field of [
-      "client",
-      "model",
-      "opportunity",
-      "candidate",
-      "definition",
-      "sourceContext",
-      "sourceFigureSummaries",
-      "formulaDefinitions",
-      "previewPath",
-      "previews",
-      "tests",
-      "priorCriticFailure",
-    ]) {
-      assert.equal(criticRequests[0][field], criticRequests[1][field], field);
-    }
-    assert.deepEqual(
-      events.filter(({ type }) => type === "visual_critic_transport_retry").map(({ data }) => ({
-        attempt: data.attempt,
-        criticAttempt: data.criticAttempt,
-        transportAttempt: data.transportAttempt,
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        candidateProvider: async () => {
+          candidateCalls += 1;
+          return candidate();
+        },
+        criticProvider: async (input) => {
+          criticRequests.push(input);
+          throw failure;
+        },
       })),
-      [{ attempt: 1, criticAttempt: 1, transportAttempt: 1 }],
+      (error) => error === failure,
     );
+    assert.equal(candidateCalls, 1);
+    assert.equal(criticRequests.length, 1);
     assert.equal(events.some(({ type }) => type === "visual_critic_retry"), false);
     assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
-    assert.equal(events.filter(({ type }) => type === "visual_critic_completed").length, 1);
-    assert.equal(events.find(({ type }) => type === "visual_critic_completed").data.tokenUsage.totalTokens, 7);
+    assert.equal(events.filter(({ type }) => type === "visual_critic_completed").length, 0);
+    const failureEvent = events.find(({ type }) => type === "visual_critic_provider_failed");
+    assert.equal(failureEvent.data.providerInvocations, 1);
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });
   }
 });
 
-test("critic availability session reuses the exact validated candidate and previews after transport exhaustion", async () => {
+test("an ambiguous critic reset is terminal without a duplicate", async () => {
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-session-retry-"));
   const events = [];
   const criticRequests = [];
-  const cooldowns = [];
+  const failure = providerConnectionFailure();
   let candidateCalls = 0;
   try {
-    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
-      candidateProvider: async () => {
-        candidateCalls += 1;
-        return candidate();
-      },
-      criticProvider: async (input) => {
-        criticRequests.push(input);
-        if (criticRequests.length <= GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS)
-          throw providerTimeout();
-        return approvedCritic();
-      },
-      criticTransportSessionWaiter: async ({ cooldownMs, signal }) => {
-        cooldowns.push({ cooldownMs, aborted: Boolean(signal?.aborted) });
-      },
-    }));
-
-    assert.equal(result.manifest?.generationAttempt, 1, result.errors.join("; "));
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        candidateProvider: async () => {
+          candidateCalls += 1;
+          return candidate();
+        },
+        criticProvider: async (input) => {
+          criticRequests.push(input);
+          throw failure;
+        },
+      })),
+      (error) => error === failure,
+    );
     assert.equal(candidateCalls, 1);
-    assert.equal(
-      criticRequests.length,
-      GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS + 1,
-    );
-    for (const field of [
-      "client",
-      "model",
-      "opportunity",
-      "candidate",
-      "definition",
-      "sourceContext",
-      "sourceFigureSummaries",
-      "formulaDefinitions",
-      "previewPath",
-      "previews",
-      "tests",
-      "priorCriticFailure",
-    ]) {
-      criticRequests.slice(1).forEach((request) =>
-        assert.equal(request[field], criticRequests[0][field], field),
-      );
-    }
-    assert.deepEqual(cooldowns, [{ cooldownMs: 0, aborted: false }]);
-    assert.equal(
-      events.filter(({ type }) => type === "visual_critic_transport_session_retry").length,
-      1,
-    );
-    assert.equal(
-      events.filter(({ type }) => type === "visual_critic_transport_session_resumed").length,
-      1,
-    );
+    assert.equal(criticRequests.length, 1);
     assert.equal(events.some(({ type }) => type === "visual_critic_retry"), false);
     assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
-    assert.equal(events.filter(({ type }) => type === "visual_critic_completed").length, 1);
+    assert.equal(events.some(({ type }) => type === "visual_critic_completed"), false);
+    const failed = events.find(({ type }) => type === "visual_critic_provider_failed");
+    assert.equal(failed.data.providerInvocations, 1);
+    assert.equal(failed.data.duplicateRequestSuppressed, true);
+    assert.equal(failed.data.reason, failure.message);
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });
   }
 });
 
-test("tracked Learn client retries the identical multimodal critic body in one bounded availability session", async () => {
+test("unqualified HTTP and partial critic failures cannot become semantic retries", async () => {
+  for (const { label, failure } of [
+    {
+      label: "unqualified-502",
+      failure: Object.assign(new Error("HTTP 502 without a request receipt"), {
+        status: 502,
+      }),
+    },
+    {
+      label: "partial-response",
+      failure: new Error("Response ended prematurely after partial output"),
+    },
+  ]) {
+    const gardenDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), `breadboard-visual-critic-${label}-`),
+    );
+    const events = [];
+    let criticCalls = 0;
+    try {
+      await assert.rejects(
+        createGeneratedVisualization(baseInput(gardenDir, events, {
+          candidateProvider: async () => candidate(),
+          criticProvider: async () => {
+            criticCalls += 1;
+            throw failure;
+          },
+        })),
+        (error) => error === failure,
+      );
+      assert.equal(criticCalls, 1);
+      assert.equal(events.some(({ type }) => type === "visual_critic_retry"), false);
+      assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
+      const exhausted = events.find(
+        ({ type }) => type === "visual_critic_provider_failed",
+      );
+      assert.ok(exhausted);
+      assert.equal(exhausted.data.duplicateRequestSuppressed, true);
+    } finally {
+      fs.rmSync(gardenDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("an unverified pre-accept critic refusal is terminal at the visual boundary", async () => {
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-safe-session-"));
+  const events = [];
+  const criticRequests = [];
+  const failure = providerConnectionRefusal();
+  try {
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        candidateProvider: async () => candidate(),
+        criticProvider: async (input) => {
+          criticRequests.push(input);
+          throw failure;
+        },
+      })),
+      (error) => error === failure,
+    );
+    assert.equal(criticRequests.length, 1);
+    const exhausted = events.find(({ type }) => type === "visual_critic_provider_failed");
+    assert.equal(exhausted.data.duplicateRequestSuppressed, true);
+    assert.equal(events.some(({ type }) => type === "visual_critic_retry"), false);
+    assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("tracked Learn critic never replays exact refusal even when recovery would verify", async () => {
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-tracked-session-"));
   const events = [];
   const rawBodies = [];
   const rawOptions = [];
   const usageEvents = [];
-  let rawCalls = 0;
+  const transportAttempts = [];
+  const rejectedTransports = [];
+  const recoveryVerifications = [];
+  const connectionFailure = Object.assign(new Error("listener refused request"), {
+    code: "ECONNREFUSED",
+  });
   const client = {
+    baseURL: "http://provider.invalid/v1",
     chat: {
       completions: {
         create: async (body, options) => {
           rawBodies.push(body);
           rawOptions.push(options);
-          rawCalls += 1;
-          if (rawCalls <= 6)
-            throw Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
-          return {
-            choices: [{ message: { content: JSON.stringify(detailedApproval()) } }],
-            usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
-          };
+          throw connectionFailure;
         },
       },
     },
@@ -998,141 +1534,133 @@ test("tracked Learn client retries the identical multimodal critic body in one b
   attachLearnTokenUsageTracking(
     client,
     (event) => usageEvents.push(event),
-    { retry502: { sleep: async () => undefined } },
-  );
-  const cooldowns = [];
-  try {
-    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
-      client,
-      candidateProvider: async () => candidate(),
-      criticTransportSessionWaiter: async ({ cooldownMs }) => {
-        cooldowns.push(cooldownMs);
+    {
+      retryTransport: {
+        verifyConnectionRecovery: async (input) => {
+          recoveryVerifications.push(input);
+          return {
+            id: "critic-health-receipt",
+            evidence: "model_health_200_with_available_account",
+          };
+        },
+        onAttempt: (attempt) => transportAttempts.push(attempt),
+        onRejected: (rejection) => rejectedTransports.push(rejection),
       },
-    }));
-
-    assert.equal(result.manifest?.generationAttempt, 1, result.errors.join("; "));
-    assert.equal(rawBodies.length, 7);
-    rawBodies.slice(1).forEach((body) => assert.deepEqual(body, rawBodies[0]));
-    rawOptions.forEach((options) => {
-      assert.equal(options.timeout, GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS);
-      assert.equal(options.maxRetries, 0);
-    });
-    assert.deepEqual(cooldowns, [0]);
-    assert.deepEqual(
-      usageEvents.map(({ type }) => type),
-      ["started", "completed", "started", "completed"],
-    );
-    assert.equal(
-      events.filter(({ type }) => type === "visual_critic_transport_session_retry").length,
-      1,
-    );
-    assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
-    assert.equal(events.filter(({ type }) => type === "visual_published").length, 1);
-  } finally {
-    fs.rmSync(gardenDir, { recursive: true, force: true });
-  }
-});
-
-test("cancellation during a critic availability cooldown does not start another critic session", async () => {
-  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-session-cancel-"));
-  const events = [];
-  const controller = new AbortController();
-  const cancellation = new Error("cancelled during critic transport session");
-  let criticCalls = 0;
+    },
+  );
   try {
     await assert.rejects(
       createGeneratedVisualization(baseInput(gardenDir, events, {
-        abortSignal: controller.signal,
+        client,
         candidateProvider: async () => candidate(),
-        criticProvider: async () => {
-          criticCalls += 1;
-          throw providerTimeout();
-        },
-        criticTransportSessionCooldownMs: 1,
-        criticTransportSessionWaiter: async () => {
-          controller.abort(cancellation);
-        },
+        runBrowserTests: true,
+        browserTestRunner: ({ outputDir }) => passingBrowserPreview(outputDir),
       })),
-      cancellation,
+      (error) => error === connectionFailure,
     );
-
-    assert.equal(criticCalls, GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS);
-    assert.equal(
-      events.filter(({ type }) => type === "visual_critic_transport_session_retry").length,
-      1,
+    assert.equal(rawBodies.length, 1);
+    const criticUserContent = rawBodies[0].messages.find(({ role }) => role === "user").content;
+    assert.ok(Array.isArray(criticUserContent), "the exercised critic request must be multimodal");
+    assert.equal(criticUserContent.filter(({ type }) => type === "image_url").length, 1);
+    assert.equal(rawOptions[0].timeout, undefined);
+    assert.ok(rawOptions[0].signal instanceof AbortSignal);
+    assert.equal(rawOptions[0].maxRetries, 0);
+    assert.equal(recoveryVerifications.length, 0);
+    assert.deepEqual(
+      transportAttempts.map(({ attempt, maxAttempts, retryCause }) => ({
+        attempt,
+        maxAttempts,
+        retryCause,
+      })),
+      [
+        {
+          attempt: 1,
+          maxAttempts: 1,
+          retryCause: undefined,
+        },
+      ],
     );
-    assert.equal(
-      events.filter(({ type }) => type === "visual_critic_transport_session_resumed").length,
-      0,
+    assert.deepEqual(rejectedTransports, [{
+      attempt: 1,
+      maxAttempts: 1,
+      rejectionCause: "replay_disabled",
+      retryCause: "connection_failure",
+    }]);
+    assert.deepEqual(
+      usageEvents.map(({ type }) => type),
+      ["started", "completed"],
     );
-    assert.equal(events.some(({ type }) => type === "visual_critic_retry"), false);
+    assert.equal(usageEvents[1].usage, null);
+    assert.equal(events.some(({ type }) => type === "visual_critic_provider_failed"), true);
     assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
-    assert.equal(events.some(({ type }) => type === "visual_published"), false);
+    assert.equal(events.filter(({ type }) => type === "visual_published").length, 0);
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });
   }
 });
 
-test("critic transport exhaustion is terminal only after the bounded availability sessions without consuming protocol or repair attempts", async () => {
+test("configured recovery diagnostics cannot reopen an exact critic refusal", async () => {
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-critic-provider-exhaust-"));
   const events = [];
+  const recoveryVerifications = [];
+  const rejectedTransports = [];
+  const connectionRefusal = providerConnectionRefusal();
   let candidateCalls = 0;
-  let criticCalls = 0;
+  let rawCalls = 0;
+  const client = {
+    chat: {
+      completions: {
+        create: async () => {
+          rawCalls += 1;
+          throw connectionRefusal;
+        },
+      },
+    },
+  };
+  attachLearnTokenUsageTracking(client, () => undefined, {
+    retryTransport: {
+      verifyConnectionRecovery: async (input) => {
+        recoveryVerifications.push(input);
+        return {
+          recovered: false,
+          probeCount: 2,
+          outcome: "service_still_unavailable",
+        };
+      },
+      onRejected: (rejection) => rejectedTransports.push(rejection),
+    },
+  });
   try {
-    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
-      candidateProvider: async () => {
-        candidateCalls += 1;
-        return candidate();
-      },
-      criticProvider: async () => {
-        criticCalls += 1;
-        throw providerTimeout();
-      },
-    }));
-
-    assert.equal(result.manifest, null);
-    assert.equal(result.failureCategory, "critic");
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        client,
+        candidateProvider: async () => {
+          candidateCalls += 1;
+          return candidate();
+        },
+      })),
+      (error) => error === connectionRefusal,
+    );
     assert.equal(candidateCalls, 1);
-    assert.equal(
-      criticCalls,
-      GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS *
-        GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_MAX_ATTEMPTS,
-    );
+    assert.equal(rawCalls, 1);
+    assert.equal(recoveryVerifications.length, 0);
+    assert.deepEqual(rejectedTransports, [{
+      attempt: 1,
+      maxAttempts: 1,
+      rejectionCause: "replay_disabled",
+      retryCause: "connection_failure",
+    }]);
     assert.deepEqual(
-      events.filter(({ type }) => type === "visual_critic_transport_retry").map(({ data }) => ({
+      events.filter(({ type }) => type === "visual_critic_provider_failed").map(({ data }) => ({
         attempt: data.attempt,
         criticAttempt: data.criticAttempt,
-        criticTransportSession: data.criticTransportSession,
+        duplicateRequestSuppressed: data.duplicateRequestSuppressed,
       })),
-      [
-        { attempt: 1, criticAttempt: 1, criticTransportSession: 1 },
-        { attempt: 1, criticAttempt: 1, criticTransportSession: 1 },
-        { attempt: 1, criticAttempt: 1, criticTransportSession: 2 },
-        { attempt: 1, criticAttempt: 1, criticTransportSession: 2 },
-      ],
-    );
-    assert.deepEqual(
-      events.filter(({ type }) => type === "visual_critic_transport_exhausted").map(({ data }) => ({
-        attempt: data.attempt,
-        criticAttempt: data.criticAttempt,
-        criticTransportSession: data.criticTransportSession,
-      })),
-      [
-        { attempt: 1, criticAttempt: 1, criticTransportSession: 1 },
-        { attempt: 1, criticAttempt: 1, criticTransportSession: 2 },
-      ],
-    );
-    assert.deepEqual(
-      events.filter(({ type }) => type === "visual_critic_transport_session_retry").map(({ data }) => ({
-        criticTransportSession: data.criticTransportSession,
-        nextCriticTransportSession: data.nextCriticTransportSession,
-        cooldownMs: data.cooldownMs,
-      })),
-      [{ criticTransportSession: 1, nextCriticTransportSession: 2, cooldownMs: 0 }],
-    );
-    assert.equal(
-      events.filter(({ type }) => type === "visual_critic_transport_session_resumed").length,
-      1,
+      [{
+        attempt: 1,
+        criticAttempt: 1,
+        duplicateRequestSuppressed: true,
+      }],
     );
     assert.equal(events.some(({ type }) => type === "visual_critic_retry"), false);
     assert.equal(events.some(({ type }) => type === "visual_critic_failed"), false);
@@ -1151,24 +1679,22 @@ test("custom critic AbortError caused by the owned deadline returns a truthful c
   let candidateCalls = 0;
   let criticCalls = 0;
   try {
-    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
-      candidateProvider: async () => {
-        candidateCalls += 1;
-        return candidate();
-      },
-      criticProvider: async ({ signal }) => {
-        criticCalls += 1;
-        return exhaustOwnedDeadlineWithNestedProviderAbort(signal);
-      },
-      criticTransportSessionMaxAttempts: 1,
-    }));
-
-    assert.equal(result.manifest, null);
-    assert.equal(result.failureCategory, "critic");
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        candidateProvider: async () => {
+          candidateCalls += 1;
+          return candidate();
+        },
+        criticProvider: async ({ signal }) => {
+          criticCalls += 1;
+          return exhaustOwnedDeadlineWithNestedProviderAbort(signal);
+        },
+      })),
+      (error) => error.code === "BREADBOARD_GENERATED_VISUAL_REQUEST_TIMEOUT",
+    );
     assert.equal(candidateCalls, 1);
     assert.equal(criticCalls, 1, "the exhausted logical request must not become a critic-protocol retry");
-    assert.match(result.errors.join("; "), /transport exhausted 3 identical-request attempts/i);
-    assert.equal(events.filter(({ type }) => type === "visual_critic_transport_exhausted").length, 1);
+    assert.equal(events.filter(({ type }) => type === "visual_critic_provider_failed").length, 1);
     assert.equal(events.some(({ type }) => type === "visual_critic_failed"), false);
     assert.equal(events.some(({ type }) => type === "visual_critic_retry"), false);
     assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
@@ -1197,7 +1723,6 @@ test("critic prompt requires topology/domain comparison and legacy approval ente
       completions: {
         create: async (request) => {
           requests.push(request);
-          if (requests.length === 1) throw providerTimeout();
           return {
             choices: [{ message: { content: JSON.stringify(replies.shift()) } }],
             usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
@@ -1214,8 +1739,7 @@ test("critic prompt requires topology/domain comparison and legacy approval ente
     }));
 
     assert.equal(result.manifest?.generationAttempt, 1, result.errors.join("; "));
-    assert.equal(requests.length, 3);
-    assert.deepEqual(requests[1], requests[0]);
+    assert.equal(requests.length, 2);
     const system = requests[0].messages.find(({ role }) => role === "system").content;
     assert.match(system, /actual topology and domain against its labels, explanation, interaction contract, and source evidence/i);
     assert.match(system, /centered\/full from bounded\/clipped\/one-sided\/sector geometry/i);
@@ -1224,6 +1748,8 @@ test("critic prompt requires topology/domain comparison and legacy approval ente
     assert.match(system, /do not require a polygon merely because that face is finite/i);
     assert.match(system, /Diagram node\.value is optional and must remain an expression object.*never a bare numeric value/i);
     assert.match(system, /do not request a derived formula or deep expression tree inside a diagram node value/i);
+    assert.match(system, /final learnerAction promises a selected, highlighted, emphasized, or distinguished branch.*diagram edge\.strength expressions for every exact select option.*single option.*exclusive emphasized branch.*combined\/both\/all\/sum\/total\/\+ option.*union.*pairwise-distinct rendered signatures/i);
+    assert.match(system, /edge\.strength is the supported authored mechanism.*rather than CSS, runtime, or control-contract changes/i);
     assert.match(system, /Do not request a long derived formula inside any spatial coordinate either.*simple literal\/input\/one-operation geometry/i);
     assert.match(system, /Never request min or max as a binary expression operator/i);
     assert.match(system, /Cylinder and cone primitives are bounded capped closed solids.*ordered polygon facets.*open, uncapped, clipped, one-sided, or sector surface/i);
@@ -1236,11 +1762,14 @@ test("critic prompt requires topology/domain comparison and legacy approval ente
     assert.match(system, /representative samples of a larger or continuous domain/i);
     assert.match(system, /whole-domain aggregate that is constructed or implied as their exact finite subtotal/i);
     assert.match(system, /part of both sourceClaimsAndUnits and primitiveTopologyAndDomain/i);
+    assert.match(system, /displayed direction is multiplied by an uncontrolled signed scalar.*underlying term direction.*fixed-sign assumption.*opposite-sign reversal.*neutral labels.*sign-dependent reversal/i);
     assert.match(system, /input, then commit, then reveal\/evaluate order/i);
     assert.match(system, /reveals or evaluates the outcome before commitment/i);
     assert.match(system, /no retained hidden-state snapshot/i);
     assert.match(system, /complete bounded inventory of every blocking revision/i);
     assert.match(system, /immutableContract controls and outputs are planner-owned/i);
+    assert.match(system, /trusted runtime renders every exact immutable control before numeric outputs and observable scenes.*runtimeEvidence verifies DOM order and rendered mobile visibility.*candidate cannot author control placement/i);
+    assert.match(system, /Do not request a duplicate selector, scene-embedded control, CSS, or runtime ordering change/i);
     assert.match(system, /sourceCode\/SDK-feasible/i);
     assert.match(system, /never request a contract, planner, lesson, route, renderer, runtime, CSS, or unavailable SDK mutation/i);
     assert.match(system, /bounded representative evidence rather than proof of complete or unshown select-state coverage/i);
@@ -1278,10 +1807,9 @@ test("critic prompt requires topology/domain comparison and legacy approval ente
       assert.equal(scoreSchema.minimum, 0);
       assert.equal(scoreSchema.maximum, 1);
     }
-    assert.equal(events.filter(({ type }) => type === "visual_critic_transport_retry").length, 1);
     assert.equal(events.filter(({ type }) => type === "visual_critic_retry").length, 1);
-    assert.match(requests[2].messages.at(-1).content, /previous review was discarded/i);
-    assert.match(requests[2].messages.at(-1).content, /primitiveTopologyAndDomain/i);
+    assert.match(requests[1].messages.at(-1).content, /previous review was discarded/i);
+    assert.match(requests[1].messages.at(-1).content, /primitiveTopologyAndDomain/i);
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });
   }
@@ -1332,14 +1860,18 @@ test("critic rejects an approval that also requests changes", () => {
   assert.match(diagnostics.reason, /approved the visual while requesting changes/i);
 });
 
-test("tracked Learn client owns restart retries without a generated-visual 6x3 expansion", async () => {
+test("tracked Learn critic makes one raw call after an ambiguous reset", async () => {
   const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-tracked-transport-"));
   const events = [];
   const usageEvents = [];
   const rawBodies = [];
   const rawOptions = [];
+  const transportAttempts = [];
+  const rejectedTransports = [];
+  const recoveryVerifications = [];
   const connectionFailure = Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
   const client = {
+    baseURL: "http://provider.invalid/v1",
     chat: {
       completions: {
         create: async (body, options) => {
@@ -1353,42 +1885,146 @@ test("tracked Learn client owns restart retries without a generated-visual 6x3 e
   attachLearnTokenUsageTracking(
     client,
     (event) => usageEvents.push(event),
-    { retry502: { sleep: async () => undefined } },
-  );
-  let criticCalls = 0;
-  try {
-    const result = await createGeneratedVisualization(baseInput(gardenDir, events, {
-      client,
-      criticProvider: async () => {
-        criticCalls += 1;
-        return approvedCritic();
+    {
+      retryTransport: {
+        verifyConnectionRecovery: async (input) => {
+          recoveryVerifications.push(input);
+          return {
+            recovered: false,
+            probeCount: 3,
+            outcome: "no_available_account",
+            httpStatus: 200,
+          };
+        },
+        onAttempt: (attempt) => transportAttempts.push(attempt),
+        onRejected: (rejection) => rejectedTransports.push(rejection),
       },
-    }));
-
-    assert.equal(result.manifest, null);
-    assert.equal(result.failureCategory, "generation");
-    assert.equal(rawBodies.length, 6, "the tracked client owns exactly its six raw transport attempts");
-    rawBodies.slice(1).forEach((body) => assert.equal(body, rawBodies[0]));
-    rawOptions.slice(1).forEach((options) => assert.equal(options, rawOptions[0]));
-    assert.equal(
-      rawOptions[0].timeout,
-      GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS,
+    },
+  );
+  try {
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        client,
+        candidateProvider: async () => candidate(),
+      })),
+      (error) => error === connectionFailure,
     );
+    assert.equal(rawBodies.length, 1, "unverified recovery cannot authorize a replay");
+    assert.equal(rawOptions.length, 1);
+    assert.equal(rawOptions[0].timeout, undefined);
+    assert.ok(rawOptions[0].signal instanceof AbortSignal);
     assert.equal(rawOptions[0].maxRetries, 0);
     assert.deepEqual(usageEvents.map(({ type }) => type), ["started", "completed"]);
     assert.equal(usageEvents[1].usage, null);
-    assert.equal(criticCalls, 0);
-    assert.equal(events.some(({ type }) => type === "visual_generation_transport_retry"), false);
-    const exhaustion = events.filter(({ type }) => type === "visual_generation_transport_exhausted");
+    assert.equal(recoveryVerifications.length, 0);
+    assert.deepEqual(transportAttempts.map(({ attempt }) => attempt), [1]);
+    assert.deepEqual(rejectedTransports, [{
+      attempt: 1,
+      maxAttempts: 1,
+      rejectionCause: "replay_disabled",
+      retryCause: "connection_failure",
+    }]);
+    const exhaustion = events.filter(({ type }) => type === "visual_critic_provider_failed");
     assert.equal(exhaustion.length, 1);
     assert.equal(exhaustion[0].data.attempt, 1);
-    assert.equal(exhaustion[0].data.transportRetryOwner, "upstream_client");
+    assert.equal(exhaustion[0].data.duplicateRequestSuppressed, true);
     assert.equal(events.filter(({ type }) => type === "visual_generation_started").length, 1);
     assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
     assert.equal(events.some(({ type }) => type === "visual_critic_completed"), false);
     assert.equal(events.some(({ type }) => type === "visual_published"), false);
     assert.equal(events.some(({ type }) => type === "visual_fallback_used"), false);
-    assert.match(result.errors.join("; "), /upstream provider transport retries were exhausted/i);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("tracked Learn author never replays exact refusal even when recovery would verify", async () => {
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-tracked-replay-exhaustion-"));
+  const events = [];
+  const usageEvents = [];
+  const rawBodies = [];
+  const rawOptions = [];
+  const transportAttempts = [];
+  const rejectedTransports = [];
+  const recoveryVerifications = [];
+  const connectionRefusal = Object.assign(new Error("listener refused request"), {
+    code: "ECONNREFUSED",
+  });
+  const client = {
+    baseURL: "http://provider.invalid/v1",
+    chat: {
+      completions: {
+        create: async (body, options) => {
+          rawBodies.push(body);
+          rawOptions.push(options);
+          throw connectionRefusal;
+        },
+      },
+    },
+  };
+  attachLearnTokenUsageTracking(
+    client,
+    (event) => usageEvents.push(event),
+    {
+      retryTransport: {
+        verifyConnectionRecovery: async (input) => {
+          recoveryVerifications.push(input);
+          return {
+            id: "generation-health-receipt",
+            evidence: "model_health_200_with_available_account",
+          };
+        },
+        onAttempt: (attempt) => transportAttempts.push(attempt),
+        onRejected: (rejection) => rejectedTransports.push(rejection),
+      },
+    },
+  );
+  let criticCalls = 0;
+  try {
+    await assert.rejects(
+      createGeneratedVisualization(baseInput(gardenDir, events, {
+        client,
+        criticProvider: async () => {
+          criticCalls += 1;
+          return approvedCritic();
+        },
+      })),
+      (error) => error === connectionRefusal,
+    );
+    assert.equal(rawBodies.length, 1);
+    assert.ok(rawOptions.every(({ timeout }) => timeout === undefined));
+    assert.ok(rawOptions.every(({ signal }) => signal instanceof AbortSignal));
+    assert.ok(rawOptions.every(({ maxRetries }) => maxRetries === 0));
+    assert.equal(recoveryVerifications.length, 0);
+    assert.deepEqual(
+      transportAttempts.map(({ attempt, maxAttempts, retryCause }) => ({
+        attempt,
+        maxAttempts,
+        retryCause,
+      })),
+      [
+        { attempt: 1, maxAttempts: 1, retryCause: undefined },
+      ],
+    );
+    assert.deepEqual(rejectedTransports, [{
+      attempt: 1,
+      maxAttempts: 1,
+      rejectionCause: "replay_disabled",
+      retryCause: "connection_failure",
+    }]);
+    assert.deepEqual(usageEvents.map(({ type }) => type), ["started", "completed"]);
+    assert.equal(usageEvents[1].usage, null);
+    assert.equal(criticCalls, 0);
+    const exhaustion = events.filter(({ type }) => type === "visual_generation_provider_failed");
+    assert.equal(exhaustion.length, 1);
+    assert.equal(exhaustion[0].data.attempt, 1);
+    assert.equal(exhaustion[0].data.providerInvocations, 1);
+    assert.equal(exhaustion[0].data.duplicateRequestSuppressed, true);
+    assert.equal(events.filter(({ type }) => type === "visual_generation_started").length, 1);
+    assert.equal(events.some(({ type }) => type === "visual_repair_started"), false);
+    assert.equal(events.some(({ type }) => type === "visual_critic_completed"), false);
+    assert.equal(events.some(({ type }) => type === "visual_published"), false);
+    assert.equal(events.some(({ type }) => type === "visual_fallback_used"), false);
   } finally {
     fs.rmSync(gardenDir, { recursive: true, force: true });
   }

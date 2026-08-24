@@ -65,15 +65,42 @@ export async function findFreePort(host = "127.0.0.1"): Promise<number> {
 }
 
 export async function allocatePort(preferred: number, taken: Set<number>): Promise<number> {
-  if (!taken.has(preferred) && (await isPortFree(preferred))) {
-    taken.add(preferred);
-    return preferred;
+  return (await allocatePortOrAdopt(preferred, taken)).port;
+}
+
+/**
+ * Allocate a port, or keep the preferred one because the service is already
+ * running on it.
+ *
+ * Relocating on conflict is right for a port squatted by something unrelated,
+ * and wrong for a port held by the very service we are about to start: that
+ * turns "already running" into "now running twice". `identify` draws the line —
+ * it is called only when the preferred port is occupied, and answers whether
+ * the occupant is an instance of this service that we can use (see
+ * `service-adoption.ts`). When it is, the caller keeps the preferred port and
+ * adopts the running process instead of spawning a second one; when it is not,
+ * the OS-assigned fallback behaves exactly as it always has.
+ */
+export async function allocatePortOrAdopt(
+  preferred: number,
+  taken: Set<number>,
+  identify?: (port: number) => Promise<boolean>,
+): Promise<{ port: number; adopt: boolean }> {
+  if (!taken.has(preferred)) {
+    if (await isPortFree(preferred)) {
+      taken.add(preferred);
+      return { port: preferred, adopt: false };
+    }
+    if (identify && (await identify(preferred))) {
+      taken.add(preferred);
+      return { port: preferred, adopt: true };
+    }
   }
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const port = await findFreePort();
     if (!taken.has(port)) {
       taken.add(port);
-      return port;
+      return { port, adopt: false };
     }
   }
   throw new Error(`Could not allocate a free loopback port (preferred ${preferred})`);

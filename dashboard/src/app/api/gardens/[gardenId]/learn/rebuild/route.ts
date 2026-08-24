@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import {
-  getLearnStatusSnapshot,
-  LearnPipelineConflictError,
-  rebuildEntireGarden,
-} from "@/lib/learn";
 import { InvalidLearnOperationRequestError, isFullRebuildRequest, parseStartLearnOperationRequest } from "@/lib/learn-operation-mode";
-import { createChatmockClient } from "@/lib/knowledge";
-import { handOffLearnTask } from "@/lib/learn-background";
+import { executeLearnOperationForRoute } from "breadboard-learn-operation-runtime";
+import {
+  InvalidLearnRouteBodyError,
+  isLearnRouteConflict,
+  readLearnRouteJsonObject,
+} from "@/lib/learn-route-errors";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 import { selectedModelForUser } from "@/lib/selected-model";
 
@@ -22,7 +21,7 @@ export async function POST(
     const { userId, cluster } = await requireOwnedClusterFromSlug(gardenId);
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) return NextResponse.json({ error: "QUARTZ_CONTENT_PATH not configured" }, { status: 500 });
-    const body = await request.json().catch(() => ({}));
+    const body = await readLearnRouteJsonObject(request);
     let operation;
     try {
       operation = parseStartLearnOperationRequest(cluster.slug, body);
@@ -41,21 +40,26 @@ export async function POST(
         ? body.syllabusSourceId.trim()
         : undefined;
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const client = createChatmockClient(baseURL);
-    const execution = await handOffLearnTask(rebuildEntireGarden(cluster.slug, {
-      userId, client, contentPath, includedSourceIds, syllabusSourceId,
-      model: selectedModelForUser(userId),
+    const model = selectedModelForUser(userId);
+    const execution = await executeLearnOperationForRoute({
+      operation: "rebuild",
+      gardenId: cluster.slug,
+      userId,
+      contentPath,
+      baseURL,
+      model,
+      includedSourceIds,
+      syllabusSourceId,
       sourceOnly: body.sourceOnly !== false,
       includeSourceSnapshots: body.includeSourceSnapshots === true,
-      forceFullRebuild: true,
-    }), `full rebuild for ${cluster.slug}`);
+    }, `full rebuild for ${cluster.slug}`);
     if (execution.accepted) {
       return NextResponse.json(
         {
           success: true,
           accepted: true,
           operation: "full_rebuild",
-          job: getLearnStatusSnapshot({ gardenId: cluster.slug, contentPath }).job,
+          jobId: execution.jobId ?? null,
         },
         { status: 202 },
       );
@@ -66,7 +70,10 @@ export async function POST(
       job: execution.value,
     });
   } catch (error) {
-    if (error instanceof LearnPipelineConflictError) {
+    if (error instanceof InvalidLearnRouteBodyError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (isLearnRouteConflict(error)) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     return routeErrorResponse(error);

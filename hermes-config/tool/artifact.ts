@@ -53,14 +53,24 @@ export const image_generate = tool({
 })
 
 export const read = tool({
-  description: "Read the current content and safe metadata of an artifact in this conversation before revising it.",
+  description: "Read the current content and safe metadata of an artifact before revising it. Native Word and PowerPoint files return anchored editable blocks; XLSX returns anchored cells; imported text returns content.",
   args: { artifactId: tool.schema.string() },
   async execute(args, ctx) { return call(ctx.sessionID, (ctx as { callID?: string }).callID, "artifact_read", args) },
 })
 
 export const update = tool({
-  description: "Replace an artifact's content. Updating a ready artifact creates a traceable new version and preserves the prior version.",
-  args: { artifactId: tool.schema.string(), content: tool.schema.string(), metadata: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional(), sourceSkill: tool.schema.string().optional(), provenance },
+  description: "Replace an artifact's content. Updating a ready artifact creates a traceable new version and preserves the prior version. For native Word, PowerPoint, or XLSX artifacts, first call artifact_read and pass only changed anchored blocks/cells as patches.",
+  args: {
+    artifactId: tool.schema.string(),
+    content: tool.schema.string().optional(),
+    patches: tool.schema.array(tool.schema.object({
+      anchor: tool.schema.string(),
+      text: tool.schema.string(),
+    })).optional(),
+    metadata: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional(),
+    sourceSkill: tool.schema.string().optional(),
+    provenance,
+  },
   async execute(args, ctx) { return call(ctx.sessionID, (ctx as { callID?: string }).callID, "artifact_update", args) },
 })
 

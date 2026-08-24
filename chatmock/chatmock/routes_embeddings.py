@@ -12,6 +12,7 @@ from typing import Any, Dict
 
 from flask import Blueprint, Response, jsonify, make_response, request
 
+from .council.gateway import recoverable_council_passthrough_guard
 from .embeddings import (
     EmbeddingError,
     embed_local,
@@ -22,6 +23,7 @@ from .embeddings import (
     normalize_input,
 )
 from .http import build_cors_headers
+from .learn_strict_route import LearnStrictRouteError, consume_learn_strict_route
 
 embeddings_bp = Blueprint("embeddings", __name__)
 
@@ -46,6 +48,15 @@ def create_embeddings() -> Response:
     if not isinstance(raw, dict):
         return _error(400, "The request body must be a JSON object.")
     payload: Dict[str, Any] = raw
+    try:
+        strict_value = consume_learn_strict_route(payload)
+    except LearnStrictRouteError as exc:
+        return _error(400, str(exc))
+    if strict_value is not None:
+        return _error(409, "Learn strict routing is unsupported on /v1/embeddings.")
+    recovery_guard = recoverable_council_passthrough_guard(payload)
+    if recovery_guard is not None:
+        return recovery_guard
     model = payload.get("model")
 
     try:

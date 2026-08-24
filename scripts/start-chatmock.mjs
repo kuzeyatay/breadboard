@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRootEnv } from "./load-root-env.mjs";
+import { exitIfAlreadyRunning } from "./service-probe.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
@@ -14,6 +15,10 @@ const python = process.platform === "win32" ? "python" : "python3";
 const port = /^\d+$/.test(process.env.CHATMOCK_PORT ?? "")
   ? process.env.CHATMOCK_PORT
   : "8765";
+
+// Another launcher (the desktop app, a second terminal) may already be
+// serving on this port; a second ChatMock would only lose the race to bind it.
+await exitIfAlreadyRunning("chatmock", { url: `http://127.0.0.1:${port}/health` });
 
 const child = spawn(
   python,

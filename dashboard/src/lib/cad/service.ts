@@ -9,6 +9,10 @@
 // the desktop supervisor or the dev launcher.
 
 import net from "node:net";
+import {
+  SupervisorResourceExhaustedError,
+  withServiceLease,
+} from "@/lib/supervisor-control";
 import { cadBaseUrl, cadServiceSecret } from "./config.ts";
 import { CadServiceError } from "./errors.ts";
 
@@ -196,7 +200,7 @@ async function call(
   const onAbort = () => controller.abort();
   init.signal?.addEventListener("abort", onAbort);
   try {
-    const response = await fetch(`${endpoint.baseUrl}${path}`, {
+    const perform = async () => fetch(`${endpoint.baseUrl}${path}`, {
       method: init.method,
       headers: {
         authorization: `Bearer ${endpoint.secret}`,
@@ -205,6 +209,9 @@ async function call(
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       signal: controller.signal,
     });
+    const response = path === "/health"
+      ? await perform()
+      : await withServiceLease("cad", "cad-task", perform);
     const text = await response.text();
     let payload: unknown = {};
     try {
@@ -231,6 +238,7 @@ async function call(
     }
     return payload;
   } catch (error) {
+    if (error instanceof SupervisorResourceExhaustedError) throw error;
     if (error instanceof CadServiceError) throw error;
     if (controller.signal.aborted && !init.signal?.aborted) {
       throw new CadServiceError(

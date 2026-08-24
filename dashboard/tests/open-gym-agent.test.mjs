@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  isOpenGymSuperAgentRoutingCandidate,
   openGymUserMessage,
   taskFromOpenGymCommand,
 } from "../src/lib/open-gym/identity.ts";
@@ -22,6 +23,7 @@ import {
   readOpenGymState,
   saveOpenGymProgram,
 } from "../src/lib/open-gym/state.ts";
+import { resolveOpenGymSuperAgentRoute } from "../src/lib/open-gym/routing.ts";
 
 const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = (relative) => fs.readFileSync(path.join(dashboardRoot, relative), "utf8");
@@ -41,6 +43,43 @@ test("the integration reads and searches the cloned openGym catalogue", async ()
   assert.match(matches[0].n, /bench press/i);
   assert.ok(matches[0].st.length > 0);
   assert.match(matches[0].gif, /\.gif$/i);
+
+  const curls = await searchOpenGymCatalog("how do i do biceps curls", { limit: 5 });
+  assert.equal(curls[0].id, "0294");
+  assert.equal(curls[0].n, "dumbbell biceps curl");
+});
+
+test("Super Agent routing is deterministic across exercise phrasing", async () => {
+  const exerciseRequests = [
+    "how do I do biceps curls?",
+    "show me proper form for a barbell bench press",
+    "can you demonstrate a dumbbell lateral raise",
+    "teach me the correct way to squat",
+    "what is the right way to do a Romanian deadlift?",
+    "walk me through a cable row",
+    "give me setup cues for a goblet squat",
+  ];
+  for (const request of exerciseRequests) {
+    assert.equal(isOpenGymSuperAgentRoutingCandidate(request), true);
+    const decision = await resolveOpenGymSuperAgentRoute(request);
+    assert.equal(decision.route, true, request);
+    assert.equal(decision.reason, "registered_exercise", request);
+    assert.ok(decision.exercise?.id, request);
+  }
+
+  const program = await resolveOpenGymSuperAgentRoute(
+    "build a three-day strength workout plan",
+  );
+  assert.deepEqual(program, { route: true, reason: "fitness_program" });
+
+  for (const request of [
+    "show me how to bake sourdough bread",
+    "how do I execute this SQL query?",
+    "make me a Python program",
+    "what muscles do biceps curls work?",
+  ]) {
+    assert.equal((await resolveOpenGymSuperAgentRoute(request)).route, false, request);
+  }
 });
 
 test("animation references survive transcript persistence", () => {
@@ -59,6 +98,25 @@ test("animation references survive transcript persistence", () => {
     bodyPart: "chest",
     equipment: "barbell",
   }]);
+
+  // Markdown and model handoffs are allowed to normalize comments. The
+  // metadata stays private and parseable even when whitespace is inserted.
+  const normalized = stored.replace("<!--OPEN_GYM", "<!--\n  OPEN_GYM");
+  const normalizedResult = parseOpenGymResult(normalized);
+  assert.equal(normalizedResult.content, "## Bench press\n\nDo it with control.");
+  assert.equal(normalizedResult.animations[0].id, "0025");
+  assert.doesNotMatch(normalizedResult.content, /OPEN_GYM_ANIMATIONS/);
+
+  const bareResult = parseOpenGymResult(
+    stored.replace("<!--", "").replace("-->", ""),
+  );
+  assert.equal(bareResult.content, "## Bench press\n\nDo it with control.");
+  assert.equal(bareResult.animations[0].id, "0025");
+
+  const leaked = parseOpenGymResult(
+    "OPEN_GYM_ANIMATIONS:%5Bbroken%5D\n\nThe answer remains visible.",
+  );
+  assert.equal(leaked.content, "The answer remains visible.");
 });
 
 test("a registered exercise how-to completes without a model and carries its animation", async () => {
@@ -69,7 +127,7 @@ test("a registered exercise how-to completes without a model and carries its ani
     const manager = await import("../src/lib/open-gym/run-manager.ts");
     const run = manager.startRun({
       userId: 77,
-      task: "show me how to do a barbell bench press",
+      task: "how do i do biceps curls",
       model: "not-needed-for-catalogue-technique",
       reasoningEffort: "medium",
       baseUrl: "http://127.0.0.1:1/v1",
@@ -82,8 +140,8 @@ test("a registered exercise how-to completes without a model and carries its ani
     }
     assert.ok(completed, "the deterministic technique run did not finish");
     const result = parseOpenGymResult(String(completed.payload.summary));
-    assert.equal(result.animations[0].id, "0025");
-    assert.match(result.content, /barbell bench press/i);
+    assert.equal(result.animations[0].id, "0294");
+    assert.match(result.content, /dumbbell biceps curl/i);
     assert.match(result.content, /How to do it/);
   } finally {
     if (previous === undefined) delete process.env.OPEN_GYM_AGENT_DATA_DIR;
@@ -123,17 +181,73 @@ test("profile and programs persist per user across reads", async () => {
 
 test("both chat surfaces launch openGym and render its persistent animation card", () => {
   const terminal = source("src/app/components/hermes/dashboard-agent-terminal.tsx");
+  const terminalPanel = source("src/app/components/hermes/agent-runtime-panel.tsx");
   const garden = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");
   const card = source("src/app/components/hermes/inline-open-gym-run.tsx");
   for (const body of [terminal, garden]) {
     assert.match(body, /\/api\/open-gym\/runs/);
     assert.match(body, /kind: "open_gym"|openGymRun:/);
     assert.match(body, /taskFromOpenGymCommand/);
+    assert.match(body, /shouldRouteOpenGymFromSuperAgent/);
+    assert.match(body, /isSuperAgentEnabled\(\)/);
+    assert.match(body, /userContent: text/);
   }
+  const routingClient = source("src/lib/open-gym/routing-client.ts");
+  const routingRoute = source("src/app/api/open-gym/route/route.ts");
+  assert.match(routingClient, /\/api\/open-gym\/route/);
+  assert.match(routingClient, /return true;[\s\S]{0,80}finally/);
+  assert.match(routingRoute, /resolveOpenGymSuperAgentRoute/);
   assert.match(card, /parseOpenGymResult\(persistedContent\)/);
   assert.match(card, /exercises\/\$\{encodeURIComponent\(exercise\.id\)\}\/animation/);
   assert.match(card, /new EventSource\(/);
   assert.match(card, /onerror/);
+  assert.match(terminalPanel, /message\.delegatedAgentRun && !message\.openGymRun/);
+  assert.match(garden, /msg\.delegatedAgentRun && !msg\.openGymRun/);
+  assert.match(
+    terminalPanel,
+    /message\.openGymRun[\s\S]{0,300}persistedContent=\{externalAgentCardContent\(message\)\}/,
+  );
+  assert.match(
+    garden,
+    /msg\.openGymRun[\s\S]{0,300}persistedContent=\{externalAgentCardContent\(msg\)\}/,
+  );
+});
+
+test("Super Agent must delegate exercise demonstrations instead of substituting prose", () => {
+  const superAgent = source("src/lib/hermes/super-agent.ts");
+  const briefs = source("src/lib/hermes/runtime-agent-briefs.ts");
+  assert.match(superAgent, /Exercise demonstrations and workout programs go to openGym/);
+  assert.match(superAgent, /Do not answer with instructions instead/);
+  assert.match(superAgent, /openGym is the presentation-bearing exception/);
+  assert.match(briefs, /Its animation card is part of the user-facing result/);
+});
+
+test("the visible openGym card does not spawn a second Super Agent thinking turn", () => {
+  const terminal = source("src/app/components/hermes/dashboard-agent-terminal.tsx");
+  const terminalPanel = source("src/app/components/hermes/agent-runtime-panel.tsx");
+  const garden = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");
+  for (const body of [terminal, garden]) {
+    assert.match(
+      body,
+      /request\.agentId === OPEN_GYM_AGENT_ID[\s\S]{0,160}awaitedLaunchRef\.current = null/,
+    );
+    assert.match(
+      body,
+      /if \(message\.openGymRun\)[\s\S]{0,180}awaitedLaunchRef\.current = null/,
+    );
+    assert.match(
+      body,
+      /openGymRun[\s\S]{0,260}setPendingLaunchContinuation\(null\)/,
+    );
+  }
+  assert.match(
+    terminalPanel,
+    /message\.delegatedAgentPreamble &&[\s\S]{0,80}!message\.openGymRun/,
+  );
+  assert.match(
+    garden,
+    /msg\.delegatedAgentPreamble && !msg\.openGymRun/,
+  );
 });
 
 test("program artifacts are conversation-scoped and rendered", () => {

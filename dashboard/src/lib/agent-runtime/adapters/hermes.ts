@@ -41,6 +41,11 @@ import {
   HermesRpcErrorResponse,
 } from "../hermes-wire.ts";
 import {
+  acquireServiceLease,
+  releaseSupervisorLease,
+  type SupervisorLease,
+} from "../../supervisor-control.ts";
+import {
   addProxyMcpConnection,
   proxyMcpDiscovery,
   setProxyMcpConnectionConnected,
@@ -48,6 +53,10 @@ import {
 
 const BREADBOARD_TOOLSET = "breadboard";
 const WEB_TOOLSET = "web";
+// Recovers text the compression stage elided from an oversized tool result.
+// Compression happens to any tool's output, so the way back has to be on
+// whenever any tool is.
+const TOKENJUICE_TOOLSET = "tokenjuice";
 const BREADBOARD_AGENT = "breadboard";
 const CHATMOCK_PROVIDER = "chatmock";
 const TURN_RESULT_POLL_MS = 1_000;
@@ -87,6 +96,7 @@ interface HermesSessionState extends RuntimeSession {
   activeTurnText?: string;
   /** Exact turn acknowledged by prompt.submit and therefore safe to recover. */
   submittedTurnId?: string;
+  serviceLease?: SupervisorLease | null;
 }
 
 interface HermesTurnResult {
@@ -294,7 +304,17 @@ export class HermesRuntimeAdapter implements AgentRuntime {
 
   dispose(): void {
     this.client.close();
+    for (const session of this.sessions.values()) {
+      void releaseSupervisorLease(session.serviceLease);
+    }
     this.sessions.clear();
+  }
+
+  private async ensureSessionLease(session?: HermesSessionState): Promise<SupervisorLease | null> {
+    if (session?.serviceLease) return session.serviceLease;
+    const lease = await acquireServiceLease("hermes", "garden-chat");
+    if (session) session.serviceLease = lease;
+    return lease;
   }
 
   async health() {
@@ -386,6 +406,8 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       "agent_loop_run",
       "messaging_send",
       "save_memory",
+      "memory_query",
+      "workflow_propose",
       "document_skill_read",
       "capability_gap",
       "capability_search",
@@ -443,9 +465,12 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       input.model,
       input.model,
     );
-    const created = await this.client.request<HermesSessionCreateResult>(
-      "session.create",
-      {
+    const serviceLease = await this.ensureSessionLease();
+    let created: HermesSessionCreateResult;
+    try {
+      created = await this.client.request<HermesSessionCreateResult>(
+        "session.create",
+        {
         source: "breadboard",
         title: input.title,
         // Hermes itself stays in the isolated runtime directory. Authorized
@@ -459,11 +484,15 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         // provider prompt cache stays stable. Keep read-only web lookup
         // available from session creation; Breadboard's per-turn capability
         // decision still tells the model when current evidence is required.
-        enabled_toolsets: [BREADBOARD_TOOLSET, WEB_TOOLSET],
+        enabled_toolsets: [BREADBOARD_TOOLSET, WEB_TOOLSET, TOKENJUICE_TOOLSET],
         system_prompt: this.systemPrompt(modelIdentity),
         close_on_disconnect: false,
-      },
-    );
+        },
+      );
+    } catch (error) {
+      await releaseSupervisorLease(serviceLease);
+      throw error;
+    }
     if (!created.session_id || !created.stored_session_id) {
       throw new Error("Hermes returned an invalid session response.");
     }
@@ -477,6 +506,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       model: input.model,
       reasoningEffort: input.reasoningEffort,
       modelIdentity,
+      serviceLease,
     };
     this.sessions.set(session.externalSessionId, session);
     return session;
@@ -492,6 +522,8 @@ export class HermesRuntimeAdapter implements AgentRuntime {
   }
 
   async startRun(input: StartRuntimeRunInput): Promise<void> {
+    const session = this.requireSession(input);
+    await this.ensureSessionLease(session);
     const requestedYoloMode = input.yoloMode;
     if (typeof requestedYoloMode === "boolean") {
       await this.setApprovalBypass({
@@ -499,7 +531,6 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         enabled: requestedYoloMode,
       });
     }
-    const session = this.requireSession(input);
     const requestedModel = input.model?.modelID?.trim();
     if (requestedModel && requestedModel !== session.model) {
       // The model id alone. Hermes rejects a `--provider custom` suffix here
@@ -580,6 +611,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     input: StartRuntimeRunInput & { clientRequestId: string },
   ): Promise<void> {
     const session = this.requireSession(input);
+    await this.ensureSessionLease(session);
     const result = await this.client.request<{ status?: string }>(
       "session.steer",
       {
@@ -598,6 +630,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     onConnected?: () => void,
   ): AsyncGenerator<NormalizedAgentEvent, void, unknown> {
     const session = this.requireSession(input);
+    await this.ensureSessionLease(session);
     session.activeTurnId ??= input.messageId;
     session.activeTurnText ??= input.instruction;
     const state = createHermesEventNormalizationState();
@@ -870,6 +903,8 @@ export class HermesRuntimeAdapter implements AgentRuntime {
       streamAbort.abort();
       signal?.removeEventListener("abort", abortStream);
       void rawIterator.return?.();
+      await releaseSupervisorLease(session.serviceLease);
+      session.serviceLease = null;
     }
   }
 
@@ -877,6 +912,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     input: ResolveRuntimeApprovalInput,
   ): Promise<void> {
     const session = this.requireSession(input);
+    await this.ensureSessionLease(session);
     await this.client.request("approval.respond", {
       session_id: session.liveSessionId,
       choice:
@@ -892,6 +928,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     input: RuntimeSessionReference & { enabled: boolean },
   ): Promise<void> {
     const session = this.requireSession(input);
+    await this.ensureSessionLease(session);
     if (input.enabled === session.yoloMode) return;
     // `yolo` is Hermes's session-scoped approval bypass. Reassert both the on
     // and off state so Breadboard never inherits a global/runtime default.
@@ -905,6 +942,7 @@ export class HermesRuntimeAdapter implements AgentRuntime {
 
   async stopRun(input: RuntimeSessionReference): Promise<void> {
     const session = this.requireSession(input);
+    await this.ensureSessionLease(session);
     await this.client.request("session.interrupt", {
       session_id: session.liveSessionId,
     });
@@ -918,6 +956,8 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         session_id: session.liveSessionId,
       });
     } finally {
+      await releaseSupervisorLease(session.serviceLease);
+      session.serviceLease = null;
       this.client.clearSession(session.liveSessionId);
       this.sessions.delete(input.externalSessionId);
     }

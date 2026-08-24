@@ -27,6 +27,7 @@ import {
   GADGET_TOOLS,
   DOCUMENT_SKILL_TOOLS,
   MEMORY_TOOLS,
+  WORKFLOW_PROPOSAL_TOOLS,
   SKILL_LESSON_TOOLS,
   MESSAGING_TOOLS,
   MANIM_TOOLS,
@@ -219,6 +220,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...ARTIFACT_TOOLS,
       ...GADGET_TOOLS,
       ...MEMORY_TOOLS,
+      ...WORKFLOW_PROPOSAL_TOOLS,
       ...SKILL_LESSON_TOOLS,
       ...DOCUMENT_SKILL_TOOLS,
       ...PREMORTEM_TOOLS,
@@ -686,6 +688,13 @@ function buildToolMap(
   // surfaces regardless of the turn's capability class: saving a preference on
   // a plain knowledge turn must work. Anonymous Quartz never receives it.
   for (const tool of MEMORY_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
+  // Proposing an automation is inert until the user accepts it, and the moment
+  // to propose is whenever the agent notices the repetition -- which is not a
+  // capability class of its own. So it follows memory's scope rather than the
+  // turn's, and like memory is never given to anonymous Quartz.
+  for (const tool of WORKFLOW_PROPOSAL_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
   // A lesson is recorded at the moment a skill's guidance turns out to be wrong

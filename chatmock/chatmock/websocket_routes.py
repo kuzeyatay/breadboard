@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
-import ssl
 from typing import Any, Dict
 
-import certifi
 from flask import current_app, request
 from flask_sock import Sock
-from websockets.sync.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
+from .council.gateway import recoverable_council_binding_values
+from .learn_strict_route import LearnStrictRouteError, consume_learn_strict_route
 from .responses_api import (
     ResponsesRequestError,
     extract_client_session_id,
@@ -21,7 +19,11 @@ from .session import (
     note_responses_stream_event,
     prepare_responses_request_for_session,
 )
-from .upstream import build_upstream_headers, build_upstream_websocket_url
+from .upstream import (
+    build_upstream_headers,
+    build_upstream_websocket_url,
+    connect_upstream_websocket,
+)
 from .utils import get_effective_chatgpt_auth
 
 
@@ -46,24 +48,11 @@ def _is_terminal_event(event: Any) -> bool:
     if not isinstance(event, dict):
         return False
     kind = event.get("type")
-    return kind in ("response.completed", "response.failed", "error")
-
-
-def _build_websocket_ssl_context() -> ssl.SSLContext:
-    cafile = (
-        os.getenv("CODEX_CA_CERTIFICATE")
-        or os.getenv("SSL_CERT_FILE")
-        or certifi.where()
-    )
-    return ssl.create_default_context(cafile=cafile)
-
-
-def connect_upstream_websocket(url: str, headers: Dict[str, str]):
-    return websocket_connect(
-        url,
-        additional_headers=headers,
-        open_timeout=15,
-        ssl=_build_websocket_ssl_context(),
+    return kind in (
+        "response.completed",
+        "response.incomplete",
+        "response.failed",
+        "error",
     )
 
 
@@ -106,6 +95,55 @@ def register_websocket_routes(sock: Sock) -> None:
                 if not isinstance(payload, dict):
                     _send_error("Websocket frames must be JSON objects.", status_code=400)
                     break
+
+                try:
+                    strict_value = consume_learn_strict_route(payload)
+                except LearnStrictRouteError as exc:
+                    _send_error(str(exc), status_code=400, code="learn_strict_route_invalid")
+                    return
+                if strict_value is not None:
+                    _send_error(
+                        "Learn strict routing is unsupported over websocket transport.",
+                        status_code=409,
+                        code="learn_strict_route_unsupported",
+                    )
+                    return
+
+                # The websocket proxy has no durable receipt/finalization
+                # boundary. Parse the same strict aliases as both HTTP Council
+                # entrypoints before auth, upstream connect, or send so a
+                # recoverable request can never silently cross this transport.
+                recoverable_binding, binding_error = recoverable_council_binding_values(
+                    payload
+                )
+                if binding_error is not None:
+                    body = binding_error.get_json(silent=True) or {}
+                    detail = body.get("error") if isinstance(body, dict) else None
+                    message = (
+                        detail.get("message")
+                        if isinstance(detail, dict)
+                        and isinstance(detail.get("message"), str)
+                        else "Invalid recoverable Council request binding."
+                    )
+                    code = (
+                        detail.get("code")
+                        if isinstance(detail, dict)
+                        and isinstance(detail.get("code"), str)
+                        else None
+                    )
+                    _send_error(
+                        message,
+                        status_code=binding_error.status_code,
+                        code=code,
+                    )
+                    return
+                if recoverable_binding is not None:
+                    _send_error(
+                        "Recoverable Council requests are not supported over websocket transport.",
+                        status_code=409,
+                        code="recoverable_transport_unsupported",
+                    )
+                    return
 
                 client_session_id = extract_client_session_id(request.headers)
                 outbound_text = incoming_text

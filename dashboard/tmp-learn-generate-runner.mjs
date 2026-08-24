@@ -47,11 +47,22 @@ if (status.confirmedLearningMapId !== learningMapId) {
     "Generate requires the current confirmed Learning Map and matching source selection.",
   );
 }
+const expectedModel = status.confirmedLearningMapModel?.trim();
+if (!expectedModel) {
+  throw new Error(
+    "The confirmed Learning Map is no longer bound to its exact planning model. Run Learn planning again before generating lessons.",
+  );
+}
+const model = selectedModelForUser(userId);
+if (model !== expectedModel) {
+  throw new Error(
+    "The selected Learn model does not match the model that planned this confirmed Learning Map. Restore the planning model, or run Learn planning again with the current selection.",
+  );
+}
 
 const { baseURL } = resolveChatmockBaseUrl(
   new Request(`http://127.0.0.1:3000/api/gardens/${gardenId}/learn/generate`),
 );
-const model = selectedModelForUser(userId);
 const client = createChatmockClient(baseURL);
 
 console.log(

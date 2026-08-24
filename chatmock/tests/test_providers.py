@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import requests
+
 from chatmock import failover
 from chatmock.app import create_app
 from chatmock.council.policy import CouncilConfig
@@ -89,6 +91,194 @@ class ProviderTransportTests(unittest.TestCase):
 
         self.assertIs(result, response)
         self.assertEqual(post.call_count, 1)
+
+    def test_unqualified_server_errors_are_returned_without_replay(self) -> None:
+        for status in (408, 500, 502, 503, 504):
+            with self.subTest(status=status):
+                failed = FakeResponse(status_code=status)
+                success = FakeResponse(status_code=200)
+                with (
+                    patch.dict(
+                        os.environ,
+                        {
+                            "CHATMOCK_PROVIDER_MAX_ATTEMPTS": "3",
+                            "CHATMOCK_PROVIDER_RETRY_BACKOFF_SECONDS": "0",
+                        },
+                        clear=False,
+                    ),
+                    patch.object(
+                        transport.requests,
+                        "post",
+                        side_effect=[failed, success],
+                    ) as post,
+                ):
+                    result = transport.post_with_retry(
+                        "http://127.0.0.1:8317/v1/chat/completions",
+                        headers={"Content-Type": "application/json"},
+                        payload={"model": "test"},
+                        stream=False,
+                        provider_id="cliproxy",
+                    )
+
+                self.assertIs(result, failed)
+                self.assertEqual(post.call_count, 1)
+
+    def test_read_timeout_fails_closed_after_one_post(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "CHATMOCK_PROVIDER_MAX_ATTEMPTS": "3",
+                    "CHATMOCK_PROVIDER_RETRY_BACKOFF_SECONDS": "0",
+                },
+                clear=False,
+            ),
+            patch.object(
+                transport.requests,
+                "post",
+                side_effect=[requests.ReadTimeout("secret"), FakeResponse()],
+            ) as post,
+        ):
+            with self.assertRaises(ProviderError) as raised:
+                transport.post_with_retry(
+                    "http://127.0.0.1:8317/v1/chat/completions",
+                    headers={"Content-Type": "application/json"},
+                    payload={"model": "test"},
+                    stream=False,
+                    provider_id="cliproxy",
+                )
+
+        self.assertEqual(post.call_count, 1)
+        self.assertFalse(raised.exception.replay_safe)
+        self.assertEqual(raised.exception.phase, "transport")
+        self.assertNotIn("secret", str(raised.exception))
+
+    def test_strict_connection_refusal_may_retry_before_send(self) -> None:
+        success = FakeResponse(status_code=200)
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "CHATMOCK_PROVIDER_MAX_ATTEMPTS": "3",
+                    "CHATMOCK_PROVIDER_RETRY_BACKOFF_SECONDS": "0",
+                },
+                clear=False,
+            ),
+            patch.object(
+                transport.requests,
+                "post",
+                side_effect=[
+                    requests.ConnectionError(
+                        ConnectionRefusedError(10061, "connection refused")
+                    ),
+                    success,
+                ],
+            ) as post,
+        ):
+            result = transport.post_with_retry(
+                "http://127.0.0.1:8317/v1/chat/completions",
+                headers={"Content-Type": "application/json"},
+                payload={"model": "test"},
+                stream=False,
+                provider_id="cliproxy",
+            )
+
+        self.assertIs(result, success)
+        self.assertEqual(post.call_count, 2)
+
+    def test_learn_strict_external_transport_disables_preconnect_retry(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "CHATMOCK_PROVIDER_MAX_ATTEMPTS": "3",
+                    "CHATMOCK_PROVIDER_RETRY_BACKOFF_SECONDS": "0",
+                },
+                clear=False,
+            ),
+            patch.object(
+                transport.requests,
+                "post",
+                side_effect=[
+                    requests.ConnectionError(
+                        ConnectionRefusedError(10061, "connection refused")
+                    ),
+                    FakeResponse(status_code=200),
+                ],
+            ) as post,
+        ):
+            with self.assertRaises(ProviderError):
+                transport.post_with_retry(
+                    "http://127.0.0.1:8317/v1/chat/completions",
+                    headers={"Content-Type": "application/json"},
+                    payload={"model": "test"},
+                    stream=False,
+                    provider_id="cliproxy",
+                    allow_preconnect_retry=False,
+                )
+        self.assertEqual(post.call_count, 1)
+
+    def test_nested_connection_reset_does_not_inherit_refusal_safety(self) -> None:
+        nested = requests.ConnectionError(
+            requests.ConnectionError(ConnectionResetError(10054, "reset"))
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "CHATMOCK_PROVIDER_MAX_ATTEMPTS": "3",
+                    "CHATMOCK_PROVIDER_RETRY_BACKOFF_SECONDS": "0",
+                },
+                clear=False,
+            ),
+            patch.object(
+                transport.requests,
+                "post",
+                side_effect=[nested, FakeResponse()],
+            ) as post,
+        ):
+            with self.assertRaises(ProviderError) as raised:
+                transport.post_with_retry(
+                    "http://127.0.0.1:8317/v1/chat/completions",
+                    headers={"Content-Type": "application/json"},
+                    payload={"model": "test"},
+                    stream=False,
+                    provider_id="cliproxy",
+                )
+
+        self.assertEqual(post.call_count, 1)
+        self.assertFalse(raised.exception.replay_safe)
+
+    def test_overdeep_refusal_chain_fails_closed_when_not_fully_inspected(self) -> None:
+        nested: BaseException = ConnectionRefusedError(10061, "refused")
+        for _ in range(35):
+            nested = requests.ConnectionError(nested)
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "CHATMOCK_PROVIDER_MAX_ATTEMPTS": "3",
+                    "CHATMOCK_PROVIDER_RETRY_BACKOFF_SECONDS": "0",
+                },
+                clear=False,
+            ),
+            patch.object(
+                transport.requests,
+                "post",
+                side_effect=[nested, FakeResponse()],
+            ) as post,
+        ):
+            with self.assertRaises(ProviderError) as raised:
+                transport.post_with_retry(
+                    "http://127.0.0.1:8317/v1/chat/completions",
+                    headers={"Content-Type": "application/json"},
+                    payload={"model": "test"},
+                    stream=False,
+                    provider_id="cliproxy",
+                )
+
+        self.assertEqual(post.call_count, 1)
+        self.assertFalse(raised.exception.replay_safe)
 
 
 class ProviderStoreTests(unittest.TestCase):
@@ -435,6 +625,28 @@ class ProviderRouterTests(unittest.TestCase):
         self.assertEqual(route["outcome"], "succeeded")
         self.assertFalse(route["fallback"])
 
+    def test_strict_router_defensively_disables_account_and_transport_retry(self) -> None:
+        store.upsert_provider("anthropic", api_key="sk-ant-key")
+        router = ProviderRouter(CouncilConfig())
+        call = ModelCall(
+            model="anthropic/claude-opus-4-5",
+            messages=[{"role": "user", "content": "hi"}],
+            allow_account_failover=True,
+            allow_transport_retry=True,
+        )
+        captured: dict[str, bool] = {}
+
+        def fake_call_model(routed_call, _credentials, _upstream_model):
+            captured["account"] = routed_call.allow_account_failover
+            captured["transport"] = routed_call.allow_transport_retry
+            return "answer"
+
+        with patch.object(anthropic, "call_model", side_effect=fake_call_model) as provider_call:
+            self.assertEqual(router.call_model_strict(call), "answer")
+
+        self.assertEqual(captured, {"account": False, "transport": False})
+        self.assertEqual(provider_call.call_count, 1)
+
     def test_council_router_records_quota_failover_and_serving_model(self) -> None:
         store.upsert_provider("anthropic", api_key="sk-ant-key")
 
@@ -453,7 +665,7 @@ class ProviderRouterTests(unittest.TestCase):
         with patch.object(
             anthropic,
             "call_model",
-            side_effect=ProviderError("usage limit reached"),
+            side_effect=ProviderError("usage limit reached", replay_safe=True),
         ):
             self.assertEqual(router.call_model(call), "chatgpt fallback")
 
@@ -557,6 +769,27 @@ class OpenAICompatibleTests(unittest.TestCase):
         self.assertEqual(call.reasoning_out, "the thinking")
         self.assertEqual(call.usage_out.total_tokens, 14)
 
+    def test_strict_council_call_disables_external_transport_retry(self) -> None:
+        body = {
+            "choices": [{"message": {"role": "assistant", "content": "answer"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        call = ModelCall(
+            model="groq/llama",
+            messages=[{"role": "user", "content": "hi"}],
+            allow_transport_retry=False,
+        )
+        with patch.object(
+            openai_compatible,
+            "request_chat",
+            return_value=FakeResponse(body=body),
+        ) as request_chat:
+            self.assertEqual(
+                openai_compatible.call_model(call, self._credentials(), "llama-3.3-70b"),
+                "answer",
+            )
+        self.assertIs(request_chat.call_args.kwargs["allow_preconnect_retry"], False)
+
     def test_http_error_surfaces_the_upstream_reason_not_the_credential(self) -> None:
         """The upstream's own sentence is written for the person who has to act
         on it, and clients render it as the assistant's answer — so it is passed
@@ -567,6 +800,8 @@ class OpenAICompatibleTests(unittest.TestCase):
             with self.assertRaises(ProviderError) as caught:
                 openai_compatible.call_model(call, self._credentials(), "llama-3.3-70b")
         self.assertEqual(str(caught.exception), "Invalid API key")
+        self.assertEqual(caught.exception.status_code, 401)
+        self.assertFalse(caught.exception.replay_safe)
         self.assertNotIn("gsk-key", str(caught.exception))
 
     def test_http_error_without_a_reason_falls_back_to_the_status(self) -> None:
@@ -576,6 +811,21 @@ class OpenAICompatibleTests(unittest.TestCase):
             with self.assertRaises(ProviderError) as caught:
                 openai_compatible.call_model(call, self._credentials(), "llama-3.3-70b")
         self.assertIn("503", str(caught.exception))
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertFalse(caught.exception.replay_safe)
+
+    def test_explicit_quota_response_is_replay_safe_for_model_failover(self) -> None:
+        response = FakeResponse(
+            status_code=429,
+            body={"error": {"message": "Resource has been exhausted"}},
+        )
+        call = ModelCall(model="groq/llama", messages=[])
+        with patch.object(openai_compatible, "request_chat", return_value=response):
+            with self.assertRaises(ProviderError) as caught:
+                openai_compatible.call_model(call, self._credentials(), "llama-3.3-70b")
+
+        self.assertEqual(caught.exception.status_code, 429)
+        self.assertTrue(caught.exception.replay_safe)
 
     def test_relay_stream_preserves_frames(self) -> None:
         response = FakeResponse(
@@ -765,6 +1015,21 @@ class AnthropicTranslationTests(unittest.TestCase):
         self.assertEqual(call.usage_out.output_tokens, 4)
         self.assertEqual(call.usage_out.total_tokens, 39)
         self.assertEqual(call.usage_out.cached_input_tokens, 20)
+
+    def test_call_model_only_marks_explicit_quota_response_replay_safe(self) -> None:
+        call = ModelCall(model="anthropic/claude", messages=[])
+        for status, expected in ((429, True), (502, False)):
+            with self.subTest(status=status):
+                response = FakeResponse(
+                    status_code=status,
+                    body={"error": {"message": f"HTTP {status}"}},
+                )
+                with patch.object(anthropic, "request_chat", return_value=response):
+                    with self.assertRaises(ProviderError) as caught:
+                        anthropic.call_model(call, self._credentials(), "claude-opus-4-5")
+
+                self.assertEqual(caught.exception.status_code, status)
+                self.assertEqual(caught.exception.replay_safe, expected)
 
     def test_stream_translation_emits_openai_chunks(self) -> None:
         events = [
@@ -1235,6 +1500,137 @@ class ExhaustedModelPassthroughTests(unittest.TestCase):
         self.assertEqual(attempts[1]["outcome"], "succeeded")
         self.assertEqual(attempts[1]["upstreamModel"], "claude-opus-5")
         self.assertTrue(attempts[1]["fallback"])
+
+    def test_learn_strict_external_request_never_calls_a_stand_in(self) -> None:
+        self._configure(["gemini-3.6-flash-high", "claude-opus-5"])
+        asked: list[str] = []
+        forwarded: list[dict] = []
+
+        def respond(credentials, payload, upstream_model, *, stream, **_kwargs):
+            asked.append(upstream_model)
+            forwarded.append(payload)
+            if upstream_model == "gemini-3.6-flash-high":
+                return FakeResponse(status_code=429, body=self.COOLDOWN_BODY)
+            return FakeResponse(body={"choices": [{"message": {"content": "must-not-serve"}}]})
+
+        with (
+            patch.object(openai_compatible, "request_chat", side_effect=respond),
+            patch.object(claude_code, "request_chat", side_effect=respond),
+        ):
+            response = self.client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "cliproxy/gemini-3.6-flash-high",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tools": [{"type": "function", "function": {"name": "noop"}}],
+                    "learnStrictRoute": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(asked, ["gemini-3.6-flash-high"])
+        self.assertTrue(all("learnStrictRoute" not in payload for payload in forwarded))
+
+    def test_learn_strict_claude_code_route_fails_before_cli_dispatch(self) -> None:
+        self._configure(["claude-opus-5"])
+        with patch.object(claude_code, "request_chat") as claude_request:
+            response = self.client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "cliproxy/claude-opus-5",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tools": [{"type": "function", "function": {"name": "noop"}}],
+                    "learnStrictRoute": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 409, response.get_json())
+        claude_request.assert_not_called()
+
+    def test_cooldown_observer_failure_does_not_replace_safe_stand_in(self) -> None:
+        self._configure(["gemini-3.6-flash-high", "claude-opus-5"])
+        asked: list[str] = []
+
+        def respond(credentials, payload, upstream_model, *, stream):
+            asked.append(upstream_model)
+            if upstream_model == "gemini-3.6-flash-high":
+                return FakeResponse(status_code=429, body=self.COOLDOWN_BODY)
+            return FakeResponse(
+                body={"choices": [{"message": {"content": "stood in"}}]}
+            )
+
+        with (
+            patch.object(openai_compatible, "request_chat", side_effect=respond),
+            patch.object(claude_code, "request_chat", side_effect=respond),
+            patch(
+                "chatmock.providers.dispatch.failover.note_exhausted",
+                side_effect=RuntimeError("cooldown observer failed"),
+            ),
+        ):
+            response = self._ask("cliproxy/gemini-3.6-flash-high")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json()["choices"][0]["message"]["content"],
+            "stood in",
+        )
+        self.assertEqual(asked, ["gemini-3.6-flash-high", "claude-opus-5"])
+
+    def test_ambiguous_stand_in_failure_stops_before_a_third_model(self) -> None:
+        self._configure(
+            [
+                "gemini-3.6-flash-high",
+                "gemini-3.1-pro-low",
+                "claude-opus-5",
+            ]
+        )
+        asked: list[str] = []
+
+        def respond(credentials, payload, upstream_model, *, stream):
+            asked.append(upstream_model)
+            if upstream_model == "gemini-3.6-flash-high":
+                return FakeResponse(status_code=429, body=self.COOLDOWN_BODY)
+            if upstream_model == "gemini-3.1-pro-low":
+                # Quota wording must not upgrade an accepted-unknown transport
+                # failure into a safe terminal rejection.
+                raise ProviderError(
+                    "quota response lost after ambiguous POST",
+                    phase="transport",
+                    replay_safe=False,
+                )
+            return FakeResponse(
+                body={"choices": [{"message": {"content": "must not run"}}]}
+            )
+
+        with (
+            patch.object(openai_compatible, "request_chat", side_effect=respond),
+            patch.object(claude_code, "request_chat", side_effect=respond),
+        ):
+            response = self._ask("cliproxy/gemini-3.6-flash-high")
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            asked,
+            ["gemini-3.6-flash-high", "gemini-3.1-pro-low"],
+        )
+        self.assertIn(
+            "ambiguous POST",
+            response.get_json()["error"]["message"],
+        )
+        attempts = [
+            json.loads(line)
+            for line in Path(os.environ["CHATMOCK_MODEL_TELEMETRY_FILE"]).read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.strip()
+        ]
+        ambiguous = next(
+            item
+            for item in reversed(attempts)
+            if item.get("upstreamModel") == "gemini-3.1-pro-low"
+        )
+        self.assertFalse(ambiguous["replaySafe"])
+        self.assertEqual(ambiguous["failurePhase"], "transport")
 
     def test_transient_google_exhaustion_tries_one_google_sibling(self) -> None:
         self._configure(

@@ -21,6 +21,11 @@ import {
   startOfWeek,
   todayDate,
 } from "../calendar/wallclock.ts";
+import {
+  EMPTY_COMPRESSION_SAVINGS,
+  readCompressionSavings,
+  type CompressionSavings,
+} from "./compression-savings.ts";
 import { readUserIdentity } from "./identity-store.ts";
 import { priceUsd } from "./model-pricing.ts";
 
@@ -156,6 +161,13 @@ export interface ProfileCost {
   unpricedReplies: number;
   /** Replies whose model was never recorded, which predate this bookkeeping. */
   unattributedReplies: number;
+  /**
+   * Tool output the runtime compressed away before it reached a model, priced
+   * at what those tokens would have cost. It sits beside the spend rather than
+   * inside it: one is money spent, the other money not spent, and netting them
+   * would hide both.
+   */
+  compression: CompressionSavings;
 }
 
 export interface ProfileReliability {
@@ -819,7 +831,24 @@ function readCost(database: Database.Database, userId: number): ProfileCost {
   }
 
   models.sort((a, b) => b.replies - a.replies || a.label.localeCompare(b.label));
-  return { models, totalUsd, pricedReplies, unpricedReplies, unattributedReplies };
+
+  // Reading the runtime's savings file must never take the profile page down
+  // with it -- the page is about the database, and this is a guest.
+  let compression = EMPTY_COMPRESSION_SAVINGS;
+  try {
+    compression = readCompressionSavings();
+  } catch {
+    compression = EMPTY_COMPRESSION_SAVINGS;
+  }
+
+  return {
+    models,
+    totalUsd,
+    pricedReplies,
+    unpricedReplies,
+    unattributedReplies,
+    compression,
+  };
 }
 
 /**

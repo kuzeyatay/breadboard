@@ -178,6 +178,35 @@ test("11. Multiple formulas are assigned to their correct metric units", () => {
   assert.equal(plan.valid, true);
 });
 
+test("11b. a compatible verified formula can support a core-concept unit in Phase B", () => {
+  const speed = identity(
+    "P1.E1",
+    "velocity",
+    "v = \\frac{d}{t}",
+    "Average velocity",
+    ["velocity", "speed"],
+  );
+  const registry = [{
+    canonicalFamily: "velocity",
+    aliases: ["speed"],
+    evidenceTerms: ["velocity", "speed", "motion rate", "meters per second"],
+  }];
+  const conceptUnit = unit(
+    "M1",
+    "Average Velocity as a Motion Concept",
+    "core_concept",
+    "What does average velocity mean physically?",
+    ["velocity", "speed"],
+  );
+
+  assert.equal(deriveUnitFormulaRequirement(conceptUnit, registry).strength, "helpful");
+  const plan = buildFormulaAssignmentPlan([speed], [conceptUnit], { familyRegistry: registry });
+  const assigned = plan.assignments.find((entry) =>
+    entry.formulaAnchorId === "P1.E1" && entry.status === "assigned");
+  assert.equal(assigned?.unitId, "M1");
+  assert.equal(plan.valid, true);
+});
+
 test("12. Greedy ordering cannot steal the only latency formula for another unit", () => {
   // U10 (latency) and a decoy unit whose title shares latency keywords but is
   // an accuracy unit. The single latency formula must land on U10.

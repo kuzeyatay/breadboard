@@ -293,16 +293,29 @@ export class PostizApiClient {
     }
   }
 
-  async listPosts(range: { week?: number; year?: number } = {}): Promise<PostizRemotePost[]> {
+  /**
+   * The posts Postiz holds for a window.
+   *
+   * Current builds want an ISO `startDate`/`endDate` pair and reject anything
+   * else with a 400; older ones took `week`/`year`. Both spellings are passed
+   * through so a caller can try the current one and fall back, rather than
+   * having "the API said no" quietly mean "there is nothing scheduled".
+   */
+  async listPosts(
+    range: { week?: number; year?: number; startDate?: string; endDate?: string } = {},
+  ): Promise<PostizRemotePost[]> {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(range)) {
       if (value !== undefined) query.set(key, String(value));
     }
     const suffix = query.toString() ? `?${query}` : "";
-    const result = await this.request<{ posts?: PostizRemotePost[] }>(
+    const result = await this.request<{ posts?: PostizRemotePost[] } | PostizRemotePost[]>(
       "GET",
       `/posts${suffix}`,
     );
+    // The route has answered with both a bare array and a `{ posts }` envelope
+    // across Postiz versions.
+    if (Array.isArray(result)) return result;
     return Array.isArray(result.posts) ? result.posts : [];
   }
 

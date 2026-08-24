@@ -87,6 +87,9 @@ class CouncilInput:
     max_tokens: Optional[int] = None
     reasoning_effort: Optional[str] = None
     reasoning_summary: Optional[str] = None
+    # Recoverable requests must execute the exact resolved model once. They may
+    # not substitute an unhealthy/missing provider or fail over after an error.
+    strict_model_route: bool = False
 
     def __post_init__(self) -> None:
         if not self.user_prompt:

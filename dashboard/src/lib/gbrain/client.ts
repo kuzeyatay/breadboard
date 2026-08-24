@@ -5,6 +5,10 @@
 // path, or the secret never propagates to the browser or the model.
 
 import { resolveGBrainConfig, type GBrainConfig } from "./config.ts";
+import {
+  SupervisorResourceExhaustedError,
+  withServiceLease,
+} from "@/lib/supervisor-control";
 
 export interface AdapterCitation {
   sourceId: string;
@@ -58,23 +62,25 @@ export class GBrainClient {
     const timer = setTimeout(() => controller.abort(), this.config.queryTimeoutMs);
     if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
     try {
-      const res = await fetch(new URL(pathName, this.config.adapterUrl), {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${this.config.secret}` },
-        body: JSON.stringify(body),
-        signal: controller.signal,
+      return await withServiceLease("gbrain", "retrieval", async () => {
+        const res = await fetch(new URL(pathName, this.config.adapterUrl), {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${this.config.secret}` },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        const data = (await res.json().catch(() => ({ ok: false, error: "invalid_response" }))) as {
+          ok?: boolean;
+          error?: string;
+          data?: T;
+        };
+        if (!res.ok || data.ok === false) {
+          throw new GBrainAdapterError(typeof data.error === "string" ? data.error : "adapter_error");
+        }
+        return data.data as T;
       });
-      const data = (await res.json().catch(() => ({ ok: false, error: "invalid_response" }))) as {
-        ok?: boolean;
-        error?: string;
-        data?: T;
-      };
-      if (!res.ok || data.ok === false) {
-        // The adapter already returns sanitized codes; pass them through as-is.
-        throw new GBrainAdapterError(typeof data.error === "string" ? data.error : "adapter_error");
-      }
-      return data.data as T;
     } catch (err) {
+      if (err instanceof SupervisorResourceExhaustedError) throw err;
       if (err instanceof GBrainAdapterError) throw err;
       if (err instanceof Error && err.name === "AbortError") throw new GBrainAdapterError("timeout");
       // Network failure (adapter down) — collapse to a stable, path-free code.

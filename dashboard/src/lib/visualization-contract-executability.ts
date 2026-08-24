@@ -62,10 +62,12 @@ export const VISUAL_CONTRACT_EXECUTABILITY_PROTOCOL_VERSION = 2 as const;
 export const VISUAL_CONTRACT_EXECUTABILITY_LEDGER_SCHEMA_VERSION = 2 as const;
 
 /**
- * At most three parsed semantic candidates are considered. Strictly malformed
- * or empty provider text gets two bounded protocol retries, for a hard maximum
- * of five physical provider invocations. `maximumTotalCalls` remains the
- * legacy input name for the semantic-candidate ceiling.
+ * At most three parsed semantic candidates are considered. Nonempty malformed
+ * provider text may get two bounded protocol repairs, for a hard maximum of
+ * five physical provider invocations. Missing/empty provider output is
+ * terminal because it is not a returned candidate that can authorize another
+ * model request. `maximumTotalCalls` remains the legacy input name for the
+ * semantic-candidate ceiling.
  */
 export const VISUAL_CONTRACT_EXECUTABILITY_CALL_BUDGET = Object.freeze({
   initialCalls: 1,
@@ -439,7 +441,7 @@ export interface VisualContractExecutabilityAttempt {
   };
   accepted: boolean;
   responseEncoding: "exact_raw" | "undefined";
-  /** Exact provider text, or null only when the provider returned undefined. */
+  /** Exact provider text, or null when the provider returned no candidate. */
   response: string | null;
   /** SHA-256 of the byte-exact provider text. It is required for exact_raw
    * responses and null for synthetic in-process JSON test providers. */
@@ -481,7 +483,7 @@ function isExactRawProviderResponse(
  * duplicate runtime aliases, and other values that would otherwise be
  * normalized before the durable raw-response audit is written. */
 function exactRawTextFromProviderResponse(value: unknown): string | null {
-  if (value === undefined) return null;
+  if (value === undefined || value === null) return null;
   if (isExactRawProviderResponse(value)) return value.content;
   if (typeof value === "string") return value;
   let serialized: string | undefined;
@@ -571,11 +573,26 @@ function normalizedVisualContractExecutabilityProviderResponse(
     };
   }
   try {
+    const parsedValue = JSON.parse(raw) as unknown;
+    if (parsedValue === null) {
+      return {
+        responseEncoding: "exact_raw",
+        response: raw,
+        exactRawResponseSha256,
+        parsedValue: null,
+        protocolProblems: [{
+          code: "invalid_protocol_response",
+          path: "response",
+          message: "provider returned literal JSON null instead of a candidate",
+        }],
+        terminalProtocolFailure: true,
+      };
+    }
     return {
       responseEncoding: "exact_raw",
       response: raw,
       exactRawResponseSha256,
-      parsedValue: JSON.parse(raw) as unknown,
+      parsedValue,
       protocolProblems: null,
       terminalProtocolFailure: false,
     };
@@ -1377,6 +1394,17 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
     maximumProtocolRetries,
     maximumProviderInvocations,
   } as const;
+  const emitReviewEvent = (
+    type: string,
+    data: Record<string, unknown>,
+  ): void => {
+    try {
+      input.onEvent?.(type, data);
+    } catch {
+      // Review telemetry is observational and cannot replace the exact model,
+      // cancellation, protocol, or semantic outcome.
+    }
+  };
   const activeUnits = input.learningUnits.filter((unit) => activeRequirement(unit));
   const activeUnitIds = activeUnits.map((unit) => unit.id);
   const beforeContracts = Object.fromEntries(
@@ -1487,7 +1515,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
       rejectionReasons: cloneExact(inputAttempt.rejectionReasons),
     };
   };
-  input.onEvent?.("visual_contract_executability_review_started", {
+  emitReviewEvent("visual_contract_executability_review_started", {
     unitIds: activeUnitIds,
     maximumSemanticCandidates,
     maximumProtocolRetries,
@@ -1533,17 +1561,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
           : protocolRetries - 1,
       });
     } catch (error) {
-      try {
-        input.checkCancelled?.();
-      } catch (cancelled) {
-        input.onEvent?.("visual_contract_executability_review_cancelled", {
-          attempt: providerInvocations,
-          unitIds: activeUnitIds,
-          reason: cancelled instanceof Error ? cancelled.message : String(cancelled),
-        });
-        throw cancelled;
-      }
-      input.onEvent?.("visual_contract_executability_review_transport_aborted", {
+      emitReviewEvent("visual_contract_executability_review_transport_aborted", {
         attempt: providerInvocations,
         unitIds: activeUnitIds,
         semanticCandidatesBeforeTransportFailure: semanticCandidates,
@@ -1552,22 +1570,42 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
       });
       throw error;
     }
-    try {
-      input.checkCancelled?.();
-    } catch (error) {
-      input.onEvent?.("visual_contract_executability_review_cancelled", {
-        attempt: providerInvocations,
-        unitIds: activeUnitIds,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
     const normalized = normalizedVisualContractExecutabilityProviderResponse(rawResponse);
+    if (
+      normalized.response === null ||
+      normalized.response.trim().length === 0
+    ) {
+      protocolRejections += 1;
+      const emptyProblems = normalized.protocolProblems ?? [{
+        code: "invalid_protocol_response",
+        path: "response",
+        message: "provider returned no nonempty exact response text",
+      }];
+      emitReviewEvent("visual_contract_executability_review_exhausted", {
+        calls: providerInvocations,
+        semanticCandidates,
+        protocolRetries,
+        protocolRejections,
+        maximumSemanticCandidates,
+        maximumProtocolRetries,
+        maximumProviderInvocations,
+        terminalEmptyResponse: true,
+        unitIds: activeUnitIds,
+        reasons: rejectionReasonStrings(emptyProblems),
+      });
+      throw new VisualContractExecutabilityReviewError({
+        calls: providerInvocations,
+        semanticCandidates,
+        protocolRetries,
+        problems: emptyProblems,
+        lastResponse: normalized.response ?? "[provider returned no exact response text]",
+      });
+    }
     if (normalized.protocolProblems) {
       protocolRejections += 1;
       previousResponseClassification = "protocol_rejection";
       if (normalized.terminalProtocolFailure) {
-        input.onEvent?.("visual_contract_executability_review_exhausted", {
+        emitReviewEvent("visual_contract_executability_review_exhausted", {
           calls: providerInvocations,
           semanticCandidates,
           protocolRetries,
@@ -1607,7 +1645,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
         accepted: false,
         rejectionReasons: normalized.protocolProblems,
       }));
-      input.onEvent?.("visual_contract_executability_review_rejected", {
+      emitReviewEvent("visual_contract_executability_review_rejected", {
         attempt: providerInvocations,
         requestPurpose,
         responseClassification: "protocol_rejection",
@@ -1653,7 +1691,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
         accepted: false,
         rejectionReasons: parsed.problems,
       }));
-      input.onEvent?.("visual_contract_executability_review_rejected", {
+      emitReviewEvent("visual_contract_executability_review_rejected", {
         attempt: providerInvocations,
         requestPurpose,
         responseClassification: "semantic_candidate",
@@ -1691,7 +1729,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
         accepted: false,
         rejectionReasons: applied.problems,
       }));
-      input.onEvent?.("visual_contract_executability_review_rejected", {
+      emitReviewEvent("visual_contract_executability_review_rejected", {
         attempt: providerInvocations,
         requestPurpose,
         responseClassification: "semantic_candidate",
@@ -1726,7 +1764,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
         accepted: false,
         rejectionReasons: globalProblems,
       }));
-      input.onEvent?.("visual_contract_executability_review_rejected", {
+      emitReviewEvent("visual_contract_executability_review_rejected", {
         attempt: providerInvocations,
         requestPurpose,
         responseClassification: "semantic_candidate",
@@ -1768,7 +1806,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
         accepted: false,
         rejectionReasons: validationProblems,
       }));
-      input.onEvent?.("visual_contract_executability_review_rejected", {
+      emitReviewEvent("visual_contract_executability_review_rejected", {
         attempt: providerInvocations,
         requestPurpose,
         responseClassification: "semantic_candidate",
@@ -1799,7 +1837,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
         .filter((unit) => activeRequirement(unit))
         .map((unit) => [unit.id, completeVisualContractForUnit(unit)]),
     );
-    input.onEvent?.("visual_contract_executability_review_completed", {
+    emitReviewEvent("visual_contract_executability_review_completed", {
       calls: providerInvocations,
       semanticCandidates,
       protocolRetries,
@@ -1830,7 +1868,7 @@ export async function runVisualContractExecutabilityReview<TPlan>(input: {
     };
   }
 
-  input.onEvent?.("visual_contract_executability_review_exhausted", {
+  emitReviewEvent("visual_contract_executability_review_exhausted", {
     calls: providerInvocations,
     semanticCandidates,
     protocolRetries,

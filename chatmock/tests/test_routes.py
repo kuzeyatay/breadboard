@@ -341,6 +341,239 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(response.get_json()["error"]["message"], "Upstream error")
 
     @patch("chatmock.routes_openai.start_upstream_request")
+    def test_responses_tools_do_not_replay_an_unqualified_502(self, mock_start) -> None:
+        failed = FakeUpstream(status_code=502, content=b"{}", text="")
+        mock_start.side_effect = [
+            (failed, None),
+            (
+                FakeUpstream(
+                    [{"type": "response.completed", "response": {"id": "late"}}]
+                ),
+                None,
+            ),
+        ]
+
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.6-sol",
+                "messages": [{"role": "user", "content": "research this"}],
+                "responses_tools": [{"type": "web_search"}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(mock_start.call_count, 1)
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_responses_tools_repair_explicit_validation_rejection(self, mock_start) -> None:
+        mock_start.side_effect = [
+            (
+                FakeUpstream(
+                    status_code=400,
+                    content=b'{"error":{"message":"unsupported tool"}}',
+                ),
+                None,
+            ),
+            (
+                FakeUpstream(
+                    [
+                        {"type": "response.output_text.delta", "delta": "answer"},
+                        {"type": "response.completed", "response": {"id": "repaired"}},
+                    ]
+                ),
+                None,
+            ),
+        ]
+
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.6-sol",
+                "messages": [{"role": "user", "content": "research this"}],
+                "responses_tools": [{"type": "web_search"}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["choices"][0]["message"]["content"], "answer")
+        self.assertEqual(mock_start.call_count, 2)
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_learn_strict_raw_request_never_retries_tools_or_leaks_flag(self, mock_start) -> None:
+        mock_start.side_effect = [
+            (
+                FakeUpstream(
+                    status_code=400,
+                    content=b'{"error":{"message":"unsupported tool"}}',
+                ),
+                None,
+            ),
+            (FakeUpstream([{"type": "response.completed"}]), None),
+        ]
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.6-sol",
+                "messages": [{"role": "user", "content": "research this"}],
+                "responses_tools": [{"type": "web_search"}],
+                "learnStrictRoute": True,
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(mock_start.call_count, 1)
+        self.assertIs(mock_start.call_args.kwargs["strict_single_attempt"], True)
+        self.assertNotIn("learnStrictRoute", json.dumps(mock_start.call_args))
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_learn_strict_alias_conflict_fails_before_raw_dispatch(self, mock_start) -> None:
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.6-sol",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function": {"name": "noop"}}],
+                "learnStrictRoute": True,
+                "learn_strict_route": False,
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        mock_start.assert_not_called()
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_learn_strict_rejects_non_direct_council_mode_before_dispatch(self, mock_start) -> None:
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.6-sol",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function": {"name": "noop"}}],
+                "learnStrictRoute": True,
+                "councilModeOverride": "full_council",
+            },
+        )
+        self.assertEqual(response.status_code, 409, response.get_json())
+        mock_start.assert_not_called()
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_learn_strict_ignores_debug_model_substitution(self, mock_start) -> None:
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "answer"},
+                    {"type": "response.completed", "response": {"id": "strict-debug"}},
+                ]
+            ),
+            None,
+        )
+        client = create_app(debug_model="gpt-5.4").test_client()
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.6-sol",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function": {"name": "noop"}}],
+                "learnStrictRoute": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(mock_start.call_count, 1)
+        self.assertEqual(mock_start.call_args.args[0], "gpt-5.6-sol")
+        self.assertIs(mock_start.call_args.kwargs["strict_single_attempt"], True)
+
+    @patch("chatmock.routes_openai.provider_dispatch.chat_completion_response")
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_learn_strict_unknown_external_image_route_never_dispatches(
+        self,
+        mock_start,
+        external_dispatch,
+    ) -> None:
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "missing-provider/model",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Describe it"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+                    ],
+                }],
+                "learnStrictRoute": True,
+            },
+        )
+        self.assertEqual(response.status_code, 409, response.get_json())
+        mock_start.assert_not_called()
+        external_dispatch.assert_not_called()
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_learn_strict_image_request_keeps_one_raw_route(self, mock_start) -> None:
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "described"},
+                    {"type": "response.completed", "response": {"id": "resp-image"}},
+                ]
+            ),
+            None,
+        )
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.6-sol",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Describe it"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+                    ],
+                }],
+                "learnStrictRoute": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(mock_start.call_count, 1)
+        self.assertIs(mock_start.call_args.kwargs["strict_single_attempt"], True)
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_responses_tools_preserve_ambiguous_repair_transport_failure(
+        self,
+        mock_start,
+    ) -> None:
+        first = FakeUpstream(
+            status_code=400,
+            content=b'{"error":{"message":"unsupported tool"}}',
+        )
+
+        def start(*_args, **_kwargs):
+            if mock_start.call_count == 1:
+                return first, None
+            return None, self.app.response_class(
+                response=json.dumps(
+                    {"error": {"message": "ambiguous repaired POST"}}
+                ),
+                status=502,
+                mimetype="application/json",
+            )
+
+        mock_start.side_effect = start
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.6-sol",
+                "messages": [{"role": "user", "content": "research this"}],
+                "responses_tools": [{"type": "web_search"}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.get_json()["error"]["message"],
+            "ambiguous repaired POST",
+        )
+        self.assertEqual(mock_start.call_count, 2)
+
+    @patch("chatmock.routes_openai.start_upstream_request")
     def test_chat_completions_normalizes_forced_tool_choice(self, mock_start) -> None:
         # Chat clients force a function with a nested {"function": {"name": ...}}
         # object; the Responses API needs the name at the top level or upstream
@@ -404,6 +637,69 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(body["message"]["content"], "hello")
         self.assertEqual(body["model"], "gpt-5.4")
+
+    @patch("chatmock.routes_ollama.start_upstream_request")
+    def test_ollama_responses_tools_do_not_replay_an_unqualified_502(
+        self,
+        mock_start,
+    ) -> None:
+        failed = FakeUpstream(status_code=502, content=b"{}", text="")
+        mock_start.side_effect = [
+            (failed, None),
+            (FakeUpstream([{"type": "response.completed"}]), None),
+        ]
+
+        response = self.client.post(
+            "/api/chat",
+            json={
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": "research this"}],
+                "stream": False,
+                "responses_tools": [{"type": "web_search"}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(mock_start.call_count, 1)
+
+    @patch("chatmock.routes_ollama.start_upstream_request")
+    def test_ollama_responses_tools_preserve_ambiguous_repair_transport_failure(
+        self,
+        mock_start,
+    ) -> None:
+        first = FakeUpstream(
+            status_code=422,
+            content=b'{"error":{"message":"unsupported tool"}}',
+        )
+
+        def start(*_args, **_kwargs):
+            if mock_start.call_count == 1:
+                return first, None
+            return None, self.app.response_class(
+                response=json.dumps(
+                    {"error": {"message": "ambiguous repaired POST"}}
+                ),
+                status=502,
+                mimetype="application/json",
+            )
+
+        mock_start.side_effect = start
+        response = self.client.post(
+            "/api/chat",
+            json={
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": "research this"}],
+                "stream": False,
+                "responses_tools": [{"type": "web_search"}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.get_json()["error"]["message"],
+            "ambiguous repaired POST",
+        )
+        self.assertEqual(mock_start.call_count, 2)
 
     @patch("chatmock.routes_ollama.start_upstream_request")
     def test_ollama_chat_honors_debug_model_override(self, mock_start) -> None:
@@ -1011,7 +1307,15 @@ class RouteTests(unittest.TestCase):
                     }),
                     json.dumps({"type": "response.completed", "response": {"id": "resp_ws_1"}}),
                     json.dumps({"type": "response.created", "response": {"id": "resp_ws_2"}}),
-                    json.dumps({"type": "response.completed", "response": {"id": "resp_ws_2"}}),
+                    json.dumps({
+                        "type": "response.incomplete",
+                        "response": {
+                            "id": "resp_ws_2",
+                            "incomplete_details": {"reason": "max_output_tokens"},
+                        },
+                    }),
+                    json.dumps({"type": "response.created", "response": {"id": "resp_ws_3"}}),
+                    json.dumps({"type": "response.completed", "response": {"id": "resp_ws_3"}}),
                 ]
 
             def send(self, message: str) -> None:
@@ -1067,12 +1371,25 @@ class RouteTests(unittest.TestCase):
             )
             third = json.loads(client.recv())
             fourth = json.loads(client.recv())
+            client.send(
+                json.dumps(
+                    {
+                        "type": "response.create",
+                        "model": "gpt-5.4",
+                        "input": "fresh after incomplete",
+                    }
+                )
+            )
+            fifth = json.loads(client.recv())
+            sixth = json.loads(client.recv())
 
         self.assertEqual(first["type"], "response.created")
         self.assertEqual(assistant["type"], "response.output_item.done")
         self.assertEqual(second["type"], "response.completed")
         self.assertEqual(third["type"], "response.created")
-        self.assertEqual(fourth["type"], "response.completed")
+        self.assertEqual(fourth["type"], "response.incomplete")
+        self.assertEqual(fifth["type"], "response.created")
+        self.assertEqual(sixth["type"], "response.completed")
         outbound = json.loads(fake_upstream.sent[0])
         self.assertEqual(outbound["model"], "gpt-5.4")
         self.assertEqual(outbound["service_tier"], "priority")
@@ -1088,6 +1405,89 @@ class RouteTests(unittest.TestCase):
             follow_up["input"],
             [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "second"}]}],
         )
+        after_incomplete = json.loads(fake_upstream.sent[2])
+        self.assertNotIn("previous_response_id", after_incomplete)
+        self.assertEqual(
+            after_incomplete["input"],
+            [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "fresh after incomplete"}],
+            }],
+        )
+
+    @patch("chatmock.websocket_routes.get_effective_chatgpt_auth", return_value=("token", "acct"))
+    @patch("chatmock.websocket_routes.connect_upstream_websocket")
+    def test_responses_websocket_rejects_recoverable_bindings_before_auth_or_connect(
+        self,
+        mock_connect,
+        mock_auth,
+    ) -> None:
+        app = create_app()
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        host, port = sock.getsockname()
+        sock.close()
+        server_thread = threading.Thread(
+            target=app.run,
+            kwargs={
+                "host": host,
+                "port": port,
+                "use_reloader": False,
+                "threaded": True,
+            },
+            daemon=True,
+        )
+        server_thread.start()
+        time.sleep(0.5)
+
+        cases = (
+            ({
+                "clientRequestId": "lrq_fixture_ws_camel_0001",
+                "clientRequestHash": "a" * 64,
+            }, 409),
+            ({
+                "client_request_id": "lrq_fixture_ws_snake_0001",
+                "client_request_hash": "a" * 64,
+            }, 409),
+            ({"clientRequestId": "lrq_fixture_ws_partial_0001"}, 400),
+            ({
+                "clientRequestId": "invalid",
+                "clientRequestHash": "not-a-hash",
+            }, 400),
+            ({
+                "clientRequestId": "lrq_fixture_ws_conflict_0001",
+                "client_request_id": "lrq_fixture_ws_conflict_other",
+                "clientRequestHash": "a" * 64,
+            }, 400),
+            ({
+                "clientRequestId": "lrq_fixture_ws_hash_conflict_0001",
+                "clientRequestHash": "a" * 64,
+                "client_request_hash": "b" * 64,
+            }, 400),
+            ({"learnStrictRoute": True}, 409),
+            ({"learn_strict_route": False}, 409),
+            ({
+                "learnStrictRoute": True,
+                "learn_strict_route": False,
+            }, 400),
+        )
+        for binding, expected_status in cases:
+            with self.subTest(binding=tuple(binding), status=expected_status):
+                payload = {
+                    "type": "response.create",
+                    "model": "gpt-5.4",
+                    "input": "fixture",
+                    **binding,
+                }
+                with ws_connect(f"ws://{host}:{port}/v1/responses") as client:
+                    client.send(json.dumps(payload))
+                    error = json.loads(client.recv())
+                self.assertEqual(error["type"], "error")
+                self.assertEqual(error["status_code"], expected_status)
+
+        mock_auth.assert_not_called()
+        mock_connect.assert_not_called()
 
 
 if __name__ == "__main__":

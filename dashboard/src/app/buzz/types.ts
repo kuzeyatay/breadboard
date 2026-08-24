@@ -130,6 +130,23 @@ export interface BuzzAgentSeat {
   organizationId: number;
 }
 
+/**
+ * A community invitation waiting on the reader, as the inbox shows it.
+ *
+ * Mirrors `ReceivedInvite` from the organizations store; redeclared here so
+ * the Buzz client keeps its own flat type surface rather than importing a
+ * server module's shape into the browser bundle.
+ */
+export interface BuzzInvite {
+  id: number;
+  organizationId: number;
+  organizationName: string;
+  role: string;
+  /** The account that sent it, or null if that account is gone. */
+  invitedBy: string | null;
+  createdAt: string;
+}
+
 /** A room as the search palette lists it — including archived ones. */
 export interface BuzzSearchRoom {
   publicId: string;

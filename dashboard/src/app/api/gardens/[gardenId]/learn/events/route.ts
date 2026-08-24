@@ -80,7 +80,6 @@ function eventLine(event: GardenEvent): string {
   for (const key of [
     "taskType",
     "councilMode",
-    "retryCouncilMode",
     "pageId",
     "visualId",
     "figureId",
@@ -104,7 +103,7 @@ function eventLine(event: GardenEvent): string {
     learn_source_map_fallback: "Source map fell back to deterministic planning",
     learn_scope_contract_created: "Council finished the scope contract",
     learn_scope_contract_fallback: "Scope contract fell back to deterministic planning",
-    learn_planning_timeout_retry: "Planning call timed out — retrying with a lighter council",
+    learn_planning_transport_ambiguous: "Planning transport ended with an ambiguous outcome",
     learn_learning_unit_contract_created: "Council finished the Learning Unit Contract",
     learn_learning_map_created: "Learning map created",
     learn_learning_spine_fallback: "Learning spine fell back to deterministic planning",

@@ -24,11 +24,39 @@ export function openGymUserMessage(task: string): string {
 }
 
 export function isExerciseTechniqueRequest(task: string): boolean {
-  return /\b(how(?:\s+\w+){0,4}\s+(?:do|perform|execute)|how to|show me|teach me|demonstrate|proper form|correct way|technique|form for|perform|execute|animation|demo)\b/i.test(task);
+  return [
+    /\bhow\b.{0,80}\b(?:do|perform|execute|set\s*up|position|hold)\b/i,
+    /\bhow\s+to\b/i,
+    /\b(?:show|teach|walk)\s+me\b/i,
+    /\b(?:demo|demonstrate|animation|animate)\b/i,
+    /\b(?:proper|correct|right|safe)\s+(?:way|form|technique)\b/i,
+    /\b(?:form|technique|setup|steps?|cues?)\s+(?:for|of|on)\b/i,
+    /\b(?:perform|execute)\b/i,
+  ].some((pattern) => pattern.test(task));
 }
 
 export function isWorkoutProgramRequest(task: string): boolean {
   return /\b(program|routine|workout|plan|split|mesocycle|schedule)\b/i.test(
     task,
   );
+}
+
+const FITNESS_PROGRAM_CONTEXT =
+  /\b(cardio|conditioning|exercise|fitness|gym|hypertrophy|lifting|mobility|muscle|strength|training|workout)\b/i;
+
+/**
+ * Cheap browser-side gate before the authenticated catalogue resolver runs.
+ * This may be permissive: only the server's registered-exercise match makes a
+ * technique request route, while an unavailable resolver deliberately fails
+ * open so a form request still receives the openGym presentation.
+ */
+export function isOpenGymSuperAgentRoutingCandidate(task: string): boolean {
+  return (
+    isExerciseTechniqueRequest(task) ||
+    (isWorkoutProgramRequest(task) && FITNESS_PROGRAM_CONTEXT.test(task))
+  );
+}
+
+export function isFitnessProgramRequest(task: string): boolean {
+  return isWorkoutProgramRequest(task) && FITNESS_PROGRAM_CONTEXT.test(task);
 }

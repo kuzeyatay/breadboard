@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadDashboardEnv, loadRootEnv } from "./load-root-env.mjs";
+import { exitIfAlreadyRunning } from "./service-probe.mjs";
 import { humanizerPythonPath } from "./setup-humanizer.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -79,6 +80,13 @@ process.stdout.write(
     `[humanizer] model ${env.BREADBOARD_HUMANIZER_MODEL}@${env.BREADBOARD_HUMANIZER_REVISION}, preloading during startup\n` +
     `[humanizer] device ${env.BREADBOARD_HUMANIZER_DEVICE}, cache ${cache}\n`,
 );
+
+// Model warm-up costs minutes and gigabytes, so reusing a rewriter that is
+// already loaded matters more here than anywhere else in the stack.
+await exitIfAlreadyRunning("humanizer", {
+  url: `http://127.0.0.1:${port}/health`,
+  headers: { Authorization: `Bearer ${secret}` },
+});
 
 const child = spawn(
   python,

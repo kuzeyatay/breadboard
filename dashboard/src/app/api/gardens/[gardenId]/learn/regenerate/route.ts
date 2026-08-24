@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import {
-  getLearnStatusSnapshot,
-  LearnPipelineConflictError,
-  LearnRepairPendingMapError,
-  runLearnRepairOperation,
-} from "@/lib/learn";
 import { InvalidLearnOperationRequestError, parseStartLearnOperationRequest } from "@/lib/learn-operation-mode";
-import { createChatmockClient } from "@/lib/knowledge";
-import { handOffLearnTask } from "@/lib/learn-background";
+import { executeLearnOperationForRoute } from "breadboard-learn-operation-runtime";
+import {
+  InvalidLearnRouteBodyError,
+  isLearnRouteConflict,
+  readLearnRouteJsonObject,
+} from "@/lib/learn-route-errors";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 import { selectedModelForUser } from "@/lib/selected-model";
 
@@ -24,7 +22,7 @@ export async function POST(
     const { userId, cluster } = await requireOwnedClusterFromSlug(gardenId);
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) return NextResponse.json({ error: "QUARTZ_CONTENT_PATH not configured" }, { status: 500 });
-    const body = await request.json().catch(() => ({}));
+    const body = await readLearnRouteJsonObject(request);
     let operation;
     try {
       operation = parseStartLearnOperationRequest(cluster.slug, body, { legacyDefault: "repair" });
@@ -38,18 +36,26 @@ export async function POST(
       return NextResponse.json({ error: "The Regenerate endpoint accepts repair mode only. Use the separate rebuild action for full_rebuild." }, { status: 400 });
     }
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const client = createChatmockClient(baseURL);
     const model = selectedModelForUser(userId);
-    const execution = await handOffLearnTask(runLearnRepairOperation({
-      gardenId: cluster.slug, userId, client, model, contentPath, request: operation,
-    }), `scoped repair for ${cluster.slug}`);
+    const execution = await executeLearnOperationForRoute<{
+      job: unknown;
+      repair: unknown;
+    }>({
+      operation: "repair",
+      gardenId: cluster.slug,
+      userId,
+      contentPath,
+      baseURL,
+      model,
+      request: operation,
+    }, `scoped repair for ${cluster.slug}`);
     if (execution.accepted) {
       return NextResponse.json(
         {
           success: true,
           accepted: true,
           operation: "repair",
-          job: getLearnStatusSnapshot({ gardenId: cluster.slug, contentPath }).job,
+          jobId: execution.jobId ?? null,
         },
         { status: 202 },
       );
@@ -61,10 +67,10 @@ export async function POST(
       job: execution.value.job,
     });
   } catch (error) {
-    if (
-      error instanceof LearnRepairPendingMapError ||
-      error instanceof LearnPipelineConflictError
-    ) {
+    if (error instanceof InvalidLearnRouteBodyError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (isLearnRouteConflict(error)) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     return routeErrorResponse(error);

@@ -218,6 +218,28 @@ copyTree(
   path.join(dashboardTarget, "dashboard", "public"),
 );
 
+// Learn runs in a bounded one-at-a-time worker rather than in the long-lived
+// Next server. Stage application source (never db/.env/artifacts) beside the
+// standalone dependency graph so Node's native TypeScript loader can execute
+// the same domain code after a dashboard recycle.
+log("staging durable Learn worker source");
+copyTree(
+  path.join(repoRoot, "dashboard", "src"),
+  path.join(dashboardTarget, "dashboard", "worker-src"),
+);
+const learnScriptsTarget = path.join(dashboardTarget, "dashboard", "scripts");
+fs.mkdirSync(learnScriptsTarget, { recursive: true });
+for (const entry of [
+  "learn-worker.mjs",
+  "learn-worker-import-hook.mjs",
+  "windows-breakaway-process.mjs",
+]) {
+  fs.copyFileSync(
+    path.join(repoRoot, "dashboard", "scripts", entry),
+    path.join(learnScriptsTarget, entry),
+  );
+}
+
 // Next's standalone tracer currently misses the MCP SDK's conditional ESM
 // exports when reached through the server-only runtime adapter. Copy the
 // lockfile-installed production closure explicitly so the installed dashboard
@@ -316,7 +338,16 @@ fs.copyFileSync(
 
 const postizRuntimeTarget = path.join(stagingRoot, "dashboard", "src", "lib", "socials-manager");
 fs.mkdirSync(postizRuntimeTarget, { recursive: true });
-for (const entry of ["api-client.ts", "bootstrap.ts", "config.ts", "docker.ts", "stack.ts"]) {
+for (const entry of [
+  "api-client.ts",
+  "bootstrap.ts",
+  "config.ts",
+  "coordinator-core.ts",
+  "coordinator-runtime.ts",
+  "coordinator-server.ts",
+  "docker.ts",
+  "stack.ts",
+]) {
   fs.copyFileSync(
     path.join(repoRoot, "dashboard", "src", "lib", "socials-manager", entry),
     path.join(postizRuntimeTarget, entry),

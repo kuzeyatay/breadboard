@@ -7,12 +7,12 @@ import {
   formatTokenCount,
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
+import { parseChatTimestamp } from "@/lib/chat-time-separators";
 
 function timestamp(value: string | number | undefined): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value !== "string") return undefined;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  return parseChatTimestamp(value) ?? undefined;
 }
 
 export default function AssistantResponseMeta({

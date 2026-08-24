@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadDashboardEnv, loadRootEnv } from "./load-root-env.mjs";
 import { createStatusWriter } from "./voicebox-status.mjs";
+import { exitIfAlreadyRunning } from "./service-probe.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
@@ -30,6 +31,10 @@ const statusPath =
   process.env.VOICEBOX_STATUS_PATH?.trim() || path.join(dataDir, "startup-status.json");
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(modelsDir, { recursive: true });
+
+// Speech models are the most expensive thing in the stack to warm, so an
+// instance that is already serving is always the one to keep.
+await exitIfAlreadyRunning("voicebox", { url: `http://127.0.0.1:${port}/health` });
 
 // Settings distinguishes "still working" from "died" by how fresh this file
 // is, so every phase this launcher owns keeps a heartbeat and records the pid

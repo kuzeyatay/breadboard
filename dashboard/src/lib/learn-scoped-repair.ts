@@ -35,10 +35,110 @@ import type { StartLearnOperationRequest } from "./learn-operation-mode.ts";
 
 export type ScopedModelRepairExecutor = (packet: unknown, issue: GardenIssue) => Promise<unknown>;
 
+export interface ScopedModelRepairExactRawResponse {
+  kind: "learn_scoped_repair_exact_raw_v1";
+  content: string;
+}
+
+export function exactScopedModelRepairResponse(
+  content: string,
+): ScopedModelRepairExactRawResponse {
+  return { kind: "learn_scoped_repair_exact_raw_v1", content };
+}
+
+function scopedModelRepairJsonCandidate(raw: string): string {
+  const trimmed = raw.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return (fenced?.[1] ?? trimmed).trim();
+}
+
+/** Invoke one logical scoped-repair model request. Provider rejections escape
+ * with exact identity. Only a fulfilled, nonempty response becomes validation
+ * evidence that may allow the bounded loop to inspect another issue. */
+export async function requestScopedModelRepairCandidate(
+  executor: ScopedModelRepairExecutor,
+  packet: unknown,
+  issue: GardenIssue,
+): Promise<unknown> {
+  const response = await executor(packet, issue);
+  if (response === undefined || response === null) {
+    throw new Error(
+      "Scoped repair provider returned no candidate; no further model request was authorized.",
+    );
+  }
+  if (
+    typeof response === "object" &&
+    Object.keys(response).length === 2 &&
+    (response as Record<string, unknown>).kind === "learn_scoped_repair_exact_raw_v1" &&
+    typeof (response as Record<string, unknown>).content === "string"
+  ) {
+    const raw = (response as ScopedModelRepairExactRawResponse).content;
+    const candidateText = scopedModelRepairJsonCandidate(raw);
+    if (candidateText.length === 0) {
+      throw new Error(
+        "Scoped repair provider returned an empty response; no further model request was authorized.",
+      );
+    }
+    if (candidateText === "null") {
+      throw new Error(
+        "Scoped repair provider returned literal JSON null; no further model request was authorized.",
+      );
+    }
+    try {
+      return JSON.parse(candidateText) as unknown;
+    } catch {
+      // Nonempty malformed text is a concrete returned candidate. The typed
+      // verifier rejects it deterministically; it is not a provider failure.
+      return null;
+    }
+  }
+  if (typeof response === "string") {
+    const candidateText = scopedModelRepairJsonCandidate(response);
+    if (candidateText.length === 0) {
+      throw new Error(
+        "Scoped repair provider returned an empty response; no further model request was authorized.",
+      );
+    }
+    if (candidateText === "null") {
+      throw new Error(
+        "Scoped repair provider returned literal JSON null; no further model request was authorized.",
+      );
+    }
+  }
+  return response;
+}
+
 export interface LearnScopedRepairProgress {
   step: string;
   issue?: GardenIssue;
   scope?: LearnRepairScope;
+}
+
+function isScopedRepairControlGateError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = (error as { name?: unknown }).name;
+  return name === "LearnCancelledError" || name === "LearnPipelineConflictError";
+}
+
+/** Progress persistence is an observer, except where the active Learn caller
+ * uses the callback as a cancellation/conflict gate or as the publication
+ * compare-and-set boundary. A failed observer must not turn an already
+ * fulfilled model decision into a failed logical request that an outer caller
+ * could replay. The stable error-name check avoids importing learn.ts here and
+ * creating a cycle with the active Learn entry point. */
+export function reportLearnScopedRepairProgress(
+  onProgress: ((progress: LearnScopedRepairProgress) => void) | undefined,
+  progress: LearnScopedRepairProgress,
+  options?: { publicationGate?: boolean },
+): void {
+  try {
+    onProgress?.(progress);
+  } catch (error) {
+    if (options?.publicationGate || isScopedRepairControlGateError(error)) {
+      throw error;
+    }
+    // Pure progress/telemetry failures are non-authoritative.
+  }
 }
 
 export interface LearnScopedRepairResult {
@@ -383,7 +483,7 @@ export async function executeLearnScopedRepair(input: {
   verifyLease?: () => boolean;
 }): Promise<LearnScopedRepairResult> {
   if (input.request.mode !== "repair") throw new Error("Scoped repair can run only with mode=repair.");
-  input.onProgress?.({ step: "Analyzing validation issues" });
+  reportLearnScopedRepairProgress(input.onProgress, { step: "Analyzing validation issues" });
   const expectedSourceFormulaReviewContext =
     sourceFormulaReviewFinalizationContextFromGarden(input.gardenDir);
   const current = loadCurrentTypedGardenIssues(
@@ -395,7 +495,10 @@ export async function executeLearnScopedRepair(input: {
   const scope = buildLearnRepairScope(current.state, current.issues, input.request);
   const selectedIssues = current.issues.filter((issue) => scope.issueIds.includes(issue.issueId));
   if (selectedIssues.length === 0) throw new Error("No current typed validation issues matched the requested repair selection.");
-  input.onProgress?.({ step: `Repairing ${scope.pageIds.length} affected page projection(s)`, scope });
+  reportLearnScopedRepairProgress(input.onProgress, {
+    step: `Repairing ${scope.pageIds.length} affected page projection(s)`,
+    scope,
+  });
 
   const beforeFiles = fingerprintGardenFiles(input.gardenDir);
   const policy = buildScopedFileMutationPolicy(current.state, scope, beforeFiles);
@@ -441,10 +544,18 @@ export async function executeLearnScopedRepair(input: {
       if (deterministic.length > 0) continue;
       const packet = handler?.buildModelPacket?.(issue, state, scope);
       if (!packet) continue;
-      input.onProgress?.({ step: `Repairing ${issue.target.visualId ?? issue.target.unitId ?? issue.type}`, issue, scope });
+      reportLearnScopedRepairProgress(input.onProgress, {
+        step: `Repairing ${issue.target.visualId ?? issue.target.unitId ?? issue.type}`,
+        issue,
+        scope,
+      });
+      if (input.verifyLease && !input.verifyLease()) {
+        throw new Error(
+          "Scoped repair lost its fenced garden lease before a model request.",
+        );
+      }
       modelCalls += 1;
-      let decision: unknown;
-      try { decision = await input.modelRepair(packet, issue); } catch { rejectedModelDecisions += 1; continue; }
+      const decision = await requestScopedModelRepairCandidate(input.modelRepair, packet, issue);
       const verified = handler?.verifyModelDecision?.(issue, decision, state, scope);
       if (!verified?.valid) { rejectedModelDecisions += 1; continue; }
       const applied = applyGardenBuildTransaction(state, verified.operations, { expectedStage: "repair", validateAfter: true });
@@ -455,7 +566,10 @@ export async function executeLearnScopedRepair(input: {
     }
 
     renderScopedState(staging, current.state, state, scope, operations);
-    input.onProgress?.({ step: "Revalidating garden", scope });
+    reportLearnScopedRepairProgress(input.onProgress, {
+      step: "Revalidating garden",
+      scope,
+    });
     const finalizationAudit = auditGardenForFinalization(staging, input.gardenId, {
       expectedSourceFormulaReviewContext,
     });
@@ -503,7 +617,13 @@ export async function executeLearnScopedRepair(input: {
     const afterFiles = fingerprintGardenFiles(staging);
     const files = verifyScopedFileMutationPolicy(beforeFiles, afterFiles, policy);
     const finalSafeToCommit = safeToCommit && files.passed;
-    if (finalSafeToCommit) input.onProgress?.({ step: "Publishing repaired projection", scope });
+    if (finalSafeToCommit) {
+      reportLearnScopedRepairProgress(
+        input.onProgress,
+        { step: "Publishing repaired projection", scope },
+        { publicationGate: true },
+      );
+    }
     const promotion = finalSafeToCommit
       ? await promoteStagingGarden({
           stagingGardenDir: staging,

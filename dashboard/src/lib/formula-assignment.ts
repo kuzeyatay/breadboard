@@ -197,9 +197,10 @@ export type UnitFormulaRequirement = {
   reason: string;
 };
 
-/** Roles that may carry a contract source formula. Mirrors the contract
- * validator in learning-unit-contract.ts (formula/metric plus the two
- * interpretation roles); any other role derives `not_needed`. */
+/** Roles that explicitly signal formula use even when their title/question
+ * supplies no recognizable family evidence. Other roles may still carry a
+ * verified formula when their own semantics name a compatible family; role is
+ * a teaching-move label, not an artifact permission bit. */
 const FORMULA_BEARING_ROLES = new Set<LearningUnitRole>([
   "formula",
   "metric",
@@ -875,7 +876,6 @@ export function buildFormulaAssignmentPlan(
     }
     const candidates = rowsForFormula(formula.anchorId)
       .filter((row) => eligible(row)
-        && FORMULA_BEARING_ROLES.has(unitsById.get(row.unitId)?.role ?? "core_concept")
         && (unitAssignedCount.get(row.unitId) ?? 0) < maxFormulasPerUnit)
       .sort((left, right) => scoreWithStability(right) - scoreWithStability(left)
         || left.unitId.localeCompare(right.unitId));

@@ -1,0 +1,48 @@
+{
+  "name": "synthetic-planning-request-v1",
+  "envelope": {
+    "schemaVersion": 1,
+    "messages": [
+      {
+        "role": "system",
+        "content": "Synthetic planning fixture — no production prompt."
+      },
+      {
+        "role": "user",
+        "content": "Return a small JSON object."
+      }
+    ],
+    "taskType": "source_map",
+    "gardenId": "fixture-garden",
+    "pageId": null,
+    "sourceContext": {
+      "attempt": 1,
+      "oneFloat": 1.0,
+      "negativeZero": -0.0,
+      "numericKeyOrder": {
+        "10": "ten",
+        "2": "two"
+      },
+      "safeIntegerMaximum": 9007199254740991,
+      "score": 0.25,
+      "unicodeKeyOrder": {
+        "😀": "astral-key",
+        "": "bmp-private-use-key"
+      },
+      "sourceIds": [
+        "fixture-source-a",
+        "fixture-source-b"
+      ]
+    },
+    "councilMode": "direct_council",
+    "requestedModel": "gpt-fixture",
+    "resolvedModel": "gpt-fixture",
+    "reasoning": {
+      "effort": "max",
+      "summary": "detailed"
+    },
+    "temperature": null,
+    "maxTokens": null
+  },
+  "expectedHash": "b3def88d60cd848ef73d31a2e377beb94bf26f45bd874df3cd01fe8d728587c9"
+}

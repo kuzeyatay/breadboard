@@ -537,6 +537,12 @@ export interface AgentSendOptions {
   textSelection?: ChatTextSelectionReference;
   /** The server has durably stored this user turn, even if its answer is pending. */
   onTurnPersisted?: (sessionId: string) => void;
+  /**
+   * The optimistic turn has been accepted into the local session state.
+   * Delegation hand-backs use this boundary so they are never marked consumed
+   * before `send` has made it past its active-run and transcript-loading guards.
+   */
+  onTurnStarted?: () => void;
 }
 
 interface BranchHistoryReference {
@@ -2980,6 +2986,12 @@ export function useAgentSession(
       assistant.clientMessageId = userMessage.id;
       const baseline = [...transcript, userMessage, assistant];
       setMessages(baseline);
+      try {
+        options?.onTurnStarted?.();
+      } catch {
+        // Starting the turn is authoritative even if an optional UI callback
+        // fails. The stream must not be abandoned after its rows are visible.
+      }
 
       let turnPersisted = false;
       const markTurnPersisted = (persistedSessionId: string) => {

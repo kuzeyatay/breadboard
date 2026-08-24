@@ -368,8 +368,9 @@ Hard requirements:
 
 /**
  * Run a bounded AI-only targeted repair after whole-spine replacements are
- * exhausted. Provider exceptions deliberately escape this function: transport
- * retries belong to the provider and never spend a semantic repair attempt.
+ * exhausted. Provider exceptions and fulfilled missing/empty responses are
+ * terminal and never spend a semantic repair attempt. Only a nonempty returned
+ * candidate with concrete merge/validation problems can authorize another call.
  */
 export async function runLearningSpineTargetedRepair(input: {
   candidate: JsonRecord;
@@ -420,6 +421,15 @@ export async function runLearningSpineTargetedRepair(input: {
     });
     const response = await input.provider(request);
     calls += 1;
+    if (
+      response === null ||
+      response === undefined ||
+      (typeof response === "string" && !response.trim())
+    ) {
+      throw new Error(
+        "Learning-spine targeted repair provider returned no nonempty candidate; no semantic repair request was issued.",
+      );
+    }
     const merged = mergeLearningSpineTargetedResponse({
       candidate,
       targetUnitIds: scope.unitIds,

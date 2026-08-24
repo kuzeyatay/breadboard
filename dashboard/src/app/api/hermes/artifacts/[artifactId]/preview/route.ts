@@ -3,6 +3,8 @@ import { Readable } from "node:stream";
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
 import { artifactFile, getArtifactForUser, ArtifactStoreError } from "@/lib/hermes/artifact-store.ts";
+import { presentArtifact } from "@/lib/hermes/artifact-store.ts";
+import { saveArtifactPdfBytes } from "@/lib/hermes/artifact-document-editor.ts";
 import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 
 export const dynamic = "force-dynamic";
@@ -88,6 +90,33 @@ export async function GET(request: Request, { params }: { params: Promise<{ arti
         ...baseHeaders,
       },
     });
+  } catch (error) {
+    if (error instanceof ArtifactStoreError) return new Response(JSON.stringify({ error: error.message, code: error.code }), { status: error.status, headers: { "Content-Type": "application/json" } });
+    return apiErrorResponse(error);
+  }
+}
+
+/** Persist PDF.js annotation/editor output as a new artifact version. */
+export async function PUT(request: Request, { params }: { params: Promise<{ artifactId: string }> }) {
+  try {
+    const userId = await requireUserId();
+    requireEnabled();
+    const url = new URL(request.url);
+    const conversationId = url.searchParams.get("conversationId")?.trim();
+    if (!conversationId) throw new ApiError(400, "artifact_conversation_required", "conversationId is required.");
+    if (!/^application\/pdf(?:\s*;|$)/i.test(request.headers.get("content-type") ?? "")) {
+      throw new ApiError(415, "artifact_pdf_content_type", "The PDF editor must send application/pdf.");
+    }
+    const length = Number(request.headers.get("content-length") ?? 0);
+    if (Number.isFinite(length) && length > 128 * 1024 * 1024) {
+      throw new ApiError(413, "artifact_editor_pdf_size", "The edited PDF is too large.");
+    }
+    const { artifactId } = await params;
+    const artifact = getArtifactForUser({ artifactId, userId, conversationPublicId: conversationId });
+    if (artifact.garden_slug) authorizeGardenAccess(userId, artifact.garden_slug);
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    const saved = await saveArtifactPdfBytes(artifact, bytes);
+    return Response.json({ artifact: presentArtifact(saved) });
   } catch (error) {
     if (error instanceof ArtifactStoreError) return new Response(JSON.stringify({ error: error.message, code: error.code }), { status: error.status, headers: { "Content-Type": "application/json" } });
     return apiErrorResponse(error);

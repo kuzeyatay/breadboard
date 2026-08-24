@@ -25,6 +25,7 @@ import {
   validateOfficeCommand,
 } from "../src/lib/office/officecli.ts";
 import { prepareOfficeExport, runOfficeCommand } from "../src/lib/office/agent-query.ts";
+import { officeArtifactRequirement } from "../src/lib/hermes/office-artifact-requirement.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -112,6 +113,67 @@ test("the skill resolves ready on the authenticated surfaces, and not on Quartz"
     false,
     "office must not be ready on quartz_ai",
   );
+});
+
+test("the Office skill batches Word reports and treats export as completion", () => {
+  const skill = fs.readFileSync(
+    path.join(repoRoot, "hermes-skills", "prebuilt", "office", "SKILL.md"),
+    "utf8",
+  );
+  assert.match(skill, /add all planned[\s\S]*in one batch/i);
+  assert.match(skill, /Do not call `office_run` once per paragraph/i);
+  assert.match(skill, /batch report\.docx --commands/);
+  assert.match(skill, /complete only after `office_export` succeeds/i);
+  assert.match(skill, /partial document[\s\S]*is not[\s\S]*deliverable/i);
+});
+
+test("an Office turn owes the requested ready artifact before it can complete", () => {
+  assert.deepEqual(officeArtifactRequirement("Create a Word document"), {
+    kind: "document",
+    rendererId: "document-file",
+    sourceSkill: "office",
+    readyEventType: "artifact.completed",
+  });
+  assert.equal(
+    officeArtifactRequirement("Make an Excel workbook").rendererId,
+    "spreadsheet-file",
+  );
+  assert.equal(
+    officeArtifactRequirement("Create a PowerPoint deck").rendererId,
+    "presentation-file",
+  );
+  assert.equal(
+    officeArtifactRequirement("Convert this PDF to a Word document").rendererId,
+    "document-file",
+    "the explicit output format wins over the mentioned input format",
+  );
+  assert.equal(
+    officeArtifactRequirement("How do I inspect a Word document?"),
+    null,
+    "read-only Office questions do not owe a new artifact",
+  );
+
+  const turnService = fs.readFileSync(
+    path.join(repoRoot, "dashboard", "src", "lib", "conversations", "turn-service.ts"),
+    "utf8",
+  );
+  const officeRoute = fs.readFileSync(
+    path.join(repoRoot, "dashboard", "src", "app", "api", "hermes", "tools", "office", "route.ts"),
+    "utf8",
+  );
+  const documentRoute = fs.readFileSync(
+    path.join(repoRoot, "dashboard", "src", "app", "api", "hermes", "tools", "document", "route.ts"),
+    "utf8",
+  );
+  const eventStream = fs.readFileSync(
+    path.join(repoRoot, "dashboard", "src", "lib", "hermes", "event-stream.ts"),
+    "utf8",
+  );
+  assert.match(turnService, /officeSkillSelected[\s\S]*officeArtifactRequirement/);
+  assert.match(turnService, /requiredArtifacts\.length > 0/);
+  assert.match(officeRoute, /sourceSkill: "office"/);
+  assert.match(documentRoute, /sourceSkill: "office"/);
+  assert.match(eventStream, /requested Office file was not published as an artifact/);
 });
 
 test("the vendored OfficeCLI clone serves the Office catalog tab", () => {
@@ -233,12 +295,21 @@ test("a document round-trips through the pinned binary", { skip: binary === null
   const created = await runOfficeCommand(workspace, { command: "create smoke.docx --json" });
   assert.equal(created.exitCode, 0, created.output);
   const added = await runOfficeCommand(workspace, {
-    command: 'add smoke.docx /body --type paragraph --prop text="Office tools smoke test"',
+    command: 'batch smoke.docx --commands \'[{"command":"add","parent":"/body","type":"paragraph","props":{"text":"Office tools smoke test"}}]\' --json',
   });
   assert.equal(added.exitCode, 0, added.output);
   const viewed = await runOfficeCommand(workspace, { command: "view smoke.docx text" });
   assert.match(viewed.output, /Office tools smoke test/);
   await runOfficeCommand(workspace, { command: "close smoke.docx" }).catch(() => undefined);
+});
+
+test("loaded OfficeCLI guidance ends with Breadboard's batching and export contract", { skip: binary === null && "OfficeCLI is not provisioned (npm run setup:officecli)" }, async () => {
+  const workspace = makeWorkspace();
+  const loaded = await runOfficeCommand(workspace, { command: "load_skill word" });
+  assert.equal(loaded.exitCode, 0, loaded.output);
+  assert.match(loaded.output, /\[Breadboard execution note\]/);
+  assert.match(loaded.output, /group planned paragraphs, table rows/);
+  assert.match(loaded.output, /incomplete until office_export returns the artifact/);
 });
 
 test("an export stages the file with an HTML snapshot and cleans up after itself", { skip: binary === null && "OfficeCLI is not provisioned (npm run setup:officecli)" }, async () => {

@@ -1617,6 +1617,8 @@ function InvitePanel({ initial }: { initial: { created: number; redeemed: number
  */
 function ModelPanel({ cost }: { cost: ProfileCost }) {
   const max = cost.models.reduce((best, entry) => Math.max(best, entry.replies), 0);
+  const compression = cost.compression;
+  const saved = compression.savedTokens > 0;
   const caveats: string[] = [];
   if (cost.unpricedReplies > 0) {
     caveats.push(
@@ -1640,7 +1642,7 @@ function ModelPanel({ cost }: { cost: ProfileCost }) {
             )} replies.`
       }
     >
-      <div className="grid grid-cols-2 gap-3">
+      <div className={`grid gap-3 ${saved ? "grid-cols-3" : "grid-cols-2"}`}>
         <Stat
           value={cost.pricedReplies === 0 ? "—" : formatUsd(cost.totalUsd)}
           label="Spent on answers"
@@ -1657,6 +1659,17 @@ function ModelPanel({ cost }: { cost: ProfileCost }) {
           label="Tokens written back"
           hint="The expensive half of the bill"
         />
+        {saved && (
+          <Stat
+            value={
+              compression.savedUsd > 0
+                ? formatUsd(compression.savedUsd)
+                : formatCompact(compression.savedTokens)
+            }
+            label="Saved by compression"
+            hint={`${formatCompact(compression.savedTokens)} tokens of tool output never sent`}
+          />
+        )}
       </div>
 
       {cost.models.length > 0 && (
@@ -1684,6 +1697,12 @@ function ModelPanel({ cost }: { cost: ProfileCost }) {
         and a subscription or a model running on this machine costs nothing at all
         no matter what the rate card says.
         {caveats.length > 0 && ` Not counted — ${caveats.join("; ")}.`}
+        {saved &&
+          ` Compression is the mirror of that bound: ${formatCount(
+            compression.compressions,
+          )} oversized tool result${compression.compressions === 1 ? "" : "s"} were thinned to ${Math.round(
+            (1 - compression.ratio) * 100,
+          )}% of their size before any model read them, and nothing was lost — the runtime keeps the full text.`}
       </p>
     </Card>
   );

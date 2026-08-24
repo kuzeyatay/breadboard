@@ -33,6 +33,7 @@ fs.writeFileSync(
   [
     'export { MessageRow } from "@/app/buzz/components/message-row";',
     'export { AgentsView, InboxView } from "@/app/buzz/components/rail-views";',
+    'export { MembersPanel } from "@/app/buzz/components/members-panel";',
     'export { MessageMarkdown } from "@/app/buzz/components/message-markdown";',
     'export { Composer } from "@/app/buzz/components/composer";',
     'export { RoomRail } from "@/app/buzz/components/room-rail";',
@@ -70,6 +71,7 @@ const {
   BuzzLoading,
   Composer,
   InboxView,
+  MembersPanel,
   MessageMarkdown,
   MessageRow,
   RoomRail,
@@ -280,13 +282,15 @@ test("the inbox sorts what names you above what merely arrived", () => {
           mentionsYou: true,
         }),
       ],
+      invites: [],
       loading: false,
       onRefresh: () => {},
       onOpen: () => {},
+      onRespondToInvite: () => {},
     }),
   );
   const mentions = html.indexOf("Mentions you");
-  const unread = html.indexOf("Unread —");
+  const unread = html.indexOf("Unread:");
   assert.ok(mentions > -1 && unread > -1, "both sections render");
   assert.ok(mentions < unread, "the line that names you comes first");
   assert.match(html, /check the transect/);
@@ -296,12 +300,44 @@ test("an empty inbox says so rather than rendering a blank pane", () => {
   const html = renderToStaticMarkup(
     React.createElement(InboxView, {
       unread: [],
+      invites: [],
       loading: false,
       onRefresh: () => {},
       onOpen: () => {},
+      onRespondToInvite: () => {},
     }),
   );
   assert.match(html, /Nothing waiting/);
+});
+
+test("a pending invitation is answerable from the inbox, above the messages", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(InboxView, {
+      unread: [hit({ message: message({ id: 1, body: "shipping the survey" }) })],
+      invites: [
+        {
+          id: 7,
+          organizationId: 10,
+          organizationName: "Fieldwork",
+          role: "member",
+          invitedBy: "ada",
+          createdAt: "2026-01-01 00:00:00",
+        },
+      ],
+      loading: false,
+      onRefresh: () => {},
+      onOpen: () => {},
+      onRespondToInvite: () => {},
+    }),
+  );
+  // Both answers are present and named: an invitation the reader can see but
+  // not act on is the state this whole section exists to prevent.
+  assert.match(html, /Accept/);
+  assert.match(html, /Decline/);
+  assert.match(html, /ada invited you to join this community/);
+  // It outranks the unread messages — until it is answered, the rooms behind
+  // it cannot be opened at all.
+  assert.ok(html.indexOf("Invitations:") < html.indexOf("Unread:"));
 });
 
 test("the agents view groups one persona's rooms under one heading", () => {
@@ -355,4 +391,63 @@ test("the shared route loader names its destination", () => {
   assert.match(html, /Opening your calendar/);
   assert.match(html, /Reading your events\./);
   assert.match(html, /aria-live="polite"/);
+});
+
+/** The panel with one person, Bread, and one specialist seated. */
+function renderMembersPanel(overrides = {}) {
+  const bread = {
+    ...agent,
+    id: 3,
+    personaSlug: "bread",
+    displayName: "Bread",
+    handle: "bread",
+    respondTo: "always",
+  };
+  return renderToStaticMarkup(
+    React.createElement(MembersPanel, {
+      members: [person, bread, agent],
+      personas: [
+        {
+          slug: "researcher",
+          name: "Researcher",
+          description: "Reads the literature",
+          division: "Academic",
+          divisionColor: "#8B5CF6",
+          color: "#8B5CF6",
+          emoji: "",
+        },
+      ],
+      roomPublicId: "r1",
+      rosterReady: true,
+      onClose: () => {},
+      onAddPersona: () => {},
+      onAddPerson: () => ({ kind: "seated" }),
+      onRemove: () => {},
+      onRespondToChange: () => {},
+      ...overrides,
+    }),
+  );
+}
+
+test("the panel labels its sections with a colon, in the display face", () => {
+  const html = renderMembersPanel();
+  assert.match(html, /People<span[^>]*>: 1<\/span>/);
+  assert.match(html, /Agents<span[^>]*>: 2<\/span>/);
+  // The em dash the counts used to hang off is gone from the headings.
+  assert.doesNotMatch(html, /People\s*—/);
+  assert.doesNotMatch(html, /Agents\s*—/);
+  // `buzz-panel-label` is what `buzz-host.css` hangs the display face on;
+  // without the class the headings silently fall back to Inter.
+  assert.match(html, /buzz-panel-label/);
+  // And the tracked-out micro-caps treatment is not on them any more.
+  assert.doesNotMatch(html, /buzz-panel-label[^"]*uppercase/);
+});
+
+test("Bread is shown as a seated agent, answering by default", () => {
+  const html = renderMembersPanel();
+  assert.match(html, /@bread/);
+  // Its `always` chip is the checked one — the room answers without anybody
+  // learning a handle first.
+  const always = html.indexOf("Always");
+  assert.ok(always > -1, "the Always chip renders");
 });

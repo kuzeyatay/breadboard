@@ -456,7 +456,7 @@ test("the inline Socials Manager card restores every durable post after chat rem
   assert.match(terminal, /conversationPublicId,/);
 });
 
-test("desktop owns optional background publishing-stack startup and Next instrumentation does not", () => {
+test("desktop owns publishing-stack lifecycle and nothing starts it on boot", () => {
   const instrumentation = source("src/instrumentation-node.ts");
   const definitions = desktopSource("src/main/service-definitions.ts");
   const launcher = fs.readFileSync(
@@ -466,12 +466,24 @@ test("desktop owns optional background publishing-stack startup and Next instrum
 
   assert.doesNotMatch(instrumentation, /autostartPostizStack|postiz\/autostart/);
   assert.match(definitions, /id: "postiz"/);
-  assert.match(definitions, /required: false,[\s\S]*startInBackground: true/);
+  // Background, because the *coordinator* must be listening to receive an
+  // activation request. What it owns — Docker, Compose, the containers — is
+  // what stays stopped.
+  assert.match(definitions, /required: false,[\s\S]*startupPolicy: "background"/);
   assert.match(definitions, /SOCIALS_MANAGER_SUPPRESS_DOCKER_UI: "true"/);
   assert.match(definitions, /dependsOn: \["chatmock", "quartz"\]/);
-  assert.match(launcher, /ensureApiKey\(config\)/);
-  assert.match(launcher, /listIntegrations\(\)/);
+
+  // The coordinator opens its socket and stops. No stack start, no Docker
+  // probe, no bootstrap anywhere on the path from `main()` to `listen`.
   assert.match(launcher, /server\.listen\(healthPort, host/);
+  const beforeListen = launcher.slice(
+    launcher.indexOf("async function main()"),
+    launcher.indexOf("server.listen(healthPort, host"),
+  );
+  assert.doesNotMatch(beforeListen, /startStack|ensureDockerRunning|waitForReady\(/);
+  assert.doesNotMatch(beforeListen, /ensureApiKey|listIntegrations/);
+  // Readiness is coordinator liveness, and it is stated as such.
+  assert.match(definitions, /expectBodyIncludes: '"ok":true'/);
 });
 
 test("the inline card is styled with the shared neumorphic material", () => {

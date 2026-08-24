@@ -4,36 +4,38 @@
 // it intentionally leaves outside the trace, then launch the normal desktop
 // supervisor with that server instead of an on-demand compiler.
 import { spawn, spawnSync } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertWindowsCommitHeadroom } from "./commit-preflight.mjs";
+import {
+  refreshStandaloneDashboardAssets,
+  reusableDashboardBuild,
+} from "./dashboard-build-cache.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const dashboard = path.join(repoRoot, "dashboard");
-const build = spawnSync(
-  process.execPath,
-  [path.join(repoRoot, "desktop", "scripts", "build-dashboard.mjs")],
-  { cwd: repoRoot, stdio: "inherit", env: process.env },
-);
-if (build.status !== 0) process.exit(build.status ?? 1);
-
-const standaloneDashboard = path.join(
-  dashboard,
-  ".next-desktop",
-  "standalone",
-  "dashboard",
-);
-fs.cpSync(
-  path.join(dashboard, ".next-desktop", "static"),
-  path.join(standaloneDashboard, ".next-desktop", "static"),
-  { recursive: true, force: true },
-);
-if (fs.existsSync(path.join(dashboard, "public"))) {
-  fs.cpSync(
-    path.join(dashboard, "public"),
-    path.join(standaloneDashboard, "public"),
-    { recursive: true, force: true },
+const forceRebuild = process.argv.includes("--rebuild");
+const cached = forceRebuild
+  ? { reusable: false, reason: "a rebuild was requested" }
+  : reusableDashboardBuild(repoRoot);
+if (cached.reusable) {
+  process.stdout.write("[desktop] reusing unchanged standalone dashboard build\n");
+  // Public assets do not alter the server graph, so keep them current without
+  // paying the webpack compilation peak.
+  refreshStandaloneDashboardAssets(repoRoot);
+} else {
+  process.stdout.write(`[desktop] standalone dashboard rebuild required: ${cached.reason}\n`);
+  try {
+    assertWindowsCommitHeadroom({ operation: "lean dashboard build", estimateMb: 6_144 });
+  } catch (error) {
+    process.stderr.write(`[desktop] ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(2);
+  }
+  const build = spawnSync(
+    process.execPath,
+    [path.join(repoRoot, "desktop", "scripts", "build-dashboard.mjs")],
+    { cwd: repoRoot, stdio: "inherit", env: process.env },
   );
+  if (build.status !== 0) process.exit(build.status ?? 1);
 }
 
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";

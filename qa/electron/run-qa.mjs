@@ -4,11 +4,15 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertWindowsCommitHeadroom } from "../../desktop/scripts/commit-preflight.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const forwarded = [];
 const env = { ...process.env };
 let skipDesktopBuild = false;
+let dashboardMode = process.env.BREADBOARD_QA_DASHBOARD_MODE === "hot"
+  ? "hot"
+  : "standalone";
 
 for (const argument of process.argv.slice(2)) {
   if (argument === "--headed") {
@@ -21,10 +25,13 @@ for (const argument of process.argv.slice(2)) {
     env.BREADBOARD_QA_PRESERVE_RUNTIME = "1";
   } else if (argument === "--skip-desktop-build") {
     skipDesktopBuild = true;
+  } else if (argument === "--hot-dashboard") {
+    dashboardMode = "hot";
   } else {
     forwarded.push(argument);
   }
 }
+env.BREADBOARD_QA_DASHBOARD_MODE = dashboardMode;
 
 if (!skipDesktopBuild) {
   const npmCliCandidates = [
@@ -34,6 +41,21 @@ if (!skipDesktopBuild) {
   const npmCli = npmCliCandidates[0];
   if (!npmCli) {
     throw new Error("Could not resolve npm-cli.js for the desktop build");
+  }
+  if (dashboardMode === "standalone") {
+    try {
+      assertWindowsCommitHeadroom({ operation: "standalone Electron QA build", estimateMb: 6_144 });
+    } catch (error) {
+      process.stderr.write(`[qa] ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(2);
+    }
+    const dashboardBuild = spawnSync(
+      process.execPath,
+      [path.join(repoRoot, "desktop", "scripts", "build-dashboard.mjs")],
+      { cwd: repoRoot, env: process.env, stdio: "inherit", shell: false },
+    );
+    if (dashboardBuild.error) throw dashboardBuild.error;
+    if (dashboardBuild.status !== 0) process.exit(dashboardBuild.status ?? 1);
   }
   const build = spawnSync(process.execPath, [npmCli, "--prefix", "desktop", "run", "build"], {
     cwd: repoRoot,

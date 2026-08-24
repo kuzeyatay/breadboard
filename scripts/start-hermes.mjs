@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadDashboardEnv, loadRootEnv } from "./load-root-env.mjs";
+import { probeService } from "./service-probe.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
@@ -159,27 +160,24 @@ const env = {
 
 // Reuse an already-running instance instead of failing to bind the port
 // (mirrors the Scriberr launcher).
-async function probeExistingServer() {
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/status`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(2_500),
-    });
-    return response.status;
-  } catch {
-    return null; // Nothing answering HTTP — the port is presumably free.
-  }
-}
-
-const existingStatus = await probeExistingServer();
-if (existingStatus === 200) {
+//
+// The probe deliberately avoids /api/status: that endpoint is Hermes's *public*
+// liveness check and answers 200 to anyone, so it cannot tell our runtime from
+// the desktop app's — which serves the same routes behind a different session
+// token. Every other /api/ path is gated on that token before routing, so 401
+// is exactly the "someone else's Hermes" signal, and the 404 for this
+// deliberately non-existent path means the token was accepted.
+const existing = await probeService({
+  url: `http://127.0.0.1:${port}/api/__breadboard_adoption_probe`,
+  headers: { Authorization: `Bearer ${token}` },
+  acceptStatuses: [200, 204, 400, 404, 405],
+});
+if (existing === "running") {
   console.log(`[hermes] Already running and healthy on 127.0.0.1:${port} — reusing it.`);
   process.exit(0);
 }
-if (existingStatus !== null) {
-  console.error(
-    `[hermes] Port ${port} is already in use (the existing server answered HTTP ${existingStatus}).`,
-  );
+if (existing === "foreign") {
+  console.error(`[hermes] Port ${port} is already in use by a server that rejected our session token.`);
   console.error(
     "[hermes] That is usually the installed desktop app's Hermes, which uses a different token and callback URL.",
   );

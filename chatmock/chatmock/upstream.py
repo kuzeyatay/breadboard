@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import time
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse, urlunparse
 
+import certifi
 import requests
 from flask import Response, current_app, jsonify, make_response
+from websockets.sync.client import connect as websocket_connect
 
 from .config import CHATGPT_RESPONSES_URL
+from .http_replay_safety import is_proven_preconnect_failure
 from .limits import parse_rate_limit_headers
 from .http import build_cors_headers
 from .model_registry import normalize_model_name
@@ -20,11 +24,13 @@ from flask import request as flask_request
 from .utils import get_effective_chatgpt_auth
 
 
-_RETRYABLE_UPSTREAM_STATUS_CODES = frozenset({502, 503, 504})
 _DEFAULT_CONNECT_TIMEOUT_SECONDS = 30.0
 _DEFAULT_READ_TIMEOUT_SECONDS = 120.0
 _DEFAULT_MAX_ATTEMPTS = 3
 _DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
+_DEFAULT_WEBSOCKET_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+_MIN_WEBSOCKET_MAX_MESSAGE_BYTES = 1024 * 1024
+_MAX_WEBSOCKET_MAX_MESSAGE_BYTES = 128 * 1024 * 1024
 
 
 def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
@@ -47,9 +53,38 @@ def _retry_delay_seconds(base_delay: float, failed_attempt: int) -> float:
     return min(30.0, base_delay * (2 ** max(0, failed_attempt - 1)))
 
 
+def upstream_websocket_max_message_bytes() -> int:
+    """Bound full Responses events without inheriting a library-sized 1 MiB cap.
+
+    A terminal response may legitimately contain substantially more data than
+    any individual delta. Keep the bound finite and configurable, but make it a
+    product transport limit rather than an accidental websockets default.
+    """
+
+    return _env_int(
+        "CHATMOCK_UPSTREAM_WEBSOCKET_MAX_MESSAGE_BYTES",
+        _DEFAULT_WEBSOCKET_MAX_MESSAGE_BYTES,
+        minimum=_MIN_WEBSOCKET_MAX_MESSAGE_BYTES,
+        maximum=_MAX_WEBSOCKET_MAX_MESSAGE_BYTES,
+    )
+
+
 def _close_quietly(response: Any) -> None:
     try:
         response.close()
+    except Exception:
+        pass
+
+
+def _note_account_exhausted_quietly(
+    account_key: str,
+    *,
+    reason: str,
+) -> None:
+    """Persist quota state without replacing the upstream's exact response."""
+
+    try:
+        note_account_exhausted(account_key, reason=reason)
     except Exception:
         pass
 
@@ -83,6 +118,7 @@ def start_upstream_request(
     parallel_tool_calls: bool = False,
     reasoning_param: Dict[str, Any] | None = None,
     service_tier: str | None = None,
+    strict_single_attempt: bool = False,
 ):
     account = select_account()
     access_token, account_id = get_effective_chatgpt_auth(
@@ -141,6 +177,7 @@ def start_upstream_request(
         responses_payload,
         session_id=session_id,
         stream=True,
+        strict_single_attempt=strict_single_attempt,
     )
 
 
@@ -166,6 +203,7 @@ def start_upstream_raw_request(
     *,
     session_id: str | None = None,
     stream: bool = True,
+    strict_single_attempt: bool = False,
 ):
     account = select_account()
     access_token, account_id = get_effective_chatgpt_auth(
@@ -228,7 +266,7 @@ def start_upstream_raw_request(
         minimum=5.0,
         maximum=1800.0,
     )
-    max_attempts = _env_int(
+    max_attempts = 1 if strict_single_attempt else _env_int(
         "CHATMOCK_UPSTREAM_MAX_ATTEMPTS",
         _DEFAULT_MAX_ATTEMPTS,
         minimum=1,
@@ -251,15 +289,27 @@ def start_upstream_raw_request(
                 timeout=(connect_timeout, read_timeout),
             )
         except requests.RequestException as exc:
-            if attempt < max_attempts:
+            replay_safe = is_proven_preconnect_failure(exc)
+            if replay_safe and attempt < max_attempts:
                 delay = _retry_delay_seconds(retry_backoff, attempt)
-                _log_upstream_retry(type(exc).__name__, attempt, max_attempts, delay)
+                _log_upstream_retry(
+                    f"pre-connect {type(exc).__name__}",
+                    attempt,
+                    max_attempts,
+                    delay,
+                )
                 if delay > 0:
                     time.sleep(delay)
                 continue
             message = (
-                f"Upstream ChatGPT request failed after {max_attempts} attempts: "
-                f"{type(exc).__name__}: {exc}"
+                "Upstream ChatGPT could not be reached after "
+                f"{attempt} pre-connect attempt{'s' if attempt != 1 else ''} "
+                f"({type(exc).__name__})."
+                if replay_safe
+                else (
+                    "Upstream ChatGPT request failed without replay "
+                    f"({type(exc).__name__})."
+                )
             )
             resp = make_response(jsonify({"error": {"message": message}}), 502)
             for key, value in build_cors_headers().items():
@@ -267,13 +317,6 @@ def start_upstream_raw_request(
             return None, resp
 
         status_code = getattr(upstream, "status_code", None)
-        if status_code in _RETRYABLE_UPSTREAM_STATUS_CODES and attempt < max_attempts:
-            _close_quietly(upstream)
-            delay = _retry_delay_seconds(retry_backoff, attempt)
-            _log_upstream_retry(f"returned HTTP {status_code}", attempt, max_attempts, delay)
-            if delay > 0:
-                time.sleep(delay)
-            continue
 
         # A 429 is not a transient failure to retry — this account's plan window
         # is spent, possibly for days. Record that so the next request selects a
@@ -281,10 +324,10 @@ def start_upstream_raw_request(
         # the rejection when one is available.
         if status_code == 429 and account is not None:
             detail = _quota_detail(upstream)
-            note_account_exhausted(account.key, reason=detail)
+            _note_account_exhausted_quietly(account.key, reason=detail)
             if verbose:
                 print(f"[ChatMock] account {account.label} is out of quota; trying the next one")
-            retry = _retry_with_next_account(
+            retry = None if strict_single_attempt else _retry_with_next_account(
                 responses_payload,
                 effective_session_id,
                 stream=stream,
@@ -292,11 +335,11 @@ def start_upstream_raw_request(
             )
             if retry is not None:
                 _close_quietly(upstream)
-                return retry, None
+                return retry
 
         return upstream, None
 
-    raise AssertionError("upstream retry loop ended unexpectedly")
+    raise AssertionError("pre-connect retry loop ended unexpectedly")
 
 
 def _quota_detail(upstream: Any) -> str:
@@ -330,17 +373,31 @@ def _retry_with_next_account(
     stream: bool,
     exhausted: str,
 ):
-    """One attempt on the next healthy account. Returns None when there is none.
+    """One attempt on the next healthy account.
+
+    Returns the normal ``(upstream, error_response)`` pair after an attempted
+    handoff, or ``None`` when no replacement account exists. Keeping the error
+    response is essential: a reset or read timeout on the replacement POST is
+    acceptance-ambiguous and must not be disguised as the first account's
+    deterministic 429.
 
     Deliberately not recursive: a second account that is also out records its
     own cooldown through the normal path on the following request, rather than
     walking every account inside a single call and stalling the caller.
     """
-    replacement = select_account()
+    try:
+        replacement = select_account()
+    except Exception:
+        return None
     if replacement is None or replacement.key == exhausted:
         return None
 
-    access_token, account_id = get_effective_chatgpt_auth((replacement.auth, replacement.path))
+    try:
+        access_token, account_id = get_effective_chatgpt_auth(
+            (replacement.auth, replacement.path)
+        )
+    except Exception:
+        return None
     if not access_token or not account_id:
         return None
 
@@ -364,14 +421,33 @@ def _retry_with_next_account(
             stream=stream,
             timeout=(connect_timeout, read_timeout),
         )
-    except requests.RequestException:
-        return None
+    except requests.RequestException as exc:
+        replay_safe = is_proven_preconnect_failure(exc)
+        message = (
+            "Upstream ChatGPT replacement account could not be reached before "
+            f"the request was sent ({type(exc).__name__})."
+            if replay_safe
+            else (
+                "Upstream ChatGPT replacement account request failed without "
+                f"replay ({type(exc).__name__})."
+            )
+        )
+        error_response = make_response(
+            jsonify({"error": {"message": message}}),
+            502,
+        )
+        for key, value in build_cors_headers().items():
+            error_response.headers.setdefault(key, value)
+        return None, error_response
 
     if getattr(upstream, "status_code", None) == 429:
-        note_account_exhausted(replacement.key, reason=_quota_detail(upstream))
+        _note_account_exhausted_quietly(
+            replacement.key,
+            reason=_quota_detail(upstream),
+        )
         _close_quietly(upstream)
         return None
-    return upstream
+    return upstream, None
 
 
 def build_upstream_websocket_url() -> str:
@@ -382,3 +458,39 @@ def build_upstream_websocket_url() -> str:
     elif scheme == "http":
         parsed = parsed._replace(scheme="ws")
     return urlunparse(parsed)
+
+
+def build_upstream_websocket_ssl_context() -> ssl.SSLContext:
+    """Build the same explicit trust store for every ChatGPT websocket path."""
+
+    cafile = (
+        os.getenv("CODEX_CA_CERTIFICATE")
+        or os.getenv("SSL_CERT_FILE")
+        or certifi.where()
+    )
+    return ssl.create_default_context(cafile=cafile)
+
+
+def connect_upstream_websocket(
+    url: str,
+    headers: Dict[str, str],
+    *,
+    open_timeout: float = 15.0,
+    close_timeout: float = 10.0,
+):
+    """Open one authenticated Responses websocket with bounded handshakes.
+
+    The caller owns the returned connection and must close it. Keeping this
+    helper transport-only lets the public websocket proxy and the council use
+    identical TLS/auth connection behavior while retaining different lifetime
+    policies (session reuse for the proxy, exactly one response for council).
+    """
+
+    return websocket_connect(
+        url,
+        additional_headers=headers,
+        open_timeout=open_timeout,
+        close_timeout=close_timeout,
+        max_size=upstream_websocket_max_message_bytes(),
+        ssl=build_upstream_websocket_ssl_context(),
+    )

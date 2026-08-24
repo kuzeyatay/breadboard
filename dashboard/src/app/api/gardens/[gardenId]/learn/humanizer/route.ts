@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import {
-  getLearnStatusSnapshot,
-  LearnPipelineConflictError,
-  switchFinishedLearnHumanizer,
-} from "@/lib/learn";
-import { handOffLearnTask } from "@/lib/learn-background";
 import { setHermesUserSettings } from "@/lib/hermes/runtime-store";
+import { executeLearnOperationForRoute } from "breadboard-learn-operation-runtime";
+import {
+  InvalidLearnRouteBodyError,
+  isLearnRouteConflict,
+  readLearnRouteJsonObject,
+} from "@/lib/learn-route-errors";
+import { getLearnStatusSnapshotForRoute } from "breadboard-learn-status-runtime";
 import {
   requireOwnedClusterFromSlug,
   routeErrorResponse,
@@ -28,16 +29,14 @@ export async function POST(
       );
     }
 
-    const body = (await request.json().catch(() => ({}))) as Record<
-      string,
-      unknown
-    >;
+    const body = await readLearnRouteJsonObject(request);
     if (typeof body.enabled !== "boolean") {
       return NextResponse.json(
         { error: "enabled must be a boolean" },
         { status: 400 },
       );
     }
+    const enabled = body.enabled;
     const expectedVersionId =
       typeof body.expectedVersionId === "string" && body.expectedVersionId.trim()
         ? body.expectedVersionId.trim()
@@ -46,16 +45,17 @@ export async function POST(
     // This route is also the authoritative server-side preference update. The
     // browser hook mirrors it independently for chat, but a network race must
     // not make this explicit Learn action observe the old value.
-    setHermesUserSettings(userId, { humanizerAuto: body.enabled });
-    const execution = await handOffLearnTask(
-      switchFinishedLearnHumanizer({
+    setHermesUserSettings(userId, { humanizerAuto: enabled });
+    const execution = await executeLearnOperationForRoute(
+      {
+        operation: "humanizer",
         gardenId: cluster.slug,
         userId,
         contentPath,
-        enabled: body.enabled,
+        enabled,
         expectedVersionId,
-      }),
-      `${body.enabled ? "humanization" : "AI-copy restore"} for ${cluster.slug}`,
+      },
+      `${enabled ? "humanization" : "AI-copy restore"} for ${cluster.slug}`,
     );
 
     if (execution.accepted) {
@@ -63,19 +63,26 @@ export async function POST(
         {
           success: true,
           accepted: true,
-          ...getLearnStatusSnapshot({ gardenId: cluster.slug, contentPath }),
+          jobId: execution.jobId ?? null,
         },
         { status: 202 },
       );
     }
+    const snapshot = await getLearnStatusSnapshotForRoute({
+      gardenId: cluster.slug,
+      contentPath,
+    });
     return NextResponse.json({
       success: true,
       accepted: false,
       result: execution.value,
-      ...getLearnStatusSnapshot({ gardenId: cluster.slug, contentPath }),
+      ...snapshot,
     });
   } catch (error) {
-    if (error instanceof LearnPipelineConflictError) {
+    if (error instanceof InvalidLearnRouteBodyError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (isLearnRouteConflict(error)) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     return routeErrorResponse(error);

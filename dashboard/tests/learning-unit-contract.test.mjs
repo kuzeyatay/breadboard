@@ -70,6 +70,29 @@ function modelAuthoredSpine() {
   }));
 }
 
+function richModelAuthoredSpine(roleForIndex) {
+  return modelAuthoredSpine().flatMap((unit, index) => [0, 1].map((copyIndex) => {
+    const ordinal = copyIndex * 8 + index + 1;
+    const anchor = `S1.P${ordinal}`;
+    return {
+      ...unit,
+      id: `U${ordinal}`,
+      title: `Authored unit ${ordinal}`,
+      role: roleForIndex(ordinal - 1),
+      learningQuestion: `What source-grounded idea ${ordinal} must the learner understand?`,
+      newConcepts: [`Concept ${ordinal}`],
+      sourceAnchors: [anchor],
+      semanticConcepts: [{
+        ...unit.semanticConcepts[0],
+        slug: `concept-${ordinal}`,
+        preferredLabel: `Concept ${ordinal}`,
+        evidenceAnchors: [anchor],
+      }],
+      sectionPlan: { ...unit.sectionPlan },
+    };
+  }));
+}
+
 test("the active spine projects model-authored sections verbatim", () => {
   const units = normalizeLearningUnits(modelAuthoredSpine(), { modelAuthoredOnly: true });
   const problems = validateLearningUnitContracts(units, {
@@ -93,6 +116,53 @@ test("the active spine projects model-authored sections verbatim", () => {
       ["Electromagnetic-Wave Propagation", "Connect changing fields to propagating waves."],
     ],
   );
+});
+
+test("model-authored rich spines reject role collapse and preserve teaching-move diversity", () => {
+  const collapsed = normalizeLearningUnits(
+    richModelAuthoredSpine(() => "formula"),
+    { modelAuthoredOnly: true },
+  );
+  const collapsedProblems = validateLearningUnitContracts(collapsed, {
+    requireModelAuthoredSemantics: true,
+    requireModelAuthoredSections: true,
+  }).join("\n");
+  assert.match(collapsedProblems, /use at least 3 distinct roles/);
+  assert.match(collapsedProblems, /no motivation, core-concept, or mechanism unit/);
+  assert.match(collapsedProblems, /no practice, interpretation, comparison, application, limitation, or synthesis unit/);
+
+  const roles = ["core_concept", "mechanism", "application", "formula"];
+  const diverse = normalizeLearningUnits(
+    richModelAuthoredSpine((index) => roles[index % roles.length]),
+    { modelAuthoredOnly: true },
+  );
+  assert.deepEqual(validateLearningUnitContracts(diverse, {
+    requireModelAuthoredSemantics: true,
+    requireModelAuthoredSections: true,
+  }), []);
+});
+
+test("verified formulas can support conceptual and mechanism teaching moves", () => {
+  const authored = modelAuthoredSpine();
+  authored[0].sourceFormulas = [{
+    id: "S1.P1.E1",
+    teachingGoal: "Connect the governing relation to the core concept.",
+    termsToDefine: ["field", "source"],
+    placement: "before_example",
+  }];
+  authored[1].role = "mechanism";
+  authored[1].sourceFormulas = [{
+    id: "S1.P2.E1",
+    teachingGoal: "Explain how the mechanism follows from the relation.",
+    termsToDefine: ["flux", "charge"],
+    placement: "before_example",
+  }];
+
+  const units = normalizeLearningUnits(authored, { modelAuthoredOnly: true });
+  assert.deepEqual(validateLearningUnitContracts(units, {
+    requireModelAuthoredSemantics: true,
+    requireModelAuthoredSections: true,
+  }), []);
 });
 
 test("model-only normalization never invents concepts, roles, word ranges, or sections", () => {

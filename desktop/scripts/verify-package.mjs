@@ -49,12 +49,36 @@ function checkResourcesRoot(resources, label) {
     `${label} Codex coding-agent binary`,
   );
   requireFile(
+    path.join(resources, "bin", "runtime-supervisor.exe"),
+    `${label} Windows Job Object runtime supervisor`,
+  );
+  requireFile(
     path.join(resources, "runtimes", "python", "Lib", "site-packages", "flask", "__init__.py"),
     `${label} ChatMock Python dependencies`,
   );
   requireFile(
     path.join(dashboard, "server.js"),
     `${label} dashboard standalone server`,
+  );
+  requireFile(
+    path.join(dashboard, "public", "genoffice-editor", "index.html"),
+    `${label} GenOffice editor shell`,
+  );
+  requireFile(
+    path.join(dashboard, "public", "genoffice-editor", "app.js"),
+    `${label} GenOffice editor JavaScript`,
+  );
+  requireFile(
+    path.join(dashboard, "public", "genoffice-editor", "app.css"),
+    `${label} GenOffice Office-style CSS`,
+  );
+  requireFile(
+    path.join(dashboard, "scripts", "learn-worker.mjs"),
+    `${label} durable Learn worker entrypoint`,
+  );
+  requireFile(
+    path.join(dashboard, "worker-src", "lib", "learn.ts"),
+    `${label} durable Learn worker source`,
   );
   requireFile(
     path.join(resources, "app-services", "openGym", "frontend", "src", "lib", "exercises-data.js"),

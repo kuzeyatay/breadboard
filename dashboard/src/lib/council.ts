@@ -48,6 +48,9 @@ export interface CouncilFields {
   sourceContext?: unknown;
   councilModeOverride?: CouncilMode;
   includeCouncilDiagnostics?: boolean;
+  /** Durable, promptless recovery binding for a single authoritative request. */
+  clientRequestId?: string;
+  clientRequestHash?: string;
 }
 
 /**

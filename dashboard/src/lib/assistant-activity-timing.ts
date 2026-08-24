@@ -1,3 +1,5 @@
+import { parseChatTimestamp } from "./chat-time-separators.ts";
+
 export interface TimedAssistantActivity {
   startedAt?: string;
   completedAt?: string;
@@ -13,9 +15,7 @@ export function assistantLiveActivityReady(elapsedMs: number | null): boolean {
 }
 
 function timestamp(value: string | undefined): number | null {
-  if (!value) return null;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  return parseChatTimestamp(value);
 }
 
 /**

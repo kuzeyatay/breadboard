@@ -9,6 +9,7 @@ import FastReadButton from '@/app/components/fastread-button';
 import NavbarFlowerWind from '@/app/components/navbar-flower-wind';
 import { getNavbarShortcuts } from '@/lib/profile/navbar-shortcuts-store.ts';
 import GardenClient from './garden-client';
+import { withServiceLease } from '@/lib/supervisor-control';
 
 export default async function GardenPage({
   params,
@@ -19,6 +20,7 @@ export default async function GardenPage({
 }) {
   const session = await getServerSession(authOptions);
   if (!session?.user) redirect('/auth/login');
+  await withServiceLease('quartz', 'garden-preview', async () => undefined);
 
   const userId = Number((session.user as { id?: string }).id);
   const { clusterSlug } = await params;

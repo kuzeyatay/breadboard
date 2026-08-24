@@ -77,6 +77,11 @@ const DURABLE_BREADBOARD_ENTRIES = new Set([
   "source-formula-reviews", // AI-authored formula fidelity records + PDF-render evidence
   "source-formula-review-set.json", // stable reviewed-formula set/source-hash binding
   "source-anchors.json", // canonical model-selected source-anchor ledger
+  // The current confirmed planning contract is an input to generation. Its
+  // independent staged copy binds syllabus evidence-recovery before writers
+  // can replace it, so omitting it would make a valid recovered plan fail
+  // closed solely because the workspace lacks the receipt to verify.
+  "learning-unit-contract.json",
   "sources", // extracted per-source markdown, if present here
   "events.jsonl", // append-only operational history; merged before promotion
 ]);
@@ -110,7 +115,6 @@ const DISPOSABLE_BREADBOARD_ENTRIES = new Set([
   "formula-identities.json",
   "humanizer",
   "learn-build.lock.json",
-  "learning-unit-contract.json",
   "repair-log.json",
   "repair-report.md",
   "render-manifest.json",

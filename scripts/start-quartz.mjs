@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRootEnv } from "./load-root-env.mjs";
+import { exitIfAlreadyRunning, WARMING_BUDGET_MS } from "./service-probe.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
@@ -23,6 +24,12 @@ if (process.platform === "win32") {
   args = ["quartz", "build", "--serve", "--port", "8081"];
   cwd = path.join(repoRoot, "quartz");
 }
+
+// A Quartz already serving the garden is the one to keep: a second build would
+// spend minutes re-rendering every note only to lose the port. (The Windows
+// PowerShell path checks this too; this covers the other platforms and gives
+// the full-stack launcher the same answer everywhere.)
+await exitIfAlreadyRunning("quartz", { url: "http://127.0.0.1:8081/" }, WARMING_BUDGET_MS.quartz);
 
 const child = spawn(cmd, args, { cwd, env: process.env, stdio: "inherit" });
 child.on("error", (error) => {

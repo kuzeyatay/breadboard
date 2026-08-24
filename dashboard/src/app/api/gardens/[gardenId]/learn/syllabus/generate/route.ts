@@ -1,4 +1,8 @@
 import { NextResponse } from "next/server";
+import {
+  InvalidLearnRouteBodyError,
+  readLearnRouteJsonObject,
+} from "@/lib/learn-route-errors";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
 import { createChatmockClient, scanClusterKnowledge, writeDocumentKnowledge } from "@/lib/knowledge";
 import {
@@ -36,7 +40,7 @@ export async function POST(
       );
     }
 
-    const body = await request.json().catch(() => ({}) as Record<string, unknown>);
+    const body = await readLearnRouteJsonObject(request);
     const prompt =
       typeof body.prompt === "string" ? body.prompt.trim().slice(0, SYLLABUS_PROMPT_MAX_CHARS) : "";
     if (!prompt) {
@@ -121,6 +125,9 @@ export async function POST(
       unitCount: syllabus.units.length,
     });
   } catch (error) {
+    if (error instanceof InvalidLearnRouteBodyError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     return routeErrorResponse(error);
   }
 }

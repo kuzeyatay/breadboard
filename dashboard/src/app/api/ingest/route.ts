@@ -39,6 +39,11 @@ import type { FigureSaver } from "@/lib/vlm-ocr/figures";
 import { DEFAULT_VLM_OCR_TASK, isVlmOcrTask } from "@/lib/vlm-ocr/prompts";
 import type { VlmOcrTask } from "@/lib/vlm-ocr/prompts";
 import { toBreadboardMarkdown } from "@/lib/vlm-ocr/quartz-safe";
+import {
+  SupervisorResourceExhaustedError,
+  withCapabilityLease,
+} from "@/lib/supervisor-control";
+import { parseIngestUpload, type IngestUploadFile, type ParsedIngestUpload } from "@/lib/ingest-upload";
 
 export const dynamic = "force-dynamic";
 
@@ -1330,7 +1335,7 @@ async function runIngest({
   request: Request;
   client?: OpenAI;
   contentPath: string;
-  file: File;
+  file: IngestUploadFile;
   normalizedClusterSlug: string;
   filename: string;
   ext: string;
@@ -1347,6 +1352,16 @@ async function runIngest({
   createdMarkdownPaths: string[];
   emit: (step: string) => void;
 }): Promise<Record<string, unknown>> {
+  // Multipart bytes are staged to a private file before this worker boundary.
+  // Materialize at most one Buffer for parsers that require random access;
+  // repeated safety/extraction passes reuse it instead of copying the upload.
+  let originalBytes: Buffer | null = null;
+  const fileBytes = async (): Promise<Buffer> => {
+    if (originalBytes) return originalBytes;
+    originalBytes = await file.readBuffer();
+    return originalBytes;
+  };
+  const fileText = async (): Promise<string> => (await fileBytes()).toString("utf8");
   // The uploaded filename is the stable identity shown in Documents. Stop a
   // re-upload before extraction so it cannot create a second source note or a
   // second set of concept scaffolding for the same document.
@@ -1407,7 +1422,7 @@ async function runIngest({
 
   if (useAnydoc) {
     throwIfRequestAborted(request.signal);
-    const buffer = Buffer.from(await file.arrayBuffer());
+    const buffer = await fileBytes();
     // A PDF keeps its original beside the note: anydoc reads the text layer,
     // not the rendered page, so the source is the only way back to the layout.
     if (ext === "pdf") {
@@ -1451,8 +1466,8 @@ async function runIngest({
     );
   } else if (isImageExt(ext)) {
     throwIfRequestAborted(request.signal);
-    const arrayBuffer = await file.arrayBuffer();
-    const base64 = Buffer.from(arrayBuffer).toString("base64");
+    const buffer = await fileBytes();
+    const base64 = buffer.toString("base64");
     const dataUrl = `${mimeToBase64Prefix(file.type, ext)}${base64}`;
 
     let vlmImageMarkdown = "";
@@ -1530,8 +1545,7 @@ async function runIngest({
     }
   } else if (ext === "pdf") {
     throwIfRequestAborted(request.signal);
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const buffer = await fileBytes();
     sourcePdfPath = saveUploadedPdfAsset({
       contentPath,
       clusterSlug: normalizedClusterSlug,
@@ -1781,33 +1795,33 @@ async function runIngest({
       markdownText = pdfFallbackMarkdown(nameWithoutExt, sourcePdfPath, reason);
     }
   } else if (ext === "csv") {
-    plainText = await file.text();
+    plainText = await fileText();
     markdownText = "```csv\n" + plainText + "\n```";
     pages = [{ label: "CSV Data", text: plainText }];
   } else if (ext === "docx") {
-    const buffer = Buffer.from(await file.arrayBuffer());
+    const buffer = await fileBytes();
     plainText = extractDocxText(buffer);
     markdownText = plainText;
     pages = [{ label: "Word Document", text: plainText }];
   } else if (ext === "pptx") {
-    const buffer = Buffer.from(await file.arrayBuffer());
+    const buffer = await fileBytes();
     plainText = extractPptxText(buffer);
     markdownText = plainText;
     pages = plainText
       .split("\n\n---\n\n")
       .map((t, i) => ({ label: `Slide ${i + 1}`, text: t }));
   } else if (ext === "xlsx") {
-    const buffer = Buffer.from(await file.arrayBuffer());
+    const buffer = await fileBytes();
     plainText = extractXlsxText(buffer);
     markdownText = "```\n" + plainText + "\n```";
     pages = [{ label: "Excel Data", text: plainText }];
   } else if (ext === "zip") {
-    const buffer = Buffer.from(await file.arrayBuffer());
+    const buffer = await fileBytes();
     plainText = extractZipText(buffer);
     markdownText = plainText;
     pages = [{ label: "Archive Contents", text: plainText }];
   } else {
-    plainText = await file.text();
+    plainText = await fileText();
     markdownText = plainText;
     pages = [{ label: ext === "md" ? "Markdown" : "Text", text: plainText }];
   }
@@ -1833,7 +1847,7 @@ async function runIngest({
   try {
     safetyReport = scanDocumentForHiddenContent({
       bytes: STRUCTURALLY_SCANNABLE.has(ext)
-        ? Buffer.from(await file.arrayBuffer())
+        ? await fileBytes()
         : undefined,
       ext,
       // Both forms are scanned because a carrier can survive into one and not
@@ -1979,10 +1993,10 @@ export async function POST(request: Request) {
   // Validation and auth run before streaming so genuine HTTP error codes
   // (400/401/500) still reach the client as a normal JSON response.
   let baseURL: string;
-  let formData: FormData;
+  let upload: ParsedIngestUpload;
   try {
     ({ baseURL } = resolveChatmockBaseUrl(request));
-    formData = await request.formData();
+    upload = await parseIngestUpload(request);
   } catch (err) {
     if (
       err instanceof UploadAbortedError ||
@@ -1993,30 +2007,32 @@ export async function POST(request: Request) {
     return routeErrorResponse(err);
   }
 
-  const file = formData.get("file");
-  const clusterSlug = formData.get("clusterSlug");
-  const sourceLabel = formData.get("sourceLabel");
-  const isHandwriting = formData.get("isHandwriting") === "true";
-  const generateMap = formData.get("generateMap") !== "false"; // default true
+  const file = upload.file;
+  const clusterSlug = upload.fields.get("clusterSlug");
+  const sourceLabel = upload.fields.get("sourceLabel");
+  const isHandwriting = upload.fields.get("isHandwriting") === "true";
+  const generateMap = upload.fields.get("generateMap") !== "false"; // default true
   // "Parse using VLM": read the pages with the local HunyuanOCR GGUF instead of
   // pdf-parse or ChatMock vision. Orthogonal to map generation.
   const parseWithVlm =
-    formData.get("parseWithVlm") === "true" ||
-    formData.get("parseMode") === "vlm";
+    upload.fields.get("parseWithVlm") === "true" ||
+    upload.fields.get("parseMode") === "vlm";
   // "Parse with anydoc": convert the document package to Markdown with the
   // anydoc bindings instead of the hand-rolled per-format text extractors.
   const parseWithAnydoc =
-    formData.get("parseWithAnydoc") === "true" ||
-    formData.get("parseMode") === "anydoc";
-  const rawVlmTask = formData.get("vlmTask");
+    upload.fields.get("parseWithAnydoc") === "true" ||
+    upload.fields.get("parseMode") === "anydoc";
+  const rawVlmTask = upload.fields.get("vlmTask");
   const vlmTask: VlmOcrTask = isVlmOcrTask(rawVlmTask)
     ? rawVlmTask
     : DEFAULT_VLM_OCR_TASK;
 
-  if (!(file instanceof File)) {
+  if (!file) {
+    await upload.cleanup();
     return NextResponse.json({ error: "file is required" }, { status: 400 });
   }
   if (typeof clusterSlug !== "string" || !clusterSlug.trim()) {
+    await upload.cleanup();
     return NextResponse.json(
       { error: "clusterSlug is required" },
       { status: 400 },
@@ -2028,6 +2044,7 @@ export async function POST(request: Request) {
   try {
     ({ cluster, userId } = await requireOwnedClusterFromSlug(clusterSlug));
   } catch (err) {
+    await upload.cleanup();
     return routeErrorResponse(err);
   }
   // Every ChatMock call in this pipeline runs on whatever the user picked in
@@ -2036,6 +2053,7 @@ export async function POST(request: Request) {
 
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
   if (!contentPath) {
+    await upload.cleanup();
     return NextResponse.json(
       { error: "QUARTZ_CONTENT_PATH is not configured" },
       { status: 500 },
@@ -2084,26 +2102,30 @@ export async function POST(request: Request) {
         : undefined;
 
       try {
-        const result = await runIngest({
-          request,
-          client: trackedClient,
-          contentPath,
-          file,
-          normalizedClusterSlug,
-          filename,
-          ext,
-          nameWithoutExt,
-          source,
-          model,
-          isHandwriting,
-          parseWithVlm,
-          parseWithAnydoc,
-          vlmTask,
-          generateMap,
-          createdFilePaths,
-          createdMarkdownPaths,
-          emit,
-        });
+        const result = await withCapabilityLease(
+          "document-ingestion",
+          `ingest-${ext || "document"}`,
+          () => runIngest({
+            request,
+            client: trackedClient,
+            contentPath,
+            file,
+            normalizedClusterSlug,
+            filename,
+            ext,
+            nameWithoutExt,
+            source,
+            model,
+            isHandwriting,
+            parseWithVlm,
+            parseWithAnydoc,
+            vlmTask,
+            generateMap,
+            createdFilePaths,
+            createdMarkdownPaths,
+            emit,
+          }),
+        );
         send({
           type: "result",
           ...result,
@@ -2130,6 +2152,9 @@ export async function POST(request: Request) {
           send({
             type: "error",
             error: errorMessage(err, "Upload failed"),
+            ...(err instanceof SupervisorResourceExhaustedError
+              ? err.result
+              : {}),
             visionError:
               err instanceof ChatmockVisionError ? err.message : undefined,
             durationMs: Date.now() - startedAt,
@@ -2137,6 +2162,7 @@ export async function POST(request: Request) {
           });
         }
       } finally {
+        await upload.cleanup();
         closed = true;
         try {
           controller.enqueue(encoder.encode("data: [DONE]\n\n"));

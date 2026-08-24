@@ -2192,7 +2192,6 @@ function asArray(value: unknown): unknown[] {
 
 const RESULT_ROLES = new Set<LearningUnitRole>(["result_interpretation", "comparison"]);
 const DEFINITION_ROLES = new Set<LearningUnitRole>(["motivation", "core_concept"]);
-const FORMULA_ROLES = new Set<LearningUnitRole>(["formula", "metric"]);
 
 const ASSIGNMENT_ROLE_PRIORITY: Record<LearningUnitRole, number> = {
   result_interpretation: 0,
@@ -3041,6 +3040,43 @@ export function validateLearningUnitContracts(
     problems.push(`only ${units.length} learning units; a garden needs a real teaching sequence (>= 8)`);
   }
 
+  // The active source-rich contract asks the model for 15-25 units. At that
+  // depth, collapsing every teaching move to one role is not a harmless label:
+  // it changes page prompts, visual review, and section semantics. Formula
+  // ownership is validated from exact anchors and placements below, so a model
+  // must never relabel conceptual/mechanism/application units as `formula`
+  // merely to carry equations.
+  if (options.requireModelAuthoredSemantics && units.length >= 15) {
+    const authoredRoles = new Set(units.map((unit) => unit.role));
+    if (authoredRoles.size < 3) {
+      problems.push(
+        `model-authored learning spine uses only ${authoredRoles.size} pedagogical role${authoredRoles.size === 1 ? "" : "s"} (${[...authoredRoles].join(", ") || "none"}); choose roles from each unit's teaching move, not its source-artifact type, and use at least 3 distinct roles`,
+      );
+    }
+    if (!units.some((unit) =>
+      unit.role === "motivation" ||
+      unit.role === "core_concept" ||
+      unit.role === "mechanism"
+    )) {
+      problems.push(
+        "model-authored learning spine has no motivation, core-concept, or mechanism unit",
+      );
+    }
+    if (!units.some((unit) =>
+      unit.role === "worked_example" ||
+      unit.role === "training_method" ||
+      unit.role === "result_interpretation" ||
+      unit.role === "comparison" ||
+      unit.role === "application" ||
+      unit.role === "limitation" ||
+      unit.role === "synthesis"
+    )) {
+      problems.push(
+        "model-authored learning spine has no practice, interpretation, comparison, application, limitation, or synthesis unit",
+      );
+    }
+  }
+
   if (options.requireModelAuthoredSections) {
     problems.push(...modelAuthoredSectionGroups(units).problems);
   } else {
@@ -3072,11 +3108,12 @@ export function validateLearningUnitContracts(
         problems.push(`unit "${unit.id}" (${unit.role}): result figure ${figure.id} assigned to a definition/introduction unit`);
       }
     }
-    for (const formula of unit.sourceFormulas) {
-      if (!FORMULA_ROLES.has(unit.role) && unit.role !== "result_interpretation" && unit.role !== "worked_example") {
-        problems.push(`unit "${unit.id}" (${unit.role}): formula ${formula.id} assigned outside a formula/metric unit`);
-      }
-    }
+    // A verified equation can legitimately support a concept, mechanism,
+    // comparison, application, or synthesis page. The unit role describes the
+    // teaching move; it is not permission to carry math. Exact artifact
+    // identity, ownership, grounding, and the model-authored placement carry
+    // that safety contract, so do not force every equation-owning unit to call
+    // itself `formula` or `metric`.
   }
 
   // Public concepts and readable claims are validated independently.

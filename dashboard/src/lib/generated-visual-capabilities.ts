@@ -18,6 +18,19 @@ export const GENERATED_VISUAL_CAPABILITY_MANIFEST_VERSION = 3 as const;
 export const GENERATED_VISUAL_CONTROL_ID_PATTERN = /^[a-z][a-z0-9_]{0,79}$/;
 export const GENERATED_VISUAL_RESERVED_CONTROL_IDS = ["x", "t"] as const;
 
+/** Prediction-only roles are a coupled protocol, not optional decoration on
+ * otherwise unrelated controls. Keep this rule shared by prompts and strict
+ * validation so a model repair cannot be asked to satisfy only one direction
+ * of the contract. */
+export const GENERATED_VISUAL_PREDICTION_PROTOCOL_ROLES = [
+  "prediction_input",
+  "commit_prediction",
+  "reveal_outcome",
+  "evaluate_prediction",
+] as const;
+export const GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE =
+  'Prediction protocol roles and interactionGoal "test_prediction" are a coupled contract: prediction_input, commit_prediction, reveal_outcome, and evaluate_prediction are legal only when interactionGoal is "test_prediction", and every other interactionGoal must omit those optional protocolRole values. Conversely, "test_prediction" requires an evidence-grounded slider/number/select marked prediction_input, followed by a distinct protocol_action button/toggle marked commit_prediction, followed by a distinct protocol_action button/toggle marked reveal_outcome or evaluate_prediction. The outcome expression or visibility must remain unchanged through initial, prediction, and commit-only states and change only after valid commit then reveal/evaluate. Do not convert a non-prediction learning interaction into a prediction interaction merely to preserve an accidentally emitted optional protocolRole; omit that role instead.';
+
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
     for (const nested of Object.values(value as Record<string, unknown>)) {
@@ -59,13 +72,7 @@ export const GENERATED_VISUAL_CAPABILITY_MANIFEST = deepFreeze({
     maximum: 3,
     types: ["slider", "number", "select", "toggle", "button"],
     kinds: ["variable", "select_case", "process_position", "protocol_action"],
-    protocolRoles: [
-      "prediction_input",
-      "commit_prediction",
-      "reveal_outcome",
-      "evaluate_prediction",
-      "reset",
-    ],
+    protocolRoles: [...GENERATED_VISUAL_PREDICTION_PROTOCOL_ROLES, "reset"] as const,
     protocolRules: {
       sourceSemanticTypes: ["slider", "number", "select"],
       pureProtocolTypes: ["button", "toggle"],
@@ -73,8 +80,7 @@ export const GENERATED_VISUAL_CAPABILITY_MANIFEST = deepFreeze({
       pureProtocolEvidence: "exactly_empty",
       buttonDefault: 0,
       toggleDefault: false,
-      testPrediction:
-        "an evidence-grounded slider/number/select marked prediction_input must precede a distinct protocol_action button/toggle marked commit_prediction, which must precede a distinct protocol_action button/toggle marked reveal_outcome or evaluate_prediction; the outcome expression or visibility must remain unchanged through prediction and commit-only states and change only after valid commit then reveal/evaluate",
+      testPrediction: GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE,
     },
     exactProjectionRequired: true,
   },

@@ -1,0 +1,333 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import Database from "better-sqlite3";
+
+import { ensureArtifactSchema } from "../../src/lib/hermes/artifact-schema.ts";
+import {
+  artifactDeliveryFile,
+  createArtifact,
+  createImportedArtifact,
+  listArtifactVersions,
+  readArtifactSource,
+  renderArtifact,
+} from "../../src/lib/hermes/artifact-store.ts";
+import {
+  loadArtifactEditor,
+  saveArtifactEditor,
+  saveArtifactOfficeBytes,
+  saveArtifactPdfBytes,
+} from "../../src/lib/hermes/artifact-document-editor.ts";
+import { artifactEditorMode } from "../../src/lib/hermes/artifact-editor-types.ts";
+import { buildContext, findQuote } from "../../src/vendor/human-review/anchor-text.ts";
+
+function fixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-document-editor-test-"));
+  const database = new Database(path.join(root, "artifacts.sqlite"));
+  database.pragma("foreign_keys = ON");
+  database.exec(`
+    CREATE TABLE users(id INTEGER PRIMARY KEY);
+    CREATE TABLE clusters(id INTEGER PRIMARY KEY, slug TEXT NOT NULL, user_id INTEGER);
+    CREATE TABLE conversations(id INTEGER PRIMARY KEY, public_id TEXT UNIQUE, user_id INTEGER, surface TEXT, default_garden_id INTEGER);
+    CREATE TABLE hermes_runtime_sessions(id INTEGER PRIMARY KEY);
+    CREATE TABLE hermes_runs(id TEXT PRIMARY KEY, runtime_session_id INTEGER);
+    CREATE TABLE conversation_messages(id INTEGER PRIMARY KEY, conversation_id INTEGER, client_message_id TEXT);
+    INSERT INTO users VALUES (1);
+    INSERT INTO conversations VALUES (10, 'conv_editor', 1, 'dashboard_terminal', NULL);
+    INSERT INTO hermes_runtime_sessions VALUES (20);
+    INSERT INTO hermes_runs VALUES ('run_editor', 20);
+  `);
+  ensureArtifactSchema(database);
+  return {
+    root,
+    workspace: path.join(root, "workspace"),
+    storage: path.join(root, "storage"),
+    database,
+  };
+}
+
+function shared(input, overrides = {}) {
+  return {
+    userId: 1,
+    runtimeSessionId: 20,
+    hermesSessionId: "session_editor",
+    conversationId: 10,
+    clusterId: null,
+    runId: "run_editor",
+    assistantMessageId: null,
+    surface: "dashboard_terminal",
+    title: "Editable artifact",
+    database: input.database,
+    storageRoot: input.storage,
+    ...overrides,
+  };
+}
+
+function options(input) {
+  return { database: input.database, storageRoot: input.storage };
+}
+
+test("editor modes and Human Review anchors cover every document family", () => {
+  const base = { status: "ready", metadata: { imported: true } };
+  assert.equal(artifactEditorMode({ ...base, kind: "document", renderer: "document-file", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }), "office-blocks");
+  assert.equal(artifactEditorMode({ ...base, kind: "presentation", renderer: "presentation-file", mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation" }), "office-blocks");
+  assert.equal(artifactEditorMode({ ...base, kind: "spreadsheet", renderer: "spreadsheet-file", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "spreadsheet-cells");
+  assert.equal(artifactEditorMode({ ...base, kind: "pdf", renderer: "pdf-file", mimeType: "application/pdf" }), "pdf");
+  assert.equal(artifactEditorMode({ ...base, kind: "data", renderer: "data-file", mimeType: "application/json; charset=utf-8" }), "file-text");
+  assert.equal(artifactEditorMode({ status: "ready", metadata: {}, kind: "markdown", renderer: "markdown", mimeType: "text/markdown" }), "source");
+
+  const context = buildContext("alpha repeated beta repeated gamma", 20, 28);
+  assert.deepEqual(findQuote("intro alpha repeated beta repeated gamma", context), {
+    start: 26,
+    end: 34,
+    exact: true,
+  });
+});
+
+test("source documents save and render a traceable new artifact version", async () => {
+  const input = fixture();
+  try {
+    let artifact = createArtifact(shared(input, {
+      kind: "markdown",
+      rendererId: "markdown",
+      filename: "report.md",
+      content: "# Report\n\nFirst version.",
+    }));
+    artifact = await renderArtifact({ artifact, runId: "run_editor", assistantMessageId: null, ...options(input) });
+    const opened = await loadArtifactEditor(artifact, options(input));
+    assert.equal(opened.mode, "source");
+    assert.match(opened.content, /First version/);
+
+    const saved = await saveArtifactEditor({
+      artifact,
+      expectedVersion: 1,
+      content: "# Report\n\nHuman-edited second version.",
+    }, options(input));
+    assert.equal(saved.status, "ready");
+    assert.equal(saved.current_version, 2);
+    assert.match(readArtifactSource(saved, 1, input.storage, input.database), /First version/);
+    assert.match(readArtifactSource(saved, 2, input.storage, input.database), /Human-edited/);
+  } finally {
+    input.database.close();
+    fs.rmSync(input.root, { recursive: true, force: true });
+  }
+});
+
+test("DOCX blocks round-trip through the native editor and retain an HTML preview", async () => {
+  const input = fixture();
+  fs.mkdirSync(input.workspace, { recursive: true });
+  fs.copyFileSync(
+    path.resolve(process.cwd(), "../OfficeCLI/examples/word/document-formatting.docx"),
+    path.join(input.workspace, "report.docx"),
+  );
+  try {
+    const artifact = createImportedArtifact(shared(input, {
+      kind: "document",
+      filename: "report.docx",
+      authorizedRoot: input.workspace,
+      filePath: "report.docx",
+    }));
+    const opened = await loadArtifactEditor(artifact, options(input));
+    assert.equal(opened.mode, "office-blocks");
+    const block = opened.blocks.find((candidate) => candidate.editable && candidate.text.trim());
+    assert.ok(block, "the Word editor exposes anchored editable blocks");
+    const changed = `${block.text} — Breadboard editor verified`;
+    const saved = await saveArtifactEditor({
+      artifact,
+      expectedVersion: 1,
+      patches: [{ anchor: block.anchor, text: changed }],
+    }, options(input));
+    assert.equal(saved.current_version, 2);
+    assert.ok(saved.preview_location, "the edited DOCX gets a browser preview");
+    const reopened = await loadArtifactEditor(saved, options(input));
+    assert.ok(reopened.blocks.some((candidate) => candidate.text.includes("Breadboard editor verified")));
+    assert.equal(listArtifactVersions(saved.id, input.database).length, 2);
+  } finally {
+    input.database.close();
+    fs.rmSync(input.root, { recursive: true, force: true });
+  }
+});
+
+test("GenOffice saves the complete DOCX package as a conflict-checked artifact version", async () => {
+  const input = fixture();
+  fs.mkdirSync(input.workspace, { recursive: true });
+  const sourcePath = path.resolve(process.cwd(), "../OfficeCLI/examples/word/document-formatting.docx");
+  fs.copyFileSync(sourcePath, path.join(input.workspace, "genoffice.docx"));
+  try {
+    const artifact = createImportedArtifact(shared(input, {
+      kind: "document",
+      filename: "genoffice.docx",
+      authorizedRoot: input.workspace,
+      filePath: "genoffice.docx",
+    }));
+    const bytes = fs.readFileSync(sourcePath);
+    const saved = await saveArtifactOfficeBytes(artifact, 1, bytes, options(input));
+    assert.equal(saved.current_version, 2);
+    assert.equal(listArtifactVersions(saved.id, input.database).length, 2);
+    assert.deepEqual(
+      fs.readFileSync(artifactDeliveryFile(saved, 2, input.storage, input.database).absolutePath),
+      bytes,
+    );
+    assert.equal(JSON.parse(saved.metadata_json).reviewWorkflow, "genoffice-docs");
+    await assert.rejects(
+      saveArtifactOfficeBytes(saved, 1, bytes, options(input)),
+      (error) => error?.code === "artifact_version_conflict",
+    );
+  } finally {
+    input.database.close();
+    fs.rmSync(input.root, { recursive: true, force: true });
+  }
+});
+
+test("PPTX slide text round-trips through anchored native blocks", async () => {
+  const input = fixture();
+  fs.mkdirSync(input.workspace, { recursive: true });
+  fs.copyFileSync(
+    path.resolve(process.cwd(), "../OfficeCLI/examples/Alien_Guide.pptx"),
+    path.join(input.workspace, "slides.pptx"),
+  );
+  try {
+    const artifact = createImportedArtifact(shared(input, {
+      kind: "presentation",
+      filename: "slides.pptx",
+      authorizedRoot: input.workspace,
+      filePath: "slides.pptx",
+    }));
+    const opened = await loadArtifactEditor(artifact, options(input));
+    const block = opened.blocks.find((candidate) => candidate.editable && candidate.text.trim());
+    assert.ok(block?.slide, "the PowerPoint editor exposes slide-aware blocks");
+    const saved = await saveArtifactEditor({
+      artifact,
+      expectedVersion: 1,
+      patches: [{ anchor: block.anchor, text: `${block.text} — reviewed` }],
+    }, options(input));
+    const reopened = await loadArtifactEditor(saved, options(input));
+    assert.ok(reopened.blocks.some((candidate) => candidate.text.endsWith("— reviewed")));
+    assert.ok(saved.preview_location);
+  } finally {
+    input.database.close();
+    fs.rmSync(input.root, { recursive: true, force: true });
+  }
+});
+
+test("imported JSON remains valid and versioned after text editing", async () => {
+  const input = fixture();
+  fs.mkdirSync(input.workspace, { recursive: true });
+  fs.writeFileSync(path.join(input.workspace, "data.json"), '{"status":"draft"}', "utf8");
+  try {
+    const artifact = createImportedArtifact(shared(input, {
+      kind: "data",
+      filename: "data.json",
+      authorizedRoot: input.workspace,
+      filePath: "data.json",
+    }));
+    assert.equal((await loadArtifactEditor(artifact, options(input))).mode, "file-text");
+    const saved = await saveArtifactEditor({
+      artifact,
+      expectedVersion: 1,
+      content: '{"status":"reviewed","complete":true}',
+    }, options(input));
+    assert.equal(saved.current_version, 2);
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(artifactDeliveryFile(saved, 2, input.storage, input.database).absolutePath, "utf8")),
+      { status: "reviewed", complete: true },
+    );
+  } finally {
+    input.database.close();
+    fs.rmSync(input.root, { recursive: true, force: true });
+  }
+});
+
+test("XLSX cells round-trip by stable sheet/cell anchors", async () => {
+  const input = fixture();
+  fs.mkdirSync(input.workspace, { recursive: true });
+  fs.copyFileSync(
+    path.resolve(process.cwd(), "../OfficeCLI/examples/excel/cell-formatting.xlsx"),
+    path.join(input.workspace, "workbook.xlsx"),
+  );
+  try {
+    const artifact = createImportedArtifact(shared(input, {
+      kind: "spreadsheet",
+      filename: "workbook.xlsx",
+      authorizedRoot: input.workspace,
+      filePath: "workbook.xlsx",
+    }));
+    const opened = await loadArtifactEditor(artifact, options(input));
+    assert.equal(opened.mode, "spreadsheet-cells");
+    const cell = opened.blocks.find((candidate) => candidate.anchor === "/Sheet1/A1");
+    assert.ok(cell);
+    const saved = await saveArtifactEditor({
+      artifact,
+      expectedVersion: 1,
+      patches: [{ anchor: cell.anchor, text: "Breadboard workbook verified" }],
+    }, options(input));
+    assert.equal(saved.current_version, 2);
+    assert.ok(saved.preview_location, "the edited workbook gets an HTML preview");
+    const reopened = await loadArtifactEditor(saved, options(input));
+    assert.equal(
+      reopened.blocks.find((candidate) => candidate.anchor === "/Sheet1/A1")?.text,
+      "Breadboard workbook verified",
+    );
+  } finally {
+    input.database.close();
+    fs.rmSync(input.root, { recursive: true, force: true });
+  }
+});
+
+test("PDF editor bytes publish as a new version without overwriting the original", async () => {
+  const input = fixture();
+  fs.mkdirSync(input.workspace, { recursive: true });
+  try {
+    let source = createArtifact(shared(input, {
+      kind: "pdf",
+      rendererId: "pdf",
+      filename: "source.pdf",
+      content: "Verified PDF\n\nA real PDF fixture.",
+    }));
+    source = await renderArtifact({ artifact: source, runId: "run_editor", assistantMessageId: null, ...options(input) });
+    const sourceFile = artifactDeliveryFile(source, 1, input.storage, input.database);
+    fs.copyFileSync(sourceFile.absolutePath, path.join(input.workspace, "editable.pdf"));
+    const artifact = createImportedArtifact(shared(input, {
+      kind: "pdf",
+      filename: "editable.pdf",
+      authorizedRoot: input.workspace,
+      filePath: "editable.pdf",
+    }));
+    const before = fs.readFileSync(artifactDeliveryFile(artifact, 1, input.storage, input.database).absolutePath);
+    const saved = await saveArtifactPdfBytes(artifact, before, options(input));
+    assert.equal(saved.current_version, 2);
+    assert.equal(listArtifactVersions(saved.id, input.database).length, 2);
+    assert.deepEqual(
+      fs.readFileSync(artifactDeliveryFile(saved, 1, input.storage, input.database).absolutePath),
+      before,
+    );
+    assert.equal((await loadArtifactEditor(saved, options(input))).mode, "pdf");
+  } finally {
+    input.database.close();
+    fs.rmSync(input.root, { recursive: true, force: true });
+  }
+});
+
+test("artifact UI exposes editors and contains no Revise control", () => {
+  const viewer = fs.readFileSync(path.resolve(process.cwd(), "src/app/components/hermes/artifact-viewer.tsx"), "utf8");
+  const studio = fs.readFileSync(path.resolve(process.cwd(), "src/app/components/hermes/artifact-document-studio.tsx"), "utf8");
+  const genoffice = fs.readFileSync(path.resolve(process.cwd(), "src/app/components/hermes/artifact-genoffice-editor.tsx"), "utf8");
+  const genofficeEntry = fs.readFileSync(path.resolve(process.cwd(), "src/genoffice-static/main.tsx"), "utf8");
+  const bridge = fs.readFileSync(path.resolve(process.cwd(), "src/app/genoffice-docs/[artifactId]/genoffice-bridge.ts"), "utf8");
+  const pdfPage = fs.readFileSync(path.resolve(process.cwd(), "src/app/artifacts/[artifactId]/pdf/page.tsx"), "utf8");
+  assert.doesNotMatch(viewer, />\s*Revise\s*</);
+  assert.match(viewer, /ArtifactDocumentStudio/);
+  assert.match(viewer, /ArtifactGenOfficeEditor/);
+  assert.match(genoffice, /\/genoffice-editor\/index\.html/);
+  assert.match(genofficeEntry, /genoffice-host\.css/);
+  assert.equal(fs.existsSync(path.resolve(process.cwd(), "public/genoffice-editor/index.html")), true);
+  assert.equal(fs.existsSync(path.resolve(process.cwd(), "public/genoffice-editor/app.js")), true);
+  assert.equal(fs.existsSync(path.resolve(process.cwd(), "public/genoffice-editor/app.css")), true);
+  assert.match(bridge, /breadboard:genoffice-artifact-saved/);
+  assert.match(bridge, /expectedVersion/);
+  assert.match(studio, /Ask AI to edit/);
+  assert.match(studio, /Save version/);
+  assert.match(pdfPage, /readOnly=!\{editable\}|readOnly=\{!editable\}/);
+});

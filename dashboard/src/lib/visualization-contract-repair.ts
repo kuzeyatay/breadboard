@@ -5,6 +5,7 @@ import type { ProposedLearningMap } from "./learn-utils.ts";
 import type { GardenVisualBudget, VisualDecisionOverride } from "./visual-necessity-types.ts";
 import {
   GENERATED_VISUAL_CONTROL_ID_PATTERN,
+  GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE,
   GENERATED_VISUAL_RESERVED_CONTROL_IDS,
 } from "./generated-visual-capabilities.ts";
 import {
@@ -56,6 +57,24 @@ export interface VisualizationContractRepairPacket {
   previousRejectionReasons: string[];
 }
 
+/** Exact provider text stays tagged until this repair boundary has decided
+ * whether it contains a real semantic candidate. This prevents an empty,
+ * malformed, or literal-null response from being collapsed to the same
+ * parsed `null` value by an upstream JSON helper. */
+export interface VisualizationContractRepairExactRawResponse {
+  kind: "visualization_contract_repair_exact_raw_v1";
+  content: string;
+}
+
+export function exactVisualizationContractRepairResponse(
+  content: string,
+): VisualizationContractRepairExactRawResponse {
+  return {
+    kind: "visualization_contract_repair_exact_raw_v1",
+    content,
+  };
+}
+
 export const VISUALIZATION_CONTRACT_REPAIR_RESPONSE_SCHEMA =
   `{"repairs":[${COMPLETE_VISUALIZATION_CONTRACT_REPAIR_SCHEMA}]}`;
 export const VISUALIZATION_CONTRACT_REPAIR_RESPONSE_SCHEMA_HASH = crypto
@@ -68,10 +87,10 @@ export function visualizationContractRepairSystemPrompt(): string {
     "Repair the complete interaction contract for each supplied model-approved interactive visual, whether its immutable requirement is required, recommended, or optional. Every repair must be a complete replacement authored by you even when only one field was missing; code will not merge, restore, or infer omitted fields.",
     `Return STRICT JSON: ${VISUALIZATION_CONTRACT_REPAIR_RESPONSE_SCHEMA}.`,
     "Use only the evidence entries supplied for that same unit. Every non-empty quote must be an exact substring of the entry with that anchor.",
-    "Author the complete non-empty learnerAction sequence plus every control id, input type, protocolRole, domain, and default; code will validate and project them verbatim. Source-semantic slider/number/select controls require exact evidence; numeric controls require finite min, max, step, and an in-range numeric default, while select controls require at least two source-named options and an exact declared default.",
+    "Author the complete non-empty learnerAction sequence plus every control id, input type, applicable optional protocolRole, domain, and default; code will validate and project them verbatim. Source-semantic slider/number/select controls require exact evidence; numeric controls require finite min, max, step, and an in-range numeric default, while select controls require at least two source-named options and an exact declared default.",
     `Every learner control id must match ${GENERATED_VISUAL_CONTROL_ID_PATTERN.source}; ${GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")} are runtime expression variables and are forbidden control ids.`,
-    "Pure protocol controls must use kind protocol_action and type button or toggle, carry protocolRole commit_prediction, reveal_outcome, evaluate_prediction, or reset, use exactly empty evidence, omit unit/min/max/step/options, and default to 0 for button or false for toggle. Their model-authored UI labels never substantiate subject claims, observables, or insights.",
-    "For test_prediction, author an evidence-grounded slider/number/select with protocolRole prediction_input, then a distinct commit_prediction protocol control, then a distinct reveal_outcome or evaluate_prediction protocol control in that exact array order. The outcome must not be revealed by default.",
+    "Pure action controls must use kind protocol_action and type button or toggle, use exactly empty evidence, omit unit/min/max/step/options, and default to 0 for button or false for toggle. Ordinary non-prediction actions may omit protocolRole; reset is allowed independently. Their model-authored UI labels never substantiate subject claims, observables, or insights.",
+    `${GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE} The outcome must not be revealed by default.`,
     "visualIntent.id must be non-empty, visualIntent.visualType must be a lowercase identifier, visualIntent.learnerManipulates must exactly equal every control label in order, visualIntent.expectedInsight must exactly equal expectedInsight, and visualIntent.sourceAnchors must include every cited subject-evidence anchor and only supplied canonical anchors. The observable label and expected insight must each be directly supported by their cited quotes. Never invent subject variables, cases, claims, or units.",
     "Do not return or change necessity, requirement, renderer, route, or publication policy; visualIntent.visualType cannot change the already-selected route. Address every failed unit and use previousRejectionReasons to correct a rejected attempt.",
   ].join(" ");
@@ -92,6 +111,74 @@ function sha256Json(value: unknown): string {
 
 function sha256Text(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function isExactVisualizationContractRepairResponse(
+  value: unknown,
+): value is VisualizationContractRepairExactRawResponse {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Object.keys(value).length === 2 &&
+    (value as Record<string, unknown>).kind ===
+      "visualization_contract_repair_exact_raw_v1" &&
+    typeof (value as Record<string, unknown>).content === "string"
+  );
+}
+
+function visualizationContractRepairJsonCandidate(raw: string): string {
+  const trimmed = raw.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return (fenced?.[1] ?? trimmed).trim();
+}
+
+function normalizeVisualizationContractRepairProviderResponse(value: unknown): {
+  candidate: unknown;
+  exactResponse: unknown;
+} {
+  if (value === undefined || value === null) {
+    throw new Error(
+      "Visualization contract repair provider returned no candidate; no semantic repair request was authorized.",
+    );
+  }
+  if (isExactVisualizationContractRepairResponse(value) || typeof value === "string") {
+    const raw = isExactVisualizationContractRepairResponse(value)
+      ? value.content
+      : value;
+    const candidateText = visualizationContractRepairJsonCandidate(raw);
+    if (candidateText.length === 0) {
+      throw new Error(
+        "Visualization contract repair provider returned an empty response; no semantic repair request was authorized.",
+      );
+    }
+    if (candidateText === "null") {
+      throw new Error(
+        "Visualization contract repair provider returned literal JSON null; no semantic repair request was authorized.",
+      );
+    }
+    let candidate: unknown = null;
+    try {
+      candidate = JSON.parse(candidateText) as unknown;
+    } catch {
+      // A nonempty returned response is concrete validation evidence. The
+      // strict parser below records its shape problem and may authorize one
+      // bounded, feedback-targeted semantic correction.
+    }
+    return { candidate, exactResponse: raw };
+  }
+  return { candidate: value, exactResponse: structuredClone(value) };
+}
+
+function emitVisualizationContractRepairEvent(
+  observer: VisualizationPlanRepairInput["onEvent"],
+  type: string,
+  data: Record<string, unknown>,
+): void {
+  try {
+    observer?.(type, data);
+  } catch {
+    // Audit telemetry is subordinate to the exact provider/cancellation result.
+  }
 }
 
 export interface VisualizationPlanRepairInput {
@@ -333,7 +420,7 @@ export async function buildVisualizationPlanWithContractRepair(
     const affectedUnitIds = new Set(affected.map((opportunity) => opportunity.learningUnitId));
     if (affectedUnitIds.size === 0) throw initialError;
 
-    input.onEvent?.("visual_opportunity_contract_repair_started", {
+    emitVisualizationContractRepairEvent(input.onEvent, "visual_opportunity_contract_repair_started", {
       problems: state.problems,
       unitIds: [...affectedUnitIds],
     });
@@ -400,36 +487,17 @@ export async function buildVisualizationPlanWithContractRepair(
       try {
         response = await input.repairProvider(packet);
       } catch (error) {
-        try {
-          input.checkCancelled?.();
-        } catch (cancelled) {
-          input.onEvent?.("visual_opportunity_contract_repair_cancelled", {
-            attempt,
-            unitIds: [...affectedUnitIds],
-            reason: cancelled instanceof Error ? cancelled.message : String(cancelled),
-          });
-          throw cancelled;
-        }
-        input.onEvent?.("visual_opportunity_contract_repair_transport_aborted", {
+        emitVisualizationContractRepairEvent(input.onEvent, "visual_opportunity_contract_repair_transport_aborted", {
           attempt,
           unitIds: [...affectedUnitIds],
           reason: error instanceof Error ? error.message : String(error),
         });
         throw error;
       }
-      try {
-        input.checkCancelled?.();
-      } catch (error) {
-        input.onEvent?.("visual_opportunity_contract_repair_cancelled", {
-          attempt,
-          unitIds: [...affectedUnitIds],
-          reason: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
-      const exactResponse = structuredClone(response);
+      const normalizedResponse = normalizeVisualizationContractRepairProviderResponse(response);
+      const exactResponse = normalizedResponse.exactResponse;
       const failedUnitIds = failed.map((opportunity) => opportunity.learningUnitId);
-      const parsedResponse = parseVisualizationContractRepairResponse(response, {
+      const parsedResponse = parseVisualizationContractRepairResponse(normalizedResponse.candidate, {
         requireCompleteContract: true,
         expectedUnitIds: failedUnitIds,
       });
@@ -443,7 +511,7 @@ export async function buildVisualizationPlanWithContractRepair(
           rejectionReasons: [...rejectionReasons],
           appliedUnitIds: [],
         });
-        input.onEvent?.("visual_opportunity_contract_repair_rejected", {
+        emitVisualizationContractRepairEvent(input.onEvent, "visual_opportunity_contract_repair_rejected", {
           attempt,
           reasons: rejectionReasons,
         });
@@ -465,7 +533,7 @@ export async function buildVisualizationPlanWithContractRepair(
           rejectionReasons: [...rejectionReasons],
           appliedUnitIds: [...applied.appliedUnitIds],
         });
-        input.onEvent?.("visual_opportunity_contract_repair_rejected", {
+        emitVisualizationContractRepairEvent(input.onEvent, "visual_opportunity_contract_repair_rejected", {
           attempt,
           reasons: rejectionReasons,
         });
@@ -482,7 +550,7 @@ export async function buildVisualizationPlanWithContractRepair(
           rejectionReasons: [],
           appliedUnitIds: [...applied.appliedUnitIds],
         });
-        input.onEvent?.("visual_opportunity_contract_repair_completed", {
+        emitVisualizationContractRepairEvent(input.onEvent, "visual_opportunity_contract_repair_completed", {
           source: "model",
           attempt,
           unitIds: applied.appliedUnitIds,
@@ -517,7 +585,7 @@ export async function buildVisualizationPlanWithContractRepair(
         });
       }
     }
-    input.onEvent?.("visual_opportunity_contract_repair_exhausted", {
+    emitVisualizationContractRepairEvent(input.onEvent, "visual_opportunity_contract_repair_exhausted", {
       attempts: maxAttempts,
       unitIds: [...affectedUnitIds],
       reasons: rejectionReasons,

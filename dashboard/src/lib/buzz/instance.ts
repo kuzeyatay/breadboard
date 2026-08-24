@@ -202,6 +202,15 @@ export function listAgentSeats(userId: number): store.BuzzAgentSeat[] {
  * who opens the room needs a row of their own. Opening a public room is what
  * enrols you in it, which is how an organization's rooms stay walk-in-able.
  */
+/**
+ * Seat Bread in a room that predates it. Paired with `ensureSelfMember` at
+ * every point a room is opened, so the backfill happens on the read that would
+ * otherwise show an empty Agents section.
+ */
+export function ensureBreadMember(roomId: number): BuzzMember {
+  return store.ensureBreadMember(db, roomId);
+}
+
 export function ensureSelfMember(
   roomId: number,
   userId: number,

@@ -33,9 +33,14 @@ import {
   type AuthorizedRuntimeSession,
 } from "../hermes/session-service.ts";
 import {
+  getHermesUserSettings,
   persistCapabilityDecision,
   recordAuditEvent,
 } from "../hermes/runtime-store.ts";
+import {
+  decideAutonomy,
+  riskClassForPermission,
+} from "../hermes/autonomy.ts";
 import { scheduleCapabilityExpiry } from "../hermes/capability-lifecycle.ts";
 import { composeHermesSystemPrompt } from "../hermes/system-prompts.ts";
 import { suppliedEvidenceText } from "../hermes/evidence-calibration.ts";
@@ -83,6 +88,7 @@ import {
   INTERACTIVE_VISUALIZER_SKILL,
   INTERACTIVE_VISUALIZER_IN_CHAT_SKILL,
 } from "../hermes/interactive-visualizer-skills.ts";
+import { officeArtifactRequirement } from "../hermes/office-artifact-requirement.ts";
 import { turnCapabilitySelection } from "../hermes/capability-usage.ts";
 import { premortemCommandText } from "../hermes/premortem-intent.ts";
 import { factcheckCommandText } from "../hermes/factcheck-intent.ts";
@@ -536,18 +542,48 @@ export async function startConversationTurn(
   // mirror the client's "once" decision exactly: one-time scope, only the
   // operations the request named.
   if (prepared.blocked && input.yoloMode === true) {
-    const filesystemRequests = prepared.pendingPermissions.filter(
+    // The switch says "act without asking me"; the tier says how far that
+    // goes. At the default tier it goes all the way, so everything below runs
+    // over the same permissions it always did — the split only bites for
+    // someone who has deliberately chosen a narrower tier, where anything
+    // above its ceiling stays pending and raises the normal permission card.
+    const autonomy = decideAutonomy({
+      tier: getHermesUserSettings(input.conversation.user_id).autonomyTier,
+      pendingPermissions: prepared.pendingPermissions,
+    });
+    const grantable = autonomy.autoApprove;
+    const filesystemRequests = grantable.filter(
       (permission) =>
         permission.kind === "filesystem" && Boolean(permission.path?.trim()),
     );
-    const confirmations = prepared.pendingPermissions
+    const confirmations = grantable
       .filter((permission) => permission.kind === "confirmation")
       .map((permission) => permission.id);
-    const unresolvable = prepared.pendingPermissions.some(
+    const unresolvable = grantable.some(
       (permission) =>
         permission.kind !== "confirmation" &&
         !(permission.kind === "filesystem" && Boolean(permission.path?.trim())),
     );
+    if (autonomy.withheld.length > 0) {
+      // Record the refusal too. An action the agent was stopped from taking
+      // unattended is worth as much in the log as one it took.
+      recordAuditEvent({
+        eventType: "conversation.permission_withheld_by_tier",
+        runtimeSessionId: session.row.id,
+        userId: input.conversation.user_id,
+        gardenId: session.row.garden_id,
+        payload: {
+          conversationPublicId: input.conversation.public_id,
+          clientMessageId: input.clientMessageId,
+          tier: autonomy.tier,
+          withheld: autonomy.withheld.map((entry) => ({
+            id: entry.permission.id,
+            risk: entry.risk,
+            capability: entry.permission.capability,
+          })),
+        },
+      });
+    }
     if (!unresolvable) {
       const createdGrantIds: string[] = [];
       const widenedGrants = new Map<string, (typeof filesystemGrants)[number]>();
@@ -599,6 +635,10 @@ export async function startConversationTurn(
               conversationPublicId: input.conversation.public_id,
               clientMessageId: input.clientMessageId,
               reason: "yolo",
+              tier: autonomy.tier,
+              approvedRisks: Array.from(
+                new Set(grantable.map((permission) => riskClassForPermission(permission))),
+              ),
               paths: filesystemRequests.map((permission) => permission.path),
               confirmedPermissionIds: confirmations,
             },
@@ -767,6 +807,7 @@ export async function startConversationTurn(
     text: messagingSelection.text,
     surface: input.surface,
     authenticated: true,
+    internalContinuation: input.internalAgentContinuation === true,
     hasActiveGoal: existingGoal !== null,
   });
   const commandContext = {
@@ -1350,6 +1391,26 @@ export async function startConversationTurn(
         .map((invocation) => invocation.slug),
     ),
   );
+  const officeSkillSelected = resolved.invocations.some(
+    (invocation) => invocation.kind === "skill" && invocation.slug === "office",
+  );
+  const requiredOfficeArtifact = officeSkillSelected
+    ? officeArtifactRequirement(resolved.userText || input.text)
+    : null;
+  const requiredArtifacts = [
+    ...(requiredVisualizerSkill
+      ? [
+          {
+            kind: "html",
+            rendererId: "interactive-visualizer",
+            sourceSkill: requiredVisualizerSkill,
+            readyEventType: "artifact.completed",
+            previewRequired: true,
+          },
+        ]
+      : []),
+    ...(requiredOfficeArtifact ? [requiredOfficeArtifact] : []),
+  ];
   // Which capabilities this turn put in play, and how each got there. Built
   // here — where the selections were actually made — and carried on the run so
   // the evidence panel reports the decisions rather than reconstructing them
@@ -1452,19 +1513,7 @@ export async function startConversationTurn(
             },
           }
         : {}),
-      ...(requiredVisualizerSkill
-        ? {
-            requiredArtifacts: [
-              {
-                kind: "html",
-                rendererId: "interactive-visualizer",
-                sourceSkill: requiredVisualizerSkill,
-                readyEventType: "artifact.completed",
-                previewRequired: true,
-              },
-            ],
-          }
-        : {}),
+      ...(requiredArtifacts.length > 0 ? { requiredArtifacts } : {}),
       ...(gardenGrounding.attempted
         ? {
             gardenGrounding: {

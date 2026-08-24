@@ -15,10 +15,11 @@
     "pretest": "npm run test:build",
     "build:dashboard": "node scripts/build-dashboard.mjs",
     "prepare:runtimes": "node scripts/prepare-runtimes.mjs",
+    "prepare:runtime-supervisor": "node scripts/build-runtime-supervisor.mjs",
     "prepare:app": "node scripts/prepare-app-resources.mjs",
     "prepare:transcription": "node ../scripts/prepare-scriberr-runtime.mjs",
     "rebuild:native": "electron-rebuild -m ../dashboard -o better-sqlite3,bcrypt",
-    "dist:win": "npm run build:dashboard && npm run prepare:runtimes && npm run prepare:app && npm run prepare:transcription && npm run build && node scripts/dist-win.mjs",
+    "dist:win": "npm run build:dashboard && npm run prepare:runtime-supervisor && npm run prepare:runtimes && npm run prepare:app && npm run prepare:transcription && npm run build && node scripts/dist-win.mjs",
     "verify:package": "node scripts/verify-package.mjs",
     "smoke:hermes": "node scripts/hermes-runtime-smoke.mjs",
     "smoke:installed": "node scripts/installed-smoke-test.mjs"

@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadDashboardEnv, loadRootEnv } from "./load-root-env.mjs";
+import { exitIfAlreadyRunning } from "./service-probe.mjs";
 import { cadPythonPath } from "./setup-cad.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -63,6 +64,14 @@ const env = {
 // Nothing to copy anywhere: the dashboard resolves the same port and reads the
 // same secret file through dashboard/src/lib/cad/config.ts.
 process.stdout.write(`[cad] serving on http://127.0.0.1:${port} (loopback only)\n`);
+
+// The secret is file-backed and shared with the dashboard, so an instance
+// that answers it is one this checkout can use — reuse it rather than racing
+// it for the port.
+await exitIfAlreadyRunning("cad", {
+  url: `http://127.0.0.1:${port}/health`,
+  headers: { Authorization: `Bearer ${secret}` },
+});
 
 const child = spawn(python, ["-m", "breadboard_cad", "serve", "--host", "127.0.0.1", "--port", port], {
   cwd: serviceRoot,

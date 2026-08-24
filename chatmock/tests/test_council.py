@@ -22,10 +22,11 @@ from chatmock.session import reset_session_state
 
 
 class FakeUpstream:
-    """Minimal stand-in for a requests streaming response (legacy passthrough)."""
+    """Minimal stand-in for both legacy SSE and Responses websocket tests."""
 
     def __init__(self, events: list[dict[str, object]]) -> None:
         self._events = events
+        self.sent: list[str] = []
         self.status_code = 200
         self.headers: dict[str, str] = {}
         self.content = b""
@@ -35,6 +36,14 @@ class FakeUpstream:
         for event in self._events:
             payload = f"data: {json.dumps(event)}"
             yield payload if decode_unicode else payload.encode("utf-8")
+
+    def send(self, message: str) -> None:
+        self.sent.append(message)
+
+    def recv(self, timeout: float | None = None):
+        if not self._events:
+            return None
+        return json.dumps(self._events.pop(0))
 
     def close(self) -> None:
         return None
@@ -124,19 +133,29 @@ class ChatGptUpstreamProviderTests(unittest.TestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
+        account_patcher = patch(
+            "chatmock.providers.chatgpt_upstream.select_account",
+            return_value=None,
+        )
+        auth_patcher = patch(
+            "chatmock.providers.chatgpt_upstream.get_effective_chatgpt_auth",
+            return_value=("token", "account"),
+        )
+        account_patcher.start()
+        auth_patcher.start()
+        self.addCleanup(account_patcher.stop)
+        self.addCleanup(auth_patcher.stop)
 
     @patch("chatmock.providers.chatgpt_upstream.record_rate_limits_from_response")
-    @patch("chatmock.providers.chatgpt_upstream.start_upstream_request")
+    @patch("chatmock.providers.chatgpt_upstream.connect_upstream_websocket")
     def test_request_reasoning_overrides_server_defaults(self, mock_start, _mock_record) -> None:
-        mock_start.return_value = (
-            FakeUpstream(
-                [
-                    {"type": "response.output_text.delta", "delta": "hello"},
-                    {"type": "response.completed", "response": {"id": "resp_reasoning"}},
-                ]
-            ),
-            None,
+        upstream = FakeUpstream(
+            [
+                {"type": "response.output_text.delta", "delta": "hello"},
+                {"type": "response.completed", "response": {"id": "resp_reasoning"}},
+            ]
         )
+        mock_start.return_value = upstream
         call = ModelCall(
             model="gpt-5.6-sol",
             messages=[{"role": "user", "content": "hi"}],
@@ -147,12 +166,12 @@ class ChatGptUpstreamProviderTests(unittest.TestCase):
         ChatGptUpstreamProvider(reasoning_effort="low", reasoning_summary="none").call_model(call)
 
         self.assertEqual(
-            mock_start.call_args.kwargs["reasoning_param"],
+            json.loads(upstream.sent[0])["reasoning"],
             {"effort": "high", "summary": "detailed"},
         )
 
     @patch("chatmock.providers.chatgpt_upstream.record_rate_limits_from_response")
-    @patch("chatmock.providers.chatgpt_upstream.start_upstream_request")
+    @patch("chatmock.providers.chatgpt_upstream.connect_upstream_websocket")
     def test_records_rate_limit_headers_for_council_calls(self, mock_start, mock_record) -> None:
         upstream = FakeUpstream(
             [
@@ -161,7 +180,7 @@ class ChatGptUpstreamProviderTests(unittest.TestCase):
             ]
         )
         upstream.headers = {"x-codex-primary-used-percent": "7.5"}
-        mock_start.return_value = (upstream, None)
+        mock_start.return_value = upstream
 
         provider = ChatGptUpstreamProvider(reasoning_effort="low", reasoning_summary="none")
         text = provider.call_model(
@@ -172,28 +191,25 @@ class ChatGptUpstreamProviderTests(unittest.TestCase):
         mock_record.assert_called_once_with(upstream)
 
     @patch("chatmock.providers.chatgpt_upstream.record_rate_limits_from_response")
-    @patch("chatmock.providers.chatgpt_upstream.start_upstream_request")
+    @patch("chatmock.providers.chatgpt_upstream.connect_upstream_websocket")
     def test_captures_responses_token_usage(self, mock_start, _mock_record) -> None:
-        mock_start.return_value = (
-            FakeUpstream(
-                [
-                    {"type": "response.output_text.delta", "delta": "hello"},
-                    {
-                        "type": "response.completed",
-                        "response": {
-                            "id": "resp_usage",
-                            "usage": {
-                                "input_tokens": 11,
-                                "input_tokens_details": {"cached_tokens": 3},
-                                "output_tokens": 7,
-                                "output_tokens_details": {"reasoning_tokens": 2},
-                                "total_tokens": 18,
-                            },
+        mock_start.return_value = FakeUpstream(
+            [
+                {"type": "response.output_text.delta", "delta": "hello"},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_usage",
+                        "usage": {
+                            "input_tokens": 11,
+                            "input_tokens_details": {"cached_tokens": 3},
+                            "output_tokens": 7,
+                            "output_tokens_details": {"reasoning_tokens": 2},
+                            "total_tokens": 18,
                         },
                     },
-                ]
-            ),
-            None,
+                },
+            ]
         )
         call = ModelCall(model="gpt-5.4", messages=[{"role": "user", "content": "hi"}])
 
@@ -211,29 +227,26 @@ class ChatGptUpstreamProviderTests(unittest.TestCase):
         )
 
     @patch("chatmock.providers.chatgpt_upstream.record_rate_limits_from_response")
-    @patch("chatmock.providers.chatgpt_upstream.start_upstream_request")
+    @patch("chatmock.providers.chatgpt_upstream.connect_upstream_websocket")
     def test_captures_usage_from_an_incomplete_terminal_response(
         self,
         mock_start,
         _mock_record,
     ) -> None:
-        mock_start.return_value = (
-            FakeUpstream(
-                [
-                    {"type": "response.output_text.delta", "delta": "partial"},
-                    {
-                        "type": "response.incomplete",
-                        "response": {
-                            "usage": {
-                                "input_tokens": 14,
-                                "output_tokens": 6,
-                                "total_tokens": 20,
-                            }
-                        },
+        mock_start.return_value = FakeUpstream(
+            [
+                {"type": "response.output_text.delta", "delta": "partial"},
+                {
+                    "type": "response.incomplete",
+                    "response": {
+                        "usage": {
+                            "input_tokens": 14,
+                            "output_tokens": 6,
+                            "total_tokens": 20,
+                        }
                     },
-                ]
-            ),
-            None,
+                },
+            ]
         )
         call = ModelCall(model="gpt-5.4", messages=[{"role": "user", "content": "hi"}])
 
@@ -241,22 +254,19 @@ class ChatGptUpstreamProviderTests(unittest.TestCase):
         self.assertEqual(call.usage_out, ModelTokenUsage(14, 6, 20))
 
     @patch("chatmock.providers.chatgpt_upstream.record_rate_limits_from_response")
-    @patch("chatmock.providers.chatgpt_upstream.start_upstream_request")
+    @patch("chatmock.providers.chatgpt_upstream.connect_upstream_websocket")
     def test_ignores_partial_responses_token_usage(self, mock_start, _mock_record) -> None:
-        mock_start.return_value = (
-            FakeUpstream(
-                [
-                    {"type": "response.output_text.delta", "delta": "hello"},
-                    {
-                        "type": "response.completed",
-                        "response": {
-                            "id": "resp_partial_usage",
-                            "usage": {"input_tokens": 11, "output_tokens": 7},
-                        },
+        mock_start.return_value = FakeUpstream(
+            [
+                {"type": "response.output_text.delta", "delta": "hello"},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_partial_usage",
+                        "usage": {"input_tokens": 11, "output_tokens": 7},
                     },
-                ]
-            ),
-            None,
+                },
+            ]
         )
         call = ModelCall(model="gpt-5.4", messages=[{"role": "user", "content": "hi"}])
 

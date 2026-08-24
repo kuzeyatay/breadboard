@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
+import { executeLearnOperationForRoute } from "breadboard-learn-operation-runtime";
 import {
-  getLearnStatusSnapshot,
-  LearnPipelineConflictError,
-  runTextbookGeneration,
-} from "@/lib/learn";
-import { createChatmockClient } from "@/lib/knowledge";
-import { handOffLearnTask } from "@/lib/learn-background";
+  InvalidLearnRouteBodyError,
+  isLearnRouteConflict,
+  readLearnRouteJsonObject,
+  requireExpectedLearnModel,
+} from "@/lib/learn-route-errors";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 import { selectedModelForUser } from "@/lib/selected-model";
 
@@ -27,10 +27,7 @@ export async function POST(
       );
     }
 
-    const body = await request.json().catch(() => ({}));
-    const { baseURL } = resolveChatmockBaseUrl(request);
-    const client = createChatmockClient(baseURL);
-    const model = selectedModelForUser(userId);
+    const body = await readLearnRouteJsonObject(request);
     const sourceOnly = body.sourceOnly !== false;
     const includeSourceSnapshots = body.includeSourceSnapshots === true;
     const includedSourceIds = Array.isArray(body.includedSourceIds)
@@ -39,63 +36,41 @@ export async function POST(
     const requestedMapId =
       typeof body.confirmedLearningMapId === "string" && body.confirmedLearningMapId.trim()
         ? body.confirmedLearningMapId.trim()
-        : undefined;
-    const status = getLearnStatusSnapshot({
-      gardenId: cluster.slug,
-      contentPath,
+        : "";
+    if (!requestedMapId) {
+      return NextResponse.json(
+        { error: "Generating Learn requires the exact confirmed Learning Map ID." },
+        { status: 400 },
+      );
+    }
+    // Treat the map's planning model as a concurrency token. Validate it in
+    // Next before a worker can start, then let the worker validate the durable
+    // map-to-planning-job binding again before creating a generation job.
+    const model = selectedModelForUser(userId);
+    const expectedModel = requireExpectedLearnModel(body, model, {
+      requiresReplanOnConflict: true,
     });
-    const mayResumeFailedInitialGeneration =
-      !status.latestTextbookVersionId &&
-      status.hasTextbook &&
-      status.job?.mode === "generate" &&
-      status.job.status === "failed";
-    if (
-      (status.latestTextbookVersionId || status.hasTextbook) &&
-      !mayResumeFailedInitialGeneration
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "This garden already has learner content. Use Repair issues, or explicitly confirm Rebuild entire garden to recreate it.",
-        },
-        { status: 409 },
-      );
-    }
-    const requestedSourceIdSet = includedSourceIds ? new Set(includedSourceIds) : null;
-    const confirmedSelectionMatches =
-      !requestedSourceIdSet ||
-      (requestedSourceIdSet.size === status.selectedSourceIds.length &&
-        status.selectedSourceIds.every((sourceId) => requestedSourceIdSet.has(sourceId)));
-    if (
-      !status.confirmedLearningMapId ||
-      (requestedMapId && requestedMapId !== status.confirmedLearningMapId) ||
-      !confirmedSelectionMatches
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "Generate requires the current confirmed Learning Map and matching source selection. Start planning explicitly for a new garden.",
-        },
-        { status: 409 },
-      );
-    }
-    const execution = await handOffLearnTask(runTextbookGeneration({
+    const { baseURL } = resolveChatmockBaseUrl(request);
+    const execution = await executeLearnOperationForRoute({
+      operation: "generate",
       gardenId: cluster.slug,
       userId,
-      client,
       contentPath,
-      confirmedLearningMapId: status.confirmedLearningMapId,
+      baseURL,
       model,
+      expectedModel,
+      requestedConfirmedLearningMapId: requestedMapId,
+      includedSourceIds,
       sourceOnly,
       includeSourceSnapshots,
-    }), `generation for ${cluster.slug}`);
+    }, `generation for ${cluster.slug}`);
 
     if (execution.accepted) {
       return NextResponse.json(
         {
           success: true,
           accepted: true,
-          job: getLearnStatusSnapshot({ gardenId: cluster.slug, contentPath }).job,
+          jobId: execution.jobId ?? null,
         },
         { status: 202 },
       );
@@ -103,7 +78,10 @@ export async function POST(
 
     return NextResponse.json({ success: true, generation: execution.value });
   } catch (error) {
-    if (error instanceof LearnPipelineConflictError) {
+    if (error instanceof InvalidLearnRouteBodyError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (isLearnRouteConflict(error)) {
       return NextResponse.json(
         { error: error.message, requiresReplan: error.requiresReplan },
         { status: 409 },

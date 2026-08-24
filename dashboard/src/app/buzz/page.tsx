@@ -6,6 +6,7 @@ import { loadAgencyAgentsCatalog } from "@/lib/hermes/agency-agents.ts";
 import { listOrganizations } from "@/lib/organizations/store.ts";
 import {
   createRoom,
+  ensureBreadMember,
   ensureSelfMember,
   listMembers,
   listRooms,
@@ -109,7 +110,12 @@ export default async function BuzzPage({
   // first readable room without revealing which case occurred.
   const opening =
     readableRooms.find((room) => room.publicId === requestedRoom) ?? readableRooms[0];
-  if (opening) ensureSelfMember(opening.id, userId, displayName);
+  if (opening) {
+    ensureSelfMember(opening.id, userId, displayName);
+    // Rooms that existed before Bread did gain it on the read that would
+    // otherwise render their Agents section empty.
+    ensureBreadMember(opening.id);
+  }
   const initialThreadRootId =
     opening && requestedThread
       ? (listSpineMessages(opening.id).find(

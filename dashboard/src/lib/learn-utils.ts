@@ -154,6 +154,86 @@ export function excludeSyllabusFromSources(
   return sources.filter((source) => source.slug !== syllabus.slug);
 }
 
+export interface PersistedLearnSelectionOwner<TCoverage = unknown> {
+  id?: string;
+  status?: string;
+  proposedLearningMapId?: string;
+  confirmedLearningMapId?: string;
+  sourceIds: readonly string[];
+  syllabusSourceId?: string | null;
+  syllabusCoverage?: TCoverage | null;
+}
+
+export interface PersistedLearnSelection<TCoverage = unknown> {
+  sourceIds: string[];
+  syllabusSourceId: string | null;
+  syllabusCoverage: TCoverage | null;
+}
+
+const JOB_STATUSES_WITH_BOUND_SELECTION_COVERAGE = new Set([
+  "awaiting_confirmation",
+  "generating_learning_pages",
+  "generating_textbook",
+  "generating_visuals",
+  "writing_quartz",
+  "building_navigation",
+  "paused",
+  "complete",
+]);
+
+/**
+ * Read the selection from one newest workflow owner. A current job always owns
+ * its source/syllabus binding. Coverage is paired only from the exact proposed
+ * or confirmed map named by a reviewable/active/completed job with that same
+ * binding; coverage is never borrowed from an older map.
+ */
+export function persistedLearnSelection<TCoverage = unknown>(
+  latestJob?: PersistedLearnSelectionOwner<TCoverage> | null,
+  jobBoundMap?: PersistedLearnSelectionOwner<TCoverage> | null,
+  confirmedMap?: PersistedLearnSelectionOwner<TCoverage> | null,
+): PersistedLearnSelection<TCoverage> | null {
+  const owner = latestJob ?? jobBoundMap ?? confirmedMap;
+  if (!owner) return null;
+
+  const sourceId =
+    typeof owner.syllabusSourceId === "string"
+      ? owner.syllabusSourceId.trim()
+      : "";
+  const syllabusSourceId = sourceId || null;
+  const boundMapSyllabusSourceId =
+    typeof jobBoundMap?.syllabusSourceId === "string"
+      ? jobBoundMap.syllabusSourceId.trim()
+      : "";
+  const boundMapId = latestJob
+    ? latestJob.proposedLearningMapId ?? latestJob.confirmedLearningMapId
+    : undefined;
+  const latestJobOwnsMapCoverage = Boolean(
+    latestJob &&
+      typeof latestJob.status === "string" &&
+      JOB_STATUSES_WITH_BOUND_SELECTION_COVERAGE.has(latestJob.status) &&
+      typeof boundMapId === "string" &&
+      typeof jobBoundMap?.id === "string" &&
+      boundMapId === jobBoundMap.id &&
+      latestJob.sourceIds.length === jobBoundMap.sourceIds.length &&
+      latestJob.sourceIds.every(
+        (sourceId, index) => sourceId === jobBoundMap.sourceIds[index],
+      ) &&
+      syllabusSourceId === (boundMapSyllabusSourceId || null),
+  );
+  const syllabusCoverage = latestJob
+    ? latestJobOwnsMapCoverage
+      ? (jobBoundMap?.syllabusCoverage ?? null)
+      : null
+    : (owner.syllabusCoverage ?? null);
+  return {
+    sourceIds: [...owner.sourceIds],
+    syllabusSourceId,
+    syllabusCoverage: syllabusSourceId
+      ? syllabusCoverage
+      : null,
+  };
+}
+
 /**
  * Fold the designated syllabus into the source-set hash so swapping or editing
  * it counts as a source change. A run without a syllabus keeps its existing hash

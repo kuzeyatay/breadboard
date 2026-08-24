@@ -49,7 +49,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f5f3ee] flex items-center justify-center px-4">
+    <div className="min-h-screen bg-[var(--paper-surface)] flex items-center justify-center px-4">
       <div className="neu-surface-raised w-full max-w-sm rounded-2xl border border-gray-800 bg-gray-900 p-6 sm:p-7">
         <h1 className="text-2xl font-semibold text-white text-center mb-8 tracking-tight">
           Sign in

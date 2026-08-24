@@ -16,15 +16,9 @@ from typing import Any, Callable, Dict, Iterator, Tuple
 
 import requests
 
+from ..http_replay_safety import is_proven_preconnect_failure
 from .catalog import provider_spec
 from .types import ProviderError
-
-# Quota responses are deliberately not retried here. The dispatcher classifies
-# 429s, records the cooldown, and moves to a healthy model. Retrying the same
-# subscription model first is especially harmful for Google via CLIProxyAPI:
-# each exhausted request can take roughly forty seconds, so three attempts run
-# past Breadboard's response watchdog before failover gets a chance to start.
-_RETRYABLE_STATUS = frozenset({408, 500, 502, 503, 504})
 
 _DEFAULT_CONNECT_TIMEOUT = 30.0
 _DEFAULT_READ_TIMEOUT = 300.0
@@ -75,13 +69,22 @@ def post_with_retry(
     payload: Dict[str, Any],
     stream: bool,
     provider_id: str,
+    allow_preconnect_retry: bool = True,
 ) -> requests.Response:
-    """POST JSON with bounded retries. Raises ProviderError on give-up."""
-    max_attempts = _env_int("CHATMOCK_PROVIDER_MAX_ATTEMPTS", _DEFAULT_MAX_ATTEMPTS, minimum=1, maximum=5)
+    """POST JSON, retrying only a proven pre-connect failure.
+
+    A response status and a generic requests exception are both terminal for
+    this helper. Neither proves that a model request was never accepted, so a
+    blind retry could create a second billable generation.
+    """
+    max_attempts = (
+        _env_int("CHATMOCK_PROVIDER_MAX_ATTEMPTS", _DEFAULT_MAX_ATTEMPTS, minimum=1, maximum=5)
+        if allow_preconnect_retry
+        else 1
+    )
     backoff = _env_float("CHATMOCK_PROVIDER_RETRY_BACKOFF_SECONDS", _DEFAULT_BACKOFF, minimum=0.0, maximum=30.0)
     connect_timeout, read_timeout = timeouts()
 
-    last_status: int | None = None
     for attempt in range(1, max_attempts + 1):
         try:
             response = requests.post(
@@ -92,26 +95,31 @@ def post_with_retry(
                 timeout=(connect_timeout, read_timeout),
             )
         except requests.RequestException as exc:
-            if attempt < max_attempts:
+            replay_safe = is_proven_preconnect_failure(exc)
+            if replay_safe and attempt < max_attempts:
                 _sleep_backoff(backoff, attempt)
                 continue
+            if replay_safe:
+                description = (
+                    f"could not be reached after {attempt} pre-connect "
+                    f"attempt{'s' if attempt != 1 else ''}"
+                )
+            else:
+                description = "request failed without replay"
             raise ProviderError(
-                f"{provider_label(provider_id)} could not be reached after "
-                f"{max_attempts} attempts ({type(exc).__name__})."
+                f"{provider_label(provider_id)} {description} "
+                f"({type(exc).__name__}).",
+                phase="connect" if replay_safe else "transport",
+                replay_safe=replay_safe,
+                code=(
+                    "connection_failed"
+                    if replay_safe
+                    else "ambiguous_transport_failure"
+                ),
             ) from exc
-
-        status = getattr(response, "status_code", 0)
-        if status in _RETRYABLE_STATUS and attempt < max_attempts:
-            last_status = status
-            close_quietly(response)
-            _sleep_backoff(backoff, attempt)
-            continue
         return response
 
-    raise ProviderError(
-        f"{provider_label(provider_id)} kept failing (last status {last_status}).",
-        status_code=last_status or None,
-    )
+    raise AssertionError("pre-connect retry loop ended unexpectedly")
 
 
 def get_json(url: str, *, headers: Dict[str, str], provider_id: str) -> Any:

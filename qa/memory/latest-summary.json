@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "mode": "smoke",
+  "startedAt": "2026-08-24T08:39:23.223Z",
+  "metricSource": "GetPerformanceInfo",
+  "minimumReserveMb": 8456,
+  "coldStartEstimateMb": 0,
+  "initialFreeCommitMb": 9522.91015625,
+  "minimumFreeCommitMb": 8325.08984375,
+  "peakCommitTotalMb": 33956.359375,
+  "peakOwnedPrivateBytes": 0,
+  "finalOwnedPrivateBytes": 0,
+  "sampleCount": 3,
+  "aborted": true,
+  "workloadExitCode": null,
+  "workloadProject": null,
+  "reason": "emergency reserve crossed at 8325 MB",
+  "finishedAt": "2026-08-24T08:39:33.921Z"
+}

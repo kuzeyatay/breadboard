@@ -30,7 +30,7 @@ import { ArtifactDockHostProvider } from "./artifact-dock-host";
 // single stable import site even though the definitions now live in the viewer.
 export {
   ARTIFACT_BROWSER_EVENT,
-  ARTIFACT_REVISE_EVENT,
+  ARTIFACT_AI_EDIT_EVENT,
   GARDEN_DOCUMENTS_CHANGED_EVENT,
   ArtifactArchiveIcon,
 } from "./artifact-viewer";
@@ -791,6 +791,7 @@ export default function ArtifactPanel({
         <ArtifactViewer
           artifact={openArtifact}
           onClose={() => setOpenId(null)}
+          onUpdated={() => { void refresh(); }}
           onEditImage={(artifact) => {
             setOpenId(null);
             setImagePromptSource(null);

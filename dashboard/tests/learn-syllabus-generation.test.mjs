@@ -187,9 +187,22 @@ describe("Learn panel syllabus generation", () => {
   });
 
   test("a generated syllabus is designated immediately and shows up in Documents", () => {
+    const generateStart = workspaceSource.indexOf(
+      "async function handleSyllabusGenerate()",
+    );
+    const generateEnd = workspaceSource.indexOf(
+      "function chooseLearnSyllabusDocument",
+      generateStart,
+    );
+    const generate = workspaceSource.slice(generateStart, generateEnd);
+    const designate = generate.indexOf("chooseLearnSyllabusDocument(slug)");
+    const refreshDocuments = generate.indexOf("await fetchDocuments()");
+
+    assert.ok(generateStart >= 0 && generateEnd > generateStart);
+    assert.ok(designate >= 0 && designate < refreshDocuments);
     assert.match(
-      workspaceSource,
-      /setLearnSyllabusSlug\(slug\);[\s\S]{0,200}await fetchDocuments\(\)/,
+      workspaceSource.slice(generateEnd),
+      /setLearnSyllabusSlug\(sourceSlug\)/,
     );
     assert.match(workspaceSource, /learn\/syllabus\/generate/);
   });

@@ -3,10 +3,14 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
-import { spawnSync } from "child_process";
 import ts from "typescript";
 import type OpenAI from "openai";
 import { withCouncil } from "./council.ts";
+import {
+  runObservedGeneratedVisualBrowserProcess,
+  type GeneratedVisualBrowserCompletion,
+  type GeneratedVisualObservedBrowserResult,
+} from "./generated-visual-browser-process.ts";
 import {
   GENERATED_VISUAL_CAPABILITY_MANIFEST,
   GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
@@ -27,20 +31,16 @@ import type {
   SourceVisualRelationship,
   VisualizationOpportunity,
 } from "./visualization-opportunities.ts";
-import { isRetryableModelTransportError } from "./http-502-retry.ts";
 
 export const GENERATED_VISUAL_BLOCK_LANG = "breadboard-generated-visual";
 export const GENERATED_VISUAL_SCHEMA_VERSION =
   GENERATED_VISUAL_CAPABILITY_MANIFEST.definitionSchemaVersion;
 export const GENERATED_VISUAL_MAX_SOURCE_CHARS =
   GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.sourceCharacters;
-export const GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS = 3;
-/** A transient multimodal critic outage must not discard a model-authored
- * candidate that has already compiled and passed its runtime preview matrix.
- * Keep one additional, deliberately cooled-down identical-request session
- * before failing closed; this is availability recovery, never semantic repair. */
-export const GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_MAX_ATTEMPTS = 2;
-export const GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_COOLDOWN_MS = 300_000;
+/** An accepted-but-slow model call cannot be distinguished from an unaccepted
+ * request after a client timeout. Keep this boundary single-shot; definite
+ * pre-accept recovery remains owned by the request-bound Learn client. */
+export const GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS = 1;
 /** Spatial visuals can require several critic-guided, model-authored revisions
  * across independent geometry, runtime, and accessibility gates. Keep that
  * semantic loop finite and distinct from identical-request transport replay. */
@@ -72,9 +72,14 @@ const GENERATED_VISUAL_TRANSIENT_BROWSER_MOUNT_ERROR_CODES = new Set([
   "ERROR_SHARING_VIOLATION",
 ]);
 /** Complex declarative visual generation can legitimately take longer than a
- * general chat request. Keep one explicit, bounded per-request deadline while
- * preserving the separate three-replay transport ladder. */
+ * general chat request. This is a soft observability threshold: crossing it
+ * must not abort a council run that ChatMock will continue server-side. */
 export const GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS = 180_000;
+/** Keep listening to the original request after the soft threshold so a late
+ * council result can be adopted without issuing a second model-authored call.
+ * The hard boundary remains finite; exhaustion fails closed because ChatMock
+ * cannot prove whether an aborted HTTP request was accepted. */
+export const GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS = 120_000;
 
 const SDK_IMPORT = GENERATED_VISUAL_CAPABILITY_MANIFEST.sourceForm.importModule;
 const IMPORT_ALLOWLIST = new Set([SDK_IMPORT, "react"]);
@@ -264,7 +269,27 @@ export interface GeneratedVisualPreviewArtifact
 /** One isolated browser attempt for a labelled preview cell. This stays
  * deliberately infrastructure-only: no model-authored candidate data is
  * synthesized or changed while retrying a capture. */
-export interface GeneratedVisualPreviewCaptureAttempt {
+export interface GeneratedVisualBrowserAttemptDiagnostics {
+  /** Measured wall-clock duration of the browser invocation. */
+  durationMs?: number;
+  /** Explicit deadline result; do not infer this from a null exit status. */
+  timedOut?: boolean;
+  /** Process/supervisor error code, kept separate from stream output. */
+  errorCode?: string;
+  /** Bounded stderr diagnostic, retained separately from rendered DOM. */
+  stderr?: string;
+  /** Bounded stdout tail, useful for proving whether DOM serialization ended. */
+  stdoutTail?: string;
+  /** Whether completion came from process exit or observable artifacts. */
+  completion?: GeneratedVisualBrowserCompletion;
+  /** False when completed artifacts were followed by explicit tree cleanup. */
+  browserExitedNaturally?: boolean;
+  cleanupMethod?: GeneratedVisualObservedBrowserResult["cleanupMethod"];
+  cleanupConfirmed?: boolean;
+}
+
+export interface GeneratedVisualPreviewCaptureAttempt
+  extends GeneratedVisualBrowserAttemptDiagnostics {
   attempt: number;
   status: number | null;
   signal: string | null;
@@ -296,7 +321,8 @@ export interface GeneratedVisualPreviewMatrixReceipt {
 
 /** One isolated browser mount attempt for a runtime viewport scenario. The
  * receipt deliberately excludes machine-local profile paths. */
-export interface GeneratedVisualBrowserMountAttempt {
+export interface GeneratedVisualBrowserMountAttempt
+  extends GeneratedVisualBrowserAttemptDiagnostics {
   attempt: number;
   status: number | null;
   signal: string | null;
@@ -406,6 +432,38 @@ export interface GeneratedVisualLifecycleRecord {
   attempt: number;
   detail?: string;
 }
+
+export type GeneratedVisualRejectedAttemptCategory =
+  | "generation_transport"
+  | "generation"
+  | "validation"
+  | "runtime"
+  | "critic_transport"
+  | "critic";
+
+/** Exact in-process evidence for one rejected semantic attempt. Durable sinks
+ * must project this through their own explicit allowlist: browser records can
+ * contain machine-local diagnostics that must never be copied wholesale. */
+export interface GeneratedVisualRejectedAttempt {
+  schemaVersion: 1;
+  visualizationId: string;
+  runId: string;
+  attempt: number;
+  category: GeneratedVisualRejectedAttemptCategory;
+  rejectedAt: string;
+  errors: string[];
+  candidate: GeneratedVisualizationCandidate | null;
+  lifecycle: GeneratedVisualLifecycleRecord[];
+  evidence?: {
+    validation?: GeneratedVisualValidationRecord;
+    tests?: GeneratedVisualTestsRecord;
+    critic?: GeneratedVisualCriticRecord;
+  };
+}
+
+export type GeneratedVisualRejectedAttemptSink = (
+  rejectedAttempt: GeneratedVisualRejectedAttempt,
+) => void;
 
 export interface GeneratedVisualCompilation {
   definition: GeneratedVisualizationDefinition | null;
@@ -705,6 +763,33 @@ function generatedVisualHighPriorityRepairInstructions(
     );
   }
   if (
+    /\bdiagram\b[\s\S]{0,520}\b(?:highlight(?:ed|ing|s)?|selected[ -]?branch|distinguish(?:ed|es|ing)?)\b|\b(?:highlight(?:ed|ing|s)?|selected[ -]?branch|distinguish(?:ed|es|ing)?)\b[\s\S]{0,520}\bdiagram\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The reviewed action promises state-dependent branch highlighting in a persistent diagram. Keep every node and edge present in one diagram scene, and implement the selection through each branch edge's authored strength expression. Use conditional edge.strength expressions keyed to the exact zero-based select option index so every single option has an exclusive emphasized branch and every combined/both/all/sum/total/+ option emphasizes their union, while all options produce pairwise-distinct rendered edge-width signatures after the runtime's absolute-value clamp to 0.5-6. Do not use node.value as selection styling, replace the diagram with changing spatial content, duplicate the immutable selector, or request CSS/runtime changes.",
+    );
+  }
+  if (
+    /\b(?:selector|select control|control)\b[\s\S]{0,260}\b(?:missing|absent|not (?:shown|visible)|visibly available|before (?:the )?(?:observable|scene))\b|\b(?:missing|absent|not (?:shown|visible)|visibly available)\b[\s\S]{0,260}\b(?:selector|select control|control)\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "Preserve the immutable control exactly once in definition.controls. The trusted SDK runtime, not candidate sourceCode, places those controls before outputs and scenes and verifies their rendered visibility; candidate fields cannot author DOM order. Do not duplicate a selector in a scene, invent a replacement control, hide it in prose, or request a CSS/runtime change. Repair the control's promised observable effect in the authored scene expressions and keep the first teaching scene concise.",
+    );
+  }
+  if (
+    /\b(?:positive|negative|sign|signed|polarity|revers(?:e|es|ed|ing))\b[\s\S]{0,360}\b(?:direction|vector|contribution|force|field)\b|\b(?:direction|vector|contribution|force|field)\b[\s\S]{0,360}\b(?:positive|negative|sign|signed|polarity|revers(?:e|es|ed|ing))\b/i.test(
+      feedback,
+    )
+  ) {
+    instructions.push(
+      "The prior directional claim omitted the sign of a multiplying scalar. If source evidence supports a normalized example under a fixed sign, state that sign assumption visibly in a formula or annotation and in both non-visual descriptions, and state what reverses under the opposite sign. Otherwise label the arrows only as the underlying terms inside the signed expression, not as directions of the signed result or its contributions. Apply the same qualification consistently to labels, explanation, pedagogicalClaims, and accessibility descriptions; do not invent a sign or add a planner-owned control.",
+    );
+  }
+  if (
     /\b(?:static|closed[ -]?form|direct)\b[\s\S]{0,200}\b(?:iterat(?:e|es|ed|ing|ion|ive)|relax(?:ation|ing)?|converg(?:e|es|ed|ing|ence)|simulation)\b|\b(?:iterat(?:e|es|ed|ing|ion|ive)|relax(?:ation|ing)?|converg(?:e|es|ed|ing|ence)|simulation)\b[\s\S]{0,200}\b(?:static|closed[ -]?form|direct)\b/i.test(
       feedback,
     )
@@ -769,6 +854,16 @@ function unwrapGeneratedVisualJsonFence(content: string): string {
     trimmed,
   );
   return fenced ? fenced[1].trim() : content;
+}
+
+function generatedVisualMissingCandidateProblem(
+  content: string,
+  label: "generated visualization candidate" | "critic",
+): string | undefined {
+  const normalized = unwrapGeneratedVisualJsonFence(content).trim();
+  if (!normalized) return `${label} returned no nonempty content`;
+  if (normalized === "null") return `${label} returned literal JSON null`;
+  return undefined;
 }
 
 function boundedGeneratedVisualEvidence(
@@ -1988,6 +2083,51 @@ type GeneratedVisualSpatialRepresentationRequirement = {
 };
 
 /**
+ * A necessity score says how useful spatial reasoning looked before contract
+ * review; it is not authority to resurrect geometry that the reviewed learner
+ * action replaced.  Require the final, planner-projected action to ask the
+ * learner to work with physical geometry as well.  In particular, words such
+ * as "path" or "branch" in a node-link dependency diagram are not spatial
+ * merely because an earlier necessity rationale discussed vectors.
+ */
+const EXPLICIT_SPATIAL_ACTION_RE =
+  /\b(?:spatial|three[ -]?dimensional|3[ -]?d|orbit|rotat(?:e|ing|ion)|orient(?:ation|ing)?)\b/i;
+const PHYSICAL_GEOMETRY_MANIPULATION_RE =
+  /\b(?:apply|construct|drag|move|place|position|trace|vary|adjust|follow|sweep)\b[\s\S]{0,180}\b(?:surface|boundary|interface|pillbox|plane|solid|volume|field|flux|normal|tangential|direction|vector|physical path|integration path|contour|trajectory)\b/i;
+const PHYSICAL_GEOMETRY_OBSERVATION_RE =
+  /\b(?:compare|examine|inspect|observe)\b/i;
+const PHYSICAL_GEOMETRY_TERM_RE =
+  /\b(?:surface|boundary|interface|pillbox|plane|solid|volume|field|flux|normal|tangential|direction|vector|physical path|integration path|contour|trajectory)\b/gi;
+const UI_FIELD_RE =
+  /\b(?:data|form|input|number|numeric|search|text)\s+field\b/gi;
+const DIAGRAM_GRAPH_ORIENTATION_OBJECT_RE =
+  /\b(?:rotat(?:e|ing)|orient(?:ed|ing)?)\b\s+(?:(?:a|an|the)\s+)?(?:orientation|rotation)\s+of\s+(?:(?:a|an|the)\s+)?(?:[\p{L}\p{N}_-]+\s+){0,3}(?:diagram|graph)\b|\b(?:rotat(?:e|ing)|orient(?:ed|ing)?)\b\s+(?:(?:a|an|the)\s+)?(?:[\p{L}\p{N}_-]+\s+){0,3}(?:diagram|graph)\b|\b(?:orientation|rotation)\b\s+of\s+(?:(?:a|an|the)\s+)?(?:[\p{L}\p{N}_-]+\s+){0,3}(?:diagram|graph)\b|\b(?:diagram|graph)\b(?:'s)?\s+(?:orientation|rotation)\b/giu;
+
+function finalLearnerActionRequiresPhysicalGeometry(
+  opportunity?: VisualizationOpportunity,
+): boolean {
+  const learnerAction = opportunity?.learnerAction?.trim() ?? "";
+  const actionWithoutNonPhysicalObjects = learnerAction
+    .replace(UI_FIELD_RE, "")
+    .replace(DIAGRAM_GRAPH_ORIENTATION_OBJECT_RE, "");
+  if (EXPLICIT_SPATIAL_ACTION_RE.test(actionWithoutNonPhysicalObjects))
+    return true;
+  if (PHYSICAL_GEOMETRY_MANIPULATION_RE.test(actionWithoutNonPhysicalObjects))
+    return true;
+  if (!PHYSICAL_GEOMETRY_OBSERVATION_RE.test(actionWithoutNonPhysicalObjects))
+    return false;
+  return (
+    new Set(
+      [
+        ...actionWithoutNonPhysicalObjects.matchAll(
+          PHYSICAL_GEOMETRY_TERM_RE,
+        ),
+      ].map(([term]) => term.toLowerCase()),
+    ).size >= 2
+  );
+}
+
+/**
  * The reviewed visual-necessity route can explicitly establish that an
  * interaction must teach through physical geometry. Preserve that
  * model-authored constraint at compilation time so a node-link flowchart
@@ -2000,7 +2140,8 @@ function reviewedSpatialRepresentationRequirement(
   const required =
     typeof spatialValue === "number" &&
     Number.isFinite(spatialValue) &&
-    spatialValue >= 0.85;
+    spatialValue >= 0.85 &&
+    finalLearnerActionRequiresPhysicalGeometry(opportunity);
   if (!required) {
     return {
       required: false,
@@ -2008,20 +2149,11 @@ function reviewedSpatialRepresentationRequirement(
       requiresVectorPrimitive: false,
     };
   }
-  const reviewText = [
-    opportunity?.learningObjective,
-    opportunity?.learnerQuestion,
-    opportunity?.pedagogicalReason,
-    opportunity?.learnerAction,
-    opportunity?.necessityDecision?.learningGoal,
-    opportunity?.necessityDecision?.reason,
-    opportunity?.necessityDecision?.teachingMediumReason,
-    opportunity?.necessityDecision?.interaction?.uniqueConcept,
-    opportunity?.necessityDecision?.interaction?.whyStaticSourceFigureIsNotEnough,
-    opportunity?.necessityDecision?.interaction?.learnerAction,
-  ]
-    .filter((entry): entry is string => typeof entry === "string")
-    .join(" ");
+  // Primitive requirements must come from the same final action that made the
+  // route spatial.  Earlier necessity prose is deliberately excluded because
+  // contract review may have replaced an unsupported orientation or surface
+  // task with a diagram, table, or other bounded representation.
+  const reviewText = opportunity?.learnerAction ?? "";
   return {
     required: true,
     requiresSurfacePrimitive:
@@ -2149,6 +2281,7 @@ export function validateGeneratedVisualizationDefinition(
       }
     }
     if (scene.kind === "diagram") {
+      const diagramNodeIds = new Set<string>();
       if (
         !Array.isArray(scene.nodes) ||
         scene.nodes.length === 0 ||
@@ -2161,7 +2294,20 @@ export function validateGeneratedVisualizationDefinition(
       }
       if (Array.isArray(scene.nodes)) {
         scene.nodes.forEach((node, nodeIndex) => {
-          if (!isRecord(node)) return;
+          if (!isRecord(node)) {
+            errors.push(
+              `scenes[${index}].nodes[${nodeIndex}] must be an object`,
+            );
+            return;
+          }
+          const nodeId = typeof node.id === "string" ? node.id : "";
+          if (!ID_PATTERN.test(nodeId) || diagramNodeIds.has(nodeId)) {
+            errors.push(
+              `scenes[${index}].nodes[${nodeIndex}].id is invalid or duplicate`,
+            );
+          } else {
+            diagramNodeIds.add(nodeId);
+          }
           const x = asFiniteNumber(node.x);
           const y = asFiniteNumber(node.y);
           if (
@@ -2184,6 +2330,26 @@ export function validateGeneratedVisualizationDefinition(
             errors.push(
               `scenes[${index}].nodes[${nodeIndex}] needs a concise label of at most 48 characters`,
             );
+          }
+        });
+      }
+      if (Array.isArray(scene.edges)) {
+        scene.edges.forEach((edge, edgeIndex) => {
+          const edgePath = `scenes[${index}].edges[${edgeIndex}]`;
+          if (!isRecord(edge)) {
+            errors.push(`${edgePath} must be an object`);
+            return;
+          }
+          const from = typeof edge.from === "string" ? edge.from : "";
+          const to = typeof edge.to === "string" ? edge.to : "";
+          if (!diagramNodeIds.has(from)) {
+            errors.push(`${edgePath}.from must name a diagram node`);
+          }
+          if (!diagramNodeIds.has(to)) {
+            errors.push(`${edgePath}.to must name a diagram node`);
+          }
+          if (from && from === to) {
+            errors.push(`${edgePath} must connect two different diagram nodes`);
           }
         });
       }
@@ -3057,6 +3223,418 @@ function timeDrivenProcessDiagnostics(
       };
 }
 
+const STATE_DEPENDENT_DIAGRAM_BRANCH_ACTION_RE =
+  /\b(?:highlight(?:ed|ing|s)?|emphasi[sz](?:e|ed|es|ing)?|distinguish(?:ed|es|ing)?|selected|active)\b/i;
+const DIAGRAM_BRANCH_RE = /\b(?:diagram|node[ -]?link graph)\b/i;
+const BRANCH_OR_PATH_RE = /\b(?:branch|path)\b/i;
+
+function requiresStateDependentDiagramBranch(
+  opportunity: Pick<VisualizationOpportunity, "learnerAction">,
+): boolean {
+  const action = opportunity.learnerAction ?? "";
+  return (
+    STATE_DEPENDENT_DIAGRAM_BRANCH_ACTION_RE.test(action) &&
+    DIAGRAM_BRANCH_RE.test(action) &&
+    BRANCH_OR_PATH_RE.test(action)
+  );
+}
+
+function renderedDiagramEdgeStrength(
+  expression: VisualExpression | undefined,
+  state: Record<string, number>,
+): number {
+  const raw = expression ? evaluateVisualExpression(expression, state) : 1.5;
+  return Number.isFinite(raw)
+    ? Math.max(0.5, Math.min(6, Math.abs(raw)))
+    : Number.NaN;
+}
+
+const EXPLICIT_COMBINED_BRANCH_OPTION_RE =
+  /\b(?:combined|both|all|sum|total|together|net)\b|\+/i;
+const CONJOINED_BRANCH_OPTION_RE = /\b(?:and|plus)\b|&/i;
+const MIN_RENDERED_DIAGRAM_EDGE_HIGHLIGHT_CONTRAST = 1;
+
+function normalizedBranchOptionTokens(label: string): Set<string> {
+  return new Set(
+    label
+      .normalize("NFKD")
+      .toLocaleLowerCase("en")
+      .match(/[\p{L}\p{N}]+/gu) ?? [],
+  );
+}
+
+function isCombinedBranchOption(
+  label: string,
+  optionIndex: number,
+  optionLabels: readonly string[],
+): boolean {
+  if (EXPLICIT_COMBINED_BRANCH_OPTION_RE.test(label)) return true;
+  if (!CONJOINED_BRANCH_OPTION_RE.test(label)) return false;
+  const combinedTokens = normalizedBranchOptionTokens(label);
+  const peerTokens = optionLabels.flatMap((peerLabel, peerIndex) =>
+    peerIndex === optionIndex
+      ? []
+      : [{ peerIndex, tokens: normalizedBranchOptionTokens(peerLabel) }],
+  );
+  const matchedPeerCount = peerTokens.filter(({ peerIndex, tokens }) =>
+    [...tokens].some(
+      (token) =>
+        combinedTokens.has(token) &&
+        !peerTokens.some(
+          (other) =>
+            other.peerIndex !== peerIndex && other.tokens.has(token),
+        ),
+    ),
+  ).length;
+  return matchedPeerCount >= 2;
+}
+
+function renderedDiagramStrengthsDiffer(left: number, right: number): boolean {
+  return (
+    Math.abs(left - right) + 1e-9 >=
+    MIN_RENDERED_DIAGRAM_EDGE_HIGHLIGHT_CONTRAST
+  );
+}
+
+function varyingDiagramBranchEdgeIndices(signatures: number[][]): number[] {
+  const edgeCount = signatures[0]?.length ?? 0;
+  return Array.from({ length: edgeCount }, (_, edgeIndex) => edgeIndex).filter(
+    (edgeIndex) => {
+      const values = signatures.map((signature) => signature[edgeIndex]);
+      return renderedDiagramStrengthsDiffer(
+        Math.max(...values),
+        Math.min(...values),
+      );
+    },
+  );
+}
+
+function diagramBranchEdgesShareConnectedComponent(
+  edges: unknown[],
+  relevantEdgeIndices: readonly number[],
+): boolean {
+  if (relevantEdgeIndices.length < 2) return false;
+  const adjacency = new Map<string, Set<string>>();
+  const connect = (from: string, to: string) => {
+    const neighbors = adjacency.get(from) ?? new Set<string>();
+    neighbors.add(to);
+    adjacency.set(from, neighbors);
+  };
+  for (const edge of edges) {
+    if (
+      !isRecord(edge) ||
+      typeof edge.from !== "string" ||
+      typeof edge.to !== "string"
+    ) {
+      return false;
+    }
+    connect(edge.from, edge.to);
+    connect(edge.to, edge.from);
+  }
+  const relevantNodes = new Set<string>();
+  for (const edgeIndex of relevantEdgeIndices) {
+    const edge = edges[edgeIndex];
+    if (
+      !isRecord(edge) ||
+      typeof edge.from !== "string" ||
+      typeof edge.to !== "string"
+    ) {
+      return false;
+    }
+    relevantNodes.add(edge.from);
+    relevantNodes.add(edge.to);
+  }
+  const firstNode = relevantNodes.values().next().value;
+  if (typeof firstNode !== "string") return false;
+  const visited = new Set([firstNode]);
+  const pending = [firstNode];
+  while (pending.length > 0) {
+    const node = pending.shift()!;
+    for (const neighbor of adjacency.get(node) ?? []) {
+      if (visited.has(neighbor)) continue;
+      visited.add(neighbor);
+      pending.push(neighbor);
+    }
+  }
+  return [...relevantNodes].every((node) => visited.has(node));
+}
+
+function diagramStrengthProfilesTeachSelectedBranches(input: {
+  signatures: number[][];
+  optionLabels: readonly string[];
+}): boolean {
+  const { signatures, optionLabels } = input;
+  if (signatures.length < 2 || signatures.length !== optionLabels.length)
+    return false;
+  if (
+    signatures.some((signature) =>
+      signature.some((value) => !Number.isFinite(value)),
+    )
+  ) {
+    return false;
+  }
+  for (let left = 0; left < signatures.length; left += 1) {
+    for (let right = left + 1; right < signatures.length; right += 1) {
+      if (
+        !signatures[left].some(
+          (value, edgeIndex) =>
+            renderedDiagramStrengthsDiffer(
+              value,
+              signatures[right][edgeIndex],
+            ),
+        )
+      ) {
+        return false;
+      }
+    }
+  }
+  const edgeCount = signatures[0]?.length ?? 0;
+  const edgeMinimums = Array.from({ length: edgeCount }, (_, edgeIndex) =>
+    Math.min(...signatures.map((signature) => signature[edgeIndex])),
+  );
+  const varyingEdges = varyingDiagramBranchEdgeIndices(signatures);
+  if (varyingEdges.length < 2) return false;
+  const emphasizedByOption = signatures.map(
+    (signature) =>
+      new Set(
+        varyingEdges.filter(
+          (edgeIndex) =>
+            renderedDiagramStrengthsDiffer(
+              signature[edgeIndex],
+              edgeMinimums[edgeIndex],
+            ),
+        ),
+      ),
+  );
+  const combinedOptionIndices = optionLabels.flatMap((label, optionIndex) =>
+    isCombinedBranchOption(label, optionIndex, optionLabels)
+      ? [optionIndex]
+      : [],
+  );
+  const combinedOptionSet = new Set(combinedOptionIndices);
+  const singleOptionIndices = optionLabels.flatMap((_, optionIndex) =>
+    combinedOptionSet.has(optionIndex) ? [] : [optionIndex],
+  );
+  if (singleOptionIndices.length < 2) return false;
+  for (const optionIndex of singleOptionIndices) {
+    const selected = emphasizedByOption[optionIndex];
+    if (selected.size === 0) return false;
+    const otherSingleEdges = new Set(
+      singleOptionIndices
+        .filter((candidate) => candidate !== optionIndex)
+        .flatMap((candidate) => [...emphasizedByOption[candidate]]),
+    );
+    if (![...selected].some((edgeIndex) => !otherSingleEdges.has(edgeIndex)))
+      return false;
+  }
+  if (combinedOptionIndices.length === 0) return true;
+  const singleBranchUnion = new Set(
+    singleOptionIndices.flatMap((optionIndex) => [
+      ...emphasizedByOption[optionIndex],
+    ]),
+  );
+  if (singleBranchUnion.size < 2) return false;
+  return combinedOptionIndices.every((optionIndex) => {
+    const selected = emphasizedByOption[optionIndex];
+    return (
+      selected.size === singleBranchUnion.size &&
+      selected.size >= 2 &&
+      [...singleBranchUnion].every((edgeIndex) => selected.has(edgeIndex))
+    );
+  });
+}
+
+const MAX_DIAGRAM_BRANCH_CONTROL_CONTEXTS = 16;
+
+function diagramBranchContextStates(
+  definition: GeneratedVisualizationDefinition,
+  defaults: Record<string, number>,
+  branchControlId: string,
+): Array<Record<string, number>> {
+  const otherControls = definition.controls.flatMap((control) => {
+    if (control.id === branchControlId) return [];
+    const defaultValue = defaults[control.id] ?? 0;
+    const availableAlternates = alternateControlStates(control, defaultValue);
+    const alternates =
+      availableAlternates.length <= 3
+        ? availableAlternates
+        : [
+            availableAlternates[0],
+            availableAlternates[Math.floor(availableAlternates.length / 2)],
+            availableAlternates[availableAlternates.length - 1],
+          ];
+    return alternates.length > 0
+      ? [{ controlId: control.id, defaultValue, alternates }]
+      : [];
+  });
+  const controlStates: Array<Record<string, number>> = [];
+  const seen = new Set<string>();
+  const addControlState = (updates: Record<string, number>) => {
+    if (controlStates.length >= MAX_DIAGRAM_BRANCH_CONTROL_CONTEXTS) return;
+    const state = { ...defaults, ...updates };
+    const key = JSON.stringify(
+      otherControls.map(({ controlId }) => state[controlId]),
+    );
+    if (seen.has(key)) return;
+    seen.add(key);
+    controlStates.push(state);
+  };
+  addControlState({});
+  addControlState(
+    Object.fromEntries(
+      otherControls.map(({ controlId, alternates }) => [
+        controlId,
+        alternates[0],
+      ]),
+    ),
+  );
+  for (let left = 0; left < otherControls.length; left += 1) {
+    for (let right = left + 1; right < otherControls.length; right += 1) {
+      addControlState({
+        [otherControls[left].controlId]: otherControls[left].alternates[0],
+        [otherControls[right].controlId]: otherControls[right].alternates[0],
+      });
+    }
+  }
+  for (const { controlId, alternates } of otherControls) {
+    for (const alternate of alternates) {
+      addControlState({ [controlId]: alternate });
+    }
+  }
+  const visitCrossProduct = (
+    controlIndex: number,
+    updates: Record<string, number>,
+  ) => {
+    if (controlStates.length >= MAX_DIAGRAM_BRANCH_CONTROL_CONTEXTS) return;
+    if (controlIndex >= otherControls.length) {
+      addControlState(updates);
+      return;
+    }
+    const { controlId, defaultValue, alternates } =
+      otherControls[controlIndex];
+    for (const value of [defaultValue, ...alternates]) {
+      visitCrossProduct(controlIndex + 1, {
+        ...updates,
+        [controlId]: value,
+      });
+      if (controlStates.length >= MAX_DIAGRAM_BRANCH_CONTROL_CONTEXTS) return;
+    }
+  };
+  visitCrossProduct(0, {});
+  return controlStates.flatMap((state) =>
+    [0, 0.371, 1].map((progress) => ({
+      ...state,
+      x: progress,
+      t: progress,
+    })),
+  );
+}
+
+function diagramBranchSelectionDiagnostics(
+  definition: GeneratedVisualizationDefinition,
+  opportunity: VisualizationOpportunity,
+  defaults: Record<string, number>,
+): Array<{ name: string; passed: boolean; detail: string }> {
+  if (!requiresStateDependentDiagramBranch(opportunity)) return [];
+  const reviewedSelects = opportunity.requiredInputs.filter(
+    (control) => control.type === "select" && control.kind === "select_case",
+  );
+  return reviewedSelects.map((requiredControl) => {
+    const control = definition.controls.find(
+      (candidate) => candidate.id === requiredControl.id,
+    );
+    const optionCount = control?.options?.length ?? 0;
+    const optionLabels = control?.options ?? [];
+    const diagramScenes = definition.scenes.flatMap((scene, sceneIndex) =>
+      isRecord(scene) && scene.kind === "diagram"
+        ? [{ scene, sceneIndex }]
+        : [],
+    );
+    const contexts = diagramBranchContextStates(
+      definition,
+      defaults,
+      requiredControl.id,
+    );
+    const qualifyingDiagram = diagramScenes.findIndex(({ scene }) => {
+      if (
+        diagramScenes.length !== 1 ||
+        !Array.isArray(scene.nodes) ||
+        !Array.isArray(scene.edges) ||
+        scene.edges.length < 2
+      ) {
+        return false;
+      }
+      const nodeIds = new Set(
+        scene.nodes.flatMap((node) =>
+          isRecord(node) && typeof node.id === "string" ? [node.id] : [],
+        ),
+      );
+      const endpointPairs = new Set<string>();
+      if (
+        !scene.edges.every((edge) => {
+          if (
+            !isRecord(edge) ||
+            typeof edge.from !== "string" ||
+            typeof edge.to !== "string" ||
+            edge.from === edge.to ||
+            !nodeIds.has(edge.from) ||
+            !nodeIds.has(edge.to)
+          ) {
+            return false;
+          }
+          const endpointPair = [edge.from, edge.to].sort().join("\u0000");
+          if (endpointPairs.has(endpointPair)) return false;
+          endpointPairs.add(endpointPair);
+          return true;
+        })
+      ) {
+        return false;
+      }
+      return contexts.every((context) => {
+        const signatures = Array.from(
+          { length: optionCount },
+          (_, optionIndex) =>
+            scene.edges.map((edge) =>
+              renderedDiagramEdgeStrength(
+                isRecord(edge)
+                  ? (edge.strength as VisualExpression | undefined)
+                  : undefined,
+                {
+                  ...context,
+                  [requiredControl.id]: optionIndex,
+                },
+              ),
+            ),
+        );
+        return (
+          diagramStrengthProfilesTeachSelectedBranches({
+            signatures,
+            optionLabels,
+          }) &&
+          diagramBranchEdgesShareConnectedComponent(
+            scene.edges,
+            varyingDiagramBranchEdgeIndices(signatures),
+          )
+        );
+      });
+    });
+    const passed = Boolean(control) && optionCount >= 2 && qualifyingDiagram >= 0;
+    return {
+      name: `${requiredControl.id} gives every selected diagram branch a distinct edge.strength signature`,
+      passed,
+      detail: passed
+        ? JSON.stringify({
+            controlId: requiredControl.id,
+            optionCount,
+            diagramSceneIndex: diagramScenes[qualifyingDiagram]?.sceneIndex,
+            contextCount: contexts.length,
+            topology: "persistent",
+          })
+        : `reviewed learnerAction requires persistent selected-branch highlighting for exact control ${requiredControl.id}: author exactly one persistent diagram, keep every relevant selectable edge in one connected dependency graph, retain every uniquely connected node and edge with no self-loop or duplicate/reverse endpoint pair, include at least two varying branch edges, and author conditional diagram edge.strength expressions so every single option has an exclusive emphasized branch, every combined/both/all/sum/total/and/&/+ option emphasizes exactly their union, and all ${optionCount || requiredControl.options?.length || 0} option indices produce pairwise-distinct rendered 0.5-6 edge-width signatures with at least ${MIN_RENDERED_DIAGRAM_EDGE_HIGHLIGHT_CONTRAST} unit contrast across animation and the bounded cross-product of other-control states`,
+    };
+  });
+}
+
 function protocolOutcomeExpressions(
   definition: GeneratedVisualizationDefinition,
   opportunity: VisualizationOpportunity,
@@ -3351,6 +3929,14 @@ export function runGeneratedVisualDeterministicTests(input: {
       }),
     });
   }
+
+  semanticTests.push(
+    ...diagramBranchSelectionDiagnostics(
+      input.definition,
+      input.opportunity,
+      defaults,
+    ),
+  );
 
   const predictionProtocol = predictionProtocolDiagnostics(
     input.definition,
@@ -3660,6 +4246,7 @@ export interface GeneratedVisualBrowserInvocation {
   args: string[];
   slug: string;
   profilePath: string;
+  timeoutMs: number;
 }
 
 export interface GeneratedVisualBrowserRunResult {
@@ -3668,6 +4255,12 @@ export interface GeneratedVisualBrowserRunResult {
   stdout?: string | Buffer | null;
   stderr?: string | Buffer | null;
   error?: { message?: string; code?: string | number } | null;
+  durationMs?: number;
+  timedOut?: boolean;
+  completion?: GeneratedVisualBrowserCompletion;
+  browserExitedNaturally?: boolean;
+  cleanupMethod?: GeneratedVisualObservedBrowserResult["cleanupMethod"];
+  cleanupConfirmed?: boolean;
 }
 
 export type GeneratedVisualBrowserRunner = (
@@ -3759,14 +4352,63 @@ function generatedVisualBrowserProcessFailureDetail(
 ): string | undefined {
   const parts = [
     result.error?.code ? `code: ${result.error.code}` : "",
-    result.error?.message ? `error: ${result.error.message}` : "",
-    result.stderr ? `stderr: ${boundedGeneratedVisualBrowserCaptureText(result.stderr)}` : "",
-    result.stdout ? `stdout: ${boundedGeneratedVisualBrowserCaptureText(result.stdout)}` : "",
+    result.error?.message
+      ? `error: ${boundedGeneratedVisualBrowserCaptureText(result.error.message)}`
+      : "",
+    result.stderr
+      ? `stderr: ${boundedGeneratedVisualBrowserCaptureText(result.stderr)}`
+      : "",
+    result.stdout
+      ? `stdout: ${boundedGeneratedVisualBrowserCaptureText(result.stdout)}`
+      : "",
   ].filter(Boolean);
   const detail = parts.join("; ");
-  return detail
-    ? boundedGeneratedVisualBrowserCaptureText(detail)
+  if (!detail) return undefined;
+  if (detail.length <= GENERATED_VISUAL_PREVIEW_CAPTURE_DIAGNOSTIC_MAX_LENGTH) {
+    return detail;
+  }
+  // Preserve the primary error code/message at the front. The prior generic
+  // tail truncation allowed a complete dumped DOM to erase ETIMEDOUT and Edge's
+  // screenshot byte receipt from the durable failure record.
+  return `${detail.slice(
+    0,
+    GENERATED_VISUAL_PREVIEW_CAPTURE_DIAGNOSTIC_MAX_LENGTH - 15,
+  )} [truncated]...`;
+}
+
+function generatedVisualBrowserAttemptDiagnostics(
+  result: GeneratedVisualBrowserRunResult,
+): GeneratedVisualBrowserAttemptDiagnostics {
+  const errorCode = result.error?.code === undefined || result.error?.code === null
+    ? undefined
+    : String(result.error.code);
+  const failed = result.status !== 0 || Boolean(result.signal) ||
+    Boolean(result.error) || result.timedOut === true;
+  const stderr = failed && result.stderr
+    ? boundedGeneratedVisualBrowserCaptureText(result.stderr)
     : undefined;
+  const stdoutTail = failed && result.stdout
+    ? boundedGeneratedVisualBrowserCaptureText(result.stdout)
+    : undefined;
+  return {
+    ...(Number.isFinite(result.durationMs)
+      ? { durationMs: Math.max(0, Math.round(result.durationMs as number)) }
+      : {}),
+    ...(typeof result.timedOut === "boolean" ? { timedOut: result.timedOut } : {}),
+    ...(errorCode === undefined ? {} : { errorCode }),
+    ...(stderr === undefined ? {} : { stderr }),
+    ...(stdoutTail === undefined ? {} : { stdoutTail }),
+    ...(result.completion === undefined ? {} : { completion: result.completion }),
+    ...(typeof result.browserExitedNaturally === "boolean"
+      ? { browserExitedNaturally: result.browserExitedNaturally }
+      : {}),
+    ...(result.cleanupMethod === undefined
+      ? {}
+      : { cleanupMethod: result.cleanupMethod }),
+    ...(typeof result.cleanupConfirmed === "boolean"
+      ? { cleanupConfirmed: result.cleanupConfirmed }
+      : {}),
+  };
 }
 
 /** Restrict retries to process-level, explicitly transient failures. A browser
@@ -3908,17 +4550,13 @@ export function runGeneratedVisualBrowserTests(input: {
     };
   }
   try {
-  const browserRunner: GeneratedVisualBrowserRunner = input.browserRunner ??
-    ((invocation) => spawnSync(
-      invocation.executable,
-      invocation.args,
-      { encoding: "utf-8", timeout, windowsHide: true },
-    ));
-  const retryBrowserMount =
-    input.browserMountRetryBackoff ??
-    waitForGeneratedVisualBrowserRetry;
-  let browserProfileCounter = 0;
-  const spawnIsolatedBrowser = (slug: string, args: string[]) => {
+    const browserRunner: GeneratedVisualBrowserRunner = input.browserRunner ??
+      ((invocation) => runObservedGeneratedVisualBrowserProcess(invocation));
+    const retryBrowserMount =
+      input.browserMountRetryBackoff ??
+      waitForGeneratedVisualBrowserRetry;
+    let browserProfileCounter = 0;
+    const spawnIsolatedBrowser = (slug: string, args: string[]) => {
     browserProfileCounter += 1;
     const profilePath = path.resolve(
       browserProfileRoot,
@@ -3937,6 +4575,7 @@ export function runGeneratedVisualBrowserTests(input: {
           args: [`--user-data-dir=${profilePath}`, ...args],
           slug,
           profilePath,
+          timeoutMs: timeout,
         });
       } catch (error) {
         return {
@@ -4019,6 +4658,7 @@ export function runGeneratedVisualBrowserTests(input: {
         status: result.status ?? null,
         signal: result.signal ?? null,
         mounted,
+        ...generatedVisualBrowserAttemptDiagnostics(result),
         ...(transientFailureCode === undefined
           ? {}
           : { transientFailureCode }),
@@ -4192,6 +4832,7 @@ export function runGeneratedVisualBrowserTests(input: {
           status: screenshot.status ?? null,
           signal: screenshot.signal ?? null,
           screenshotCreated: created,
+          ...generatedVisualBrowserAttemptDiagnostics(screenshot),
           ...(requiresPreviewPrimarySpatialFrame
             ? { previewPrimarySpatialFrameValidated }
             : {}),
@@ -4316,9 +4957,13 @@ function availableGeneratedVisualPreviews(
 function generatedVisualPreviewIdentities(
   previews: readonly GeneratedVisualPreviewArtifact[],
 ): GeneratedVisualPreviewIdentity[] {
-  return previews.map(({ path: _path, selectState, ...identity }) => ({
-    ...identity,
-    selectState: selectState.map((entry) => ({ ...entry })),
+  return previews.map((preview) => ({
+    id: preview.id,
+    viewport: { ...preview.viewport },
+    theme: preview.theme,
+    selectState: preview.selectState.map((entry) => ({ ...entry })),
+    defaultState: preview.defaultState,
+    selectStateCoverageTruncated: preview.selectStateCoverageTruncated,
   }));
 }
 
@@ -4879,7 +5524,7 @@ export function validateGeneratedVisualizationCandidateEnvelope(
   };
 }
 
-export async function generateVisualizationCandidate(input: {
+async function requestGeneratedVisualizationCandidateRaw(input: {
   client: OpenAI;
   model: string;
   opportunity: VisualizationOpportunity;
@@ -4894,7 +5539,10 @@ export async function generateVisualizationCandidate(input: {
   errors?: string[];
   timeoutMs?: number;
   signal?: AbortSignal;
-}): Promise<GeneratedVisualizationCandidate> {
+}): Promise<{
+  content: string;
+  tokenUsage?: GeneratedVisualTokenUsage;
+}> {
   const validModuleTemplate = `import { defineVisualization } from "@breadboard/visual-sdk";
 export default defineVisualization({
   schemaVersion: ${GENERATED_VISUAL_CAPABILITY_MANIFEST.definitionSchemaVersion},
@@ -4953,14 +5601,14 @@ export default defineVisualization({
     "Every expression uses the field kind (never type); binary and unary expressions use op (never operator), and a unary expression stores its child in argument (never value). " +
     `Every output uses representation (never type or value). Its optional expression is the derived value. output.representation is metadata and does not force scene.kind: a spatial scene may satisfy a diagram or animation output. ${GENERATED_VISUAL_CAPABILITY_MANIFEST.outputs.numericExpressionOptionalFor.join(", ")} outputs may omit output.expression when their observable is nonnumeric; never expose a select option index as an output merely to satisfy influence. ` +
     "A plot uses xMin, xMax, samples, xLabel, yLabel and series[].expression; it never uses axes or explicit point arrays. Its source-authored xLabel and yLabel are visible SVG text, so each must be concise, source-grounded, and fully legible inside every supplied mobile and desktop plot frame; put supplementary equation detail in an annotation or formula scene instead of clipping or truncating an axis label. " +
-    "A diagram is only a 2D node-link graph. A diagram node requires id, label, x, and y; node.value is omitted unless it represents a genuinely meaningful numeric quantity. Never use node.value for selection styling or visibility, and never use diagram nodes as substitutes for physical surfaces or solids. A diagram renders in a 640 by 360 frame: keep a sparse, generously separated layout, use short edge labels, and remember that each edge label appears at its edge midpoint. Do not place another node or label near that midpoint, and never author parallel or reverse labelled edges that share an endpoint pair because their labels stack at the same midpoint. Use at most one short conceptual relationship label per endpoint pair; put equations, ratios, equality signs, and other wide formula text in an annotation or formula scene so every node and edge label remains legible on desktop and narrow mobile previews. For a text-bearing mobile diagram, design inside the conservative interior x=112-528 and y=72-288 rather than merely satisfying the wider schema bounds, keep at most three text-bearing nodes in a shared horizontal or vertical band, and reserve at least 80 SVG units from every text-bearing node center to a frame edge. Do not pack a long symbolic label, a numeric value, and edge prose into one small node: use one short identifier plus at most one concise numeric readout, or move the number to a value, status, plot, formula, or annotation scene. At every default, changed-control, and Reset state, each rendered node label and tspan must fit inside its actual SVG node footprint; prefer a 1-6-character identifier in a node and move full phrases, equations, step descriptions, and live values outside the graph when they cannot fit. Do not encode a dense physical grid as a diagram; show a compact representative stencil and explain repeated steps or ratios outside the graph. " +
+    "A diagram is only a 2D node-link graph. A diagram node requires id, label, x, and y; node.value is omitted unless it represents a genuinely meaningful numeric quantity. Never use node.value for selection styling or visibility, and never use diagram nodes as substitutes for physical surfaces or solids. A diagram edge may use strength as an authored numeric expression; the runtime renders abs(strength) clamped to 0.5-6 as stroke width. When opportunity.learnerAction promises a selected, highlighted, emphasized, or distinguished branch in a persistent diagram, retain every node and edge in one diagram scene and use conditional edge.strength expressions keyed to the exact select index. Every single option must have an exclusive emphasized branch, every combined/both/all/sum/total/+ option must emphasize the union of those branches, and all options must produce pairwise-distinct rendered edge-width signatures. A diagram renders in a 640 by 360 frame: keep a sparse, generously separated layout, use short edge labels, and remember that each edge label appears at its edge midpoint. Do not place another node or label near that midpoint, and never author parallel or reverse labelled edges that share an endpoint pair because their labels stack at the same midpoint. Use at most one short conceptual relationship label per endpoint pair; put equations, ratios, equality signs, and other wide formula text in an annotation or formula scene so every node and edge label remains legible on desktop and narrow mobile previews. For a text-bearing mobile diagram, design inside the conservative interior x=112-528 and y=72-288 rather than merely satisfying the wider schema bounds, keep at most three text-bearing nodes in a shared horizontal or vertical band, and reserve at least 80 SVG units from every text-bearing node center to a frame edge. Do not pack a long symbolic label, a numeric value, and edge prose into one small node: use one short identifier plus at most one concise numeric readout, or move the number to a value, status, plot, formula, or annotation scene. At every default, changed-control, and Reset state, each rendered node label and tspan must fit inside its actual SVG node footprint; prefer a 1-6-character identifier in a node and move full phrases, equations, step descriptions, and live values outside the graph when they cannot fit. Do not encode a dense physical grid as a diagram; show a compact representative stencil and explain repeated steps or ratios outside the graph. " +
     "Diagram source coordinates are strictly validated at x=72-568 and y=48-312 because those are the renderer's non-clamped limits. The renderer will not repair an out-of-range authored coordinate for publication; for text-bearing mobile diagrams, use the conservative x=112-528 and y=72-288 interior already specified above. " +
     "A value scene contains kind and outputId. A formula/annotation scene contains kind, title, and text. A timeline scene is exactly {kind:\"timeline\",title,progressInput,steps:[{id,label,description,at},...]}; it needs 2-30 ordered steps, and progressInput must exactly equal one of the declared reviewed control ids. There is no implicit progress, time, step, or output input: when the reviewed controls do not provide an appropriate progress control, use another supported scene instead of inventing one. " +
     `Expression kinds are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.kinds.join(", ")}. Binary operators are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.binaryOperators.join("/")}; unary operators are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.unaryOperators.join("/")}. A conditional is exactly {kind, comparison, left, right, whenTrue, whenFalse}; comparison is one of ${GENERATED_VISUAL_CAPABILITY_MANIFEST.expressions.comparisons.join("/")}. Never use condition/then/else or min/max as a binary op. Every expression has hard limits of ${MAX_EXPRESSION_DEPTH} nested levels and ${MAX_EXPRESSION_NODES} nodes; target at most 6 nested levels and 40 nodes. In a spatial coordinate, use a literal, an input, or a one-operation expression only; never paste a full derived calculation into from, to, position, center, normal, axis, or polygon points. Put longer calculations in an output, plot, status, or formula scene and use simple geometry to illustrate their result. Before returning sourceCode, check it as one complete module: every object/array delimiter is balanced, every property and array item has its comma, and the default export is exactly defineVisualization({ ...literal definition... }). Diagram node.value is normally omitted; when it represents a genuinely meaningful numeric quantity, use only {kind:"constant",value:<finite>}, {kind:"input",id:<known control>}, or a one-operation expression, never a bare numeric value such as value: 1. Put longer derivations in an output, plot, status, or formula scene, never in a diagram node value. ` +
     `Scene kinds are ${GENERATED_VISUAL_CAPABILITY_MANIFEST.scenes.kinds.join(", ")}. Use only these exact field names. ` +
     `Use spatial for physical geometry. A spatial scene is exactly {kind:"spatial",title,view?:{azimuthDegrees?,elevationDegrees?,scale?,projection?:"orthographic"|"perspective",interaction?:"fixed"|"orbit"},groups:[{id,label,visibleWhen?,primitives:[...]}]}; authored view values must be literal finite numbers within azimuthDegrees -180..180, elevationDegrees -85..85, and scale 0.25..2. Every spatial group and primitive label must be a concise nonempty 1-72-character string. It supports 1-${MAX_SPATIAL_GROUPS} groups, 1-${MAX_SPATIAL_PRIMITIVES_PER_GROUP} primitives per group, and ${MAX_SPATIAL_PRIMITIVES} total. ` +
     `A spatial primitive has kind,id,label,color?,pattern?,labelMode?,opacity?,visibleWhen? plus kind fields: plane(center,normal,size), polygon(points with 3-${MAX_SPATIAL_POLYGON_POINTS} coplanar non-collinear SpatialVectors in boundary order), sphere(center,radius), cylinder(center,axis,radius,height), cone(apex,axis,radius,height), point(position,size?), or vector(from,to,headSize?). labelMode defaults to "inline"; use "legend_only" for dense supporting primitives when the required visible legend and accessible object description are clearer than an on-canvas label. The label remains required and is still rendered in the legend and ARIA. Authored opacity, when present, must be a literal finite number between 0.1 and 1. A vector primitive is a finite directed segment from from to to; its label, explanation, and accessibility description must not call it an unbounded line, ray, or axis. ` +
-    "authorEvidence.spatialRepresentationRequirement is a reviewed, immutable route constraint. When its required field is true, include an actual spatial scene with source-grounded physical primitives; do not replace that geometry with a diagram node-link graph, flowchart, state-transition graph, or plot. When requiresSurfacePrimitive is true, include a spatial surface primitive; when requiresVectorPrimitive is true, include a spatial vector primitive. Those primitives must teach the reviewed relationship itself, not serve as decorative additions. " +
+    "authorEvidence.spatialRepresentationRequirement is the reviewed route constraint after final learner-action precedence. Its required field, not a stale necessity score or earlier rationale, is authority. When required is true, include an actual spatial scene with source-grounded physical primitives; do not replace that geometry with a diagram node-link graph, flowchart, state-transition graph, or plot. When requiresSurfacePrimitive is true, include a spatial surface primitive; when requiresVectorPrimitive is true, include a spatial vector primitive. Those primitives must teach the reviewed relationship itself, not serve as decorative additions. When required is false and the final action explicitly asks for a node-link dependency diagram, do not resurrect superseded physical orientation geometry. " +
     "A plane is a centered full rectangular patch extending to both sides of its center. A polygon is a bounded filled surface patch whose points trace one non-self-intersecting boundary. Use ordered polygon vertices, not plane, whenever the visible surface must be clipped, sector-shaped, one-sided, triangular, or a half-plane patch; never describe a plane primitive as a half-plane or clipped patch. Cylinder and cone primitives are bounded capped closed solids; never use either when the claim requires an open, uncapped, clipped, one-sided, or sector surface. For those claims, use one or more ordered polygon facets and describe the result honestly as a bounded faceted, local, or tangent approximation when appropriate. Whenever a named-point normal, tangent, or basis-direction claim refers to a displayed planar, faceted, or local surface patch, audit the literal plane or polygon geometry: the named point must be in the relative interior of its face, never on an edge, vertex, seam, or cap, and its actual face normal must be parallel or antiparallel to the claimed vector. A label never corrects a geometric mismatch. " +
     "For any named-point normal/tangent/basis claim, do the literal geometry calculation before authoring prose: a point must be strictly inside one displayed face, and for a polygon its ordered-vertex cross product (p1-p0) x (p2-p0) must be parallel or antiparallel to the claimed vector. A shared facet edge, seam, vertex, cap, or an off-point chord is never evidence for a local curved-surface normal. When the source calls for a local curved normal, render a tangent plane or bounded tangent polygon containing the named point in its interior and describe it honestly as a local/tangent approximation. " +
     "Every spatial vector is exactly three SpatialScalars. A SpatialScalar is a finite number or any valid expression, including input or t for dynamic geometry. visibleWhen is an expression; the group or primitive is visible only when it evaluates above zero. Normals, axes, and vectors must be non-zero; sizes, radii, heights, point sizes, and head sizes must stay positive. Do not call a direction vector unit or normalized by implication: from:[0,0,0] to:[1,0,0] has magnitude 1, while to:[1,1,1] has magnitude sqrt(3); evaluate the actual endpoint delta in every rendered state. " +
@@ -4975,8 +5623,8 @@ export default defineVisualization({
     "Each testCases item represents inputs and expected as arrays of {id,value} pairs and includes tolerance (number or null). " +
     `Every control id must match ${CONTROL_ID_PATTERN.source}; ${[...RESERVED_CONTROL_IDS].join(", ")} are reserved runtime expression variables and cannot be learner controls. ` +
     "Implement opportunity.interactionGoal and opportunity.learnerAction as the artifact's actual interaction sequence, not merely as labels or explanatory prose. When the reviewed action asks to simulate, iterate, relax, converge, evolve, or step through a process, a static closed-form ratio is not the interaction: author definition.animation:{durationMs,loop,autoplay} and use the reserved runtime expression {kind:\"input\",id:\"t\"} in at least one actual numeric output or scene expression so Play and Step reveal distinct source-grounded initial, intermediate, and settled stages. Do not add t as a learner control, invent a solver or hidden history, or claim literal numerical iteration when only illustrative or normalized stages are evidence-supported. For test_prediction, require the learner to commit a prediction before the artifact reveals or evaluates the outcome; use the exact protocolRole fields from the reviewed controls and author the required outcome expression or scene visibleWhen so it is unchanged initially, after prediction input, after unauthorized reveal/evaluate without commitment, and after commit alone; it must change only after valid commit_prediction then reveal_outcome/evaluate_prediction. Gate that observable with both authored action controls, not commit alone or reveal alone. The trusted runtime derives sequencing only from protocolRole: prediction_input stays editable until commit, commitment locks it, reveal/evaluate stays disabled and mutation-guarded until commit, and Reset clears and unlocks the sequence. Every decisive condition named by the reviewed interaction contract must be directly manipulable or evaluated by the artifact. " +
-    "Copy the opportunity.requiredInputs array exactly and in order: same control count, id, kind, label, type, protocolRole, unit, min, max, step, options, and defaultValue. Do not add a control or a field the reviewed contract omits. Copy opportunity.requiredOutputs exactly and in order: same output count, id, label, and representation; never add or reorder learner-visible outputs. Keep any runtime-internal derived values inside scene or output expressions rather than declaring extra outputs. Use only source-backed relationships. Label illustrative or normalized values clearly. Every required control must materially change a numeric output or scene expression. Before returning, verify this executable condition for each reviewed required control: from its default protocol-aware state, at least one allowed alternate control state must change by more than 1e-9 the evaluated value of an output.expression or numeric scene expression in sourceCode. A control that only changes labels, diagram display, output representation, prose, metadata, accessibility text, or an otherwise constant expression fails; for select controls, use the declared zero-based option index in a numeric scene/output expression, including spatial group or primitive visibleWhen. " +
-    "Before returning, perform a complete model-authored consistency check against the supplied evidence and the literal definition. Independently recompute every evaluable numeric or geometric relationship you authored: scalar values, signed directions, units and conversions, vector endpoint deltas and magnitudes, component-wise sums, resultants, and other aggregates. Make every coordinate, label, annotation, explanation, and accessibility statement agree at the authored precision. When a required output, plot series, plot marker, status, formula, or annotation displays a component, resultant, or magnitude of rendered vector contributions, derive it from those same literal endpoint deltas and carry the identical relationship through every representation; never leave a stale scaled or half-magnitude expression in one view. Perform a claim-to-primitive audit: whenever a label, explanation, or accessibility text calls a vector unit or normalized, its evaluated to-from Euclidean norm must be exactly 1 in every rendered state; whenever text identifies a primitive as a named point with coordinates, that primitive's evaluated position and any vector origin explicitly claimed at that point must equal those coordinates in every rendered state. For every named-point normal, tangent, or basis-direction claim about a displayed planar, faceted, or local surface patch, inspect the literal plane or polygon face rather than prose: the point must be in its relative interior, not an edge, vertex, seam, or cap, and the face normal must be parallel or antiparallel to the claimed vector. For every screen-relative left/right/top/bottom claim, perform a projection audit against the exact authored camera and each relevant labelled preview; if it is not proven in every claimed state and viewport, remove it or state a world-coordinate relationship instead. Do not solve a topology, geometry, or projection defect only by relabeling it. If a display vector or anchor is qualitative, do not call it unit/normalized or present it as a named source coordinate. If a total is claimed to be the sum of displayed contributions, its components must equal that displayed sum; do not hide a discrepancy behind rounding or prose. If displayed elements are representative samples of a larger or continuous domain, do not construct or imply the whole-domain aggregate as their exact finite subtotal unless the supplied evidence explicitly establishes that equality; distinguish the sample contribution and whole-domain result in the geometry as well as the labels and non-visual explanation. When the evidence does not supply enough information to evaluate a sign, magnitude, scale, or aggregate, use explicitly qualitative or normalized encoding and do not invent or claim an evaluated value. The compiler and renderer will not infer or repair any of these relationships for you. " +
+    "Copy the opportunity.requiredInputs array exactly and in order: same control count, id, kind, label, type, protocolRole, unit, min, max, step, options, and defaultValue. Do not add a control or a field the reviewed contract omits. The trusted runtime renders every exact immutable control before numeric outputs and observable scenes and verifies its DOM order and rendered visibility at mobile; sourceCode cannot and must not duplicate, reposition, or replace those controls. Copy opportunity.requiredOutputs exactly and in order: same output count, id, label, and representation; never add or reorder learner-visible outputs. Keep any runtime-internal derived values inside scene or output expressions rather than declaring extra outputs. Use only source-backed relationships. Label illustrative or normalized values clearly. Every required control must materially change a numeric output or scene expression. Before returning, verify this executable condition for each reviewed required control: from its default protocol-aware state, at least one allowed alternate control state must change by more than 1e-9 the evaluated value of an output.expression or numeric scene expression in sourceCode. A control that only changes labels, static diagram metadata, output representation, prose, accessibility text, or an otherwise constant expression fails; for select controls, use the declared zero-based option index in a numeric scene/output expression, including diagram edge.strength or spatial group or primitive visibleWhen. " +
+    "Before returning, perform a complete model-authored consistency check against the supplied evidence and the literal definition. Independently recompute every evaluable numeric or geometric relationship you authored: scalar values, signed directions, units and conversions, vector endpoint deltas and magnitudes, component-wise sums, resultants, and other aggregates. Make every coordinate, label, annotation, explanation, and accessibility statement agree at the authored precision. When a displayed direction is multiplied by an uncontrolled signed scalar, never call the underlying term direction the signed result or contribution direction without source-supported sign authority: either state a fixed-sign assumption visibly and non-visually plus what reverses for the opposite sign, or label only the unsigned/field term and explain the sign-dependent reversal. When a required output, plot series, plot marker, status, formula, or annotation displays a component, resultant, or magnitude of rendered vector contributions, derive it from those same literal endpoint deltas and carry the identical relationship through every representation; never leave a stale scaled or half-magnitude expression in one view. Perform a claim-to-primitive audit: whenever a label, explanation, or accessibility text calls a vector unit or normalized, its evaluated to-from Euclidean norm must be exactly 1 in every rendered state; whenever text identifies a primitive as a named point with coordinates, that primitive's evaluated position and any vector origin explicitly claimed at that point must equal those coordinates in every rendered state. For every named-point normal, tangent, or basis-direction claim about a displayed planar, faceted, or local surface patch, inspect the literal plane or polygon face rather than prose: the point must be in its relative interior, not an edge, vertex, seam, or cap, and the face normal must be parallel or antiparallel to the claimed vector. For every screen-relative left/right/top/bottom claim, perform a projection audit against the exact authored camera and each relevant labelled preview; if it is not proven in every claimed state and viewport, remove it or state a world-coordinate relationship instead. Do not solve a topology, geometry, or projection defect only by relabeling it. If a display vector or anchor is qualitative, do not call it unit/normalized or present it as a named source coordinate. If a total is claimed to be the sum of displayed contributions, its components must equal that displayed sum; do not hide a discrepancy behind rounding or prose. If displayed elements are representative samples of a larger or continuous domain, do not construct or imply the whole-domain aggregate as their exact finite subtotal unless the supplied evidence explicitly establishes that equality; distinguish the sample contribution and whole-domain result in the geometry as well as the labels and non-visual explanation. When the evidence does not supply enough information to evaluate a sign, magnitude, scale, or aggregate, use explicitly qualitative or normalized encoding and do not invent or claim an evaluated value. The compiler and renderer will not infer or repair any of these relationships for you. " +
     "A select control is exposed to expressions as the stable zero-based index of its option in the declared options array (0 for the first option, 1 for the second, and so on), while the interface displays the option label; use conditional expressions against those numeric indices. Group or primitive visibleWhen counts as scene influence, so do not add a meaningless numeric output for the select. " +
     "When repairContext is supplied, return a complete replacement candidate that addresses every exact history entry using only this candidate's six authored fields and the declared SDK. When authorEvidence.highPriorityRepairInstructions is present, follow every instruction by replacing the affected sourceCode structure, not by merely relabelling, describing, or partially editing the rejected module. Before returning, make an internal checklist from every exactErrors and exactHistory entry: revise the actual sourceCode fields implicated by all entries, not merely their labels, explanation, or the newest entry, and re-run the claim-to-primitive audit after those revisions. Its immutableContract controls and outputs are fixed by the reviewed planner: do not add, remove, rename, reorder, or request mutation of them, and do not rely on renderer, runtime, CSS, route, lesson, or planner changes. Use the labelled rendered previews only for the viewport and select state they identify; do not infer an unshown state or viewport. A preview that contradicts a screen-relative placement claim requires an authored geometry or claim correction, never a camera assumption. If previewCoverage.selectStateCoverageTruncated is true, the bounded matrix is not proof of complete or unshown select-state coverage. " +
     "Keep sourceCode below 16,000 bytes and use at most five scenes; prefer the smallest expression tree that teaches the objective. testCases should cover only simple derived outputs with numeric expectations you can compute exactly (an empty testCases array is allowed because Breadboard adds deterministic tests). " +
@@ -5127,24 +5775,69 @@ export default defineVisualization({
     ),
     {
       signal: input.signal,
-      ...(input.timeoutMs ? { timeout: input.timeoutMs } : {}),
+      // The caller owns a soft deadline plus a bounded late-result grace. An
+      // SDK timeout here would sever the only handle to a council run that
+      // continues after the client connection closes.
       maxRetries: 0,
     },
   );
   const content = response.choices[0]?.message?.content ?? "";
   const tokenUsage = generatedVisualTokenUsage(response.usage);
+  return {
+    content,
+    ...(tokenUsage ? { tokenUsage } : {}),
+  };
+}
+
+function parseGeneratedVisualizationCandidateRaw(input: {
+  content: string;
+  tokenUsage?: GeneratedVisualTokenUsage;
+}): { candidate: GeneratedVisualizationCandidate | null; errors: string[] } {
+  const missingCandidateProblem = generatedVisualMissingCandidateProblem(
+    input.content,
+    "generated visualization candidate",
+  );
+  if (missingCandidateProblem) {
+    return {
+      candidate: null,
+      errors: [missingCandidateProblem],
+    };
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(unwrapGeneratedVisualJsonFence(content));
+    parsed = JSON.parse(unwrapGeneratedVisualJsonFence(input.content));
   } catch (error) {
-    throw new Error(
-      `generated visualization candidate is not valid JSON: ${error instanceof Error ? error.message : "parse failed"}`,
-    );
+    return {
+      candidate: null,
+      errors: [
+        `generated visualization candidate is not valid JSON: ${error instanceof Error ? error.message : "parse failed"}`,
+      ],
+    };
   }
-  const envelope = validateGeneratedVisualizationCandidateEnvelope(
+  return validateGeneratedVisualizationCandidateEnvelope(
     parsed,
-    tokenUsage,
+    input.tokenUsage,
   );
+}
+
+export async function generateVisualizationCandidate(input: {
+  client: OpenAI;
+  model: string;
+  opportunity: VisualizationOpportunity;
+  pageMarkdown: string;
+  sourceContext?: unknown;
+  sourceFigureSummaries?: unknown[];
+  formulaDefinitions?: unknown[];
+  previousSourceCode?: string;
+  previousCandidate?: GeneratedVisualizationCandidate;
+  repairHistory?: GeneratedVisualRepairHistoryEntry[];
+  previews?: GeneratedVisualPreviewArtifact[];
+  errors?: string[];
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}): Promise<GeneratedVisualizationCandidate> {
+  const raw = await requestGeneratedVisualizationCandidateRaw(input);
+  const envelope = parseGeneratedVisualizationCandidateRaw(raw);
   if (!envelope.candidate) {
     throw new Error(
       `generated visualization candidate envelope is invalid: ${envelope.errors.join("; ")}`,
@@ -5489,7 +6182,7 @@ export function normalizeDetailedGeneratedVisualCriticRecord(
   };
 }
 
-async function reviewGeneratedVisualization(input: {
+async function requestGeneratedVisualizationCriticRaw(input: {
   client: OpenAI;
   model: string;
   opportunity: VisualizationOpportunity;
@@ -5506,7 +6199,10 @@ async function reviewGeneratedVisualization(input: {
   priorCriticFailure?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
-}): Promise<GeneratedVisualCriticRecord> {
+}): Promise<{
+  content: string;
+  tokenUsage?: GeneratedVisualTokenUsage;
+}> {
   const legacyPreview: GeneratedVisualPreviewArtifact[] =
     input.previewPath && fs.existsSync(input.previewPath)
       ? [
@@ -5566,6 +6262,7 @@ async function reviewGeneratedVisualization(input: {
           browser: input.tests.browser,
           sandboxCapabilities: [
             "native labelled controls with keyboard focus",
+            "exact immutable controls render before numeric outputs and observable scenes, with runtime checks for DOM order and rendered mobile visibility",
             "reset synchronizes state, controls, and readouts",
             "exact protocolRole values enforce prediction then commit then reveal/evaluate, lock committed prediction inputs, guard premature activation, and Reset the sequence",
             "derived values and textual status use aria-live",
@@ -5592,11 +6289,11 @@ async function reviewGeneratedVisualization(input: {
               `{"approved": <boolean>, "reason": <string>, "requestedChanges": [<string>, ...], "scores": {${CRITIC_RUBRIC_KEYS.map((key) => `"${key}": <0-1 number>`).join(", ")}}}\n` +
               "Score every one of those dimensions as a number from 0 to 1 — an approval that leaves any dimension unscored is discarded. " +
               "Leave requestedChanges empty when you approve; otherwise list the complete bounded inventory of every blocking revision visible in the supplied evidence, not only the first issue discovered. " +
-              "Compare every rendered primitive's actual topology and domain against its labels, explanation, interaction contract, and source evidence. Explicitly distinguish centered/full from bounded/clipped/one-sided/sector geometry and open from closed geometry. plane(center,normal,size) is a finite centered full rectangular patch and is valid for a full rectangular box face; do not require a polygon merely because that face is finite. Require a polygon only for clipped, one-sided, sector, or non-rectangular boundaries. Cylinder and cone primitives are bounded capped closed solids, so require ordered polygon facets for a claimed open, uncapped, clipped, one-sided, or sector surface. Diagram node.value is optional and must remain an expression object (a constant, input, or shallow one-operation expression), never a bare numeric value; do not request a derived formula or deep expression tree inside a diagram node value. Do not request a long derived formula inside any spatial coordinate either: request simple literal/input/one-operation geometry and put the calculation in an output, plot, status, or formula scene. Never request min or max as a binary expression operator. If the visual needs a longer derivation, request an output, plot, status, or formula scene instead. For every named-point normal, tangent, or basis-direction claim about a displayed planar, faceted, or local surface patch, inspect the literal face: reject a point on an edge, vertex, seam, or cap, and reject a face normal that is not parallel or antiparallel to the claimed vector. A faceted or local tangent approximation is acceptable only when the artifact says so. Reject any mismatch even when a label or prose renames the rendered shape; relabeling does not change topology or domain. " +
-              "Independently recompute every evaluable relationship from the literal definition rather than trusting its labels, explanation, pedagogical claims, or screenshot. Check scalar values, signs, directions, units and conversions, every vector's endpoint delta and magnitude, component-wise sums, resultants, rounding, and other aggregates. A claimed sum must equal the displayed contributions at the authored precision. If displayed elements are representative samples of a larger or continuous domain, reject a whole-domain aggregate that is constructed or implied as their exact finite subtotal unless the source evidence explicitly establishes that equality; require the distinction in geometry, labels, and the non-visual explanation. If source evidence does not establish a sign, magnitude, scale, or aggregate, require explicitly qualitative or normalized encoding and reject unsupported evaluated claims. Treat every such check as part of both sourceClaimsAndUnits and primitiveTopologyAndDomain, and score either below its publication threshold when any check fails. " +
+              "Compare every rendered primitive's actual topology and domain against its labels, explanation, interaction contract, and source evidence. Explicitly distinguish centered/full from bounded/clipped/one-sided/sector geometry and open from closed geometry. plane(center,normal,size) is a finite centered full rectangular patch and is valid for a full rectangular box face; do not require a polygon merely because that face is finite. Require a polygon only for clipped, one-sided, sector, or non-rectangular boundaries. Cylinder and cone primitives are bounded capped closed solids, so require ordered polygon facets for a claimed open, uncapped, clipped, one-sided, or sector surface. Diagram node.value is optional and must remain an expression object (a constant, input, or shallow one-operation expression), never a bare numeric value; do not request a derived formula or deep expression tree inside a diagram node value. Do not request a long derived formula inside any spatial coordinate either: request simple literal/input/one-operation geometry and put the calculation in an output, plot, status, or formula scene. Never request min or max as a binary expression operator. If the visual needs a longer derivation, request an output, plot, status, or formula scene instead. For every named-point normal, tangent, or basis-direction claim about a displayed planar, faceted, or local surface patch, inspect the literal face: reject a point on an edge, vertex, seam, or cap, and reject a face normal that is not parallel or antiparallel to the claimed vector. A faceted or local tangent approximation is acceptable only when the artifact says so. Reject any mismatch even when a label or prose renames the rendered shape; relabeling does not change topology or domain. When the final learnerAction promises a selected, highlighted, emphasized, or distinguished branch in a persistent diagram, inspect the literal diagram edge.strength expressions for every exact select option. Require every node and edge to remain present, every single option to have an exclusive emphasized branch, every combined/both/all/sum/total/+ option to emphasize their union, and all options to produce pairwise-distinct rendered signatures after abs(strength) is clamped to 0.5-6; node.value, prose, or an unrelated spatial change is not branch highlighting. edge.strength is the supported authored mechanism, so request that candidate repair rather than CSS, runtime, or control-contract changes. " +
+              "Independently recompute every evaluable relationship from the literal definition rather than trusting its labels, explanation, pedagogical claims, or screenshot. Check scalar values, signs, directions, units and conversions, every vector's endpoint delta and magnitude, component-wise sums, resultants, rounding, and other aggregates. When a displayed direction is multiplied by an uncontrolled signed scalar, reject a claim that the underlying term direction is the signed result or contribution direction unless source evidence fixes the sign. Accept either a visible and non-visual fixed-sign assumption plus an explicit opposite-sign reversal, or neutral labels for the underlying terms plus the sign-dependent reversal; do not require an invented sign or planner-owned control. A claimed sum must equal the displayed contributions at the authored precision. If displayed elements are representative samples of a larger or continuous domain, reject a whole-domain aggregate that is constructed or implied as their exact finite subtotal unless the source evidence explicitly establishes that equality; require the distinction in geometry, labels, and the non-visual explanation. If source evidence does not establish a sign, magnitude, scale, or aggregate, require explicitly qualitative or normalized encoding and reject unsupported evaluated claims. Treat every such check as part of both sourceClaimsAndUnits and primitiveTopologyAndDomain, and score either below its publication threshold when any check fails. " +
               "For a spatial scene, verify that its explicitly authored orthographic/perspective and fixed/orbit view is pedagogically useful rather than decorative, preserves legibility and truthful geometry, and is explained accessibly when orbit navigation is enabled. Omitted camera fields are the fixed orthographic legacy default; never infer a different mode from the screenshot or subject matter. Treat the supplied narrow mobile preview as a hard camera-framing check: reject a source-essential plane, vector, endpoint, or inline label that is off-center, cropped, or too close to a frame edge because its azimuth, elevation, scale, projection, or geometry envelope is unsuitable, and request an authored view/geometry correction rather than CSS or runtime auto-fit. Trace every learner-facing non-structural numeric literal or symbol in spatial coordinates and formula/output expressions: reject an unexplained physical interval, scale, or constant unless its symbol, value, unit when applicable, and role are visibly defined in a formula/annotation, diagram, plot, or status scene and described non-visually; do not demand labels for pure rendering-only coordinates. Treat every screen-relative left/right/top/bottom statement as a literal rendered claim: reject it when the exact supplied preview for that state and viewport contradicts it, and when such placement is not source-grounded request removal or a world-coordinate relationship rather than a camera assumption. " +
               "For test_prediction, verify the actual control and output behavior follows the reviewed input, then commit, then reveal/evaluate order; reject an artifact that reveals or evaluates the outcome before commitment, whose outcome changes initially, during prediction, or at commit alone, ignores any protocol stage, or merely describes the sequence in prose. The trusted runtime uses exact protocolRole values (never labels or subject inference) to keep prediction inputs editable until commit, lock them after commit, mutation-guard reveal/evaluate until commitment, and clear/unlock on Reset. There is no retained hidden-state snapshot; the mechanism is a UI/state lock and guard, not a semantic prediction snapshot invented by the runtime. Require the authored outcome expression or visibility to be gated by both commit and reveal/evaluate. " +
-              "The immutableContract controls and outputs are planner-owned and cannot be changed in this candidate loop. Reject only with requestedChanges that a complete replacement candidate can make through its six authored fields and sourceCode using the supplied capabilityManifest. Requested changes must be sourceCode/SDK-feasible: never request a contract, planner, lesson, route, renderer, runtime, CSS, or unavailable SDK mutation. Use each labelled rendered preview only as evidence for its stated viewport and select state; do not claim a mobile or alternate-state defect from a different or unshown preview. When previewCoverage.selectStateCoverageTruncated is true, it is bounded representative evidence rather than proof of complete or unshown select-state coverage. Approve only if interaction improves understanding, belongs in this subsection, uses meaningful controls, has a useful default state, introduces every variable, preserves source claims and units, matches primitive topology and domain, avoids duplication and unnecessary complexity, and is accessible.",
+              "The immutableContract controls and outputs are planner-owned and cannot be changed in this candidate loop. The trusted runtime renders every exact immutable control before numeric outputs and observable scenes, and passed runtimeEvidence verifies DOM order and rendered mobile visibility; a candidate cannot author control placement. Do not request a duplicate selector, scene-embedded control, CSS, or runtime ordering change. Reject only with requestedChanges that a complete replacement candidate can make through its six authored fields and sourceCode using the supplied capabilityManifest. Requested changes must be sourceCode/SDK-feasible: never request a contract, planner, lesson, route, renderer, runtime, CSS, or unavailable SDK mutation. Use each labelled rendered preview only as evidence for its stated viewport and select state; do not claim a mobile or alternate-state defect from a different or unshown preview. When previewCoverage.selectStateCoverageTruncated is true, it is bounded representative evidence rather than proof of complete or unshown select-state coverage. Approve only if interaction improves understanding, belongs in this subsection, uses meaningful controls, has a useful default state, introduces every variable, preserves source claims and units, matches primitive topology and domain, avoids duplication and unnecessary complexity, and is accessible.",
           },
           {
             role: "user",
@@ -5676,34 +6373,62 @@ async function reviewGeneratedVisualization(input: {
     ),
     {
       signal: input.signal,
-      ...(input.timeoutMs ? { timeout: input.timeoutMs } : {}),
+      // Keep the original response promise recoverable past the soft deadline;
+      // the outer boundary still aborts it after a finite grace period.
       maxRetries: 0,
     },
   );
   const content = response.choices[0]?.message?.content ?? "";
   const tokenUsage = generatedVisualTokenUsage(response.usage);
+  return {
+    content,
+    ...(tokenUsage ? { tokenUsage } : {}),
+  };
+}
+
+function parseGeneratedVisualizationCriticRaw(input: {
+  content: string;
+  tokenUsage?: GeneratedVisualTokenUsage;
+  opportunityId: string;
+}): { critic: GeneratedVisualCriticRecord | null; problem?: string } {
+  const missingCandidateProblem = generatedVisualMissingCandidateProblem(
+    input.content,
+    "critic",
+  );
+  if (missingCandidateProblem) {
+    return {
+      critic: null,
+      problem: missingCandidateProblem,
+    };
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(unwrapGeneratedVisualJsonFence(content));
+    parsed = JSON.parse(unwrapGeneratedVisualJsonFence(input.content));
   } catch {
-    throw new Error(
-      `critic returned invalid JSON: ${content.slice(0, 500) || "(empty response)"}`,
-    );
+    return {
+      critic: null,
+      problem: `critic returned invalid JSON: ${input.content.slice(0, 500)}`,
+    };
   }
   const criticDiagnostics: DetailedGeneratedVisualCriticDiagnostics = {};
   const detailedCritic = normalizeDetailedGeneratedVisualCriticRecord(
     parsed,
-    tokenUsage,
-    input.opportunity.id,
+    input.tokenUsage,
+    input.opportunityId,
     criticDiagnostics,
   );
-  if (detailedCritic) return detailedCritic;
+  if (detailedCritic) return { critic: detailedCritic };
   // Active publication has one critic protocol. Legacy/compact score records
   // cannot approve by bypassing a required topology/domain comparison.
-  throw new Error(
-    `critic returned an unusable rubric verdict: ${criticDiagnostics.reason ?? "the reply did not score every required critic dimension, including primitiveTopologyAndDomain"}`,
-  );
+  return {
+    critic: null,
+    problem: `critic returned an unusable rubric verdict: ${criticDiagnostics.reason ?? "the reply did not score every required critic dimension, including primitiveTopologyAndDomain"}`,
+  };
 }
+
+type GeneratedVisualCriticProvider = (
+  input: Parameters<typeof requestGeneratedVisualizationCriticRaw>[0],
+) => Promise<GeneratedVisualCriticRecord>;
 
 function nextGeneratedVisualVersion(gardenDir: string, id: string): number {
   return (loadGeneratedVisualManifest(gardenDir, id)?.version ?? 0) + 1;
@@ -5714,7 +6439,12 @@ function emit(
   type: string,
   data: Record<string, unknown>,
 ): void {
-  sink?.({ type, data });
+  try {
+    sink?.({ type, data });
+  } catch {
+    // Lifecycle telemetry is observational. It must never replace a provider
+    // result, cancellation, validation failure, or the exact provider error.
+  }
 }
 
 const GENERATED_VISUAL_REQUEST_TIMEOUT_CODE =
@@ -5723,42 +6453,23 @@ const GENERATED_VISUAL_REQUEST_TIMEOUT_CODE =
 class GeneratedVisualRequestTimeoutError extends Error {
   readonly code = GENERATED_VISUAL_REQUEST_TIMEOUT_CODE;
   readonly timeoutMs: number;
+  readonly lateResultGraceMs: number;
 
-  constructor(timeoutMs: number, cause?: unknown) {
+  constructor(
+    timeoutMs: number,
+    lateResultGraceMs = 0,
+    cause?: unknown,
+  ) {
     super(
-      `generated visualization provider request timed out after ${timeoutMs}ms`,
+      lateResultGraceMs > 0
+        ? `generated visualization provider request did not settle within the ${timeoutMs}ms soft deadline plus ${lateResultGraceMs}ms late-result grace; the ambiguous duplicate request was suppressed`
+        : `generated visualization provider request timed out after ${timeoutMs}ms`,
     );
     this.name = "GeneratedVisualRequestTimeoutError";
     this.timeoutMs = timeoutMs;
+    this.lateResultGraceMs = lateResultGraceMs;
     if (cause !== undefined)
       (this as Error & { cause?: unknown }).cause = cause;
-  }
-}
-
-class GeneratedVisualProviderTransportExhaustedError extends Error {
-  readonly transportAttempts: number;
-  readonly lastError: unknown;
-  readonly retryOwner: "generated_visual_timeout" | "upstream_client";
-
-  constructor(
-    transportAttempts: number,
-    lastError: unknown,
-    retryOwner: "generated_visual_timeout" | "upstream_client",
-  ) {
-    const detail =
-      lastError instanceof Error && lastError.message.trim()
-        ? lastError.message.trim()
-        : String(lastError || "provider transport failed");
-    super(
-      retryOwner === "generated_visual_timeout"
-        ? `generated visualization provider transport exhausted ${transportAttempts} identical-request attempts: ${detail}`
-        : `generated visualization upstream provider transport retries were exhausted before a model response: ${detail}`,
-    );
-    this.name = "GeneratedVisualProviderTransportExhaustedError";
-    this.transportAttempts = transportAttempts;
-    this.lastError = lastError;
-    this.retryOwner = retryOwner;
-    (this as Error & { cause?: unknown }).cause = lastError;
   }
 }
 
@@ -5870,227 +6581,225 @@ function generatedVisualAbortReason(signal: AbortSignal): unknown {
   );
 }
 
+function notifyGeneratedVisualTimeoutObserver<T>(
+  observer: ((event: T) => void) | undefined,
+  event: T,
+): void {
+  try {
+    observer?.(event);
+  } catch {
+    // Deadline telemetry is subordinate to the provider result. In particular,
+    // a broken Learn event sink must not abandon an accepted request or turn a
+    // recovered response into a semantic generation/critic failure.
+  }
+}
+
 async function withGeneratedVisualTimeout<T>(input: {
   timeoutMs: number;
+  lateResultGraceMs: number;
   externalSignal?: AbortSignal;
   work: (signal: AbortSignal) => Promise<T>;
+  onLateResultWait?: (event: {
+    timeoutMs: number;
+    lateResultGraceMs: number;
+    hardTimeoutMs: number;
+  }) => void;
+  onLateResultRecovered?: (event: {
+    timeoutMs: number;
+    lateResultGraceMs: number;
+    waitedMs: number;
+  }) => void;
 }): Promise<T> {
   if (input.externalSignal?.aborted)
     throw generatedVisualAbortReason(input.externalSignal);
   const controller = new AbortController();
-  let timeoutFailure: GeneratedVisualRequestTimeoutError | undefined;
-  let externalFailure: unknown;
   let rejectBoundary: (reason?: unknown) => void = () => undefined;
   const boundary = new Promise<never>((_resolve, reject) => {
     rejectBoundary = reject;
   });
   const abortFromExternal = () => {
-    externalFailure = generatedVisualAbortReason(input.externalSignal!);
+    const externalFailure = generatedVisualAbortReason(input.externalSignal!);
     controller.abort(externalFailure);
     rejectBoundary(externalFailure);
   };
   input.externalSignal?.addEventListener("abort", abortFromExternal, {
     once: true,
   });
-  const timer = setTimeout(() => {
-    timeoutFailure = new GeneratedVisualRequestTimeoutError(input.timeoutMs);
-    controller.abort(timeoutFailure);
-    rejectBoundary(timeoutFailure);
-  }, input.timeoutMs);
+  const lateResultGraceMs = Math.max(0, input.lateResultGraceMs);
+  const softDeadline = Symbol("generated-visual-soft-deadline");
+  let softTimer: ReturnType<typeof setTimeout> | undefined;
+  let hardTimer: ReturnType<typeof setTimeout> | undefined;
+  const softBoundary = new Promise<typeof softDeadline>((resolve) => {
+    softTimer = setTimeout(() => resolve(softDeadline), input.timeoutMs);
+  });
+  // Observe the original promise through both deadlines. If the hard boundary
+  // wins, its later settlement remains handled instead of becoming an orphaned
+  // rejection, while no second model-authored request is launched.
+  const work = Promise.resolve().then(() => input.work(controller.signal));
   try {
-    return await Promise.race([
-      Promise.resolve().then(() => input.work(controller.signal)),
+    const initial = await Promise.race([
+      work,
       boundary,
+      softBoundary,
     ]);
-  } catch (error) {
-    if (externalFailure !== undefined) throw externalFailure;
-    if (timeoutFailure) {
-      if (error !== timeoutFailure) {
-        (timeoutFailure as Error & { cause?: unknown }).cause = error;
-      }
-      throw timeoutFailure;
-    }
-    throw error;
+    if (initial !== softDeadline) return initial as T;
+
+    const lateResultWaitStartedAt = Date.now();
+    notifyGeneratedVisualTimeoutObserver(input.onLateResultWait, {
+      timeoutMs: input.timeoutMs,
+      lateResultGraceMs,
+      hardTimeoutMs: input.timeoutMs + lateResultGraceMs,
+    });
+    const hardBoundary = new Promise<never>((_resolve, reject) => {
+      hardTimer = setTimeout(() => {
+        const timeoutFailure = new GeneratedVisualRequestTimeoutError(
+          input.timeoutMs,
+          lateResultGraceMs,
+        );
+        controller.abort(timeoutFailure);
+        reject(timeoutFailure);
+      }, lateResultGraceMs);
+    });
+    const recovered = await Promise.race([work, boundary, hardBoundary]);
+    notifyGeneratedVisualTimeoutObserver(input.onLateResultRecovered, {
+      timeoutMs: input.timeoutMs,
+      lateResultGraceMs,
+      waitedMs: Date.now() - lateResultWaitStartedAt,
+    });
+    return recovered;
   } finally {
-    clearTimeout(timer);
+    if (softTimer) clearTimeout(softTimer);
+    if (hardTimer) clearTimeout(hardTimer);
     input.externalSignal?.removeEventListener("abort", abortFromExternal);
   }
 }
 
-async function waitForGeneratedVisualCriticTransportSession(input: {
-  cooldownMs: number;
-  externalSignal?: AbortSignal;
-  checkCancelled?: () => void;
-  waiter?: (input: {
-    cooldownMs: number;
-    signal?: AbortSignal;
-  }) => Promise<void>;
-}): Promise<void> {
-  input.checkCancelled?.();
-  if (input.externalSignal?.aborted)
-    throw generatedVisualAbortReason(input.externalSignal);
-  if (input.cooldownMs <= 0 && !input.waiter) return;
-  if (input.waiter) {
-    await input.waiter({
-      cooldownMs: input.cooldownMs,
-      signal: input.externalSignal,
-    });
-  } else {
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const finish = (error?: unknown) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        input.externalSignal?.removeEventListener("abort", abort);
-        if (error !== undefined) reject(error);
-        else resolve();
-      };
-      const abort = () =>
-        finish(generatedVisualAbortReason(input.externalSignal!));
-      const timer = setTimeout(() => finish(), input.cooldownMs);
-      input.externalSignal?.addEventListener("abort", abort, { once: true });
-    });
-  }
-  if (input.externalSignal?.aborted)
-    throw generatedVisualAbortReason(input.externalSignal);
-  input.checkCancelled?.();
-}
-
 export async function retryGeneratedVisualProviderRequest<T>(input: {
   timeoutMs: number;
-  /** The built-in OpenAI provider applies `timeoutMs` to each raw SDK call so
-   * an upstream connection-retry delay is never aborted by this boundary. */
-  timeoutOwner?: "boundary" | "provider";
+  lateResultGraceMs?: number;
   externalSignal?: AbortSignal;
   checkCancelled?: () => void;
-  maxTransportAttempts?: number;
   work: (signal: AbortSignal, transportAttempt: number) => Promise<T>;
-  onRetry?: (event: {
-    error: unknown;
-    transportAttempt: number;
-    transportMaxAttempts: number;
+  onLateResultWait?: (event: {
+    timeoutMs: number;
+    lateResultGraceMs: number;
+    hardTimeoutMs: number;
+  }) => void;
+  onLateResultRecovered?: (event: {
+    timeoutMs: number;
+    lateResultGraceMs: number;
+    waitedMs: number;
   }) => void;
 }): Promise<T> {
-  const maxTransportAttempts = Math.max(
-    1,
-    Math.min(
-      GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS,
-      input.maxTransportAttempts ??
-        GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS,
-    ),
-  );
-  for (
-    let transportAttempt = 1;
-    transportAttempt <= maxTransportAttempts;
-    transportAttempt += 1
-  ) {
-    input.checkCancelled?.();
-    if (input.externalSignal?.aborted)
-      throw generatedVisualAbortReason(input.externalSignal);
-    try {
-      if (input.timeoutOwner === "provider") {
-        const requestSignal =
-          input.externalSignal ?? new AbortController().signal;
-        return await input.work(requestSignal, transportAttempt);
-      }
-      return await withGeneratedVisualTimeout({
-        timeoutMs: input.timeoutMs,
-        externalSignal: input.externalSignal,
-        work: (signal) => input.work(signal, transportAttempt),
-      });
-    } catch (error) {
-      if (input.externalSignal?.aborted)
-        throw generatedVisualAbortReason(input.externalSignal);
-      input.checkCancelled?.();
-      if (error instanceof GeneratedVisualProviderTransportExhaustedError)
-        throw error;
-      if (isGeneratedVisualProviderTransportError(error)) {
-        if (transportAttempt === maxTransportAttempts) {
-          throw new GeneratedVisualProviderTransportExhaustedError(
-            transportAttempt,
-            error,
-            "generated_visual_timeout",
-          );
-        }
-        input.onRetry?.({
-          error,
-          transportAttempt,
-          transportMaxAttempts: maxTransportAttempts,
-        });
-        continue;
-      }
-      // `attachLearnTokenUsageTracking` already gave these narrow failures its
-      // six-attempt schedule. Treat final exhaustion as infrastructure-terminal
-      // for this logical request; never multiply it or spend a semantic attempt.
-      if (isRetryableModelTransportError(error)) {
-        throw new GeneratedVisualProviderTransportExhaustedError(
-          transportAttempt,
-          error,
-          "upstream_client",
-        );
-      }
-      throw error;
-    }
-  }
-  throw new Error(
-    "generated visualization provider transport retry schedule did not run",
-  );
+  const transportAttempt = 1;
+  input.checkCancelled?.();
+  if (input.externalSignal?.aborted)
+    throw generatedVisualAbortReason(input.externalSignal);
+  // The timeout boundary adopts the original late result when possible and
+  // otherwise throws its exact terminal object. Never wrap a provider throw:
+  // callers need object identity for durable ambiguity and cancellation audit.
+  return withGeneratedVisualTimeout({
+    timeoutMs: input.timeoutMs,
+    lateResultGraceMs: input.lateResultGraceMs ?? input.timeoutMs,
+    externalSignal: input.externalSignal,
+    work: (signal) => input.work(signal, transportAttempt),
+    onLateResultWait: input.onLateResultWait,
+    onLateResultRecovered: input.onLateResultRecovered,
+  });
 }
 
-function writeRejectedAttempt(
-  gardenDir: string,
-  id: string,
-  runId: string,
-  attempt: number,
-  candidate: GeneratedVisualizationCandidate | null,
-  category: string,
-  errors: string[],
-  lifecycle: GeneratedVisualLifecycleRecord[] = [],
+function writeRejectedAttempt(input: {
+  gardenDir: string;
+  id: string;
+  runId: string;
+  attempt: number;
+  candidate: GeneratedVisualizationCandidate | null;
+  category: GeneratedVisualRejectedAttemptCategory;
+  errors: string[];
+  lifecycle?: GeneratedVisualLifecycleRecord[];
   evidence?: {
     validation?: GeneratedVisualValidationRecord;
     tests?: GeneratedVisualTestsRecord;
     critic?: GeneratedVisualCriticRecord;
-  },
-): void {
+  };
+  onRejectedAttempt?: GeneratedVisualRejectedAttemptSink;
+  onEvent?: EventSink;
+}): void {
+  const lifecycle = input.lifecycle ?? [];
+  const rejectedAt = nowIso();
+  const rejectedLifecycle: GeneratedVisualLifecycleRecord[] = [
+    ...lifecycle,
+    {
+      status: "rejected",
+      at: rejectedAt,
+      attempt: input.attempt,
+      detail: input.errors.join("; "),
+    },
+  ];
   const dir = path.join(
-    generatedVisualArtifactDir(gardenDir, id),
+    generatedVisualArtifactDir(input.gardenDir, input.id),
     "attempts",
-    runId,
-    `attempt-${attempt}`,
+    input.runId,
+    `attempt-${input.attempt}`,
   );
   fs.mkdirSync(dir, { recursive: true });
-  if (candidate) {
+  if (input.candidate) {
     fs.writeFileSync(
       path.join(dir, "source.tsx"),
-      candidate.sourceCode,
+      input.candidate.sourceCode,
       "utf-8",
     );
-    writeJson(path.join(dir, "candidate.json"), candidate);
+    writeJson(path.join(dir, "candidate.json"), input.candidate);
   }
-  if (evidence?.validation)
-    writeJson(path.join(dir, "validation.json"), evidence.validation);
-  if (evidence?.tests) {
-    writeJson(path.join(dir, "tests.json"), evidence.tests);
-    if (evidence.tests.browser?.previewMatrixReceipt) {
+  if (input.evidence?.validation)
+    writeJson(path.join(dir, "validation.json"), input.evidence.validation);
+  if (input.evidence?.tests) {
+    writeJson(path.join(dir, "tests.json"), input.evidence.tests);
+    if (input.evidence.tests.browser?.previewMatrixReceipt) {
       writeJson(
         path.join(dir, "preview-matrix.json"),
-        evidence.tests.browser.previewMatrixReceipt,
+        input.evidence.tests.browser.previewMatrixReceipt,
       );
     }
   }
-  if (evidence?.critic)
-    writeJson(path.join(dir, "critic.json"), evidence.critic);
+  if (input.evidence?.critic)
+    writeJson(path.join(dir, "critic.json"), input.evidence.critic);
   writeJson(path.join(dir, "rejection.json"), {
     status: "rejected",
-    category,
-    errors,
-    at: nowIso(),
+    category: input.category,
+    errors: input.errors,
+    at: rejectedAt,
   });
-  writeJson(path.join(dir, "lifecycle.json"), [
-    ...lifecycle,
-    { status: "rejected", at: nowIso(), attempt, detail: errors.join("; ") },
-  ]);
+  writeJson(path.join(dir, "lifecycle.json"), rejectedLifecycle);
+  try {
+    input.onRejectedAttempt?.({
+      schemaVersion: 1,
+      visualizationId: input.id,
+      runId: input.runId,
+      attempt: input.attempt,
+      category: input.category,
+      rejectedAt,
+      errors: [...input.errors],
+      candidate: input.candidate,
+      lifecycle: rejectedLifecycle.map((entry) => ({ ...entry })),
+      ...(input.evidence ? { evidence: input.evidence } : {}),
+    });
+  } catch {
+    // Durable diagnostics are subordinate to the semantic result. A broken
+    // audit sink must never convert the original rejection into a new failure.
+    try {
+      emit(input.onEvent, "learn_visual_rejected_attempt_audit_failed", {
+        visualizationId: input.id,
+        runId: input.runId,
+        attempt: input.attempt,
+        category: input.category,
+        reason: "rejected attempt audit could not be persisted",
+      });
+    } catch {
+      // The event ledger is best-effort when the audit destination itself is
+      // unavailable; retain the original visual failure either way.
+    }
+  }
 }
 
 export type CreateGeneratedVisualizationInput = {
@@ -6105,22 +6814,19 @@ export type CreateGeneratedVisualizationInput = {
   availableSourceAnchorIds?: Set<string>;
   onEvent?: EventSink;
   candidateProvider?: typeof generateVisualizationCandidate;
-  criticProvider?: typeof reviewGeneratedVisualization;
+  criticProvider?: GeneratedVisualCriticProvider;
   maxAttempts?: number;
   criticMaxAttempts?: number;
   runBrowserTests?: boolean;
   /** Test-only override for deterministic runtime-gate simulations. */
   browserTestRunner?: typeof runGeneratedVisualBrowserTests;
   timeoutMs?: number;
-  /** Availability-only outer retry sessions around one identical multimodal
-   * critic request. This never creates or repairs a candidate. */
-  criticTransportSessionMaxAttempts?: number;
-  criticTransportSessionCooldownMs?: number;
-  /** Test seam for the cancellable availability cooldown. */
-  criticTransportSessionWaiter?: (input: {
-    cooldownMs: number;
-    signal?: AbortSignal;
-  }) => Promise<void>;
+  /** How long to keep awaiting one already-started provider request after its
+   * soft observability threshold, before failing closed without a replay. */
+  lateResultGraceMs?: number;
+  /** Called synchronously at the rejection boundary for every semantic
+   * attempt, including provider failures that produced no candidate. */
+  onRejectedAttempt?: GeneratedVisualRejectedAttemptSink;
   abortSignal?: AbortSignal;
   checkCancelled?: () => void;
 };
@@ -6213,53 +6919,40 @@ async function createGeneratedVisualizationWithSlot(
         (Number(process.env.LEARN_GENERATED_VISUAL_MAX_ATTEMPTS ?? 3) || 3),
     ),
   );
-  const candidateProvider =
-    input.candidateProvider ?? generateVisualizationCandidate;
-  const criticProvider = input.criticProvider ?? reviewGeneratedVisualization;
+  const candidateProvider = input.candidateProvider;
+  const criticProvider = input.criticProvider;
   let previousSourceCode = "";
   let previousCandidate: GeneratedVisualizationCandidate | undefined;
   let previousPreviews: GeneratedVisualPreviewArtifact[] = [];
   let repairErrors: string[] = [];
   const repairHistory: GeneratedVisualRepairHistoryEntry[] = [];
   let lastFailure: GeneratedVisualResult["failureCategory"] = "generation";
-  let transportExhaustedWithoutFallback = false;
+  const configuredRequestTimeoutMs =
+    input.timeoutMs ??
+    (Number(
+      process.env.LEARN_GENERATED_VISUAL_TIMEOUT_MS ??
+        GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS,
+    ) || GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS);
   const requestTimeoutMs = Math.max(
-    5_000,
+    // Explicit values are a deterministic test/integration seam. Environment
+    // configuration retains the production floor that prevents accidental
+    // sub-five-second model deadlines.
+    input.timeoutMs === undefined ? 5_000 : 1,
     Math.min(
       300_000,
-      input.timeoutMs ??
-        (Number(
-          process.env.LEARN_GENERATED_VISUAL_TIMEOUT_MS ??
-            GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS,
-        ) || GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS),
+      configuredRequestTimeoutMs,
     ),
   );
-  const configuredCriticTransportSessions =
-    input.criticTransportSessionMaxAttempts ??
-    Number(
-      process.env.LEARN_GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_ATTEMPTS,
-    );
-  const criticTransportSessionMaxAttempts = Math.max(
+  const configuredLateResultGraceMs =
+    input.lateResultGraceMs ??
+    Number(process.env.LEARN_GENERATED_VISUAL_LATE_RESULT_GRACE_MS);
+  const lateResultGraceMs = Math.max(
     1,
     Math.min(
-      GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_MAX_ATTEMPTS,
-      Number.isFinite(configuredCriticTransportSessions)
-        ? Math.floor(configuredCriticTransportSessions)
-        : GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_MAX_ATTEMPTS,
-    ),
-  );
-  const configuredCriticTransportCooldownMs =
-    input.criticTransportSessionCooldownMs ??
-    Number(
-      process.env.LEARN_GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_COOLDOWN_MS,
-    );
-  const criticTransportSessionCooldownMs = Math.max(
-    0,
-    Math.min(
-      900_000,
-      Number.isFinite(configuredCriticTransportCooldownMs)
-        ? Math.floor(configuredCriticTransportCooldownMs)
-        : GENERATED_VISUAL_CRITIC_TRANSPORT_SESSION_COOLDOWN_MS,
+      300_000,
+      Number.isFinite(configuredLateResultGraceMs)
+        ? Math.floor(configuredLateResultGraceMs)
+        : GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS,
     ),
   );
   let currentRepairAttempt = 0;
@@ -6330,83 +7023,141 @@ async function createGeneratedVisualizationWithSlot(
       errors: repairErrors.length ? repairErrors : undefined,
       timeoutMs: requestTimeoutMs,
     };
+    let candidateBoundaryResult:
+      | { kind: "candidate"; candidate: GeneratedVisualizationCandidate }
+      | {
+          kind: "raw";
+          raw: { content: string; tokenUsage?: GeneratedVisualTokenUsage };
+        };
     try {
-      candidate = await retryGeneratedVisualProviderRequest({
+      candidateBoundaryResult = await retryGeneratedVisualProviderRequest({
         timeoutMs: requestTimeoutMs,
-        timeoutOwner:
-          candidateProvider === generateVisualizationCandidate
-            ? "provider"
-            : "boundary",
+        lateResultGraceMs,
         externalSignal: input.abortSignal,
         checkCancelled: input.checkCancelled,
-        work: (signal) => candidateProvider({ ...candidateRequest, signal }),
-        onRetry: ({ error, transportAttempt, transportMaxAttempts }) => {
-          emit(input.onEvent, "visual_generation_transport_retry", {
+        work: async (signal) => candidateProvider
+          ? {
+              kind: "candidate" as const,
+              candidate: await candidateProvider({ ...candidateRequest, signal }),
+            }
+          : {
+              kind: "raw" as const,
+              raw: await requestGeneratedVisualizationCandidateRaw({
+                ...candidateRequest,
+                signal,
+              }),
+            },
+        onLateResultWait: ({ timeoutMs, lateResultGraceMs, hardTimeoutMs }) => {
+          emit(input.onEvent, "visual_generation_late_result_wait_started", {
             visualizationId: id,
             attempt,
-            transportAttempt,
-            transportMaxAttempts,
-            reason:
-              error instanceof Error
-                ? error.message
-                : "provider transport failed",
+            timeoutMs,
+            lateResultGraceMs,
+            hardTimeoutMs,
+            duplicateRequestSuppressed: true,
+          });
+        },
+        onLateResultRecovered: ({ waitedMs }) => {
+          emit(input.onEvent, "visual_generation_late_result_adopted", {
+            visualizationId: id,
+            attempt,
+            waitedMs,
+            duplicateRequestSuppressed: true,
           });
         },
       });
     } catch (error) {
-      if (input.abortSignal?.aborted)
-        throw generatedVisualAbortReason(input.abortSignal);
-      input.checkCancelled?.();
-      lastFailure = "generation";
-      repairErrors = [
-        error instanceof Error ? error.message : "candidate generation failed",
-      ];
-      recordRepairFailure({
-        failureCategory: "generation",
-        errors: repairErrors,
-      });
-      if (error instanceof GeneratedVisualProviderTransportExhaustedError) {
-        transportExhaustedWithoutFallback = true;
-        writeRejectedAttempt(
-          input.gardenDir,
+      // A thrown provider call has no returned semantic candidate. Record only
+      // best-effort diagnostics and propagate the exact object; another author
+      // POST cannot be justified from an ambiguous/empty provider outcome.
+      try {
+        lastFailure = "generation";
+        repairErrors = [
+          error instanceof Error ? error.message : "candidate generation failed",
+        ];
+        recordRepairFailure({
+          failureCategory: "generation",
+          errors: repairErrors,
+        });
+        writeRejectedAttempt({
+          gardenDir: input.gardenDir,
           id,
           runId,
           attempt,
-          null,
-          "generation_transport",
-          repairErrors,
+          candidate: null,
+          category: "generation",
+          errors: repairErrors,
           lifecycle,
-        );
-        emit(input.onEvent, "visual_generation_transport_exhausted", {
+          onRejectedAttempt: input.onRejectedAttempt,
+          onEvent: input.onEvent,
+        });
+        emit(input.onEvent, "visual_generation_provider_failed", {
           visualizationId: id,
           attempt,
-          transportAttempts: error.transportAttempts,
-          transportRetryOwner: error.retryOwner,
+          providerInvocations: 1,
+          duplicateRequestSuppressed: true,
           failureCategory: "generation",
           reason: repairErrors.join("; "),
           durationMs: Date.now() - startedAt,
         });
-        break;
+      } catch {
+        // Diagnostic persistence is subordinate to the provider error.
       }
-      if (isGeneratedVisualProviderCancellation(error)) throw error;
-      writeRejectedAttempt(
-        input.gardenDir,
-        id,
-        runId,
-        attempt,
-        null,
-        "generation",
-        repairErrors,
-        lifecycle,
+      throw error;
+    }
+    if (candidateBoundaryResult.kind === "candidate") {
+      if (!candidateBoundaryResult.candidate) {
+        throw new Error(
+          "generated visualization candidate provider returned no candidate; no semantic repair request was issued",
+        );
+      }
+      candidate = candidateBoundaryResult.candidate;
+    } else {
+      const envelope = parseGeneratedVisualizationCandidateRaw(
+        candidateBoundaryResult.raw,
       );
-      emit(input.onEvent, "visual_generation_failed", {
-        visualizationId: id,
-        attempt,
-        failureCategory: "generation",
-        reason: repairErrors.join("; "),
-        durationMs: Date.now() - startedAt,
-      });
-      continue;
+      const missingCandidateProblem = generatedVisualMissingCandidateProblem(
+        candidateBoundaryResult.raw.content,
+        "generated visualization candidate",
+      );
+      if (missingCandidateProblem) {
+        throw new Error(
+          envelope.errors[0] ??
+            missingCandidateProblem,
+        );
+      }
+      if (!envelope.candidate) {
+        // Nonempty returned model text plus exact local parser/schema problems
+        // is concrete semantic evidence for one bounded corrected request.
+        lastFailure = "generation";
+        repairErrors = envelope.errors;
+        recordRepairFailure({
+          failureCategory: "generation",
+          errors: repairErrors,
+        });
+        writeRejectedAttempt({
+          gardenDir: input.gardenDir,
+          id,
+          runId,
+          attempt,
+          candidate: null,
+          category: "generation",
+          errors: repairErrors,
+          lifecycle,
+          onRejectedAttempt: input.onRejectedAttempt,
+          onEvent: input.onEvent,
+        });
+        emit(input.onEvent, "visual_generation_failed", {
+          visualizationId: id,
+          attempt,
+          failureCategory: "generation",
+          reason: repairErrors.join("; "),
+          returnedCandidateValidated: true,
+          durationMs: Date.now() - startedAt,
+        });
+        continue;
+      }
+      candidate = envelope.candidate;
     }
     previousSourceCode = candidate.sourceCode;
     previousCandidate = candidate;
@@ -6430,19 +7181,21 @@ async function createGeneratedVisualizationWithSlot(
         errors: repairErrors,
         candidate,
       });
-      writeRejectedAttempt(
-        input.gardenDir,
+      writeRejectedAttempt({
+        gardenDir: input.gardenDir,
         id,
         runId,
         attempt,
         candidate,
-        "validation",
-        repairErrors,
+        category: "validation",
+        errors: repairErrors,
         lifecycle,
-        {
+        evidence: {
           validation: compilation.validation,
         },
-      );
+        onRejectedAttempt: input.onRejectedAttempt,
+        onEvent: input.onEvent,
+      });
       emit(input.onEvent, "visual_static_validation_failed", {
         visualizationId: id,
         attempt,
@@ -6549,20 +7302,22 @@ async function createGeneratedVisualizationWithSlot(
         errors: repairErrors,
         candidate,
       });
-      writeRejectedAttempt(
-        input.gardenDir,
+      writeRejectedAttempt({
+        gardenDir: input.gardenDir,
         id,
         runId,
         attempt,
         candidate,
-        "runtime",
-        repairErrors,
+        category: "runtime",
+        errors: repairErrors,
         lifecycle,
-        {
+        evidence: {
           validation: compilation.validation,
           tests: deterministicTests,
         },
-      );
+        onRejectedAttempt: input.onRejectedAttempt,
+        onEvent: input.onEvent,
+      });
       emit(input.onEvent, "visual_runtime_test_failed", {
         visualizationId: id,
         attempt,
@@ -6576,174 +7331,149 @@ async function createGeneratedVisualizationWithSlot(
 
     let critic: GeneratedVisualCriticRecord | null = null;
     let criticFailure = "critic failed";
-    const criticAttempts = Math.max(
-      1,
-      Math.min(
-        3,
-        input.criticMaxAttempts ??
-          (Number(process.env.LEARN_GENERATED_VISUAL_CRITIC_ATTEMPTS ?? 2) ||
-            2),
-      ),
-    );
+    const criticAttempts = criticProvider
+      ? 1
+      : Math.max(
+          1,
+          Math.min(
+            3,
+            input.criticMaxAttempts ??
+              (Number(process.env.LEARN_GENERATED_VISUAL_CRITIC_ATTEMPTS ?? 2) ||
+                2),
+          ),
+        );
     const criticStartedAt = Date.now();
-    let priorCriticFailure: string | undefined;
-    let criticTransportExhausted:
-      | GeneratedVisualProviderTransportExhaustedError
-      | undefined;
     const criticModel = String(
       process.env.LEARN_GENERATED_VISUAL_CRITIC_MODEL ?? input.model,
     );
+    let priorCriticFailure: string | undefined;
     for (
-      let criticTransportSession = 1;
-      criticTransportSession <= criticTransportSessionMaxAttempts;
-      criticTransportSession += 1
+      let criticAttempt = 1;
+      criticAttempt <= criticAttempts;
+      criticAttempt += 1
     ) {
-      criticTransportExhausted = undefined;
-      for (
-        let criticAttempt = 1;
-        criticAttempt <= criticAttempts;
-        criticAttempt += 1
-      ) {
-        const criticRequest = {
-          client: input.client,
-          model: criticModel,
-          opportunity: input.opportunity,
-          candidate,
-          definition,
-          sourceContext: input.sourceContext,
-          sourceFigureSummaries: input.sourceFigureSummaries,
-          formulaDefinitions: input.formulaDefinitions,
-          previewPath: browser.browser?.screenshotCreated
-            ? path.join(stagingDir, "preview.png")
-            : undefined,
-          previews: browser.previews,
-          tests: deterministicTests,
-          priorCriticFailure,
+      const criticRequest = {
+        client: input.client,
+        model: criticModel,
+        opportunity: input.opportunity,
+        candidate,
+        definition,
+        sourceContext: input.sourceContext,
+        sourceFigureSummaries: input.sourceFigureSummaries,
+        formulaDefinitions: input.formulaDefinitions,
+        previewPath: browser.browser?.screenshotCreated
+          ? path.join(stagingDir, "preview.png")
+          : undefined,
+        previews: browser.previews,
+        tests: deterministicTests,
+        priorCriticFailure,
+        timeoutMs: requestTimeoutMs,
+      };
+      let criticBoundaryResult:
+        | { kind: "critic"; critic: GeneratedVisualCriticRecord }
+        | {
+            kind: "raw";
+            raw: { content: string; tokenUsage?: GeneratedVisualTokenUsage };
+          };
+      try {
+        criticBoundaryResult = await retryGeneratedVisualProviderRequest({
           timeoutMs: requestTimeoutMs,
-        };
-        try {
-          critic = await retryGeneratedVisualProviderRequest({
-            timeoutMs: requestTimeoutMs,
-            timeoutOwner:
-              criticProvider === reviewGeneratedVisualization
-                ? "provider"
-                : "boundary",
-            externalSignal: input.abortSignal,
-            checkCancelled: input.checkCancelled,
-            work: (signal) => criticProvider({ ...criticRequest, signal }),
-            onRetry: ({ error, transportAttempt, transportMaxAttempts }) => {
-              emit(input.onEvent, "visual_critic_transport_retry", {
-                visualizationId: id,
-                attempt,
-                criticAttempt,
-                criticTransportSession,
-                criticTransportSessionMaxAttempts,
-                transportAttempt,
-                transportMaxAttempts,
-                reason:
-                  error instanceof Error
-                    ? error.message
-                    : "provider transport failed",
-              });
-            },
+          lateResultGraceMs,
+          externalSignal: input.abortSignal,
+          checkCancelled: input.checkCancelled,
+          work: async (signal) => criticProvider
+            ? {
+                kind: "critic" as const,
+                critic: await criticProvider({ ...criticRequest, signal }),
+              }
+            : {
+                kind: "raw" as const,
+                raw: await requestGeneratedVisualizationCriticRaw({
+                  ...criticRequest,
+                  signal,
+                }),
+              },
+          onLateResultWait: ({ timeoutMs, lateResultGraceMs, hardTimeoutMs }) => {
+            emit(input.onEvent, "visual_critic_late_result_wait_started", {
+              visualizationId: id,
+              attempt,
+              criticAttempt,
+              timeoutMs,
+              lateResultGraceMs,
+              hardTimeoutMs,
+              duplicateRequestSuppressed: true,
+            });
           },
-          );
-          break;
-        } catch (error) {
-          if (input.abortSignal?.aborted)
-            throw generatedVisualAbortReason(input.abortSignal);
-          input.checkCancelled?.();
-          if (error instanceof GeneratedVisualProviderTransportExhaustedError) {
-            criticTransportExhausted = error;
-            criticFailure = error.message;
-            emit(input.onEvent, "visual_critic_transport_exhausted", {
+          onLateResultRecovered: ({ waitedMs }) => {
+            emit(input.onEvent, "visual_critic_late_result_adopted", {
               visualizationId: id,
               attempt,
               criticAttempt,
-              criticTransportSession,
-              criticTransportSessionMaxAttempts,
-              transportAttempts: error.transportAttempts,
-              transportRetryOwner: error.retryOwner,
-              failureCategory: "critic",
-              reason: error.message,
-              durationMs: Date.now() - criticStartedAt,
+              waitedMs,
+              duplicateRequestSuppressed: true,
             });
-            break;
-          }
-          if (isGeneratedVisualProviderCancellation(error)) throw error;
-          criticFailure =
-            error instanceof Error ? error.message : "critic failed";
-          priorCriticFailure = criticFailure;
-          if (criticAttempt < criticAttempts) {
-            emit(input.onEvent, "visual_critic_retry", {
-              visualizationId: id,
-              attempt,
-              criticAttempt,
-              reason: criticFailure,
-            });
-          }
+          },
+        });
+      } catch (error) {
+        // A thrown critic request is not a rejected critic candidate. Keep
+        // diagnostics best-effort, then preserve the exact provider object.
+        try {
+          criticFailure = error instanceof Error ? error.message : "critic failed";
+          emit(input.onEvent, "visual_critic_provider_failed", {
+            visualizationId: id,
+            attempt,
+            criticAttempt,
+            providerInvocations: 1,
+            duplicateRequestSuppressed: true,
+            failureCategory: "critic",
+            reason: criticFailure,
+            durationMs: Date.now() - criticStartedAt,
+          });
+        } catch {
+          // Diagnostic telemetry is subordinate to the provider error.
         }
+        throw error;
       }
-      if (critic || !criticTransportExhausted) break;
-      if (
-        criticTransportSession === criticTransportSessionMaxAttempts
-      )
+      if (criticBoundaryResult.kind === "critic") {
+        if (!criticBoundaryResult.critic) {
+          throw new Error(
+            "generated visualization critic provider returned no verdict; no semantic retry was issued",
+          );
+        }
+        critic = criticBoundaryResult.critic;
         break;
-      emit(input.onEvent, "visual_critic_transport_session_retry", {
-        visualizationId: id,
-        attempt,
-        criticTransportSession,
-        criticTransportSessionMaxAttempts,
-        nextCriticTransportSession: criticTransportSession + 1,
-        cooldownMs: criticTransportSessionCooldownMs,
-        criticModel,
-        transportAttempts: criticTransportExhausted.transportAttempts,
-        transportRetryOwner: criticTransportExhausted.retryOwner,
-        failureCategory: "critic",
-        reason: criticTransportExhausted.message,
-        durationMs: Date.now() - criticStartedAt,
+      }
+      const parsedCritic = parseGeneratedVisualizationCriticRaw({
+        ...criticBoundaryResult.raw,
+        opportunityId: input.opportunity.id,
       });
-      await waitForGeneratedVisualCriticTransportSession({
-        cooldownMs: criticTransportSessionCooldownMs,
-        externalSignal: input.abortSignal,
-        checkCancelled: input.checkCancelled,
-        waiter: input.criticTransportSessionWaiter,
-      });
-      emit(input.onEvent, "visual_critic_transport_session_resumed", {
-        visualizationId: id,
-        attempt,
-        criticTransportSession: criticTransportSession + 1,
-        criticTransportSessionMaxAttempts,
-        criticModel,
-        durationMs: Date.now() - criticStartedAt,
-      });
+      const missingCandidateProblem = generatedVisualMissingCandidateProblem(
+        criticBoundaryResult.raw.content,
+        "critic",
+      );
+      if (missingCandidateProblem) {
+        throw new Error(
+          parsedCritic.problem ?? missingCandidateProblem,
+        );
+      }
+      if (parsedCritic.critic) {
+        critic = parsedCritic.critic;
+        break;
+      }
+      criticFailure = parsedCritic.problem ?? "critic returned an invalid verdict";
+      priorCriticFailure = criticFailure;
+      if (criticAttempt < criticAttempts) {
+        emit(input.onEvent, "visual_critic_retry", {
+          visualizationId: id,
+          attempt,
+          criticAttempt,
+          reason: criticFailure,
+          returnedCandidateValidated: true,
+        });
+      }
     }
     if (!critic) {
       lastFailure = "critic";
-      if (criticTransportExhausted) {
-        transportExhaustedWithoutFallback = true;
-        repairErrors = [criticTransportExhausted.message];
-        recordRepairFailure({
-          failureCategory: "critic",
-          errors: repairErrors,
-          candidate,
-        });
-        writeRejectedAttempt(
-          input.gardenDir,
-          id,
-          runId,
-          attempt,
-          candidate,
-          "critic_transport",
-          repairErrors,
-          lifecycle,
-          {
-            validation: compilation.validation,
-            tests: deterministicTests,
-          },
-        );
-        break;
-      }
       repairErrors = [
         `Critic review could not complete after ${criticAttempts} attempt${criticAttempts === 1 ? "" : "s"}: ${criticFailure}`,
       ];
@@ -6752,20 +7482,22 @@ async function createGeneratedVisualizationWithSlot(
         errors: repairErrors,
         candidate,
       });
-      writeRejectedAttempt(
-        input.gardenDir,
+      writeRejectedAttempt({
+        gardenDir: input.gardenDir,
         id,
         runId,
         attempt,
         candidate,
-        "critic",
-        repairErrors,
+        category: "critic",
+        errors: repairErrors,
         lifecycle,
-        {
+        evidence: {
           validation: compilation.validation,
           tests: deterministicTests,
         },
-      );
+        onRejectedAttempt: input.onRejectedAttempt,
+        onEvent: input.onEvent,
+      });
       emit(input.onEvent, "visual_critic_failed", {
         visualizationId: id,
         attempt,
@@ -6797,21 +7529,23 @@ async function createGeneratedVisualizationWithSlot(
         },
         candidate,
       });
-      writeRejectedAttempt(
-        input.gardenDir,
+      writeRejectedAttempt({
+        gardenDir: input.gardenDir,
         id,
         runId,
         attempt,
         candidate,
-        "critic",
-        repairErrors,
+        category: "critic",
+        errors: repairErrors,
         lifecycle,
-        {
+        evidence: {
           validation: compilation.validation,
           tests: deterministicTests,
           critic,
         },
-      );
+        onRejectedAttempt: input.onRejectedAttempt,
+        onEvent: input.onEvent,
+      });
       emit(input.onEvent, "visual_critic_rejected", {
         visualizationId: id,
         attempt,
@@ -6889,17 +7623,15 @@ async function createGeneratedVisualizationWithSlot(
     return { manifest, definition, errors: [] };
   }
 
-  if (!transportExhaustedWithoutFallback) {
-    emit(input.onEvent, "visual_fallback_used", {
-      gardenId: input.opportunity.gardenId,
-      learningUnitId: input.opportunity.learningUnitId,
-      visualizationId: id,
-      failureCategory: lastFailure,
-      reason:
-        repairErrors.join("; ") || "generated visualization attempts exhausted",
-      resultingStatus: "rejected",
-    });
-  }
+  emit(input.onEvent, "visual_fallback_used", {
+    gardenId: input.opportunity.gardenId,
+    learningUnitId: input.opportunity.learningUnitId,
+    visualizationId: id,
+    failureCategory: lastFailure,
+    reason:
+      repairErrors.join("; ") || "generated visualization attempts exhausted",
+    resultingStatus: "rejected",
+  });
   return {
     manifest: null,
     definition: null,

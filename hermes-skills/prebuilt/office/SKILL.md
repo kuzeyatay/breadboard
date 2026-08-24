@@ -79,11 +79,16 @@ into an edit, and do not replace OfficeCLI with the in-process engine.
 `help pptx set shape`. One help call beats a guess-fail-retry loop. Add
 `--json` to any command for structured output.
 
-For many edits to one file, prefer `batch` — atomic by default, one save
-cycle:
+For many edits to one file, use `batch` — atomic by default, one save cycle.
+For a straightforward new Word report, create the DOCX, then add all planned
+headings, paragraphs, lists and tables in one batch (or the fewest batches the
+payload size permits). **Do not call `office_run` once per paragraph.** Repeated
+single-element calls make simple documents take minutes and can exhaust the
+turn before the file is delivered.
 
 ```
-batch data.xlsx --commands '[{"op":"set","path":"/Sheet1/A1","props":{"value":"Done"}}]' --json
+batch data.xlsx --commands '[{"command":"set","path":"/Sheet1/A1","props":{"value":"Done"}}]' --json
+batch report.docx --commands '[{"command":"add","parent":"/body","type":"paragraph","props":{"text":"Cats and Their Ancestry","style":"Title"}},{"command":"add","parent":"/body","type":"paragraph","props":{"text":"Domestic cats descend from Near Eastern wildcats."}}]' --json
 ```
 
 ## Deeper guidance is one load away
@@ -96,10 +101,13 @@ same guides are in the Skills catalog under **Office**.
 
 ## Finish by exporting
 
-A document the user never receives does not exist. After the last edit, call
-`office_export` with the file and a title — once per finished document, not
-after every change. The user gets a downloadable artifact with an inline
-preview; `.csv` and `.pdf` files in the workspace export too.
+A document the user never receives does not exist. A request to create an
+Office file is complete only after `office_export` succeeds and returns the
+ready artifact. A workspace filename, partial document, or prose summary is not
+a deliverable. After the last edit, call `office_export` with the file and a
+title — once per finished document, not after every change. The user gets a
+downloadable artifact with an inline preview; `.csv` and `.pdf` files in the
+workspace export too.
 
 Before exporting, `view <file> issues` and `validate <file>` are how you check
 your own work — an artifact with a broken layout you never looked at is worse

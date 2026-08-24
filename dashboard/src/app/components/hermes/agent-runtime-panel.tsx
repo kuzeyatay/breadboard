@@ -1976,7 +1976,10 @@ export default function AgentRuntimePanel({
                   >
                     <div className={message.role === "user" ? "flex w-fit max-w-[75%] flex-col items-end gap-1" : "w-full"}>
                     <MessageActionsSlot
-                      suppressActions={message.delegatedAgentRun === true}
+                      suppressActions={
+                        message.delegatedAgentRun === true ||
+                        (index === lastAssistantIndex && delegationInFlight)
+                      }
                     >
                     {message.role === "user" ? (
                       <ChatMessageAttachments
@@ -1991,7 +1994,8 @@ export default function AgentRuntimePanel({
                       />
                     ) : null}
                     {message.role === "assistant" &&
-                    message.delegatedAgentPreamble ? (
+                    message.delegatedAgentPreamble &&
+                    !message.openGymRun ? (
                       <div className="mb-3 text-sm leading-7 text-gray-200">
                         <ActivityPanel
                           activities={[]}
@@ -2166,8 +2170,15 @@ export default function AgentRuntimePanel({
                       )
                     ) : isExternalAgentRunMessage(message) ? (
                       <div
-                        className={message.delegatedAgentRun ? "hidden" : "contents"}
-                        aria-hidden={message.delegatedAgentRun || undefined}
+                        className={
+                          message.delegatedAgentRun && !message.openGymRun
+                            ? "hidden"
+                            : "contents"
+                        }
+                        aria-hidden={
+                          (message.delegatedAgentRun && !message.openGymRun) ||
+                          undefined
+                        }
                       >
                       {message.browserRun ? (
                       <div className="text-sm leading-7 text-gray-200">
@@ -2380,7 +2391,7 @@ export default function AgentRuntimePanel({
                         <InlineOpenGymRun
                           runId={message.openGymRun.runId}
                           task={message.openGymRun.task}
-                          persistedContent={message.content}
+                          persistedContent={externalAgentCardContent(message)}
                           persistedOutcome={message.externalAgentOutcome}
                           onRetry={
                             onRetryMessage &&

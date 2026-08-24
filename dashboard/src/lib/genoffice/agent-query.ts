@@ -3,7 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { openDocx, patchBlocks as patchDocxBlocks, saveDocx } from "./docx-edit.ts";
-import { pdfToDocx } from "./pdf-to-docx.ts";
 import { openPptx, patchBlocks as patchPptxBlocks, savePptx } from "./pptx-edit.ts";
 import { resolveGenOfficeWorkspacePath } from "./paths.ts";
 import { GenOfficeError, type EditableOfficeBlock, type OfficeBlockPatch } from "./types.ts";
@@ -12,7 +11,7 @@ const MAX_INPUT_BYTES = 128 * 1024 * 1024;
 const MAX_RETURNED_BLOCKS = 1_000;
 const MAX_BLOCK_TEXT = 4_000;
 
-function readInputFile(workspace: string, file: unknown, extensions: readonly string[]): {
+export function readInputFile(workspace: string, file: unknown, extensions: readonly string[]): {
   absolute: string;
   relative: string;
   extension: string;
@@ -41,8 +40,7 @@ function readInputFile(workspace: string, file: unknown, extensions: readonly st
     bytes: fs.readFileSync(absolute),
   };
 }
-
-function outputPath(workspace: string, raw: unknown, input: string, extension: string): {
+export function outputPath(workspace: string, raw: unknown, input: string, extension: string): {
   absolute: string;
   relative: string;
 } {
@@ -56,7 +54,7 @@ function outputPath(workspace: string, raw: unknown, input: string, extension: s
   return { absolute, relative: path.relative(workspace, absolute).replaceAll("\\", "/") };
 }
 
-function atomicWrite(filePath: string, bytes: Uint8Array): void {
+export function atomicWrite(filePath: string, bytes: Uint8Array): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
@@ -148,50 +146,5 @@ export async function editDocument(
     filename,
     kind: document.format === "docx" ? "document" : "presentation",
     patched: patches.map((patch) => patch.anchor),
-  };
-}
-
-export interface PdfConversionResult {
-  file: string;
-  outputPath: string;
-  title: string;
-  filename: string;
-  kind: "document";
-  pages: number;
-  warnings: string[];
-  scannedDocument: boolean;
-  pageResults: Array<{
-    page: number;
-    status: "ok" | "degraded" | "scanned";
-    reason?: string;
-    confidence?: number;
-  }>;
-}
-
-export async function convertPdfDocument(
-  workspace: string,
-  args: Record<string, unknown>,
-): Promise<PdfConversionResult> {
-  const input = readInputFile(workspace, args.file, [".pdf"]);
-  const parsed = path.parse(input.relative);
-  const fallback = `${parsed.name}.docx`;
-  const output = outputPath(workspace, args.output ?? fallback, fallback, ".docx");
-  const password = typeof args.password === "string" && args.password ? args.password : undefined;
-  const converted = await pdfToDocx(input.bytes, password ? { password } : {});
-  atomicWrite(output.absolute, converted.bytes);
-  const filename = path.basename(output.absolute);
-  const title = typeof args.title === "string" && args.title.trim()
-    ? args.title.trim().slice(0, 240)
-    : path.parse(filename).name;
-  return {
-    file: input.relative,
-    outputPath: output.absolute,
-    title,
-    filename,
-    kind: "document",
-    pages: converted.pages,
-    warnings: converted.warnings,
-    scannedDocument: converted.scannedDocument,
-    pageResults: converted.pageResults,
   };
 }

@@ -6,6 +6,10 @@
 // held only here (server-side) and is never sent to the frontend.
 
 import { resolveUITarsConfig, type UITarsAdapterConfig } from "./adapter-config.ts";
+import {
+  SupervisorResourceExhaustedError,
+  withServiceLease,
+} from "@/lib/supervisor-control";
 
 export interface AdapterHealth {
   status: "healthy" | "unavailable";
@@ -80,22 +84,25 @@ export class UITarsClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
     try {
-      const res = await fetch(new URL(pathName, this.config.adapterUrl), {
-        method,
-        headers: this.authHeaders(),
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-        signal: controller.signal,
+      return await withServiceLease("ui-tars", "browser-run", async () => {
+        const res = await fetch(new URL(pathName, this.config.adapterUrl), {
+          method,
+          headers: this.authHeaders(),
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+          signal: controller.signal,
+        });
+        const data = (await res.json().catch(() => ({ ok: false, error: "invalid_response" }))) as {
+          ok?: boolean;
+          error?: string;
+          data?: T;
+        };
+        if (!res.ok || data.ok === false) {
+          throw new UITarsAdapterError(typeof data.error === "string" ? data.error : "adapter_error");
+        }
+        return data.data as T;
       });
-      const data = (await res.json().catch(() => ({ ok: false, error: "invalid_response" }))) as {
-        ok?: boolean;
-        error?: string;
-        data?: T;
-      };
-      if (!res.ok || data.ok === false) {
-        throw new UITarsAdapterError(typeof data.error === "string" ? data.error : "adapter_error");
-      }
-      return data.data as T;
     } catch (err) {
+      if (err instanceof SupervisorResourceExhaustedError) throw err;
       if (err instanceof UITarsAdapterError) throw err;
       if (err instanceof Error && err.name === "AbortError") throw new UITarsAdapterError("timeout");
       throw new UITarsAdapterError("unavailable");

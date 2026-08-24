@@ -153,12 +153,16 @@ interface AssistantLearnState {
     currentSectionTitle?: string;
     currentPageTitle?: string;
     error?: string;
+    requiresReplan?: boolean;
   } | null;
   confirmedLearningMapId?: string;
+  confirmedLearningMapModel?: string;
   latestTextbookVersionId?: string;
   hasSources?: boolean;
   selectedSourceIds?: string[];
+  syllabusSourceId?: string | null;
   hasTextbook?: boolean;
+  sourceSetChanged?: boolean;
   buttonLabel?: string;
 }
 
@@ -1685,7 +1689,14 @@ export default function GardenAssistant({
       await appendAssistantNotice('Upload source documents before running Learn.');
       return;
     }
-    if (learnState.job?.status === 'awaiting_confirmation') {
+    const hasExistingLearnContent = Boolean(
+      learnState.latestTextbookVersionId || learnState.hasTextbook,
+    );
+    const awaitingCleanLearningMapReview =
+      learnState.job?.status === 'awaiting_confirmation' &&
+      !hasExistingLearnContent &&
+      learnState.sourceSetChanged !== true;
+    if (awaitingCleanLearningMapReview) {
       await appendAssistantNotice(
         `A learning map is ready for confirmation. Open the garden dashboard to review the section order: [${clusterLabel}](/gardens/${activeClusterSlug}).`,
       );
@@ -1694,12 +1705,26 @@ export default function GardenAssistant({
 
     setLearnBusy(true);
     try {
-      const hasExistingLearnContent = Boolean(
-        learnState.latestTextbookVersionId || learnState.hasTextbook,
+      const confirmedLearningMapModel =
+        learnState.confirmedLearningMapModel?.trim();
+      const syllabusSourceId =
+        typeof learnState.syllabusSourceId === 'string' &&
+        learnState.syllabusSourceId.trim()
+          ? learnState.syllabusSourceId.trim()
+          : null;
+      const selectedSourceIds = Array.isArray(learnState.selectedSourceIds)
+        ? learnState.selectedSourceIds
+        : [];
+      const selectedTeachingSourceIds = selectedSourceIds.filter(
+        (sourceId) => sourceId !== syllabusSourceId,
       );
       const endpoint = hasExistingLearnContent
         ? 'regenerate'
-        : learnState.confirmedLearningMapId
+        : learnState.sourceSetChanged === true
+          ? 'plan'
+        : learnState.job?.status === 'failed' && learnState.job.requiresReplan
+          ? 'plan'
+        : learnState.confirmedLearningMapId && confirmedLearningMapModel
           ? 'generate'
           : 'plan';
       const response = await fetch(
@@ -1711,12 +1736,20 @@ export default function GardenAssistant({
             model,
             ...(endpoint === 'regenerate' ? { mode: 'repair' } : {}),
             ...(endpoint === 'generate'
-              ? { confirmedLearningMapId: learnState.confirmedLearningMapId }
+              ? {
+                  confirmedLearningMapId: learnState.confirmedLearningMapId,
+                  expectedModel: confirmedLearningMapModel,
+                }
               : {}),
             sourceOnly: true,
-            ...(Array.isArray(learnState.selectedSourceIds)
-              ? { includedSourceIds: learnState.selectedSourceIds }
-              : {}),
+            ...(endpoint === 'plan'
+              ? {
+                  includedSourceIds: selectedTeachingSourceIds,
+                  syllabusSourceId,
+                }
+              : Array.isArray(learnState.selectedSourceIds)
+                ? { includedSourceIds: selectedSourceIds }
+                : {}),
             includeSourceSnapshots: false,
           }),
         },
@@ -1724,12 +1757,19 @@ export default function GardenAssistant({
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.error) throw new Error(data.error ?? 'Learn action failed');
       await fetchLearnStatus();
+      const started = data.accepted === true;
       await appendAssistantNotice(
         endpoint === 'plan'
-          ? `Learning map drafted. Open the garden dashboard to confirm the lesson order: [${clusterLabel}](/gardens/${activeClusterSlug}).`
+          ? started
+            ? `Learning map generation started for [${clusterLabel}](/gardens/${activeClusterSlug}).`
+            : `Learning map drafted. Open the garden dashboard to confirm the lesson order: [${clusterLabel}](/gardens/${activeClusterSlug}).`
           : endpoint === 'generate'
-            ? `Lessons generated for [${clusterLabel}](/garden/${activeClusterSlug}).`
-            : `Current validation issues were repaired for [${clusterLabel}](/garden/${activeClusterSlug}); unaffected pages were preserved.`,
+            ? started
+              ? `Lesson generation started for [${clusterLabel}](/garden/${activeClusterSlug}).`
+              : `Lessons generated for [${clusterLabel}](/garden/${activeClusterSlug}).`
+            : started
+              ? `Validation issue repair started for [${clusterLabel}](/garden/${activeClusterSlug}).`
+              : `Current validation issues were repaired for [${clusterLabel}](/garden/${activeClusterSlug}); unaffected pages were preserved.`,
       );
     } catch (error) {
       await appendAssistantNotice(error instanceof Error ? error.message : 'Learn action failed.');

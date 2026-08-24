@@ -12,6 +12,7 @@ import {
 import { isChatHighlight } from "../conversations/highlights.ts";
 import { scrubbed } from "../watermarks/scrub-text.ts";
 import { scrubFileInPlace } from "../watermarks/scrub-file.ts";
+import { withCapabilityLease } from "../supervisor-control.ts";
 import {
   ARTIFACT_KINDS,
   type ArtifactEventType,
@@ -974,6 +975,8 @@ export interface ImportArtifactVersionInput {
   /** The workspace the file must live inside. Nothing outside it is read. */
   authorizedRoot: string;
   filePath: string;
+  /** Optional HTML snapshot for Office formats whose bytes are not browser-renderable. */
+  previewFilePath?: string | null;
   runId: string;
   assistantMessageId: number | null;
   /** Merged over the artifact's existing metadata, as an update would be. */
@@ -1039,6 +1042,53 @@ export function importArtifactVersion(input: ImportArtifactVersionInput): Artifa
     );
   }
 
+  let previewSourcePath: string | null = null;
+  if (input.previewFilePath) {
+    try {
+      const requested = path.isAbsolute(input.previewFilePath)
+        ? path.resolve(input.previewFilePath)
+        : path.resolve(authorizedRoot, input.previewFilePath);
+      if (fs.lstatSync(requested).isSymbolicLink()) {
+        throw new ArtifactStoreError(
+          400,
+          "artifact_import_symlink",
+          "Symbolic links cannot be imported as artifacts.",
+        );
+      }
+      previewSourcePath = fs.realpathSync(requested);
+    } catch (error) {
+      if (error instanceof ArtifactStoreError) throw error;
+      throw new ArtifactStoreError(
+        404,
+        "artifact_import_not_found",
+        "The preview file was not found in the authorized workspace.",
+      );
+    }
+    const relativePreview = path.relative(authorizedRoot, previewSourcePath);
+    const previewStat = fs.statSync(previewSourcePath);
+    if (
+      !relativePreview ||
+      relativePreview.startsWith("..") ||
+      path.isAbsolute(relativePreview) ||
+      !previewStat.isFile() ||
+      previewStat.size <= 0 ||
+      previewStat.size > 16 * 1024 * 1024
+    ) {
+      throw new ArtifactStoreError(
+        422,
+        "artifact_import_preview_invalid",
+        "The preview must be a non-empty HTML file inside the workspace and at most 16 MiB.",
+      );
+    }
+    const head = fs.readFileSync(previewSourcePath).subarray(0, 4_096);
+    if (
+      head.includes(0) ||
+      !/<(?:!doctype\s+html|html|head|body|div|table|svg)[\s>]/i.test(head.toString("utf8"))
+    ) {
+      throw new ArtifactStoreError(422, "artifact_import_preview_invalid", "The preview must be an HTML document.");
+    }
+  }
+
   let inspected;
   try {
     inspected = inspectArtifactImport(sourcePath, artifact.kind);
@@ -1070,6 +1120,11 @@ export function importArtifactVersion(input: ImportArtifactVersionInput): Artifa
   const relativeDirectory = artifactRelativeDirectory(artifact.user_id, artifact.id, nextVersion);
   const sourceLocation = path.posix.join(relativeDirectory, "source.json");
   const outputLocation = path.posix.join(relativeDirectory, artifact.filename);
+  const previewLocation = inspected.previewAvailable
+    ? outputLocation
+    : previewSourcePath
+      ? path.posix.join(relativeDirectory, "preview.html")
+      : null;
   const storedOutputPath = resolveStoredPath(root, outputLocation);
 
   atomicWrite(
@@ -1087,6 +1142,10 @@ export function importArtifactVersion(input: ImportArtifactVersionInput): Artifa
   // taken, so the recorded hash describes the bytes that were actually stored.
   if (input.scrubProvenance !== false) scrubFileInPlace(temporary);
   fs.renameSync(temporary, storedOutputPath);
+
+  if (previewSourcePath && previewLocation && previewLocation !== outputLocation) {
+    atomicWrite(resolveStoredPath(root, previewLocation), fs.readFileSync(previewSourcePath));
+  }
 
   const { byteSize, contentHash } = hashFileStreaming(storedOutputPath);
   const now = new Date().toISOString();
@@ -1122,7 +1181,7 @@ export function importArtifactVersion(input: ImportArtifactVersionInput): Artifa
       nextVersion,
       previous?.id ?? null,
       sourceLocation,
-      inspected.previewAvailable ? outputLocation : null,
+      previewLocation,
       outputLocation,
       inspected.mimeType,
       byteSize,
@@ -1140,7 +1199,7 @@ export function importArtifactVersion(input: ImportArtifactVersionInput): Artifa
     `).run(
       nextVersion,
       title,
-      inspected.previewAvailable ? outputLocation : null,
+      previewLocation,
       outputLocation,
       inspected.mimeType,
       byteSize,
@@ -1461,7 +1520,7 @@ export function updateArtifactContent(input: {
   return getArtifactById(input.artifact.id, database)!;
 }
 
-export async function renderArtifact(input: {
+async function renderArtifactInner(input: {
   artifact: ArtifactRow;
   runId: string;
   assistantMessageId: number | null;
@@ -1525,6 +1584,20 @@ export async function renderArtifact(input: {
     return failArtifact(input.artifact, input.runId, input.assistantMessageId,
       "artifact_render_failed", error instanceof Error ? error.message : "Rendering failed.", database);
   }
+}
+
+export function renderArtifact(input: {
+  artifact: ArtifactRow;
+  runId: string;
+  assistantMessageId: number | null;
+  database?: Database.Database;
+  storageRoot?: string;
+}): Promise<ArtifactRow> {
+  return withCapabilityLease(
+    "artifact-render",
+    `artifact-${input.artifact.renderer_id}`,
+    () => renderArtifactInner(input),
+  );
 }
 
 /** Shallow-merges a metadata patch into an artifact (null values are removed). */

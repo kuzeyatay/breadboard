@@ -3402,9 +3402,12 @@ interface ModelRepairAttempt {
 
 /** Try one model repair for a single page: call the executor, scope-check the
  * candidate, apply it, validate it against the same checks that grade the
- * request, and keep it only if the page's failures are cleared. On any failure
- * the candidate is reverted and dumped to failed-repairs/. */
-async function tryModelRepairForPage({
+ * request, and keep it only if the page's failures are cleared. Provider/model
+ * exceptions deliberately escape with their original identity. Only a returned
+ * candidate may be converted into semantic validation evidence. */
+/** @internal Exported so fail-closed request identity can be regression-tested
+ * without running the full garden finalization pipeline. */
+export async function tryModelRepairForPage({
   gardenDir,
   gardenSlug,
   request,
@@ -3430,18 +3433,7 @@ async function tryModelRepairForPage({
     return { success: false, changedFiles: [], validationErrorsAfter: [], modelFailureReason: "page not found on disk", notes: [] };
   }
 
-  let candidate: RepairCandidate | null;
-  try {
-    candidate = await modelRepair(request);
-  } catch (error) {
-    return {
-      success: false,
-      changedFiles: [],
-      validationErrorsAfter: [],
-      modelFailureReason: `model executor error: ${error instanceof Error ? error.message : String(error)}`,
-      notes: [],
-    };
-  }
+  const candidate = await modelRepair(request);
   if (!candidate || typeof candidate.markdown !== "string" || !candidate.markdown.trim()) {
     return { success: false, changedFiles: [], validationErrorsAfter: [], modelFailureReason: "model returned no candidate", notes: [] };
   }
@@ -3587,6 +3579,15 @@ export async function repairLearningUnitsFromContract({
           expectedVisualContractExecutabilityContext,
           expectedSourceFormulaReviewContext,
         });
+        if (
+          !allowDeterministic &&
+          !attempt.success &&
+          attempt.modelFailureReason === "model returned no candidate"
+        ) {
+          throw new Error(
+            `Model repair for ${pagePath} returned no nonempty candidate; no semantic retry was issued.`,
+          );
+        }
         executions.push({
           unitId: merged.unitId,
           pagePath,

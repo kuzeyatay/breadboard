@@ -131,6 +131,7 @@ export async function POST(request: Request) {
           title: staged.title,
           filename: staged.filename,
           metadata: { officeExport: true, officeFile: staged.relativeFile },
+          sourceSkill: "office",
           sourceHermesTool: "office_export",
           authorizedRoot: workspace,
           filePath: staged.filePath,

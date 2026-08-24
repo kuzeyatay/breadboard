@@ -3,6 +3,10 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  refreshStandaloneDashboardAssets,
+  writeDashboardBuildManifest,
+} from "./dashboard-build-cache.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const dashboardDir = path.join(repoRoot, "dashboard");
@@ -24,6 +28,17 @@ if (mem0.status !== 0) {
   );
 }
 
+// GenOffice Docs is deliberately a static iframe bundle, outside Next's route
+// graph, so opening a document cannot compile a new route and refresh the chat.
+// Rebuild it before every desktop dashboard build instead of trusting a stale
+// generated public directory from the checkout.
+const genofficeEditor = spawnSync(
+  process.execPath,
+  [path.join(dashboardDir, "scripts", "build-genoffice-editor.mjs")],
+  { cwd: dashboardDir, stdio: "inherit" },
+);
+if (genofficeEditor.status !== 0) process.exit(genofficeEditor.status ?? 1);
+
 const result = spawnSync(process.execPath, [nextBin, "build"], {
   cwd: dashboardDir,
   stdio: "inherit",
@@ -33,4 +48,10 @@ const result = spawnSync(process.execPath, [nextBin, "build"], {
     BREADBOARD_NEXT_DIST_DIR: ".next-desktop",
   },
 });
-process.exit(result.status ?? 1);
+if (result.status !== 0) process.exit(result.status ?? 1);
+
+// Next intentionally leaves static/public assets beside standalone output.
+// Complete the runnable tree here so every caller (lean dev, QA, packaging)
+// gets the same production-like artifact rather than each copying a subset.
+refreshStandaloneDashboardAssets(repoRoot);
+writeDashboardBuildManifest(repoRoot);

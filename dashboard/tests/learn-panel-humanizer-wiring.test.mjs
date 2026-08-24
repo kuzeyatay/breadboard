@@ -66,8 +66,16 @@ test("a finished Learn version follows later Rewrite naturally changes", () => {
   );
   assert.match(workspace, /Switched lessons back to the AI copy/);
   assert.match(workspace, /learnState\?\.humanizer\?\.status === "running"/);
-  assert.match(switchRoute, /switchFinishedLearnHumanizer/);
-  assert.match(switchRoute, /handOffLearnTask/);
+  assert.match(switchRoute, /executeLearnOperationForRoute/);
+  assert.match(
+    switchRoute,
+    /operation: "humanizer"[\s\S]*?enabled,[\s\S]*?expectedVersionId,/,
+  );
+  assert.match(
+    switchRoute,
+    /if \(execution\.accepted\) \{[\s\S]*?accepted: true,[\s\S]*?\{ status: 202 \}/,
+  );
+  assert.doesNotMatch(switchRoute, /switchFinishedLearnHumanizer|handOffLearnTask/);
   assert.match(postBuild, /\.breadboard\/humanizer/);
   assert.match(postBuild, /restoreLearnAiCopy/);
   assert.match(postBuild, /activeCopy: "ai"/);

@@ -133,7 +133,7 @@
 
   /* The UI was authored for a dark palette where high gray numbers = dark
      surfaces and white = light text. The ramp is inverted here so the same
-     utility classes render the light theme: gray-950 = app background,
+     utility classes render the light theme: gray-950 = warm paper canvas,
      gray-900 = card surface, gray-700/800 = borders, low grays = dark text,
      and `white` = primary ink (so `text-white` headings read dark while
      `bg-white text-gray-950` buttons become dark charcoal-green with light
@@ -151,7 +151,7 @@
   --color-gray-700: var(--bb-color-gray-700, #9cb7a7); /* strong border / disabled fill */
   --color-gray-800: var(--bb-color-gray-800, #bccfc2); /* border / selected + raised fill */
   --color-gray-900: var(--bb-color-gray-900, #faf7ef); /* surface / cards */
-  --color-gray-950: var(--bb-color-gray-950, #e6f0e6); /* app background */
+  --color-gray-950: var(--bb-color-gray-950, #f5f3ee); /* warm paper canvas */
 
   /* Secondary accent (slate-blue). cyan-/blue-100..300 hold readable dark
      text used for active states; -950 are faint tint backgrounds. */

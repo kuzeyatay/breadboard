@@ -15,6 +15,12 @@ import {
   canonicalAccessibleDirectory,
   discoverFilesystemRoots,
 } from "@/lib/hermes/workspace.ts";
+import {
+  AUTONOMY_TIERS,
+  label as autonomyLabel,
+  normalizeAutonomyTier,
+  type AutonomyTier,
+} from "@/lib/hermes/autonomy.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +30,11 @@ function payload(userId: number) {
     filesystemMode: settings.filesystemMode,
     lastActiveDirectory: settings.lastActiveDirectory,
     accessibleRoots: discoverFilesystemRoots(),
+    autonomyTier: settings.autonomyTier,
+    autonomyTiers: AUTONOMY_TIERS.map((tier) => ({
+      tier,
+      label: autonomyLabel(tier),
+    })),
     note:
       settings.filesystemMode === "full"
         ? "Read discovery may use OS-accessible paths; mutations still require permission."
@@ -66,9 +77,24 @@ export async function PATCH(request: Request) {
         throw new ApiError(400, "invalid_directory", "activeDirectory must be a path or null.");
       }
     }
+    let autonomyTier: AutonomyTier | undefined;
+    if (body.autonomyTier !== undefined) {
+      if (
+        typeof body.autonomyTier !== "string" ||
+        !(AUTONOMY_TIERS as readonly string[]).includes(body.autonomyTier)
+      ) {
+        throw new ApiError(
+          400,
+          "invalid_autonomy_tier",
+          `autonomyTier must be one of ${AUTONOMY_TIERS.join(", ")}.`,
+        );
+      }
+      autonomyTier = normalizeAutonomyTier(body.autonomyTier);
+    }
     setHermesUserSettings(userId, {
       ...(mode ? { filesystemMode: mode } : {}),
       ...(activeDirectory !== undefined ? { lastActiveDirectory: activeDirectory } : {}),
+      ...(autonomyTier ? { autonomyTier } : {}),
     });
     return NextResponse.json(payload(userId));
   } catch (error) {

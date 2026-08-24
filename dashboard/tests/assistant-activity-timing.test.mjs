@@ -88,6 +88,18 @@ test("a reopened live response keeps counting from its durable message start", (
   );
 });
 
+test("a restored SQLite UTC start does not add the browser timezone offset", () => {
+  assert.equal(
+    assistantResponseElapsedMs({
+      activities: [],
+      active: true,
+      now: Date.parse("2026-08-23T13:47:17.000Z"),
+      responseStartedAt: "2026-08-23 13:47:07",
+    }),
+    10_000,
+  );
+});
+
 test("the durable response start outranks activity rebuilt after navigation", () => {
   assert.equal(
     assistantResponseElapsedMs({

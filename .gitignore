@@ -102,6 +102,9 @@ hermes-skills/approved/
 .swarm/
 .claude-flow/
 
+# Unlazy's task-local acceptance ledgers and runtime state.
+/.unlazy/
+
 # ---------------------------------------------------------------------------
 # Vendored upstream clones that carry their own .git
 #
@@ -167,6 +170,7 @@ hermes-skills/approved/
 /stable-fast-3d/
 /subsai/
 /tradingagents/
+/unlazy/
 /unslop/
 /video-use/
 /vimax/

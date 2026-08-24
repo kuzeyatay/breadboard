@@ -265,7 +265,7 @@ def note_responses_stream_event(session_id: str, event: Dict[str, Any]) -> None:
             _clear_inflight(state)
             return
 
-        if kind in ("response.failed", "error"):
+        if kind in ("response.incomplete", "response.failed", "error"):
             _clear_reuse_state(state)
 
 

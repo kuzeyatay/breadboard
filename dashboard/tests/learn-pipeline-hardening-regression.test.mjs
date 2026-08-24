@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { describe } from "node:test";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import * as ts from "typescript";
 
 import {
@@ -18,6 +19,10 @@ import {
   learnTimerRunsForStatus,
   transitionLearnTimer,
 } from "../src/lib/learn-timer.ts";
+import {
+  isAmbiguousModelTransportFailure,
+  modelTransportFailureEvidence,
+} from "../src/lib/http-502-retry.ts";
 
 const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const learnPath = path.join(dashboardRoot, "src", "lib", "learn.ts");
@@ -45,6 +50,22 @@ function namedFunction(name) {
 
 function sourceOf(node) {
   return node.getText(learnAst);
+}
+
+function executableNamedFunction(name, globals = {}) {
+  const executableSource = ts.transpileModule(
+    `${sourceOf(namedFunction(name))}\nglobalThis.testFunction = ${name};`,
+    {
+      compilerOptions: {
+        module: ts.ModuleKind.None,
+        target: ts.ScriptTarget.ES2022,
+      },
+    },
+  ).outputText;
+  const sandbox = { ...globals };
+  vm.runInNewContext(executableSource, sandbox);
+  assert.equal(typeof sandbox.testFunction, "function");
+  return sandbox.testFunction;
 }
 
 function callsNamed(root, name) {
@@ -186,6 +207,139 @@ describe("Learn rollback and garden isolation contracts", () => {
       /for \(const relPath of LEARN_RUN_ROLLBACK_PATHS\)/,
     );
     assert.doesNotMatch(rollbackSource, /readdirSync\(clusterDir|walkMarkdown/);
+  });
+
+  test("generation persists the correct rollback owner before proposal promotion or handoff", () => {
+    const rollbackPolicy = executableNamedFunction("generationRollbackInheritanceJobId");
+    const planningJobId = "job-planning-generic";
+
+    assert.equal(
+      rollbackPolicy({
+        mapAtEntry: { jobId: planningJobId, status: "confirmed" },
+        confirmsProposedMap: true,
+      }),
+      undefined,
+      "an already-confirmed map is a generation input even when auto-confirm is enabled",
+    );
+    assert.equal(
+      rollbackPolicy({
+        mapAtEntry: { jobId: planningJobId, status: "proposed" },
+        confirmsProposedMap: true,
+      }),
+      planningJobId,
+      "a proposal promoted by this generation retains its planning rollback owner",
+    );
+    assert.equal(
+      rollbackPolicy({
+        mapAtEntry: { jobId: planningJobId, status: "proposed" },
+        confirmsProposedMap: false,
+      }),
+      undefined,
+      "a generation that does not promote the proposal cannot claim its planning snapshot",
+    );
+    assert.equal(
+      rollbackPolicy({ mapAtEntry: null, confirmsProposedMap: true }),
+      undefined,
+    );
+
+    const generation = sourceOf(namedFunction("runTextbookGeneration"));
+    const ownershipDecision = generation.indexOf(
+      "inheritedPlanningSnapshotJobId = generationRollbackInheritanceJobId",
+    );
+    const inheritedGuard = generation.indexOf(
+      "if (!gardenLease && inheritedPlanningSnapshotJobId)",
+      ownershipDecision,
+    );
+    const inheritedSnapshot = generation.indexOf("createLearnRunSnapshot", inheritedGuard);
+    const automaticConfirmation = generation.indexOf("confirmLearningMap", inheritedSnapshot);
+    const interactiveGuard = generation.indexOf(
+      "if (confirmProposedLearningMap)",
+      automaticConfirmation,
+    );
+    const interactiveConfirmation = generation.indexOf("confirmLearningMap", interactiveGuard);
+    const freshGuard = generation.indexOf(
+      "if (!gardenLease && !inheritedPlanningSnapshotJobId)",
+      interactiveConfirmation,
+    );
+    const freshSnapshot = generation.indexOf("createLearnRunSnapshot", freshGuard);
+    const handoffCommit = generation.indexOf("job = db.transaction", freshSnapshot);
+    const responseYield = generation.indexOf("await yieldToResponse", handoffCommit);
+    assert.ok(
+      ownershipDecision >= 0 &&
+        inheritedGuard > ownershipDecision &&
+        inheritedSnapshot > inheritedGuard &&
+        automaticConfirmation > inheritedSnapshot &&
+        interactiveConfirmation > inheritedSnapshot,
+      "a transient proposal must inherit its planning rollback anchor before either confirmation path can mutate it",
+    );
+    assert.ok(
+      freshGuard > interactiveConfirmation &&
+        freshSnapshot > freshGuard &&
+        handoffCommit > freshSnapshot &&
+        responseYield > handoffCommit,
+      "an already-confirmed input must receive a fresh rollback baseline before its generation job is handed off or exposed",
+    );
+    assert.match(
+      generation.slice(inheritedSnapshot, automaticConfirmation),
+      /inheritFromJobId: inheritedPlanningSnapshotJobId/,
+    );
+    assert.doesNotMatch(
+      generation.slice(freshSnapshot, handoffCommit),
+      /inheritFromJobId:/,
+      "a pre-existing confirmed map's fresh baseline must not point behind that map",
+    );
+    assert.doesNotMatch(
+      generation.slice(ownershipDecision),
+      /inheritFromJobId: map\.jobId/,
+      "a pre-existing confirmed map must never inherit its pre-planning snapshot",
+    );
+    assert.doesNotMatch(
+      generation.slice(responseYield),
+      /createLearnRunSnapshot/,
+      "no accepted generation may expose a job before its rollback checkpoint exists",
+    );
+  });
+
+  test("cancellation during generation response handoff rolls back before lease release", () => {
+    const generation = sourceOf(namedFunction("runTextbookGeneration"));
+    const setupStart = generation.indexOf("let workspace: LearnBuildWorkspace | null = null");
+    const setupEnd = generation.indexOf("const artifactContentPath", setupStart);
+    const setup = generation.slice(setupStart, setupEnd);
+    const generatingStatus = setup.indexOf('status: "generating_learning_pages"');
+    const firstCancellationCheck = setup.indexOf("throwIfLearnCancelled(job.id)", generatingStatus);
+    const responseYield = setup.indexOf("await yieldToResponse", firstCancellationCheck);
+    const secondCancellationCheck = setup.indexOf("throwIfLearnCancelled(job.id)", responseYield);
+    const workspaceSeed = setup.indexOf("createLearnBuildWorkspace", secondCancellationCheck);
+    const cancellationBranch = setup.indexOf("if (isLearnCancellationWithoutMaskingFailure(job.id, error))", workspaceSeed);
+    const rollback = setup.indexOf("cleanupLearnArtifactsAfterCancel", cancellationBranch);
+    const cancelledTerminal = setup.indexOf('status: "cancelled"', rollback);
+    const snapshotDiscard = setup.indexOf("discardLearnRunSnapshot", cancelledTerminal);
+    const failedTerminal = setup.indexOf('status: "failed"', snapshotDiscard);
+    const finalLeaseRelease = setup.indexOf("lease.release()", failedTerminal);
+
+    assert.ok(
+      generatingStatus >= 0 &&
+        firstCancellationCheck > generatingStatus &&
+        responseYield > firstCancellationCheck &&
+        secondCancellationCheck > responseYield &&
+        workspaceSeed > secondCancellationCheck,
+      "the durable job must check Stop on both sides of the response handoff",
+    );
+    assert.ok(
+      cancellationBranch > workspaceSeed &&
+        rollback > cancellationBranch &&
+        cancelledTerminal > rollback &&
+        snapshotDiscard > cancelledTerminal &&
+        failedTerminal > snapshotDiscard &&
+        finalLeaseRelease > failedTerminal,
+      "setup cancellation must rollback and terminalize as cancelled while the fenced lease is still owned",
+    );
+    assert.match(setup.slice(cancellationBranch, failedTerminal), /throw error/);
+    assert.doesNotMatch(
+      setup.slice(cancellationBranch, failedTerminal),
+      /throw new LearnCancelledError\(\)/,
+      "a concurrent provider/SDK failure classified as cancellation retains exact identity",
+    );
   });
 
   test("every learning-map ID lookup is scoped by garden_id", () => {
@@ -347,7 +501,7 @@ describe("Learn rollback and garden isolation contracts", () => {
     );
   });
 
-  test("failed staged visual preview matrices retain bounded root-ledger evidence without publishing the candidate", () => {
+  test("failed staged visuals retain bounded root-ledger evidence without publishing the candidate", () => {
     const reconciliation = sourceOf(namedFunction("reconcileInteractiveVisuals"));
     assert.match(reconciliation, /durableEventContentPath\?: string/);
     assert.match(reconciliation, /event\.type === "visual_browser_tests_completed"/);
@@ -366,10 +520,53 @@ describe("Learn rollback and garden isolation contracts", () => {
       /contentPath: artifactContentPath,\s*durableEventContentPath: contentPath,/,
       "normal generation must send visual artifacts to staging but preview receipts to the root ledger",
     );
-    assert.doesNotMatch(
+    assert.match(
       reconciliation,
-      /gardenDir: path\.join\(durableEventContentPath, gardenId\)/,
-      "durable preview diagnostics must never redirect generated artifacts out of staging",
+      /createGeneratedVisualization\(\{[\s\S]*?gardenDir: path\.join\(contentPath, gardenId\)/,
+      "generated artifacts must remain in staging",
+    );
+    assert.match(
+      reconciliation,
+      /onRejectedAttempt:[\s\S]*?persistLearnVisualRejectedAttemptAudit\([\s\S]*?gardenDir: path\.join\(durableEventContentPath, gardenId\)/,
+      "only the bounded rejected-attempt receipt may target the durable snapshot",
+    );
+  });
+
+  test("rejected visual audits survive ordinary failure and clear only at success or cancellation boundaries", () => {
+    const discard = sourceOf(namedFunction("discardLearnRunSnapshot"));
+    assert.doesNotMatch(
+      discard,
+      /removeAllLearnVisualRejectedAttemptAudits/,
+      "ordinary planning/setup snapshot disposal must not sweep sibling failed-generation evidence",
+    );
+
+    const reconciliation = sourceOf(namedFunction("reconcileInteractiveVisuals"));
+    assert.match(
+      reconciliation,
+      /if \(result\.manifest\)[\s\S]*?removeLearnVisualRejectedAttemptAudit/,
+      "a visual that eventually succeeds must discard its own failed attempts",
+    );
+
+    const generation = sourceOf(namedFunction("runTextbookGeneration"));
+    assert.match(
+      generation,
+      /promotionCommitted = true;[\s\S]*?removeAllLearnVisualRejectedAttemptAudits\(repositoryGardenDir\)/,
+      "a committed generation must sweep obsolete sibling-job audit trees",
+    );
+    assert.match(
+      generation,
+      /status: "cancelled"[\s\S]*?discardLearnRunSnapshot[\s\S]*?removeRejectedAttemptAuditsAfterTerminalLifecycle/,
+    );
+
+    const cancel = sourceOf(namedFunction("cancelLatestLearnJob"));
+    assert.match(
+      cancel,
+      /status: "cancelled"[\s\S]*?discardLearnRunSnapshot[\s\S]*?removeRejectedAttemptAuditsAfterTerminalLifecycle/,
+    );
+    assert.match(
+      learnSource,
+      /STATIC_LEARN_CLEAR_REMOVAL_ROOTS[\s\S]*?"\.breadboard\/learn-run-snapshots"/,
+      "Learn Clear must remove the complete rejected-attempt snapshot namespace",
     );
   });
 });
@@ -415,8 +612,10 @@ describe("Learn validation, reads, and publication contracts", () => {
     assert.equal(repairExecutor.text, "repairExecutorMode");
 
     const finalizers = callsNamed(generation, "finalizeGardenExport");
-    assert.equal(finalizers.length, 1);
-    assertBooleanCallOption(finalizers[0], "preserveModelAuthoredContent", true);
+    assert.ok(finalizers.length >= 1);
+    for (const finalizer of finalizers) {
+      assertBooleanCallOption(finalizer, "preserveModelAuthoredContent", true);
+    }
 
     const criticRepairs = callsNamed(generation, "makeCriticArtifactRepair");
     assert.equal(criticRepairs.length, 1);
@@ -633,12 +832,12 @@ describe("Learn validation, reads, and publication contracts", () => {
 
     assert.match(
       planningSource,
-      /const requestSourceMap = async \(\) => \{[\s\S]*?const artifactInventory = refreshSelectedSourceArtifactInventory\([\s\S]*?const sourceSetHash = context\.sourceSetHash[\s\S]*?const call = await callValidatedPlanningJson\([\s\S]*?return \{ call, artifactInventory, sourceSetHash \}/,
+      /const requestSourceMap = async \(reauthorCycle: number\) => \{[\s\S]*?const artifactInventory = refreshSelectedSourceArtifactInventory\([\s\S]*?const sourceSetHash = context\.sourceSetHash[\s\S]*?const call = await callValidatedPlanningJson\([\s\S]*?return \{ call, artifactInventory, sourceSetHash \}/,
       "the full selected planning evidence must be captured immediately before every Source Map call",
     );
     assert.match(
       planningSource,
-      /for \(;;\) \{[\s\S]*?ensureReferencedSourceArtifactsExtracted\([\s\S]*?const refreshedPlanningContext = collectLearnSourceContext\([\s\S]*?syllabusCoverageRebindSourceBindingProblems\([\s\S]*?context = refreshedPlanningContext[\s\S]*?const postSelectedPageArtifactInventory = refreshSelectedSourceArtifactInventory\([\s\S]*?const evidenceTransition = sourceMapPlanningEvidenceTransition\([\s\S]*?await rebindSyllabusCoverage\(\);[\s\S]*?sourceMapRequest = await requestSourceMap\(\)/,
+      /for \(;;\) \{[\s\S]*?ensureReferencedSourceArtifactsExtracted\([\s\S]*?const refreshedPlanningContext = collectLearnSourceContext\([\s\S]*?syllabusCoverageRebindSourceBindingProblems\([\s\S]*?context = refreshedPlanningContext[\s\S]*?const postSelectedPageArtifactInventory = refreshSelectedSourceArtifactInventory\([\s\S]*?const evidenceTransition = sourceMapPlanningEvidenceTransition\([\s\S]*?const reauthorCycle = sourceMapReauthorAttempts \+ 1;[\s\S]*?await rebindSyllabusCoverage\(reauthorCycle\);[\s\S]*?sourceMapRequest = await requestSourceMap\(reauthorCycle\)/,
       "every allowed formula-review or registry drift must refresh source context, rebind coverage, and re-author the complete Source Map",
     );
     assert.match(
@@ -648,12 +847,12 @@ describe("Learn validation, reads, and publication contracts", () => {
     );
     assert.match(
       planningSource,
-      /sourceMapAttempt: sourceMapReauthorAttempts \+ 1[\s\S]*?sourceMapReauthorAttempts \+= 1/,
+      /sourceMapAttempt: sourceMapReauthorAttempts \+ 1[\s\S]*?const reauthorCycle = sourceMapReauthorAttempts \+ 1;[\s\S]*?sourceMapReauthorAttempts = reauthorCycle/,
       "each complete model reauthor must have a truthful 1-based attempt receipt",
     );
     assert.match(
       planningSource,
-      /const rebindSyllabusCoverage = async \(\): Promise<void> => \{[\s\S]*?callValidatedPlanningJson\([\s\S]*?taskType:\s*"source_map"[\s\S]*?runSyllabusCoverageEvidenceRecovery\([\s\S]*?syllabusCoverageRecoveryReceiptProblems\([\s\S]*?syllabusCoverage = reboundCoverage/,
+      /const rebindSyllabusCoverage = async \(reauthorCycle: number\): Promise<void> => \{[\s\S]*?callValidatedPlanningJson\([\s\S]*?taskType:\s*"source_map"[\s\S]*?runSyllabusCoverageEvidenceRecovery\([\s\S]*?syllabusCoverageRecoveryReceiptProblems\([\s\S]*?syllabusCoverage = reboundCoverage/,
       "the rebind must obtain a new model-authored coverage decision and strictly validate any new recovery receipt before replacing state",
     );
     const rebindStart = planningSource.indexOf("const rebindSyllabusCoverage = async");
@@ -778,14 +977,40 @@ describe("Learn validation, reads, and publication contracts", () => {
     const extraction = generation.indexOf("const generationFormulaReview = await reviewAndBindSourceFormulas");
     const postExtractionGate = generation.indexOf("context.sourceArtifactInventoryHash !== map.sourceArtifactInventoryHash", extraction);
     const contractWrite = generation.indexOf("const contractWrite = writeLearningUnitContractArtifacts", postExtractionGate);
+    const invalidReviewGate = generation.indexOf(
+      "generationFormulaReview.newlyReplacedFormulaIds.length > 0",
+      extraction,
+    );
+    const invalidReviewThrow = generation.indexOf(
+      "throw new LearnPipelineConflictError(",
+      invalidReviewGate,
+    );
     const finalMapCas = generation.lastIndexOf("UPDATE learn_maps");
     const versionInsert = generation.indexOf("insertLearnVersion", finalMapCas);
     assert.ok(liveGate >= 0 && stagedGate > liveGate && extraction > stagedGate);
     assert.ok(postExtractionGate > extraction && contractWrite > postExtractionGate);
+    assert.ok(
+      invalidReviewGate > extraction &&
+        postExtractionGate > invalidReviewGate &&
+        invalidReviewThrow > invalidReviewGate &&
+        invalidReviewThrow > postExtractionGate &&
+        invalidReviewThrow < contractWrite,
+      "a changed formula-review receipt must fail before contract or learner writes",
+    );
+    assert.match(
+      generation.slice(invalidReviewThrow, contractWrite),
+      /requiresReplan:\s*true/,
+      "the failed background job must preserve the only valid recovery action",
+    );
     assert.ok(finalMapCas > contractWrite && versionInsert > finalMapCas);
     assert.match(
       generation.slice(finalMapCas, versionInsert + 500),
       /status = 'confirmed'[\s\S]*?source_set_hash = \?[\s\S]*?source_artifact_inventory_hash = \?[\s\S]*?sourceArtifactInventoryHash:\s*context\.sourceArtifactInventoryHash/,
+    );
+    assert.match(
+      generation.slice(contractWrite),
+      /requiresReplan = learnFailureRequiresReplan\(error\)[\s\S]*?learn_failed[\s\S]*?requiresReplan[\s\S]*?updateLearnJob\(job\.id,[\s\S]*?requiresReplan/,
+      "background generation failures must persist structured recovery state",
     );
   });
 
@@ -795,7 +1020,15 @@ describe("Learn validation, reads, and publication contracts", () => {
       status,
       /const versionMap = isContractBackedLearningMap\(versionMapCandidate\)/,
     );
-    assert.match(status, /let sourceSetChanged = Boolean\(latestVersion && !versionMap\)/);
+    assert.match(
+      status,
+      /let sourceSetChanged =\s*Boolean\(latestVersion && !versionMap\) \|\|\s*learnLifecycleMapBindingMismatch[\s\S]*?learnSelectionDiffersFromMapBinding/,
+    );
+    assert.match(
+      status,
+      /sourceSetChanged =\s*sourceSetChanged \|\|\s*expectedSourceSetHash !== currentHash/,
+      "artifact/hash refresh must not erase an earlier job-to-map binding mismatch",
+    );
     assert.match(
       status,
       /const sourceBindingMap = latestVersion\s*\? versionMap\s*:\s*contractProposed \?\? confirmedMap/,
@@ -811,9 +1044,532 @@ describe("Learn validation, reads, and publication contracts", () => {
     );
   });
 
+  test("status flags a newest-job selection paired with an unrelated fallback map", () => {
+    const selectionDiffers = executableNamedFunction("learnSelectionDiffersFromMapBinding");
+    const currentSelection = {
+      sourceIds: ["source-current-generic", "guide-current-generic"],
+      syllabusSourceId: "guide-current-generic",
+    };
+    const exactMap = {
+      sourceIds: [...currentSelection.sourceIds],
+      syllabusSourceId: currentSelection.syllabusSourceId,
+      sourceSetHash: "hash-current-generic",
+    };
+    const fallbackMap = {
+      sourceIds: ["source-older-generic"],
+      syllabusSourceId: undefined,
+      sourceSetHash: "hash-older-generic",
+    };
+
+    assert.equal(
+      selectionDiffers({
+        selection: currentSelection,
+        map: exactMap,
+        jobSourceSetHash: "hash-current-generic",
+      }),
+      false,
+      "the preserved confirmed input must remain a valid status binding after cancellation",
+    );
+    assert.equal(
+      selectionDiffers({
+        selection: currentSelection,
+        map: fallbackMap,
+        jobSourceSetHash: "hash-current-generic",
+      }),
+      true,
+      "status must expose a stale fallback map instead of reporting an unchanged source set",
+    );
+  });
+
+  test("status treats map identity as part of the published lifecycle binding", () => {
+    const lifecycleMismatch = executableNamedFunction("learnLifecycleMapBindingMismatch");
+    const publishedMapId = "map-published-generic";
+    const newerMapId = "map-newer-generic";
+
+    assert.equal(
+      lifecycleMismatch({
+        versionMapId: publishedMapId,
+        confirmedMapId: publishedMapId,
+        jobMapId: publishedMapId,
+      }),
+      false,
+      "normal generation stays current when version, confirmed map, and job share one map ID",
+    );
+    assert.equal(
+      lifecycleMismatch({
+        versionMapId: publishedMapId,
+        confirmedMapId: newerMapId,
+        jobMapId: newerMapId,
+      }),
+      true,
+      "a same-source newer map cannot masquerade as the map that owns the published version",
+    );
+    assert.equal(
+      lifecycleMismatch({
+        versionMapId: publishedMapId,
+        confirmedMapId: publishedMapId,
+        jobMapId: newerMapId,
+      }),
+      true,
+      "a newest job bound to a distinct map makes the published lifecycle stale",
+    );
+    assert.equal(
+      lifecycleMismatch({
+        confirmedMapId: newerMapId,
+        jobMapId: newerMapId,
+      }),
+      false,
+      "without a published version there is no version-to-map lifecycle mismatch",
+    );
+  });
+
+  test("an ambiguous nested planning transport failure never repeats the authoritative request", async () => {
+    const authoritativeCall = namedFunction("callPlanningJsonOnce");
+    const authoritativeSource = sourceOf(authoritativeCall);
+    assert.equal(
+      callsNamed(authoritativeCall, "callCouncilJson").length,
+      1,
+      "one planning invocation must issue exactly one Council request",
+    );
+    assert.match(
+      authoritativeSource,
+      /catch \(error\)[\s\S]*?isLearnCancellationWithoutMaskingFailure\(jobId, error\)[\s\S]*?!isAmbiguousModelTransportFailure\(error\)[\s\S]*?learn_planning_transport_ambiguous[\s\S]*?modelTransportFailureEvidence\(error\)[\s\S]*?retryIssued:\s*false[\s\S]*?throw error/,
+      "an ambiguous failure must leave deep durable evidence and rethrow the original error",
+    );
+    const timeoutCatch = authoritativeSource.slice(authoritativeSource.indexOf("catch (error)"));
+    assert.doesNotMatch(
+      timeoutCatch,
+      /callCouncilJson|retryCouncilMode|LEARN_PLANNING_RETRY_COUNCIL_MODE/,
+      "the timeout catch must not contain a hidden second provider call",
+    );
+
+    const providerCalls = [];
+    const events = [];
+    const resetCause = Object.assign(new Error("socket reset after request write"), {
+      code: "ECONNRESET",
+    });
+    const originalFailure = new Error("Connection error.", { cause: resetCause });
+    const executableSource = ts.transpileModule(
+      `${authoritativeSource}\nglobalThis.testFunction = callPlanningJsonOnce;`,
+      {
+        compilerOptions: {
+          module: ts.ModuleKind.None,
+          target: ts.ScriptTarget.ES2022,
+        },
+      },
+    ).outputText;
+    const sandbox = {
+      LEARN_PLANNING_COUNCIL_MODE: "direct_council",
+      LEARN_PLANNING_TIMEOUT_MS: 1234,
+      callCouncilJson: async (request) => {
+        providerCalls.push(request);
+        throw originalFailure;
+      },
+      isLearnCancellationWithoutMaskingFailure: () => false,
+      isAmbiguousModelTransportFailure,
+      modelTransportFailureEvidence,
+      appendLearnEvent: (...args) => events.push(args),
+      errorMessage: (error) => error.message,
+    };
+    vm.runInNewContext(executableSource, sandbox);
+    await assert.rejects(
+      sandbox.testFunction({
+        client: {},
+        model: "model-generic",
+        taskType: "source_map",
+        gardenId: "garden-generic",
+        system: "system-generic",
+        user: "user-generic",
+        sourceContext: { stage: "generic" },
+        contentPath: "content-generic",
+        jobId: "job-generic",
+      }),
+      (error) => error === originalFailure,
+      "the exact ambiguous wrapper object must escape unchanged",
+    );
+    assert.equal(providerCalls.length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+      [
+        "content-generic",
+        "garden-generic",
+        "learn_planning_transport_ambiguous",
+        {
+          jobId: "job-generic",
+          taskType: "source_map",
+          error: "Connection error.",
+          transportFailure: {
+            causes: [
+              {
+                name: "Error",
+                message: "Connection error.",
+                leaf: false,
+              },
+              {
+                code: "ECONNRESET",
+                name: "Error",
+                message: "socket reset after request write",
+                leaf: true,
+              },
+            ],
+          },
+          councilMode: "direct_council",
+          retryIssued: false,
+        },
+      ],
+    ]);
+
+    const cancellation = new Error("Learn job cancelled");
+    sandbox.callCouncilJson = async (request) => {
+      providerCalls.push(request);
+      throw cancellation;
+    };
+    sandbox.isLearnCancellationWithoutMaskingFailure = (_jobId, error) => error === cancellation;
+    await assert.rejects(
+      sandbox.testFunction({
+        client: {},
+        model: "model-generic",
+        taskType: "scope_contract",
+        gardenId: "garden-generic",
+        system: "system-generic",
+        user: "user-generic",
+        sourceContext: { stage: "cancelled-generic" },
+        contentPath: "content-generic",
+        jobId: "job-cancelled-generic",
+      }),
+      (error) => error === cancellation,
+      "the exact cancellation object must escape unchanged",
+    );
+    assert.equal(providerCalls.length, 2);
+    assert.equal(
+      events.length,
+      1,
+      "intentional job cancellation must not be mislabeled as transport ambiguity",
+    );
+
+    assert.doesNotMatch(
+      learnSource,
+      /LEARN_PLANNING_RETRY_COUNCIL_MODE|learn_planning_timeout_retry/,
+      "obsolete retry configuration and events must stay removed",
+    );
+
+    const validatedPlanning = sourceOf(namedFunction("callValidatedPlanningJson"));
+    assert.match(
+      validatedPlanning,
+      /let result = await callPlanningJsonOnce\([\s\S]*?\);\s*assertNonemptyPlanningCandidate\(result, stageLabel\);\s*let problems = validate\(result\.parsed\);\s*for \(let repairAttempt = 1; repairAttempt <= 2 && problems\.length > 0;[\s\S]*?result = await dispatchAfterDurablePlanningIssuance\([\s\S]*?dispatch: \(\) => callPlanningJsonOnce\([\s\S]*?\),\s*\}\);\s*assertNonemptyPlanningCandidate\(result, stageLabel\);/,
+      "bounded semantic repair requires a nonempty returned candidate and concrete validation failure",
+    );
+    assert.equal(
+      callsNamed(namedFunction("callValidatedPlanningJson"), "callPlanningJsonOnce").length,
+      2,
+      "validated planning has one initial call site and one validation-gated repair call site",
+    );
+
+    const assertPlanningCandidate = executableNamedFunction(
+      "assertNonemptyPlanningCandidate",
+      { stripMarkdownFence: (value) => value.trim() },
+    );
+    for (const missing of [
+      { content: "", parsed: null },
+      { content: "  \n", parsed: null },
+      { content: "null", parsed: null },
+      { content: "anything", parsed: undefined },
+    ]) {
+      assert.throws(
+        () => assertPlanningCandidate(missing, "Generic planning stage"),
+        /no usable nonempty candidate; no semantic repair request was issued/i,
+      );
+    }
+    assert.doesNotThrow(
+      () => assertPlanningCandidate(
+        { content: "{nonempty malformed returned candidate", parsed: null },
+        "Generic planning stage",
+      ),
+      "nonempty malformed provider text remains concrete validation evidence",
+    );
+
+    const planningSource = sourceOf(namedFunction("runLearnPlanning"));
+    assert.match(
+      planningSource,
+      /let topicMapCall = await callPlanningJsonOnce\([\s\S]*?assertNonemptyPlanningCandidate\(topicMapCall, "Learning spine"\)/,
+    );
+    assert.match(
+      planningSource,
+      /const retryCall = await callPlanningJsonOnce\([\s\S]*?assertNonemptyPlanningCandidate\(retryCall, "Learning spine repair"\)/,
+    );
+    assert.match(
+      planningSource,
+      /const result = await callPlanningJsonOnce\([\s\S]*?assertNonemptyPlanningCandidate\(result, "Learning spine targeted repair"\)/,
+      "specialized learning-spine loops must not turn an empty result into repair permission",
+    );
+  });
+
+  test("planning cleanup and observers cannot replace the authoritative provider error", async () => {
+    const rethrowAfterCleanup = executableNamedFunction(
+      "rethrowAfterBestEffortLearnFailureCleanup",
+    );
+    const providerFailure = new Error("exact planning provider failure");
+    const cleanupFailures = [
+      () => {
+        throw new Error("rollback fixture failed");
+      },
+      async () => {
+        throw new Error("failure observer fixture failed");
+      },
+    ];
+    for (const cleanup of cleanupFailures) {
+      await assert.rejects(
+        rethrowAfterCleanup(providerFailure, cleanup),
+        (error) => error === providerFailure,
+      );
+    }
+
+    const planningSource = sourceOf(namedFunction("runLearnPlanning"));
+    assert.match(
+      planningSource,
+      /return rethrowAfterBestEffortLearnFailureCleanup\(error, async \(\) => \{/,
+      "the complete planning rollback/diagnostic path must be subordinate to the original error",
+    );
+    assert.doesNotMatch(
+      planningSource,
+      /throw rollbackError/,
+      "lease loss during rollback must stop stale cleanup without replacing the original provider error",
+    );
+    assert.match(
+      planningSource,
+      /finally \{[\s\S]*?try \{\s*disposeModelTracking\(\);[\s\S]*?try \{\s*lease\.release\(\);/,
+      "planning finalizers must also remain subordinate to the authoritative outcome",
+    );
+  });
+
+  test("text repair requests propagate provider failures and require returned validation evidence", async () => {
+    const modelTextCandidateOrThrow = executableNamedFunction(
+      "modelTextCandidateOrThrow",
+      {
+        cleanCouncilMarkdown: (content, fallback) =>
+          typeof content === "string" ? content : fallback,
+      },
+    );
+    const runRepair = executableNamedFunction("runValidatedTextRepairLoop", {
+      cleanCouncilMarkdown: (content, fallback) =>
+        typeof content === "string" ? content : fallback,
+      modelTextCandidateOrThrow,
+    });
+    const failures = [
+      new Error("Connection error.", {
+        cause: Object.assign(new Error("socket reset after request write"), {
+          code: "ECONNRESET",
+        }),
+      }),
+      Object.assign(new Error("Request timed out."), {
+        name: "APIConnectionTimeoutError",
+      }),
+      Object.assign(new Error("Request was aborted."), {
+        name: "AbortError",
+        code: "ABORT_ERR",
+      }),
+      Object.assign(new Error("HTTP 502 without request-bound authorization"), {
+        status: 502,
+      }),
+      new Error("Response ended prematurely after partial output"),
+    ];
+
+    for (const failure of failures) {
+      let requests = 0;
+      let validations = 0;
+      let reviews = 0;
+      await assert.rejects(
+        runRepair({
+          maxAttempts: 3,
+          request: async () => {
+            requests += 1;
+            throw failure;
+          },
+          validate: (markdown) => {
+            validations += 1;
+            return { markdown, problems: [] };
+          },
+          emptyResponseMessage: "empty response",
+          onReviewed: () => {
+            reviews += 1;
+          },
+        }),
+        (error) => error === failure,
+      );
+      assert.equal(requests, 1);
+      assert.equal(validations, 0);
+      assert.equal(reviews, 0);
+    }
+
+    let emptyRequests = 0;
+    await assert.rejects(
+      runRepair({
+        maxAttempts: 3,
+        request: async () => {
+          emptyRequests += 1;
+          return "  ";
+        },
+        validate: () => {
+          assert.fail("an empty response is not a semantic candidate");
+        },
+        emptyResponseMessage: "exact empty response failure",
+      }),
+      /exact empty response failure/,
+    );
+    assert.equal(emptyRequests, 1);
+
+    for (const missingCandidate of ["null", "```json\nnull\n```"]) {
+      let requests = 0;
+      await assert.rejects(
+        runRepair({
+          maxAttempts: 3,
+          request: async () => {
+            requests += 1;
+            return missingCandidate;
+          },
+          validate: () => {
+            assert.fail("literal JSON null is not semantic validation evidence");
+          },
+          emptyResponseMessage: "exact missing text candidate",
+        }),
+        /literal JSON null/i,
+      );
+      assert.equal(requests, 1);
+    }
+
+    const requestEvidence = [];
+    const reviewEvidence = [];
+    const repaired = await runRepair({
+      maxAttempts: 3,
+      request: async (input) => {
+        requestEvidence.push(JSON.parse(JSON.stringify(input)));
+        return input.attempt === 1 ? "returned invalid draft" : "returned valid draft";
+      },
+      validate: (markdown) => ({
+        markdown,
+        problems: markdown.includes("invalid") ? ["missing-concrete-example"] : [],
+      }),
+      emptyResponseMessage: "empty response",
+      onReviewed: (input) => reviewEvidence.push(JSON.parse(JSON.stringify(input))),
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(repaired)), {
+      markdown: "returned valid draft",
+      lastMarkdown: "returned valid draft",
+      problems: [],
+    });
+    assert.deepEqual(requestEvidence, [
+      { attempt: 1, previousMarkdown: "", failedProblems: [] },
+      {
+        attempt: 2,
+        previousMarkdown: "returned invalid draft",
+        failedProblems: ["missing-concrete-example"],
+      },
+    ]);
+
+    const acceptedDespiteObserver = await runRepair({
+      maxAttempts: 2,
+      request: async () => "accepted draft",
+      validate: (markdown) => ({ markdown, problems: [] }),
+      emptyResponseMessage: "empty response",
+      onReviewed: () => {
+        throw new Error("review observer failed");
+      },
+    });
+    assert.equal(acceptedDespiteObserver.markdown, "accepted draft");
+
+    const generationSource = sourceOf(namedFunction("runTextbookGeneration"));
+    assert.match(
+      generationSource,
+      /attemptBody = modelTextCandidateOrThrow\([\s\S]*?generated\.content/,
+    );
+    assert.match(
+      generationSource,
+      /const repairedBody = modelTextCandidateOrThrow\([\s\S]*?repaired\.content/,
+    );
+    assert.deepEqual(reviewEvidence.map(({ attempt, problems }) => ({ attempt, problems })), [
+      { attempt: 1, problems: ["missing-concrete-example"] },
+      { attempt: 2, problems: [] },
+    ]);
+  });
+
+  test("source scans and lesson generation have no throw-to-repair escape hatch", () => {
+    const referencedScan = namedFunction("ensureReferencedSourceArtifactsExtracted");
+    const eagerScan = namedFunction("ensureSourceVisualsExtracted");
+    assert.equal(callsNamed(referencedScan, "extractSourceVisuals").length, 1);
+    assert.equal(callsNamed(eagerScan, "extractSourceVisuals").length, 1);
+    assert.doesNotMatch(sourceOf(referencedScan), /\bcatch\s*\(/);
+    assert.doesNotMatch(sourceOf(eagerScan), /\bcatch\s*\(/);
+
+    const planningSource = sourceOf(namedFunction("runLearnPlanning"));
+    const reconcileStart = planningSource.indexOf(
+      "const reconcilePlannedSourceArtifacts = async",
+    );
+    const reconcileEnd = planningSource.indexOf(
+      'learningUnits = await reconcilePlannedSourceArtifacts(learningUnits, "initial")',
+      reconcileStart,
+    );
+    assert.ok(reconcileStart >= 0 && reconcileEnd > reconcileStart);
+    const reconcileSource = planningSource.slice(reconcileStart, reconcileEnd);
+    assert.match(
+      reconcileSource,
+      /const resolution = await ensureReferencedSourceArtifactsExtracted\(/,
+    );
+    assert.doesNotMatch(
+      reconcileSource,
+      /Referenced source-page scan could not finish|learn_referenced_source_scan_failed|catch\s*\(/,
+      "a late referenced-page provider failure must escape before any later model work",
+    );
+    assert.doesNotMatch(
+      learnSource,
+      /learn_referenced_source_scan_failed/,
+      "planning and generation must not downgrade an exact scan failure to a warning",
+    );
+
+    const generationSource = sourceOf(namedFunction("runTextbookGeneration"));
+    assert.match(
+      generationSource,
+      /const referencedArtifactResolution = await ensureReferencedSourceArtifactsExtracted\([\s\S]*?ledgerVisuals = loadSourceVisuals/,
+    );
+    const lessonStart = generationSource.indexOf("// Stage 4: bounded model generation and repair");
+    const lessonEnd = generationSource.indexOf(
+      "throwIfLearnCancelled(job.id);",
+      lessonStart,
+    );
+    assert.ok(lessonStart >= 0 && lessonEnd > lessonStart);
+    const lessonSource = generationSource.slice(lessonStart, lessonEnd);
+    assert.doesNotMatch(lessonSource, /\bcatch\s*\(/);
+    assert.match(
+      lessonSource,
+      /attempt > 0[\s\S]*?!lastAttemptBody\.trim\(\)[\s\S]*?failedProblemCodes\.length === 0/,
+    );
+    assert.match(
+      lessonSource,
+      /if \(quality\.hardFail\)[\s\S]*?const hardQualityProblems = quality\.problems\.filter\(\(problem\) => problem\.hard\)[\s\S]*?taskType: "subsection_repair"/,
+    );
+    assert.doesNotMatch(
+      learnSource,
+      /LEARN_ENABLE_UNCONDITIONAL_REVISION|taskType: "full_page_revision"/,
+    );
+
+    assert.match(
+      generationSource,
+      /catch \(criticError\) \{\s*try \{[\s\S]*?learn_critic_loop_failed[\s\S]*?\} catch \{[\s\S]*?throw criticError;/,
+      "critic diagnostics must not replace the exact provider failure",
+    );
+    const terminalFailureStart = generationSource.lastIndexOf(
+      "if (isLearnCancellationWithoutMaskingFailure(job.id, error))",
+    );
+    assert.ok(terminalFailureStart >= 0);
+    const terminalFailureSource = generationSource.slice(terminalFailureStart);
+    assert.match(
+      terminalFailureSource,
+      /return rethrowAfterBestEffortLearnFailureCleanup\(error, async \(\) => \{[\s\S]*?try \{[\s\S]*?appendLearnEvent\([\s\S]*?"learn_failed"[\s\S]*?\} catch \{[\s\S]*?try \{[\s\S]*?updateLearnJob\([\s\S]*?\} catch \{/,
+      "terminal event/status diagnostics must remain best-effort before exact rethrow",
+    );
+  });
+
   test("learning-spine repair carries the strongest rejected candidate with its exact problem history", () => {
     const planningSource = sourceOf(namedFunction("runLearnPlanning"));
-    const repairStart = planningSource.indexOf("let topicMapCall = await callPlanningJsonWithRetry");
+    const repairStart = planningSource.indexOf("let topicMapCall = await callPlanningJsonOnce");
     const repairEnd = planningSource.indexOf("const visualNecessityReview", repairStart);
     assert.ok(repairStart >= 0 && repairEnd > repairStart);
     const repairSource = planningSource.slice(repairStart, repairEnd);
@@ -825,12 +1581,12 @@ describe("Learn validation, reads, and publication contracts", () => {
     );
     assert.match(
       repairSource,
-      /let topicMapCall = await callPlanningJsonWithRetry\(\{[\s\S]*?taskType:\s*"learning_spine"[\s\S]*?preserveExactContent:\s*true[\s\S]*?\}\);/,
+      /let topicMapCall = await callPlanningJsonOnce\(\{[\s\S]*?taskType:\s*"learning_spine"[\s\S]*?preserveExactContent:\s*true[\s\S]*?\}\);/,
       "the initial candidate must retain exact provider text before entering the lineage",
     );
     assert.match(
       repairSource,
-      /const retryCall = await callPlanningJsonWithRetry\(\{[\s\S]*?taskType:\s*"learning_spine"[\s\S]*?preserveExactContent:\s*true[\s\S]*?\}\);/,
+      /const retryCall = await callPlanningJsonOnce\(\{[\s\S]*?taskType:\s*"learning_spine"[\s\S]*?preserveExactContent:\s*true[\s\S]*?\}\);/,
       "every full-contract repair candidate must retain exact provider text",
     );
     assert.match(
@@ -860,7 +1616,7 @@ describe("Learn validation, reads, and publication contracts", () => {
     );
     assert.match(repairSource, /for \(let repairAttempt = 1; repairAttempt <= 2/);
     assert.equal(
-      (repairSource.match(/callPlanningJsonWithRetry\(/g) ?? []).length,
+      (repairSource.match(/callPlanningJsonOnce\(/g) ?? []).length,
       3,
       "the initial/full-replacement call sites stay intact and targeted model repair has its own provider call",
     );
@@ -869,6 +1625,14 @@ describe("Learn validation, reads, and publication contracts", () => {
     assert.match(repairSource, /targetedCalls:\s*targetedRepairOutcome\?\.calls \?\? 0/);
     assert.match(repairSource, /targetedStatus:\s*targetedRepairOutcome\?\.status \?\? "not_run"/);
     assert.match(repairSource, /No fallback curriculum was written/);
+    assert.match(
+      learnSource,
+      /role names the unit's teaching move, never the type of source artifact it owns[\s\S]*?verified formula may support any semantically appropriate role[\s\S]*?at least three appropriate roles[\s\S]*?conceptual\/mechanism[\s\S]*?application\/interpretation\/synthesis\/practice/,
+    );
+    assert.match(
+      learnSource,
+      /Treat role as the teaching move rather than the owned artifact type:[\s\S]*?never turn concept\/mechanism\/application\/interpretation\/synthesis\/practice units into formula units merely because they own equations/,
+    );
   });
 
   test("residual unit/concept failures use complete AI-authored targeted records and full revalidation", () => {
@@ -1047,7 +1811,7 @@ describe("Learn repair timing and abandoned-job recovery", () => {
     );
   });
 
-  test("Node startup wires a guarded immediate and recurring Learn recovery sweep", () => {
+  test("Node startup wires a guarded detached Learn recovery sweep", () => {
     assert.match(
       instrumentationSource,
       /__breadboardAbandonedLearnSweeper\?: ReturnType<typeof setInterval>/,
@@ -1059,8 +1823,9 @@ describe("Learn repair timing and abandoned-job recovery", () => {
     assert.match(instrumentationSource, /process\.env\.QUARTZ_CONTENT_PATH/);
     assert.match(
       instrumentationSource,
-      /await import\("\.\/lib\/learn\.ts"\)[\s\S]*?await recoverAbandonedLearnJobs\(\{ contentPath \}\)/,
+      /await launchAbandonedLearnRecoveryWorker\(\)/,
     );
+    assert.doesNotMatch(instrumentationSource, /learn\.ts|recoverAbandonedLearnJobs/);
     assert.match(instrumentationSource, /setTimeout\(\(\) => void sweep\(\), 0\)/);
     assert.match(instrumentationSource, /setInterval\(\(\) => void sweep\(\), 60 \* 1000\)/);
     assert.match(
@@ -1099,7 +1864,7 @@ describe("Learn repair timing and abandoned-job recovery", () => {
       promotionIndex,
     );
     const failureUpdateIndex = generationSource.indexOf(
-      'status: "failed"',
+      'status: restorePending ? "writing_quartz" : "failed"',
       restoreIndex,
     );
 
@@ -1207,6 +1972,40 @@ describe("Learn cancellation and terminal-transition races", () => {
 });
 
 describe("Learn recovery and Clear transaction boundaries", () => {
+  test("abandoned-job recovery terminalizes token lifecycles atomically", () => {
+    const terminalCommit = sourceOf(
+      namedFunction("commitRecoveredLearnJobTerminalState"),
+    );
+    const statusIndex = terminalCommit.indexOf("updateLearnJobExpectStatus");
+    const usageIndex = terminalCommit.indexOf(
+      "reconcilePersistedLearnTokenUsageForTerminalJob",
+    );
+    assert.ok(statusIndex >= 0 && usageIndex > statusIndex);
+    assert.match(terminalCommit, /return db\.transaction\(\(\) => \{/);
+    assert.match(terminalCommit, /\}\)\.immediate\(\);/);
+    assert.doesNotMatch(terminalCommit, /catch\s*\(/);
+
+    const recoverySource = sourceOf(namedFunction("recoverAbandonedLearnJobs"));
+    const cutoffIndex = recoverySource.indexOf(
+      "LEARN_JOB_ABANDONED_AFTER_MS",
+    );
+    const staleTerminalIndex = recoverySource.indexOf(
+      "reconcilePersistedLearnTokenUsageForStaleTerminalJobs",
+    );
+    const candidateQueryIndex = recoverySource.indexOf("const candidates = db");
+    assert.ok(
+      cutoffIndex >= 0 &&
+        staleTerminalIndex > cutoffIndex &&
+        candidateQueryIndex > staleTerminalIndex,
+      "startup must age-fence and reconcile older terminal rows before its active-job sweep",
+    );
+    assert.equal(
+      recoverySource.match(/commitRecoveredLearnJobTerminalState\(/g)?.length,
+      2,
+      "both superseded and rolled-back abandoned jobs must reconcile usage",
+    );
+  });
+
   test("abandoned-job recovery isolates failures to one candidate", () => {
     const recoverySource = sourceOf(namedFunction("recoverAbandonedLearnJobs"));
     const loopIndex = recoverySource.indexOf("for (const candidate of candidates)");
@@ -1573,7 +2372,10 @@ describe("startup cleanup journals", () => {
       'const cancellationRecovery = current.status === "cancelled"',
     );
     const rollbackIndex = recoverySource.lastIndexOf("await rollbackLearnRun", cancellationIndex);
-    const terminalIndex = recoverySource.indexOf("updateLearnJobExpectStatus", cancellationIndex);
+    const terminalIndex = recoverySource.indexOf(
+      "commitRecoveredLearnJobTerminalState",
+      cancellationIndex,
+    );
     const discardIndex = recoverySource.indexOf("discardLearnRunSnapshot", terminalIndex);
     assert.ok(rollbackIndex >= 0 && rollbackIndex < cancellationIndex);
     assert.ok(terminalIndex > cancellationIndex && discardIndex > terminalIndex);
@@ -1637,7 +2439,7 @@ describe("rollback snapshot lifetime and lease-loss ownership", () => {
     );
 
     const generationSource = sourceOf(namedFunction("runTextbookGeneration"));
-    const generationCancelIndex = generationSource.indexOf("if (isLearnCancellation(job.id, error))");
+    const generationCancelIndex = generationSource.indexOf("if (isLearnCancellationWithoutMaskingFailure(job.id, error))");
     const generationRollbackIndex = generationSource.indexOf("cleanupLearnArtifactsAfterCancel", generationCancelIndex);
     const generationTerminalIndex = generationSource.indexOf('status: "cancelled"', generationRollbackIndex);
     const generationDiscardIndex = generationSource.indexOf("discardLearnRunSnapshot", generationTerminalIndex);
@@ -1660,47 +2462,21 @@ describe("rollback snapshot lifetime and lease-loss ownership", () => {
   });
 
   test("lease loss leaves snapshots for the new owner and skips outer rebuild rollback", () => {
-    for (const functionName of [
-      "runLearnPlanning",
-      "runTextbookGeneration",
-      "runLearnRepairOperation",
+    for (const [functionName, ownershipHelper] of [
+      ["runLearnPlanning", "stillOwnPlanningLease"],
+      ["runTextbookGeneration", "stillOwnGenerationLease"],
+      ["runLearnRepairOperation", "stillOwnRepairLease"],
     ]) {
-      const declaration = namedFunction(functionName);
-      const guardedCatches = [];
-      const visit = (node) => {
-        if (ts.isCatchClause(node)) {
-          const firstStatement = node.block.statements[0];
-          if (
-            firstStatement &&
-            ts.isIfStatement(firstStatement) &&
-            sourceOf(firstStatement.expression).includes("lease.lost") &&
-            sourceOf(firstStatement.expression).includes(
-              "leaseLostLearnJobs.has(job.id)",
-            )
-          ) {
-            guardedCatches.push(firstStatement);
-          }
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(declaration);
-      assert.equal(
-        guardedCatches.length,
-        1,
-        `${functionName} must have one authoritative outer lease-loss guard`,
-      );
-      const leaseGuard = guardedCatches[0];
-      const guardCondition = sourceOf(leaseGuard.expression);
-      const guardBody = sourceOf(leaseGuard.thenStatement);
+      const functionSource = sourceOf(namedFunction(functionName));
       assert.match(
-        guardCondition,
-        /!lease\.heartbeat\(\)/,
-        `${functionName} must freshly verify lease ownership before rollback`,
+        functionSource,
+        new RegExp(`const ${ownershipHelper} = \\(\\): boolean => \\{[\\s\\S]*?lease\\.lost[\\s\\S]*?leaseLostLearnJobs\\.has\\(job\\.id\\)[\\s\\S]*?lease\\.heartbeat\\(\\)`),
+        `${functionName} must freshly and safely verify lease ownership before rollback`,
       );
-      assert.match(guardBody, /throw error/);
-      assert.doesNotMatch(
-        guardBody,
-        /rollbackLearnRun|discardLearnRunSnapshot|restorePreviousPromotedGarden|updateLearnJob/,
+      assert.match(
+        functionSource,
+        new RegExp(`if \\(!${ownershipHelper}\\(\\)\\) \\{[\\s\\S]{0,300}?throw error;`),
+        `${functionName} must leave cleanup to the new fenced owner after lease loss`,
       );
     }
 
@@ -1711,17 +2487,18 @@ describe("rollback snapshot lifetime and lease-loss ownership", () => {
     );
 
     const rebuildSource = sourceOf(namedFunction("rebuildEntireGarden"));
-    const leaseLossIndex = rebuildSource.indexOf("rebuildLease.lost");
-    const heartbeatIndex = rebuildSource.indexOf(
-      "!rebuildLease.heartbeat()",
-      leaseLossIndex,
-    );
-    const throwIndex = rebuildSource.indexOf("throw error", heartbeatIndex);
+    const ownershipIndex = rebuildSource.indexOf("const stillOwnRebuildLease");
+    const leaseLossIndex = rebuildSource.indexOf("rebuildLease.lost", ownershipIndex);
+    const heartbeatIndex = rebuildSource.indexOf("rebuildLease.heartbeat()", leaseLossIndex);
+    const ownershipGuardIndex = rebuildSource.indexOf("!stillOwnRebuildLease()", heartbeatIndex);
+    const throwIndex = rebuildSource.indexOf("throw error", ownershipGuardIndex);
     const rollbackIndex = rebuildSource.indexOf("await rollbackLearnRun", throwIndex);
     assert.ok(
-      leaseLossIndex >= 0 &&
+      ownershipIndex >= 0 &&
+        leaseLossIndex > ownershipIndex &&
         heartbeatIndex > leaseLossIndex &&
-        throwIndex > heartbeatIndex &&
+        ownershipGuardIndex > heartbeatIndex &&
+        throwIndex > ownershipGuardIndex &&
         rollbackIndex > throwIndex,
     );
   });

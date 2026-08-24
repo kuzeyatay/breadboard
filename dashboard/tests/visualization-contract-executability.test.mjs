@@ -15,6 +15,7 @@ import {
   buildFinalVisualizationPlanFromRoutedContracts,
   buildVisualContractExecutabilityPrompt,
   buildVisualContractExecutabilityLedger,
+  VisualContractExecutabilityReviewError,
   loadVisualContractExecutabilityLedger,
   reviewedWholeGardenConstraintProblems,
   reviewVisualizationPlanExecutability,
@@ -32,6 +33,7 @@ import { verifyFinalArtifactNoMutation } from "../src/lib/garden-finalize.ts";
 import {
   GENERATED_VISUAL_CAPABILITY_MANIFEST,
   GENERATED_VISUAL_CAPABILITY_MANIFEST_HASH,
+  GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE,
 } from "../src/lib/generated-visual-capabilities.ts";
 import {
   applyVisualizationRoutesToLearningUnits,
@@ -722,6 +724,35 @@ test("surplus-brace output reaches a fresh complete AI rereview byte-for-byte", 
   assert.deepEqual(reviewed.acceptedResponse, freshBatch);
   assert.deepEqual(reviewed.reviewedContracts.U3, u3Replacement);
   assert.deepEqual(reviewed.reviewedContracts.U10, u10Replacement);
+});
+
+test("missing, empty, or literal-null executability output is terminal and event sinks cannot reopen it", async () => {
+  for (const emptyOutput of [undefined, null, "", "   \n", "null"]) {
+    const unit = activeUnit(executablePredictionContract("visual-u3-empty-terminal"));
+    let calls = 0;
+    await assert.rejects(
+      runVisualContractExecutabilityReview({
+        gardenId: GARDEN_ID,
+        learningUnits: [unit],
+        canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+        provider: async () => {
+          calls += 1;
+          return emptyOutput;
+        },
+        validateAll: (learningUnits) => learningUnits,
+        onEvent: () => {
+          throw new Error("event sink fixture must remain observational");
+        },
+      }),
+      (error) =>
+        error instanceof VisualContractExecutabilityReviewError &&
+        error.calls === 1 &&
+        /no exact response text|empty exact response text|literal JSON null/i.test(
+          error.problems[0]?.message ?? "",
+        ),
+    );
+    assert.equal(calls, 1);
+  }
 });
 
 test("a parseable response accepted on a protocol retry persists its exact retry ordinal", async () => {
@@ -1418,7 +1449,7 @@ test("durable Electromagnetics U3 is shown exactly and changes only by an AI-aut
   assert.equal(reviewed.learningUnits[0].interactiveVisualPlan.decision.necessity, "required");
 });
 
-test("approval preserves the active unit exactly and transport/cancellation escape semantic retries", async () => {
+test("approval preserves the active unit exactly and provider throws escape semantic retries", async () => {
   const unit = activeUnit(executablePredictionContract());
   const approved = await runVisualContractExecutabilityReview({
     gardenId: GARDEN_ID,
@@ -1436,6 +1467,7 @@ test("approval preserves the active unit exactly and transport/cancellation esca
 
   let transportCalls = 0;
   const transportEvents = [];
+  const transportFailure = new Error("network unavailable");
   await assert.rejects(
     () => runVisualContractExecutabilityReview({
       gardenId: GARDEN_ID,
@@ -1443,39 +1475,41 @@ test("approval preserves the active unit exactly and transport/cancellation esca
       canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
       provider: async () => {
         transportCalls += 1;
-        throw new Error("network unavailable");
+        throw transportFailure;
       },
       validateAll: () => 1,
-      onEvent: (type) => transportEvents.push(type),
+      onEvent: (type) => {
+        transportEvents.push(type);
+        throw new Error("event sink failed");
+      },
     }),
-    /network unavailable/,
+    (error) => error === transportFailure,
   );
   assert.equal(transportCalls, 1);
   assert.equal(transportEvents.includes("visual_contract_executability_review_transport_aborted"), true);
 
   let cancellationChecks = 0;
   const cancellationEvents = [];
-  await assert.rejects(
-    () => runVisualContractExecutabilityReview({
-      gardenId: GARDEN_ID,
-      learningUnits: [unit],
-      canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
-      provider: async () => response([{
-        unitId: "U3",
-        verdict: "approve",
-        reason: "Would otherwise be accepted.",
-      }]),
-      validateAll: () => 1,
-      checkCancelled: () => {
-        cancellationChecks += 1;
-        if (cancellationChecks === 2) throw new Error("cancelled after provider");
-      },
-      onEvent: (type) => cancellationEvents.push(type),
-    }),
-    /cancelled after provider/,
-  );
-  assert.equal(cancellationEvents.includes("visual_contract_executability_review_cancelled"), true);
-  assert.equal(cancellationEvents.includes("visual_contract_executability_review_completed"), false);
+  const settledApproval = await runVisualContractExecutabilityReview({
+    gardenId: GARDEN_ID,
+    learningUnits: [unit],
+    canonicalEvidenceByUnit: EVIDENCE_BY_UNIT,
+    provider: async () => response([{
+      unitId: "U3",
+      verdict: "approve",
+      reason: "The fulfilled candidate remains authoritative.",
+    }]),
+    validateAll: () => 1,
+    checkCancelled: () => {
+      cancellationChecks += 1;
+      if (cancellationChecks > 1) throw new Error("late cancellation observer");
+    },
+    onEvent: (type) => cancellationEvents.push(type),
+  });
+  assert.equal(settledApproval.plan, 1);
+  assert.equal(cancellationChecks, 1);
+  assert.equal(cancellationEvents.includes("visual_contract_executability_review_cancelled"), false);
+  assert.equal(cancellationEvents.includes("visual_contract_executability_review_completed"), true);
 });
 
 test("a complete reversed multi-unit review remains exact and links verdicts by unit id", async () => {
@@ -1835,8 +1869,27 @@ test("prediction protocol controls fail closed on type, evidence, role, and orde
   for (const control of missingRoles.controls) delete control.protocolRole;
   assert.match(
     validate(missingRoles).join(" "),
-    /requires protocolRole.*requires one evidence-grounded.*prediction_input/is,
+    /requires one evidence-grounded.*prediction_input.*requires a distinct.*commit_prediction.*requires a distinct reveal_outcome/is,
   );
+});
+
+test("non-prediction protocol actions may omit prediction-only roles", () => {
+  const contract = executablePredictionContract();
+  contract.interactionGoal = "compare_cases";
+  for (const control of contract.controls) delete control.protocolRole;
+  const problems = validateVisualizationContractUnitRepair({
+    unit: activeUnit(contract),
+    evidence: EVIDENCE_BY_UNIT.U3,
+    repair: contract,
+    requireCompleteContract: true,
+    requireExecutableProtocol: true,
+  });
+  assert.deepEqual(problems, []);
+
+  const structuralPrompt = visualizationContractRepairSystemPrompt();
+  assert.equal(structuralPrompt.includes(GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE), true);
+  assert.match(structuralPrompt, /ordinary non-prediction actions may omit protocolRole/i);
+  assert.doesNotMatch(structuralPrompt, /must.*carry protocolRole/i);
 });
 
 test("ledger survives replacement, links review to route only, and fails closed on tampering", async () => {

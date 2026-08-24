@@ -14,7 +14,9 @@ import {
   isoToWallClock,
 } from "./api-client.ts";
 import { readPostImage } from "./post-images.ts";
-import { reachable, startStack, waitForReady, type StackStatus } from "./stack.ts";
+import { activateStack, releaseActivation, type ActivationOutcome } from "./activation.ts";
+import type { ActivationReason } from "./coordinator-core.ts";
+import { reachable, type StackStatus } from "./stack.ts";
 import type { SocialsManagerStore } from "./store.ts";
 import type { SocialsManagerPost } from "./types.ts";
 
@@ -29,6 +31,20 @@ export interface PostizAvailability {
   /** Why the real stack is not in play, for the run to report honestly. */
   reason?: string;
   state: StackStatus["state"] | "unauthenticated" | "adapter" | "disabled";
+  /**
+   * A hold on the stack, when one was requested. Release it once the operation
+   * that needed Postiz is finished, or idle shutdown will never fire.
+   */
+  leaseId?: string;
+}
+
+export interface OpenSessionInput {
+  /** Why Postiz is wanted. A closed category; it is logged, never executed. */
+  reason?: ActivationReason;
+  /** Pin the stack until `closePostizSession` releases it. */
+  hold?: boolean;
+  /** The caller's next scheduled publish, so idle shutdown can see it. */
+  nextScheduledAt?: string | null;
 }
 
 /**
@@ -37,6 +53,7 @@ export interface PostizAvailability {
  * local drafting rather than a long stall.
  */
 export async function openPostizSession(
+  input: OpenSessionInput = {},
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<PostizAvailability> {
   const config = resolveSocialsManagerConfig(env);
@@ -45,29 +62,48 @@ export async function openPostizSession(
     return { session: null, state: "adapter", reason: "Local drafting mode." };
   }
 
+  let outcome: ActivationOutcome | null = null;
   if (!(await reachable(config))) {
-    // Fire-and-forget: the stack keeps coming up after this run gives up on it,
-    // so the next run finds it healthy and `syncPendingPosts` pushes the drafts.
-    const starting = startStack(config);
-    starting.catch(() => null);
-
-    if (!(await waitForReady(config, config.readyTimeoutMs))) {
-      const status = await Promise.race([
-        starting.catch(() => null),
-        Promise.resolve(null),
-      ]);
+    // This is the activation seam: the lifecycle owner starts Docker and the
+    // containers, and this caller waits only for the run's own budget. When the
+    // budget runs out the activation keeps going in the coordinator, so the
+    // next run finds it healthy and `syncPendingPosts` pushes today's drafts.
+    outcome = await activateStack(
+      config,
+      {
+        reason: input.reason ?? "run",
+        timeoutMs: config.readyTimeoutMs,
+        ...(input.hold ? { hold: true } : {}),
+        ...(input.nextScheduledAt ? { nextScheduledAt: input.nextScheduledAt } : {}),
+      },
+      env,
+    );
+    if (!outcome.ready) {
       return {
         session: null,
-        state: status?.state ?? "starting",
-        reason:
-          status?.reason ??
-          "Postiz is still starting; drafting locally for now.",
+        state: outcome.state === "starting" ? "starting" : "stopped",
+        reason: outcome.reason ?? "Postiz is still starting; drafting locally for now.",
       };
     }
+  } else if (input.hold) {
+    // Already up, but this operation still wants a hold so idle shutdown does
+    // not pull the stack out from under it mid-run.
+    outcome = await activateStack(
+      config,
+      {
+        reason: input.reason ?? "run",
+        timeoutMs: config.readyTimeoutMs,
+        hold: true,
+        ...(input.nextScheduledAt ? { nextScheduledAt: input.nextScheduledAt } : {}),
+      },
+      env,
+    );
   }
+  const lease = outcome?.leaseId ? { leaseId: outcome.leaseId } : {};
 
   const apiKey = await ensureApiKey(config);
   if (!apiKey) {
+    await releaseActivation(outcome?.leaseId, env);
     return {
       session: null,
       state: "unauthenticated",
@@ -80,13 +116,26 @@ export async function openPostizSession(
   try {
     integrations = await client.listIntegrations();
   } catch {
+    await releaseActivation(outcome?.leaseId, env);
     return {
       session: null,
       state: "unauthenticated",
       reason: "Postiz rejected Breadboard's API key.",
     };
   }
-  return { session: { client, integrations, config }, state: "running" };
+  return { session: { client, integrations, config }, state: "running", ...lease };
+}
+
+/**
+ * Release whatever `openPostizSession` took out. Safe to call with an
+ * availability that never held anything, which is what makes it usable from a
+ * plain `finally`.
+ */
+export async function closePostizSession(
+  availability: Pick<PostizAvailability, "leaseId">,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  await releaseActivation(availability.leaseId, env);
 }
 
 /**

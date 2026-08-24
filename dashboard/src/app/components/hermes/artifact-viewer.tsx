@@ -28,6 +28,12 @@ import type { VimaxProduction } from "@/lib/vimax/types";
 import type { VoxProduction } from "@/lib/vox-director/types";
 import type { SocialsPostDocument } from "@/lib/socials-manager/post-artifact";
 import type { ArtifactKind, PresentedArtifact } from "@/lib/hermes/artifact-types";
+import { artifactEditorMode } from "@/lib/hermes/artifact-editor-types";
+import ArtifactDocumentStudio from "./artifact-document-studio";
+import ArtifactGenOfficeEditor from "./artifact-genoffice-editor";
+import { dispatchArtifactAiEdit } from "./artifact-ai-edit";
+
+export { ARTIFACT_AI_EDIT_EVENT } from "./artifact-ai-edit";
 
 // The blueprint pulls in Wokwi's custom elements, which only exist in a
 // browser, so it is loaded on demand rather than with every artifact view.
@@ -87,7 +93,6 @@ const InlineGadget = dynamic(() => import("@/app/components/hermes/inline-gadget
 });
 
 export const ARTIFACT_BROWSER_EVENT = "breadboard:artifact-event";
-export const ARTIFACT_REVISE_EVENT = "breadboard:artifact-revise";
 export const GARDEN_DOCUMENTS_CHANGED_EVENT = "breadboard:garden-documents-changed";
 
 const ARTIFACTS_FOLDER = "artifacts";
@@ -226,13 +231,14 @@ export function artifactUrl(
 
 /**
  * PDF artifacts always open in Breadboard's full-page PDF viewer. Published
- * Garden PDFs retain their editable document route; otherwise the artifact
- * route opens the same viewer in read-only mode.
+ * Garden PDFs retain their document route. Imported PDF files open Breadboard's
+ * PDF.js editor; source-rendered PDFs stay in the document source editor.
  */
 export function artifactPdfHref(artifact: PresentedArtifact): string | null {
   if (artifact.kind !== "pdf") return null;
   const open = artifact.metadata?.gardenOpenPath;
   if (typeof open === "string" && open.startsWith("/gardens/")) return open;
+  if (artifact.renderer !== "pdf-file") return null;
   if (!artifact.previewAvailable || !artifact.conversationId) return null;
   const query = new URLSearchParams({
     conversationId: artifact.conversationId,
@@ -359,8 +365,8 @@ interface ArtifactViewerProps {
   onCreateImage?: (artifact: PresentedArtifact) => void;
   /** Open the video studio. Offered for every video artifact, whoever made it. */
   onEditVideo?: (artifact: PresentedArtifact) => void;
-  /** Hide the "Revise" action (e.g. surfaces that can't drive the agent). */
-  hideRevise?: boolean;
+  /** Refresh archive/card state after the editor creates a new version. */
+  onUpdated?: (artifact: PresentedArtifact) => void;
 }
 
 /**
@@ -377,7 +383,7 @@ export default function ArtifactViewer({
   onEditImage,
   onCreateImage,
   onEditVideo,
-  hideRevise = false,
+  onUpdated,
 }: ArtifactViewerProps) {
   // Keyed by preview URL so switching artifacts never flashes stale text and we
   // avoid resetting state synchronously inside the effect (cascading renders).
@@ -394,6 +400,7 @@ export default function ArtifactViewer({
   // panel around it that grows to the whole window, so every kind gets the
   // same button and the same result.
   const [expanded, setExpanded] = useState(false);
+  const [editingDocument, setEditingDocument] = useState(false);
 
   // A parametric CAD manifest is JSON, which the textual branch would otherwise
   // dump as raw text; its own renderer needs that same text, so it is fetched
@@ -419,6 +426,11 @@ export default function ArtifactViewer({
   const isRaster = artifact?.kind === "image" || artifact?.kind === "diagram";
   const artifactId = artifact?.id ?? "";
   const artifactVersion = artifact?.version ?? 0;
+  const editorMode = artifact ? artifactEditorMode(artifact) : null;
+  const usesGenOfficeEditor = artifact
+    ? artifact.renderer === "document-file" && artifact.filename.toLowerCase().endsWith(".docx")
+    : false;
+  const pdfEditorHref = artifact ? artifactPdfHref(artifact) : null;
   const interactiveChannel = useMemo(
     () => interactive && artifactId
       ? `${artifactId}:${artifactVersion}:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
@@ -440,6 +452,7 @@ export default function ArtifactViewer({
   // Opening a different artifact starts it at the size the surface intended.
   useEffect(() => {
     setExpanded(false);
+    setEditingDocument(false);
   }, [artifactId]);
 
   // While expanded the panel is the window, so Escape shrinks it rather than
@@ -672,6 +685,30 @@ export default function ArtifactViewer({
         <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
           {artifact.error?.message ?? "This artifact failed to generate."}
         </p>
+      );
+    }
+    if (editingDocument && editorMode && editorMode !== "pdf") {
+      if (usesGenOfficeEditor) {
+        return (
+          <ArtifactGenOfficeEditor
+            artifact={artifact}
+            onSaved={(saved) => onUpdated?.(saved)}
+            onAskAi={(prompt) => {
+              dispatchArtifactAiEdit({ artifact, prompt });
+              onClose();
+            }}
+          />
+        );
+      }
+      return (
+        <ArtifactDocumentStudio
+          artifact={artifact}
+          onSaved={(saved) => onUpdated?.(saved)}
+          onAskAi={(saved, prompt) => {
+            dispatchArtifactAiEdit({ artifact: saved, prompt });
+            onClose();
+          }}
+        />
       );
     }
     if (!artifact.previewAvailable) {
@@ -961,18 +998,22 @@ export default function ArtifactViewer({
               Create image
             </button>
           ) : null}
-          {!hideRevise ? (
+          {editorMode === "pdf" && pdfEditorHref ? (
+            <a href={pdfEditorHref} className={actionButton}>
+              Edit PDF
+            </a>
+          ) : editorMode ? (
             <button
               type="button"
               className={actionButton}
               onClick={() => {
-                window.dispatchEvent(
-                  new CustomEvent(ARTIFACT_REVISE_EVENT, { detail: artifact }),
-                );
-                onClose();
+                const next = !editingDocument;
+                setEditingDocument(next);
+                if (next && usesGenOfficeEditor) setExpanded(true);
               }}
+              aria-pressed={editingDocument}
             >
-              Revise
+              {editingDocument ? "Preview" : "Edit"}
             </button>
           ) : null}
           {artifact.downloadAvailable ? (

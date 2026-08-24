@@ -558,6 +558,7 @@ export function InlineArtifactCardsProvider({
       <ArtifactViewer
         artifact={openArtifact}
         onClose={() => setOpenId(null)}
+        onUpdated={() => { void refresh(); }}
         onEditImage={(artifact) => openImageStudio({ sourceArtifact: artifact })}
         onCreateImage={(artifact) => openImageStudio({ promptArtifact: artifact })}
         onEditVideo={openVideoStudio}

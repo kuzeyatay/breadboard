@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getLearnStatusSnapshot } from "@/lib/learn";
+import { getLearnStatusSnapshotForRoute } from "breadboard-learn-status-runtime";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -19,10 +19,11 @@ export async function GET(
       );
     }
 
-    return NextResponse.json({
-      success: true,
-      ...getLearnStatusSnapshot({ gardenId: cluster.slug, contentPath }),
+    const snapshot = await getLearnStatusSnapshotForRoute({
+      gardenId: cluster.slug,
+      contentPath,
     });
+    return NextResponse.json({ success: true, ...snapshot });
   } catch (error) {
     return routeErrorResponse(error);
   }

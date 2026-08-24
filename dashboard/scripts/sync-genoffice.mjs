@@ -8,12 +8,17 @@ export const GENOFFICE_PACKAGES = Object.freeze([
   "pptx-render",
   "font-metrics",
   "pdf2docx",
+  "ui",
+  "i18n",
 ]);
+
+export const GENOFFICE_APPS = Object.freeze(["docs"]);
 
 const dashboardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(dashboardRoot, "..");
 const upstreamRoot = path.join(repoRoot, "genoffice");
 const vendorRoot = path.join(dashboardRoot, "src", "vendor", "genoffice");
+const overrideRoot = path.join(dashboardRoot, "src", "vendor-overrides", "genoffice");
 const commitFile = path.join(upstreamRoot, "BREADBOARD_UPSTREAM_COMMIT");
 
 async function readUpstreamCommit() {
@@ -52,12 +57,26 @@ export async function syncGenOffice() {
     await mkdir(path.dirname(destination), { recursive: true });
     await cp(source, destination, { recursive: true, force: true, preserveTimestamps: false });
   }
+  for (const appName of GENOFFICE_APPS) {
+    const source = path.join(upstreamRoot, "apps", appName, "src");
+    const destination = path.join(vendorRoot, appName, "src");
+    if (!(await stat(source)).isDirectory()) throw new Error(`GenOffice source is missing: ${source}`);
+    await rm(destination, { recursive: true, force: true });
+    await mkdir(path.dirname(destination), { recursive: true });
+    await cp(source, destination, { recursive: true, force: true, preserveTimestamps: false });
+  }
+  // The Docs renderer is an Electron app upstream. Breadboard keeps the visual
+  // editor byte-identical, then overlays only its browser bridge/type surface
+  // and AI dock so file I/O remains authenticated and versioned by Breadboard.
+  if ((await stat(overrideRoot).catch(() => null))?.isDirectory()) {
+    await cp(overrideRoot, vendorRoot, { recursive: true, force: true, preserveTimestamps: false });
+  }
   return commit;
 }
 
 export async function assertGenOfficeVendorDrift() {
   const commit = await readUpstreamCommit();
-  const expectedPackageDirs = [...GENOFFICE_PACKAGES].sort();
+  const expectedPackageDirs = [...GENOFFICE_PACKAGES, ...GENOFFICE_APPS].sort();
   const actualPackageDirs = (await readdir(vendorRoot, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
@@ -77,12 +96,38 @@ export async function assertGenOfficeVendorDrift() {
       throw new Error(`GenOffice file list drifted for ${packageName} at ${commit}`);
     }
     for (const relativePath of sourceFiles) {
+      const override = path.join(overrideRoot, packageName, "src", relativePath);
+      const expected = (await stat(override).catch(() => null))?.isFile()
+        ? override
+        : path.join(source, relativePath);
       const [upstream, vendored] = await Promise.all([
-        readFile(path.join(source, relativePath)),
+        readFile(expected),
         readFile(path.join(destination, relativePath)),
       ]);
       if (!upstream.equals(vendored)) {
         throw new Error(`GenOffice bytes drifted for ${packageName}/src/${relativePath} at ${commit}`);
+      }
+    }
+  }
+  for (const appName of GENOFFICE_APPS) {
+    const source = path.join(upstreamRoot, "apps", appName, "src");
+    const destination = path.join(vendorRoot, appName, "src");
+    const sourceFiles = await relativeFiles(source);
+    const destinationFiles = await relativeFiles(destination);
+    if (JSON.stringify(sourceFiles) !== JSON.stringify(destinationFiles)) {
+      throw new Error(`GenOffice file list drifted for app ${appName} at ${commit}`);
+    }
+    for (const relativePath of sourceFiles) {
+      const override = path.join(overrideRoot, appName, "src", relativePath);
+      const expected = (await stat(override).catch(() => null))?.isFile()
+        ? override
+        : path.join(source, relativePath);
+      const [upstream, vendored] = await Promise.all([
+        readFile(expected),
+        readFile(path.join(destination, relativePath)),
+      ]);
+      if (!upstream.equals(vendored)) {
+        throw new Error(`GenOffice bytes drifted for ${appName}/src/${relativePath} at ${commit}`);
       }
     }
   }

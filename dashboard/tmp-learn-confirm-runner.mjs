@@ -49,6 +49,7 @@ const client = createChatmockClient(baseURL);
 const learningMap = confirmLearningMap({
   gardenId: cluster.slug,
   learningMapId,
+  expectedModel: model,
   contentPath,
 });
 

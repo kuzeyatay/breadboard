@@ -26,7 +26,12 @@ export type StackState =
 
 export interface StackStatus {
   state: StackState;
-  docker: DockerStatus;
+  /**
+   * Present only when the caller explicitly asked for a Docker probe. A status
+   * read is not allowed to run `docker info` behind the user's back, so the
+   * ordinary answer simply omits it.
+   */
+  docker?: DockerStatus;
   /** True once the Postiz HTTP endpoint answers. */
   reachable: boolean;
   reason?: string;
@@ -57,6 +62,36 @@ const SOCIAL_ENV_KEYS = [
   "NEYNAR_CLIENT_ID", "NEYNAR_SECRET_KEY",
   "TELEGRAM_BOT_NAME", "TELEGRAM_TOKEN",
 ] as const;
+
+const POSTIZ_MEMORY_DEFAULTS_MB = {
+  postiz: 1536,
+  "postiz-postgres": 512,
+  "postiz-redis": 256,
+  spotlight: 256,
+  "temporal-elasticsearch": 768,
+  "temporal-postgresql": 512,
+  temporal: 768,
+  "temporal-admin-tools": 256,
+  "temporal-ui": 256,
+} as const;
+
+function resourceLines(
+  service: keyof typeof POSTIZ_MEMORY_DEFAULTS_MB,
+  env: NodeJS.ProcessEnv,
+): string[] {
+  const key = `BREADBOARD_POSTIZ_${service.replaceAll("-", "_").toUpperCase()}_MEMORY_MB`;
+  const raw = env[key]?.trim();
+  let limit: number = POSTIZ_MEMORY_DEFAULTS_MB[service];
+  if (raw) {
+    if (!/^\d+$/.test(raw)) throw new Error(`${key} must be a whole number of MB.`);
+    limit = Number(raw);
+    if (!Number.isSafeInteger(limit) || limit < 128 || limit > 8192) {
+      throw new Error(`${key} must be between 128 and 8192 MB.`);
+    }
+  }
+  const reservation = Math.max(64, Math.floor(limit / 2));
+  return [`    mem_limit: ${limit}m`, `    mem_reservation: ${reservation}m`];
+}
 
 function quote(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
@@ -131,6 +166,10 @@ export function renderOverride(
     "# edit Breadboard's settings rather than this file — it is rewritten on start.",
     "services:",
     "  postiz:",
+    // Recovery belongs to the coordinator. Docker must not keep recreating a
+    // tree that just failed from commit pressure.
+    "    restart: 'no'",
+    ...resourceLines("postiz", env),
     "    environment:",
     `      MAIN_URL: ${quote(config.baseUrl)}`,
     `      FRONTEND_URL: ${quote(config.baseUrl)}`,
@@ -148,13 +187,36 @@ export function renderOverride(
     "    depends_on:",
     "      temporal:",
     "        condition: service_healthy",
+    "  postiz-postgres:",
+    "    restart: 'no'",
+    ...resourceLines("postiz-postgres", env),
+    "  postiz-redis:",
+    "    restart: 'no'",
+    ...resourceLines("postiz-redis", env),
+    "  spotlight:",
+    "    restart: 'no'",
+    ...resourceLines("spotlight", env),
+    "  temporal-elasticsearch:",
+    "    restart: 'no'",
+    ...resourceLines("temporal-elasticsearch", env),
+    "  temporal-postgresql:",
+    "    restart: 'no'",
+    ...resourceLines("temporal-postgresql", env),
     "  temporal:",
+    "    restart: 'no'",
+    ...resourceLines("temporal", env),
     "    healthcheck:",
     "      test: ['CMD', 'temporal', 'operator', 'cluster', 'health', '--address', 'temporal:7233']",
     "      interval: 5s",
     "      timeout: 5s",
     "      retries: 30",
     "      start_period: 20s",
+    "  temporal-admin-tools:",
+    "    restart: 'no'",
+    ...resourceLines("temporal-admin-tools", env),
+    "  temporal-ui:",
+    "    restart: 'no'",
+    ...resourceLines("temporal-ui", env),
     "",
   ].join("\n");
 }
@@ -187,18 +249,28 @@ export async function reachable(config: SocialsManagerConfig): Promise<boolean> 
   }
 }
 
-export async function stackStatus(config: SocialsManagerConfig): Promise<StackStatus> {
+/**
+ * Where the stack is, without touching it.
+ *
+ * The default answer costs one HTTP request to the Postiz backend and runs no
+ * Docker command whatsoever — which is what lets the UI and the status route
+ * poll it. `probeDocker` adds a read-only engine check (`docker info`, never a
+ * start) for callers that are genuinely diagnosing Docker.
+ */
+export async function stackStatus(
+  config: SocialsManagerConfig,
+  options: { probeDocker?: boolean } = {},
+): Promise<StackStatus> {
   if (await reachable(config)) {
     return {
       state: "running",
       reachable: true,
-      docker: {
-        cliInstalled: true,
-        desktopInstalled: true,
-        daemonRunning: true,
-      },
+      ...(options.probeDocker
+        ? { docker: { cliInstalled: true, desktopInstalled: true, daemonRunning: true } }
+        : {}),
     };
   }
+  if (!options.probeDocker) return { state: "stopped", reachable: false };
   const docker = await ensureDockerRunning({
     timeoutMs: 0,
     autoStart: false,

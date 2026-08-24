@@ -2777,11 +2777,13 @@
     })
     syncProtocolControls()
 
-    // Gemini-style hierarchy: authored visual first, then the compact result
-    // strip, then the least number of controls needed to explore it.
-    app.appendChild(scenesHost)
-    app.appendChild(valuesHost)
+    // The immutable learner action must be available before the content it
+    // changes. Keep controls in authored contract order, then show compact
+    // derived values and observable scenes. Candidate source cannot override
+    // this trusted ordering or duplicate controls inside a scene.
     app.appendChild(controlsHost)
+    app.appendChild(valuesHost)
+    app.appendChild(scenesHost)
 
     const updatePlayPauseButton = () => {
       if (!playPauseButton) return
@@ -2907,6 +2909,48 @@
           const failures = []
           const boxSummary = (box) =>
             `x=${Math.round(box.x * 10) / 10},y=${Math.round(box.y * 10) / 10},width=${Math.round(box.width * 10) / 10},height=${Math.round(box.height * 10) / 10}`
+          const firstObservableScene = scenesHost.querySelector(".gv-scene")
+          definition.controls.forEach((control) => {
+            const input = controlElements.get(control.id)?.input
+            if (!input) {
+              failures.push(`control.initial.missing: controlId=${String(control.id)}`)
+              return
+            }
+            const precedesScenes = !firstObservableScene || Boolean(
+              input.compareDocumentPosition(firstObservableScene) & Node.DOCUMENT_POSITION_FOLLOWING,
+            )
+            const style = getComputedStyle(input)
+            const box = input.getBoundingClientRect()
+            const rendered =
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity || 1) > 0 &&
+              box.width > 0 &&
+              box.height > 0
+            const mobileInitialViewportVisible =
+              window.innerWidth > 640 ||
+              (box.left >= 0 &&
+                box.right <= window.innerWidth + 1 &&
+                box.top >= 0 &&
+                box.bottom <= window.innerHeight + 1)
+            input.dataset.controlPrecedesScenes = String(precedesScenes)
+            input.dataset.controlRendered = String(rendered)
+            input.dataset.controlMobileInitialViewportVisible = String(
+              mobileInitialViewportVisible,
+            )
+            if (!precedesScenes)
+              failures.push(
+                `control.initial.order: controlId=${String(control.id)}; expected=before_first_observable_scene`,
+              )
+            if (!rendered)
+              failures.push(
+                `control.initial.not_rendered: controlId=${String(control.id)}; ${boxSummary(box)}`,
+              )
+            if (!mobileInitialViewportVisible)
+              failures.push(
+                `control.initial.mobile_viewport_out_of_frame: controlId=${String(control.id)}; viewport=${String(window.innerWidth)}x${String(window.innerHeight)}; ${boxSummary(box)}`,
+              )
+          })
           const collectSpatialDiagnostics = (phase) =>
             Array.from(document.querySelectorAll("[data-spatial-host=true]")).forEach(
               (host, hostIndex) => {

@@ -18,6 +18,7 @@ import {
   validateGeneratedVisualizationCandidateEnvelope,
   validateGeneratedVisualizationDefinition,
 } from "../src/lib/generated-visuals.ts";
+import { runObservedGeneratedVisualBrowserProcess } from "../src/lib/generated-visual-browser-process.ts";
 
 const visibleCase = (index) => ({
   kind: "conditional",
@@ -342,6 +343,8 @@ test("a high-spatial reviewed route rejects a flowchart substitute and requires 
     ...opportunity,
     id: "visual-boundary-fixture",
     similarityFingerprint: "boundary-fixture",
+    learnerAction:
+      "Apply an external electric field to a conductor boundary and inspect its surface-normal vector.",
     necessityDecision: {
       spatialValue: 0.95,
       learningGoal: "Relate an electric field to a conductor boundary.",
@@ -435,6 +438,153 @@ test("a high-spatial reviewed route rejects a flowchart substitute and requires 
     boundaryOpportunity,
   );
   assert.ok(valid.definition, valid.validation.errors.join("; "));
+});
+
+test("the final reviewed learner action outranks stale high-spatial necessity prose", () => {
+  const dependencyOpportunity = {
+    ...opportunity,
+    id: "visual-reviewed-dependency-fixture",
+    similarityFingerprint: "reviewed-dependency-fixture",
+    learnerAction:
+      "Select a case and inspect the highlighted branch of a persistent node-link dependency diagram.",
+    necessityDecision: {
+      spatialValue: 0.99,
+      learningGoal: "Compare vector contributions in a physical orientation.",
+      reason:
+        "The earlier necessity pass expected a cross product and directional field vectors.",
+      teachingMediumReason:
+        "Rotate a spatial vector construction to compare orientations.",
+      interaction: {
+        uniqueConcept: "Two contributions combine through a dependency relation.",
+        whyStaticSourceFigureIsNotEnough:
+          "The obsolete proposal asked for physical vector orientations.",
+        learnerAction:
+          "Select a case and inspect the highlighted branch of a persistent node-link dependency diagram.",
+      },
+    },
+  };
+  const dependencyDiagram = spatialDefinition();
+  dependencyDiagram.scenes = [{
+    kind: "diagram",
+    title: "Persistent dependency branches",
+    nodes: [
+      { id: "first", label: "A", x: 140, y: 120 },
+      { id: "second", label: "B", x: 140, y: 240 },
+      { id: "result", label: "R", x: 500, y: 180 },
+    ],
+    edges: [
+      { from: "first", to: "result", directed: true },
+      { from: "second", to: "result", directed: true },
+    ],
+  }];
+  const reviewedDiagram = compileGeneratedVisualization(
+    moduleSource(dependencyDiagram),
+    dependencyOpportunity,
+  );
+  assert.ok(
+    reviewedDiagram.definition,
+    reviewedDiagram.validation.errors.join("; "),
+  );
+
+  const pathOpportunity = {
+    ...dependencyOpportunity,
+    learnerAction:
+      "Trace a point along a spatial integration path and inspect the changing construction.",
+  };
+  assert.match(
+    compileGeneratedVisualization(
+      moduleSource(dependencyDiagram),
+      pathOpportunity,
+    ).validation.errors.join("; "),
+    /reviewed_spatial_representation\.missing_spatial_scene/,
+    "an explicit final spatial-path action still requires physical geometry",
+  );
+
+  const vectorOpportunity = {
+    ...dependencyOpportunity,
+    learnerAction:
+      "Rotate the field vector and inspect its direction in the shared physical frame.",
+  };
+  const pointOnly = spatialDefinition();
+  pointOnly.scenes[0].groups = [{
+    id: "point-only",
+    label: "Point",
+    primitives: [{
+      kind: "point",
+      id: "sample-point",
+      label: "Sample point",
+      position: [0, 0, 0],
+    }],
+  }];
+  assert.match(
+    compileGeneratedVisualization(
+      moduleSource(pointOnly),
+      vectorOpportunity,
+    ).validation.errors.join("; "),
+    /reviewed_spatial_representation\.missing_vector_primitive/,
+    "an explicit final vector action still requires a vector primitive",
+  );
+
+  const uiFieldOpportunity = {
+    ...dependencyOpportunity,
+    learnerAction:
+      "Adjust the numeric input field and inspect the dependency diagram.",
+  };
+  const uiFieldDiagram = compileGeneratedVisualization(
+    moduleSource(dependencyDiagram),
+    uiFieldOpportunity,
+  );
+  assert.ok(
+    uiFieldDiagram.definition,
+    uiFieldDiagram.validation.errors.join("; "),
+  );
+
+  for (const learnerAction of [
+    "Rotate the dependency diagram and inspect the selected branch.",
+    "Rotate the orientation of the dependency diagram and inspect its branches.",
+    "Inspect the orientation of the node-link graph and compare its branches.",
+  ]) {
+    const diagramOrientationOpportunity = {
+      ...dependencyOpportunity,
+      learnerAction,
+    };
+    const diagramOrientationResult = compileGeneratedVisualization(
+      moduleSource(dependencyDiagram),
+      diagramOrientationOpportunity,
+    );
+    assert.ok(
+      diagramOrientationResult.definition,
+      `${learnerAction}: ${diagramOrientationResult.validation.errors.join("; ")}`,
+    );
+  }
+
+  const physicalRotationBesideDiagram = {
+    ...dependencyOpportunity,
+    learnerAction:
+      "Rotate the field vector beside the dependency diagram and inspect its direction.",
+  };
+  assert.match(
+    compileGeneratedVisualization(
+      moduleSource(dependencyDiagram),
+      physicalRotationBesideDiagram,
+    ).validation.errors.join("; "),
+    /reviewed_spatial_representation\.missing_spatial_scene/,
+    "diagram context must not erase an explicitly physical rotation object",
+  );
+
+  const observedGeometryOpportunity = {
+    ...dependencyOpportunity,
+    learnerAction:
+      "Compare the Gaussian surface normal with the field direction as it crosses the interface.",
+  };
+  assert.match(
+    compileGeneratedVisualization(
+      moduleSource(dependencyDiagram),
+      observedGeometryOpportunity,
+    ).validation.errors.join("; "),
+    /reviewed_spatial_representation\.missing_spatial_scene/,
+    "an explicit physical-geometry comparison remains spatial even without a manipulation verb",
+  );
 });
 
 test("browser runtime keeps a long plot axis label inside the mobile SVG frame", (t) => {
@@ -801,6 +951,9 @@ test("candidate envelope fails closed and the Council-visible prompt discloses t
     "browser mount 1280x800 reduced-motion: runtime self-check failures: diagram.after_control_change.scene[0].node_label_footprint: node=v_step; label=x=348,y=-492.6,width=113.1,height=27; footprint=x=361.5,y=-513.6,width=86,height=86; diagram.after_reset.scene[0].node_label_footprint: node=v_step; label=x=348,y=-492.6,width=113.1,height=27; footprint=x=361.5,y=-513.6,width=86,height=86.",
     "Adjust diagram node horizontal coordinates so all grid stencil nodes fit within a 375px mobile viewport without right-edge cropping.",
     "In the narrow mobile viewport (375x667), node Q2 in the Point Charge Arrangement diagram is cropped on the right edge due to node coordinates exceeding the readable viewport width.",
+    "The persistent dependency diagram does not visibly distinguish the selected branch for selector branch_case.",
+    "The required selector is not visibly available before the observable scenes.",
+    "A signed scalar multiplies each displayed contribution direction, but the explanation does not state that a negative sign reverses the result.",
     "Add a complete non-visual explanation and ensure every control is keyboard-readable and explicitly labelled.",
   ];
   await assert.rejects(
@@ -823,7 +976,10 @@ test("candidate envelope fails closed and the Council-visible prompt discloses t
   assert.match(system, /output\.representation is metadata and does not force scene\.kind/);
   assert.match(system, /source-authored xLabel and yLabel are visible SVG text.*concise, source-grounded, and fully legible.*mobile and desktop plot frame.*annotation or formula scene/i);
   assert.match(system, /A spatial scene is exactly/);
-  assert.match(system, /spatialRepresentationRequirement is a reviewed, immutable route constraint.*actual spatial scene.*diagram node-link graph, flowchart, state-transition graph, or plot.*requiresSurfacePrimitive.*requiresVectorPrimitive/i);
+  assert.match(system, /spatialRepresentationRequirement is the reviewed route constraint after final learner-action precedence.*not a stale necessity score or earlier rationale.*actual spatial scene.*diagram node-link graph, flowchart, state-transition graph, or plot.*requiresSurfacePrimitive.*requiresVectorPrimitive/i);
+  assert.match(system, /diagram edge may use strength as an authored numeric expression.*abs\(strength\) clamped to 0\.5-6.*single option.*exclusive emphasized branch.*combined\/both\/all\/sum\/total\/\+ option.*union/i);
+  assert.match(system, /trusted runtime renders every exact immutable control before numeric outputs and observable scenes.*DOM order and rendered visibility at mobile.*sourceCode cannot and must not duplicate, reposition, or replace/i);
+  assert.match(system, /displayed direction is multiplied by an uncontrolled signed scalar.*fixed-sign assumption.*opposite sign.*unsigned\/field term.*sign-dependent reversal/i);
   assert.match(system, /labelMode\?.*legend_only/);
   assert.match(system, /Projection overlap is a hard failure even when world coordinates differ.*named source-essential points, vector arrowheads, endpoints, and inline labels.*every exact desktop and narrow-mobile state.*labelMode:"legend_only"/i);
   assert.match(system, /first rendered spatial scene with primitives.*primary narrow-mobile preview scene.*ahead of supporting plot, formula, annotation, status, or secondary-scene content.*initial 375x667 document viewport.*SVG-local safe frame is not sufficient.*unitless display-scale factor.*arbitrary unmentioned multiplier/i);
@@ -952,6 +1108,18 @@ test("candidate envelope fails closed and the Council-visible prompt discloses t
     userPacket.highPriorityRepairInstructions.join(" "),
     /candidate accessibilityDescription and definition\.accessibilityDescription.*standalone, specific non-visual walkthrough.*keyboard navigation plus Reset behavior/i,
   );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /state-dependent branch highlighting in a persistent diagram.*every node and edge present.*edge's authored strength expression.*single option has an exclusive emphasized branch.*combined\/both\/all\/sum\/total\/\+ option emphasizes their union.*node\.value as selection styling.*CSS\/runtime changes/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /Preserve the immutable control exactly once.*trusted SDK runtime.*before outputs and scenes.*candidate fields cannot author DOM order.*Do not duplicate a selector/i,
+  );
+  assert.match(
+    userPacket.highPriorityRepairInstructions.join(" "),
+    /directional claim omitted the sign of a multiplying scalar.*fixed sign.*opposite sign.*underlying terms inside the signed expression.*planner-owned control/i,
+  );
 });
 
 test("select preview planning covers mixed reviewed select kinds, remains bounded, and marks unrendered combinations explicitly", () => {
@@ -996,8 +1164,20 @@ test("select preview planning covers mixed reviewed select kinds, remains bounde
 test("spatial runtime mounts accessibly at browser viewports and captures every bounded select-case preview", (t) => {
   if (!browserPath()) return t.skip("Chromium or Edge is not installed");
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-spatial-browser-"));
+  const domBySlug = new Map();
   try {
-    const result = runGeneratedVisualBrowserTests({ definition: spatialDefinition(), outputDir, timeoutMs: 25_000 });
+    const definition = spatialDefinition();
+    const result = runGeneratedVisualBrowserTests({
+      definition,
+      outputDir,
+      timeoutMs: 25_000,
+      browserRunner: (invocation) => {
+        const observed = runObservedGeneratedVisualBrowserProcess(invocation);
+        if (invocation.slug === "375x667-light")
+          domBySlug.set(invocation.slug, observed.stdout ?? "");
+        return observed;
+      },
+    });
     assert.ok(result.tests.every((entry) => entry.passed), JSON.stringify(result.tests));
     assert.ok(
       result.tests
@@ -1010,6 +1190,35 @@ test("spatial runtime mounts accessibly at browser viewports and captures every 
     assert.equal(result.browser?.previewCount, 6);
     assert.equal(result.browser?.selectStateCoverageTruncated, false);
     assert.equal(result.previews?.length, 6);
+    for (const attempt of (result.browser?.mountReceipts ?? []).flatMap(
+      (receipt) => receipt.attempts,
+    )) {
+      assert.equal(attempt.cleanupConfirmed, true);
+      assert.ok(
+        attempt.timedOut
+          ? attempt.completion === "deadline"
+          : ["observed_dom", "process_exit"].includes(attempt.completion),
+      );
+      assert.ok(attempt.durationMs >= 0 && attempt.durationMs < 30_000);
+    }
+    for (const receipt of result.browser?.previewMatrixReceipt?.cells ?? []) {
+      assert.equal(receipt.captured, true, JSON.stringify(receipt));
+      assert.ok(
+        receipt.attempts.some(
+          (attempt) => attempt.screenshotCreated && !attempt.timedOut,
+        ),
+        JSON.stringify(receipt),
+      );
+      for (const attempt of receipt.attempts) {
+        assert.equal(attempt.cleanupConfirmed, true);
+        assert.ok(
+          attempt.timedOut
+            ? attempt.completion === "deadline"
+            : ["observed_capture", "process_exit"].includes(attempt.completion),
+        );
+        assert.ok(attempt.durationMs >= 0 && attempt.durationMs < 30_000);
+      }
+    }
     const previewIds = result.previews.map((preview) => preview.id).sort();
     assert.deepEqual(previewIds, [
       "desktop-1000x720-light--case_mode-1",
@@ -1036,6 +1245,26 @@ test("spatial runtime mounts accessibly at browser viewports and captures every 
       path.join(outputDir, "preview.png"),
     );
     assert.ok(fs.statSync(path.join(outputDir, "preview.png")).size > 0);
+    const mobileDom = domBySlug.get("375x667-light") ?? "";
+    assert.ok(mobileDom, "the exercised 375x667 runtime DOM must be observed");
+    assert.ok(
+      mobileDom.indexOf('class="gv-controls"') <
+        mobileDom.indexOf('class="gv-scenes"'),
+      "trusted runtime controls must precede the first observable scene host",
+    );
+    for (const control of definition.controls) {
+      const escapedId = control.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const controlTag = mobileDom.match(
+        new RegExp(`<[^>]+data-control-id="${escapedId}"[^>]*>`),
+      )?.[0];
+      assert.ok(controlTag, `missing rendered control ${control.id}`);
+      assert.match(controlTag, /data-control-precedes-scenes="true"/);
+      assert.match(controlTag, /data-control-rendered="true"/);
+      assert.match(
+        controlTag,
+        /data-control-mobile-initial-viewport-visible="true"/,
+      );
+    }
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
   }
@@ -1239,6 +1468,10 @@ test("browser mount retries a transient Edge launch timeout with a fresh profile
             return {
               status: null,
               signal: "SIGTERM",
+              durationMs: 20_000,
+              timedOut: true,
+              stderr: "generic Edge launch stderr",
+              stdout: "<html><body>incomplete launch output",
               error: {
                 code: "ETIMEDOUT",
                 message: "spawnSync C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe ETIMEDOUT",
@@ -1266,6 +1499,11 @@ test("browser mount retries a transient Edge launch timeout with a fresh profile
     assert.equal(receipt.attempts[0].signal, "SIGTERM");
     assert.equal(receipt.attempts[0].mounted, false);
     assert.equal(receipt.attempts[0].transientFailureCode, "ETIMEDOUT");
+    assert.equal(receipt.attempts[0].durationMs, 20_000);
+    assert.equal(receipt.attempts[0].timedOut, true);
+    assert.equal(receipt.attempts[0].errorCode, "ETIMEDOUT");
+    assert.match(receipt.attempts[0].stderr ?? "", /generic Edge launch stderr/);
+    assert.match(receipt.attempts[0].stdoutTail ?? "", /incomplete launch output/);
     assert.equal(receipt.attempts[0].retryDelayMs, 125);
     assert.match(receipt.attempts[0].detail ?? "", /ETIMEDOUT/);
     assert.doesNotMatch(JSON.stringify(receipt), /C:\\Program Files|msedge\.exe/i);
@@ -1286,6 +1524,160 @@ test("browser mount retries a transient Edge launch timeout with a fresh profile
         "retry profiles must be cleaned with the disposable root",
       );
     }
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("browser completion is artifact-observed and cleans a stalled disposable process tree", () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-observed-browser-"));
+  const fakeBrowserPath = path.join(outputDir, "generic-stalled-browser.mjs");
+  const descendantPidLedger = path.join(outputDir, "descendant-pids.txt");
+  const retryDelays = [];
+  fs.writeFileSync(
+    fakeBrowserPath,
+    `import fs from "node:fs";
+import { spawn } from "node:child_process";
+const [pidLedger, ...browserArgs] = process.argv.slice(2);
+const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  windowsHide: true,
+  stdio: "ignore",
+});
+descendant.unref();
+fs.appendFileSync(pidLedger, String(descendant.pid) + "\\n", "utf8");
+const screenshotArg = browserArgs.find((arg) => arg.startsWith("--screenshot="));
+if (screenshotArg) {
+  const screenshotPath = screenshotArg.slice("--screenshot=".length);
+  const screenshot = Buffer.from("generic screenshot bytes");
+  fs.writeFileSync(screenshotPath, screenshot);
+  process.stdout.write('<!doctype html><html><body data-breadboard-preview-primary-spatial-frame="passed"></body></html>');
+  process.stderr.write(String(screenshot.length) + " bytes written to file " + screenshotPath + "\\n");
+} else {
+  process.stdout.write('<!doctype html><html><body data-breadboard-runtime-tests="passed"></body></html>');
+}
+setInterval(() => {}, 1000);
+`,
+    "utf8",
+  );
+  try {
+    const result = runGeneratedVisualBrowserTests({
+      definition: spatialDefinition(),
+      outputDir,
+      browserExecutable: "generic-fake-browser",
+      browserMountRetryBackoff: (delayMs) => retryDelays.push(delayMs),
+      previewCaptureRetryBackoff: (delayMs) => retryDelays.push(delayMs),
+      browserRunner: ({ args, timeoutMs }) =>
+        runObservedGeneratedVisualBrowserProcess({
+          executable: process.execPath,
+          args: [fakeBrowserPath, descendantPidLedger, ...args],
+          timeoutMs,
+        }),
+    });
+
+    assert.ok(result.tests.every((entry) => entry.passed), JSON.stringify(result.tests));
+    assert.deepEqual(retryDelays, [], "completed artifacts must not consume a retry");
+    const mountAttempts = (result.browser?.mountReceipts ?? [])
+      .flatMap((receipt) => receipt.attempts);
+    const captureAttempts = (result.browser?.previewMatrixReceipt?.cells ?? [])
+      .flatMap((receipt) => receipt.attempts);
+    assert.equal(mountAttempts.length, 3);
+    assert.equal(captureAttempts.length, 6);
+    for (const attempt of mountAttempts) {
+      assert.equal(attempt.status, 0);
+      assert.equal(attempt.timedOut, false);
+      assert.equal(attempt.completion, "observed_dom");
+      assert.equal(attempt.browserExitedNaturally, false);
+      assert.equal(attempt.cleanupConfirmed, true);
+      assert.ok(attempt.durationMs >= 0 && attempt.durationMs < 20_000);
+    }
+    for (const attempt of captureAttempts) {
+      assert.equal(attempt.status, 0);
+      assert.equal(attempt.timedOut, false);
+      assert.equal(attempt.completion, "observed_capture");
+      assert.equal(attempt.browserExitedNaturally, false);
+      assert.equal(attempt.cleanupConfirmed, true);
+      assert.equal(attempt.screenshotCreated, true);
+      assert.ok(attempt.screenshotBytes > 0);
+    }
+    const descendantPids = fs.readFileSync(descendantPidLedger, "utf8")
+      .trim()
+      .split(/\s+/)
+      .map(Number);
+    assert.equal(descendantPids.length, 9);
+    if (process.platform === "win32") {
+      for (const pid of descendantPids) {
+        assert.throws(
+          () => process.kill(pid, 0),
+          (error) => error?.code === "ESRCH",
+          `descendant ${pid} should be gone after taskkill /T /F`,
+        );
+      }
+    }
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("browser deadline rejects an unconfirmed screenshot and preserves diagnostics separately", () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-browser-deadline-"));
+  const fakeBrowserPath = path.join(outputDir, "generic-incomplete-browser.mjs");
+  const screenshotPath = path.join(outputDir, "unconfirmed.png");
+  fs.writeFileSync(
+    fakeBrowserPath,
+    `import fs from "node:fs";
+const screenshotArg = process.argv.find((arg) => arg.startsWith("--screenshot="));
+const screenshotPath = screenshotArg.slice("--screenshot=".length);
+fs.writeFileSync(screenshotPath, "partial screenshot");
+process.stdout.write('<!doctype html><html><body data-generic="rendered"></body></html>');
+process.stderr.write("999 bytes written to file " + screenshotPath + "\\n");
+setInterval(() => {}, 1000);
+`,
+    "utf8",
+  );
+  try {
+    const result = runObservedGeneratedVisualBrowserProcess({
+      executable: process.execPath,
+      args: [fakeBrowserPath, `--screenshot=${screenshotPath}`],
+      timeoutMs: 250,
+    });
+    assert.equal(result.status, null);
+    assert.equal(result.timedOut, true);
+    assert.equal(result.error?.code, "ETIMEDOUT");
+    assert.match(result.stderr, /999 bytes written to file/);
+    assert.match(result.stdout, /data-generic="rendered"/);
+    assert.equal(result.completion, undefined);
+    assert.equal(result.cleanupConfirmed, true);
+    assert.ok(result.durationMs >= 200 && result.durationMs < 5_000, JSON.stringify(result));
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("browser output overflow cannot inherit a successful process status", () => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-browser-overflow-"));
+  const fakeBrowserPath = path.join(outputDir, "generic-overflow-browser.mjs");
+  fs.writeFileSync(
+    fakeBrowserPath,
+    `process.stdout.write("x".repeat(17 * 1024 * 1024));
+process.exitCode = 0;
+`,
+    "utf8",
+  );
+  try {
+    const result = runObservedGeneratedVisualBrowserProcess({
+      executable: process.execPath,
+      args: [fakeBrowserPath],
+      timeoutMs: 5_000,
+    });
+    assert.equal(result.status, null, JSON.stringify({
+      status: result.status,
+      signal: result.signal,
+      error: result.error,
+    }));
+    assert.equal(result.timedOut, false);
+    assert.equal(result.error?.code, "ENOBUFS");
+    assert.equal(result.completion, undefined);
+    assert.equal(result.cleanupConfirmed, true);
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
   }
@@ -1527,6 +1919,11 @@ test("browser self-test diagnostics are bounded, preserve the primary cause, and
       },
     },
   }));
+  definition.scenes = [{
+    kind: "annotation",
+    title: "Diagnostic isolation",
+    text: "This fixture isolates bounded output diagnostics from spatial viewport checks.",
+  }];
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-browser-diagnostics-"));
   try {
     const result = runGeneratedVisualBrowserTests({ definition, outputDir, timeoutMs: 25_000 });

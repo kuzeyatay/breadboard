@@ -10,6 +10,7 @@ import { ensureOrganizationSchema } from "./organizations/schema.ts";
 import { ensureArtifactSchema } from "./hermes/artifact-schema.ts";
 import { ensureGBrainSchema } from "./gbrain/schema.ts";
 import { ensureMem0Schema } from "./mem0/schema.ts";
+import { ensureMemoryTreeSchema } from "./memory-tree/schema.ts";
 import { ensureUITarsSchema } from "./ui-tars/schema.ts";
 import { ensureAgentBrowserSchema } from "./agent-browser/schema.ts";
 import { ensureCadSchema } from "./cad/schema.ts";
@@ -23,15 +24,18 @@ import { ensurePlanSchema } from "./plan/schema.ts";
 import { ensureMapSchema } from "./map/schema.ts";
 import { ensureSocialsManagerSchema } from "./socials-manager/schema.ts";
 import { ensureTelegramSchema } from "./telegram/schema.ts";
+import { ensureEmailSchema } from "./email/schema.ts";
 import { ensureWhatsAppSchema } from "./whatsapp/schema.ts";
 import { ensureReviewSchema } from "./review/schema.ts";
 import { ensureMcpOAuthSchema } from "./hermes/mcp-oauth-schema.ts";
 import { ensureSpotifySchema } from "./spotify/schema.ts";
+import { configureSqliteConcurrency } from "./sqlite-concurrency.ts";
 
 const DB_PATH = path.join(databaseDir(), "brain.db");
 
 // Singleton — prevents duplicate connections during Next.js hot-reloading in dev
 const globalWithDb = global as typeof globalThis & { db?: Database.Database };
+let databaseOpenedHere = false;
 
 if (!globalWithDb.db) {
   const dbDir = path.dirname(DB_PATH);
@@ -40,11 +44,9 @@ if (!globalWithDb.db) {
   }
 
   globalWithDb.db = new Database(DB_PATH);
+  databaseOpenedHere = true;
+  configureSqliteConcurrency(globalWithDb.db);
   globalWithDb.db.pragma("foreign_keys = ON");
-  // The dev server, the desktop app, and the test runner all open this same
-  // file, so a writer regularly arrives while another process holds the lock.
-  // Waiting is the right answer; failing is not.
-  globalWithDb.db.pragma("busy_timeout = 10000");
 
   globalWithDb.db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -141,6 +143,10 @@ if (!globalWithDb.db) {
 }
 
 const db = globalWithDb.db;
+// Hot reload can reuse the process-global handle without re-entering the
+// constructor branch. Reapply connection-local settings and verify the
+// persistent journal mode in that case as well.
+if (!databaseOpenedHere) configureSqliteConcurrency(db);
 db.pragma("foreign_keys = ON");
 db.exec(`
   CREATE TABLE IF NOT EXISTS invite_codes (
@@ -756,6 +762,25 @@ ensureColumn(
   "reasoning_effort_by_model",
   "reasoning_effort_by_model TEXT NOT NULL DEFAULT '{}'",
 );
+// How much the agent may do without asking when the act-without-asking switch
+// is on. Defaults to 'autonomous', which is what that switch has always done;
+// the narrower tiers are there to be chosen, not to be arrived at by upgrading.
+// See lib/hermes/autonomy.ts.
+ensureColumn(
+  "hermes_user_settings",
+  "autonomy_tier",
+  "autonomy_tier TEXT NOT NULL DEFAULT 'autonomous' CHECK (autonomy_tier IN ('supervised','semi_autonomous','autonomous'))",
+);
+// A column default only applies to rows written after it exists, and a
+// pre-release build of this column backfilled 'semi_autonomous'. Nothing could
+// have chosen that deliberately -- the tier has no UI and reached the API only
+// through this same build -- so those rows are the old default, not a choice,
+// and putting them back is a correction rather than an override.
+db.exec(`
+  UPDATE hermes_user_settings
+  SET autonomy_tier = 'autonomous'
+  WHERE autonomy_tier = 'semi_autonomous';
+`);
 // "Rewrite naturally" as a standing preference rather than a per-message
 // toggle. It lives on the server because the browser switch alone cannot reach
 // the surfaces the user asked it to cover: an artifact and a garden note are
@@ -785,6 +810,10 @@ ensureConversationSchema(db);
 // Bookkeeping mapping durable memories to their mem0 semantic-index entries.
 // Must follow the conversation schema: it references durable_memories(id).
 ensureMem0Schema(db);
+// Structure over those same memories, plus the bookkeeping for mirroring it
+// into an editable markdown vault. Also references durable_memories(id), so it
+// follows the conversation schema for the same reason mem0 does.
+ensureMemoryTreeSchema(db);
 ensureArtifactSchema(db);
 // Additive GBrain source-mapping and sync/audit bookkeeping (derived retrieval
 // state only; canonical content stays in markdown). Safe to re-apply.
@@ -849,6 +878,9 @@ ensureWhatsAppSchema(db);
 // Additive Telegram link tables (settings + update offset, chat→conversation map,
 // dedupe). The bot token is never stored here either — only on disk under Hermes.
 ensureTelegramSchema(db);
+// Email as a channel the assistant speaks through, alongside WhatsApp and
+// Telegram. Credentials live on disk, never here.
+ensureEmailSchema(db);
 
 // Spaced repetition: per-user delivery choice, per-garden participation, one
 // FSRS card per learning page, and the questions currently awaiting a reply.

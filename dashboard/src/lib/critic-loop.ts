@@ -263,7 +263,7 @@ function issueTargetPath(issue: CriticIssue): string | undefined {
 }
 
 function issueEvidenceHash(issue: CriticIssue): string {
-  const basis = `${issue.evidence ?? ""} ${issue.problem ?? ""} ${issue.expected ?? ""}`;
+  const basis = `${issue.evidence ?? ""}\0${issue.problem ?? ""}\0${issue.expected ?? ""}`;
   return createHash("sha1").update(basis).digest("hex").slice(0, 16);
 }
 
@@ -1085,6 +1085,28 @@ export function parseAnchorCriticDecision(text: string): AnchorCriticDecision | 
   };
 }
 
+/** Terminal protocol failure after an anchor-critic request fulfilled without a
+ * usable structured decision. Provider exceptions are never wrapped in this
+ * error; they cross the request boundary by exact identity. */
+export class AnchorCriticProtocolError extends Error {
+  constructor(message: string) {
+    super(`Anchor critic response validation failed: ${message}`);
+    this.name = "AnchorCriticProtocolError";
+  }
+}
+
+/** Strict production boundary around the tolerant standalone parser. */
+export function parseAnchorCriticDecisionStrict(text: string): AnchorCriticDecision {
+  if (!String(text ?? "").trim()) {
+    throw new AnchorCriticProtocolError("response was empty.");
+  }
+  const decision = parseAnchorCriticDecision(text);
+  if (!decision) {
+    throw new AnchorCriticProtocolError("response did not contain a structured decision.");
+  }
+  return decision;
+}
+
 /** ChatMock-backed anchor confirmation critic (OpenAI-compatible). */
 export function createChatMockAnchorCritic(opts: {
   client: ChatCompletionClientLike;
@@ -1103,7 +1125,7 @@ export function createChatMockAnchorCritic(opts: {
       },
       opts.timeoutMs ? { timeout: opts.timeoutMs, maxRetries: 0 } : undefined,
     );
-    return parseAnchorCriticDecision(response.choices?.[0]?.message?.content ?? "");
+    return parseAnchorCriticDecisionStrict(response.choices?.[0]?.message?.content ?? "");
   };
 }
 
@@ -1264,7 +1286,11 @@ export function buildModelRepairPrompt(input: ModelRepairInput): { system: strin
 /** Parse a model repair response into structured output for the target file. */
 export function parseModelRepairOutput(text: string, targetPath: string): ModelRepairOutput | null {
   const stripped = String(text ?? "").trim().replace(/^```(?:json|markdown|md)?\s*/i, "").replace(/```$/i, "").trim();
-  if (!stripped) return null;
+  // JSON null is the provider explicitly returning no repair candidate. Treat
+  // fenced and unfenced forms exactly like an empty response so the strict
+  // active-Learn repair boundary stops instead of re-observing the blocker and
+  // issuing another model request in a later critic round.
+  if (!stripped || stripped === "null") return null;
   if (/\.json$/i.test(targetPath)) {
     try {
       return { targetPath, revisedJson: JSON.parse(stripped) };
@@ -1507,12 +1533,27 @@ export function makeCriticArtifactRepair(opts: {
         let used: RepairProvenanceRecord["executorUsed"] = "none";
         let modelFailureReason: string | undefined;
         let changed = false;
-        try {
-          const out = await Promise.resolve(opts.modelRepair(buildModelRepairInput(state, gardenDir, req, issue)));
-          if (out && applyModelRepairOutput(gardenDir, gardenSlug, out)) { used = "model"; changed = true; }
-          else modelFailureReason = "model returned no valid candidate";
-        } catch (error) {
-          modelFailureReason = error instanceof Error ? error.message : String(error);
+        // A thrown provider/model request is not semantic evidence and cannot
+        // authorize another critic round. Preserve the exact thrown object by
+        // allowing it to escape this repair boundary unchanged.
+        const out = await Promise.resolve(
+          opts.modelRepair(buildModelRepairInput(state, gardenDir, req, issue)),
+        );
+        if (!out) {
+          if (!allowDeterministicRepairs) {
+            throw new Error(
+              `Model repair for ${req.targetPath ?? req.id} returned no nonempty candidate; no semantic retry was issued.`,
+            );
+          }
+          modelFailureReason = "model returned no valid candidate";
+        } else if (applyModelRepairOutput(gardenDir, gardenSlug, out)) {
+          used = "model";
+          changed = true;
+        } else {
+          // This is a real returned candidate rejected by deterministic target
+          // and safety validation. A later critic round may retry only after it
+          // re-observes the still-concrete blocker.
+          modelFailureReason = "returned model candidate failed target or safety validation";
         }
         if (!changed && allowDeterministicRepairs) attempted.push("deterministic");
         provenance.push({ requestId: req.id, targetKind: req.targetKind, targetPath: req.targetPath, executorAttempted: attempted, executorUsed: used, modelFailureReason, changed });
@@ -1949,17 +1990,22 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
   let lastBlocking: CriticIssue[] = [];
   let lastWarnings: CriticIssue[] = [];
 
+  const requireCriticIssues = (value: CriticIssue[] | null | undefined): CriticIssue[] => {
+    if (!Array.isArray(value)) {
+      throw new Error('Critic response validation failed: critic returned no structured "issues" array.');
+    }
+    return value;
+  };
+
   for (let round = 1; round <= options.maxRounds; round += 1) {
     const state = buildFinalGardenState(args.gardenDir, args.gardenSlug);
-    const anchorIssues = anchorEvidenceCriticIssues(state);
     const packet = buildCriticReviewPacket(state);
-    let criticIssues: CriticIssue[];
-    try {
-      criticIssues = (await Promise.resolve(args.critic(packet))).slice(0, options.maxIssuesPerRound);
-    } catch (error) {
-      // Prose critic unavailable — low-confidence anchors still block.
-      return finish([...(prevBlocking ?? []), ...anchorIssues.filter((a) => !(prevBlocking ?? []).some((p) => p.id === a.id))], lastWarnings, round > 1, true, error instanceof Error ? error.message : String(error));
-    }
+    // The critic call is single-shot. Any provider, transport, cancellation, or
+    // strict parsing exception crosses this boundary by exact identity; reports
+    // are emitted only for completed reviews and can never replace that error.
+    const criticIssues = requireCriticIssues(
+      await Promise.resolve(args.critic(packet)),
+    ).slice(0, options.maxIssuesPerRound);
     const review = verifiedReview(state, criticIssues, round);
     allInstances.push(...review.instances);
     const { blocking, warnings } = review;
@@ -1999,12 +2045,9 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
 
     let anchorDecisions: AppliedAnchorDecision[] = [];
     if (anchorBlocking.length > 0 && args.anchorConfirm) {
-      try {
-        anchorDecisions = await applyAnchorDecisions(args.gardenDir, args.gardenSlug, args.anchorConfirm, state);
-      } catch (error) {
-        // Anchor critic unavailable — keep the anchors blocking.
-        return finish(blocking, warnings, true, true, error instanceof Error ? error.message : String(error));
-      }
+      // As above, a rejected request or terminal protocol failure escapes
+      // unchanged and stops the loop before another anchor/prose model call.
+      anchorDecisions = await applyAnchorDecisions(args.gardenDir, args.gardenSlug, args.anchorConfirm, state);
       // Rebuild derived artifacts + evidence report after applying decisions.
       try { reconcileFinalGardenState(args.gardenDir, args.gardenSlug); } catch { /* best effort */ }
     }
@@ -2054,27 +2097,29 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
   // measurement review so finalBlockingIssues reflects the post-repair state and
   // the last repair round gets accurate resolution accounting.
   if (!endedClean && prevBlocking && prevRoundIdx >= 0 && rounds[prevRoundIdx].resolutions.length === 0) {
-    try {
-      const state = buildFinalGardenState(args.gardenDir, args.gardenSlug);
-      const measurementRound = (rounds[rounds.length - 1]?.round ?? 0) + 1;
-      const finalReview = verifiedReview(state, (await Promise.resolve(args.critic(buildCriticReviewPacket(state)))).slice(0, options.maxIssuesPerRound), measurementRound);
-      allInstances.push(...finalReview.instances);
-      lastBlocking = finalReview.blocking;
-      lastWarnings = finalReview.warnings;
-      const resolutions = computeIssueResolutions(prevBlocking, lastBlocking, prevRequestsByIssue);
-      rounds[prevRoundIdx].resolutions = resolutions;
-      rounds[prevRoundIdx].repairsResolved = resolutions.filter((r) => r.status === "resolved").length;
-    } catch (error) {
-      return finish(lastBlocking, lastWarnings, true, true, error instanceof Error ? error.message : String(error));
-    }
+    const state = buildFinalGardenState(args.gardenDir, args.gardenSlug);
+    const measurementRound = (rounds[rounds.length - 1]?.round ?? 0) + 1;
+    const finalReview = verifiedReview(
+      state,
+      requireCriticIssues(
+        await Promise.resolve(args.critic(buildCriticReviewPacket(state))),
+      ).slice(0, options.maxIssuesPerRound),
+      measurementRound,
+    );
+    allInstances.push(...finalReview.instances);
+    lastBlocking = finalReview.blocking;
+    lastWarnings = finalReview.warnings;
+    const resolutions = computeIssueResolutions(prevBlocking, lastBlocking, prevRequestsByIssue);
+    rounds[prevRoundIdx].resolutions = resolutions;
+    rounds[prevRoundIdx].repairsResolved = resolutions.filter((r) => r.status === "resolved").length;
   }
 
   return finish(lastBlocking, lastWarnings, true, false);
 }
 
 /** Build a decision packet per unresolved low-confidence anchor, ask the critic,
- *  and apply each structured decision. Throws if the critic itself is
- *  unavailable so the loop can mark the run critic-errored. */
+ *  and apply each structured decision. Provider failures retain exact identity;
+ *  a fulfilled null is a terminal protocol failure rather than retry evidence. */
 async function applyAnchorDecisions(
   gardenDir: string,
   gardenSlug: string,
@@ -2086,8 +2131,7 @@ async function applyAnchorDecisions(
   for (const packet of packets) {
     const decision = await Promise.resolve(anchorConfirm(packet));
     if (!decision) {
-      applied.push({ anchorId: packet.anchor.id, decision: "reject", applied: false, reason: "critic returned no decision", changed: [], invalidReason: "no_decision" });
-      continue;
+      throw new AnchorCriticProtocolError(`critic returned no decision for anchor "${packet.anchor.id}".`);
     }
     applied.push(applyAnchorCriticDecision(gardenDir, gardenSlug, decision));
   }

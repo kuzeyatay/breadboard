@@ -14,14 +14,20 @@ import {
 import { resolvePaths, type ResolvedPaths } from "../src/main/path-resolver";
 import { defaultPersistentConfig, type DesktopRuntimeConfig } from "../src/main/runtime-config";
 import { DEFAULT_BREADBOARD_SKILLS_CATALOG_URL } from "../src/main/skills-catalog-config";
+import {
+  DASHBOARD_HEAP_OVERRIDE_ENV,
+  MAX_DASHBOARD_HEAP_MB,
+  resolveDashboardHeapBudgetMb,
+} from "../src/main/dashboard-heap-budget";
 
 function fixture(mode: "dev" | "packaged", overrides: Partial<ReturnType<typeof defaultPersistentConfig>> = {}) {
+  const repositoryRoot = path.resolve(__dirname, "..", "..", "..");
   const paths = resolvePaths({
     isPackaged: mode === "packaged",
     forceDev: false,
     userDataDir: path.join(os.tmpdir(), "bb-ud"),
     electronResourcesPath: path.join(os.tmpdir(), "bb-res"),
-    moduleDir: path.join(os.tmpdir(), "bb-repo", "desktop", "dist", "main"),
+    moduleDir: path.join(repositoryRoot, "desktop", "dist", "main"),
   });
   const config: DesktopRuntimeConfig = {
     persistent: { ...defaultPersistentConfig(), ...overrides },
@@ -79,6 +85,14 @@ test("dashboard env propagates dynamic ports, secrets and data locations", () =>
   assert.equal(dashboard.env["BREADBOARD_DATA_DIR"], paths.dataRoot);
   assert.equal(dashboard.env["QUARTZ_CONTENT_PATH"], paths.quartzContent);
   assert.equal(dashboard.env["NODE_ENV"], "production");
+  assert.equal(
+    dashboard.env["BREADBOARD_LEARN_WORKER_DASHBOARD_ROOT"],
+    paths.dashboardServerDir,
+  );
+  assert.equal(
+    dashboard.env["BREADBOARD_LEARN_SOURCE_ROOT"],
+    path.join(paths.dashboardServerDir, "worker-src"),
+  );
   assert.equal(dashboard.env["VIDEO_TRANSCRIPTION_ENABLED"], "true");
   assert.equal(dashboard.env["SCRIBERR_USERNAME"], config.persistent.scriberrUsername);
   assert.equal(dashboard.env["SCRIBERR_PASSWORD"], config.persistent.scriberrPassword);
@@ -101,7 +115,51 @@ test("dashboard env propagates dynamic ports, secrets and data locations", () =>
   assert.notEqual(dashboard.env["NEXTAUTH_SECRET"], "change-me");
 });
 
-test("hot-reload dashboard raises Next's dev heap without changing packaged runtime", () => {
+test("packaged ChatMock recovery state is rooted in mutable user data", () => {
+  const { definitions, paths } = fixture("packaged");
+  assert.equal(paths.qaMode, false, "this guards the normal packaged profile");
+  const chatmock = definitions.find((definition) => definition.id === "chatmock");
+  const dashboard = definitions.find((definition) => definition.id === "dashboard");
+  assert.ok(chatmock);
+  assert.ok(dashboard);
+
+  const ledgerDir = path.join(paths.dataRoot, ".breadboard", "council-runs");
+  const receiptDir = path.join(ledgerDir, "request-receipts");
+  assert.equal(chatmock.env["COUNCIL_LEDGER_DIR"], ledgerDir);
+  assert.equal(chatmock.env["COUNCIL_REQUEST_RECEIPT_DIR"], receiptDir);
+  assert.equal(dashboard.env["COUNCIL_LEDGER_DIR"], ledgerDir);
+
+  for (const candidate of [ledgerDir, receiptDir]) {
+    const relativeToData = path.relative(paths.dataRoot, candidate);
+    assert.ok(
+      relativeToData !== "" && !relativeToData.startsWith("..") && !path.isAbsolute(relativeToData),
+      `${candidate} must be below the mutable data root`,
+    );
+    const relativeToResources = path.relative(paths.resourcesRoot, candidate);
+    assert.ok(
+      relativeToResources.startsWith("..") || path.isAbsolute(relativeToResources),
+      `${candidate} must not be written under packaged resources`,
+    );
+  }
+});
+
+test("normal dev keeps the historical Council ledger path", () => {
+  const { definitions, paths } = fixture("dev");
+  const chatmock = definitions.find((definition) => definition.id === "chatmock");
+  const dashboard = definitions.find((definition) => definition.id === "dashboard");
+  assert.ok(chatmock);
+  assert.ok(dashboard);
+  const historicalLedger = path.join(paths.appRoot, ".breadboard", "council-runs");
+  assert.equal(paths.dataRoot, paths.appRoot);
+  assert.equal(chatmock.env["COUNCIL_LEDGER_DIR"], historicalLedger);
+  assert.equal(dashboard.env["COUNCIL_LEDGER_DIR"], historicalLedger);
+  assert.equal(
+    chatmock.env["COUNCIL_REQUEST_RECEIPT_DIR"],
+    path.join(historicalLedger, "request-receipts"),
+  );
+});
+
+test("hot-reload dashboard gets a bounded dev heap; packaged runtime is untouched", () => {
   const previousNodeOptions = process.env["NODE_OPTIONS"];
   const previousDashboardMode = process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"];
   try {
@@ -117,14 +175,24 @@ test("hot-reload dashboard raises Next's dev heap without changing packaged runt
     });
     const devDashboard = devDefinitions.find((definition) => definition.id === "dashboard");
     assert.ok(devDashboard);
-    const totalMemoryMb = Math.floor(os.totalmem() / (1024 * 1024));
-    const expectedHeapMb = Math.min(
-      24 * 1024,
-      Math.max(1024, Math.floor(totalMemoryMb * 0.75)),
-    );
+    const expectedHeapMb = resolveDashboardHeapBudgetMb({
+      totalMemoryBytes: os.totalmem(),
+      override: process.env[DASHBOARD_HEAP_OVERRIDE_ENV],
+    });
     assert.equal(
       devDashboard.env["NODE_OPTIONS"],
       `--trace-warnings --max-old-space-size=${expectedHeapMb}`,
+    );
+    // The 75%-of-RAM / 24 GiB policy is gone: on any machine this must stay
+    // small enough that Next's own restart watchdog fires long before the
+    // system commit limit does.
+    assert.ok(
+      expectedHeapMb <= MAX_DASHBOARD_HEAP_MB,
+      `dev heap must stay capped, got ${expectedHeapMb}MB`,
+    );
+    assert.ok(
+      expectedHeapMb < Math.floor((os.totalmem() / (1024 * 1024)) * 0.75),
+      "the dev heap must be well below the old 75%-of-RAM policy",
     );
 
     const packagedDashboard = packaged.definitions.find(
@@ -170,7 +238,7 @@ test("Voicebox is supervised from its dev environment and remains server-only", 
     const dashboard = definitions.find((definition) => definition.id === "dashboard");
     assert.ok(voicebox && dashboard);
     assert.equal(voicebox.required, false);
-    assert.equal(voicebox.startInBackground, true);
+    assert.equal(voicebox.startPolicy, "on-demand");
     assert.equal(voicebox.command, base.binaries.node);
     assert.deepEqual(voicebox.args, [launcher]);
     assert.equal(voicebox.env["VOICEBOX_AUTOINSTALL"], "true");
@@ -232,6 +300,14 @@ test("dev dashboard retains the historical dashboard/db data layout", () => {
   assert.ok(dashboard);
   assert.equal(dashboard.env["BREADBOARD_DATA_DIR"], "");
   assert.equal(dashboard.env["NODE_ENV"], "development");
+  assert.equal(
+    dashboard.env["BREADBOARD_LEARN_WORKER_DASHBOARD_ROOT"],
+    path.join(devPaths.appRoot, "dashboard"),
+  );
+  assert.equal(
+    dashboard.env["BREADBOARD_LEARN_SOURCE_ROOT"],
+    path.join(devPaths.appRoot, "dashboard", "src"),
+  );
   assert.ok(dashboard.args.includes("--webpack"));
   assert.ok(!dashboard.args.includes("--turbopack"));
 });
@@ -652,13 +728,15 @@ test("Codex is a dashboard-launched coding agent, not a supervised chat runtime"
   assert.equal(dashboard.env["CODEX_HOME"], paths.codexHome);
 });
 
-test("Postiz starts silently in the background and never blocks the workspace", () => {
+test("only the lightweight Postiz coordinator starts eagerly", () => {
   const { definitions, paths } = fixture("packaged");
   const postiz = definitions.find((definition) => definition.id === "postiz");
   const dashboard = definitions.find((definition) => definition.id === "dashboard");
   assert.ok(postiz && dashboard);
   assert.equal(postiz.required, false);
-  assert.equal(postiz.startInBackground, true);
+  // The small coordinator joins the core; the Docker stack it owns still
+  // starts only when an authenticated operation asks for it.
+  assert.equal(postiz.startPolicy, "eager");
   assert.equal(postiz.command, "C:/rt/node.exe");
   assert.deepEqual(postiz.args, [
     "--experimental-strip-types",
@@ -672,7 +750,8 @@ test("Postiz starts silently in the background and never blocks the workspace", 
     throw new Error("Postiz should use the supervisor readiness endpoint");
   }
   assert.equal(postiz.healthCheck.url, "http://127.0.0.1:4307/health");
-  assert.equal(postiz.healthCheck.expectBodyIncludes, '"ready":true');
+  // Coordinator liveness, not stack readiness.
+  assert.equal(postiz.healthCheck.expectBodyIncludes, '"ok":true');
   assert.ok(!(dashboard.dependsOn ?? []).includes("postiz"));
   assert.equal(dashboard.env["SOCIALS_MANAGER_SUPPRESS_DOCKER_UI"], "true");
 });
@@ -725,4 +804,59 @@ test("dashboard and ChatMock are told the same proxy the supervisor starts", () 
     // Secrets travel by env, never argv (process-listing safety).
     assert.ok(!cliproxy.args.some((a) => a.includes(dashboard.env["CLIPROXY_API_KEY"] ?? "\u0000")));
   });
+});
+
+test("the dev dashboard carries a memory budget; the packaged one does not", () => {
+  const previousDashboardMode = process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"];
+  try {
+    delete process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"];
+    const packaged = fixture("packaged");
+    const devDefinitions = buildServiceDefinitions({
+      paths: { ...packaged.paths, mode: "dev" as const },
+      config: packaged.config,
+      binaries: packaged.binaries,
+    });
+
+    const devDashboard = devDefinitions.find((definition) => definition.id === "dashboard");
+    assert.ok(devDashboard);
+    const budget = devDashboard.resourceBudget;
+    assert.ok(budget, "the hot-reload dashboard must declare a budget");
+    assert.ok(budget.warningBytes < budget.hardLimitBytes, "warn before killing");
+    assert.ok(
+      budget.hardLimitBytes <= 13 * 1024 * 1024 * 1024,
+      "the hard limit must sit below the ~15-17 GiB that exhausted system commit",
+    );
+    assert.ok(
+      budget.warningBytes >= 10 * 1024 * 1024 * 1024,
+      "the warning must sit above the ~9 GiB sawtooth ceiling measured in burn-in",
+    );
+    assert.ok(
+      budget.consecutiveSamplesBeforeAction >= 2,
+      "a single transient spike must never be actionable",
+    );
+    assert.ok(budget.sampleIntervalMs >= 5_000, "sampling must not spawn a shell every second");
+
+    // Only the compiler-driven dev dashboard is budgeted; nothing else was
+    // measured, so nothing else gets an invented ceiling.
+    const budgeted = devDefinitions
+      .filter((definition) => definition.resourceBudget !== undefined)
+      .map((definition) => definition.id);
+    assert.deepEqual(budgeted, ["dashboard"]);
+
+    const packagedDashboard = packaged.definitions.find(
+      (definition) => definition.id === "dashboard",
+    );
+    assert.ok(packagedDashboard);
+    assert.equal(
+      packagedDashboard.resourceBudget,
+      undefined,
+      "the packaged server runs no dev compiler and gets no dev-only budget",
+    );
+  } finally {
+    if (previousDashboardMode === undefined) {
+      delete process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"];
+    } else {
+      process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"] = previousDashboardMode;
+    }
+  }
 });

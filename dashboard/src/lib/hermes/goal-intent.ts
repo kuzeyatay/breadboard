@@ -65,6 +65,8 @@ export interface GoalIntentInput {
   text: string;
   surface: HermesSurface;
   authenticated: boolean;
+  /** A delegated worker's report is evidence, never a new user commitment. */
+  internalContinuation?: boolean;
   /**
    * This conversation already holds a goal. Selecting the skill again would
    * only earn a `create_goal` refusal — the existing goal is already carried
@@ -80,6 +82,7 @@ export function shouldAutoSelectGoal(input: GoalIntentInput): boolean {
   // explicit command already says what the turn is, so never argue with one.
   const available =
     input.authenticated &&
+    !input.internalContinuation &&
     !input.hasActiveGoal &&
     (input.surface === "dashboard_terminal" || input.surface === "garden_chat");
   if (!available || !text || text.startsWith("/")) return false;

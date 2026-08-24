@@ -53,8 +53,10 @@ test("startup paints in the last dashboard theme before its stylesheet loads", (
   assert.match(themeScript, /theme === "dark" \|\| theme === "light"/);
   assert.match(themeScript, /document\.documentElement\.dataset\.theme = theme/);
   assert.match(css, /:root\[data-theme="dark"\]\s*\{/);
+  assert.match(css, /--app-background:\s*#faf7ef/);
   assert.match(css, /--background:\s*#171916/);
   assert.match(css, /--app-background:\s*#0b0c0a/);
+  assert.doesNotMatch(css, /#e6f0e6/);
   assert.match(sceneCss, /:root\[data-theme="dark"\] \.loading-scene::before/);
   assert.match(css, /:root\[data-theme="dark"\] \.dissolve-bloom/);
 });

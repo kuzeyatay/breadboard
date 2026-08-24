@@ -11,9 +11,8 @@
   --ink: #17261f;
   --ink-muted: #607068;
   --danger: #a45151;
-  /* The dashboard's own page background. The dissolve lands on it so the
-     handoff from this window to the app is one continuous surface. */
-  --app-background: #e6f0e6;
+  /* The warm-paper sheet shared by the native window and startup handoff. */
+  --app-background: #faf7ef;
   --welcome-size: clamp(2.5rem, 7.6vw, 5rem);
 }
 
@@ -258,9 +257,9 @@ body[data-phase="failed"] .stage-halo {
   inset: 0;
   background: radial-gradient(
     circle 44vmax at var(--bloom-x) var(--bloom-y),
-    rgba(255, 255, 255, 0.96) 0 5%,
-    rgba(236, 243, 234, 0.7) 27%,
-    rgba(214, 231, 214, 0) 63%
+    rgba(255, 254, 251, 0.96) 0 5%,
+    rgba(250, 247, 239, 0.7) 27%,
+    rgba(250, 247, 239, 0) 63%
   );
   opacity: 0;
   pointer-events: none;

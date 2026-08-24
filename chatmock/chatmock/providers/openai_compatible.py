@@ -115,6 +115,7 @@ def request_chat(
     upstream_model: str,
     *,
     stream: bool,
+    allow_preconnect_retry: bool = True,
 ) -> requests.Response:
     return transport.post_with_retry(
         chat_url(credentials),
@@ -122,6 +123,7 @@ def request_chat(
         payload=build_payload(payload, upstream_model, stream=stream),
         stream=stream,
         provider_id=credentials.provider_id,
+        allow_preconnect_retry=allow_preconnect_retry,
     )
 
 
@@ -171,11 +173,21 @@ def call_model(call: ModelCall, credentials: ResolvedCredentials, upstream_model
     if isinstance(call.reasoning_effort, str) and call.reasoning_effort.strip():
         payload["reasoning_effort"] = call.reasoning_effort.strip()
 
-    response = request_chat(credentials, payload, upstream_model, stream=False)
+    request_kwargs = {"stream": False}
+    if not call.allow_transport_retry:
+        request_kwargs["allow_preconnect_retry"] = False
+    response = request_chat(credentials, payload, upstream_model, **request_kwargs)
     if response.status_code >= 400:
+        status = response.status_code
         message = transport.error_message(response, credentials.provider_id)
         transport.close_quietly(response)
-        raise ProviderError(message)
+        raise ProviderError(
+            message,
+            status_code=status,
+            phase="upstream",
+            replay_safe=status == 429,
+            code="http_error",
+        )
 
     try:
         body = response.json()

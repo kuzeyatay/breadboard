@@ -587,7 +587,10 @@ describe("pipeline wiring for model-authored syllabus coverage", () => {
   });
 
   test("supplies exact material semantics and selected source evidence", () => {
-    assertSource("selectedSourceCatalog: promptSyllabusCoverageSourceCatalog(context, syllabusPlan)", "send selected sources");
+    assertSource(
+      "selectedSourceCatalog: promptSyllabusCoverageSourceCatalog(",
+      "send selected sources",
+    );
     assertSource("authoredLocators: authoredSyllabusLocatorCatalog(syllabusPlan.referencedMaterials)", "send exact authored locators without matching them");
     assertSource("buildSyllabusCoverageSourceCatalog(context.sources)", "send a bounded coverage source catalog");
     assertSource("canonicalRawPageEvidence.pages", "distinguish raw canonical page evidence from planning context");
