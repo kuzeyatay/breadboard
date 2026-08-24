@@ -24,7 +24,11 @@ import AgentRuntimePanel from "./agent-runtime-panel";
 import ChatGreetingEmptyState from "./chat-greeting-empty-state";
 import { useChatGreeting } from "./use-chat-greeting";
 import { ArtifactDockHostProvider } from "./artifact-dock-host";
-import ArtifactPanel, { ARTIFACT_REVISE_EVENT } from "./artifact-panel";
+import ArtifactPanel, { ARTIFACT_AI_EDIT_EVENT } from "./artifact-panel";
+import {
+  consumeArtifactAiEdit,
+  type ArtifactAiEditDetail,
+} from "./artifact-ai-edit";
 // The Terminal reads GBrain status but never words it: the header dot carries
 // it. GBrainStatusBadge itself stays a Garden Chat component.
 import { useGBrainStatus } from "./gbrain-status-badge";
@@ -102,9 +106,11 @@ import {
   taskFromCareerOpsCommand,
 } from "@/lib/career-ops/identity.ts";
 import {
+  OPEN_GYM_AGENT_ID,
   openGymUserMessage,
   taskFromOpenGymCommand,
 } from "@/lib/open-gym/identity.ts";
+import { shouldRouteOpenGymFromSuperAgent } from "@/lib/open-gym/routing-client.ts";
 import {
   TRADINGAGENTS_AGENT_ID,
   TRADINGAGENTS_AGENT_NAME,
@@ -300,6 +306,7 @@ interface RuntimeHistorySession {
 }
 
 const HEIGHT_KEY = "breadboard:knowledge-terminal-height";
+const OPEN_STATE_KEY = "breadboard:knowledge-terminal-open";
 const COLLAPSED_HEIGHT = 48;
 // The shortest the dock can stand open. The composer is anchored to the bottom
 // of the body (`.bb-composer-overlay`), so a body with no room for it does not
@@ -309,6 +316,7 @@ const COLLAPSED_HEIGHT = 48;
 const MIN_OPEN_HEIGHT = 260;
 const MIN_HEIGHT = COLLAPSED_HEIGHT;
 const HEALTH_RETRY_DELAY_MS = 3_000;
+const HEALTH_FAILURE_THRESHOLD = 3;
 
 // Clicking the bar opens or closes the dock outright, and that travel is
 // animated. Dragging it never is — an edge with a transition on it trails the
@@ -400,12 +408,25 @@ type HealthState = {
   mode: "required" | "preferred" | "legacy";
 };
 
-// The selected runtime is server configuration and can be Hermes or Hermes,
-// so this stays runtime-neutral: naming Hermes here reported the wrong
-// component when a Hermes runtime was the one that was down. No legacy request
-// was sent — required mode never silently falls back.
+async function loadRuntimeHealth(): Promise<HealthState> {
+  const response = await fetch("/api/hermes/health", { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Runtime health returned ${response.status}`);
+  }
+  const data = await response.json();
+  const mode =
+    data?.dashboardMode === "preferred" || data?.dashboardMode === "legacy"
+      ? data.dashboardMode
+      : "required";
+  if (data?.enabled && data?.healthy) return { status: "runtime", mode };
+  if (data?.enabled) return { status: "unavailable", mode };
+  return { status: "disabled", mode };
+}
+
+// Keep the failure actionable and runtime-neutral. Required mode still never
+// silently falls back to the legacy transport.
 const RUNTIME_UNAVAILABLE_MESSAGE =
-  "The agent runtime is required but unavailable. No legacy request was sent.";
+  "The agent runtime is temporarily unavailable. Reconnect and try again.";
 
 // Liquid-glass bar: paused, not removed.
 //
@@ -457,34 +478,33 @@ export default function DashboardAgentTerminal({
     status: "checking",
     mode: "required",
   });
-  const [healthRefreshVersion, setHealthRefreshVersion] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     let retryTimer: number | null = null;
+    let consecutiveFailures = 0;
 
     async function checkHealth() {
       let shouldRetry = false;
       try {
-        const response = await fetch("/api/hermes/health");
-        if (!response.ok)
-          throw new Error(`Runtime health returned ${response.status}`);
-        const data = await response.json();
+        const nextHealth = await loadRuntimeHealth();
         if (cancelled) return;
-        const mode =
-          data?.dashboardMode === "preferred" ||
-          data?.dashboardMode === "legacy"
-            ? data.dashboardMode
-            : "required";
-        if (data?.enabled && data?.healthy)
-          setHealth({ status: "runtime", mode });
-        else if (data?.enabled) {
-          setHealth({ status: "unavailable", mode });
+        if (nextHealth.status === "unavailable") {
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= HEALTH_FAILURE_THRESHOLD) {
+            setHealth(nextHealth);
+          }
           shouldRetry = true;
-        } else setHealth({ status: "disabled", mode });
+        } else {
+          consecutiveFailures = 0;
+          setHealth(nextHealth);
+        }
       } catch {
         if (cancelled) return;
-        setHealth((current) => ({ ...current, status: "unavailable" }));
+        // The dashboard itself may be recompiling or reconnecting while Hermes
+        // stays healthy. A transport miss is not evidence that the agent runtime
+        // is down, so retain the last known state and try again quietly.
+        consecutiveFailures += 1;
         shouldRetry = true;
       }
 
@@ -501,11 +521,18 @@ export default function DashboardAgentTerminal({
       cancelled = true;
       if (retryTimer !== null) window.clearTimeout(retryTimer);
     };
-  }, [healthRefreshVersion]);
+  }, []);
 
-  const refreshRuntimeHealth = useCallback(() => {
+  const refreshRuntimeHealth = useCallback(async (): Promise<boolean> => {
     setHealth((current) => ({ ...current, status: "checking" }));
-    setHealthRefreshVersion((current) => current + 1);
+    try {
+      const nextHealth = await loadRuntimeHealth();
+      setHealth(nextHealth);
+      return nextHealth.status === "runtime";
+    } catch {
+      setHealth((current) => ({ ...current, status: "unavailable" }));
+      return false;
+    }
   }, []);
 
   // Route-owned panels do not depend on which chat transport is available.
@@ -568,7 +595,7 @@ function RuntimeTerminal({
   onRefreshRuntime,
 }: Props & {
   runtimeUnavailable?: boolean;
-  onRefreshRuntime: () => void;
+  onRefreshRuntime: () => Promise<boolean>;
 }) {
   const resizeStartRef = useRef<{
     startY: number;
@@ -576,6 +603,7 @@ function RuntimeTerminal({
     wasOpen: boolean;
   } | null>(null);
   const preferredOpenHeightRef = useRef<number | null>(null);
+  const openStatePersistenceReadyRef = useRef(false);
   const [height, setHeight] = useState(COLLAPSED_HEIGHT);
 
   useEffect(() => {
@@ -583,10 +611,13 @@ function RuntimeTerminal({
     if (Number.isFinite(saved) && saved > COLLAPSED_HEIGHT + 8) {
       preferredOpenHeightRef.current = clampHeight(saved);
     }
-    if (initialPanel) {
+    const wasOpen = window.sessionStorage.getItem(OPEN_STATE_KEY) === "true";
+    if (initialPanel || wasOpen) {
       // A route-owned panel is the requested page, so it cannot stay hidden in
-      // the normally collapsed dock on first arrival. Nothing is scrolled yet,
-      // so this opens to exactly what a click would.
+      // the normally collapsed dock on first arrival. An already-open dock is
+      // also restored after a renderer reload so a dev-server restart does not
+      // look like the user closed Terminal. Nothing is scrolled yet, so this
+      // opens to exactly what a click would.
       setHeight(openHeight(preferredOpenHeightRef.current));
     }
   }, [initialPanel]);
@@ -793,6 +824,7 @@ function RuntimeTerminal({
   const socialsManagerDispatchingRef = useRef(false);
   const hardwareDispatchingRef = useRef(false);
   const openGymDispatchingRef = useRef(false);
+  const openGymRoutingRef = useRef(false);
   const cadDispatchingRef = useRef(false);
   const hyperframesDispatchingRef = useRef(false);
   const resource2SkillDispatchingRef = useRef(false);
@@ -1066,8 +1098,9 @@ function RuntimeTerminal({
   const refreshTerminal = useCallback(async () => {
     if (runtimeOnline || refreshingTerminal) return;
     setRefreshingTerminal(true);
-    onRefreshRuntime();
     try {
+      const runtimeReady = await onRefreshRuntime();
+      if (!runtimeReady) return;
       if (session.sessionId) {
         await session.openSession(session.sessionId, session.messages);
       } else {
@@ -1079,25 +1112,22 @@ function RuntimeTerminal({
   }, [onRefreshRuntime, refreshingTerminal, runtimeOnline, session]);
 
   useEffect(() => {
-    const listener = (raw: Event) => {
-      const artifact = (
-        raw as CustomEvent<{
-          id?: string;
-          title?: string;
-          conversationId?: string;
-          renderer?: string;
-          sourceSkill?: string | null;
-        }>
-      ).detail;
+    const apply = ({ artifact, prompt }: ArtifactAiEditDetail) => {
       if (!artifact?.id || artifact.conversationId !== session.sessionId)
         return;
       setSidePanel((current) => (current === "artifacts" ? null : current));
       setInput(
-        `${interactiveVisualizerCommandForArtifact(artifact)}Revise the selected artifact "${artifact.title ?? "artifact"}" (${artifact.id}): `,
+        `${interactiveVisualizerCommandForArtifact(artifact)}${prompt}`,
       );
     };
-    window.addEventListener(ARTIFACT_REVISE_EVENT, listener);
-    return () => window.removeEventListener(ARTIFACT_REVISE_EVENT, listener);
+    const listener = (raw: Event) => apply((raw as CustomEvent<ArtifactAiEditDetail>).detail);
+    const queued = consumeArtifactAiEdit({ conversationId: session.sessionId });
+    const timer = queued ? window.setTimeout(() => apply(queued), 0) : null;
+    window.addEventListener(ARTIFACT_AI_EDIT_EVENT, listener);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      window.removeEventListener(ARTIFACT_AI_EDIT_EVENT, listener);
+    };
   }, [session.sessionId]);
 
   useEffect(() => {
@@ -1112,6 +1142,20 @@ function RuntimeTerminal({
     const preferredHeight = clampHeight(height);
     preferredOpenHeightRef.current = preferredHeight;
     window.localStorage.setItem(HEIGHT_KEY, String(preferredHeight));
+  }, [height]);
+
+  useEffect(() => {
+    // The initial collapsed React state is only a hydration-safe placeholder.
+    // Do not let that first commit overwrite an open state that the mount
+    // effect above is in the process of restoring.
+    if (!openStatePersistenceReadyRef.current) {
+      openStatePersistenceReadyRef.current = true;
+      return;
+    }
+    window.sessionStorage.setItem(
+      OPEN_STATE_KEY,
+      height > COLLAPSED_HEIGHT + 8 ? "true" : "false",
+    );
   }, [height]);
 
   // At full height the dock covers everything below the nav, so the page behind
@@ -3817,14 +3861,18 @@ function RuntimeTerminal({
 
   /** openGym is command-carried and available with the dashboard at startup. */
   const launchOpenGymRun = useCallback(
-    async (task: string, options: { branchGroupId?: string } = {}) => {
+    async (
+      task: string,
+      options: { branchGroupId?: string; userContent?: string } = {},
+    ) => {
       if (openGymDispatchingRef.current) return;
       openGymDispatchingRef.current = true;
       setLaunchingOpenGymRun(true);
       const normalizedTask = task.trim();
       const requestedClientMessageId = crypto.randomUUID();
       let clientMessageId = requestedClientMessageId;
-      const userContent = openGymUserMessage(normalizedTask);
+      const userContent =
+        options.userContent?.trim() || openGymUserMessage(normalizedTask);
       clientMessageId = session.previewExternalAgentTurn({
         clientMessageId,
         userContent,
@@ -5446,11 +5494,11 @@ function RuntimeTerminal({
   >(null);
 
   const submit = useCallback(
-    (textOverride?: string) => {
+    async (textOverride?: string) => {
       // Nothing may be dispatched into a chat that is still arriving -- not a
       // Hermes turn and not one of the runtime-agent launches below, which bind
       // their run to whichever conversation is selected when they start.
-      if (session.loadingSession) return;
+      if (session.loadingSession || openGymRoutingRef.current) return;
       const text = (textOverride ?? input).trim();
       // Only the composer calls this with no override, so this is the one place
       // that knows a human is speaking: it ends whatever hand-off chain was
@@ -5947,6 +5995,33 @@ function RuntimeTerminal({
         void launchVideoUseRun(text, editableVideo, { userContent: text });
         return;
       }
+      // Exercise presentation is an output contract, not a model preference.
+      // In Super Agent mode, resolve likely form/program prompts against the
+      // registered catalogue before Hermes sees them. A match launches the
+      // visible openGym card directly, so no model response can replace it with
+      // prose. Explicit agent selections and attachments have already been
+      // handled above and therefore retain their normal routing.
+      if (
+        isSuperAgentEnabled() &&
+        text &&
+        chatAttachments.length === 0 &&
+        !runtimeUnavailable &&
+        !busy
+      ) {
+        openGymRoutingRef.current = true;
+        let routeToOpenGym = false;
+        try {
+          routeToOpenGym = await shouldRouteOpenGymFromSuperAgent(text);
+        } finally {
+          openGymRoutingRef.current = false;
+        }
+        if (routeToOpenGym) {
+          setInput("");
+          setAttachmentStatus("");
+          await launchOpenGymRun(text, { userContent: text });
+          return;
+        }
+      }
       if ((!text && chatAttachments.length === 0) || runtimeUnavailable || busy)
         return;
       const pendingAttachments = chatAttachments;
@@ -5989,6 +6064,7 @@ function RuntimeTerminal({
       browserAgent,
       agentBrowserAgent,
       launchVideoUseRun,
+      launchOpenGymRun,
       launchingVideoUseRun,
       videoUseSource,
       videoUseTarget,
@@ -6339,7 +6415,11 @@ function RuntimeTerminal({
     }
   }
 
-  const launchReady = !busy && !externalRunLaunching && !runtimeUnavailable;
+  const launchReady =
+    !busy &&
+    !externalRunLaunching &&
+    !runtimeUnavailable &&
+    !session.loadingSession;
   const agentLaunchQueue = useAgentLaunchQueue({
     submit: (request) => {
       void launchDelegatedAgent(request);
@@ -6347,6 +6427,14 @@ function RuntimeTerminal({
     scopeKey: session.sessionId ?? null,
     ready: launchReady,
     onLaunched: (request) => {
+      // openGym owns a visible, self-contained result card. Treating it like a
+      // private worker would create a second Super Agent "Thinking" turn as
+      // soon as the card completes, replacing the requested presentation with
+      // a redundant prose synthesis.
+      if (request.agentId === OPEN_GYM_AGENT_ID) {
+        awaitedLaunchRef.current = null;
+        return;
+      }
       launchHopsRef.current += 1;
       awaitedLaunchRef.current = request.awaitResult
         ? {
@@ -6391,7 +6479,7 @@ function RuntimeTerminal({
   // worker, or resume a terminal result that has not yet produced its hidden
   // continuation. Any later transcript row proves that continuation was
   // already consumed (or the user moved on), so it is never replayed.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (session.loadingSession || pendingLaunchContinuation) {
       return;
     }
@@ -6403,6 +6491,13 @@ function RuntimeTerminal({
       if (session.messages[index + 1]) return;
       const continuationKey =
         message.clientMessageId ?? message.id ?? `delegated-${index}`;
+      // The visible openGym card is the terminal presentation. A refresh must
+      // not reconstruct the private-worker hand-back it does not participate in.
+      if (message.openGymRun) {
+        continuedDelegatedTurnsRef.current.add(continuationKey);
+        awaitedLaunchRef.current = null;
+        return;
+      }
       if (continuedDelegatedTurnsRef.current.has(continuationKey)) return;
       const agentName = message.externalAgentName ?? "The delegated agent";
       if (message.externalAgentOutcome === "aborted") {
@@ -6441,7 +6536,7 @@ function RuntimeTerminal({
   // The stream hands launch requests to the session hook, which does not launch
   // anything itself; this is where they meet the surface that can.
   const handleAgentLaunchEvent = agentLaunchQueue.handleEvent;
-  useEffect(() => {
+  useLayoutEffect(() => {
     for (const request of session.agentLaunchRequests) {
       handleAgentLaunchEvent({ type: "agent_launch", ...request });
     }
@@ -6454,11 +6549,18 @@ function RuntimeTerminal({
     if (!pendingLaunchContinuation || !launchReady) return;
     const continuation = pendingLaunchContinuation;
     const timer = window.setTimeout(() => {
-      setPendingLaunchContinuation(null);
       void sendAgentContinuation(continuation, {
         model,
         reasoningEffort,
         internalAgentContinuation: true,
+        // `send` can still refuse a stale callback at its ref-backed guards.
+        // Keep the hand-off live until it has actually accepted the optimistic
+        // continuation rows; clearing before this callback stranded the exact
+        // "I've handed it off" response shown in the bug report.
+        onTurnStarted: () =>
+          setPendingLaunchContinuation((current) =>
+            current === continuation ? null : current,
+          ),
       });
     }, 0);
     return () => window.clearTimeout(timer);
@@ -6575,6 +6677,20 @@ function RuntimeTerminal({
           );
         },
       );
+      const presentationOwned = session.messages.some(
+        (message) =>
+          message.role === "assistant" &&
+          message.clientMessageId === clientMessageId &&
+          Boolean(message.openGymRun),
+      );
+      if (presentationOwned) {
+        continuedDelegatedTurnsRef.current.add(clientMessageId);
+        if (awaitedLaunchRef.current?.clientMessageId === clientMessageId) {
+          awaitedLaunchRef.current = null;
+        }
+        setPendingLaunchContinuation(null);
+        return;
+      }
       if (result.outcome === "aborted") {
         continuedDelegatedTurnsRef.current.add(clientMessageId);
         if (
@@ -6614,7 +6730,7 @@ function RuntimeTerminal({
         }),
       );
     },
-    [finishExternalAgentTurn],
+    [finishExternalAgentTurn, session.messages],
   );
 
   const handleStopRequested = useCallback(
@@ -7573,7 +7689,7 @@ function RuntimeTerminal({
                       ? "Refreshing terminal connection"
                       : "Refresh and reconnect this terminal"
                   }
-                  className="neu-button inline-flex h-7 items-center gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--danger)_32%,var(--line))] bg-[var(--paper-raised)] px-2 text-[11px] font-medium text-[var(--danger)] transition hover:bg-[var(--paper-strong)] disabled:cursor-wait disabled:opacity-65"
+                  className="neu-button inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[color-mix(in_srgb,var(--danger)_32%,var(--line))] bg-[var(--paper-raised)] p-0 text-[var(--danger)] transition-[transform,background-color,opacity] duration-150 hover:bg-[var(--paper-strong)] active:scale-[0.97] disabled:cursor-wait disabled:opacity-65"
                 >
                   <svg
                     aria-hidden="true"
@@ -7589,7 +7705,6 @@ function RuntimeTerminal({
                       d="M16.023 9.348h4.992V4.356m-1.291 5.001a8.25 8.25 0 10.219 5.062M7.977 14.652H2.985v4.992m1.291-5.001a8.25 8.25 0 0015.485-2.288"
                     />
                   </svg>
-                  <span>{refreshingTerminal ? "Refreshing" : "Reconnect"}</span>
                 </button>
               ) : null}
             </div>

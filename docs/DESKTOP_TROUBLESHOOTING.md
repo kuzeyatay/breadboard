@@ -26,10 +26,15 @@ causes:
 - **Garden site (Quartz)**: the first build of a large garden can take
   minutes; the health check waits up to 5. If it fails, `quartz.log` has the
   build error (usually a malformed markdown file; remove/fix it and Retry).
-- **Social publishing (Postiz)**: `postiz.log` records Docker/Podman discovery,
-  Compose startup, web readiness, and API bootstrap. A first image pull can take
-  several minutes. Install and start Docker Desktop, Docker Engine, or Podman,
-  then use Retry; the workspace intentionally remains gated until Postiz is ready.
+- **Social publishing (Postiz)**: the supervised service is the lifecycle
+  *coordinator*, and it becomes healthy in about a second with the Docker stack
+  deliberately stopped — that is the expected state at launch, not a degraded
+  one. `postiz.log` records the coordinator's state transitions and, once
+  something actually asks for Postiz, Docker/Podman discovery, Compose startup,
+  web readiness and API bootstrap. A first image pull can take several minutes,
+  during which the Socials Manager drafts locally and syncs later; Breadboard is
+  never gated on it. Install and start Docker Desktop, Docker Engine or Podman
+  if activation reports the engine is unavailable.
 - **Breadboard workspace (dashboard)**: `dashboard.log`; a corrupted
   database shows here — restore from `Data/backups/` if migration created
   one.

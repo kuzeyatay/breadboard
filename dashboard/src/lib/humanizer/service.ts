@@ -20,6 +20,10 @@ import {
   humanizerServiceSecret,
   humanizerTimeoutMs,
 } from "./config.ts";
+import {
+  SupervisorResourceExhaustedError,
+  withServiceLease,
+} from "../supervisor-control.ts";
 
 export type HumanizerModelState = "not_installed" | "installed_not_loaded" | "loaded" | "unknown";
 
@@ -106,7 +110,11 @@ function unreachable(detail: string): HumanizerHealth {
 
 interface CallOutcome {
   status: number;
-  body: Record<string, unknown>;
+  body: unknown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function call(
@@ -125,7 +133,7 @@ async function call(
   const forwardAbort = () => controller.abort(new Error("cancelled"));
   init.signal?.addEventListener("abort", forwardAbort, { once: true });
   try {
-    const response = await fetch(`${humanizerBaseUrl(env)}${route}`, {
+    const perform = async () => fetch(`${humanizerBaseUrl(env)}${route}`, {
       method: init.method,
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -134,15 +142,19 @@ async function call(
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       signal: controller.signal,
     });
+    const response = route === "/health"
+      ? await perform()
+      : await withServiceLease("humanizer", "rewrite", perform, env);
     const text = await response.text();
-    let parsed: Record<string, unknown> = {};
+    let parsed: unknown;
     try {
-      parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+      parsed = text ? JSON.parse(text) : undefined;
     } catch {
-      parsed = {};
+      parsed = undefined;
     }
     return { status: response.status, body: parsed };
-  } catch {
+  } catch (error) {
+    if (error instanceof SupervisorResourceExhaustedError) throw error;
     // A service that is not running is the ordinary case on a machine that
     // never ran setup, not an exception worth propagating.
     if (init.signal?.aborted) return { aborted: true };
@@ -168,6 +180,9 @@ export async function humanizerHealth(
   if (!isOutcome(result)) return unreachable("The humanizer service is not running.");
   if (result.status !== 200) {
     return unreachable(`The humanizer service answered ${result.status}.`);
+  }
+  if (!isRecord(result.body)) {
+    return unreachable("The humanizer service returned an invalid health response.");
   }
   const body = result.body;
   const modelState = String(body.modelState ?? "");
@@ -214,6 +229,24 @@ function parseWarnings(value: unknown): HumanizerWarning[] {
   });
 }
 
+function terminalRewrittenText(value: unknown): boolean {
+  if (typeof value !== "string") return true;
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  const fenced = /^```(?:json|markdown|md)?[ \t]*\r?\n([\s\S]*?)\r?\n?```[ \t]*$/i.exec(
+    trimmed,
+  );
+  return (fenced?.[1] ?? trimmed).trim() === "null";
+}
+
+function invalidRewriteProtocol(detail: string): HumanizerFailure {
+  return {
+    ok: false,
+    reason: "inference_failed",
+    detail,
+  };
+}
+
 export async function humanizerRewrite(
   input: { requestId: string; text: string; maxChunkTokens?: number; signal?: AbortSignal },
   env: NodeJS.ProcessEnv = process.env,
@@ -258,14 +291,15 @@ export async function humanizerRewrite(
       detail: "The humanizer model has not been downloaded on this machine.",
     };
   }
+  const errorBody = isRecord(result.body) ? result.body : {};
   if (result.status === 503) {
-    const error = String(result.body.error ?? "");
+    const error = String(errorBody.error ?? "");
     return error === "humanizer_busy"
       ? { ok: false, reason: "busy", detail: "The humanizer is already rewriting something." }
       : {
           ok: false,
           reason: "inference_failed",
-          detail: String(result.body.detail ?? "The model could not be loaded."),
+          detail: String(errorBody.detail ?? "The model could not be loaded."),
         };
   }
   if (result.status === 499) {
@@ -275,7 +309,7 @@ export async function humanizerRewrite(
     return {
       ok: false,
       reason: "invalid_input",
-      detail: String(result.body.detail ?? result.body.error ?? "The text could not be rewritten."),
+      detail: String(errorBody.detail ?? errorBody.error ?? "The text could not be rewritten."),
     };
   }
   if (result.status !== 200) {
@@ -286,19 +320,42 @@ export async function humanizerRewrite(
     };
   }
 
+  if (!isRecord(result.body)) {
+    return invalidRewriteProtocol(
+      "The humanizer service returned no structured rewrite candidate.",
+    );
+  }
   const body = result.body;
-  const preservation = (body.preservation ?? {}) as Record<string, unknown>;
-  const chunks = (body.chunks ?? {}) as Record<string, unknown>;
-  const timing = (body.timingMs ?? {}) as Record<string, unknown>;
+  if (body.status !== "complete" && body.status !== "preservation_failed") {
+    return invalidRewriteProtocol(
+      "The humanizer service returned a rewrite candidate without a valid status.",
+    );
+  }
+  if (terminalRewrittenText(body.rewrittenText)) {
+    return invalidRewriteProtocol(
+      "The humanizer service returned no substantive rewrite candidate.",
+    );
+  }
+  if (
+    !isRecord(body.preservation) ||
+    typeof body.preservation.passed !== "boolean"
+  ) {
+    return invalidRewriteProtocol(
+      "The humanizer service returned a rewrite candidate without a preservation verdict.",
+    );
+  }
+  const preservation = body.preservation;
+  const chunks = isRecord(body.chunks) ? body.chunks : {};
+  const timing = isRecord(body.timingMs) ? body.timingMs : {};
   const rewrite: HumanizerRewrite = {
     requestId: String(body.requestId ?? input.requestId),
-    status: body.status === "preservation_failed" ? "preservation_failed" : "complete",
+    status: body.status,
     modelId: String(body.modelId ?? ""),
     modelRevision: String(body.modelRevision ?? ""),
     device: String(body.device ?? ""),
     dtype: String(body.dtype ?? ""),
     originalText: String(body.originalText ?? input.text),
-    rewrittenText: String(body.rewrittenText ?? ""),
+    rewrittenText: body.rewrittenText as string,
     chunks: {
       total: Number(chunks.total ?? 0),
       rewritten: Number(chunks.rewritten ?? 0),

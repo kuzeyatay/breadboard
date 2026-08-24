@@ -26,6 +26,8 @@ import {
   type ArtifactRow,
 } from "@/lib/hermes/artifact-store.ts";
 import { ARTIFACT_KINDS, type ArtifactKind } from "@/lib/hermes/artifact-types.ts";
+import { artifactEditorMode } from "@/lib/hermes/artifact-editor-types.ts";
+import { loadArtifactEditor, saveArtifactEditor, type ArtifactEditorPatch } from "@/lib/hermes/artifact-document-editor.ts";
 import { availableArtifactRenderers } from "@/lib/hermes/artifact-renderers.ts";
 import {
   cancelInteractiveVisualizer,
@@ -324,19 +326,34 @@ export async function POST(request: Request) {
         session.cluster_id,
       );
       if (action === "artifact_read") {
-        result = { artifact: presentArtifact(artifact), content: readArtifactSource(artifact) };
+        const presented = presentArtifact(artifact);
+        result = artifactEditorMode(presented)
+          ? await loadArtifactEditor(artifact)
+          : { artifact: presented, content: readArtifactSource(artifact) };
       } else if (action === "artifact_update" || action === "artifact_append" || action === "artifact_fork") {
         const provenance = validateMcpProvenance(session.user_id, args.provenance, selectedMcpServers);
         const sourceSkill = validateSourceSkill(args.sourceSkill, selectedSkills);
-        const updated = updateArtifactContent({
-          artifact,
-          content: content(args.content),
-          mode: action === "artifact_append" ? "append" : action === "artifact_fork" ? "fork" : "replace",
-          runId: run.id,
-          assistantMessageId: assistantMessage?.id ?? null,
-          toolCallId,
-          metadata: record(args.metadata),
-        });
+        const editorMode = artifactEditorMode(presentArtifact(artifact));
+        const importedEditor = editorMode === "file-text" || editorMode === "office-blocks" || editorMode === "spreadsheet-cells";
+        if (importedEditor && action !== "artifact_update") {
+          throw new ArtifactStoreError(422, "artifact_editor_operation_unsupported", "Imported documents support artifact_update with content or anchored patches.");
+        }
+        const updated = importedEditor
+          ? await saveArtifactEditor({
+              artifact,
+              expectedVersion: artifact.current_version,
+              content: typeof args.content === "string" ? args.content : undefined,
+              patches: Array.isArray(args.patches) ? args.patches as ArtifactEditorPatch[] : undefined,
+            })
+          : updateArtifactContent({
+              artifact,
+              content: content(args.content),
+              mode: action === "artifact_append" ? "append" : action === "artifact_fork" ? "fork" : "replace",
+              runId: run.id,
+              assistantMessageId: assistantMessage?.id ?? null,
+              toolCallId,
+              metadata: record(args.metadata),
+            });
         if (provenance) {
           addArtifactProvenance({
             artifactId: updated.id,

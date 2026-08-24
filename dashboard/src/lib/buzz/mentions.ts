@@ -31,16 +31,28 @@ export function mentionedHandles(body: string): string[] {
  * put words in their mouth. `always` members speak on every message; everyone
  * else waits to be named, which is the default a member joins with because a
  * room with four always-on agents answers every line four times.
+ *
+ * With one exception, and it is the rule that makes a default always-on member
+ * bearable: naming an agent hands that message to it alone. Bread is seated in
+ * every room on `always`, so without this every "@researcher what did the
+ * survey say" got two answers — the specialist's, and the generalist's guess
+ * at the same question over the top of it. Addressing somebody by name in a
+ * room full of people means you want that person to answer, and nothing here
+ * should have to explain itself twice.
  */
 export function resolveResponders(
   members: readonly BuzzMember[],
   body: string,
 ): BuzzMember[] {
   const mentioned = new Set(mentionedHandles(body));
-  return members.filter((member) => {
-    if (member.kind !== "agent" || member.muted) return false;
-    if (member.respondTo === "never") return false;
-    if (member.respondTo === "always") return true;
-    return mentioned.has(member.handle);
-  });
+  const speakable = members.filter(
+    (member) =>
+      member.kind === "agent" && !member.muted && member.respondTo !== "never",
+  );
+  // Only handles belonging to an agent that could actually speak count as
+  // addressing someone: naming a colleague, or an agent set to `never`, must
+  // not silence the room's always-on member and leave the message unanswered.
+  const addressed = speakable.filter((member) => mentioned.has(member.handle));
+  if (addressed.length > 0) return addressed;
+  return speakable.filter((member) => member.respondTo === "always");
 }

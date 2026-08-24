@@ -8,6 +8,14 @@ export interface OpenGymAnimationReference {
 }
 
 const MARKER = "OPEN_GYM_ANIMATIONS:";
+const COMMENT_MARKER = new RegExp(
+  `<!--\\s*${MARKER}\\s*([\\s\\S]*?)\\s*-->`,
+  "g",
+);
+const BARE_MARKER = new RegExp(
+  `^[\\t ]*${MARKER}([^\\r\\n]*)$`,
+  "gm",
+);
 
 export function openGymAnimationReferences(
   exercises: Array<Pick<OpenGymExercise, "id" | "n" | "bp" | "eq">>,
@@ -34,19 +42,31 @@ export function parseOpenGymResult(content: string): {
   content: string;
   animations: OpenGymAnimationReference[];
 } {
-  const expression = new RegExp(`<!--${MARKER}([^>]*)-->`, "g");
   const animations: OpenGymAnimationReference[] = [];
-  const clean = content.replace(expression, (_marker, encoded: string) => {
+  const seen = new Set<string>();
+  const collectAnimations = (payload: string) => {
+    const raw = payload.replace(/-->\\s*$/, "").trim();
+    const candidates = [raw];
     try {
-      const parsed = JSON.parse(decodeURIComponent(encoded)) as unknown;
-      if (Array.isArray(parsed)) {
+      const decoded = decodeURIComponent(raw);
+      if (decoded !== raw) candidates.push(decoded);
+    } catch {
+      // A damaged marker is still private metadata and must not reach Markdown.
+    }
+
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate) as unknown;
+        if (!Array.isArray(parsed)) continue;
         for (const item of parsed) {
           if (!item || typeof item !== "object" || Array.isArray(item)) continue;
           const row = item as Record<string, unknown>;
           if (
             typeof row.id === "string" && /^[a-z0-9_-]{1,80}$/i.test(row.id) &&
-            typeof row.name === "string"
+            typeof row.name === "string" &&
+            !seen.has(row.id)
           ) {
+            seen.add(row.id);
             animations.push({
               id: row.id,
               name: row.name.slice(0, 160),
@@ -55,11 +75,24 @@ export function parseOpenGymResult(content: string): {
             });
           }
         }
+        break;
+      } catch {
+        // Try the decoded form next. The answer surrounding this marker stays.
       }
-    } catch {
-      // A damaged marker should not hide the answer around it.
     }
+  };
+  let clean = content.replace(COMMENT_MARKER, (_marker, payload: string) => {
+    collectAnimations(payload);
     return "";
   });
-  return { content: clean.trim(), animations: animations.slice(0, 12) };
+  // A model handoff may discard the HTML comment delimiters while preserving
+  // the private marker line. Do not let that legacy form become visible prose.
+  clean = clean.replace(BARE_MARKER, (_marker, payload: string) => {
+    collectAnimations(payload);
+    return "";
+  });
+  return {
+    content: clean.trim(),
+    animations: animations.slice(0, 12),
+  };
 }

@@ -1394,6 +1394,8 @@ Exercise 2</p>
     .gv-node { fill:var(--viz-accent-soft); stroke:var(--viz-accent); stroke-width:1.5; }
     .gv-edge { stroke:var(--viz-muted); stroke-width:1.5; }
     .gv-label { fill:var(--viz-text); font-size:18px; font-weight:600; paint-order:stroke; stroke:var(--viz-bg); stroke-width:3px; stroke-linejoin:round; text-anchor:middle; }
+    .gv-svg .gv-plot-axis-label { font-size:22px; }
+    .gv-svg .gv-plot-axis-label[data-plot-axis-label=y] { text-anchor:start; }
     .gv-node-label { font-size:15px; }
     .gv-spatial-object,.gv-spatial-camera { outline:none; }
     .gv-spatial-object:focus-visible,.gv-spatial-camera:focus-visible { outline:3px solid var(--viz-accent); outline-offset:-4px; }
@@ -1470,8 +1472,9 @@ Exercise 2</p>
       class: "gv-svg",
       role: "img",
       "aria-label": scene.title,
+      "data-plot-scene": "true",
     })
-    const margin = { left: 64, right: 18, top: 18, bottom: 68 }
+    const margin = { left: 78, right: 18, top: 44, bottom: 60 }
     const width = 640 - margin.left - margin.right
     const height = 340 - margin.top - margin.bottom
     const seriesValues = []
@@ -1580,14 +1583,19 @@ Exercise 2</p>
       circle.appendChild(title)
       svg.appendChild(circle)
     })
-    const xLabel = svgElement("text", { x: margin.left + width / 2, y: 330, class: "gv-label" })
+    const xLabel = svgElement("text", {
+      x: margin.left + width / 2,
+      y: 328,
+      class: "gv-label gv-plot-axis-label",
+      "data-plot-axis-label": "x",
+    })
     xLabel.textContent = scene.xLabel
     svg.appendChild(xLabel)
     const yLabel = svgElement("text", {
-      x: 13,
-      y: margin.top + height / 2,
-      class: "gv-label",
-      transform: \`rotate(-90 13 \${margin.top + height / 2})\`,
+      x: margin.left,
+      y: 28,
+      class: "gv-label gv-plot-axis-label",
+      "data-plot-axis-label": "y",
     })
     yLabel.textContent = scene.yLabel
     svg.appendChild(yLabel)
@@ -3849,11 +3857,13 @@ Exercise 2</p>
     })
     syncProtocolControls()
 
-    // Gemini-style hierarchy: authored visual first, then the compact result
-    // strip, then the least number of controls needed to explore it.
-    app.appendChild(scenesHost)
-    app.appendChild(valuesHost)
+    // The immutable learner action must be available before the content it
+    // changes. Keep controls in authored contract order, then show compact
+    // derived values and observable scenes. Candidate source cannot override
+    // this trusted ordering or duplicate controls inside a scene.
     app.appendChild(controlsHost)
+    app.appendChild(valuesHost)
+    app.appendChild(scenesHost)
 
     const updatePlayPauseButton = () => {
       if (!playPauseButton) return
@@ -3979,6 +3989,48 @@ Exercise 2</p>
           const failures = []
           const boxSummary = (box) =>
             \`x=\${Math.round(box.x * 10) / 10},y=\${Math.round(box.y * 10) / 10},width=\${Math.round(box.width * 10) / 10},height=\${Math.round(box.height * 10) / 10}\`
+          const firstObservableScene = scenesHost.querySelector(".gv-scene")
+          definition.controls.forEach((control) => {
+            const input = controlElements.get(control.id)?.input
+            if (!input) {
+              failures.push(\`control.initial.missing: controlId=\${String(control.id)}\`)
+              return
+            }
+            const precedesScenes = !firstObservableScene || Boolean(
+              input.compareDocumentPosition(firstObservableScene) & Node.DOCUMENT_POSITION_FOLLOWING,
+            )
+            const style = getComputedStyle(input)
+            const box = input.getBoundingClientRect()
+            const rendered =
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity || 1) > 0 &&
+              box.width > 0 &&
+              box.height > 0
+            const mobileInitialViewportVisible =
+              window.innerWidth > 640 ||
+              (box.left >= 0 &&
+                box.right <= window.innerWidth + 1 &&
+                box.top >= 0 &&
+                box.bottom <= window.innerHeight + 1)
+            input.dataset.controlPrecedesScenes = String(precedesScenes)
+            input.dataset.controlRendered = String(rendered)
+            input.dataset.controlMobileInitialViewportVisible = String(
+              mobileInitialViewportVisible,
+            )
+            if (!precedesScenes)
+              failures.push(
+                \`control.initial.order: controlId=\${String(control.id)}; expected=before_first_observable_scene\`,
+              )
+            if (!rendered)
+              failures.push(
+                \`control.initial.not_rendered: controlId=\${String(control.id)}; \${boxSummary(box)}\`,
+              )
+            if (!mobileInitialViewportVisible)
+              failures.push(
+                \`control.initial.mobile_viewport_out_of_frame: controlId=\${String(control.id)}; viewport=\${String(window.innerWidth)}x\${String(window.innerHeight)}; \${boxSummary(box)}\`,
+              )
+          })
           const collectSpatialDiagnostics = (phase) =>
             Array.from(document.querySelectorAll("[data-spatial-host=true]")).forEach(
               (host, hostIndex) => {
@@ -4238,6 +4290,55 @@ Exercise 2</p>
                 })
               },
             )
+          const collectPlotDiagnostics = (phase) =>
+            Array.from(document.querySelectorAll("[data-plot-scene=true]")).forEach(
+              (svg, plotIndex) => {
+                const scope = "plot." + phase + ".scene[" + plotIndex + "]"
+                const labels = Array.from(
+                  svg.querySelectorAll("[data-plot-axis-label]"),
+                )
+                if (labels.length !== 2) {
+                  failures.push(
+                    scope + ".axis_label_count: expected=2; actual=" + labels.length,
+                  )
+                }
+                labels.forEach((label, labelIndex) => {
+                  let box
+                  try {
+                    box = label.getBBox()
+                  } catch {
+                    failures.push(
+                      scope + ".axis_label_box: axis=" + String(label.dataset.plotAxisLabel ?? labelIndex) + "; unavailable",
+                    )
+                    return
+                  }
+                  if (
+                    ![box.x, box.y, box.width, box.height].every(Number.isFinite)
+                  ) {
+                    failures.push(
+                      scope + ".axis_label_box: axis=" + String(label.dataset.plotAxisLabel ?? labelIndex) + "; nonfinite",
+                    )
+                    return
+                  }
+                  const overflow = [
+                    box.x < 0 ? "left=" + Math.round(-box.x * 10) / 10 : undefined,
+                    box.x + box.width > 640
+                      ? "right=" + Math.round((box.x + box.width - 640) * 10) / 10
+                      : undefined,
+                    box.y < 0 ? "top=" + Math.round(-box.y * 10) / 10 : undefined,
+                    box.y + box.height > 340
+                      ? "bottom=" + Math.round((box.y + box.height - 340) * 10) / 10
+                      : undefined,
+                  ].filter(Boolean)
+                  if (overflow.length) {
+                    failures.push(
+                      scope + ".axis_label_out_of_frame: axis=" + String(label.dataset.plotAxisLabel ?? labelIndex) + "; overflow=" + overflow.join(","),
+                    )
+                  }
+                })
+              },
+            )
+          collectPlotDiagnostics("default")
           const first = document.querySelector("[data-control-id]")
           if (first) {
             first.focus()
@@ -4254,6 +4355,7 @@ Exercise 2</p>
           }
           collectSpatialDiagnostics("after_control_change")
           collectDiagramDiagnostics("after_control_change")
+          collectPlotDiagnostics("after_control_change")
           document.querySelectorAll("[data-output-finite]").forEach((node) => {
             if (node.dataset.outputFinite !== "true")
               failures.push(
@@ -4264,6 +4366,7 @@ Exercise 2</p>
           if (resetButton) resetButton.click()
           collectSpatialDiagnostics("after_reset")
           collectDiagramDiagnostics("after_reset")
+          collectPlotDiagnostics("after_reset")
           document.querySelectorAll("[data-control-id]").forEach((node) => {
             const control = definition.controls.find(
               (candidate) => candidate.id === node.dataset.controlId,
@@ -4351,4 +4454,4 @@ Exercise 2</p>
         const socket = new WebSocket('ws://localhost:3001')
         // reload(true) ensures resources like images and scripts are fetched again in firefox
         socket.addEventListener('message', () => document.location.reload(true))
-      </script><script src="../postscript.js?v=mt5bvnbi" type="module" data-persist="true"></script></html>
+      </script><script src="../postscript.js?v=mt6txwbe" type="module" data-persist="true"></script></html>

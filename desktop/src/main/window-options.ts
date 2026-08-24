@@ -39,7 +39,7 @@ export function titleBarForSurface(surface: BreadboardWindowSurface) {
 
 export function backgroundColorForSurface(surface: BreadboardWindowSurface): string {
   if (surface === "voice") return "#c1543c";
-  return surface === "dark" ? "#0b0c0a" : "#e6f0e6";
+  return surface === "dark" ? "#0b0c0a" : "#faf7ef";
 }
 
 export function titleBarForTheme(theme: BreadboardWindowTheme) {
@@ -56,9 +56,9 @@ export function titleBarForTheme(theme: BreadboardWindowTheme) {
  * markup in it at all. A route's own `loading.tsx` cannot help: there is no
  * document yet for it to be part of.
  *
- * Breadboard's pages are paper, so paper is the right sheet for them. Chat
- * paints its own palette edge to edge, and flashing Breadboard's green before
- * turning cream reads as the wrong app opening.
+ * Breadboard's pages are paper, so paper is the right sheet for them. Keeping
+ * the native sheet and title-bar paper identical also prevents a green flash
+ * while the renderer is still preparing its first frame.
  */
 export function popupBackgroundColor(
   targetUrl: string,

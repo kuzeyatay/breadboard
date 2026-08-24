@@ -230,6 +230,57 @@ describe("learning-spine targeted model repair", () => {
     assert.equal(result.candidate.learningUnits[0], u1);
   });
 
+  test("missing or empty fulfilled output is terminal after one provider call", async () => {
+    const u1 = unit("U1", [concept("differential-gauss-law", "Differential Gauss law")]);
+    const u2 = unit("U2", [concept("differential-gauss-law", "Gauss law in differential form")]);
+    for (const output of [undefined, null, "", "  \n"]) {
+      let calls = 0;
+      let validations = 0;
+      await assert.rejects(
+        runLearningSpineTargetedRepair({
+          candidate: { learningUnits: [u1, u2] },
+          units: [u1, u2],
+          validationProblems: [conflict],
+          canonicalPlanningPacket: {},
+          canonicalEvidenceByUnit: {},
+          provider: async () => {
+            calls += 1;
+            return output;
+          },
+          validateCandidate: () => {
+            validations += 1;
+            return { units: [u1, u2], problems: [] };
+          },
+        }),
+        /returned no nonempty candidate; no semantic repair request was issued/i,
+      );
+      assert.equal(calls, 1);
+      assert.equal(validations, 0);
+    }
+  });
+
+  test("nonempty malformed output remains bounded semantic repair evidence", async () => {
+    const u1 = unit("U1", [concept("differential-gauss-law", "Differential Gauss law")]);
+    const u2 = unit("U2", [concept("differential-gauss-law", "Gauss law in differential form")]);
+    let calls = 0;
+    const result = await runLearningSpineTargetedRepair({
+      candidate: { learningUnits: [u1, u2] },
+      units: [u1, u2],
+      validationProblems: [conflict],
+      canonicalPlanningPacket: {},
+      canonicalEvidenceByUnit: {},
+      provider: async () => {
+        calls += 1;
+        return "{nonempty malformed targeted candidate";
+      },
+      validateCandidate: () => {
+        throw new Error("malformed output must not reach whole-candidate validation");
+      },
+    });
+    assert.equal(result.status, "exhausted");
+    assert.equal(calls, 2);
+  });
+
   test("provider transport failures escape and do not consume a semantic retry", async () => {
     const u1 = unit("U1", [concept("differential-gauss-law", "Differential Gauss law")]);
     const u2 = unit("U2", [concept("differential-gauss-law", "Gauss law in differential form")]);

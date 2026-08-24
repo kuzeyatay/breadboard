@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
+import { executeLearnOperationForRoute } from "breadboard-learn-operation-runtime";
 import {
-  confirmLearningMap,
-  getLearnStatusSnapshot,
-  LearnPipelineConflictError,
-  runTextbookGeneration,
-} from "@/lib/learn";
-import { createChatmockClient } from "@/lib/knowledge";
-import { handOffLearnTask } from "@/lib/learn-background";
+  InvalidLearnRouteBodyError,
+  isLearnRouteConflict,
+  readLearnRouteJsonObject,
+  requireExpectedLearnModel,
+} from "@/lib/learn-route-errors";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 import { selectedModelForUser } from "@/lib/selected-model";
 
@@ -28,63 +27,70 @@ export async function POST(
       );
     }
 
-    const body = await request.json().catch(() => ({}));
-    const status = getLearnStatusSnapshot({
-      gardenId: cluster.slug,
-      contentPath,
-    });
-    if (status.latestTextbookVersionId || status.hasTextbook) {
+    const body = await readLearnRouteJsonObject(request);
+    const learningMapId =
+      typeof body.learningMapId === "string" ? body.learningMapId.trim() : "";
+    if (!learningMapId) {
       return NextResponse.json(
-        {
-          error:
-            "This garden already has learner content. Use Repair issues, or explicitly confirm Rebuild entire garden to recreate it.",
-        },
-        { status: 409 },
+        { error: "Confirming Learn requires the exact proposed Learning Map ID." },
+        { status: 400 },
       );
     }
-    const learningMap = confirmLearningMap({
-      gardenId: cluster.slug,
-      learningMapId:
-        typeof body.learningMapId === "string" && body.learningMapId.trim()
-          ? body.learningMapId.trim()
-          : undefined,
-      contentPath,
-    });
-
+    // Capture the current selection and validate the model reviewed by the UI
+    // synchronously, before either confirmation path can mutate state or spawn
+    // a worker. The returned value is the one handed to generation below.
+    const model = selectedModelForUser(userId);
+    const expectedModel = requireExpectedLearnModel(body, model);
     if (body.generate === true) {
       const { baseURL } = resolveChatmockBaseUrl(request);
-      const client = createChatmockClient(baseURL);
-      const execution = await handOffLearnTask(runTextbookGeneration({
+      const execution = await executeLearnOperationForRoute<{
+        learningMap: unknown;
+        generation: unknown;
+      }>({
+        operation: "confirm_generate",
         gardenId: cluster.slug,
         userId,
-        client,
         contentPath,
-        confirmedLearningMapId: learningMap.id,
-        model: selectedModelForUser(userId),
+        baseURL,
+        model,
+        expectedModel,
+        proposedLearningMapId: learningMapId,
         sourceOnly: body.sourceOnly !== false,
         includeSourceSnapshots: body.includeSourceSnapshots === true,
-      }), `generation for ${cluster.slug}`);
+      }, `generation for ${cluster.slug}`);
       if (execution.accepted) {
         return NextResponse.json(
           {
             success: true,
             accepted: true,
-            learningMap,
-            job: getLearnStatusSnapshot({ gardenId: cluster.slug, contentPath }).job,
+            jobId: execution.jobId ?? null,
           },
           { status: 202 },
         );
       }
       return NextResponse.json({
         success: true,
-        learningMap,
-        generation: execution.value,
+        ...execution.value,
       });
     }
 
-    return NextResponse.json({ success: true, learningMap });
+    const execution = await executeLearnOperationForRoute({
+      operation: "confirm",
+      gardenId: cluster.slug,
+      userId,
+      contentPath,
+      expectedModel,
+      proposedLearningMapId: learningMapId,
+    }, `confirmation for ${cluster.slug}`);
+    if (execution.accepted) {
+      throw new Error("Confirm-only unexpectedly entered a background handoff.");
+    }
+    return NextResponse.json({ success: true, learningMap: execution.value });
   } catch (error) {
-    if (error instanceof LearnPipelineConflictError) {
+    if (error instanceof InvalidLearnRouteBodyError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (isLearnRouteConflict(error)) {
       return NextResponse.json(
         { error: error.message, requiresReplan: error.requiresReplan },
         { status: 409 },

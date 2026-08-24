@@ -142,6 +142,22 @@ test("the terminal always starts collapsed and uses saved height only after open
   }
 });
 
+test("an open Hermes terminal survives a renderer reload", () => {
+  assert.match(
+    terminal,
+    /window\.sessionStorage\.getItem\(OPEN_STATE_KEY\) === "true"/,
+  );
+  assert.match(terminal, /if \(initialPanel \|\| wasOpen\)/);
+  assert.match(
+    terminal,
+    /window\.sessionStorage\.setItem\([\s\S]*?OPEN_STATE_KEY[\s\S]*?height > COLLAPSED_HEIGHT \+ 8 \? "true" : "false"/,
+  );
+  assert.match(
+    terminal,
+    /if \(!openStatePersistenceReadyRef\.current\)[\s\S]*?return;/,
+  );
+});
+
 test("the restored shell retains Hermes runtime capabilities", () => {
   assert.match(terminal, /useAgentSession\("dashboard_terminal"/);
   assert.match(terminal, /<AgentRuntimePanel/);
@@ -173,7 +189,8 @@ test("the terminal header uses a runtime-neutral health dot without an engine ba
 test("the red terminal status offers a transcript-preserving reconnect action", () => {
   assert.match(terminal, /\{!runtimeOnline \? \(/);
   assert.match(terminal, /"Reconnect terminal"/);
-  assert.match(terminal, /onRefreshRuntime\(\)/);
+  assert.match(terminal, /const runtimeReady = await onRefreshRuntime\(\)/);
+  assert.match(terminal, /if \(!runtimeReady\) return/);
   assert.match(
     terminal,
     /await session\.openSession\(session\.sessionId, session\.messages\)/,
@@ -184,7 +201,11 @@ test("the red terminal status offers a transcript-preserving reconnect action", 
   );
   assert.match(
     terminal,
-    /setHealthRefreshVersion\(\(current\) => current \+ 1\)/,
+    /className="neu-button inline-flex h-7 w-7/,
+  );
+  assert.doesNotMatch(
+    terminal,
+    /<span>\{refreshingTerminal \? "Refreshing" : "Reconnect"\}<\/span>/,
   );
 });
 
@@ -195,7 +216,16 @@ test("runtime startup never disables drafting and retries a transient failed hea
   );
   assert.match(
     terminal,
-    /window\.setTimeout\(\(\) => void checkHealth\(\), HEALTH_RETRY_DELAY_MS\)/,
+    /window\.setTimeout\(\s*\(\) => void checkHealth\(\),\s*HEALTH_RETRY_DELAY_MS/,
+  );
+  assert.match(terminal, /HEALTH_FAILURE_THRESHOLD = 3/);
+  assert.match(
+    terminal,
+    /if \(consecutiveFailures >= HEALTH_FAILURE_THRESHOLD\) \{\s*setHealth\(nextHealth\)/,
+  );
+  assert.match(
+    terminal,
+    /A transport miss is not evidence that the agent runtime\s*\/\/ is down/,
   );
   assert.match(terminal, /if \(retryTimer !== null\) window\.clearTimeout\(retryTimer\)/);
 });

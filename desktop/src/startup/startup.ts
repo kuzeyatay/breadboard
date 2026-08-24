@@ -8,6 +8,7 @@ interface StartupServiceViewLocal {
   state: string;
   lastError: string | null;
   restarts: number;
+  adopted?: boolean;
 }
 
 interface StartupStateViewLocal {
@@ -352,7 +353,12 @@ function renderStartupState(state: StartupStateViewLocal): void {
       name.textContent = service.displayName + (service.required ? "" : " (optional)");
       const stateSpan = document.createElement("span");
       stateSpan.className = "state";
-      stateSpan.textContent = stateLabel(service.state);
+      // An adopted service was found already running; saying "ready" would hide
+      // that this launch is reusing someone else's process.
+      stateSpan.textContent =
+        service.adopted && service.state === "healthy"
+          ? "already running"
+          : stateLabel(service.state);
       item.append(dot, name, stateSpan);
       return item;
     }),

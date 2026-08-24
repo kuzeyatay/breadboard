@@ -115,7 +115,19 @@ export const GADGET_TOOLS = [
 
 // Durable cross-chat memory. Available only to the authenticated conversational
 // surfaces (Garden Chat and Terminal); anonymous Quartz AI never writes memory.
-export const MEMORY_TOOLS = ["save_memory"] as const;
+// `memory_query` is the read half — one tool over the durable rows, the
+// semantic index and the topic tree together, scoped to the same surfaces for
+// the same reason: what the agent remembers about you is yours, and a surface
+// that may not write it may not read it either.
+export const MEMORY_TOOLS = ["save_memory", "memory_query"] as const;
+
+// Offering an automation. Scoped like memory and for the same reasons: the
+// noticing happens on ordinary turns, not only on super-agent ones, and what
+// it writes is durable and personal. It is deliberately NOT in
+// SUPER_AGENT_TOOLS beside `workflow_run` — running an automation and offering
+// to build one are different grants, and only the first should need a
+// super-agent turn.
+export const WORKFLOW_PROPOSAL_TOOLS = ["workflow_propose"] as const;
 
 // A correction learned while using one reviewed skill, kept beside it for next
 // time. Scoped like memory — authenticated conversational surfaces only — and
@@ -405,6 +417,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...ARTIFACT_TOOLS,
       ...GADGET_TOOLS,
       ...MEMORY_TOOLS,
+      ...WORKFLOW_PROPOSAL_TOOLS,
       ...DOCUMENT_SKILL_TOOLS,
       ...PREMORTEM_TOOLS,
       ...FACTCHECK_TOOLS,
@@ -440,6 +453,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...ARTIFACT_TOOLS,
     ...GADGET_TOOLS,
     ...MEMORY_TOOLS,
+    ...WORKFLOW_PROPOSAL_TOOLS,
     ...DOCUMENT_SKILL_TOOLS,
     ...PREMORTEM_TOOLS,
     ...FACTCHECK_TOOLS,

@@ -16,6 +16,10 @@ import {
   colpaliServiceSecret,
   colpaliTopK,
 } from "./config.ts";
+import {
+  SupervisorResourceExhaustedError,
+  withServiceLease,
+} from "@/lib/supervisor-control";
 
 export interface ColpaliHealth {
   status: "ok" | "degraded" | "unreachable";
@@ -91,7 +95,7 @@ async function call(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), init.timeoutMs);
   try {
-    const response = await fetch(`${colpaliBaseUrl(env)}${path}`, {
+    const perform = async () => fetch(`${colpaliBaseUrl(env)}${path}`, {
       method: init.method,
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -100,6 +104,9 @@ async function call(
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       signal: controller.signal,
     });
+    const response = path === "/health"
+      ? await perform()
+      : await withServiceLease("colpali", "visual-document", perform, env);
     const text = await response.text();
     let parsed: Record<string, unknown> = {};
     try {
@@ -108,7 +115,8 @@ async function call(
       parsed = {};
     }
     return { status: response.status, body: parsed };
-  } catch {
+  } catch (error) {
+    if (error instanceof SupervisorResourceExhaustedError) throw error;
     // A service that is not running is the ordinary case on a machine that
     // never ran setup, not an exception worth propagating.
     return null;

@@ -32,6 +32,13 @@ async function loadRoute(relativePath) {
             path: "learn",
             namespace: "learn-security-stub",
           }));
+          build.onResolve(
+            { filter: /^breadboard-learn-status-runtime$/ },
+            () => ({
+              path: "learn-status-runtime",
+              namespace: "learn-security-stub",
+            }),
+          );
           build.onLoad(
             { filter: /.*/, namespace: "learn-security-stub" },
             (args) => {
@@ -76,14 +83,22 @@ async function loadRoute(relativePath) {
                   `,
                 };
               }
+              if (args.path === "learn-status-runtime") {
+                return {
+                  loader: "js",
+                  contents: `
+                    const state = () => globalThis[${JSON.stringify(STATE_KEY)}];
+                    export async function getLearnStatusSnapshotForRoute(input) {
+                      state().learnCalls.push({ operation: "status", input });
+                      return { phase: "idle" };
+                    }
+                  `,
+                };
+              }
               return {
                 loader: "js",
                 contents: `
                   const state = () => globalThis[${JSON.stringify(STATE_KEY)}];
-                  export function getLearnStatusSnapshot(input) {
-                    state().learnCalls.push({ operation: "status", input });
-                    return { phase: "idle" };
-                  }
                   export function getLearnValidationReport(input) {
                     state().learnCalls.push({ operation: "report", input });
                     return state().report;

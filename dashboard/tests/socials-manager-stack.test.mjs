@@ -218,6 +218,32 @@ test("the override never edits the vendored clone", () => {
   assert.ok(!config.overrideFile.startsWith(config.cloneRoot));
 });
 
+test("the generated override bounds every Postiz container without a restart loop", () => {
+  const config = resolveSocialsManagerConfig({});
+  const yaml = renderOverride(config, credentials, {});
+  assert.equal((yaml.match(/mem_limit: \d+m/g) ?? []).length, 9);
+  assert.equal((yaml.match(/mem_reservation: \d+m/g) ?? []).length, 9);
+  assert.equal((yaml.match(/restart: 'no'/g) ?? []).length, 9);
+  assert.doesNotMatch(yaml, /restart: (?:always|unless-stopped)/);
+});
+
+test("Postiz container memory limits are configurable and validated", () => {
+  const config = resolveSocialsManagerConfig({});
+  const yaml = renderOverride(config, credentials, {
+    BREADBOARD_POSTIZ_TEMPORAL_ELASTICSEARCH_MEMORY_MB: "1024",
+  });
+  assert.match(
+    yaml,
+    /temporal-elasticsearch:\n    restart: 'no'\n    mem_limit: 1024m\n    mem_reservation: 512m/,
+  );
+  assert.throws(
+    () => renderOverride(config, credentials, {
+      BREADBOARD_POSTIZ_POSTIZ_MEMORY_MB: "lots",
+    }),
+    /BREADBOARD_POSTIZ_POSTIZ_MEMORY_MB/,
+  );
+});
+
 // ------------------------------------------------------------------- time
 
 test("wall-clock stamps convert to an instant and back unchanged", () => {

@@ -2,7 +2,7 @@
 // model executor (no real LLM call). Covers the required cases:
 //   1. fake model returns a valid page      -> deterministic fallback NOT used
 //   2. fake model returns an invalid page   -> deterministic fallback used
-//   3. fake model unavailable (throws)      -> deterministic fallback used
+//   3. fake model unavailable (throws)      -> exact error propagates; no fallback
 //   4. fake model changes unsupported files -> rejected, fallback used
 //   5. repaired page passes no-mutation verification after finalization
 // Plus one integration fixture where deterministic repair is DISABLED
@@ -14,10 +14,12 @@
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   finalizeGardenExport,
   repairLearningUnitsFromContract,
+  tryModelRepairForPage,
   verifyFinalArtifactNoMutation,
 } from "../src/lib/garden-finalize.ts";
 import { buildModelRepairPrompt, parseModelRepairResponse } from "../src/lib/repair-executor.ts";
@@ -91,7 +93,65 @@ function fakeRequest(overrides = {}) {
   };
 }
 
+function ambiguousModelFailures() {
+  const resetLeaf = Object.assign(new Error("socket reset after request write"), { code: "ECONNRESET" });
+  const reset = new Error("provider request failed", { cause: new AggregateError([resetLeaf], "nested transport failure") });
+  const timeout = Object.assign(new Error("provider request timed out"), { code: "ETIMEDOUT" });
+  const abort = new DOMException("provider request aborted", "AbortError");
+  return [
+    ["nested reset", reset],
+    ["timeout", timeout],
+    ["AbortError", abort],
+  ];
+}
+
 describe("model repair prompt + parsing", () => {
+  test("single-page finalization propagates ambiguous model failures by exact identity and never falls back", async () => {
+    for (const [label, providerError] of ambiguousModelFailures()) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `bb-finalize-${label.replace(/\W+/g, "-")}-`));
+      const gardenDir = path.join(root, "test-2");
+      const pagePath = "learning/2. Metrics/2.2 Latency.md";
+      const page = `---
+title: "2.2 Latency"
+knowledge_type: "learning-page"
+breadboardType: "learning_page"
+generated_by: "learn_button"
+learningUnitId: "U8"
+sourceAnchors: []
+sourceFormulaAnchors: []
+tags: []
+---
+
+Latency is the elapsed time between stimulus and decision.
+`;
+      fs.mkdirSync(path.dirname(path.join(gardenDir, ...pagePath.split("/"))), { recursive: true });
+      fs.writeFileSync(path.join(gardenDir, ...pagePath.split("/")), page, "utf-8");
+      let calls = 0;
+      try {
+        await assert.rejects(
+          () => tryModelRepairForPage({
+            gardenDir,
+            gardenSlug: "test-2",
+            request: fakeRequest({ pagePath, currentPageMarkdown: page }),
+            modelRepair: () => {
+              calls += 1;
+              throw providerError;
+            },
+            repairReport: { changed: [], notes: [] },
+            contractPath: undefined,
+          }),
+          (actual) => {
+            assert.equal(actual, providerError, `${label} identity must be preserved`);
+            return true;
+          },
+        );
+        assert.equal(calls, 1, `${label} must issue exactly one model request`);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("prompt includes contract, failures, source anchors, handles, neighbours, and the current page", () => {
     const { system, user } = buildModelRepairPrompt(fakeRequest(), { sourceText: "Latency L = t_decision - t_stimulus." });
     assert.match(system, /frontmatter schema/i);
@@ -265,22 +325,24 @@ describe("model-backed repair executor end-to-end (fake model)", () => {
     assert.deepEqual(ctx.verify.mutatedFiles, []);
   });
 
-  test("case 3: unavailable model (throws) falls back to deterministic", { skip }, async () => {
-    const ctx = await driveExecutor({
-      setup: mutateFormulaGrounding,
-      repairExecutor: "model_with_deterministic_fallback",
-      makeModelRepair: () => () => {
-        throw new Error("model endpoint unavailable");
+  test("case 3: unavailable model (throws) propagates exact failure and stops fallback", { skip }, async () => {
+    const providerError = Object.assign(new Error("model endpoint unavailable"), { code: "ETIMEDOUT" });
+    let calls = 0;
+    await assert.rejects(
+      () => driveExecutor({
+        setup: mutateFormulaGrounding,
+        repairExecutor: "model_with_deterministic_fallback",
+        makeModelRepair: () => () => {
+          calls += 1;
+          throw providerError;
+        },
+      }),
+      (actual) => {
+        assert.equal(actual, providerError);
+        return true;
       },
-    });
-
-    const entry = ctx.entryFor(ctx.meta.rel);
-    assert.equal(entry.executorUsed, "deterministic");
-    assert.deepEqual(entry.executorAttempted, ["model", "deterministic"]);
-    assert.match(entry.modelFailureReason ?? "", /model executor error: model endpoint unavailable/);
-    assert.equal(entry.result, "resolved");
-    assert.equal(ctx.verify.accepted, true);
-    assert.deepEqual(ctx.verify.mutatedFiles, []);
+    );
+    assert.equal(calls, 1);
   });
 
   test("case 4: model candidate touching unsupported files is rejected, deterministic fallback used", { skip }, async () => {

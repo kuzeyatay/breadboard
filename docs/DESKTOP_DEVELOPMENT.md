@@ -101,6 +101,10 @@ After edits: `npm run build` inside `desktop/` (or just re-run
 
 - `BREADBOARD_DESKTOP_RELEASE_DIR`: overrides the installer output directory.
 - `BREADBOARD_DESKTOP_DASHBOARD_MODE=standalone`: uses an existing `.next-desktop` standalone build (normally set by `desktop:dev:fast`).
+- `BREADBOARD_DASHBOARD_MAX_OLD_SPACE_MB`: expert override for the development
+  dashboard's V8 old-space budget, in MiB. See "Development dashboard memory"
+  below. Accepted range 512–16384; anything else (non-integer, out of range,
+  empty) is ignored and the computed default is used.
 - `BREADBOARD_MIGRATE_FROM`: explicit dev checkout to offer for first-run copy migration.
 - `CHATMOCK_MODEL`: overrides the default local ChatMock model passed to services.
 - `--breadboard-dev`: forces repository-backed development mode.
@@ -109,3 +113,48 @@ After edits: `npm run build` inside `desktop/` (or just re-run
 `NEXTAUTH_SECRET`, service ports, Hermes credentials/capability secrets,
 data paths, and internal URLs are generated or resolved by the Electron main
 process. They should not be hard-coded in a packaged launch.
+
+## Development dashboard memory
+
+`next dev --webpack` compiles routes on demand and does not unload a route
+bundle once the server has evaluated it. This dashboard has ~517 API routes and
+~26 MB of TypeScript; compiling a route was measured to retain roughly 50–100 MB
+permanently, so a long session grows without bound. Requests to routes that are
+already compiled are flat — 3000 of them moved the heap from 1217 MB to 972 MB —
+so the growth is compilation, not traffic.
+
+Next.js guards against this itself: after every dev request it compares
+`used_heap_size` with `0.8 * heap_size_limit` and restarts its server child when
+it crosses. `heap_size_limit` is whatever `--max-old-space-size` says, so the
+heap budget is really the *recycle* threshold, not just a ceiling.
+
+`desktop/src/main/dashboard-heap-budget.ts` computes it: take what is left after
+an 8 GiB system reserve (Electron, WSL, Python runtimes, editor, Defender, OS),
+give the dashboard 35% of that for the sidecars' sake, and clamp to
+1 GiB–6 GiB. On a 32 GiB workstation that is 6 GiB, which puts Next's recycle
+point at ~4.9 GiB of heap and about 8.4 GiB of committed process-tree memory.
+
+The ceiling is a trade-off in both directions. Too high and the process is
+unbounded — that is the incident. Too low and Next recycles often enough to drop
+in-flight interactive work: at 4 GiB a recycle landed in the middle of a QA
+document ingest. Long-running work survives a recycle regardless (Learn owns
+durable jobs with fenced, staleness-detected leases and a resume path), but the
+request in flight does not.
+
+An earlier policy granted 75% of physical RAM capped at 24 GiB. On a 32 GiB
+machine that moved the recycle point to ~19.8 GiB of heap — more commit than the
+machine had to give — and the dashboard exhausted the system commit limit
+instead, taking out the Desktop Window Manager and Chromium's GPU process.
+
+Two backstops sit behind the budget:
+
+- The supervisor samples the dashboard's **whole process tree**, not the
+  `next dev` wrapper (which stays at ~65 MB while its server child grows). A
+  sustained breach of the budget in `service-definitions.ts` is logged and the
+  tree is terminated; the normal restart policy and its cap take it from there.
+- `npm run dev` and `npm run desktop:dev` each warn if the other is already
+  running against this checkout, since two dev servers double the exposure.
+
+Raise `BREADBOARD_DASHBOARD_MAX_OLD_SPACE_MB` only if you have measured that you
+need it, and keep the total below what the machine can commit alongside
+everything else.

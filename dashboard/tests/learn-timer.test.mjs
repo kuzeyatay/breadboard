@@ -108,7 +108,7 @@ test("Skip review remains changeable while the source map is being planned", () 
   assert.match(workspaceSource, /autoConfirmingLearnJobRef/);
   assert.match(
     workspaceSource,
-    /autoConfirmLearnJobStatus !== "awaiting_confirmation"[\s\S]*?postLearnAction\("confirm", \{ generate: true \}\)/,
+    /autoConfirmLearnJobStatus !== "awaiting_confirmation"[\s\S]*?!autoConfirmLearningMapId[\s\S]*?!autoConfirmLearnModel[\s\S]*?postLearnAction\("confirm",\s*\{\s*learningMapId: autoConfirmLearningMapId,\s*expectedModel: autoConfirmLearnModel,\s*generate: true,/,
   );
   assert.match(workspaceSource, /active && status !== "planning"/);
 });
@@ -123,7 +123,7 @@ test("Learn panel stays outside the independently scrolling chat transcript", ()
   );
   const panelIndex = workspaceSource.indexOf("{renderLearnPanel()}");
   const chatScrollerIndex = workspaceSource.search(
-    /<main(?:\s+ref=\{transcriptScrollRef\})?\s+className="flex-1 overflow-y-auto px-4 py-6">/,
+    /<main\s+ref=\{transcriptScrollRef\}\s+className="[^"]*\boverflow-y-auto\b[^"]*"\s*>/,
   );
   const transcriptIndex = workspaceSource.indexOf("<ChatTranscript", chatScrollerIndex);
 
@@ -165,7 +165,7 @@ test("Learn has no detached or post-completion loading circle", () => {
   assert.doesNotMatch(workspaceSource, /setShowSettledLearnIndicator/);
 });
 
-test("failed Learn jobs choose retry or scoped repair from the current garden state", () => {
+test("failed Learn jobs restart rolled-back planning but preserve generation retry", () => {
   const workspaceSource = fs.readFileSync(
     new URL(
       "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
@@ -187,6 +187,46 @@ test("failed Learn jobs choose retry or scoped repair from the current garden st
     /async function handleRepairIssues\(\)[\s\S]*?postLearnAction\("regenerate", \{ mode: "repair" \}\)/,
   );
   assert.match(workspaceSource, /status === "failed"[\s\S]*?"Retry Learn"/);
+  assert.match(
+    workspaceSource,
+    /const shouldRestartFailedPlanning =[\s\S]*?status === "failed"[\s\S]*?!hasExistingLearnContent[\s\S]*?job\.mode === "plan"[\s\S]*?!learnState\.job\.proposedLearningMapId\?\.trim\(\)[\s\S]*?\|\|[\s\S]*?learnState\.job\.requiresReplan === true/,
+  );
+  const primaryStart = workspaceSource.indexOf("async function handleLearnPrimary()");
+  const primaryEnd = workspaceSource.indexOf(
+    "async function handleConfirmAndGenerate()",
+    primaryStart,
+  );
+  const primaryHandler = workspaceSource.slice(primaryStart, primaryEnd);
+  const failedPlanningBranchIndex = primaryHandler.indexOf(
+    "if (shouldRestartFailedPlanning)",
+  );
+  const failedPlanningPlanIndex = primaryHandler.indexOf(
+    'postLearnAction("plan")',
+    failedPlanningBranchIndex,
+  );
+  const generationRetryIndex = primaryHandler.indexOf(
+    'postLearnAction("generate"',
+    failedPlanningBranchIndex,
+  );
+
+  assert.ok(primaryStart >= 0 && primaryEnd > primaryStart);
+  assert.ok(failedPlanningBranchIndex >= 0, "failed planning needs an explicit recovery branch");
+  assert.ok(
+    failedPlanningPlanIndex > failedPlanningBranchIndex,
+    "a rolled-back failed plan must restart planning",
+  );
+  assert.ok(
+    generationRetryIndex > failedPlanningPlanIndex,
+    "historical confirmed maps must be considered only after failed-planning recovery",
+  );
+  assert.match(
+    primaryHandler,
+    /if \(shouldRestartFailedPlanning\)[\s\S]*?postLearnAction\("plan"\)[\s\S]*?return;[\s\S]*?if \(learnState\?\.confirmedLearningMapId\)[\s\S]*?postLearnAction\("generate"/,
+  );
+  assert.match(
+    workspaceSource,
+    /status === "failed"[\s\S]*?shouldRestartFailedPlanning[\s\S]*?"Planning\.\.\."[\s\S]*?"Retrying\.\.\."[\s\S]*?shouldRestartFailedPlanning[\s\S]*?"Restart planning"[\s\S]*?"Retry Learn"/,
+  );
   assert.match(workspaceSource, /endpoint === "regenerate"[\s\S]*?unaffected pages were preserved/);
   assert.match(workspaceSource, /handleFullRebuild[\s\S]*?forceFullRebuild: true/);
 });
@@ -277,13 +317,25 @@ test("cancelled Learn jobs recover according to the current garden state", () =>
   const primaryEnd = workspaceSource.indexOf("async function handleConfirmAndGenerate()", primaryStart);
   const primaryHandler = workspaceSource.slice(primaryStart, primaryEnd);
   const repairIndex = primaryHandler.indexOf('postLearnAction("regenerate", { mode: "repair" })');
+  const cancelledPlanningIndex = primaryHandler.indexOf("if (shouldRestartCancelledPlanning)");
+  const failedPlanningIndex = primaryHandler.indexOf("if (shouldRestartFailedPlanning)");
+  const staleBindingIndex = primaryHandler.lastIndexOf("if (shouldReplanStaleMapBinding)");
+  const replanIndex = primaryHandler.indexOf('postLearnAction("plan")', cancelledPlanningIndex);
   const generateIndex = primaryHandler.indexOf('postLearnAction("generate"');
-  const planIndex = primaryHandler.indexOf('postLearnAction("plan")');
+  const initialPlanIndex = primaryHandler.lastIndexOf('postLearnAction("plan")');
 
   assert.ok(primaryStart >= 0 && primaryEnd > primaryStart);
   assert.ok(repairIndex >= 0, "existing learner content must recover through repair");
-  assert.ok(generateIndex > repairIndex, "a map-only garden may generate its first pages");
-  assert.ok(planIndex > generateIndex, "only an empty garden may start planning");
+  assert.ok(cancelledPlanningIndex > repairIndex, "cancelled planning follows existing-content repair");
+  assert.ok(failedPlanningIndex > cancelledPlanningIndex, "failed planning keeps its explicit recovery");
+  assert.ok(staleBindingIndex > failedPlanningIndex, "stale bindings replan after specific recovery branches");
+  assert.ok(replanIndex > cancelledPlanningIndex, "a cancelled plan must start fresh planning");
+  assert.ok(generateIndex > staleBindingIndex, "a usable map-only garden may generate its first pages");
+  assert.ok(initialPlanIndex > generateIndex, "an empty garden may start initial planning");
+  assert.match(
+    primaryHandler,
+    /if \(shouldRestartCancelledPlanning\)[\s\S]*?postLearnAction\("plan"\)[\s\S]*?if \(shouldRestartFailedPlanning\)[\s\S]*?postLearnAction\("plan"\)/,
+  );
   assert.match(
     workspaceSource,
     /async function handleGenerateAfterCancellation\(\)[\s\S]*?await handleLearnPrimary\(\)/,
@@ -300,6 +352,6 @@ test("cancelled Learn jobs recover according to the current garden state", () =>
   );
   assert.match(
     assistantSource,
-    /const hasExistingLearnContent = Boolean\([\s\S]*?latestTextbookVersionId[\s\S]*?hasTextbook[\s\S]*?const endpoint = hasExistingLearnContent[\s\S]*?'regenerate'[\s\S]*?confirmedLearningMapId[\s\S]*?'generate'[\s\S]*?'plan'/,
+    /const hasExistingLearnContent = Boolean\([\s\S]*?latestTextbookVersionId[\s\S]*?hasTextbook[\s\S]*?const endpoint = hasExistingLearnContent[\s\S]*?'regenerate'[\s\S]*?requiresReplan[\s\S]*?'plan'[\s\S]*?confirmedLearningMapId[\s\S]*?'generate'[\s\S]*?'plan'/,
   );
 });

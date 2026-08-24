@@ -198,14 +198,43 @@ describe("learn route and council wiring", () => {
 
   test("learn pipeline uses ChatMock Council task types", () => {
     const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
+    const eventsRouteSource = fs.readFileSync(
+      path.join(
+        repoRoot,
+        "src",
+        "app",
+        "api",
+        "gardens",
+        "[gardenId]",
+        "learn",
+        "events",
+        "route.ts",
+      ),
+      "utf8",
+    );
 
     assert.match(learnSource, /withCouncil/);
     assert.match(learnSource, /taskType: "source_map"/);
     assert.match(learnSource, /taskType: "learning_spine"/);
     assert.match(learnSource, /taskType: "subsection_generation"/);
-    assert.match(learnSource, /taskType: "full_page_revision"/);
+    assert.match(learnSource, /taskType: "subsection_repair"/);
+    assert.doesNotMatch(
+      learnSource,
+      /taskType: "full_page_revision"|LEARN_ENABLE_UNCONDITIONAL_REVISION/,
+    );
     assert.match(learnSource, /LEARN_PLANNING_COUNCIL_MODE/);
-    assert.match(learnSource, /isPlanningTimeoutError/);
+    assert.match(learnSource, /callPlanningJsonOnce/);
+    assert.match(learnSource, /isAmbiguousModelTransportFailure/);
+    assert.match(learnSource, /modelTransportFailureEvidence/);
+    assert.doesNotMatch(learnSource, /isPlanningTimeoutError/);
+    assert.match(learnSource, /learn_planning_transport_ambiguous/);
+    assert.doesNotMatch(learnSource, /LEARN_PLANNING_RETRY_COUNCIL_MODE/);
+    assert.doesNotMatch(learnSource, /learn_planning_timeout_retry/);
+    assert.match(eventsRouteSource, /learn_planning_transport_ambiguous/);
+    assert.doesNotMatch(
+      eventsRouteSource,
+      /learn_planning_timeout_retry|retryCouncilMode/,
+    );
     assert.doesNotMatch(learnSource, /learn_source_map_fallback/);
     assert.doesNotMatch(learnSource, /learn_scope_contract_fallback/);
     assert.doesNotMatch(learnSource, /learn_learning_spine_fallback/);
@@ -218,13 +247,16 @@ describe("learn route and council wiring", () => {
     assert.doesNotMatch(learnSource, /preparedFallback/);
     assert.match(learnSource, /let pageBody: string \| null = null/);
     assert.match(learnSource, /No fallback learner page was written/);
-    assert.match(learnSource, /debugFailedSubsectionDraft/);
+    assert.match(
+      learnSource,
+      /const debugRelPath = `\.breadboard\/debug\/failed-pages\/[\s\S]*?relPath: debugRelPath,[\s\S]*?FAILED QUALITY GATES/,
+    );
     assert.doesNotMatch(learnSource, /Start with the idea itself/);
     assert.doesNotMatch(learnSource, /Name the starting idea/);
     assert.doesNotMatch(learnSource, /What is the main idea to take away from/);
   });
 
-  test("Learn runs on the selected model through ChatMock Council at high reasoning", () => {
+  test("Learn runs on the selected model through ChatMock Council at Ultra reasoning", () => {
     const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
     const workspaceSource = fs.readFileSync(
       path.join(repoRoot, "src", "app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
@@ -242,8 +274,12 @@ describe("learn route and council wiring", () => {
       learnSource,
       /falls back to when the user has expressed no preference/,
     );
-    assert.match(learnSource, /export const LEARN_REASONING = \{[\s\S]*?effort: "high"[\s\S]*?summary: "detailed"/);
+    assert.match(learnSource, /export const LEARN_REASONING = \{[\s\S]*?effort: "max"[\s\S]*?summary: "detailed"/);
     assert.match(learnSource, /model,[\s\S]*?reasoning: LEARN_REASONING,[\s\S]*?withCouncil|withCouncil\([\s\S]*?reasoning: LEARN_REASONING/);
+    assert.match(
+      learnSource,
+      /attachLearnTokenUsageTracking\([\s\S]*?completionRequestOverrides:\s*\{[\s\S]*?reasoning:\s*LEARN_REASONING/,
+    );
     for (const action of ["plan", "generate", "regenerate", "rebuild", "confirm"]) {
       assert.match(
         learnRoute(action),
@@ -344,12 +380,56 @@ describe("learn route and council wiring", () => {
       ),
       "utf8",
     );
+    const executorSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "learn-operation-executor.ts"),
+      "utf8",
+    );
 
-    assert.match(routeSource, /getLearnStatusSnapshot/);
-    assert.doesNotMatch(routeSource, /runLearnPlanning/);
-    assert.match(routeSource, /requestedMapId && requestedMapId !== status\.confirmedLearningMapId/);
-    assert.match(routeSource, /Generate requires the current confirmed Learning Map/);
+    assert.match(routeSource, /executeLearnOperationForRoute/);
+    assert.match(routeSource, /operation: "generate"/);
+    assert.match(
+      routeSource,
+      /requestedConfirmedLearningMapId: requestedMapId/,
+    );
+    assert.doesNotMatch(routeSource, /from "@\/lib\/learn"/);
+    assert.match(executorSource, /getLearnStatusSnapshot/);
+    assert.doesNotMatch(executorSource, /runLearnPlanning/);
+    assert.match(
+      executorSource,
+      /request\.requestedConfirmedLearningMapId !==[\s\S]*?status\.confirmedLearningMapId/,
+    );
+    assert.match(executorSource, /Generate requires the current confirmed Learning Map/);
+    assert.match(
+      executorSource,
+      /status\.job\?\.status === "failed" && status\.job\.requiresReplan/,
+    );
+    assert.match(executorSource, /requiresReplan: true/);
     assert.match(routeSource, /\{ status: 409 \}/);
+  });
+
+  test("generation replan intent is durable across background handoff and refresh", () => {
+    const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
+    const workspaceSource = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
+      "utf8",
+    );
+
+    assert.match(learnSource, /requires_replan\s+INTEGER NOT NULL DEFAULT 0/);
+    assert.match(learnSource, /ALTER TABLE learn_jobs ADD COLUMN requires_replan/);
+    assert.match(learnSource, /requiresReplan: Boolean\(row\.requires_replan \?\? 0\)/);
+    assert.match(
+      learnSource,
+      /return rethrowAfterBestEffortLearnFailureCleanup\(error, async \(\) => \{[\s\S]*?requiresReplan = learnFailureRequiresReplan\(error\);[\s\S]*?updateLearnJob\(job\.id, \{[\s\S]*?status: restorePending \? "writing_quartz" : "failed"[\s\S]*?requiresReplan,[\s\S]*?\}\);[\s\S]*?\}\);/,
+    );
+    assert.match(
+      learnSource,
+      /async function rethrowAfterBestEffortLearnFailureCleanup\([\s\S]*?await cleanup\(\);[\s\S]*?catch \{[\s\S]*?throw authoritativeError;/,
+    );
+    assert.match(learnSource, /failedGenerationRequiresReplanFromEvents/);
+    assert.match(
+      workspaceSource,
+      /job\?\.status === "failed"[\s\S]*?job\.requiresReplan[\s\S]*?postLearnAction\("plan"\)/,
+    );
   });
 
   test("creation routes reject existing learner content while full rebuild stays explicit", () => {
@@ -367,15 +447,35 @@ describe("learn route and council wiring", () => {
       ),
       "utf8",
     );
-    const existingGardenGuard = /status\.latestTextbookVersionId \|\| status\.hasTextbook/;
+    const executorSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "learn-operation-executor.ts"),
+      "utf8",
+    );
 
-    assert.match(route("plan"), existingGardenGuard);
-    assert.match(route("confirm"), existingGardenGuard);
-    assert.match(route("generate"), /status\.latestTextbookVersionId \|\| status\.hasTextbook/);
-    assert.match(route("plan"), /Use Repair issues/);
-    assert.match(route("confirm"), /Use Repair issues/);
-    assert.match(route("generate"), /Use Repair issues/);
-    assert.match(route("rebuild"), /forceFullRebuild/);
+    for (const action of ["plan", "confirm", "generate"]) {
+      const routeSource = route(action);
+      assert.match(routeSource, /executeLearnOperationForRoute/);
+      assert.match(routeSource, new RegExp(`operation:\\s*"${action}"`));
+      assert.doesNotMatch(routeSource, /from "@\/lib\/learn"/);
+    }
+    assert.match(
+      executorSource,
+      /function requireCurrentProposal\([\s\S]*?status\.latestTextbookVersionId \|\| status\.hasTextbook/,
+    );
+    assert.match(
+      executorSource,
+      /case "plan": \{[\s\S]*?status\.latestTextbookVersionId \|\| status\.hasTextbook/,
+    );
+    assert.match(
+      executorSource,
+      /case "generate": \{[\s\S]*?status\.latestTextbookVersionId \|\| status\.hasTextbook[\s\S]*?rejectExistingLearnerContent\(\)/,
+    );
+    assert.match(executorSource, /Use Repair issues/);
+    assert.match(route("rebuild"), /isFullRebuildRequest\(operation\)/);
+    assert.match(
+      executorSource,
+      /case "rebuild":[\s\S]*?forceFullRebuild: true/,
+    );
   });
 
   test("Learn panel exposes a separately confirmed garden-scoped clear action", () => {
@@ -410,10 +510,10 @@ describe("learn route and council wiring", () => {
 
     assert.match(workspaceSource, /Clear data/);
     assert.match(workspaceSource, /confirmClearLearnData: true/);
-    assert.match(confirmationDialogSource, /Uploaded source documents/);
+    assert.match(confirmationDialogSource, /title: "Clear Learn data\?"/);
     assert.match(
       confirmationDialogSource,
-      /notes outside the generated Learning folder will remain/,
+      /This permanently deletes all generated Learn content and history\. This cannot be undone\./,
     );
     assert.match(
       workspaceSource,
@@ -478,7 +578,9 @@ describe("learn route and council wiring", () => {
     );
 
     assert.match(learnSource, /createLearnRunSnapshot/);
-    assert.match(learnSource, /inheritFromJobId: map\.jobId/);
+    assert.match(learnSource, /generationRollbackInheritanceJobId/);
+    assert.match(learnSource, /inheritFromJobId: inheritedPlanningSnapshotJobId/);
+    assert.doesNotMatch(learnSource, /inheritFromJobId: map\.jobId/);
     assert.match(learnSource, /rollbackLearnRun\(\{ gardenId, contentPath, jobId/);
     assert.match(learnSource, /learnMaps: db[\s\S]*?SELECT \* FROM learn_maps WHERE garden_id/);
     assert.match(learnSource, /learnVersions: db[\s\S]*?SELECT \* FROM learn_versions WHERE garden_id/);
@@ -510,15 +612,24 @@ describe("learn route and council wiring", () => {
       path.join(repoRoot, "src", "app", "api", "gardens", "[gardenId]", "learn", "regenerate", "route.ts"),
       "utf8",
     );
+    const executorSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "learn-operation-executor.ts"),
+      "utf8",
+    );
 
     assert.match(learnSource, /resetSourceMap \? "full_rebuild" : "plan"/);
-    assert.match(regenerateRouteSource, /runLearnRepairOperation/);
+    assert.match(regenerateRouteSource, /executeLearnOperationForRoute/);
+    assert.match(regenerateRouteSource, /operation: "repair"/);
     assert.match(regenerateRouteSource, /legacyDefault: "repair"/);
-    assert.match(regenerateRouteSource, /LearnRepairPendingMapError/);
+    assert.match(regenerateRouteSource, /isLearnRouteConflict/);
     assert.match(regenerateRouteSource, /status: 409/);
     assert.doesNotMatch(regenerateRouteSource, /runLearnPlanning/);
     assert.doesNotMatch(regenerateRouteSource, /resetSourceMap: true/);
     assert.doesNotMatch(regenerateRouteSource, /runTextbookGeneration/);
+    assert.match(
+      executorSource,
+      /case "repair":[\s\S]*?return runLearnRepairOperation\(/,
+    );
     assert.match(learnSource, /latestJob\?\.status === "awaiting_confirmation"/);
     assert.match(learnSource, /Scoped repair must use runLearnRepairOperation; it cannot enter the full page-generation loop/);
   });

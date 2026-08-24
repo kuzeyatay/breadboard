@@ -32,7 +32,9 @@ before(async () => {
       });
       const answer = respond(seen[seen.length - 1], response);
       if (!answer) return; // the handler took over (used by the timeout test)
-      const payload = JSON.stringify(answer.body);
+      const payload = Object.hasOwn(answer, "raw")
+        ? answer.raw
+        : JSON.stringify(answer.body);
       response.writeHead(answer.status, {
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(payload),
@@ -141,6 +143,30 @@ test("a preservation failure is refused rather than offered", async () => {
   const result = await service.humanizerRewrite({ requestId: "req-7", text: "hello" }, env());
   assert.equal(result.ok, false);
   assert.equal(result.reason, "preservation_failed");
+});
+
+test("terminal protocol outputs never become rewrite candidates", async () => {
+  const cases = [
+    { label: "empty body", answer: { status: 200, raw: "" } },
+    { label: "literal null body", answer: { status: 200, raw: "null" } },
+    { label: "fenced null body", answer: { status: 200, raw: "```json\nnull\n```" } },
+    { label: "missing rewrittenText", answer: { status: 200, body: completeBody({ rewrittenText: undefined }) } },
+    { label: "empty rewrittenText", answer: { status: 200, body: completeBody({ rewrittenText: "" }) } },
+    { label: "literal null rewrittenText", answer: { status: 200, body: completeBody({ rewrittenText: "null" }) } },
+    { label: "fenced null rewrittenText", answer: { status: 200, body: completeBody({ rewrittenText: "```markdown\nnull\n```" }) } },
+  ];
+
+  for (const { label, answer } of cases) {
+    seen.length = 0;
+    respond = () => answer;
+    const result = await service.humanizerRewrite(
+      { requestId: `terminal-${seen.length}`, text: "hello" },
+      env(),
+    );
+    assert.equal(result.ok, false, label);
+    assert.equal(result.reason, "inference_failed", label);
+    assert.equal(seen.length, 1, `${label} must remain one outbound request`);
+  }
 });
 
 test("a caller that goes away is cancelled, and the sidecar is told", async () => {

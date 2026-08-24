@@ -179,9 +179,9 @@ export const RUNTIME_AGENT_BRIEFS: Record<string, RuntimeAgentBrief> = {
 
   "open-gym": {
     group: "fitness",
-    does: "Plans and remembers workouts against openGym's 1,324-exercise catalogue, tracks training preferences and programs across runs, and shows the registered animated demonstration with exercise-form answers.",
+    does: "Uses openGym's 1,324-exercise catalogue to plan and remember workouts, persist preferences and programs, and show the registered animation with exercise-form answers. Its animation card is part of the user-facing result and remains visible when delegated.",
     choose:
-      "Choose it for how to perform a named exercise, building or revising a full training program, or continuing the user's saved workout plan. Do not choose it to diagnose pain or injury, prescribe rehabilitation or nutrition, or answer a general fitness fact that needs no catalogue or persistent plan.",
+      "Always choose it for a named exercise how-to, a full training program, or a saved-plan continuation: those need its animation catalogue or persistent state, not prose. Do not choose it for pain, injury, rehabilitation, nutrition, or a general fitness fact needing neither capability.",
   },
   openwork: {
     group: "work",

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as net from "node:net";
-import { allocatePort, findFreePort, isPortFree } from "../src/main/ports";
+import { allocatePort, allocatePortOrAdopt, findFreePort, isPortFree } from "../src/main/ports";
 
 test("allocatePort prefers the requested port when free", async () => {
   const free = await findFreePort();
@@ -62,4 +62,49 @@ test("isPortFree reports an occupied port", async () => {
   } finally {
     server.close();
   }
+});
+
+test("an occupied preferred port is kept when the service on it is ours", async () => {
+  // The duplication case: the port is busy because this very service is already
+  // running. Relocating would start a second copy of it.
+  const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string");
+  const busyPort = address.port;
+  try {
+    const taken = new Set<number>();
+    const result = await allocatePortOrAdopt(busyPort, taken, async () => true);
+    assert.deepEqual(result, { port: busyPort, adopt: true });
+    assert.ok(taken.has(busyPort));
+  } finally {
+    server.close();
+  }
+});
+
+test("an occupied preferred port still relocates when the occupant is not ours", async () => {
+  const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string");
+  const busyPort = address.port;
+  try {
+    const taken = new Set<number>();
+    const result = await allocatePortOrAdopt(busyPort, taken, async () => false);
+    assert.equal(result.adopt, false);
+    assert.notEqual(result.port, busyPort);
+  } finally {
+    server.close();
+  }
+});
+
+test("a free preferred port never runs the identity probe", async () => {
+  const free = await findFreePort();
+  let probed = false;
+  const result = await allocatePortOrAdopt(free, new Set<number>(), async () => {
+    probed = true;
+    return true;
+  });
+  assert.deepEqual(result, { port: free, adopt: false });
+  assert.equal(probed, false);
 });

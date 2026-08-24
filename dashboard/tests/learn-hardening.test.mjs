@@ -128,7 +128,15 @@ describe("fallback + commentary detectors", () => {
       learnSource.indexOf("function sourceMapMarkdown"),
     );
     assert.match(overviewValidator, /problems\.push\(formatQualityProblemForRepair\(problem\)\)/);
-    assert.match(learnSource, /failedProblems:\s*lastOverviewProblems/);
+    const overviewRepair = learnSource.slice(
+      learnSource.indexOf("const overviewOutcome = await runValidatedTextRepairLoop"),
+      learnSource.indexOf("const overviewBody = overviewOutcome.markdown"),
+    );
+    assert.match(
+      overviewRepair,
+      /request:\s*async \(\{ attempt, previousMarkdown, failedProblems \}\)/,
+    );
+    assert.match(overviewRepair, /previousMarkdown,\s*failedProblems,/);
   });
 
   test("placeholder feedback preserves a real unfinished line without rejecting ordinary passive prose", () => {

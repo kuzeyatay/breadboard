@@ -4,7 +4,12 @@ import { getServerSession } from "next-auth/next";
 
 import { authOptions } from "@/lib/auth-options";
 import { ApiError } from "@/lib/hermes/route-helpers.ts";
-import { getRoom, listMembers, ensureSelfMember } from "./instance.ts";
+import {
+  ensureBreadMember,
+  ensureSelfMember,
+  getRoom,
+  listMembers,
+} from "./instance.ts";
 import type { BuzzMember, BuzzRoom } from "./store.ts";
 
 /**
@@ -53,6 +58,10 @@ export function requireRoomAndSelf(
 ): { room: BuzzRoom; self: BuzzMember; members: BuzzMember[] } {
   const room = requireRoom(userId, publicId);
   const self = ensureSelfMember(room.id, userId, displayName);
+  // Backfilled here as well as on the page: switching rooms in the client
+  // never re-renders the server page, so this is where an older room picks
+  // Bread up.
+  ensureBreadMember(room.id);
   return { room, self, members: listMembers(room.id) };
 }
 

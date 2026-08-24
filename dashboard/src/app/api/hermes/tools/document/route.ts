@@ -3,7 +3,8 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 
 import db from "@/lib/db";
-import { editDocument, convertPdfDocument } from "@/lib/genoffice/agent-query.ts";
+import { editDocument } from "@/lib/genoffice/agent-query.ts";
+import { convertPdfDocument } from "@/lib/genoffice/pdf-query.ts";
 import { GenOfficeError } from "@/lib/genoffice/types.ts";
 import {
   createImportedArtifact,
@@ -125,6 +126,7 @@ export async function POST(request: Request) {
               ? { pdfToDocx: true, pages: conversionResult.pages, warnings: conversionResult.warnings }
               : { documentEdit: true, patched: patchResult!.patched }),
           },
+          sourceSkill: "office",
           sourceHermesTool: toolName,
           authorizedRoot: workspace,
           filePath: staged.filePath,

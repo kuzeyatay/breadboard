@@ -30,6 +30,14 @@ import {
   INBOX_ZERO_AGENT_ID,
   INBOX_ZERO_COMMAND,
 } from "../inbox-zero/identity.ts";
+import {
+  OPEN_GYM_AGENT_ID,
+  OPEN_GYM_COMMAND,
+} from "../open-gym/identity.ts";
+import {
+  GOAL_MODE_CONNECTION,
+  GOAL_MODE_SKILL,
+} from "../goal-mode.ts";
 import { listWorkflows } from "../workflows/store.ts";
 import type { LocalWorkflowSummary } from "../workflows/types.ts";
 import { researchPipelineRule } from "../research/directive.ts";
@@ -89,7 +97,12 @@ function skillEntries(
       // A coding-conditional skill has to execute through Codex, OpenCode or
       // Ruflo, so offering its guidance here would describe work this turn
       // cannot carry out.
-      skill.classification === "eligible_general",
+      skill.classification === "eligible_general" &&
+      // Goal is a conversation-level commitment, not an ambient capability.
+      // It is selected by /goal or explicit persistence wording in
+      // goal-intent.ts; listing it in Super Agent's broad inventory lets a
+      // model turn an ordinary one-shot request into a goal without consent.
+      skill.slug !== GOAL_MODE_SKILL,
   );
   return {
     entries: available.map((skill) => ({
@@ -155,10 +168,13 @@ export async function loadSuperAgentInventory(input: {
   userId: number;
   surface: HermesSurface;
 }): Promise<SuperAgentInventory> {
-  const connections = listMcpConnections(input.userId, true).map(
+  const connectedMcpServers = listMcpConnections(input.userId, true).map(
     (connection) => connection.slug,
   );
-  const skills = skillEntries(input.surface, connections);
+  const connections = connectedMcpServers.filter(
+    (slug) => slug !== GOAL_MODE_CONNECTION,
+  );
+  const skills = skillEntries(input.surface, connectedMcpServers);
   const catalog = loadAgencyAgentsCatalog();
   const roster =
     catalog.status === "ready"
@@ -208,6 +224,23 @@ function emailRoutingRule(): string {
     "Two boundaries, because a standing rule is only safe with them:",
     "- Writing a message body the user asked *you* for — a draft they will paste somewhere themselves, wording to look over — is writing, not email. Do that yourself. Delegate the moment it has to reach, read, or leave the mailbox.",
     "- The brief is everything the agent gets. It cannot see this conversation, so name the person, the thread, the time range, and what a finished result looks like. Never state that mail was read, sent, archived, or changed until its result comes back saying so.",
+  ].join("\n");
+}
+
+/**
+ * A registered movement demonstration is a presentation capability, not merely
+ * fitness knowledge. Without a hard routing rule the general "answer it when
+ * you can" instruction wins and produces plausible prose while silently
+ * dropping the animation the user actually asked the product to provide.
+ */
+function openGymRoutingRule(): string {
+  return [
+    "## Exercise demonstrations and workout programs go to openGym",
+    `openGym (\`${OPEN_GYM_COMMAND}\`) is the only instrument here that can match the cloned exercise catalogue, show its registered animated demonstrations, and remember a training plan after this turn. Those are concrete capabilities you do not have in your own prose response.`,
+    "",
+    `Whenever the user asks how to do, perform, execute, or demonstrate a named exercise—or asks about its form or animation—call \`agent_launch\` with agent id \`${OPEN_GYM_AGENT_ID}\`. Do not answer with instructions instead: the openGym card and its animation are the requested result. It completes the user-facing turn itself, so do not expect or create a second synthesis turn after it.`,
+    "",
+    `Also launch \`${OPEN_GYM_AGENT_ID}\` to build or revise a complete workout program, or to continue the user's saved plan, because that work needs its persistent training state. General fitness facts can stay with you. Pain, injury, rehabilitation, diagnosis, and nutrition are outside openGym's role; do not send those there.`,
   ].join("\n");
 }
 
@@ -387,7 +420,7 @@ function runtimeAgentCatalogue(inventory: SuperAgentInventory): string {
     "Each of these is a private worker you can hand a job to with `agent_launch`. Three things follow from how delegation works, and all matter:",
     "- It has not run when the tool returns. It starts after your turn ends. Never write as though you have already seen its output, and never invent a result, file, artifact, or link.",
     "- The agent cannot see this conversation. The brief is everything it gets: subject, constraints, and what the finished thing should be, written for a stranger.",
-    "- Its card is hidden. Its outcome always returns to you as an internal turn. Summarize the useful result in your own voice; if it produced an artifact or file, present that exact artifact or link to the user. Do not merely report that the worker finished.",
+    "- Its card is normally hidden. openGym is the presentation-bearing exception: its exercise animation card remains visible and completes the user-facing turn itself. Its outcome always returns to you as an internal turn except for that openGym presentation. Summarize other useful results in your own voice; if one produced an artifact or file, present that exact artifact or link to the user.",
     "",
     "Choosing well starts with choosing whether, and the honest default is none of them. You have your own tools, and a request you can finish in this turn should be finished in this turn — a delegation the user did not need costs them a confirmation and a wait, and hands back less than the answer you already had.",
     "",
@@ -515,6 +548,12 @@ export function renderSuperAgentDirective(
 
   if (inventory.runtimeAgents.length) {
     sections.push(runtimeAgentCatalogue(inventory));
+
+    if (
+      inventory.runtimeAgents.some((agent) => agent.id === OPEN_GYM_AGENT_ID)
+    ) {
+      sections.push(openGymRoutingRule());
+    }
 
     if (
       inventory.runtimeAgents.some((agent) => agent.id === INBOX_ZERO_AGENT_ID)

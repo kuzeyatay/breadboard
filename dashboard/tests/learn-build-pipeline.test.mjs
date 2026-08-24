@@ -492,6 +492,61 @@ test("1e. source-anchor ledger verification rejects staged or authoritative muta
   );
 });
 
+test("1f. the confirmed Learning Unit Contract receipt is seeded intact", () => {
+  const repo = tmp("repo-contract-receipt");
+  const breadboard = path.join(repo, ".breadboard");
+  fs.mkdirSync(breadboard, { recursive: true });
+  const recoveryReceipt = {
+    integritySha256: "a".repeat(64),
+    recoveredAt: "2026-08-23T00:00:00.000Z",
+    recoveredLocatorIds: ["syllabus-1"],
+  };
+  const contract = {
+    schemaVersion: 2,
+    sourceSetHash: "source-set",
+    sourceFormulaReviewSetHash: "review-set",
+    sourceArtifactInventoryHash: "b".repeat(64),
+    syllabusCoverageEvidenceRecoveryHash: recoveryReceipt.integritySha256,
+    syllabusCoverageEvidenceRecovery: recoveryReceipt,
+    learningUnits: [],
+  };
+  fs.writeFileSync(
+    path.join(breadboard, "source-formula-review-set.json"),
+    JSON.stringify({ reviewSetHash: "review-set", formulaIds: [], sourceIds: [] }),
+  );
+  fs.writeFileSync(
+    path.join(breadboard, "learning-unit-contract.json"),
+    `${JSON.stringify(contract, null, 2)}\n`,
+  );
+
+  const ws = createLearnBuildWorkspace({
+    gardenSlug: "g-contract-receipt",
+    jobId: "job-contract-receipt",
+    mode: "generate",
+    repositoryGardenDir: repo,
+    contractFingerprint: "cf-contract-receipt",
+    sourceSetFingerprint: "sf-contract-receipt",
+    workspaceRoot: path.join(tmp("workspace-contract-receipt"), "workspace"),
+  });
+  const stagedContract = JSON.parse(
+    fs.readFileSync(
+      path.join(ws.stagingGardenDir, ".breadboard", "learning-unit-contract.json"),
+      "utf8",
+    ),
+  );
+
+  assert.deepEqual(stagedContract, contract);
+  assert.equal(
+    stagedContract.syllabusCoverageEvidenceRecoveryHash,
+    recoveryReceipt.integritySha256,
+  );
+  assert.deepEqual(stagedContract.syllabusCoverageEvidenceRecovery, recoveryReceipt);
+  assert.equal(
+    fingerprintDurableGardenState(repo),
+    fingerprintDurableGardenState(ws.stagingGardenDir),
+  );
+});
+
 test("4. seeding leaves the repository garden unchanged", () => {
   const repo = tmp("repo2");
   fs.mkdirSync(path.join(repo, "sources"), { recursive: true });

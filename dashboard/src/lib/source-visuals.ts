@@ -25,7 +25,6 @@ import {
   publishExternalCacheFileAtomically,
   readFileSyncWithRetry,
 } from "./resilient-fs.ts";
-import { MODEL_TRANSPORT_TOTAL_DELAY_MS } from "./http-502-retry.ts";
 import { slugify } from "./tags.ts";
 
 export type SourceVisualType =
@@ -114,12 +113,11 @@ const SOURCE_FORMULA_REVIEW_MAX_FORMULAS_PER_PAGE = 64;
 const SOURCE_FORMULA_REVIEW_MAX_EXACT_TEXT_CHARS = 12_000;
 const SOURCE_FORMULA_REVIEW_MAX_CAPTION_CHARS = 2_000;
 const SOURCE_FORMULA_REVIEW_MAX_REASON_CHARS = 2_000;
-/** Leave the final transport attempt one normal source-review window to answer
- * after all three four-minute retry delays, with a small event-loop margin. */
+/** Leave the single authoritative source-review request a normal answer window.
+ * The scheduling margin covers local orchestration, never a second model POST. */
 export const SOURCE_FORMULA_REVIEW_FINAL_ATTEMPT_ALLOWANCE_MS = 180_000;
 export const SOURCE_FORMULA_REVIEW_SCHEDULING_MARGIN_MS = 30_000;
 export const DEFAULT_SOURCE_FORMULA_REVIEW_TIMEOUT_MS =
-  MODEL_TRANSPORT_TOTAL_DELAY_MS +
   SOURCE_FORMULA_REVIEW_FINAL_ATTEMPT_ALLOWANCE_MS +
   SOURCE_FORMULA_REVIEW_SCHEDULING_MARGIN_MS;
 export const MIN_SOURCE_FORMULA_REVIEW_TIMEOUT_MS = 30_000;
@@ -1708,6 +1706,20 @@ export class SourceFormulaReviewProtocolError extends Error {
   }
 }
 
+function assertNonemptySourceFormulaModelResponse(
+  rawResponse: string,
+  stage: string,
+): void {
+  const normalizedCandidate = sourceFormulaReviewJsonCandidate(rawResponse);
+  if (!normalizedCandidate || normalizedCandidate === "null") {
+    throw new SourceFormulaReviewProtocolError(
+      normalizedCandidate === "null"
+        ? `${stage} returned literal JSON null; no semantic repair request was issued`
+        : `${stage} returned no nonempty candidate; no semantic repair request was issued`,
+    );
+  }
+}
+
 const sourceFormulaReviewRejectedDetails = new WeakMap<
   object,
   readonly SourceFormulaReviewRejectedPage[]
@@ -2192,7 +2204,7 @@ function sourceFormulaReviewProtocolMetadata(
 function pageReviewKeyMaterial(
   evidence: SourceFormulaReviewPageEvidence,
   model: string,
-  inputs = evidence.inputs,
+  inputs: readonly SourceFormulaReviewInput[] = evidence.inputs,
   protocol: SourceFormulaReviewProtocol = "v2",
 ): Record<string, unknown> {
   const protocolMetadata = sourceFormulaReviewProtocolMetadata(protocol);
@@ -2213,7 +2225,7 @@ function pageReviewKeyMaterial(
 function pageReviewCacheKey(
   evidence: SourceFormulaReviewPageEvidence,
   model: string,
-  inputs = evidence.inputs,
+  inputs: readonly SourceFormulaReviewInput[] = evidence.inputs,
   protocol: SourceFormulaReviewProtocol = "v2",
 ): string {
   return sha256(JSON.stringify(pageReviewKeyMaterial(evidence, model, inputs, protocol)));
@@ -2222,7 +2234,7 @@ function pageReviewCacheKey(
 function pageReviewRequestPayload(
   evidence: SourceFormulaReviewPageEvidence,
   model: string,
-  inputs = evidence.inputs,
+  inputs: readonly SourceFormulaReviewInput[] = evidence.inputs,
   protocol: SourceFormulaReviewProtocol = "v2",
 ): string {
   const protocolMetadata = sourceFormulaReviewProtocolMetadata(protocol);
@@ -3053,11 +3065,11 @@ async function requestSourceFormulaPageReview(
         },
         { signal: controller.signal, maxRetries: 0 },
       );
-      options.checkCancelled?.();
       rawResponse = response.choices[0]?.message?.content ?? "";
     } finally {
       clearTimeout(timeout);
     }
+    assertNonemptySourceFormulaModelResponse(rawResponse, "formula page review");
 
     let reviews: SourceFormulaReviewModelDecision[];
     try {
@@ -4260,11 +4272,11 @@ async function requestSourceFormulaArtifactRecovery(
         },
         { signal: controller.signal, maxRetries: 0 },
       );
-      options.checkCancelled?.();
       rawResponse = response.choices[0]?.message?.content ?? "";
     } finally {
       clearTimeout(timeout);
     }
+    assertNonemptySourceFormulaModelResponse(rawResponse, "formula artifact recovery");
     let recovered: {
       detections: SourceVisualDetection[];
       replacements: SourceFormulaArtifactRecoveryReplacement[];
@@ -4365,11 +4377,11 @@ async function requestSourceFormulaArtifactTopologyRecovery(
         },
         { signal: controller.signal, maxRetries: 0 },
       );
-      options.checkCancelled?.();
       rawResponse = response.choices[0]?.message?.content ?? "";
     } finally {
       clearTimeout(timeout);
     }
+    assertNonemptySourceFormulaModelResponse(rawResponse, "formula topology recovery");
     let recovered: ReturnType<typeof sourceFormulaArtifactTopologyRecoveryResponse>;
     try {
       recovered = sourceFormulaArtifactTopologyRecoveryResponse(rawResponse, evidence, inputs);
@@ -4628,11 +4640,11 @@ async function requestSourceFormulaArtifactTopologyCandidateRepairCandidate(
         },
         { signal: controller.signal, maxRetries: 0 },
       );
-      options.checkCancelled?.();
       rawResponse = response.choices[0]?.message?.content ?? "";
     } finally {
       clearTimeout(timeout);
     }
+    assertNonemptySourceFormulaModelResponse(rawResponse, "formula topology candidate repair");
     let recovered: ReturnType<typeof sourceFormulaArtifactTopologyRecoveryResponse>;
     try {
       recovered = sourceFormulaArtifactTopologyRecoveryResponse(
@@ -4803,11 +4815,11 @@ async function requestSourceFormulaArtifactTopologyReview(
         },
         { signal: controller.signal, maxRetries: 0 },
       );
-      options.checkCancelled?.();
       rawResponse = response.choices[0]?.message?.content ?? "";
     } finally {
       clearTimeout(timeout);
     }
+    assertNonemptySourceFormulaModelResponse(rawResponse, "formula topology review");
     let reviewed: ReturnType<typeof sourceFormulaArtifactTopologyReviewResponse>;
     try {
       reviewed = sourceFormulaArtifactTopologyReviewResponse(rawResponse, recovery);
@@ -5498,11 +5510,11 @@ async function requestSourceFormulaArtifactTopologyEmptyInventoryReview(
         },
         { signal: controller.signal, maxRetries: 0 },
       );
-      options.checkCancelled?.();
       rawResponse = response.choices[0]?.message?.content ?? "";
     } finally {
       clearTimeout(timeout);
     }
+    assertNonemptySourceFormulaModelResponse(rawResponse, "empty formula inventory review");
     let parsed: { status: "confirmed" | "rejected"; reason: string };
     try {
       parsed = sourceFormulaArtifactTopologyEmptyInventoryReviewResponse(rawResponse);
@@ -5784,11 +5796,11 @@ async function requestSourceFormulaArtifactTopologyConsensusRepairCandidate(
         },
         { signal: controller.signal, maxRetries: 0 },
       );
-      options.checkCancelled?.();
       rawResponse = response.choices[0]?.message?.content ?? "";
     } finally {
       clearTimeout(timeout);
     }
+    assertNonemptySourceFormulaModelResponse(rawResponse, "formula topology consensus repair");
     let recovered: ReturnType<typeof sourceFormulaArtifactTopologyRecoveryResponse>;
     try {
       recovered = sourceFormulaArtifactTopologyRecoveryResponse(rawResponse, evidence, inputVisuals);
@@ -12374,7 +12386,7 @@ async function detectVisualsOnPage(
           },
         ],
       },
-      { signal: controller.signal },
+      { signal: controller.signal, maxRetries: 0 },
     );
     return parseDetections(response.choices[0]?.message?.content);
   } finally {
@@ -12512,8 +12524,6 @@ export async function extractSourceVisuals(
   const found: SourceVisual[] = [];
   const replacedPages = new Set<number>();
   const counters = new Map<string, number>();
-  const detectionErrors: string[] = [];
-  let consecutiveDetectionFailures = 0;
 
   const nextId = (pageNumber: number, type: SourceVisualType): string => {
     const letter = TYPE_LETTER[type];
@@ -12948,7 +12958,6 @@ export async function extractSourceVisuals(
       try {
         detections = validateDetectionRecords(cached.detections);
         reusedCachedScan = true;
-        consecutiveDetectionFailures = 0;
         onProgress?.(`Reusing saved visual scan for page ${pageNumber || "?"}...`);
       } catch {
         // A corrupt or legacy cache entry is never evidence of a completed scan.
@@ -12959,7 +12968,6 @@ export async function extractSourceVisuals(
       try {
         onProgress?.(`Scanning page ${pageNumber || "?"} for figures...`);
         detections = await detectVisualsOnPage(client, model, pngBuffer);
-        consecutiveDetectionFailures = 0;
         sourceCache[pageUrl] = {
           detectorVersion: DETECTOR_VERSION,
           fingerprint,
@@ -12970,13 +12978,10 @@ export async function extractSourceVisuals(
         saveSourceVisualScanCache(contentPath, gardenSlug, scanCache);
         checkpoint?.();
       } catch (error) {
-        // A throw is different from a successful scan returning no visuals.
-        detections = [];
-        detectionErrors.push(`page ${pageNumber || "?"}: ${error instanceof Error ? error.message : String(error)}`);
-        consecutiveDetectionFailures += 1;
-        // Stop when the model is clearly unavailable rather than grinding
-        // every remaining page (each with its own SDK retries).
-        if (consecutiveDetectionFailures >= 3) break;
+        // A provider throw is not a successful empty detector result. Preserve
+        // its exact identity so the caller cannot mistake transport ambiguity
+        // for semantic evidence or replay the same page request.
+        throw error;
       }
     }
 
@@ -13211,15 +13216,6 @@ export async function extractSourceVisuals(
       }
       found.push(visual);
     }
-  }
-
-  // A partial scan is not a completed extraction. Successful pages are already
-  // cached, but the rollback-owned output ledger remains untouched until Retry
-  // finishes every page.
-  if (detectionErrors.length > 0) {
-    throw new Error(
-      `vision detection failed on ${detectionErrors.length} page(s): ${detectionErrors.slice(0, 2).join("; ")}`,
-    );
   }
 
   // Pages where detection found nothing meaningful get no entry at all —

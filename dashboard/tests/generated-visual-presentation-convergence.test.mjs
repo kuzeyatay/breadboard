@@ -395,7 +395,7 @@ function convergenceDefinition() {
   };
 }
 
-test("Learn generated visuals expose the flat visual-first camera contract", () => {
+test("Learn generated visuals expose the flat control-first camera contract", () => {
   const sdk = fs.readFileSync(sdkPath, "utf8");
   const generator = fs.readFileSync(generatorPath, "utf8");
   const runtime = fs.readFileSync(runtimePath, "utf8");
@@ -426,13 +426,18 @@ test("Learn generated visuals expose the flat visual-first camera contract", () 
   );
   assert.match(runtime, /element\("h1"/);
   assert.ok(
-    runtime.indexOf("app.appendChild(scenesHost)") <
+    runtime.indexOf("app.appendChild(controlsHost)") <
       runtime.indexOf("app.appendChild(valuesHost)"),
   );
   assert.ok(
     runtime.indexOf("app.appendChild(valuesHost)") <
-      runtime.indexOf("app.appendChild(controlsHost)"),
+      runtime.indexOf("app.appendChild(scenesHost)"),
   );
+  assert.match(runtime, /control\.initial\.order: controlId=/);
+  assert.match(runtime, /control\.initial\.not_rendered: controlId=/);
+  assert.match(runtime, /control\.initial\.mobile_viewport_out_of_frame: controlId=/);
+  assert.match(runtime, /data(?:set)?\.controlPrecedesScenes/);
+  assert.match(runtime, /data(?:set)?\.controlMobileInitialViewportVisible/);
   assert.match(runtime, /addEventListener\("pointerdown"/);
   assert.match(runtime, /addEventListener\(\s*"wheel"/);
   assert.match(runtime, /addEventListener\("keydown"/);
@@ -670,7 +675,12 @@ setTimeout(() => {
   const farRadius = Number(perspectiveHost?.querySelector('[data-spatial-id="far-sphere"] .gv-spatial-surface')?.getAttribute("r"));
   document.body.dataset.perspectiveForeshortening = String(nearRadius > farRadius && Number.isFinite(nearRadius) && Number.isFinite(farRadius));
   document.body.dataset.orbitAccessible = String(orbit()?.getAttribute("aria-roledescription") && orbit()?.getAttribute("aria-keyshortcuts")?.includes("Home") && orbit()?.querySelector("desc")?.textContent.includes("arrow keys"));
-  document.body.dataset.flatHierarchy = String(document.querySelectorAll("h1").length === 1 && document.querySelector(".gv-root")?.firstElementChild?.classList.contains("gv-header") && document.querySelector(".gv-header")?.nextElementSibling?.classList.contains("gv-scenes"));
+  const rootChildren = Array.from(document.querySelector(".gv-root")?.children || []);
+  const headerIndex = rootChildren.findIndex((node) => node.classList.contains("gv-header"));
+  const controlsIndex = rootChildren.findIndex((node) => node.classList.contains("gv-controls"));
+  const valuesIndex = rootChildren.findIndex((node) => node.classList.contains("gv-values"));
+  const scenesIndex = rootChildren.findIndex((node) => node.classList.contains("gv-scenes"));
+  document.body.dataset.flatHierarchy = String(document.querySelectorAll("h1").length === 1 && headerIndex === 0 && headerIndex < controlsIndex && controlsIndex < valuesIndex && valuesIndex < scenesIndex);
   document.body.dataset.toolbarAccessible = String(Array.from(document.querySelectorAll(".gv-transport")).every((button) => button.getAttribute("aria-label") && button.querySelector("svg")));
   document.body.dataset.visualDominant = String((document.querySelector(".gv-scenes .gv-svg")?.getBoundingClientRect().height || 0) >= (requestedAuditWidth <= 400 ? 295 : 380));
   const lightBackground = getComputedStyle(document.documentElement).getPropertyValue("--viz-bg").trim();

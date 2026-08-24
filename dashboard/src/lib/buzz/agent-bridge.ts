@@ -23,6 +23,7 @@ import {
 } from "@/lib/conversations/store.ts";
 import { startConversationTurn } from "@/lib/conversations/turn-service.ts";
 import { loadAgencyAgentsCatalog } from "@/lib/hermes/agency-agents.ts";
+import { BREAD_INSTRUCTIONS, isBreadSlug } from "./bread.ts";
 import {
   getMember,
   listMembers,
@@ -81,6 +82,9 @@ export function ensureMemberConversation(
 
 function personaInstructions(slug: string | null): string {
   if (!slug) return "";
+  // Bread has no catalog file — being the un-narrowed runtime is the whole
+  // point of it — so its brief is stated rather than loaded.
+  if (isBreadSlug(slug)) return BREAD_INSTRUCTIONS;
   const catalog = loadAgencyAgentsCatalog();
   const agent = catalog.agents.find((candidate) => candidate.slug === slug);
   return agent?.instructions ?? "";

@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { getLearnStatusSnapshot, LearnPipelineConflictError, runLearnPipeline } from "@/lib/learn";
-import { createChatmockClient } from "@/lib/knowledge";
-import { handOffLearnTask } from "@/lib/learn-background";
+import { executeLearnOperationForRoute } from "breadboard-learn-operation-runtime";
+import {
+  InvalidLearnRouteBodyError,
+  isLearnRouteConflict,
+  parseExplicitLearnPlanSelection,
+  readLearnRouteJsonObject,
+} from "@/lib/learn-route-errors";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 import { selectedModelForUser } from "@/lib/selected-model";
 
@@ -23,49 +27,31 @@ export async function POST(
       );
     }
 
-    const body = await request.json().catch(() => ({}));
-    const status = getLearnStatusSnapshot({
-      gardenId: cluster.slug,
-      contentPath,
-    });
-    if (status.latestTextbookVersionId || status.hasTextbook) {
-      return NextResponse.json(
-        {
-          error:
-            "This garden already has learner content. Use Repair issues, or explicitly confirm Rebuild entire garden to recreate it.",
-        },
-        { status: 409 },
-      );
-    }
-    const includedSourceIds = Array.isArray(body.includedSourceIds)
-      ? body.includedSourceIds.filter((sourceId: unknown): sourceId is string => typeof sourceId === "string")
-      : undefined;
-    const syllabusSourceId =
-      typeof body.syllabusSourceId === "string" && body.syllabusSourceId.trim()
-        ? body.syllabusSourceId.trim()
-        : undefined;
+    const body = await readLearnRouteJsonObject(request);
+    const { includedSourceIds, syllabusSourceId } =
+      parseExplicitLearnPlanSelection(body);
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const client = createChatmockClient(baseURL);
-    const execution = await handOffLearnTask(runLearnPipeline({
+    const model = selectedModelForUser(userId);
+    const execution = await executeLearnOperationForRoute({
+      operation: "plan",
       gardenId: cluster.slug,
       userId,
-      mode: "plan",
-      client,
       contentPath,
+      baseURL,
+      model,
       includedSourceIds,
       syllabusSourceId,
-      model: selectedModelForUser(userId),
       sourceOnly: body.sourceOnly !== false,
       includeSourceSnapshots: body.includeSourceSnapshots === true,
       autoConfirmTopicMap: body.skipManualReview === true,
-    }), `planning for ${cluster.slug}`);
+    }, `planning for ${cluster.slug}`);
 
     if (execution.accepted) {
       return NextResponse.json(
         {
           success: true,
           accepted: true,
-          job: getLearnStatusSnapshot({ gardenId: cluster.slug, contentPath }).job,
+          jobId: execution.jobId ?? null,
         },
         { status: 202 },
       );
@@ -73,8 +59,14 @@ export async function POST(
 
     return NextResponse.json({ success: true, result: execution.value });
   } catch (error) {
-    if (error instanceof LearnPipelineConflictError) {
-      return NextResponse.json({ error: error.message }, { status: 409 });
+    if (error instanceof InvalidLearnRouteBodyError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (isLearnRouteConflict(error)) {
+      return NextResponse.json(
+        { error: error.message, requiresReplan: error.requiresReplan === true },
+        { status: 409 },
+      );
     }
     return routeErrorResponse(error);
   }

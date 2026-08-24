@@ -46,10 +46,11 @@ export default async function ArtifactPdfPage({
     Number.isInteger(requestedVersion) && requestedVersion > 0
       ? requestedVersion
       : artifact.current_version;
+  const editable = artifact.renderer_id === "pdf-file" && version === artifact.current_version;
   const sourceQuery = new URLSearchParams({
     conversationId,
-    version: String(version),
   });
+  if (!editable) sourceQuery.set("version", String(version));
   const sourceUrl =
     `/api/hermes/artifacts/${encodeURIComponent(artifact.id)}/preview?${sourceQuery.toString()}`;
 
@@ -59,7 +60,16 @@ export default async function ArtifactPdfPage({
         title={artifact.title}
         browserTitle={artifact.filename}
         sourceUrl={sourceUrl}
-        readOnly
+        readOnly={!editable}
+        kicker={editable ? "PDF artifact editor" : "PDF artifact"}
+        aiEditArtifact={editable ? {
+          id: artifact.id,
+          title: artifact.title,
+          conversationId,
+          gardenId: artifact.garden_slug ?? null,
+          renderer: artifact.renderer_id,
+          sourceSkill: artifact.source_skill,
+        } : undefined}
         fastRead={getNavbarShortcuts(userId).fastRead}
       />
     </div>

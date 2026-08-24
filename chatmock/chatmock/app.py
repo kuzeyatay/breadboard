@@ -5,6 +5,7 @@ from flask_sock import Sock
 
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .council.debug_routes import council_debug_bp
+from .council.result_routes import council_result_bp
 from .http import build_cors_headers
 from .routes_embeddings import embeddings_bp
 from .routes_openai import openai_bp
@@ -56,6 +57,7 @@ def create_app(
     app.register_blueprint(ollama_bp)
     app.register_blueprint(providers_bp)
     app.register_blueprint(council_debug_bp)
+    app.register_blueprint(council_result_bp)
     sock = Sock(app)
     register_websocket_routes(sock)
 

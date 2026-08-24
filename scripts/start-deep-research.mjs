@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRootEnv, loadDashboardEnv } from "./load-root-env.mjs";
+import { exitIfAlreadyRunning } from "./service-probe.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
@@ -68,6 +69,11 @@ const env = {
   DEEP_RESEARCH_SEARCH_TIMEOUT_MS: process.env.DEEP_RESEARCH_SEARCH_TIMEOUT_MS || "300000",
   DEEP_RESEARCH_CONCURRENCY: process.env.DEEP_RESEARCH_CONCURRENCY || "2",
 };
+
+await exitIfAlreadyRunning("deep-research", {
+  url: `http://127.0.0.1:${port}/health`,
+  expectBodyIncludes: '"engine":"open-deep-research"',
+});
 
 const child = spawn(process.execPath, [tsx, entry], {
   cwd: engineDir,

@@ -8,10 +8,15 @@
 // reads as a second, competing transcript.
 
 import { useCallback, useEffect, useState } from "react";
-import { Bot, Hash, Inbox, MessagesSquare, RefreshCw } from "lucide-react";
+import { Bot, Hash, Inbox, MailPlus, MessagesSquare, RefreshCw } from "lucide-react";
 
 import { cn } from "@/app/buzz/lib/cn";
-import type { BuzzAgentSeat, BuzzMessageHit, BuzzRespondTo } from "../types.ts";
+import type {
+  BuzzAgentSeat,
+  BuzzInvite,
+  BuzzMessageHit,
+  BuzzRespondTo,
+} from "../types.ts";
 
 const RESPOND_LABELS: Record<BuzzRespondTo, string> = {
   always: "Always",
@@ -28,6 +33,7 @@ const RESPOND_TITLES: Record<BuzzRespondTo, string> = {
 export interface RailViewData {
   unread: BuzzMessageHit[];
   agents: BuzzAgentSeat[];
+  invites: BuzzInvite[];
 }
 
 /**
@@ -37,7 +43,11 @@ export interface RailViewData {
  * the two disagree about a room that changed between the calls.
  */
 export function useRailViews(active: boolean) {
-  const [data, setData] = useState<RailViewData>({ unread: [], agents: [] });
+  const [data, setData] = useState<RailViewData>({
+    unread: [],
+    agents: [],
+    invites: [],
+  });
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
@@ -119,41 +129,61 @@ function clockTime(iso: string): string {
 
 export function InboxView({
   unread,
+  invites,
   loading,
   onRefresh,
   onOpen,
+  onRespondToInvite,
 }: {
   unread: BuzzMessageHit[];
+  invites: BuzzInvite[];
   loading: boolean;
   onRefresh: () => void;
   onOpen: (hit: BuzzMessageHit) => void;
+  onRespondToInvite: (invite: BuzzInvite, accept: boolean) => void | Promise<void>;
 }) {
   // Mentions first: in a busy community the line that names you is the one
   // thing an inbox exists to surface, and it would otherwise sink under
   // whatever a chatty room posted after it.
   const mentions = unread.filter((hit) => hit.mentionsYou);
   const rest = unread.filter((hit) => !hit.mentionsYou);
+  // An invitation outranks both. It is the only row here that expires nothing
+  // and blocks everything: until it is answered, the rooms behind it cannot be
+  // opened at all.
+  const empty = unread.length === 0 && invites.length === 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <ViewHeader
         title="Inbox"
-        count={unread.length}
+        count={unread.length + invites.length}
         loading={loading}
         onRefresh={onRefresh}
       />
-      {unread.length === 0 ? (
+      {empty ? (
         <EmptyState
           icon={Inbox}
           title="Nothing waiting"
-          body="Everything in your rooms has been read. New messages from other people and their agents land here."
+          body="Everything in your rooms has been read. New messages from other people and their agents land here, along with any invitation to join a community."
         />
       ) : (
         <div className="buzz-content-scrollbar min-h-0 flex-1 overflow-y-auto px-2 pb-3">
           <div className="mx-auto w-full max-w-3xl">
+          {invites.length > 0 ? (
+            <>
+              <SectionLabel>Invitations: {invites.length}</SectionLabel>
+              {invites.map((invite) => (
+                <InviteRow
+                  key={invite.id}
+                  invite={invite}
+                  onRespond={onRespondToInvite}
+                />
+              ))}
+            </>
+          ) : null}
           {mentions.length > 0 ? (
             <>
-              <SectionLabel>Mentions you — {mentions.length}</SectionLabel>
+              <SectionLabel>Mentions you: {mentions.length}</SectionLabel>
               {mentions.map((hit) => (
                 <InboxRow key={hit.message.id} hit={hit} onOpen={onOpen} />
               ))}
@@ -161,7 +191,7 @@ export function InboxView({
           ) : null}
           {rest.length > 0 ? (
             <>
-              <SectionLabel>Unread — {rest.length}</SectionLabel>
+              <SectionLabel>Unread: {rest.length}</SectionLabel>
               {rest.map((hit) => (
                 <InboxRow key={hit.message.id} hit={hit} onOpen={onOpen} />
               ))}
@@ -179,6 +209,74 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
     <p className="px-2 pb-1 pt-3 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
       {children}
     </p>
+  );
+}
+
+/**
+ * One community asking the reader to join it.
+ *
+ * Both answers are spelled out rather than hidden behind a menu, and neither
+ * is the row's default click target: accepting puts an account into shared
+ * state other people can see, so it should take a deliberate press on a button
+ * that says what it does.
+ */
+function InviteRow({
+  invite,
+  onRespond,
+}: {
+  invite: BuzzInvite;
+  onRespond: (invite: BuzzInvite, accept: boolean) => void | Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  const respond = async (accept: boolean) => {
+    setBusy(true);
+    try {
+      await onRespond(invite, accept);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex w-full items-start gap-2.5 rounded-xl bg-primary/5 px-2 py-2">
+      <MailPlus className="mt-0.5 size-3.5 shrink-0 text-primary" />
+      <span className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="flex items-center gap-1.5">
+          <span className="truncate text-xs font-semibold">
+            {invite.organizationName}
+          </span>
+          <span className="ml-auto shrink-0 text-3xs text-muted-foreground">
+            {clockTime(invite.createdAt)}
+          </span>
+        </span>
+        <span className="text-2xs leading-relaxed text-muted-foreground">
+          {invite.invitedBy
+            ? `${invite.invitedBy} invited you to join this community`
+            : "You have been invited to join this community"}
+          {invite.role === "admin" ? " as an admin" : ""}. Its rooms open once
+          you accept.
+        </span>
+        <span className="flex gap-1.5 pt-0.5">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void respond(true)}
+            className="rounded-lg bg-primary px-2 py-1 text-2xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            Accept
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void respond(false)}
+            className="rounded-lg border border-border/60 px-2 py-1 text-2xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+          >
+            Decline
+          </button>
+        </span>
+      </span>
+    </div>
   );
 }
 

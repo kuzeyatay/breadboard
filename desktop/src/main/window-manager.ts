@@ -214,6 +214,13 @@ export function remainingStartupVisibleMs(
 export class WindowManager {
   private readonly options: WindowManagerOptions;
   private mainWindow: BrowserWindow | null = null;
+  /**
+   * Set only by the native `close` event for the window that is still current.
+   * A renderer/GPU failure can make Electron emit `closed` without that user
+   * intent; the application lifecycle uses this distinction to reopen instead
+   * of interpreting a crash as a request to quit.
+   */
+  private mainWindowCloseRequested = false;
   private startupShownAt: number | null = null;
   private startupContinued = false;
   private readonly startupContinueWaiters = new Set<() => void>();
@@ -236,6 +243,13 @@ export class WindowManager {
 
   get window(): BrowserWindow | null {
     return this.mainWindow;
+  }
+
+  /** Read and clear the close intent associated with the last main window. */
+  consumeMainWindowCloseRequest(): boolean {
+    const requested = this.mainWindowCloseRequested;
+    this.mainWindowCloseRequested = false;
+    return requested;
   }
 
   rememberTheme(theme: BreadboardWindowTheme): void {
@@ -752,6 +766,7 @@ export class WindowManager {
     replacement.webContents.removeAllListeners("render-process-gone");
     replacement.webContents.removeAllListeners("did-finish-load");
     this.unparkWindow(replacement);
+    this.mainWindowCloseRequested = false;
     this.mainWindow = replacement;
     this.installLocalPageRecovery(replacement, state.url);
     this.installMainWindowLifetime(replacement);
@@ -760,6 +775,12 @@ export class WindowManager {
   }
 
   private installMainWindowLifetime(window: BrowserWindow): void {
+    window.on("close", () => {
+      // Retired startup/recovery windows are destroyed after their replacement
+      // has become current. Their close events must not turn that handoff into
+      // an application quit request.
+      if (this.mainWindow === window) this.mainWindowCloseRequested = true;
+    });
     window.on("closed", () => {
       // Only if it is still the main window: a dashboard swap retires this one
       // deliberately, and must not blank out its replacement.
@@ -777,6 +798,7 @@ export class WindowManager {
     // (seen on Windows after a dev rebuild). Never leave a healthy app running
     // indefinitely without a visible native window.
     this.revealWhenReady(window);
+    this.mainWindowCloseRequested = false;
     this.installMainWindowLifetime(window);
     this.mainWindow = window;
     return window;
@@ -972,6 +994,7 @@ export class WindowManager {
       dashboard.center();
     }
     this.unparkWindow(dashboard);
+    this.mainWindowCloseRequested = false;
     this.mainWindow = dashboard;
     this.installMainWindowLifetime(dashboard);
     dashboard.show();
@@ -1028,8 +1051,20 @@ export class WindowManager {
   }
 
   sendToRenderer(channel: string, payload: unknown): void {
-    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-      this.mainWindow.webContents.send(channel, payload);
+    const window = this.mainWindow;
+    if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
+    try {
+      window.webContents.send(channel, payload);
+    } catch (error) {
+      // A local dashboard restart can dispose its RenderFrameHost a fraction
+      // before Electron marks the BrowserWindow/WebContents destroyed. Sending
+      // inside that gap throws synchronously. A state notification is
+      // replayable after recovery; it must never take down the main process.
+      this.log(
+        `renderer unavailable while sending ${channel}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 

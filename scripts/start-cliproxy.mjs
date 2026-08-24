@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadRootEnv, loadDashboardEnv } from "./load-root-env.mjs";
+import { exitIfAlreadyRunning } from "./service-probe.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
@@ -148,6 +149,14 @@ function findFile(directory, name) {
 }
 
 async function main() {
+  // Before anything is downloaded or rewritten: the proxy's bearer lives in a
+  // file under CLIPROXY_HOME and every launcher on this machine reads the same
+  // one, so an instance that answers it is one this stack can use as-is.
+  await exitIfAlreadyRunning("cliproxy", {
+    url: `http://127.0.0.1:${cliproxyPort()}/v1/models`,
+    headers: { Authorization: `Bearer ${cliproxyApiKey()}` },
+  });
+
   fs.mkdirSync(cliproxyHome(), { recursive: true });
   fs.mkdirSync(cliproxyAuthDir(), { recursive: true });
 

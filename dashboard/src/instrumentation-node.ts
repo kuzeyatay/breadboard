@@ -8,6 +8,8 @@ import { synchronizeSkillsCatalog } from "./lib/hermes/skills-catalog-sync.ts";
 import { resumeAbandonedRuntimeRuns } from "./lib/hermes/run-recovery.ts";
 import { ABANDONED_RUN_AFTER_MS } from "./lib/hermes/run-liveness.ts";
 import { startScheduledChatScheduler } from "./lib/schedules/scheduler.ts";
+import { startMemoryAutofetch } from "./lib/memory-tree/autofetch.ts";
+import { autostartEmailPoller } from "./lib/email/service.ts";
 import { startReviewScheduler } from "./lib/review/scheduler.ts";
 import { startCaldavScheduler } from "./lib/calendar/caldav-scheduler.ts";
 import { autostartComfyUi } from "./lib/comfyui/autostart.ts";
@@ -15,6 +17,7 @@ import { autostartTelegramGateway } from "./lib/telegram/service.ts";
 import { autostartWhatsAppGateway } from "./lib/whatsapp/service.ts";
 import { startIfixAiMaintenanceScheduler } from "./lib/ifixai-maintenance/scheduler.ts";
 import { autostartPaperTrader } from "./lib/paper-trader/autostart.ts";
+import { launchAbandonedLearnRecoveryWorker } from "./lib/learn-recovery-background.ts";
 
 const globalState = globalThis as typeof globalThis & {
   __breadboardSkillsCatalogScheduler?: ReturnType<typeof setInterval>;
@@ -57,10 +60,10 @@ if (!globalState.__breadboardAbandonedRunSweeper) {
   globalState.__breadboardAbandonedRunSweeper = timer;
 }
 
-// Learn jobs are also durable, but their workers are process-local. A fenced
-// sweeper restores the pre-run snapshot only after both the database heartbeat
-// and the garden lease are stale. Keeping this out of the status endpoint makes
-// every Learn GET a genuine read while still recovering cleanly after restart.
+// Learn jobs are durable, but a worker can still disappear. Recovery runs in a
+// fixed detached process so importing the large Learn pipeline cannot inflate
+// or destabilize Next at startup. It restores a pre-run snapshot only after the
+// database heartbeat and fenced garden lease are stale; status remains read-only.
 if (!globalState.__breadboardAbandonedLearnSweeper) {
   let sweeping = false;
   const sweep = async () => {
@@ -68,8 +71,7 @@ if (!globalState.__breadboardAbandonedLearnSweeper) {
     if (!contentPath || sweeping) return;
     sweeping = true;
     try {
-      const { recoverAbandonedLearnJobs } = await import("./lib/learn.ts");
-      await recoverAbandonedLearnJobs({ contentPath });
+      await launchAbandonedLearnRecoveryWorker();
     } catch {
       // Recovery owns a fenced lease and is idempotent. A later sweep retries
       // anything that could not be inspected safely during startup.
@@ -86,6 +88,14 @@ if (!globalState.__breadboardAbandonedLearnSweeper) {
 // Cron-scheduled chats fire from this process, so they keep running while the
 // app is open on any page — or on none at all.
 startScheduledChatScheduler();
+// Keeps the agent's memory current from the user's own local data, so the
+// context is there before a question is asked rather than assembled after it.
+startMemoryAutofetch();
+
+// The mail channel, but only for someone who has linked a mailbox and asked
+// for it to run on its own. Off by default: an app that starts reading mail
+// because it was installed is not one anybody asked for.
+autostartEmailPoller();
 
 // Spaced repetition pushes its questions from here for the same reason: review
 // that only happens when you remember to open the app is the thing this feature

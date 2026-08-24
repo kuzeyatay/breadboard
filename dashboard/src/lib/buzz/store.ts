@@ -9,6 +9,13 @@
 import crypto from "node:crypto";
 import type Database from "better-sqlite3";
 
+import {
+  BREAD_ACCENT,
+  BREAD_HANDLE,
+  BREAD_NAME,
+  BREAD_SLUG,
+} from "./bread.ts";
+
 export type BuzzRoomKind = "channel" | "dm";
 export type BuzzRoomVisibility = "public" | "private";
 export type BuzzMemberKind = "human" | "agent";
@@ -384,7 +391,38 @@ export function createRoom(
   const row = database
     .prepare("SELECT * FROM buzz_rooms WHERE id = ?")
     .get(Number(info.lastInsertRowid)) as RoomRow;
-  return toRoom(row);
+  const room = toRoom(row);
+  ensureBreadMember(database, room.id);
+  return room;
+}
+
+/**
+ * Seat Bread, if it is not seated already.
+ *
+ * Called from `createRoom` so a new room has it from its first message, and
+ * again whenever a room is opened, so the rooms that existed before Bread did
+ * gain it too rather than staying permanently agentless. Idempotent by the
+ * unique index on `(room_id, persona_slug)`, so two readers opening one room at
+ * once cannot seat it twice.
+ */
+export function ensureBreadMember(
+  database: Database.Database,
+  roomId: number,
+): BuzzMember {
+  const existing = listMembers(database, roomId).find(
+    (member) => member.personaSlug === BREAD_SLUG,
+  );
+  if (existing) return existing;
+  return addMember(database, roomId, {
+    kind: "agent",
+    personaSlug: BREAD_SLUG,
+    displayName: BREAD_NAME,
+    handle: BREAD_HANDLE,
+    accent: BREAD_ACCENT,
+    // The one agent that speaks unasked. See `bread.ts` for why this is the
+    // exception to the room's mention-by-default rule.
+    respondTo: "always",
+  });
 }
 
 export function updateRoom(

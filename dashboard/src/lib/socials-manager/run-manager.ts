@@ -33,6 +33,7 @@ import { schedulePost } from "./calendar-bridge.ts";
 import { getSocialsManagerStore } from "./instance.ts";
 import { postImagePreviewUrl } from "./post-images.ts";
 import {
+  closePostizSession,
   openPostizSession,
   publishToPostiz,
   syncPendingPosts,
@@ -76,6 +77,12 @@ interface RunState {
   createdAt: number;
   /** Every model call this run has paid for: drafting, plus any artwork. */
   spent: ChatTokenUsage[];
+  /**
+   * The hold this run has on the Postiz stack, if it took one. Released when
+   * the run reaches any terminal state, including abort and failure — a lease
+   * that outlives its run would keep the containers alive forever.
+   */
+  postizLeaseId?: string | null;
 }
 
 const globalRuns = globalThis as typeof globalThis & {
@@ -207,7 +214,11 @@ async function execute(
     run.brief,
     socialsManagerDefaults(agentSettingsFor(run.userId, "socials-manager")),
   );
-  const availability = await openPostizSession();
+  // A run is one of the few things that legitimately wants Postiz, so it
+  // activates the stack and holds it for the duration: idle shutdown must not
+  // pull the containers away between drafting and publishing.
+  const availability = await openPostizSession({ reason: "run", hold: true });
+  run.postizLeaseId = availability.leaseId ?? null;
   const connectedProviderIds = [
     ...new Set(
       availability.session?.integrations
@@ -448,6 +459,7 @@ export function startRun(input: {
     postIds: [],
     createdAt: Date.now(),
     spent: [],
+    postizLeaseId: null,
   };
   runs.set(runId, run);
   forget();
@@ -459,13 +471,22 @@ export function startRun(input: {
     ...(input.conversationContext
       ? { conversationContext: input.conversationContext }
       : {}),
-  }).catch((error: unknown) => {
-    if (isAborted(run)) return;
-    run.status = "failed";
-    emit(run, "run.failed", {
-      error: error instanceof Error ? error.message : "run_error",
+  })
+    .catch((error: unknown) => {
+      if (isAborted(run)) return;
+      run.status = "failed";
+      emit(run, "run.failed", {
+        error: error instanceof Error ? error.message : "run_error",
+      });
+    })
+    .finally(() => {
+      // Completed, failed or aborted: the run is over either way, so the hold
+      // goes back. An abort returns here too, because `execute` keeps running
+      // until its next abort check.
+      const leaseId = run.postizLeaseId ?? null;
+      run.postizLeaseId = null;
+      void closePostizSession({ ...(leaseId ? { leaseId } : {}) }).catch(() => null);
     });
-  });
 
   return { runId, status: "queued" };
 }

@@ -76,6 +76,19 @@ function normalized(value: string): string {
     .trim();
 }
 
+function canonicalToken(value: string): string {
+  // Exercise requests are commonly plural ("biceps curls") while catalogue
+  // names are singular. Keep the anatomical noun `biceps`, but normalize the
+  // ordinary English plurals so the plain movement beats a variant that merely
+  // happens to use the plural spelling.
+  if (value === "biceps") return value;
+  if (value.length > 5 && /(?:ches|shes|sses|xes|zes)$/.test(value)) {
+    return value.slice(0, -2);
+  }
+  if (value.length > 3 && value.endsWith("s")) return value.slice(0, -1);
+  return value;
+}
+
 const QUERY_NOISE = new Set([
   "a", "an", "and", "animation", "can", "demo", "demonstrate", "do", "exercise",
   "for", "form", "how", "i", "me", "of", "perform", "please", "proper", "should",
@@ -88,7 +101,10 @@ export async function searchOpenGymCatalog(
 ): Promise<OpenGymCatalogMatch[]> {
   const catalog = await loadOpenGymCatalog();
   const needle = normalized(query);
-  const tokens = needle.split(/\s+/).filter((token) => token && !QUERY_NOISE.has(token));
+  const tokens = needle
+    .split(/\s+/)
+    .filter((token) => token && !QUERY_NOISE.has(token))
+    .map(canonicalToken);
   const equipment = normalized(options.equipment ?? "");
   const bodyPart = normalized(options.bodyPart ?? "");
   const scored: OpenGymCatalogMatch[] = [];
@@ -96,6 +112,7 @@ export async function searchOpenGymCatalog(
     if (equipment && !normalized(exercise.eq).includes(equipment)) continue;
     if (bodyPart && !normalized(exercise.bp).includes(bodyPart)) continue;
     const name = normalized(exercise.n);
+    const nameTokens = name.split(" ").map(canonicalToken);
     const haystack = normalized(
       [exercise.n, exercise.bp, exercise.eq, exercise.tg, exercise.mg, ...exercise.sm].join(" "),
     );
@@ -104,9 +121,14 @@ export async function searchOpenGymCatalog(
     if (needle && needle.includes(name)) score += 700 + Math.min(name.length, 100);
     if (needle && name.includes(needle)) score += 500 + Math.min(needle.length, 100);
     for (const token of tokens) {
-      if (name.split(" ").includes(token)) score += 80;
+      if (nameTokens.includes(token)) score += 80;
       else if (name.includes(token)) score += 45;
       else if (haystack.includes(token)) score += 12;
+    }
+    if (tokens.length && tokens.every((token) => nameTokens.includes(token))) {
+      // When all requested words are present, prefer the least specialized
+      // registered movement unless the user named equipment or a variation.
+      score += 40 - Math.max(0, nameTokens.length - tokens.length) * 2;
     }
     if (!tokens.length && (equipment || bodyPart)) score = 1;
     if (score > 0) scored.push({ ...exercise, score });

@@ -91,6 +91,8 @@ export interface LaunchPorts {
   postiz: number;
   /** Private readiness endpoint owned by the Postiz supervisor process. */
   postizSupervisor: number;
+  /** Electron-owned authenticated lifecycle/governor control plane. */
+  supervisorControl?: number;
   quartz: number;
   /** Quartz's hot-reload websocket listener (`build --serve --wsPort`). It is
    * opened unconditionally by the Quartz CLI, so it must be allocated too or
@@ -118,9 +120,42 @@ export interface LaunchPorts {
   recall?: number;
 }
 
+/**
+ * Secrets minted fresh on every launch and never written to disk.
+ *
+ * A per-install secret in `desktop-config.json` is the right shape for a
+ * credential the user's data outlives (NextAuth, Hermes). A capability token
+ * that only authorizes one running loopback coordinator is the opposite: it
+ * should die with the process that issued it, so a copy scraped from anywhere
+ * is worthless the moment Breadboard restarts.
+ */
+export interface LaunchSecrets {
+  /**
+   * Authorizes control of the Postiz lifecycle coordinator: activation, stop,
+   * and status. Handed only to the coordinator process and the dashboard
+   * server process, never to a renderer, endpoints.json, or any API response.
+   */
+  postizCoordinatorToken: string;
+  /** Authorizes the dashboard server to acquire service/job leases. */
+  supervisorControlToken?: string;
+}
+
+export function mintLaunchSecrets(): LaunchSecrets {
+  return {
+    postizCoordinatorToken: randomSecret(),
+    supervisorControlToken: randomSecret(),
+  };
+}
+
 export interface DesktopRuntimeConfig {
   persistent: PersistentDesktopConfig;
   ports: LaunchPorts;
+  /**
+   * Optional so older/simpler callers (and tests that only inspect ports)
+   * remain valid. When it is absent the coordinator receives no token, and
+   * fails closed: its control endpoints refuse every request.
+   */
+  launchSecrets?: LaunchSecrets;
 }
 
 const CONFIG_FILE = "desktop-config.json";
@@ -343,10 +378,20 @@ export function redactedConfigSummary(config: DesktopRuntimeConfig): Record<stri
   };
 }
 
-/** Redact any known secret values from a log line. */
-export function redactSecrets(line: string, config: PersistentDesktopConfig): string {
+/**
+ * Redact any known secret values from a log line.
+ *
+ * `extra` carries the per-launch secrets, which by design are not part of the
+ * persisted config but must be redacted exactly as hard.
+ */
+export function redactSecrets(
+  line: string,
+  config: PersistentDesktopConfig,
+  extra: readonly string[] = [],
+): string {
   let out = line;
   for (const secret of [
+    ...extra,
     config.nextAuthSecret,
     config.hermesSessionToken,
     config.hermesToolSecret,

@@ -284,11 +284,31 @@ export function inviteMember(
   handle: string,
   role: OrganizationRole,
 ): { username: string } {
-  requireRole(organizationId, userId, "admin");
-
   const invitee = findUserByHandle(handle);
   if (!invitee) throw new OrganizationError(404, "No account by that name");
-  if (memberRole(organizationId, invitee.id)) {
+  return inviteAccount(organizationId, userId, invitee.id, role);
+}
+
+/**
+ * The same invitation, addressed by account id rather than by typed handle.
+ *
+ * Pickers already know exactly which account was chosen, so re-resolving a
+ * name would only reintroduce the ambiguity they exist to remove. This is what
+ * Buzz calls when someone adds a person who is not in the community yet: the
+ * invitation is pending until they answer it, and no membership changes in the
+ * meantime.
+ */
+export function inviteAccount(
+  organizationId: number,
+  userId: number,
+  invitedUserId: number,
+  role: OrganizationRole = "member",
+): { username: string } {
+  requireRole(organizationId, userId, "admin");
+
+  const invitee = getAccount(invitedUserId);
+  if (!invitee) throw new OrganizationError(404, "No account by that name");
+  if (memberRole(organizationId, invitee.userId)) {
     throw new OrganizationError(409, `${invitee.username} is already a member`);
   }
 
@@ -303,7 +323,7 @@ export function inviteMember(
        status = 'pending',
        created_at = datetime('now'),
        responded_at = NULL`,
-  ).run(organizationId, invitee.id, userId, wanted);
+  ).run(organizationId, invitee.userId, userId, wanted);
 
   return { username: invitee.username };
 }
@@ -352,11 +372,12 @@ export function respondToInvite(
 /**
  * Put an account into an organization outright, no invite round trip.
  *
- * The invite flow exists for the case where the other person decides; this is
- * the case where the organization's own admin does. Buzz needs it because
- * bringing someone into a room is how people join a community now — there is
- * no separate screen to accept an invitation on — and a room member who is not
- * an organization member cannot read the room they were just added to.
+ * Nothing calls this today, and that is deliberate rather than an oversight:
+ * Buzz used to, and enrolling someone in a community without asking them
+ * turned out to be the wrong default — see `inviteAccount`, which replaced it.
+ * Kept because an admin action that genuinely does not need the invitee's
+ * consent may want it, and because deleting it would only mean writing the
+ * same three lines again.
  *
  * Idempotent: already being in the organization is a success, not a clash, so
  * two people adding the same colleague at once cannot fail the second one.

@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadDashboardEnv, loadRootEnv } from "./load-root-env.mjs";
+import { exitIfAlreadyRunning } from "./service-probe.mjs";
 import { colpaliPythonPath } from "./setup-colpali.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -65,6 +66,11 @@ process.stdout.write(
   `[colpali] serving on http://127.0.0.1:${port} (loopback only)\n` +
     `[colpali] model ${env.BREADBOARD_COLPALI_MODEL}, loaded on first request\n`,
 );
+
+await exitIfAlreadyRunning("colpali", {
+  url: `http://127.0.0.1:${port}/health`,
+  headers: { Authorization: `Bearer ${secret}` },
+});
 
 const child = spawn(
   python,

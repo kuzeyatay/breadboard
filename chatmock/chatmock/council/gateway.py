@@ -10,18 +10,28 @@ Response shape is the standard OpenAI chat completion, extended with:
 """
 
 import json
+import hmac
 import re
 import time
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from flask import Response, current_app, jsonify, make_response
 
-from ..ask import chatmock_ask
+from ..ask import chatmock_ask, get_council_runtime
 from ..http import build_cors_headers
 from ..model_registry import normalize_model_name
 from ..providers.registry import resolve_model
 from ..reasoning import request_reasoning_overrides
-from .policy import council_enabled
+from .policy import choose_council_mode, council_enabled
+from .request_receipts import (
+    CouncilReceiptConflict,
+    StrictCouncilReceiptStore,
+    council_request_hash_v1,
+    default_receipt_store,
+    safe_result_from_run,
+    valid_request_hash,
+    valid_request_id,
+)
 from .types import CouncilInput, CouncilRun, CouncilTokenUsage
 
 _STREAM_CHUNK_CHARS = 4000
@@ -32,6 +42,135 @@ def _payload_flag(payload: Dict[str, Any], *names: str) -> Any:
         if name in payload:
             return payload[name]
     return None
+
+
+ReceiptBinding = Tuple[str, str, StrictCouncilReceiptStore]
+
+
+def _strict_alias_value(
+    payload: Dict[str, Any],
+    camel_name: str,
+    snake_name: str,
+) -> Tuple[Any, bool]:
+    """Return one alias value while rejecting two different spellings.
+
+    Recovery identifiers are part of the dispatch fence, so normal
+    first-spelling-wins parsing is unsafe here: a proxy or caller could supply
+    both spellings with different values and make different layers bind the
+    same provider request to different receipts.
+    """
+    camel_present = camel_name in payload
+    snake_present = snake_name in payload
+    if camel_present and snake_present:
+        camel_value = payload[camel_name]
+        snake_value = payload[snake_name]
+        if type(camel_value) is not type(snake_value) or camel_value != snake_value:
+            raise ValueError(
+                f"Conflicting recoverable Council aliases: {camel_name}/{snake_name}."
+            )
+    if camel_present:
+        return payload[camel_name], True
+    if snake_present:
+        return payload[snake_name], True
+    return None, False
+
+
+def recoverable_council_binding_values(
+    payload: Dict[str, Any],
+) -> Tuple[Optional[Tuple[str, str]], Optional[Response]]:
+    try:
+        client_request_id, has_id = _strict_alias_value(
+            payload,
+            "clientRequestId",
+            "client_request_id",
+        )
+        client_request_hash, has_hash = _strict_alias_value(
+            payload,
+            "clientRequestHash",
+            "client_request_hash",
+        )
+    except ValueError as exc:
+        return None, _error_response(str(exc), status=400)
+
+    if not has_id and not has_hash:
+        return None, None
+    if (
+        not has_id
+        or not has_hash
+        or not valid_request_id(client_request_id)
+        or not valid_request_hash(client_request_hash)
+    ):
+        return None, _error_response(
+            "Invalid recoverable Council request binding.",
+            status=400,
+        )
+    return (client_request_id, client_request_hash), None
+
+
+def recoverable_council_passthrough_guard(
+    payload: Dict[str, Any],
+) -> Optional[Response]:
+    """Reject a recoverable binding before an unfenced provider passthrough.
+
+    External Responses providers are selected before the Council adapter runs,
+    so the route calls this guard explicitly. It deliberately shares the exact
+    alias/conflict parser used by both Council entrypoints.
+    """
+    binding, binding_error = recoverable_council_binding_values(payload)
+    if binding_error is not None:
+        return binding_error
+    if binding is None:
+        return None
+    return _error_response(
+        "Recoverable Council requests cannot bypass Council routing.",
+        status=409,
+    )
+
+
+def _reserve_recoverable_request(
+    council_input: CouncilInput,
+    requested_binding: Optional[Tuple[str, str]],
+) -> Tuple[Optional[ReceiptBinding], Optional[Response]]:
+    if requested_binding is None:
+        return None, None
+
+    client_request_id, client_request_hash = requested_binding
+    try:
+        effective_mode = choose_council_mode(
+            council_input,
+            get_council_runtime().config,
+        )
+        server_hash = council_request_hash_v1(
+            council_input,
+            effective_mode=effective_mode,
+        )
+    except Exception:
+        return None, _error_response(
+            "Recoverable Council request could not be canonically bound.",
+            status=400,
+        )
+    if not hmac.compare_digest(server_hash, client_request_hash):
+        return None, _error_response(
+            "Recoverable Council request hash does not match the effective request.",
+            status=409,
+        )
+
+    try:
+        store = default_receipt_store()
+        # This strict exclusive-create is the dispatch fence. No provider call
+        # is reachable unless the started receipt is durable.
+        store.reserve(client_request_id, server_hash)
+    except CouncilReceiptConflict:
+        return None, _error_response(
+            "Recoverable Council request id/hash is already in use.",
+            status=409,
+        )
+    except Exception:
+        return None, _error_response(
+            "Recoverable Council request receipt could not be persisted.",
+            status=500,
+        )
+    return (client_request_id, server_hash, store), None
 
 
 def _request_reasoning(
@@ -154,6 +293,48 @@ def _resolved_usage(run: CouncilRun) -> Tuple[CouncilTokenUsage, bool]:
     )
 
 
+def _finalize_recoverable_result(
+    run: CouncilRun,
+    receipt_binding: Optional[ReceiptBinding],
+) -> Optional[Response]:
+    if receipt_binding is None:
+        return None
+
+    receipt_id, receipt_hash, store = receipt_binding
+    try:
+        if not (run.final_answer or "").strip():
+            store.fail(
+                receipt_id,
+                receipt_hash,
+                "council_no_final_answer",
+            )
+        else:
+            persisted_result = safe_result_from_run(run)
+            persisted_usage, persisted_usage_estimated = _resolved_usage(run)
+            persisted_result["usage"] = {
+                "inputTokens": persisted_usage.input_tokens,
+                "outputTokens": persisted_usage.output_tokens,
+                "totalTokens": persisted_usage.total_tokens,
+                "cachedInputTokens": persisted_usage.cached_input_tokens,
+                "reasoningTokens": persisted_usage.reasoning_tokens,
+                "callCount": persisted_usage.call_count,
+                "reportedCallCount": persisted_usage.reported_call_count,
+            }
+            persisted_result["usageEstimated"] = persisted_usage_estimated
+            store.complete(
+                receipt_id,
+                receipt_hash,
+                persisted_result,
+            )
+    except Exception:
+        return _error_response(
+            "Council result completed but its durable recovery receipt could not be finalized.",
+            run,
+            status=500,
+        )
+    return None
+
+
 def _chat_completions_usage(usage: CouncilTokenUsage) -> Dict[str, Any]:
     return {
         "prompt_tokens": usage.input_tokens,
@@ -230,16 +411,17 @@ def _empty_final_answer_message(run: CouncilRun) -> str:
     ):
         return (
             "The council could not produce an answer because the ChatGPT upstream timed out "
-            "after automatic retries. Please try the request again."
+            "before the response completed. Please try the request again."
         )
     if re.search(
-        r"\bHTTP\s+(?:502|503|504)\b|\bupstream unavailable\b",
+        r"\bHTTP\s+(?:502|503|504)\b|\bupstream unavailable\b|"
+        r"\bwebsocket closed before completion\b|\bconnection_closed\b",
         diagnostics,
         flags=re.IGNORECASE,
     ):
         return (
             "The council could not produce an answer because the ChatGPT upstream was "
-            "temporarily unavailable after automatic retries. Please try the request again."
+            "temporarily unavailable. Please try the request again."
         )
     # A refusal naming the account, not the request: every model fails the same
     # way until someone signs in with an account that has Codex access, so say
@@ -323,12 +505,24 @@ def maybe_handle_with_council(
     requested_model: Optional[str],
     model: str,
     requested_model_alias: Optional[str] = None,
+    strict_model_route: bool = False,
     verbose: bool = False,
 ) -> Optional[Response]:
     """Returns a Flask response when the council handled the request, or None
     to let the legacy passthrough continue."""
+    requested_binding, binding_error = recoverable_council_binding_values(payload)
+    if binding_error is not None:
+        return binding_error
+
     bypass = council_bypass_reason(payload, messages)
     if bypass is not None:
+        if requested_binding is not None:
+            # A recoverable request may never fall through to a provider path
+            # that lacks the strict pre-dispatch receipt fence.
+            return _error_response(
+                "Recoverable Council requests cannot bypass Council routing.",
+                status=409,
+            )
         if verbose:
             print(f"[Council] bypass: {bypass}")
         return None
@@ -340,7 +534,18 @@ def maybe_handle_with_council(
         model,
         requested_model_alias,
     )
+    council_input.strict_model_route = requested_binding is not None or strict_model_route
+    receipt_binding, reserve_error = _reserve_recoverable_request(
+        council_input,
+        requested_binding,
+    )
+    if reserve_error is not None:
+        return reserve_error
     run = chatmock_ask(council_input)
+
+    finalize_error = _finalize_recoverable_result(run, receipt_binding)
+    if finalize_error is not None:
+        return finalize_error
 
     if verbose:
         print(f"[Council] run {run.id} mode={run.council_mode} taskType={run.task_type or '-'}")
@@ -425,6 +630,10 @@ _COUNCIL_FIELD_NAMES = (
     "source_context",
     "includeCouncilDiagnostics",
     "include_council_diagnostics",
+    "clientRequestId",
+    "client_request_id",
+    "clientRequestHash",
+    "client_request_hash",
     "council",
 )
 
@@ -683,6 +892,9 @@ def maybe_handle_responses_with_council(
     response when the request is text-only and safely council-mediated, or
     None to fall through to the legacy passthrough."""
     fields = extract_council_fields(payload)
+    requested_binding, binding_error = recoverable_council_binding_values(fields)
+    if binding_error is not None:
+        return binding_error
 
     bypass = _responses_bypass_reason(payload, fields)
     if bypass is None:
@@ -690,6 +902,12 @@ def maybe_handle_responses_with_council(
         if convert_error is not None:
             bypass = convert_error
     if bypass is not None:
+        if requested_binding is not None:
+            # The raw Responses passthrough has no strict receipt boundary.
+            return _error_response(
+                "Recoverable Council requests cannot bypass Council routing.",
+                status=409,
+            )
         if verbose:
             print(f"[Council] bypass responses: {bypass}")
         return None
@@ -704,6 +922,7 @@ def maybe_handle_responses_with_council(
     model_name = resolved.public_model if routed_model == resolved.upstream_model else routed_model
 
     temperature = payload.get("temperature")
+    max_tokens = payload.get("max_output_tokens")
     reasoning_effort, reasoning_summary = _request_reasoning(payload, requested_model_alias)
     council_input = CouncilInput(
         messages=messages,
@@ -717,10 +936,22 @@ def maybe_handle_responses_with_council(
         resolved_model=model_name,
         requested_model=routed_model,
         temperature=temperature if isinstance(temperature, (int, float)) else None,
+        max_tokens=max_tokens if isinstance(max_tokens, int) else None,
         reasoning_effort=reasoning_effort,
         reasoning_summary=reasoning_summary,
+        strict_model_route=requested_binding is not None,
     )
+    receipt_binding, reserve_error = _reserve_recoverable_request(
+        council_input,
+        requested_binding,
+    )
+    if reserve_error is not None:
+        return reserve_error
     run = chatmock_ask(council_input)
+
+    finalize_error = _finalize_recoverable_result(run, receipt_binding)
+    if finalize_error is not None:
+        return finalize_error
 
     if verbose:
         print(f"[Council] run {run.id} mode={run.council_mode} taskType={run.task_type or '-'} (responses)")

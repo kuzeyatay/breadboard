@@ -14,6 +14,7 @@ import {
   DEFAULT_ASSISTANT_REASONING_EFFORT,
   type AssistantReasoningEffort,
 } from "../assistant-reasoning.ts";
+import { normalizeAutonomyTier, type AutonomyTier } from "./autonomy.ts";
 import type { HermesSurface } from "./config.ts";
 import type { RuntimeKind } from "../agent-runtime/contracts.ts";
 import type {
@@ -219,6 +220,12 @@ export interface HermesUserSettings {
   reasoningEffortByModel: Record<string, AssistantReasoningEffort>;
   intelligencePreferenceSet: boolean;
   /**
+   * How much the agent may do unattended when the act-without-asking switch is
+   * on. The switch chooses whether to consult this at all; this chooses where
+   * the line falls. See lib/hermes/autonomy.ts.
+   */
+  autonomyTier: AutonomyTier;
+  /**
    * "Rewrite naturally" as a standing preference: every finished answer, every
    * artifact and every garden note is offered to the local rewriter, and takes
    * the rewrite when the preservation gates pass it.
@@ -255,7 +262,7 @@ export function getHermesUserSettings(
     .prepare(
       `SELECT filesystem_mode, last_active_directory, default_model,
               reasoning_effort, reasoning_effort_by_model, intelligence_preference_set,
-              humanizer_auto
+              humanizer_auto, autonomy_tier
        FROM hermes_user_settings WHERE user_id = ?`,
     )
     .get(userId) as
@@ -267,6 +274,7 @@ export function getHermesUserSettings(
         reasoning_effort_by_model: string | null;
         intelligence_preference_set: number;
         humanizer_auto: number;
+        autonomy_tier: string | null;
       }
     | undefined;
   return {
@@ -280,6 +288,7 @@ export function getHermesUserSettings(
     reasoningEffortByModel: parseEffortsByModel(row?.reasoning_effort_by_model),
     intelligencePreferenceSet: row?.intelligence_preference_set === 1,
     humanizerAuto: row?.humanizer_auto === 1,
+    autonomyTier: normalizeAutonomyTier(row?.autonomy_tier),
   };
 }
 
@@ -311,6 +320,7 @@ export function setHermesUserSettings(
         ? true
         : current.intelligencePreferenceSet,
     humanizerAuto: input.humanizerAuto ?? current.humanizerAuto,
+    autonomyTier: normalizeAutonomyTier(input.autonomyTier ?? current.autonomyTier),
   };
   if (input.defaultModel !== undefined || input.reasoningEffort !== undefined) {
     next.reasoningEffortByModel = {
@@ -322,8 +332,8 @@ export function setHermesUserSettings(
     `INSERT INTO hermes_user_settings
        (user_id, filesystem_mode, last_active_directory, default_model,
         reasoning_effort, reasoning_effort_by_model, intelligence_preference_set,
-        humanizer_auto, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        humanizer_auto, autonomy_tier, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(user_id) DO UPDATE SET
        filesystem_mode = excluded.filesystem_mode,
        last_active_directory = excluded.last_active_directory,
@@ -332,6 +342,7 @@ export function setHermesUserSettings(
        reasoning_effort_by_model = excluded.reasoning_effort_by_model,
        intelligence_preference_set = excluded.intelligence_preference_set,
        humanizer_auto = excluded.humanizer_auto,
+       autonomy_tier = excluded.autonomy_tier,
        updated_at = datetime('now')`,
   ).run(
     userId,
@@ -342,6 +353,7 @@ export function setHermesUserSettings(
     JSON.stringify(next.reasoningEffortByModel),
     next.intelligencePreferenceSet ? 1 : 0,
     next.humanizerAuto ? 1 : 0,
+    next.autonomyTier,
   );
   return next;
 }

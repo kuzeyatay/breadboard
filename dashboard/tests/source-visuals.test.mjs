@@ -28,7 +28,7 @@ import {
   validateSourceFormulaReviewSet,
 } from "../src/lib/source-visuals.ts";
 import { encodePng } from "../src/lib/png-crop.ts";
-import { MODEL_TRANSPORT_TOTAL_DELAY_MS } from "../src/lib/http-502-retry.ts";
+import { attachLearnTokenUsageTracking } from "../src/lib/learn-token-usage.ts";
 
 /** Write N page-snapshot PNGs and return their garden-relative URLs. */
 function seedPageImages(contentPath, garden, count) {
@@ -49,7 +49,6 @@ function fakeClient(create) {
 
 test("formula-review logical timeout covers the full bounded transport schedule", () => {
   const requiredDefault =
-    MODEL_TRANSPORT_TOTAL_DELAY_MS +
     SOURCE_FORMULA_REVIEW_FINAL_ATTEMPT_ALLOWANCE_MS +
     SOURCE_FORMULA_REVIEW_SCHEDULING_MARGIN_MS;
 
@@ -484,22 +483,75 @@ test("extractSourceVisuals surfaces a model failure instead of silently reportin
     ]);
 
     let calls = 0;
+    const providerFailure = new Error("502 Bad Gateway");
     const client = fakeClient(async () => {
       calls += 1;
-      throw new Error("502 Bad Gateway");
+      throw providerFailure;
     });
 
     await assert.rejects(
       () => extractSourceVisuals({ client, model: "m", contentPath: root, gardenSlug: garden, sourceId: "src", sourceIndex: 1, pageImageUrls: urls }),
-      /vision detection failed on \d+ page\(s\).*502/s,
+      (error) => error === providerFailure,
     );
-    // Fail-fast: stops after 3 consecutive detection failures, not all 5 pages.
-    assert.ok(calls <= 3, `expected fail-fast within 3 calls, got ${calls}`);
+    assert.equal(calls, 1, "one provider failure must stop the scan without replay");
     // The prior good ledger entry is preserved (not wiped by the failed run).
     const ledger = JSON.parse(fs.readFileSync(path.join(root, garden, ".breadboard", "source-visuals.json"), "utf-8"));
     assert.deepEqual(ledger.map((v) => v.sourceVisualId), ["S9.P1.F1"]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("source visual detection preserves ambiguous provider failures after one create", async () => {
+  const failures = [
+    new Error("Connection error.", {
+      cause: Object.assign(new Error("socket reset after request write"), {
+        code: "ECONNRESET",
+      }),
+    }),
+    Object.assign(new Error("Request timed out."), {
+      name: "APIConnectionTimeoutError",
+    }),
+    Object.assign(new Error("Request was aborted."), {
+      name: "AbortError",
+      code: "ABORT_ERR",
+    }),
+    Object.assign(new Error("HTTP 502 without a request receipt"), {
+      status: 502,
+    }),
+    new Error("Response ended prematurely after partial output"),
+  ];
+
+  for (const [index, providerFailure] of failures.entries()) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `bb-extract-ambiguous-${index}-`));
+    try {
+      const [page] = seedPageImages(root, "garden", 1);
+      let calls = 0;
+      const usageEvents = [];
+      const client = fakeClient(async () => {
+        calls += 1;
+        throw providerFailure;
+      });
+      attachLearnTokenUsageTracking(client, (event) => usageEvents.push(event));
+
+      await assert.rejects(
+        () => extractSourceVisuals({
+          client,
+          model: "model-generic",
+          contentPath: root,
+          gardenSlug: "garden",
+          sourceId: "source-generic",
+          sourceIndex: 1,
+          pageImageUrls: [page],
+        }),
+        (error) => error === providerFailure,
+      );
+      assert.equal(calls, 1);
+      assert.deepEqual(usageEvents.map(({ type }) => type), ["started", "completed"]);
+      assert.equal(usageEvents[1].usage, null);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 
@@ -573,7 +625,7 @@ for (const invalid of [
           sourceIndex: 1,
           pageImageUrls: [page],
         }),
-        /vision detection failed.*Source visual detection protocol error/s,
+        /Source visual detection protocol error/s,
       );
       const cachePath = path.join(root, garden, ".breadboard", "source-visual-scan-cache.json");
       assert.equal(fs.existsSync(cachePath), false, "an invalid response must not create a scan cache entry");
@@ -681,6 +733,7 @@ test("extractSourceVisuals resumes after a failed page without rescanning comple
     const urls = seedPageImages(root, garden, 2);
     let firstPageCalls = 0;
     let secondPageCalls = 0;
+    const providerFailure = new Error("Connection error.");
     const interruptedClient = fakeClient(async (request) => {
       const imageUrl = request.messages[1].content[0].image_url.url;
       assert.equal(request.messages[1].content[0].image_url.detail, "low");
@@ -700,12 +753,12 @@ test("extractSourceVisuals resumes after a failed page without rescanning comple
         };
       }
       secondPageCalls += 1;
-      throw new Error("Connection error.");
+      throw providerFailure;
     });
 
     await assert.rejects(
       () => extractSourceVisuals({ client: interruptedClient, model: "m", contentPath: root, gardenSlug: garden, sourceId: "src", sourceIndex: 1, pageImageUrls: urls }),
-      /vision detection failed/,
+      (error) => error === providerFailure,
     );
     assert.equal(firstPageCalls, 1);
     assert.equal(secondPageCalls, 1);
@@ -1424,6 +1477,65 @@ test("malformed formula review gets bounded AI-only rereview with exact prior re
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(cacheRoot, { recursive: true, force: true });
   }
+});
+
+test("empty, missing, or literal-null formula-review output is terminal after one model request", async () => {
+  for (const [label, content] of [
+    ["missing", undefined],
+    ["null", null],
+    ["empty", ""],
+    ["whitespace", "  \n"],
+    ["literal-null", "null"],
+    ["fenced-null", "```json\nnull\n```"],
+  ]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `bb-formula-review-${label}-`));
+    const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), `bb-formula-review-${label}-cache-`));
+    try {
+      const garden = "garden";
+      seedFormulaReviewGarden(root, garden, [1]);
+      let calls = 0;
+      await assert.rejects(
+        () => reviewRequiredSourceFormulaExactText({
+          client: fakeClient(async () => {
+            calls += 1;
+            return {
+              choices: [{
+                message: content === undefined ? {} : { content },
+              }],
+            };
+          }),
+          model: "review-model",
+          contentPath: root,
+          gardenSlug: garden,
+          selectedSourceIds: ["src"],
+          requiredFormulaIds: ["S1.P1.E1"],
+          cacheRoot,
+          renderPdfPage: async () => solidPng(),
+        }),
+        /formula page review returned (?:no nonempty candidate|literal JSON null); no semantic repair request was issued/,
+      );
+      assert.equal(calls, 1, `${label} output must not authorize a semantic model retry`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(cacheRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test("formula model boundaries parse each fulfilled response before a later cancellation checkpoint", () => {
+  const source = fs.readFileSync(
+    new URL("../src/lib/source-visuals.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    source,
+    /await options\.client\.chat\.completions\.create\([\s\S]{0,1200}?\);\s*options\.checkCancelled\?\.\(\);\s*rawResponse = response\.choices/,
+    "a settled formula response must be captured and validated before cancellation can gate another request",
+  );
+  assert.ok(
+    (source.match(/options\.checkCancelled\?\.\(\);\s*const requestPayload/g) ?? []).length >= 7,
+    "every bounded formula loop still gates cancellation before its next outbound request",
+  );
 });
 
 test("failed page-batch review leaves the staging ledger untouched and reuses accepted external cache", async () => {

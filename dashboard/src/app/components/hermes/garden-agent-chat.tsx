@@ -25,9 +25,10 @@ import { reusableChatAttachments } from "@/lib/chat-attachments";
 import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import AgentRuntimePanel from "./agent-runtime-panel";
 import ArtifactPanel, {
-  ARTIFACT_REVISE_EVENT,
+  ARTIFACT_AI_EDIT_EVENT,
   ArtifactArchiveIcon,
 } from "./artifact-panel";
+import { consumeArtifactAiEdit, type ArtifactAiEditDetail } from "./artifact-ai-edit";
 import SkillReviewPanel from "./skill-review-panel";
 import ReviewSettingsPanel from "./review-settings-panel";
 import TerminalScheduledPanel from "./terminal-scheduled-panel";
@@ -284,24 +285,21 @@ export default function GardenAgentChat({
   );
 
   useEffect(() => {
-    const listener = (raw: Event) => {
-      const artifact = (
-        raw as CustomEvent<{
-          id?: string;
-          title?: string;
-          gardenId?: string | null;
-          renderer?: string;
-          sourceSkill?: string | null;
-        }>
-      ).detail;
+    const apply = ({ artifact, prompt }: ArtifactAiEditDetail) => {
       if (!artifact?.id || artifact.gardenId !== gardenSlug) return;
       setView("chat");
       setInput(
-        `${interactiveVisualizerCommandForArtifact(artifact)}Revise the selected artifact "${artifact.title ?? "artifact"}" (${artifact.id}): `,
+        `${interactiveVisualizerCommandForArtifact(artifact)}${prompt}`,
       );
     };
-    window.addEventListener(ARTIFACT_REVISE_EVENT, listener);
-    return () => window.removeEventListener(ARTIFACT_REVISE_EVENT, listener);
+    const listener = (raw: Event) => apply((raw as CustomEvent<ArtifactAiEditDetail>).detail);
+    const queued = consumeArtifactAiEdit({ gardenId: gardenSlug });
+    const timer = queued ? window.setTimeout(() => apply(queued), 0) : null;
+    window.addEventListener(ARTIFACT_AI_EDIT_EVENT, listener);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      window.removeEventListener(ARTIFACT_AI_EDIT_EVENT, listener);
+    };
   }, [gardenSlug]);
 
   const loadProposals = useCallback(async () => {

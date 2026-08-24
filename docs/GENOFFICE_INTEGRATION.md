@@ -1,19 +1,31 @@
 # GenOffice integration
 
-Breadboard vendors a deliberately small part of GenOffice as an in-process,
-Node-only document engine. It adds two paths: byte-preserving edits to existing
-DOCX/PPTX files, and local PDF-to-DOCX conversion through PDFium wasm.
+Breadboard vendors GenOffice's document engines plus its native Docs renderer.
+The engines add byte-preserving edits to existing DOCX/PPTX files and local
+PDF-to-DOCX conversion through PDFium wasm. The renderer supplies the familiar
+paginated Word-style canvas and ribbon used for human DOCX editing.
 
 The source is pinned to GenOffice commit
 `f68df70e222d47aa08211f9a2d7748c610d1d6aa`. The preserved upstream clone is
 under `genoffice/`; its `BREADBOARD_UPSTREAM_COMMIT` file is the source of truth.
-Only these packages are retained:
+These packages are retained:
 
 - `docx-engine`
 - `pptx-engine`
 - `pptx-render`
 - `font-metrics`
 - `pdf2docx`
+- `ui`
+- `i18n`
+
+The upstream `apps/docs/src/renderer` and `apps/docs/src/shared` trees are also
+retained. Their visual/editor source is copied from the same pin. Six focused
+compatibility files are intentionally overlaid during sync: the Electron IPC
+types, the renderer's global bridge declaration, the AI dock, two small browser
+bundling adaptations, and a narrow `bidi-js` type boundary for PDF-to-DOCX.
+The overlays live under
+`dashboard/src/vendor-overrides/genoffice/` and are included in the vendor
+drift check.
 
 Their `src/` trees are copied byte-for-byte to
 `dashboard/src/vendor/genoffice/`. Breadboard code imports the copies through a
@@ -22,9 +34,15 @@ become application contracts.
 
 ## Deliberate boundaries
 
-This is not an integration of the GenOffice application suite. `apps/`, `ee/`,
-the AI/provider/search packages, UI, storage, parsing, and Electron utilities
-are excluded. Breadboard keeps its own Hermes AI layer, AnyDoc ingestion, and
+This is a focused integration of GenOffice Docs, not the whole application
+suite. GenOffice's Electron main/preload processes, `ee/`, provider/search
+packages, storage, and Electron utilities remain excluded. The Docs renderer
+is compiled into `dashboard/public/genoffice-editor/` and runs in a same-origin
+iframe so its Office UI styles cannot leak into the chat. Keeping this editor
+outside the Next.js route graph also prevents editor compilation or HMR from
+refreshing the owning chat. Its browser bridge loads and saves through
+Breadboard's authenticated artifact API, and its AI dock hands instructions to
+the owning Hermes conversation. Breadboard keeps AnyDoc ingestion and
 `document-structure` attachment parsing.
 
 Breadboard does not expose or integrate the Sheets/XLSX path because GenOffice's
@@ -53,16 +71,25 @@ PDFium is loaded from `@embedpdf/pdfium/pdfium.wasm`; Next standalone tracing
 and desktop package verification both include that asset. Conversion is local
 and performs no runtime network access.
 
+For an interactive DOCX edit, the artifact viewer opens the GenOffice Docs
+renderer. Saving publishes the complete DOCX package as a new immutable
+artifact version after an expected-version conflict check; it does not flatten
+the document into extracted paragraph fields. PPTX/XLSX retain their existing
+specialized fallback editors until GenOffice exposes browser-safe suites for
+those formats.
+
 ## Updating the pin
 
 1. Review the target GenOffice commit and its Apache-2.0 licensing files.
-2. Replace the retained `genoffice/` tree at that commit, keeping only the five
-   packages and the root `LICENSE`, `NOTICE`, and `README.md`.
+2. Replace the retained `genoffice/` tree at that commit, keeping the seven
+   packages, Docs renderer/shared sources, and the root licensing/readme files.
 3. Update `genoffice/BREADBOARD_UPSTREAM_COMMIT`.
 4. Read every retained `package.json`, re-check the transitive
    `@genoffice/*` dependency closure, and update dashboard runtime dependency
    versions if the manifests changed.
-5. Run `cd dashboard && npm run sync:genoffice`.
+5. Run `cd dashboard && npm run sync:genoffice`. This also rebuilds the static
+   browser editor in `public/genoffice-editor/`; use
+   `npm run build:genoffice-editor` when only the bundle needs rebuilding.
 6. Run the typecheck, lint, and `node --test tests/genoffice-*.test.mjs` suite.
 
 The drift test fails if a copied file, byte, or retained package name differs

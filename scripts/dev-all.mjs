@@ -2,12 +2,13 @@
 // Ordered full-stack launcher: providers + local services -> Hermes -> Quartz -> dashboard.
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import fsSync, { existsSync } from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadDashboardEnv, loadRootEnv } from "./load-root-env.mjs";
 import { loadOrCreateScriberrCredentials } from "./prepare-scriberr-runtime.mjs";
+import { probeService, WARMING_BUDGET_MS } from "./service-probe.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
@@ -67,6 +68,16 @@ const cadPythonBinary = path.join(
   process.platform === "win32" ? "python.exe" : "python",
 );
 const cadEnabled = cadMode !== "disabled" && existsSync(cadPythonBinary);
+// Resolved the same way the dashboard and the service launcher resolve it (a
+// file under the CAD home), so a probe can tell our running service from a
+// stranger on the port.
+const cadSecret = cadEnabled
+  ? (
+      await import(
+        pathToFileURL(path.join(repoRoot, "dashboard", "src", "lib", "cad", "config.ts")).href
+      )
+    ).cadServiceSecret(process.env)
+  : null;
 if (cadMode !== "disabled" && !cadEnabled) {
   process.stdout.write(
     "[stack] CAD service not provisioned (run `npm run setup:cad`); the Parametric CAD agent will report it as unavailable.\n",
@@ -91,6 +102,13 @@ const colpaliPythonBinary = path.join(
   process.platform === "win32" ? "python.exe" : "python",
 );
 const colpaliEnabled = colpaliMode !== "disabled" && existsSync(colpaliPythonBinary);
+const colpaliSecret = colpaliEnabled
+  ? (
+      await import(
+        pathToFileURL(path.join(repoRoot, "dashboard", "src", "lib", "colpali", "config.ts")).href
+      )
+    ).colpaliServiceSecret(process.env)
+  : null;
 if (colpaliMode !== "disabled" && !colpaliEnabled) {
   process.stdout.write(
     "[stack] ColPali not provisioned (run `npm run setup:colpali`); attached documents will be inlined whole.\n",
@@ -279,6 +297,13 @@ function prefix(name, chunk) {
   }
 }
 
+/**
+ * Statuses that mean a gated endpoint accepted our secret: not a 401. A route
+ * that does not exist (404), a body it refuses (400), or a method it does not
+ * take (405) all prove the request got past the gate.
+ */
+const AUTHENTICATED = [200, 204, 400, 404, 405];
+
 function startService(name, command, args, options = {}) {
   const child = spawn(command, args, { cwd: repoRoot, env: runtimeEnv, ...options });
   child.stdout.on("data", (chunk) => prefix(name, chunk));
@@ -286,6 +311,39 @@ function startService(name, command, args, options = {}) {
   child.on("error", (error) => prefix(name, `failed to start: ${error.message}`));
   children.push(child);
   return child;
+}
+
+/**
+ * Start a service unless an instance we can use is already answering.
+ *
+ * The stack is often started on top of itself — a desktop app already running,
+ * a previous `npm run dev` that outlived its terminal, a sidecar launched by
+ * hand. Spawning the second copy either loses the race for the port or runs a
+ * duplicate against the same data, so the probe comes first.
+ *
+ * Only an instance that answers *our* credentials is reused: the secrets these
+ * services share with the dashboard are per-launch unless the environment pins
+ * them, and adopting an instance holding a different one would look healthy
+ * here and 401 on the first real request. Anything else starts exactly as it
+ * did before.
+ */
+async function startUnlessRunning(name, probe, command, args, options = {}) {
+  const target = new URL(probe.url).origin;
+  // A service that is up but still compiling answers nothing for a while; the
+  // budget waits that out rather than reading the silence as an empty port.
+  const state = await probeService(probe, WARMING_BUDGET_MS[name] ?? 0);
+  if (state === "running") {
+    process.stdout.write(`[stack] ${name} is already running at ${target} — reusing it.
+`);
+    return null;
+  }
+  if (state === "foreign") {
+    process.stdout.write(
+      `[stack] ${target} is held by a process that does not answer as ${name}; starting ours anyway.
+`,
+    );
+  }
+  return startService(name, command, args, options);
 }
 
 async function waitFor(url, options = {}, timeoutMs = 60_000) {
@@ -301,7 +359,76 @@ async function waitFor(url, options = {}, timeoutMs = 60_000) {
   }
   throw new Error(`Timed out waiting for ${url}`);
 }
+/**
+ * Warn when a desktop stack is already supervising this same checkout.
+ *
+ * Both launchers run `next dev --webpack` plus the same sidecars against the
+ * same `dashboard/db`, and the desktop supervisor silently moves the dashboard
+ * to a spare port when 3000 is taken — so the duplication is invisible until
+ * two multi-gigabyte dev servers are competing for the machine's commit budget.
+ * Advisory only: parallel runs are sometimes deliberate. Shares the record
+ * format written by desktop/src/main/dev-instance-lock.ts.
+ */
+const DEV_INSTANCE_LOCK = path.join(repoRoot, ".runtime", "dev-stack.lock.json");
+
+function claimDevInstanceLock() {
+  let existing = null;
+  try {
+    const parsed = JSON.parse(fsSync.readFileSync(DEV_INSTANCE_LOCK, "utf8"));
+    if (parsed && typeof parsed.pid === "number" && typeof parsed.checkout === "string") {
+      existing = parsed;
+    }
+  } catch {
+    // Missing or unreadable: no lock.
+  }
+  const sameCheckout =
+    existing !== null && path.resolve(existing.checkout) === path.resolve(repoRoot);
+  let alive = false;
+  if (sameCheckout && existing.pid !== process.pid) {
+    try {
+      process.kill(existing.pid, 0);
+      alive = true;
+    } catch {
+      alive = false; // Stale record from a crashed stack; take it over.
+    }
+  }
+  if (alive) {
+    process.stdout.write(
+      `[stack] WARNING: another Breadboard development stack is already running for this ` +
+        `checkout (owner=${existing.owner}, pid=${existing.pid}, started=${existing.startedAt}). ` +
+        `Two stacks run two "next dev" servers against the same dashboard/db, and each can grow ` +
+        `to several gigabytes. Stop the other stack unless this is deliberate.\n`,
+    );
+    return;
+  }
+  try {
+    const record = {
+      owner: "stack",
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      checkout: path.resolve(repoRoot),
+    };
+    fsSync.mkdirSync(path.dirname(DEV_INSTANCE_LOCK), { recursive: true });
+    fsSync.writeFileSync(
+      DEV_INSTANCE_LOCK,
+      `${JSON.stringify(record, null, 2)}\n`,
+    );
+  } catch {
+    // Advisory only; an unwritable .runtime must not stop the stack.
+  }
+}
+
+function releaseDevInstanceLock() {
+  try {
+    const parsed = JSON.parse(fsSync.readFileSync(DEV_INSTANCE_LOCK, "utf8"));
+    if (parsed?.pid === process.pid) fsSync.rmSync(DEV_INSTANCE_LOCK, { force: true });
+  } catch {
+    // Nothing to release.
+  }
+}
+
 async function main() {
+  claimDevInstanceLock();
   // Semantic memory. The vendored mem0 engine is a build, not a service: the
   // clone gitignores its own dist/, so a checkout that has never run the setup
   // step recalls memories by wording alone and only the Settings panel ever
@@ -317,7 +444,12 @@ async function main() {
     ]);
   }
 
-  startService("chatmock", process.execPath, [path.join(repoRoot, "scripts", "start-chatmock.mjs")]);
+  await startUnlessRunning(
+    "chatmock",
+    { url: "http://127.0.0.1:8765/health" },
+    process.execPath,
+    [path.join(repoRoot, "scripts", "start-chatmock.mjs")],
+  );
   await waitFor("http://127.0.0.1:8765/health");
   process.stdout.write("[stack] ChatMock healthy\n");
 
@@ -325,7 +457,12 @@ async function main() {
     process.env.VOICEBOX_AUTOSTART?.trim() ?? "",
   );
   if (voiceboxAutostart) {
-    startService("voicebox", process.execPath, [path.join(repoRoot, "scripts", "start-voicebox.mjs")]);
+    await startUnlessRunning(
+      "voicebox",
+      { url: `${voiceboxBaseUrl}/health` },
+      process.execPath,
+      [path.join(repoRoot, "scripts", "start-voicebox.mjs")],
+    );
     process.stdout.write(
       `[stack] Voicebox starting on ${voiceboxBaseUrl}; Speech settings reports model readiness.\n`,
     );
@@ -336,7 +473,15 @@ async function main() {
   // readiness gate here would delay the whole stack for a capability most turns
   // never use. The dashboard's /api/cad/health reports the real state.
   if (cadEnabled) {
-    startService("cad", process.execPath, [path.join(repoRoot, "scripts", "start-cad.mjs")]);
+    await startUnlessRunning(
+      "cad",
+      {
+        url: `${cadServiceUrl}/health`,
+        ...(cadSecret ? { headers: { Authorization: `Bearer ${cadSecret}` } } : {}),
+      },
+      process.execPath,
+      [path.join(repoRoot, "scripts", "start-cad.mjs")],
+    );
   }
 
   // ColPali starts alongside the other sidecars and is never waited on. It
@@ -345,9 +490,15 @@ async function main() {
   // seconds of startup for a capability the first turn may not use. The
   // dashboard's /api/colpali/health reports the real state.
   if (colpaliEnabled) {
-    startService("colpali", process.execPath, [
-      path.join(repoRoot, "scripts", "start-colpali.mjs"),
-    ]);
+    await startUnlessRunning(
+      "colpali",
+      {
+        url: `${colpaliServiceUrl}/health`,
+        ...(colpaliSecret ? { headers: { Authorization: `Bearer ${colpaliSecret}` } } : {}),
+      },
+      process.execPath,
+      [path.join(repoRoot, "scripts", "start-colpali.mjs")],
+    );
   }
 
   // The humanizer preloads an installed checkpoint before opening its socket.
@@ -355,9 +506,15 @@ async function main() {
   // sequence. Missing weights remain an optional health state and do not stop
   // Breadboard from starting.
   if (humanizerEnabled) {
-    startService("humanizer", process.execPath, [
-      path.join(repoRoot, "scripts", "start-humanizer.mjs"),
-    ]);
+    await startUnlessRunning(
+      "humanizer",
+      {
+        url: `${humanizerServiceUrl}/health`,
+        headers: { Authorization: `Bearer ${humanizerSecret}` },
+      },
+      process.execPath,
+      [path.join(repoRoot, "scripts", "start-humanizer.mjs")],
+    );
     try {
       await waitFor(
         `${humanizerServiceUrl}/health`,
@@ -376,7 +533,24 @@ async function main() {
   // session opens. In `preferred` a failure is surfaced but non-fatal; in
   // `required` it aborts the stack.
   if (gbrainEnabled) {
-    startService("gbrain", process.execPath, [path.join(repoRoot, "scripts", "start-gbrain.mjs")]);
+    // /health is unauthenticated, so it cannot tell our adapter from one
+    // holding a different secret. Every other route is a POST behind the
+    // bearer: an empty body reaches the handler only once the secret matched.
+    await startUnlessRunning(
+      "gbrain",
+      {
+        url: `${gbrainAdapterUrl}/search`,
+        method: "POST",
+        body: "{}",
+        headers: {
+          Authorization: `Bearer ${gbrainSecret}`,
+          "Content-Type": "application/json",
+        },
+        acceptStatuses: AUTHENTICATED,
+      },
+      process.execPath,
+      [path.join(repoRoot, "scripts", "start-gbrain.mjs")],
+    );
     try {
       await waitFor(`${gbrainAdapterUrl}/health`, {}, 30_000);
       process.stdout.write("[stack] GBrain adapter healthy\n");
@@ -390,7 +564,20 @@ async function main() {
   // Hermes is never a hard dependency of the stack: an unhealthy runtime makes
   // agent routes return the sanitized unavailable error while Gardens and every
   // unrelated feature stay usable (mirrors the desktop supervisor).
-  startService("hermes", process.execPath, [path.join(repoRoot, "scripts", "start-hermes.mjs")]);
+  // Hermes's /api/status is a public liveness probe and answers any caller, so
+  // it cannot tell our runtime from a desktop app's. Every other /api/ path is
+  // gated on the session token before routing: a wrong token is 401, ours falls
+  // through to a 404 for this deliberately non-existent path.
+  await startUnlessRunning(
+    "hermes",
+    {
+      url: `${hermesBaseUrl}/api/__breadboard_adoption_probe`,
+      headers: { Authorization: `Bearer ${hermesToken}` },
+      acceptStatuses: AUTHENTICATED,
+    },
+    process.execPath,
+    [path.join(repoRoot, "scripts", "start-hermes.mjs")],
+  );
   try {
     await waitFor(`${hermesBaseUrl}/api/status`, {
       headers: { Authorization: `Bearer ${hermesToken}` },
@@ -407,7 +594,12 @@ async function main() {
   // "Scriberr unavailable" state until it becomes healthy.
   const scriberrAutostart = !/^(0|false|no|off)$/i.test(process.env.SCRIBERR_AUTOSTART?.trim() ?? "");
   if (scriberrAutostart) {
-    startService("scriberr", process.execPath, [path.join(repoRoot, "scripts", "start-scriberr.mjs")]);
+    await startUnlessRunning(
+      "scriberr",
+      { url: `${scriberrBaseUrl}/health` },
+      process.execPath,
+      [path.join(repoRoot, "scripts", "start-scriberr.mjs")],
+    );
     try {
       await waitFor(`${scriberrBaseUrl}/health`, {}, 30_000);
       process.stdout.write("[stack] Scriberr healthy\n");
@@ -421,9 +613,17 @@ async function main() {
   // Subscription proxy. The first launch downloads the binary, so allow a
   // generous window before deciding it failed.
   if (cliproxyEnabled) {
-    startService("cliproxy", process.execPath, [
-      path.join(repoRoot, "scripts", "start-cliproxy.mjs"),
-    ]);
+    await startUnlessRunning(
+      "cliproxy",
+      {
+        url: `${cliproxyBaseUrlValue}/models`,
+        ...(cliproxyApiKeyValue
+          ? { headers: { Authorization: `Bearer ${cliproxyApiKeyValue}` } }
+          : {}),
+      },
+      process.execPath,
+      [path.join(repoRoot, "scripts", "start-cliproxy.mjs")],
+    );
     try {
       // The OpenAI surface is bearer-protected, so the probe must authenticate
       // or it would read a healthy proxy's 401 as "still starting".
@@ -444,9 +644,12 @@ async function main() {
   // Deep Research is optional in the same sense as Scriberr: start it, but never
   // block the stack — the Agents tab reports why it is not usable until it is up.
   if (deepResearchEnabled) {
-    startService("deep-research", process.execPath, [
-      path.join(repoRoot, "scripts", "start-deep-research.mjs"),
-    ]);
+    await startUnlessRunning(
+      "deep-research",
+      { url: `${deepResearchUrl}/health`, expectBodyIncludes: '"engine":"open-deep-research"' },
+      process.execPath,
+      [path.join(repoRoot, "scripts", "start-deep-research.mjs")],
+    );
     try {
       await waitFor(`${deepResearchUrl}/health`, {}, 30_000);
       process.stdout.write("[stack] Deep Research service healthy\n");
@@ -457,18 +660,28 @@ async function main() {
     }
   }
 
-  startService("quartz", process.execPath, [path.join(repoRoot, "scripts", "start-quartz.mjs")]);
+  await startUnlessRunning(
+    "quartz",
+    { url: "http://127.0.0.1:8081/" },
+    process.execPath,
+    [path.join(repoRoot, "scripts", "start-quartz.mjs")],
+  );
   // Next is launched through Node directly rather than `npm.cmd`: Windows Node
   // (>=20.12) refuses to spawn a .cmd shim without a shell, which threw a
   // synchronous EINVAL and tore the whole stack down. This mirrors how the
   // desktop supervisor starts the same dev server.
-  startService("dashboard", process.execPath, [dashboardDir("node_modules", "next", "dist", "bin", "next"), "dev", "--webpack"], {
-    cwd: dashboardDir(),
-  });
+  await startUnlessRunning(
+    "dashboard",
+    { url: "http://127.0.0.1:3000/api/health", expectBodyIncludes: '"status":"ok"' },
+    process.execPath,
+    [dashboardDir("node_modules", "next", "dist", "bin", "next"), "dev", "--webpack"],
+    { cwd: dashboardDir() },
+  );
   process.stdout.write("[stack] Agent runtime: Hermes\n");
 }
 
 function shutdown() {
+  releaseDevInstanceLock();
   for (const child of children) child.kill("SIGTERM");
   process.exit(0);
 }

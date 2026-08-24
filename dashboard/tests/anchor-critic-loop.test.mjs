@@ -89,7 +89,6 @@ function registerEnergyBottleneck(dir) {
   write(dir, ".breadboard/source-anchors.json", JSON.stringify(l, null, 2) + "\n");
 }
 const noCritic = () => [];
-const throwingCritic = () => { throw new Error("connect ECONNREFUSED 127.0.0.1:8765"); };
 
 describe("anchor confirmation in the ChatMock critic loop", { skip }, () => {
   test("parse + validate the structured decision schema", () => {
@@ -187,13 +186,21 @@ describe("anchor confirmation in the ChatMock critic loop", { skip }, () => {
     assert.equal(readLedger(dir).sourceStructuralAnchors.find((a) => a.id === anchorId).criticConfirmed, undefined);
   });
 
-  test("6. ChatMock unavailable + low-confidence anchor (strict) → publishReady false with anchor reason", async () => {
+  test("6. ChatMock failure + low-confidence anchor propagates exactly", async () => {
     const dir = freshCopy();
     injectLowConfidenceAnchor(dir);
-    const res = await runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: throwingCritic, options: { strictPublish: true, maxRounds: 3 } });
-    assert.equal(res.status.draftGenerated, true);
-    assert.equal(res.status.publishReady, false);
-    assert.equal(res.status.reason, "critic_unavailable_with_unresolved_anchor");
+    const providerError = new Error("connect ECONNREFUSED 127.0.0.1:8765");
+    let calls = 0;
+    await assert.rejects(
+      () => runCriticLoop({
+        gardenDir: dir,
+        gardenSlug: "test-2",
+        critic: () => { calls += 1; throw providerError; },
+        options: { strictPublish: true, maxRounds: 3 },
+      }),
+      (actual) => actual === providerError,
+    );
+    assert.equal(calls, 1);
   });
 
   test("7. low-confidence anchor appears in critic + evidence reports", async () => {

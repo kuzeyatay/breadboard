@@ -41,7 +41,7 @@ test("Learn panel reports one failure message without redundant status or stage 
   assert.match(workspaceSource, /showFailedState && job\?\.error/);
   assert.match(
     workspaceSource,
-    /status === "failed" \|\| status === "cancelled" \|\| staleReviewForExistingGarden/,
+    /status === "failed"\s*\|\|\s*status === "cancelled"\s*\|\|\s*staleReviewForExistingGarden/,
   );
   assert.match(workspaceSource, /Starting Learn retry\.\.\./);
   assert.doesNotMatch(workspaceSource, /Internal stage:/);
@@ -82,7 +82,7 @@ test("Learn keeps controls up and current-step copy below the progress bar", () 
   );
   assert.match(
     workspaceSource,
-    /status === "cancelled" \|\| staleReviewForExistingGarden[\s\S]*?\? ""/,
+    /status === "cancelled"\s*\|\|\s*staleReviewForExistingGarden[\s\S]*?\?\s*""/,
   );
 });
 
@@ -114,15 +114,19 @@ test("model call labels are plain text without a badge or status dot", () => {
   );
 });
 
-test("a long syllabus name cannot push the Learn close button into the controls", () => {
-  assert.match(workspaceSource, /max-w-28 truncate sm:max-w-32/);
+test("a long syllabus name stays bounded while the panel closes from the toolbar", () => {
   assert.match(
     workspaceSource,
-    /<div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-2 gap-y-1\.5 md:flex-nowrap">[\s\S]*?<\/div>\s*\{!active &&[\s\S]*?aria-label="Close Learn panel"/,
+    /ref=\{learnSyllabusMenuButtonRef\}[\s\S]*?className="neu-button flex h-\[30px\] w-full min-w-0 items-center/,
   );
   assert.match(
     workspaceSource,
-    /aria-label="Close Learn panel"[\s\S]*?className="h-3\.5 w-3\.5"/,
+    /className="min-w-0 flex-1 max-w-28 truncate sm:max-w-32"/,
+  );
+  assert.doesNotMatch(workspaceSource, /aria-label="Close Learn panel"/);
+  assert.match(
+    workspaceSource,
+    /onClick=\{\(\) => setLearnPanelOpen\(\(open\) => !open\)\}[\s\S]*?learnPanelOpen \? "Close Learn panel" : "Open Learn panel"/,
   );
 });
 
@@ -139,7 +143,11 @@ test("Learn controls stay on one row and the syllabus name absorbs the pressure"
   const rowStart = workspaceSource.indexOf(
     'justify-end gap-x-2 gap-y-1.5 md:flex-nowrap',
   );
-  const rowEnd = workspaceSource.indexOf('aria-label="Close Learn panel"');
+  const rowEnd = workspaceSource.indexOf(
+    '{(active || status === "complete" || status === "failed") && (',
+    rowStart,
+  );
+  assert.ok(rowStart >= 0 && rowEnd > rowStart, "Learn control row is missing");
   const row = workspaceSource.slice(rowStart, rowEnd);
   const controlHeights = row.match(/h-\[30px\]/g) ?? [];
   assert.ok(

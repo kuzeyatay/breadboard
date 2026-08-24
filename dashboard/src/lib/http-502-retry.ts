@@ -1,22 +1,15 @@
-export const MODEL_TRANSPORT_MAX_ATTEMPTS = 6;
-export const MODEL_TRANSPORT_RETRY_INTERVAL_MS = 4 * 60 * 1000;
-
-/** Delay before each attempt. Attempts 1-3 are adjacent; attempts 4-6 each
- * begin after a four-minute quiet period. */
-export const MODEL_TRANSPORT_ATTEMPT_DELAYS_MS = [
-  0,
-  0,
-  0,
-  MODEL_TRANSPORT_RETRY_INTERVAL_MS,
-  MODEL_TRANSPORT_RETRY_INTERVAL_MS,
-  MODEL_TRANSPORT_RETRY_INTERVAL_MS,
-] as const;
+/** One original request plus one replay whose recovery must be proven. A
+ * second failure is new diagnostic evidence, not permission to run a ladder
+ * of identical model calls. */
+export const MODEL_TRANSPORT_MAX_ATTEMPTS = 2;
+export const MODEL_TRANSPORT_RETRY_INTERVAL_MS = 0;
+export const MODEL_TRANSPORT_ATTEMPT_DELAYS_MS = [0, 0] as const;
 
 /** The complete quiet period before the final scheduled transport attempt.
  * Callers that impose a bounded logical-request deadline can derive it from
  * this value instead of silently pre-empting the retry contract. */
 export const MODEL_TRANSPORT_TOTAL_DELAY_MS = MODEL_TRANSPORT_ATTEMPT_DELAYS_MS
-  .reduce((total, delayMs) => total + delayMs, 0);
+  .reduce<number>((total, delayMs) => total + delayMs, 0);
 
 export interface ModelTransportAttempt {
   attempt: number;
@@ -24,15 +17,71 @@ export interface ModelTransportAttempt {
   delayMs: number;
   /** Why this retry is being attempted. Absent only for the first request. */
   retryCause?: ModelTransportRetryCause;
+  /** Durable/diagnostic identity of the positive state that allowed replay. */
+  recoveryReceiptId?: string;
+  recoveryEvidence?: string;
 }
 
-export type ModelTransportRetryCause = "http_502" | "connection_failure";
+export type ModelTransportRetryCause = "connection_failure";
+
+export interface ModelTransportRecoveryReceipt {
+  id: string;
+  evidence: string;
+}
+
+export interface ModelTransportRecoveryFailure {
+  recovered: false;
+  probeCount: number;
+  outcome: string;
+  httpStatus?: number;
+}
+
+export type ModelTransportRecoveryVerification =
+  | ModelTransportRecoveryReceipt
+  | ModelTransportRecoveryFailure;
+
+export type ModelTransportRejectionCause =
+  | "unqualified_http_502"
+  | "partial_response"
+  | "replay_disabled"
+  | "recovery_unverified"
+  | "attempts_exhausted"
+  | "not_retryable";
+
+export interface ModelTransportRejection {
+  attempt: number;
+  maxAttempts: number;
+  rejectionCause: ModelTransportRejectionCause;
+  retryCause?: ModelTransportRetryCause;
+  httpStatus?: number;
+  recoveryProbeCount?: number;
+  recoveryProbeOutcome?: string;
+  recoveryProbeHttpStatus?: number;
+}
 
 export interface ModelTransportRetryOptions {
   signal?: AbortSignal | null;
+  /** Model POST consumers must use `never`: a downstream refusal can be
+   * observed after an upstream accepted the logical request. */
+  replayPolicy?: "never" | "verified_preaccept";
   sleep?: (delayMs: number, signal?: AbortSignal | null) => Promise<void>;
-  onDelay?: (attempt: ModelTransportAttempt) => void;
-  onAttempt?: (attempt: ModelTransportAttempt) => void;
+  /** Control-plane gate, intentionally distinct from observational callbacks.
+   * A thrown cancellation/conflict prevents the next outbound request. */
+  assertCanAttempt?: (attempt: ModelTransportAttempt) => void;
+  onDelay?: (attempt: ModelTransportAttempt) => void | Promise<void>;
+  onAttempt?: (attempt: ModelTransportAttempt) => void | Promise<void>;
+  /**
+   * Verify service recovery only after an exact operating-system ECONNREFUSED
+   * proof. The retry boundary never calls this for resets, timeouts, partial
+   * responses, aborts, generic connection failures, or mixed aggregates.
+   */
+  verifyConnectionRecovery?: (input: {
+    attempt: number;
+    maxAttempts: number;
+    error: unknown;
+    signal?: AbortSignal | null;
+  }) => Promise<ModelTransportRecoveryVerification | null | undefined>;
+  onRejected?: (rejection: ModelTransportRejection) => void | Promise<void>;
 }
 
 /** Backward-compatible names for callers that predate connection-error retries. */
@@ -45,6 +94,24 @@ export type Http502RetryOptions = ModelTransportRetryOptions;
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+}
+
+/** Telemetry is observational. A throwing or asynchronously rejecting callback
+ * must never suppress a model request, replace its exact failure, or authorize
+ * another attempt. */
+function notifyModelTransportObserver<T>(
+  observer: ((event: T) => void | Promise<void>) | undefined,
+  event: T,
+): void {
+  if (!observer) return;
+  try {
+    const result = observer(event);
+    if (result && typeof result.then === "function") {
+      void result.catch(() => undefined);
+    }
+  } catch {
+    // Deliberately ignore observer failures.
+  }
 }
 
 async function waitForRetry(delayMs: number, signal?: AbortSignal | null): Promise<void> {
@@ -76,15 +143,23 @@ export function httpStatusFromError(error: unknown): number | undefined {
   return undefined;
 }
 
-const RETRYABLE_CONNECTION_CODES = new Set(["ECONNREFUSED", "ECONNRESET"]);
+const RETRYABLE_CONNECTION_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EPIPE",
+  "ECONNABORTED",
+  "ENETRESET",
+]);
 const RETRYABLE_CONNECTION_MESSAGE =
-  /\bconnection error\b|\beconnrefused\b|\beconnreset\b|\bsocket hang(?:\s+)?up\b|\bresponse ended prematurely\b|\bpremature response\b/i;
+  /\bconnection error\b|\bfetch failed\b|\beconnrefused\b|\beconnreset\b|\bepipe\b|\bbroken pipe\b|\bsocket hang up\b/i;
+const PARTIAL_RESPONSE_MESSAGE =
+  /\bresponse ended prematurely\b|\bpremature response\b|\bchunked encoding\b|\bpartial (?:output|response)\b/i;
 const CANCELLATION_MESSAGE =
   /\b(?:request|operation|job) (?:was )?(?:cancelled|canceled|aborted)\b/i;
 const TIMEOUT_MESSAGE = /\b(?:timed out|timeout)\b/i;
 // Some subscription gateways wrap an explicit spent-session response in 502.
-// Require both a quota/limit marker and a reset/retry marker, so an ordinary
-// bad gateway remains eligible for the bounded transport retry schedule.
+// Require both a quota/limit marker and a reset/retry marker. A provider reset
+// is terminal even if a gateway wrapped it in the status used by receipts.
 const PROVIDER_QUOTA_OR_LIMIT_MESSAGE =
   /\b(?:session|usage|rate)\s+limit\b|\b(?:insufficient[_\s-]?quota|quota|credits?)\s+(?:is\s+)?(?:exhausted|exceeded|depleted)\b/i;
 const PROVIDER_QUOTA_RESET_MESSAGE =
@@ -95,6 +170,7 @@ interface ErrorDetail {
   name: string;
   message: string;
   status?: number;
+  leaf: boolean;
 }
 
 /** Read the wrapper, cause, and AggregateError branches without trusting any
@@ -108,7 +184,7 @@ function errorDetails(error: unknown): ErrorDetail[] {
   while (pending.length > 0 && details.length < 24) {
     const current = pending.shift();
     if (typeof current === "string") {
-      details.push({ code: "", name: "", message: current });
+      details.push({ code: "", name: "", message: current, leaf: true });
       continue;
     }
     if (!current || typeof current !== "object" || seen.has(current)) continue;
@@ -121,14 +197,17 @@ function errorDetails(error: unknown): ErrorDetail[] {
       message?: unknown;
       name?: unknown;
     };
+    const children: unknown[] = [];
+    if (record.cause !== undefined) children.push(record.cause);
+    if (Array.isArray(record.errors)) children.push(...record.errors);
     details.push({
       code: typeof record.code === "string" ? record.code : "",
       name: typeof record.name === "string" ? record.name : "",
       message: typeof record.message === "string" ? record.message : "",
       status: httpStatusFromError(current),
+      leaf: children.length === 0,
     });
-    if (record.cause !== undefined) pending.push(record.cause);
-    if (Array.isArray(record.errors)) pending.push(...record.errors);
+    pending.push(...children);
   }
 
   return details;
@@ -164,6 +243,111 @@ function hasExplicitProviderQuotaReset(details: ErrorDetail[]): boolean {
   ));
 }
 
+function hasCompetingAmbiguousConnectionBranch(details: ErrorDetail[]): boolean {
+  return details.some(({ code, message }) =>
+    ["ECONNRESET", "EPIPE", "ECONNABORTED", "ENETRESET"].includes(
+      code.toUpperCase(),
+    ) ||
+    /\beconnreset\b|\bepipe\b|\bbroken pipe\b|\bsocket hang up\b/i.test(message),
+  );
+}
+
+/**
+ * The only connection outcome a later health check can make safely replayable:
+ * every leaf carries the exact operating-system ECONNREFUSED code, proving no
+ * listener accepted the request. A mixed AggregateError or any response,
+ * reset, abort, timeout, partial-output, or quota branch fails closed.
+ */
+export function isStrictPreAcceptConnectionRefusal(error: unknown): boolean {
+  const details = errorDetails(error);
+  if (
+    details.length === 0 ||
+    details.some(({ status }) => status !== undefined) ||
+    isCancellation(details) ||
+    isTimeout(details) ||
+    hasExplicitProviderQuotaReset(details) ||
+    hasCompetingAmbiguousConnectionBranch(details) ||
+    details.some(({ message }) => PARTIAL_RESPONSE_MESSAGE.test(message))
+  ) {
+    return false;
+  }
+  const leaves = details.filter(({ leaf }) => leaf);
+  return (
+    leaves.length > 0 &&
+    leaves.every(({ code }) => code.toUpperCase() === "ECONNREFUSED")
+  );
+}
+
+/** Deep wrapper/cause/AggregateError classification for failures whose exact
+ * request outcome is unknown. Learn checks its durable cancellation state
+ * before using this classifier so intentional job cancellation is not logged
+ * as a transport ambiguity. */
+export function isAmbiguousModelTransportFailure(error: unknown): boolean {
+  const details = errorDetails(error);
+  if (details.length === 0 || isStrictPreAcceptConnectionRefusal(error)) {
+    return false;
+  }
+  const hasHttpResponse = details.some(({ status }) => status !== undefined);
+  // A standalone HTTP response has a determinate result. If an AggregateError
+  // or SDK wrapper also carries a distinct status-free reset/timeout leaf, that
+  // competing branch remains ambiguous and must still reach Learn's ledger.
+  const ambiguityDetails = hasHttpResponse
+    ? details.filter(({ status, leaf }) => status === undefined && leaf)
+    : details;
+  return (
+    isCancellation(ambiguityDetails) ||
+    isTimeout(ambiguityDetails) ||
+    ambiguityDetails.some(({ message }) => PARTIAL_RESPONSE_MESSAGE.test(message)) ||
+    ambiguityDetails.some(({ code, message }) =>
+      RETRYABLE_CONNECTION_CODES.has(code.toUpperCase()) ||
+      RETRYABLE_CONNECTION_MESSAGE.test(message),
+    )
+  );
+}
+
+/** Whether an error belongs to the model request boundary rather than to
+ * semantic validation of a returned model candidate. This deliberately
+ * excludes cancellation so callers can preserve their owned abort identity. */
+export function isModelTransportBoundaryFailure(error: unknown): boolean {
+  const details = errorDetails(error);
+  if (details.length === 0 || isCancellation(details)) return false;
+  return (
+    details.some(({ status }) => status !== undefined) ||
+    isTimeout(details) ||
+    hasExplicitProviderQuotaReset(details) ||
+    details.some(({ message }) => PARTIAL_RESPONSE_MESSAGE.test(message)) ||
+    details.some(({ code, message }) =>
+      RETRYABLE_CONNECTION_CODES.has(code.toUpperCase()) ||
+      RETRYABLE_CONNECTION_MESSAGE.test(message),
+    )
+  );
+}
+
+export interface ModelTransportFailureEvidence {
+  causes: Array<{
+    code?: string;
+    name?: string;
+    message?: string;
+    httpStatus?: number;
+    leaf: boolean;
+  }>;
+}
+
+/** Serializable, cycle-safe evidence from the exact wrapper/cause graph. */
+export function modelTransportFailureEvidence(
+  error: unknown,
+): ModelTransportFailureEvidence {
+  return {
+    causes: errorDetails(error).map(({ code, name, message, status, leaf }) => ({
+      ...(code ? { code } : {}),
+      ...(name ? { name } : {}),
+      ...(message ? { message } : {}),
+      ...(status !== undefined ? { httpStatus: status } : {}),
+      leaf,
+    })),
+  };
+}
+
 /** Whether a provider expressly says that the selected model is quota-limited
  * until a reset/retry point, even when a gateway incorrectly wraps it in 502.
  * This is terminal at the Learn transport boundary: replaying the same model
@@ -172,21 +356,25 @@ export function isExplicitProviderQuotaResetError(error: unknown): boolean {
   return hasExplicitProviderQuotaReset(errorDetails(error));
 }
 
-/** Only failures that mean ChatMock disappeared between request and response
- * are replayable. If an HTTP response exists, 502 is the sole retryable
- * status. Aborts and timeouts remain caller-owned terminal outcomes. */
+/** Classify connection-shaped failures for terminal evidence. Replay still
+ * requires the stricter exact-leaf ECONNREFUSED predicate plus a positive
+ * request-bound recovery verification. Aborts, timeouts, partial responses,
+ * resets, and every HTTP response remain terminal. */
 export function modelTransportRetryCause(
   error: unknown,
 ): ModelTransportRetryCause | undefined {
   const details = errorDetails(error);
   if (details.length === 0 || isCancellation(details)) return undefined;
   if (hasExplicitProviderQuotaReset(details)) return undefined;
+  if (isTimeout(details)) return undefined;
+  if (details.some(({ message }) => PARTIAL_RESPONSE_MESSAGE.test(message))) {
+    return undefined;
+  }
 
   const responseStatus = details.find(({ status }) => status !== undefined)?.status;
   if (responseStatus !== undefined) {
-    return responseStatus === 502 ? "http_502" : undefined;
+    return undefined;
   }
-  if (isTimeout(details)) return undefined;
 
   return details.some(({ code, message }) => (
     RETRYABLE_CONNECTION_CODES.has(code.toUpperCase()) ||
@@ -200,35 +388,162 @@ export function isRetryableModelTransportError(error: unknown): boolean {
   return modelTransportRetryCause(error) !== undefined;
 }
 
-/** Retry one logical model request after a transient ChatMock transport
- * failure. The operation is called with the same inputs by its caller; these
- * transport attempts never become semantic-repair attempts. */
+function terminalRejectionCause(
+  error: unknown,
+  retryCause?: ModelTransportRetryCause,
+): ModelTransportRejectionCause {
+  if (retryCause === "connection_failure") return "recovery_unverified";
+  const details = errorDetails(error);
+  if (details.some(({ message }) => PARTIAL_RESPONSE_MESSAGE.test(message))) {
+    return "partial_response";
+  }
+  if (details.some(({ status }) => status === 502)) return "unqualified_http_502";
+  return "not_retryable";
+}
+
+function isRecoveryFailure(
+  value: ModelTransportRecoveryVerification | null | undefined,
+): value is ModelTransportRecoveryFailure {
+  return Boolean(
+    value &&
+    "recovered" in value &&
+    value.recovered === false,
+  );
+}
+
+/** Run a bounded generic transport operation. Model POST consumers set
+ * `replayPolicy: "never"`; the optional verified-refusal replay exists only for
+ * boundaries that can prove a downstream refusal also means non-acceptance by
+ * the authoritative upstream. Provider bodies/headers never authorize replay. */
 export async function retryModelTransport<T>(
   operation: (attempt: ModelTransportAttempt) => Promise<T>,
   options: ModelTransportRetryOptions = {},
 ): Promise<T> {
   const sleep = options.sleep ?? waitForRetry;
+  const replayEnabled = options.replayPolicy === "verified_preaccept";
+  const attemptDelays = replayEnabled
+    ? MODEL_TRANSPORT_ATTEMPT_DELAYS_MS
+    : ([0] as const);
+  const maxAttempts = attemptDelays.length;
   let retryCause: ModelTransportRetryCause | undefined;
-  for (let index = 0; index < MODEL_TRANSPORT_ATTEMPT_DELAYS_MS.length; index += 1) {
+  let recoveryReceipt: ModelTransportRecoveryReceipt | undefined;
+  let recoveryFailure: ModelTransportRecoveryFailure | undefined;
+  for (let index = 0; index < attemptDelays.length; index += 1) {
     if (options.signal?.aborted) throw abortReason(options.signal);
     const attempt: ModelTransportAttempt = {
       attempt: index + 1,
-      maxAttempts: MODEL_TRANSPORT_MAX_ATTEMPTS,
-      delayMs: MODEL_TRANSPORT_ATTEMPT_DELAYS_MS[index],
+      maxAttempts,
+      delayMs: attemptDelays[index],
       ...(retryCause ? { retryCause } : {}),
+      ...(recoveryReceipt
+        ? {
+            recoveryReceiptId: recoveryReceipt.id,
+            recoveryEvidence: recoveryReceipt.evidence,
+          }
+        : {}),
     };
+    if (index > 0) {
+      notifyModelTransportObserver(options.onDelay, attempt);
+    }
     if (attempt.delayMs > 0) {
-      options.onDelay?.(attempt);
       await sleep(attempt.delayMs, options.signal);
       if (options.signal?.aborted) throw abortReason(options.signal);
     }
-    options.onAttempt?.(attempt);
+    options.assertCanAttempt?.(attempt);
+    notifyModelTransportObserver(options.onAttempt, attempt);
     try {
       return await operation(attempt);
     } catch (error) {
-      if (options.signal?.aborted) throw abortReason(options.signal);
+      // Once the operation itself has rejected, that exact object is the
+      // authoritative outcome. A concurrently observed abort must not replace
+      // it with `signal.reason` (or accidentally authorize another attempt).
+      if (options.signal?.aborted) throw error;
       retryCause = modelTransportRetryCause(error);
-      if (!retryCause || attempt.attempt === attempt.maxAttempts) {
+      if (!retryCause) {
+        notifyModelTransportObserver(options.onRejected, {
+          attempt: attempt.attempt,
+          maxAttempts: attempt.maxAttempts,
+          rejectionCause: terminalRejectionCause(error),
+          ...(httpStatusFromError(error) !== undefined
+            ? { httpStatus: httpStatusFromError(error) }
+            : {}),
+        });
+        throw error;
+      }
+      if (!replayEnabled) {
+        notifyModelTransportObserver(options.onRejected, {
+          attempt: attempt.attempt,
+          maxAttempts: attempt.maxAttempts,
+          rejectionCause: "replay_disabled",
+          retryCause,
+          ...(httpStatusFromError(error) !== undefined
+            ? { httpStatus: httpStatusFromError(error) }
+            : {}),
+        });
+        throw error;
+      }
+      if (attempt.attempt === attempt.maxAttempts) {
+        notifyModelTransportObserver(options.onRejected, {
+          attempt: attempt.attempt,
+          maxAttempts: attempt.maxAttempts,
+          rejectionCause: "attempts_exhausted",
+          retryCause,
+          ...(httpStatusFromError(error) !== undefined
+            ? { httpStatus: httpStatusFromError(error) }
+            : {}),
+        });
+        throw error;
+      }
+
+      // A recovery authorization can come only from the configured verifier,
+      // and the verifier is reachable only when exact leaf ECONNREFUSED proves
+      // that no listener accepted the original request. Arbitrary provider
+      // bodies/headers are never trusted as replay authorization.
+      recoveryReceipt = undefined;
+      recoveryFailure = undefined;
+      if (
+        retryCause === "connection_failure" &&
+        isStrictPreAcceptConnectionRefusal(error)
+      ) {
+        try {
+          const verification = await options.verifyConnectionRecovery?.({
+            attempt: attempt.attempt,
+            maxAttempts: attempt.maxAttempts,
+            error,
+            signal: options.signal,
+          }) ?? undefined;
+          if (isRecoveryFailure(verification)) {
+            recoveryFailure = verification;
+          } else {
+            recoveryReceipt = verification;
+          }
+        } catch {
+          recoveryFailure = {
+            recovered: false,
+            probeCount: 0,
+            outcome: "observation_failed",
+          };
+        }
+      }
+      if (!recoveryReceipt) {
+        notifyModelTransportObserver(options.onRejected, {
+          attempt: attempt.attempt,
+          maxAttempts: attempt.maxAttempts,
+          rejectionCause: "recovery_unverified",
+          retryCause,
+          ...(httpStatusFromError(error) !== undefined
+            ? { httpStatus: httpStatusFromError(error) }
+            : {}),
+          ...(recoveryFailure
+            ? {
+                recoveryProbeCount: recoveryFailure.probeCount,
+                recoveryProbeOutcome: recoveryFailure.outcome,
+                ...(recoveryFailure.httpStatus !== undefined
+                  ? { recoveryProbeHttpStatus: recoveryFailure.httpStatus }
+                  : {}),
+              }
+            : {}),
+        });
         throw error;
       }
     }
@@ -236,8 +551,7 @@ export async function retryModelTransport<T>(
   throw new Error("Model transport retry schedule did not run");
 }
 
-/** @deprecated Use retryModelTransport; this now also retries the narrowly
- * recognized connection failures handled by the Learn transport boundary. */
+/** @deprecated Use retryModelTransport; both names require recovery evidence. */
 export function retryHttp502<T>(
   operation: (attempt: ModelTransportAttempt) => Promise<T>,
   options: ModelTransportRetryOptions = {},

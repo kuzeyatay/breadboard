@@ -25,6 +25,8 @@ export interface StartupServiceView {
   state: string;
   lastError: string | null;
   restarts: number;
+  /** Reused from an instance that was already running, not started here. */
+  adopted?: boolean;
 }
 
 export interface StartupStateView {

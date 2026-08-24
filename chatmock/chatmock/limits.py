@@ -179,15 +179,20 @@ def _dict_to_window(value: Any) -> Optional[RateLimitWindow]:
 
 
 def record_rate_limits_from_response(response: Any) -> None:
-    if response is None:
+    try:
+        if response is None:
+            return
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return
+        snapshot = parse_rate_limit_headers(headers)
+        if snapshot is None:
+            return
+        store_rate_limit_snapshot(snapshot)
+    except Exception:
+        # Rate-limit persistence is observational and cannot replace the exact
+        # upstream response it was meant to describe.
         return
-    headers = getattr(response, "headers", None)
-    if headers is None:
-        return
-    snapshot = parse_rate_limit_headers(headers)
-    if snapshot is None:
-        return
-    store_rate_limit_snapshot(snapshot)
 
 
 def compute_reset_at(captured_at: datetime, window: RateLimitWindow) -> Optional[datetime]:
@@ -197,4 +202,3 @@ def compute_reset_at(captured_at: datetime, window: RateLimitWindow) -> Optional
         return captured_at + timedelta(seconds=int(window.resets_in_seconds))
     except Exception:
         return None
-

@@ -90,6 +90,17 @@ class CouncilRuntime:
 
     def _model_for_call(self, model: str, council_input: CouncilInput) -> str:
         call_model = model or self.config.upstream_fallback_model
+        if council_input.strict_model_route:
+            resolved = resolve_model(call_model)
+            if resolved.is_unknown_external:
+                raise ProviderError("strict recoverable model route is unavailable")
+            effective = (
+                resolved.upstream_model if resolved.is_chatgpt else resolved.public_model
+            )
+            expected = council_input.resolved_model or council_input.requested_model
+            if not expected or effective != expected:
+                raise ProviderError("strict recoverable model route does not match")
+            return effective
         # The router normalizes ChatGPT ids and substitutes its own fallback for
         # anything it cannot serve, so a plain id here is already final.
         effective = self.router.effective_model(call_model)
@@ -200,19 +211,37 @@ class CouncilRuntime:
                 or council_input.requested_model
             ),
             request_id=run.id,
+            allow_account_failover=not council_input.strict_model_route,
+            allow_transport_retry=not council_input.strict_model_route,
         )
         try:
-            text = self.router.call_model(call)
+            if council_input.strict_model_route:
+                strict_call = getattr(self.router, "call_model_strict", None)
+                if not callable(strict_call):
+                    raise ProviderError("strict recoverable model routing is unavailable")
+                text = strict_call(call)
+            else:
+                text = self.router.call_model(call)
         finally:
-            run.record_model_attempts(call.model_attempts_out)
-            usage = call.usage_out
-            run.record_model_call_usage(
-                input_tokens=usage.input_tokens if usage else None,
-                output_tokens=usage.output_tokens if usage else None,
-                total_tokens=usage.total_tokens if usage else None,
-                cached_input_tokens=usage.cached_input_tokens if usage else None,
-                reasoning_tokens=usage.reasoning_tokens if usage else None,
-            )
+            try:
+                run.record_model_attempts(call.model_attempts_out)
+            except Exception:
+                # The run ledger observes a completed call. It must not replace
+                # either the returned answer or the provider's exact error.
+                pass
+            try:
+                usage = call.usage_out
+                run.record_model_call_usage(
+                    input_tokens=usage.input_tokens if usage else None,
+                    output_tokens=usage.output_tokens if usage else None,
+                    total_tokens=usage.total_tokens if usage else None,
+                    cached_input_tokens=usage.cached_input_tokens if usage else None,
+                    reasoning_tokens=usage.reasoning_tokens if usage else None,
+                )
+            except Exception:
+                # Usage accounting is independently best-effort so one broken
+                # observer cannot suppress the other or alter the model result.
+                pass
         if not isinstance(text, str) or not text.strip():
             raise ProviderError(f"model {call_model} returned an empty answer")
         reasoning = call.reasoning_out if isinstance(call.reasoning_out, str) and call.reasoning_out.strip() else None

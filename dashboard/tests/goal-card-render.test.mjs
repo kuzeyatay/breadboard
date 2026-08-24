@@ -90,9 +90,9 @@ function render(goal, props = {}) {
   }
 }
 
-test("an idle goal reads as stalled and offers to keep going", () => {
+test("an idle goal remains visibly pursued and offers to keep going", () => {
   const html = render(GOAL, { running: false, onContinue: () => {} });
-  assert.match(html, /Goal stalled/);
+  assert.match(html, /Pursuing goal/);
   assert.match(html, /Get every dashboard test passing/);
   assert.match(html, /aria-label="Keep working on this goal"/);
   assert.match(html, /aria-label="Abandon this goal"/);
@@ -102,9 +102,9 @@ test("an idle goal reads as stalled and offers to keep going", () => {
   assert.match(html, /\d+d \d+h \d+m \d+s/);
 });
 
-test("a goal with a turn in flight reads as running and offers to hold it", () => {
+test("a goal with a turn in flight stays pursued and offers to hold it", () => {
   const html = render(GOAL, { running: true });
-  assert.match(html, /Goal running/);
+  assert.match(html, /Pursuing goal/);
   assert.match(html, /aria-label="Pause this goal"/);
   assert.doesNotMatch(html, /Keep working on this goal/);
 });
@@ -119,7 +119,7 @@ test("a goal out of turns asks for more rather than pretending to continue", () 
   const html = render({ ...GOAL, status: "budget_limited", turnBudget: 4 });
   assert.match(html, /Goal out of turns/);
   assert.match(html, /aria-label="Give this goal more turns"/);
-  assert.match(html, /4\/4 turns/);
+  assert.doesNotMatch(html, /4\/4 turns/);
 });
 
 test("a complete goal offers nothing but the record of it", () => {
@@ -141,4 +141,12 @@ test("continuing is held back while a draft is waiting", () => {
   const html = render(GOAL, { onContinue: () => {}, continueBlocked: true });
   assert.match(html, /Send or clear your draft first/);
   assert.match(html, /disabled=""/);
+});
+
+test("the default goal treatment is a single minimal composer strip", () => {
+  const html = render(GOAL, { running: true });
+  assert.match(html, /border-b/);
+  assert.doesNotMatch(html, /neu-surface-subtle/);
+  assert.doesNotMatch(html, /rounded-2xl/);
+  assert.doesNotMatch(html, /animate-pulse/);
 });

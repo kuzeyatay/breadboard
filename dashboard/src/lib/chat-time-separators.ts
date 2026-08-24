@@ -4,7 +4,15 @@ export interface TimestampedChatMessage {
   createdAt?: string;
 }
 
-function parsedTimestamp(value: string | undefined): number | null {
+/**
+ * Parse timestamps carried by chat records.
+ *
+ * SQLite's `datetime('now')` is UTC but is stored as `YYYY-MM-DD HH:mm:ss`,
+ * without a timezone suffix. Browsers interpret that shape as local time,
+ * which adds the local UTC offset to live response timers. Normalize only the
+ * exact SQLite shape; ISO timestamps that already carry an offset pass through.
+ */
+export function parseChatTimestamp(value: string | undefined): number | null {
   if (!value) return null;
   const normalized =
     /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
@@ -86,7 +94,7 @@ export function chatTimeSeparatorLabels(
   let lastSeparatorAt: number | null = null;
 
   return messages.map((message) => {
-    const timestamp = parsedTimestamp(message.createdAt);
+    const timestamp = parseChatTimestamp(message.createdAt);
     if (timestamp === null) return null;
 
     const shouldShow =

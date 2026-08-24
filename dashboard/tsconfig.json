@@ -30,6 +30,9 @@
       "@genoffice/*": [
         "./src/vendor/genoffice/*/src"
       ],
+      "@genoffice/pptx-render/*": [
+        "./src/vendor/genoffice/pptx-render/src/*"
+      ],
       "@genoffice/pptx-engine/*": [
         "./src/vendor/genoffice/pptx-engine/src/*"
       ]
@@ -52,6 +55,8 @@
     ".next-production-final",
     ".next-schedcheck",
     "src/vendor/genoffice/pptx-render/src/bidi-js.d.ts",
+    "src/vendor/genoffice/docs/src/renderer/ai",
+    "src/vendor-overrides",
     "openwork-runtime",
     "openwork-state",
     "openwork-workspace"

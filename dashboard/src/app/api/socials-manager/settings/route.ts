@@ -57,7 +57,11 @@ function connectionMode(provider: PostizProviderConnection): string {
  * connection the user may never want.
  */
 async function liveSettings() {
-  const availability = await openPostizSession();
+  // Opening this dialog *is* the channel-connection flow, which is one of the
+  // few things that legitimately needs the real stack. Nothing else on this
+  // route activates Postiz: the network checkboxes below are answered from
+  // local settings while the containers stay stopped.
+  const availability = await openPostizSession({ reason: "channels" });
   if (!availability.session) {
     return {
       availability,

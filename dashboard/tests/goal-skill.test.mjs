@@ -101,6 +101,7 @@ test("a commitment to keep working selects the skill; ordinary turns do not", ()
     "summarize the team's goals for Q3",
     "rewrite the objectives section of this doc",
     "run the tests",
+    "how do i do biceps curls",
     "keep the second paragraph and drop the rest",
   ]) {
     assert.equal(selects(text), false, `stolen: ${text}`);
@@ -111,6 +112,15 @@ test("a commitment to keep working selects the skill; ordinary turns do not", ()
   assert.equal(selects("keep going until it passes", true), false);
   // An explicit command already says what the turn is.
   assert.equal(selects("/watch keep going until you have the whole clip"), false);
+  assert.equal(
+    shouldAutoSelectGoal({
+      text: "The user's goal is to learn biceps curls",
+      surface: "dashboard_terminal",
+      authenticated: true,
+      internalContinuation: true,
+    }),
+    false,
+  );
   assert.equal(
     goalCommandText({
       text: "keep going until the tests pass",
@@ -239,4 +249,13 @@ test("the goal tools are gated on the skill or an existing goal, not on a reques
     "utf8",
   );
   assert.doesNotMatch(messages, /goalMode/);
+});
+
+test("Super Agent cannot start Goal Mode from its ambient inventory", () => {
+  const superAgent = fs.readFileSync(
+    new URL("../src/lib/hermes/super-agent.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(superAgent, /skill\.slug !== GOAL_MODE_SKILL/);
+  assert.match(superAgent, /slug !== GOAL_MODE_CONNECTION/);
 });

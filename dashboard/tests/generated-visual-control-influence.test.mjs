@@ -197,6 +197,428 @@ test("select influence checks every non-default option index", () => {
   assert.equal(JSON.parse(selectCheck.detail).alternateState, 2);
 });
 
+const branchOpportunity = {
+  interactionGoal: "explore_structure",
+  learnerAction:
+    "Select the first, second, or combined case and inspect the highlighted branch of a persistent dependency diagram.",
+  requiredInputs: [{
+    id: "branch_case",
+    kind: "select_case",
+    label: "Branch case",
+    type: "select",
+    options: ["First", "Second", "First + Second"],
+    defaultValue: "First + Second",
+  }],
+  requiredOutputs: [{
+    id: "branch_view",
+    label: "Selected dependency branch",
+    representation: "diagram",
+  }],
+  sourceAnchorIds: [],
+};
+
+function strengthWhen(optionIndex, whenTrue = 5, whenFalse = 1) {
+  return {
+    kind: "conditional",
+    comparison: "eq",
+    left: inputExpression("branch_case"),
+    right: { kind: "constant", value: optionIndex },
+    whenTrue: { kind: "constant", value: whenTrue },
+    whenFalse: { kind: "constant", value: whenFalse },
+  };
+}
+
+function selectedOrCombinedStrength(selectedIndex, high = 5, low = 1) {
+  return {
+    kind: "conditional",
+    comparison: "eq",
+    left: inputExpression("branch_case"),
+    right: { kind: "constant", value: selectedIndex },
+    whenTrue: { kind: "constant", value: high },
+    whenFalse: strengthWhen(2, high, low),
+  };
+}
+
+function branchDefinition(edgeStrengths) {
+  return {
+    schemaVersion: 1,
+    sdkVersion: "1.0.0",
+    title: "Persistent selected branches",
+    description:
+      "Choose one dependency case while the full node-link topology remains visible.",
+    accessibilityDescription:
+      "A labelled branch selector changes the emphasized dependency edges; Reset restores the combined case.",
+    controls: structuredClone(branchOpportunity.requiredInputs),
+    outputs: structuredClone(branchOpportunity.requiredOutputs),
+    scenes: [{
+      kind: "diagram",
+      title: "Dependency branches",
+      nodes: [
+        { id: "first", label: "A", x: 140, y: 110 },
+        { id: "second", label: "B", x: 140, y: 250 },
+        { id: "result", label: "R", x: 500, y: 180 },
+      ],
+      edges: [
+        { from: "first", to: "result", directed: true, strength: edgeStrengths[0] },
+        { from: "second", to: "result", directed: true, strength: edgeStrengths[1] },
+      ],
+    }],
+  };
+}
+
+test("selected-branch diagram validation requires exclusive single branches and a combined union", () => {
+  const unrelatedUniformChange = branchDefinition([
+    inputExpression("branch_case"),
+    inputExpression("branch_case"),
+  ]);
+  let result = runGeneratedVisualDeterministicTests({
+    definition: unrelatedUniformChange,
+    opportunity: branchOpportunity,
+    testCases: [],
+  });
+  assert.equal(
+    result.semanticTests.find((check) => /changes a numeric/.test(check.name))?.passed,
+    true,
+    "a uniform width change demonstrates why generic influence alone is insufficient",
+  );
+  let branchCheck = result.semanticTests.find((check) =>
+    /branch_case gives every selected diagram branch/.test(check.name),
+  );
+  assert.ok(branchCheck);
+  assert.equal(branchCheck.passed, false, JSON.stringify(branchCheck));
+  assert.match(branchCheck.detail, /exact control branch_case/);
+  assert.match(branchCheck.detail, /diagram edge\.strength/);
+  assert.match(
+    branchCheck.detail,
+    /combined\/both\/all\/sum\/total\/and\/&\/\+/,
+  );
+
+  const combinedDoesNotShowUnion = branchDefinition([
+    strengthWhen(0),
+    strengthWhen(1),
+  ]);
+  result = runGeneratedVisualDeterministicTests({
+    definition: combinedDoesNotShowUnion,
+    opportunity: branchOpportunity,
+    testCases: [],
+  });
+  branchCheck = result.semanticTests.find((check) =>
+    /branch_case gives every selected diagram branch/.test(check.name),
+  );
+  assert.equal(branchCheck?.passed, false, JSON.stringify(branchCheck));
+
+  const faithfulBranches = branchDefinition([
+    selectedOrCombinedStrength(0),
+    selectedOrCombinedStrength(1),
+  ]);
+  result = runGeneratedVisualDeterministicTests({
+    definition: faithfulBranches,
+    opportunity: branchOpportunity,
+    testCases: [],
+  });
+  branchCheck = result.semanticTests.find((check) =>
+    /branch_case gives every selected diagram branch/.test(check.name),
+  );
+  assert.equal(branchCheck?.passed, true, JSON.stringify(branchCheck));
+  assert.equal(result.passed, true, JSON.stringify(result));
+});
+
+function selectedBranchCheck(definition, branchContract = branchOpportunity) {
+  const result = runGeneratedVisualDeterministicTests({
+    definition,
+    opportunity: branchContract,
+    testCases: [],
+  });
+  const branchCheck = result.semanticTests.find((check) =>
+    /branch_case gives every selected diagram branch/.test(check.name),
+  );
+  assert.ok(branchCheck, JSON.stringify(result.semanticTests));
+  return branchCheck;
+}
+
+test("selected-branch highlighting must be perceptible and persist across runtime contexts", () => {
+  const imperceptible = branchDefinition([
+    selectedOrCombinedStrength(0, 1.00000002, 1),
+    selectedOrCombinedStrength(1, 1.00000002, 1),
+  ]);
+  assert.equal(
+    selectedBranchCheck(imperceptible).passed,
+    false,
+    "sub-pixel numerical differences are not visible highlighting",
+  );
+
+  const addClock = (expression) => ({
+    kind: "binary",
+    op: "add",
+    left: expression,
+    right: {
+      kind: "binary",
+      op: "multiply",
+      left: { kind: "constant", value: 10 },
+      right: inputExpression("t"),
+    },
+  });
+  const clockSaturatesEveryBranch = branchDefinition([
+    addClock(selectedOrCombinedStrength(0)),
+    addClock(selectedOrCombinedStrength(1)),
+  ]);
+  clockSaturatesEveryBranch.animation = {
+    durationMs: 1_000,
+    loop: true,
+    autoplay: true,
+  };
+  assert.equal(
+    selectedBranchCheck(clockSaturatesEveryBranch).passed,
+    false,
+    "highlighting that disappears when the runtime clock advances must fail",
+  );
+
+  const otherControlSaturatesEveryBranch = branchDefinition([
+    {
+      kind: "binary",
+      op: "add",
+      left: selectedOrCombinedStrength(0),
+      right: {
+        kind: "binary",
+        op: "multiply",
+        left: { kind: "constant", value: 10 },
+        right: inputExpression("wash_out"),
+      },
+    },
+    {
+      kind: "binary",
+      op: "add",
+      left: selectedOrCombinedStrength(1),
+      right: {
+        kind: "binary",
+        op: "multiply",
+        left: { kind: "constant", value: 10 },
+        right: inputExpression("wash_out"),
+      },
+    },
+  ]);
+  otherControlSaturatesEveryBranch.controls.push({
+    id: "wash_out",
+    kind: "variable",
+    label: "Wash out",
+    type: "toggle",
+    defaultValue: false,
+  });
+  assert.equal(
+    selectedBranchCheck(otherControlSaturatesEveryBranch).passed,
+    false,
+    "highlighting that disappears in another authored control state must fail",
+  );
+
+  const bothToggleWashout = {
+    kind: "conditional",
+    comparison: "gt",
+    left: inputExpression("mask_a"),
+    right: { kind: "constant", value: 0 },
+    whenTrue: {
+      kind: "conditional",
+      comparison: "gt",
+      left: inputExpression("mask_b"),
+      right: { kind: "constant", value: 0 },
+      whenTrue: { kind: "constant", value: 10 },
+      whenFalse: { kind: "constant", value: 0 },
+    },
+    whenFalse: { kind: "constant", value: 0 },
+  };
+  const twoControlsTogetherSaturateEveryBranch = branchDefinition([
+    {
+      kind: "binary",
+      op: "add",
+      left: selectedOrCombinedStrength(0),
+      right: bothToggleWashout,
+    },
+    {
+      kind: "binary",
+      op: "add",
+      left: selectedOrCombinedStrength(1),
+      right: bothToggleWashout,
+    },
+  ]);
+  for (const controlId of ["mask_a", "mask_b"]) {
+    twoControlsTogetherSaturateEveryBranch.controls.push({
+      id: controlId,
+      kind: "variable",
+      label: controlId,
+      type: "toggle",
+      defaultValue: false,
+    });
+  }
+  assert.equal(
+    selectedBranchCheck(twoControlsTogetherSaturateEveryBranch).passed,
+    false,
+    "the bounded cross-product must catch highlighting that vanishes only when two controls are active together",
+  );
+
+  assert.equal(
+    selectedBranchCheck(
+      branchDefinition([
+        selectedOrCombinedStrength(0),
+        selectedOrCombinedStrength(1),
+      ]),
+    ).passed,
+    true,
+  );
+});
+
+test("selected-branch topology rejects decoys, duplicate paths, and combined extras", () => {
+  const faithful = branchDefinition([
+    selectedOrCombinedStrength(0),
+    selectedOrCombinedStrength(1),
+  ]);
+
+  const decoy = structuredClone(faithful);
+  const staticPromisedDiagram = structuredClone(decoy.scenes[0]);
+  staticPromisedDiagram.edges.forEach((edge) => {
+    edge.strength = { kind: "constant", value: 1 };
+  });
+  decoy.scenes = [staticPromisedDiagram, decoy.scenes[0]];
+  assert.equal(
+    selectedBranchCheck(decoy).passed,
+    false,
+    "an unrelated responsive diagram cannot excuse the promised static diagram",
+  );
+
+  for (const reversed of [false, true]) {
+    const duplicatePath = structuredClone(faithful);
+    duplicatePath.scenes[0].edges[1] = {
+      ...duplicatePath.scenes[0].edges[1],
+      from: reversed ? "result" : "first",
+      to: reversed ? "first" : "result",
+    };
+    assert.equal(
+      selectedBranchCheck(duplicatePath).passed,
+      false,
+      reversed
+        ? "a reverse overlay is not a second visible branch"
+        : "a duplicate endpoint pair is not a second visible branch",
+    );
+  }
+
+  const combinedExtra = structuredClone(faithful);
+  combinedExtra.scenes[0].nodes.push({
+    id: "unrelated",
+    label: "U",
+    x: 320,
+    y: 280,
+  });
+  combinedExtra.scenes[0].edges.push({
+    from: "unrelated",
+    to: "result",
+    directed: true,
+    strength: strengthWhen(2),
+  });
+  assert.equal(
+    selectedBranchCheck(combinedExtra).passed,
+    false,
+    "combined highlighting must equal the union, not add an unrelated branch",
+  );
+
+  const disconnected = branchDefinition([
+    selectedOrCombinedStrength(0),
+    selectedOrCombinedStrength(1),
+  ]);
+  disconnected.scenes[0].nodes = [
+    { id: "first", label: "A", x: 120, y: 100 },
+    { id: "first_result", label: "A result", x: 280, y: 100 },
+    { id: "second", label: "B", x: 360, y: 260 },
+    { id: "second_result", label: "B result", x: 520, y: 260 },
+  ];
+  disconnected.scenes[0].edges[0].to = "first_result";
+  disconnected.scenes[0].edges[1].to = "second_result";
+  const disconnectedCheck = selectedBranchCheck(disconnected);
+  assert.equal(
+    disconnectedCheck.passed,
+    false,
+    "two disconnected selectable edges are not one dependency graph",
+  );
+  assert.match(disconnectedCheck.detail, /connected dependency graph/);
+
+  const connectedByPersistentDependency = structuredClone(disconnected);
+  connectedByPersistentDependency.scenes[0].edges.push({
+    from: "first_result",
+    to: "second",
+    directed: true,
+    strength: { kind: "constant", value: 1 },
+  });
+  assert.equal(
+    selectedBranchCheck(connectedByPersistentDependency).passed,
+    true,
+    "a persistent static dependency edge may connect the two selectable branches",
+  );
+});
+
+test("conjoined option labels identify a combined branch only when they cover peer options", () => {
+  for (const options of [
+    ["First", "Second", "First and Second"],
+    ["Electric", "Magnetic", "Electric & Magnetic"],
+  ]) {
+    const conjoinedOpportunity = structuredClone(branchOpportunity);
+    conjoinedOpportunity.requiredInputs[0].options = options;
+    conjoinedOpportunity.requiredInputs[0].defaultValue = options[2];
+    const definition = branchDefinition([
+      selectedOrCombinedStrength(0),
+      selectedOrCombinedStrength(1),
+    ]);
+    definition.controls[0].options = options;
+    definition.controls[0].defaultValue = options[2];
+    assert.equal(
+      selectedBranchCheck(definition, conjoinedOpportunity).passed,
+      true,
+      options.join(" / "),
+    );
+  }
+
+  const descriptiveOpportunity = structuredClone(branchOpportunity);
+  descriptiveOpportunity.requiredInputs[0].options = [
+    "Cause and effect",
+    "Second",
+    "Third",
+  ];
+  descriptiveOpportunity.requiredInputs[0].defaultValue = "Third";
+  const descriptiveDefinition = branchDefinition([
+    selectedOrCombinedStrength(0),
+    selectedOrCombinedStrength(1),
+  ]);
+  descriptiveDefinition.controls[0].options =
+    descriptiveOpportunity.requiredInputs[0].options;
+  descriptiveDefinition.controls[0].defaultValue = "Third";
+  assert.equal(
+    selectedBranchCheck(descriptiveDefinition, descriptiveOpportunity).passed,
+    false,
+    "a descriptive `and` without peer-option coverage is not an aggregate role",
+  );
+});
+
+test("malformed diagram edges fail validation and deterministic branch diagnostics fail closed", () => {
+  const malformed = branchDefinition([
+    selectedOrCombinedStrength(0),
+    selectedOrCombinedStrength(1),
+  ]);
+  malformed.scenes[0].edges = [null, null];
+  const validation = validateGeneratedVisualizationDefinition(malformed);
+  assert.match(
+    validation.errors.join("; "),
+    /scenes\[0\]\.edges\[0\] must be an object/,
+  );
+  assert.doesNotThrow(() => selectedBranchCheck(malformed));
+  assert.equal(selectedBranchCheck(malformed).passed, false);
+
+  const unknownEndpoint = branchDefinition([
+    selectedOrCombinedStrength(0),
+    selectedOrCombinedStrength(1),
+  ]);
+  unknownEndpoint.scenes[0].edges[0].from = "missing";
+  assert.match(
+    validateGeneratedVisualizationDefinition(unknownEndpoint).errors.join("; "),
+    /edges\[0\]\.from must name a diagram node/,
+  );
+});
+
 test("candidate tests translate select option labels into their expression indices", () => {
   const definition = definitionWithExpressions();
   const result = runGeneratedVisualDeterministicTests({

@@ -15,13 +15,13 @@ import type {
 import type { VisualizationInteractionGoal } from "./visualization-registry.ts";
 import {
   GENERATED_VISUAL_CONTROL_ID_PATTERN,
+  GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE,
   GENERATED_VISUAL_RESERVED_CONTROL_IDS,
 } from "./generated-visual-capabilities.ts";
 import {
   parseVisualizationContractRepairResponse,
   VISUALIZATION_CONTRACT_CONTROL_SCHEMA,
   validateVisualizationContractUnitRepair,
-  type VisualizationContractControlRepair,
   type VisualizationContractEvidenceEntry,
   type VisualizationContractEvidenceRef,
 } from "./visualization-contract-validation.ts";
@@ -214,6 +214,37 @@ export class ModelVisualNecessityPlanningError extends Error {
   }
 }
 
+function assertModelVisualNecessityCandidate(
+  value: unknown,
+  calls: number,
+): void {
+  const normalizedText = typeof value === "string"
+    ? (() => {
+        const trimmed = value.trim();
+        const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed);
+        return (fenced ? fenced[1] : trimmed).trim();
+      })()
+    : undefined;
+  if (
+    value === null ||
+    value === undefined ||
+    normalizedText === "" ||
+    normalizedText === "null"
+  ) {
+    throw new ModelVisualNecessityPlanningError({
+      calls,
+      problems: [{
+        code: "missing_provider_candidate",
+        path: "response",
+        message: normalizedText === "null"
+          ? "provider returned literal JSON null; no semantic repair was authorized"
+          : "provider returned no nonempty candidate; no semantic repair was authorized",
+      }],
+      lastResponse: value,
+    });
+  }
+}
+
 const NECESSITIES = new Set<InteractiveVisualNecessity>([
   "required",
   "recommended",
@@ -391,9 +422,9 @@ export function modelVisualNecessitySystemPrompt(): string {
     "Judge every unit from its supplied learning question, concepts, claims, source artifacts, and garden context; code will not classify or repair your pedagogical choices.",
     "The request budget contains safety maximums, not quotas. Author visualBudget as your whole-garden plan, keep it within those maximums, and make its required/recommended/optional counts exactly match your decisions. Do not add interaction merely to fill a budget and do not omit a necessary interaction merely to create variety.",
     "For every required, recommended, or optional interaction, author the interactionGoal, uniqueConcept, whyStaticSourceFigureIsNotEnough, concrete learnerAction, at least one typed learner control, a learner-visible observable and its representation, an expected insight, and a garden-unique duplicateSignature.",
-    "Every source-semantic slider, number, or select control must author its stable id, exact input type, complete domain/default, and exact source evidence. Select controls require at least two unique source-grounded options and an exact declared default. Pure UI protocol controls use kind protocol_action and type button or toggle, must carry exactly one protocolRole and empty evidence, and must not declare subject domains. Button defaults are 0 and toggle defaults are false.",
+    "Every source-semantic slider, number, or select control must author its stable id, exact input type, complete domain/default, and exact source evidence. Select controls require at least two unique source-grounded options and an exact declared default. Pure UI action controls use kind protocol_action and type button or toggle, carry empty evidence, and must not declare subject domains. Their protocolRole is conditional: ordinary non-prediction actions may omit it, reset is allowed independently, and prediction roles follow the coupled prediction contract. Button defaults are 0 and toggle defaults are false.",
     `Every learner control id must match ${GENERATED_VISUAL_CONTROL_ID_PATTERN.source}; ${GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")} are runtime expression variables and are forbidden control ids.`,
-    "For test_prediction, author three ordered, distinct controls: an evidence-grounded slider/number/select with protocolRole prediction_input, then a protocol_action button/toggle with protocolRole commit_prediction, then a protocol_action button/toggle with protocolRole reveal_outcome or evaluate_prediction. The result must not be revealed by default. Never invent subject variables, cases, claims, or units; protocol labels are model-authored UI mechanics and never support subject claims.",
+    `${GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE} The result must not be revealed by default. Never invent subject variables, cases, claims, or units; protocol labels are model-authored UI mechanics and never support subject claims.`,
     "Grounding is literal for source-semantic controls: every meaningful normalized token in each slider/number/select label, each select option, the observable label, and the expected insight must occur in the exact quote text cited for that field. Exact source symbols and formulas are valid with identifier boundaries. Pure protocol_action button/toggle controls instead require exactly empty evidence; their model-authored UI labels express only interaction mechanics and never substantiate a subject claim, observable, or insight. Every non-empty quote must be an exact substring of canonical evidence at its anchor, and evidence.sourceAnchorIds must include every cited anchor.",
     "Use a non-interactive preferredMedium when a source figure, derivation, worked example, table, timeline, static diagram, or prose teaches the goal adequately.",
     "Honor every explicit user override exactly. Coordinate the whole batch to avoid redundant interactions.",
@@ -459,7 +490,7 @@ export const MODEL_VISUAL_NECESSITY_RESPONSE_CONTRACT = Object.freeze({
         label: "specific source-grounded input, or model-authored protocol action label",
         type: "slider | number | select | toggle | button",
         protocolRole:
-          "optional prediction_input | commit_prediction | reveal_outcome | evaluate_prediction | reset",
+          "optional; reset may be used for any interaction, while prediction_input | commit_prediction | reveal_outcome | evaluate_prediction are legal only when interactionGoal is test_prediction and must be omitted for every other goal",
         unit: "optional source-supported display unit",
         min: "required finite number for slider or number",
         max: "required finite number for slider or number",
@@ -1373,13 +1404,13 @@ export function buildModelVisualNecessityTargetedRepairPrompt(input: {
     system: [
       "You repair model-authored visual-necessity decisions that failed strict validation.",
       "Return strict JSON with schemaVersion 1, the supplied gardenId, and exactly one complete replacement decision record for every supplied unit in decisions.",
-      "Each replacement is atomic: author every decision field in the response contract, even when only one interaction field failed. The application will replace the entire prior decision and will not merge, restore, infer, normalize, or rewrite any semantic field inside it.",
+      "Each replacement is atomic: author every required decision field in the response contract, even when only one interaction field failed. Omit optional fields when their declared preconditions are not satisfied. The application will replace the entire prior decision and will not merge, restore, infer, normalize, or rewrite any semantic field inside it.",
       "Do not return decisions for unaffected units. Their previously validated records are immutable and will be preserved exactly by the application.",
       "Copy unitId, pageId, learningGoal, evidence.unitRole, evidence.learningQuestion, evidence.concepts, and evidence.sourceAnchorIds only from that unit packet. Honor every supplied override and the whole-garden budget. When the reported defects are limited to interaction grounding, preserve the prior necessity and preferredMedium so the accepted whole-garden allocation remains coherent.",
       "Use only that unit's supplied canonical source evidence. Every non-empty evidence quote must be an exact substring of the text at the same anchor.",
       "Grounding is literal for source-semantic controls: every meaningful normalized token in each slider/number/select label and option, plus the observable and expected insight, must occur in its exact cited quote. Exact source symbols and formulas are valid with identifier boundaries. Pure protocol_action button/toggle controls require exactly empty evidence; their model-authored UI labels express only mechanics and cannot substantiate subject claims, observables, or insights. evidence.sourceAnchorIds must include every actually cited subject anchor.",
       `Every learner control id must match ${GENERATED_VISUAL_CONTROL_ID_PATTERN.source}; ${GENERATED_VISUAL_RESERVED_CONTROL_IDS.join(", ")} are runtime expression variables and are forbidden control ids.`,
-      "For every active interaction, author the complete interactionGoal, uniqueConcept, whyStaticSourceFigureIsNotEnough, learnerAction, controls, observable, expectedInsight, expectedInsightEvidence, and a duplicateSignature that does not reuse a reserved signature. Protocol actions must omit unit/min/max/step/options and default to button 0 or toggle false. For test_prediction, order distinct roles prediction_input, commit_prediction, then reveal_outcome or evaluate_prediction.",
+      `For every active interaction, author the complete interactionGoal, uniqueConcept, whyStaticSourceFigureIsNotEnough, learnerAction, controls, observable, expectedInsight, expectedInsightEvidence, and a duplicateSignature that does not reuse a reserved signature. Protocol actions must omit unit/min/max/step/options and default to button 0 or toggle false. ${GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE}`,
       "For a non-interactive decision, use a non-interactive preferredMedium and omit interaction entirely. Never emit a partial patch, prose, renderer code, or a deterministic fallback.",
     ].join(" "),
     user: JSON.stringify(sourceContext),
@@ -1550,8 +1581,8 @@ export function applyModelVisualNecessityTargetedRepairs(input: {
  * Runs the complete model-authored decision loop. Unit-scoped failures may be
  * returned to the model as compact, complete-decision replacement requests;
  * unscoped failures stay on the bounded whole-batch path. Provider/transport
- * failures are rethrown because their retry budget belongs to the transport,
- * never to this semantic-repair loop.
+ * failures are rethrown exactly; only returned, invalid decisions authorize a
+ * semantic-repair call.
  */
 export async function runModelVisualNecessityPlanning(input: {
   packet: ModelVisualNecessityPacket;
@@ -1577,13 +1608,14 @@ export async function runModelVisualNecessityPlanning(input: {
           repairAttempt: attempt,
         });
     calls += 1;
-    // callCouncilText owns bounded transport retry. If it ultimately throws,
-    // propagate that error without consuming another semantic model attempt.
+    // The request boundary is single-shot for ambiguous transport outcomes.
+    // Propagate any throw without consuming another semantic model attempt.
     lastResponse = await input.provider({
       ...prompt,
       attempt,
       problems: [...problems],
     });
+    assertModelVisualNecessityCandidate(lastResponse, calls);
     let validation = validateModelVisualNecessityBatch({
       packet: input.packet,
       learningUnits: input.learningUnits,
@@ -1625,6 +1657,7 @@ export async function runModelVisualNecessityPlanning(input: {
         problems: targetedFeedback.map((problem) => ({ ...problem })),
         unitIds: [...targetUnitIds],
       });
+      assertModelVisualNecessityCandidate(repairResponse, calls);
       const merged = applyModelVisualNecessityTargetedRepairs({
         packet: input.packet,
         invalidResponse: lastResponse,

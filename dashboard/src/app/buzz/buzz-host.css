@@ -199,3 +199,23 @@ html[data-breadboard-desktop="true"] .buzz-theme-gradient-layer::after {
   width: calc(0.5rem + 1rem);
   background: linear-gradient(to top, transparent, var(--buzz-caption-end));
 }
+
+/*
+ * Panel headings ("People: 1", "Agents: 2").
+ *
+ * Buzz sets everything in Inter, which is right for a transcript and wrong for
+ * a four-character label: at 10–11px the uppercase, letter-spaced treatment
+ * these used read as separated glyphs rather than as a word. Breadboard's own
+ * display face has the shorter, sturdier lowercase that holds together at that
+ * size, and it is already loaded on the document by the root layout — this is
+ * the same `--font-schibsted` the app's own headings use.
+ *
+ * `.buzz-root :is(h1…h6) { font-family: inherit }` above deliberately hands
+ * typography back to Buzz; this opts one specific element back out, by class,
+ * rather than reopening that rule.
+ */
+.buzz-root .buzz-panel-label {
+  font-family: var(--font-schibsted), "Inter Variable", Inter, "Segoe UI", sans-serif;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}

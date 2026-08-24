@@ -3,6 +3,11 @@ import "server-only";
 import fs from "node:fs";
 import path from "node:path";
 import { RouteError } from "@/lib/server-auth";
+import {
+  acquireServiceLease,
+  releaseSupervisorLease,
+  type SupervisorLease,
+} from "@/lib/supervisor-control";
 import { parseStartupStatus, type VoiceboxStartupStatus } from "./startup-status";
 
 const DEFAULT_VOICEBOX_URL = "http://127.0.0.1:17493";
@@ -56,13 +61,61 @@ export async function voiceboxFetch(
   if (callerSignal?.aborted) controller.abort();
   else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let lease: SupervisorLease | null = null;
   try {
-    return await fetch(`${voiceboxBaseUrl()}${pathname}`, {
+    if (pathname !== "/health") {
+      lease = await acquireServiceLease("voicebox", "speech-operation");
+    }
+    const response = await fetch(`${voiceboxBaseUrl()}${pathname}`, {
       ...init,
       cache: "no-store",
       signal: controller.signal,
     });
+    if (!lease || !response.body) {
+      await releaseSupervisorLease(lease);
+      lease = null;
+      return response;
+    }
+    const heldLease = lease;
+    lease = null;
+    const reader = response.body.getReader();
+    let released = false;
+    const release = async () => {
+      if (released) return;
+      released = true;
+      await releaseSupervisorLease(heldLease);
+    };
+    const body = new ReadableStream<Uint8Array>({
+      async pull(stream) {
+        try {
+          const next = await reader.read();
+          if (next.done) {
+            await release();
+            stream.close();
+          } else {
+            stream.enqueue(next.value);
+          }
+        } catch (error) {
+          await release();
+          stream.error(error);
+        }
+      },
+      async cancel(reason) {
+        try {
+          await reader.cancel(reason);
+        } finally {
+          await release();
+        }
+      },
+    });
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
   } catch (error) {
+    await releaseSupervisorLease(lease);
+    lease = null;
     if (error instanceof RouteError) throw error;
     const timedOut =
       error instanceof Error && error.name === "AbortError" && !callerSignal?.aborted;

@@ -994,7 +994,9 @@ function driveSessionEventPump(
               const missingArtifact = missingRequiredArtifact();
               if (missingArtifact) {
                 assistantText =
-                  "The required visualizer was not published before this turn ended.";
+                  missingArtifact.sourceSkill === "office"
+                    ? "The requested Office file was not published as an artifact before this turn ended. Please retry the request."
+                    : "The required visualizer was not published before this turn ended.";
                 emit({
                   type: "assistant.completed",
                   sessionId: session.hermesSessionId,

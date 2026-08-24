@@ -6,6 +6,7 @@ import {
   useState,
   useRef,
   useEffect,
+  useLayoutEffect,
   useCallback,
   useMemo,
   type RefObject,
@@ -48,6 +49,7 @@ import AssistantMessageActions, {
   MessageActionsSlot,
 } from "@/app/components/assistant-message-actions";
 import { isDirectModeEnabled } from "@/app/components/use-direct-mode";
+import { isSuperAgentEnabled } from "@/app/components/use-agent-mode";
 import { isPersonalizeEnabled } from "@/app/components/use-personalize";
 import {
   applyBranchVariant,
@@ -118,10 +120,11 @@ import {
 } from "@/app/components/anydoc-parse-option";
 import ArtifactPanel, {
   ARTIFACT_BROWSER_EVENT,
-  ARTIFACT_REVISE_EVENT,
+  ARTIFACT_AI_EDIT_EVENT,
   ArtifactArchiveIcon,
   GARDEN_DOCUMENTS_CHANGED_EVENT,
 } from "@/app/components/hermes/artifact-panel";
+import { consumeArtifactAiEdit, type ArtifactAiEditDetail } from "@/app/components/hermes/artifact-ai-edit";
 import InlineAgentBrowserRun from "@/app/components/hermes/inline-agent-browser-run";
 import InlineArtifactCards, {
   InlineArtifactCardsProvider,
@@ -320,9 +323,11 @@ import {
   taskFromCareerOpsCommand,
 } from "@/lib/career-ops/identity.ts";
 import {
+  OPEN_GYM_AGENT_ID,
   openGymUserMessage,
   taskFromOpenGymCommand,
 } from "@/lib/open-gym/identity.ts";
+import { shouldRouteOpenGymFromSuperAgent } from "@/lib/open-gym/routing-client.ts";
 import {
   TRADINGAGENTS_AGENT_ID,
   TRADINGAGENTS_AGENT_NAME,
@@ -743,12 +748,15 @@ interface LearnJobInfo {
   id: string;
   model: string;
   status: LearnStatus;
+  mode: "plan" | "generate" | "repair" | "full_rebuild" | "update_sources";
   updatedAt?: string;
   currentStep?: string;
   progressPercent?: number;
   currentSectionTitle?: string;
   currentPageTitle?: string;
   error?: string;
+  requiresReplan?: boolean;
+  proposedLearningMapId?: string;
   elapsedMs: number;
   timerStartedAt?: string;
   tokenUsage?: {
@@ -763,6 +771,13 @@ interface LearnJobInfo {
     reportedCalls: number;
     unreportedCalls: number;
     inFlightCalls: number;
+    requestPolicy?: {
+      model: string | null;
+      reasoningEffort: string | null;
+      reasoningSummary: string | null;
+      observedCalls: number;
+      consistent: boolean;
+    };
   };
 }
 
@@ -801,6 +816,7 @@ interface LearnStatusResponse {
   job?: LearnJobInfo | null;
   proposedLearningMap?: LearnMapInfo | null;
   confirmedLearningMapId?: string;
+  confirmedLearningMapModel?: string;
   latestTextbookVersionId?: string;
   humanizer?: {
     versionId: string;
@@ -1754,7 +1770,7 @@ const ChatTranscript = memo(function ChatTranscript({
                     ) : (
                       <div className="flex w-full flex-col gap-2">
                         <MessageActionsSlot>
-                          {msg.delegatedAgentPreamble ? (
+                          {msg.delegatedAgentPreamble && !msg.openGymRun ? (
                             <ActivityPanel
                               activities={[]}
                               connection={
@@ -1769,7 +1785,7 @@ const ChatTranscript = memo(function ChatTranscript({
                               completedLabel={delegatedAgentCompleted}
                             />
                           ) : null}
-                          {msg.delegatedAgentPreamble ? (
+                          {msg.delegatedAgentPreamble && !msg.openGymRun ? (
                             <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
                               <ChatMarkdown
                                 content={msg.delegatedAgentPreamble}
@@ -1825,9 +1841,14 @@ const ChatTranscript = memo(function ChatTranscript({
                           {externalRun ? (
                             <div
                               className={
-                                msg.delegatedAgentRun ? "hidden" : "contents"
+                                msg.delegatedAgentRun && !msg.openGymRun
+                                  ? "hidden"
+                                  : "contents"
                               }
-                              aria-hidden={msg.delegatedAgentRun || undefined}
+                              aria-hidden={
+                                (msg.delegatedAgentRun && !msg.openGymRun) ||
+                                undefined
+                              }
                             >
                               {msg.agentBrowserRun ? (
                                 <InlineAgentBrowserRun
@@ -2126,7 +2147,7 @@ const ChatTranscript = memo(function ChatTranscript({
                                 <InlineOpenGymRun
                                   runId={msg.openGymRun.runId}
                                   task={msg.openGymRun.task}
-                                  persistedContent={msg.content}
+                                  persistedContent={externalAgentCardContent(msg)}
                                   persistedOutcome={msg.externalAgentOutcome}
                                   onRetry={
                                     i === lastAssistantIndex && !isStreaming
@@ -2525,6 +2546,7 @@ const ChatTranscript = memo(function ChatTranscript({
                             />
                           ) : null}
                           {!externalRun &&
+                          !delegatedAgentActive &&
                           !(isStreaming && i === lastAssistantIndex) ? (
                             <AssistantMessageActions
                               content={
@@ -2964,6 +2986,7 @@ export default function WorkspaceClient({
     | "ruflo"
     | null
   >(null);
+  const openGymRoutingRef = useRef(false);
   const [externalAgentStatus, setExternalAgentStatus] = useState("");
   const [streamingChatIds, setStreamingChatIds] = useState<Set<number>>(
     () => new Set(),
@@ -3032,24 +3055,21 @@ export default function WorkspaceClient({
   } | null>(null);
 
   useEffect(() => {
-    const listener = (raw: Event) => {
-      const artifact = (
-        raw as CustomEvent<{
-          id?: string;
-          title?: string;
-          gardenId?: string | null;
-          renderer?: string;
-          sourceSkill?: string | null;
-        }>
-      ).detail;
+    const apply = ({ artifact, prompt }: ArtifactAiEditDetail) => {
       if (!artifact?.id || artifact.gardenId !== clusterSlug) return;
       setInput(
-        `${interactiveVisualizerCommandForArtifact(artifact)}Revise the existing artifact "${artifact.title || "Untitled artifact"}" (artifact ID: ${artifact.id}). `,
+        `${interactiveVisualizerCommandForArtifact(artifact)}${prompt}`,
       );
       requestAnimationFrame(() => textareaRef.current?.focus());
     };
-    window.addEventListener(ARTIFACT_REVISE_EVENT, listener);
-    return () => window.removeEventListener(ARTIFACT_REVISE_EVENT, listener);
+    const listener = (raw: Event) => apply((raw as CustomEvent<ArtifactAiEditDetail>).detail);
+    const queued = consumeArtifactAiEdit({ gardenId: clusterSlug });
+    const timer = queued ? window.setTimeout(() => apply(queued), 0) : null;
+    window.addEventListener(ARTIFACT_AI_EDIT_EVENT, listener);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      window.removeEventListener(ARTIFACT_AI_EDIT_EVENT, listener);
+    };
   }, [clusterSlug]);
 
   // Upload modal
@@ -3288,17 +3308,19 @@ export default function WorkspaceClient({
         if (!res.ok || data.error) {
           throw new Error(data.error ?? "Could not switch the finished Learn copy");
         }
-        setLearnState(data);
-        if (data.accepted !== true) {
-          await fetchDocuments();
-          setGraphRefreshVersion((value) => value + 1);
-          addToast(
-            enabled
-              ? "Finished lessons rewritten naturally"
-              : "Switched lessons back to the AI copy",
-            "success",
-          );
+        if (data.accepted === true) {
+          await fetchLearnStatus();
+          return;
         }
+        setLearnState(data);
+        await fetchDocuments();
+        setGraphRefreshVersion((value) => value + 1);
+        addToast(
+          enabled
+            ? "Finished lessons rewritten naturally"
+            : "Switched lessons back to the AI copy",
+          "success",
+        );
       } catch (error) {
         await fetchLearnStatus();
         addToast(
@@ -4006,6 +4028,12 @@ export default function WorkspaceClient({
     scopeKey: activeChatId,
     ready: !isStreaming && launchingExternalAgent === null,
     onLaunched: (request) => {
+      // openGym presents its own visible result. Waiting for a private hand-back
+      // would append a second Thinking/synthesis row after the card finishes.
+      if (request.agentId === OPEN_GYM_AGENT_ID) {
+        awaitedLaunchRef.current = null;
+        return;
+      }
       launchHopsRef.current += 1;
       awaitedLaunchRef.current = request.awaitResult
         ? {
@@ -4091,7 +4119,7 @@ export default function WorkspaceClient({
   // observer remains mounted (but hidden), while this ref tells its terminal
   // callback which Super Agent turn is waiting. A result already persisted
   // before refresh is sent straight into the hidden continuation instead.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (loadingChats || pendingLaunchContinuation) return;
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
@@ -4101,6 +4129,11 @@ export default function WorkspaceClient({
       if (messages[index + 1]) return;
       const runId = assistantExternalAgentRunId(message);
       const continuationKey = runId ?? message.id ?? `delegated-${index}`;
+      if (message.openGymRun) {
+        continuedDelegatedRunsRef.current.add(continuationKey);
+        awaitedLaunchRef.current = null;
+        return;
+      }
       if (continuedDelegatedRunsRef.current.has(continuationKey)) return;
       const agentName = message.externalAgentName ?? "The delegated agent";
       if ((message.externalAgentOutcome ?? "running") === "running") {
@@ -4139,8 +4172,16 @@ export default function WorkspaceClient({
       return;
     const continuation = pendingLaunchContinuation;
     const timer = window.setTimeout(() => {
-      setPendingLaunchContinuation(null);
-      void handleSubmit(continuation, undefined, undefined, true);
+      void handleSubmit(
+        continuation,
+        undefined,
+        undefined,
+        true,
+        () =>
+          setPendingLaunchContinuation((current) =>
+            current === continuation ? null : current,
+          ),
+      );
     }, 0);
     return () => window.clearTimeout(timer);
     // handleSubmit is redeclared every render and reads current state when it
@@ -5446,16 +5487,17 @@ export default function WorkspaceClient({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               sourceOnly: learnSourceOnly,
-              ...(learnIncludedSourceSlugs !== null
-                ? {
-                    includedSourceIds: learnIncludedSourceSlugs.filter(
-                      (sourceSlug) => sourceSlug !== learnSyllabusSlug,
-                    ),
-                  }
-                : {}),
-              ...(learnSyllabusSlug
-                ? { syllabusSourceId: learnSyllabusSlug }
-                : {}),
+              // Send the resolved selection explicitly. `null` is the UI's
+              // not-yet-synchronized sentinel for sources, so omitting these
+              // fields would let an interrupted request become the server's
+              // legacy all-documents/no-syllabus default.
+              includedSourceIds: (
+                learnIncludedSourceSlugs ??
+                documents
+                  .filter((document) => document.type === "source-document")
+                  .map((document) => document.slug)
+              ).filter((sourceSlug) => sourceSlug !== learnSyllabusSlug),
+              syllabusSourceId: learnSyllabusSlug,
               includeSourceSnapshots: false,
               // Keep planning interruptible from the UI. The live checkbox is
               // evaluated when the proposed map reaches the review boundary.
@@ -5566,6 +5608,7 @@ export default function WorkspaceClient({
     [
       addToast,
       clusterSlug,
+      documents,
       fetchDocuments,
       fetchLearnStatus,
       learnIncludedSourceSlugs,
@@ -5577,6 +5620,20 @@ export default function WorkspaceClient({
   const hasExistingLearnContent = Boolean(
     learnState?.latestTextbookVersionId || learnState?.hasTextbook,
   );
+  const shouldRestartCancelledPlanning =
+    learnState?.job?.status === "cancelled" &&
+    learnState.job.mode === "plan" &&
+    !learnState.job.proposedLearningMapId?.trim() &&
+    !hasExistingLearnContent;
+  const shouldRestartFailedPlanning =
+    learnState?.job?.status === "failed" &&
+    !hasExistingLearnContent &&
+    ((learnState.job.mode === "plan" &&
+      !learnState.job.proposedLearningMapId?.trim()) ||
+      learnState.job.requiresReplan === true);
+  const shouldReplanStaleMapBinding =
+    !hasExistingLearnContent &&
+    learnState?.sourceSetChanged === true;
 
   async function handleCancelLearn() {
     const status = learnState?.job?.status;
@@ -5612,6 +5669,11 @@ export default function WorkspaceClient({
         await handleRepairIssues();
         return;
       }
+      if (shouldReplanStaleMapBinding) {
+        addToast("Planning a new Learning Map for the changed sources");
+        await postLearnAction("plan");
+        return;
+      }
       setLearnPanelOpen(true);
       return;
     }
@@ -5622,9 +5684,45 @@ export default function WorkspaceClient({
       await postLearnAction("regenerate", { mode: "repair" });
       return;
     }
+    // Cancellation rolls an unfinished planning run back to its last safe
+    // checkpoint. With no proposed map to confirm and no published Learn
+    // content to repair, an older confirmed map is historical state rather
+    // than a valid continuation target.
+    if (shouldRestartCancelledPlanning) {
+      addToast("Restarting Learning Map planning for the current sources");
+      await postLearnAction("plan");
+      return;
+    }
+    // A failed planning run is rolled back without erasing older confirmed-map
+    // history, while a failed generation can explicitly invalidate its map.
+    // Both states require fresh planning before historical map state is
+    // considered; an ordinary failed generation still retries that exact map.
+    if (shouldRestartFailedPlanning) {
+      addToast("Planning a new Learning Map for these sources");
+      await postLearnAction("plan");
+      return;
+    }
+    // Status computes this from the durable map/source binding, including
+    // source hashes and rollback identity. Do not probe a map the server has
+    // already declared stale: generation may durably start before discovering
+    // the same mismatch, while fresh planning is the only useful recovery.
+    if (shouldReplanStaleMapBinding) {
+      addToast("Planning a new Learning Map for the changed sources");
+      await postLearnAction("plan");
+      return;
+    }
     if (learnState?.confirmedLearningMapId) {
+      const expectedModel = learnState.confirmedLearningMapModel?.trim();
+      if (!expectedModel) {
+        addToast(
+          "This confirmed Learning Map has no verifiable planning model. Planning a new map for the current sources.",
+        );
+        await postLearnAction("plan");
+        return;
+      }
       const generated = await postLearnAction("generate", {
         confirmedLearningMapId: learnState.confirmedLearningMapId,
+        expectedModel,
       });
       // The confirmed map no longer matches the sources it was planned from, so
       // generation can never succeed from it. Planning again is the documented
@@ -5637,7 +5735,35 @@ export default function WorkspaceClient({
 
   async function handleConfirmAndGenerate() {
     if (learnBusy || isLearnActive(learnState?.job?.status)) return;
-    await postLearnAction("confirm", { generate: true });
+    if (hasExistingLearnContent) {
+      await handleRepairIssues();
+      return;
+    }
+    if (shouldReplanStaleMapBinding) {
+      addToast("Planning a new Learning Map for the changed sources");
+      await postLearnAction("plan");
+      return;
+    }
+    const proposedLearningMapId =
+      learnState?.job?.proposedLearningMapId?.trim();
+    const expectedModel = learnState?.job?.model?.trim();
+    if (
+      learnState?.job?.status !== "awaiting_confirmation" ||
+      !proposedLearningMapId ||
+      !expectedModel
+    ) {
+      addToast(
+        "This Learning Map is no longer the current proposal. Refresh and review the latest map before confirming.",
+        "error",
+      );
+      await fetchLearnStatus();
+      return;
+    }
+    await postLearnAction("confirm", {
+      learningMapId: proposedLearningMapId,
+      expectedModel,
+      generate: true,
+    });
   }
 
   async function handleRegenerateLearningMap() {
@@ -5688,26 +5814,39 @@ export default function WorkspaceClient({
 
   const autoConfirmLearnJobId = learnState?.job?.id;
   const autoConfirmLearnJobStatus = learnState?.job?.status;
+  const autoConfirmLearningMapId =
+    learnState?.job?.proposedLearningMapId?.trim();
+  const autoConfirmLearnModel = learnState?.job?.model?.trim();
   useEffect(() => {
     if (
       !learnSkipManualReview ||
       learnBusy ||
       hasExistingLearnContent ||
+      shouldReplanStaleMapBinding ||
       autoConfirmLearnJobStatus !== "awaiting_confirmation" ||
       !autoConfirmLearnJobId ||
+      !autoConfirmLearningMapId ||
+      !autoConfirmLearnModel ||
       autoConfirmingLearnJobRef.current === autoConfirmLearnJobId
     ) {
       return;
     }
     autoConfirmingLearnJobRef.current = autoConfirmLearnJobId;
-    void postLearnAction("confirm", { generate: true });
+    void postLearnAction("confirm", {
+      learningMapId: autoConfirmLearningMapId,
+      expectedModel: autoConfirmLearnModel,
+      generate: true,
+    });
   }, [
     autoConfirmLearnJobId,
     autoConfirmLearnJobStatus,
+    autoConfirmLearningMapId,
+    autoConfirmLearnModel,
     hasExistingLearnContent,
     learnBusy,
     learnSkipManualReview,
     postLearnAction,
+    shouldReplanStaleMapBinding,
   ]);
 
   /**
@@ -8333,7 +8472,10 @@ export default function WorkspaceClient({
     }
   }
 
-  async function launchOpenGym(task: string) {
+  async function launchOpenGym(
+    task: string,
+    options: { userContent?: string } = {},
+  ) {
     if (!task || externalAgentLaunchRef.current) {
       if (!task) setExternalAgentStatus("Tell openGym what exercise or program you need.");
       return;
@@ -8342,7 +8484,8 @@ export default function WorkspaceClient({
     setLaunchingExternalAgent("open-gym");
     setExternalAgentStatus("");
     const normalizedTask = task.trim();
-    const userContent = openGymUserMessage(normalizedTask);
+    const userContent =
+      options.userContent?.trim() || openGymUserMessage(normalizedTask);
     const launchClientMessageId = crypto.randomUUID();
     const prepared = await prepareExternalAgentSession(userContent);
     if (!prepared) {
@@ -9913,6 +10056,15 @@ export default function WorkspaceClient({
     updateChatMessages(session.id, nextMessages);
     void persistChatSession(session.id, nextMessages);
 
+    if (session.messages.some((message) => ownsRun(message) && message.openGymRun)) {
+      continuedDelegatedRunsRef.current.add(runId);
+      if (awaitedLaunchRef.current?.runId === runId) {
+        awaitedLaunchRef.current = null;
+      }
+      setPendingLaunchContinuation(null);
+      return;
+    }
+
     // If the assistant started this run and asked to hear how it went, hand the
     // outcome back as a new turn. Matching on the bound run id keeps a run the
     // user started themselves out of the chain.
@@ -9940,6 +10092,7 @@ export default function WorkspaceClient({
     historyOverride?: Message[],
     attachmentOverride?: readonly ChatAttachment[],
     internalAgentContinuation = false,
+    onTurnStarted?: () => void,
   ) {
     // Only a retry sets the branch it is replacing, and only a retry passes a
     // history. Anything else that reaches a launcher appends as usual.
@@ -9953,7 +10106,8 @@ export default function WorkspaceClient({
     if (
       (!text && pendingAttachments.length === 0) ||
       isStreaming ||
-      launchingExternalAgent
+      launchingExternalAgent ||
+      openGymRoutingRef.current
     )
       return;
 
@@ -9966,6 +10120,11 @@ export default function WorkspaceClient({
       agentLaunchQueue.reset();
     }
 
+    // A private worker result belongs to Hermes, regardless of which runtime
+    // agent the person's composer currently has selected. Letting it enter the
+    // routing cascade below can send the hand-back into that agent instead of
+    // starting the Super Agent synthesis, leaving the delegating row terminal.
+    if (!internalAgentContinuation) {
     // Refuse an impossible combination before anything is dispatched. The
     // branches below are a priority cascade, so without this a second runtime
     // agent or a stacked skill would be silently swallowed into the winner's
@@ -10464,6 +10623,33 @@ export default function WorkspaceClient({
       return;
     }
 
+    // Super Agent cannot opt out of a registered exercise presentation. Resolve
+    // likely form/program requests before the model turn; a catalogue match
+    // starts the visible openGym card while preserving the user's own wording
+    // in the transcript. Internal hand-back turns and attachment workflows are
+    // excluded so this routing boundary cannot consume another capability.
+    if (
+      !internalAgentContinuation &&
+      isSuperAgentEnabled() &&
+      text &&
+      pendingAttachments.length === 0
+    ) {
+      openGymRoutingRef.current = true;
+      let routeToOpenGym = false;
+      try {
+        routeToOpenGym = await shouldRouteOpenGymFromSuperAgent(text);
+      } finally {
+        openGymRoutingRef.current = false;
+      }
+      if (routeToOpenGym) {
+        setInput("");
+        setChatAttachments([]);
+        await launchOpenGym(text, { userContent: text });
+        return;
+      }
+    }
+    }
+
     const responseStartedAt = performance.now();
 
     // Snapshot attachments and clear them immediately
@@ -10564,6 +10750,12 @@ export default function WorkspaceClient({
     setChatAttachments([]);
     setChatStreaming(sessionId, true);
     updateChatMessages(sessionId, finalMessages);
+    try {
+      onTurnStarted?.();
+    } catch {
+      // The chat turn is already visible and owns the stream. An optional
+      // hand-off bookkeeping callback cannot be allowed to cancel it.
+    }
     // The real transcript now holds this turn; the stand-in has done its job.
     if (showedDraft) setDraftMessages(null);
     if (title) {
@@ -11259,8 +11451,18 @@ export default function WorkspaceClient({
     // picker in the chat bar is reflected here immediately instead of leaving
     // the last run's model on screen.
     const learnPanelModel = active ? (job?.model ?? model) : model;
+    const learnSelectionOwnerKey =
+      learnState?.job?.id ?? learnState?.confirmedLearningMapId ?? "idle";
+    const learnSelectionHydrated =
+      Array.isArray(learnState?.selectedSourceIds) &&
+      learnState.syllabusSourceId !== undefined &&
+      lastSyncedLearnSelectionRef.current ===
+        `${learnSelectionOwnerKey}:${learnState.selectedSourceIds.join("|")}` &&
+      lastSyncedLearnSyllabusRef.current ===
+        `${learnSelectionOwnerKey}:${learnState.syllabusSourceId ?? ""}`;
     const canStart =
       Boolean(learnState?.hasSources) &&
+      learnSelectionHydrated &&
       hasSelectedLearnSources &&
       !learnBusy &&
       !learnCancelBusy &&
@@ -11968,17 +12170,34 @@ export default function WorkspaceClient({
                         : "Repair issues"
                       : status === "failed"
                         ? learnBusy
-                          ? "Retrying..."
-                          : "Retry Learn"
+                          ? shouldRestartFailedPlanning ||
+                            shouldReplanStaleMapBinding
+                            ? "Planning..."
+                            : "Retrying..."
+                          : shouldRestartFailedPlanning ||
+                              shouldReplanStaleMapBinding
+                            ? "Restart planning"
+                            : "Retry Learn"
                         : status === "cancelled"
                           ? learnBusy
                             ? hasExistingLearnContent
                               ? "Repairing..."
-                              : "Generating..."
+                              : shouldRestartCancelledPlanning ||
+                                  shouldReplanStaleMapBinding
+                                ? "Planning..."
+                                : "Generating..."
                             : hasExistingLearnContent
                               ? "Repair issues"
-                              : "Generate"
-                          : (learnState?.buttonLabel ?? "Learn")}
+                              : shouldRestartCancelledPlanning ||
+                                  shouldReplanStaleMapBinding
+                                ? "Restart planning"
+                                : "Generate"
+                          : status === "awaiting_confirmation" &&
+                              shouldReplanStaleMapBinding
+                            ? learnBusy
+                              ? "Planning..."
+                              : "Restart planning"
+                            : (learnState?.buttonLabel ?? "Learn")}
                   </button>
                 )}
                 {active && showPauseControl && (
@@ -12238,7 +12457,8 @@ export default function WorkspaceClient({
         {panelExpanded &&
           proposedMap &&
           status === "awaiting_confirmation" &&
-          !staleReviewForExistingGarden && (
+          !staleReviewForExistingGarden &&
+          !shouldReplanStaleMapBinding && (
             <div className="mt-4 border-t border-gray-800 pt-3">
               <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -12255,7 +12475,7 @@ export default function WorkspaceClient({
                   <button
                     type="button"
                     onClick={handleConfirmAndGenerate}
-                    disabled={learnBusy}
+                    disabled={learnBusy || !job?.proposedLearningMapId}
                     className="flex items-center gap-1.5 rounded-lg bg-cyan-100 px-3 py-1.5 text-xs font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {learnBusy ? <Spinner className="h-3.5 w-3.5" /> : null}

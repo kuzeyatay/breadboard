@@ -19,6 +19,7 @@ import { inspectYouTubeVideo } from "./ytdlp.ts";
 import { checkVideoTranscriptionHealth } from "./health.ts";
 import type { VideoTranscriptionRouteDeps } from "./route-core.ts";
 import type { ParsedYouTubeUrl } from "./youtube.ts";
+import { withServiceLease } from "../supervisor-control.ts";
 
 interface VideoTranscriptionGlobals {
   videoTranscriptionStore?: VideoTranscriptionJobStore;
@@ -50,6 +51,8 @@ export function getVideoTranscriptionRunner(): VideoTranscriptionRunner {
       resumeIndexing: resumeTranscriptIndexing,
       findExistingVideoSource,
       contentPath: () => process.env.QUARTZ_CONTENT_PATH ?? "",
+      withScriberrLease: (reason, operation) =>
+        withServiceLease("scriberr", reason, operation),
     });
   }
   return globals.videoTranscriptionRunner;

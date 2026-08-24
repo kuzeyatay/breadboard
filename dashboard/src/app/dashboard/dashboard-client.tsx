@@ -2070,7 +2070,7 @@ export default function DashboardClient({
     <div
       // Marks the pixels the terminal dock's glass bar refracts.
       data-glass-scene-root
-      className="dashboard-shell min-h-screen bg-gray-950 text-white flex flex-col"
+      className="dashboard-shell min-h-screen bg-[var(--paper-bg)] text-white flex flex-col"
       style={{
         // Clear the fixed dock, then a screenful of slack so the bottom of the
         // grid can always be scrolled up to a comfortable reading position.

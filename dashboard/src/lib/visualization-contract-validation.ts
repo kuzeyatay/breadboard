@@ -4,6 +4,7 @@ import type { LearningUnitContract } from "./learning-unit-contract.ts";
 import {
   GENERATED_VISUAL_CAPABILITY_MANIFEST,
   GENERATED_VISUAL_CONTROL_ID_PATTERN,
+  GENERATED_VISUAL_PREDICTION_PROTOCOL_ROLES,
   GENERATED_VISUAL_RESERVED_CONTROL_IDS,
 } from "./generated-visual-capabilities.ts";
 import type {
@@ -752,9 +753,7 @@ export function validateVisualizationContractUnitRepair(input: {
       if (control.kind !== "protocol_action") {
         problems.push(`${unit.id}: ${control.type} control "${control.label}" must use kind protocol_action`);
       }
-      if (!protocolRole) {
-        problems.push(`${unit.id}: ${control.type} control "${control.label}" requires protocolRole`);
-      } else if (protocolRole === "prediction_input") {
+      if (protocolRole === "prediction_input") {
         problems.push(
           `${unit.id}: prediction_input must mark an evidence-grounded subject control, not a pure protocol action`,
         );
@@ -911,14 +910,13 @@ export function validateVisualizationContractUnitRepair(input: {
     }
   } else if (
     repair.interactionGoal !== "test_prediction" &&
-    (
-      protocolRoleIndex.has("prediction_input") ||
-      protocolRoleIndex.has("commit_prediction") ||
-      protocolRoleIndex.has("reveal_outcome") ||
-      protocolRoleIndex.has("evaluate_prediction")
-    )
+    GENERATED_VISUAL_PREDICTION_PROTOCOL_ROLES.some((role) =>
+      protocolRoleIndex.has(role))
   ) {
-    problems.push(`${unit.id}: prediction protocol roles require interactionGoal test_prediction`);
+    problems.push(
+      `${unit.id}: prediction protocol roles require interactionGoal test_prediction; ` +
+      "omit those optional roles for a non-prediction interaction or author the complete test_prediction protocol",
+    );
   }
   if (repair.interactionGoal !== undefined) {
     if (!INTERACTION_GOALS.has(repair.interactionGoal)) {

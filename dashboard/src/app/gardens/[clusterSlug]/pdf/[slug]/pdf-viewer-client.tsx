@@ -22,6 +22,10 @@ import {
   useState,
 } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
+import {
+  queueArtifactAiEdit,
+  type ArtifactAiEditTarget,
+} from "@/app/components/hermes/artifact-ai-edit";
 
 type PdfJsModule = typeof import("pdfjs-dist");
 type PdfDocumentLoadingTask = ReturnType<PdfJsModule["getDocument"]>;
@@ -116,6 +120,8 @@ interface Props {
    * the default, so a page that has not read the setting shows no button.
    */
   fastRead?: boolean;
+  /** Enables the cross-page review handoff for an artifact-owned PDF. */
+  aiEditArtifact?: ArtifactAiEditTarget;
 }
 
 function Spinner({ className = "h-4 w-4" }: { className?: string }) {
@@ -282,6 +288,7 @@ export default function PdfViewerClient({
   readOnly = false,
   kicker,
   fastRead = false,
+  aiEditArtifact,
 }: Props) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -323,6 +330,10 @@ export default function PdfViewerClient({
   const [toolsOpen, setToolsOpen] = useState(false);
   const [pendingStamp, setPendingStamp] = useState<PendingStamp | null>(null);
   const [toolRunning, setToolRunning] = useState(false);
+  const [artifactReviewOpen, setArtifactReviewOpen] = useState(false);
+  const [artifactReview, setArtifactReview] = useState("");
+  const canEditTitle = !readOnly && Boolean(clusterSlug && documentSlug);
+  const artifactEditor = !readOnly && Boolean(sourceUrl);
 
   const pdfUrl = useMemo(() => {
     if (sourceUrl) return sourceUrl;
@@ -338,10 +349,10 @@ export default function PdfViewerClient({
 
   const editedFileName = useMemo(
     () =>
-      readOnly && browserTitle?.trim()
+      sourceUrl && browserTitle?.trim()
         ? browserTitle.trim()
         : fileNameFromTitle(documentTitle || documentSlug),
-    [browserTitle, documentSlug, documentTitle, readOnly],
+    [browserTitle, documentSlug, documentTitle, sourceUrl],
   );
 
   // Remember the last viewed page per document so it reopens where you left off.
@@ -463,8 +474,8 @@ export default function PdfViewerClient({
     setSaveState("dirty");
     saveTimeoutRef.current = setTimeout(() => {
       void saveEditedPdfRef.current();
-    }, 0);
-  }, [clearScheduledSave, readOnly]);
+    }, artifactEditor ? 700 : 0);
+  }, [artifactEditor, clearScheduledSave, readOnly]);
 
   const wireDocument = useCallback(
     (pdfDocument: PDFDocumentProxy) => {
@@ -986,8 +997,31 @@ export default function PdfViewerClient({
     }
 
     startNavigationProgress();
-    router.push(`/gardens/${clusterSlug}`);
-  }, [clusterSlug, readOnly, router, saveEditedPdfToServer, saveState]);
+    if (artifactEditor) router.back();
+    else router.push(`/gardens/${clusterSlug}`);
+  }, [artifactEditor, clusterSlug, readOnly, router, saveEditedPdfToServer, saveState]);
+
+  const askAiToEditArtifact = useCallback(async () => {
+    if (!aiEditArtifact) return;
+    if (saveState === "saving") {
+      setError("Please wait for the PDF save to finish before sending the review.");
+      return;
+    }
+    if (saveState === "dirty" || saveState === "error") {
+      const saved = await saveEditedPdfToServer();
+      if (!saved) return;
+    }
+    queueArtifactAiEdit({
+      artifact: aiEditArtifact,
+      prompt: [
+        `Continue editing the existing PDF artifact "${aiEditArtifact.title}" (artifact ID: ${aiEditArtifact.id}).`,
+        "Read the artifact first and preserve its version history. Treat PDF annotations already saved in the file as part of the human review.",
+        artifactReview.trim() ? `Human review:\n${artifactReview.trim()}` : "Improve the PDF while preserving its purpose and native format.",
+      ].join("\n\n"),
+    });
+    startNavigationProgress();
+    router.back();
+  }, [aiEditArtifact, artifactReview, router, saveEditedPdfToServer, saveState]);
 
   const goToPreviousPage = useCallback(() => {
     pdfViewerRef.current?.previousPage();
@@ -1189,7 +1223,7 @@ export default function PdfViewerClient({
             <p className="text-[10px] uppercase tracking-wider text-gray-600">
               {kicker ?? (readOnly ? "PDF artifact" : "PDF source")}
             </p>
-            {!readOnly && editingTitle ? (
+            {canEditTitle && editingTitle ? (
               <form
                 className="flex min-w-0 items-center gap-1.5"
                 onSubmit={(event) => {
@@ -1263,7 +1297,7 @@ export default function PdfViewerClient({
                 <h1 className="truncate text-sm font-semibold text-white">
                   {documentTitle}
                 </h1>
-                {!readOnly ? (
+                {canEditTitle ? (
                   <button
                     type="button"
                     onClick={startRenameTitle}
@@ -1306,6 +1340,16 @@ export default function PdfViewerClient({
             >
               {saveStatusText}
             </span>
+          ) : null}
+          {aiEditArtifact ? (
+            <button
+              type="button"
+              onClick={() => setArtifactReviewOpen((open) => !open)}
+              className="rounded-md border border-gray-800 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-600 hover:text-white"
+              aria-pressed={artifactReviewOpen}
+            >
+              Ask AI to edit
+            </button>
           ) : null}
           {!readOnly && serverHistoryCount > 0 && (
             <button
@@ -1371,6 +1415,29 @@ export default function PdfViewerClient({
           </button>
         </div>
       </header>
+
+      {aiEditArtifact && artifactReviewOpen ? (
+        <div className="flex flex-wrap items-end gap-3 border-b border-gray-800 bg-gray-950 px-4 py-3">
+          <label className="min-w-[18rem] flex-1 text-xs text-gray-400">
+            Review for the AI
+            <textarea
+              value={artifactReview}
+              onChange={(event) => setArtifactReview(event.target.value)}
+              placeholder="Describe the text, layout, or annotations to change…"
+              rows={2}
+              className="mt-1.5 w-full resize-y rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-gray-500"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => void askAiToEditArtifact()}
+            disabled={saveState === "saving"}
+            className="rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-600 disabled:opacity-40"
+          >
+            Send review
+          </button>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 bg-gray-900 px-4 py-2">
         <div className="flex flex-wrap items-center gap-2">

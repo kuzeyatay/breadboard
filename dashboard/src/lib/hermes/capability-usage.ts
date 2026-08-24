@@ -180,7 +180,7 @@ export function capabilityForTool(toolName: string): ToolOwner | null {
       return { kind: "integration", id: entry.id, label: entry.label };
     }
   }
-  if (name === "save_memory") {
+  if (name === "save_memory" || name === "memory_query") {
     return { kind: "integration", id: "memory", label: "Durable memory" };
   }
   return null;

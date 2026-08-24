@@ -88,7 +88,8 @@ test("terminal required mode cannot render the direct KnowledgeTerminal fallback
     terminal,
     /Preferred and legacy modes may use the old transport/,
   );
-  assert.match(terminal, /No legacy request was sent/);
+  assert.match(terminal, /never\s*\/\/ silently falls back to the legacy transport/);
+  assert.doesNotMatch(terminal, /No legacy request was sent/);
 });
 
 /**

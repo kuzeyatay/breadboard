@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   chatTimeSeparatorLabels,
   formatChatTimeSeparator,
+  parseChatTimestamp,
 } from "../src/lib/chat-time-separators.ts";
 
 const localIso = (year, month, day, hour, minute) =>
@@ -70,6 +71,10 @@ test("chat timestamps use today, yesterday, weekday, and calendar labels", () =>
 test("SQLite UTC timestamps are interpreted as UTC rather than browser local time", () => {
   const timestamp = "2026-07-27 08:37:00";
   const now = Date.parse("2026-07-27T12:00:00.000Z");
+  assert.equal(
+    parseChatTimestamp(timestamp),
+    Date.parse("2026-07-27T08:37:00.000Z"),
+  );
   assert.deepEqual(
     chatTimeSeparatorLabels([{ createdAt: timestamp }], now, "en-US"),
     [
@@ -80,6 +85,15 @@ test("SQLite UTC timestamps are interpreted as UTC rather than browser local tim
       ),
     ],
   );
+});
+
+test("chat timestamp parsing preserves explicit offsets and rejects invalid input", () => {
+  assert.equal(
+    parseChatTimestamp("2026-07-27T08:37:00+03:00"),
+    Date.parse("2026-07-27T08:37:00+03:00"),
+  );
+  assert.equal(parseChatTimestamp("not a timestamp"), null);
+  assert.equal(parseChatTimestamp(undefined), null);
 });
 
 test("all Breadboard chat transcripts render and persist message timestamps", () => {
@@ -93,7 +107,10 @@ test("all Breadboard chat transcripts render and persist message timestamps", ()
   );
   for (const source of sources) {
     assert.match(source, /<ChatTimeSeparator/);
-    assert.match(source, /chatTimeSeparatorLabels\(messages\)/);
+    assert.match(
+      source,
+      /chatTimeSeparatorLabels\((?:visibleMessages|messages)\)/,
+    );
     assert.match(source, /createdAt/);
   }
 

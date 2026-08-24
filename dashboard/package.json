@@ -2,6 +2,9 @@
   "name": "dashboard",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "^22.15.0 || >=23.5.0"
+  },
   "scripts": {
     "dev": "next dev",
     "dev:turbo": "next dev --turbopack",
@@ -14,13 +17,15 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --test --experimental-strip-types tests/*.test.mjs",
-    "sync:genoffice": "node scripts/sync-genoffice.mjs",
+    "sync:genoffice": "node scripts/sync-genoffice.mjs && node scripts/build-genoffice-editor.mjs",
+    "build:genoffice-editor": "node scripts/build-genoffice-editor.mjs",
     "sync:skills": "node --experimental-strip-types scripts/sync-skills-catalog.ts",
     "validate:garden": "node --experimental-strip-types ../scripts/validate-breadboard-garden.ts",
     "migrate:semantics": "node --experimental-strip-types ../scripts/migrate-garden-semantics.ts",
     "evaluate:retrieval": "node --experimental-strip-types ../scripts/evaluate-semantic-retrieval.ts",
     "prose:score": "node --experimental-strip-types scripts/prose-score.mjs",
-    "vendor:slop-rules": "node scripts/vendor-slop-rules.mjs"
+    "vendor:slop-rules": "node scripts/vendor-slop-rules.mjs",
+    "learn:waive-legacy-planning": "node --experimental-strip-types scripts/create-learn-planning-legacy-waiver.mjs"
   },
   "dependencies": {
     "@cantoo/pdf-lib": "^2.8.2",
@@ -43,6 +48,10 @@
     "@radix-ui/react-tabs": "^1.1.21",
     "@radix-ui/react-tooltip": "^1.2.16",
     "@tanstack/react-virtual": "^3.14.9",
+    "@tiptap/core": "^3.30.3",
+    "@tiptap/extensions": "^3.30.3",
+    "@tiptap/pm": "^3.30.3",
+    "@tiptap/react": "^3.30.3",
     "@tweenjs/tween.js": "^25.0.0",
     "@vercel/oidc": "^3.8.0",
     "@wokwi/elements": "^1.9.2",
@@ -51,6 +60,7 @@
     "bcrypt": "^6.0.0",
     "better-sqlite3": "^12.9.0",
     "bidi-js": "^1.0.3",
+    "busboy": "^1.6.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "d3": "^7.9.0",
@@ -63,8 +73,10 @@
     "js-yaml": "^4.1.1",
     "jszip": "^3.10.1",
     "katex": "^0.16.45",
+    "koffi": "3.1.6",
     "lucide-react": "^1.33.0",
     "maplibre-gl": "^5.24.0",
+    "marked": "^17.0.6",
     "mathjax-full": "^3.2.2",
     "mem0ai": "file:../mem0/mem0-ts",
     "motion": "^13.1.0",

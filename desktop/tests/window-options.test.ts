@@ -34,6 +34,8 @@ function fakeWindow(url: string) {
     getURL: () => string;
     stop: () => void;
     executeJavaScript: (code: string, gesture?: boolean) => Promise<unknown>;
+    isDestroyed: () => boolean;
+    send: (channel: string, payload: unknown) => void;
   };
   webContents.getURL = () => url;
   const stopped: string[] = [];
@@ -41,6 +43,8 @@ function fakeWindow(url: string) {
     stopped.push(webContents.getURL());
   };
   webContents.executeJavaScript = async () => true;
+  webContents.isDestroyed = () => false;
+  webContents.send = () => {};
   const loaded: string[] = [];
   const files: string[] = [];
   const window = Object.assign(new EventEmitter(), {
@@ -81,7 +85,7 @@ test("main window options enforce renderer isolation", () => {
   assert.equal(options.show, false);
   assert.equal(options.title, "Breadboard");
   assert.equal(options.icon, "C:\\app\\icon.ico");
-  assert.equal(options.backgroundColor, "#e6f0e6");
+  assert.equal(options.backgroundColor, "#faf7ef");
   assert.equal(options.titleBarStyle, "hidden");
   assert.deepEqual(options.titleBarOverlay, BREADBOARD_TITLE_BAR);
   assert.deepEqual(options.titleBarOverlay, {
@@ -118,7 +122,7 @@ test("dark window chrome meshes with the charcoal application palette", () => {
     symbolColor: "#ccd2c9",
     height: 32,
   });
-  assert.equal(backgroundColorForTheme("light"), "#e6f0e6");
+  assert.equal(backgroundColorForTheme("light"), "#faf7ef");
   assert.equal(backgroundColorForTheme("dark"), "#0b0c0a");
 
   const darkOptions = mainWindowOptions(
@@ -172,6 +176,56 @@ test("a failed local page reload retries quickly and then settles into a bounded
   // Well past a cold route compile: the watchdog breaks deadlocks, and a slow
   // load that is still making progress must never be mistaken for one.
   assert.equal(LOCAL_PAGE_LOAD_WATCHDOG_MS, 90_000);
+});
+
+test("only a deliberate close of the current main window requests application exit", () => {
+  const manager = new WindowManager({
+    allowed: { origins: new Set() },
+    startupHtmlPath: "C:\\app\\startup\\index.html",
+    preloadPath: "C:\\app\\preload.js",
+  });
+  const first = fakeWindow("http://127.0.0.1:3000/dashboard");
+  const internals = manager as unknown as {
+    mainWindow: unknown;
+    installMainWindowLifetime: (window: unknown) => void;
+  };
+
+  internals.mainWindow = first;
+  internals.installMainWindowLifetime(first);
+  first.emit("closed");
+  assert.equal(
+    manager.consumeMainWindowCloseRequest(),
+    false,
+    "an unexpected window loss must be recoverable",
+  );
+
+  const second = fakeWindow("http://127.0.0.1:3000/dashboard");
+  internals.mainWindow = second;
+  internals.installMainWindowLifetime(second);
+  second.emit("close");
+  second.emit("closed");
+  assert.equal(manager.consumeMainWindowCloseRequest(), true);
+  assert.equal(
+    manager.consumeMainWindowCloseRequest(),
+    false,
+    "close intent must not leak into a later replacement window",
+  );
+});
+
+test("a renderer disposed during a dashboard restart cannot crash the desktop", () => {
+  const manager = new WindowManager({
+    allowed: { origins: new Set() },
+    startupHtmlPath: "C:\\app\\startup\\index.html",
+    preloadPath: "C:\\app\\preload.js",
+  });
+  const window = fakeWindow("http://127.0.0.1:3000/dashboard");
+  window.webContents.isDestroyed = () => false;
+  window.webContents.send = () => {
+    throw new Error("Render frame was disposed before WebFrameMain could be accessed");
+  };
+  (manager as unknown as { mainWindow: unknown }).mainWindow = window;
+
+  assert.doesNotThrow(() => manager.sendToRenderer("breadboard:startup-state", { phase: "ready" }));
 });
 
 test("a failed dashboard navigation reloads the last owned URL", async () => {

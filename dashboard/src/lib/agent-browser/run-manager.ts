@@ -20,6 +20,10 @@ import os from "node:os";
 import path from "node:path";
 import { breadSystemPrompt } from "../assistant-identity.ts";
 import { isChatmockProvider } from "../ui-tars/model-provider.ts";
+import {
+  SupervisorResourceExhaustedError,
+  withCapabilityLease,
+} from "../supervisor-control.ts";
 import { publicId } from "./store.ts";
 import { chatmockApiKeyValue } from "./provider.ts";
 import { chatmockGatewayBase, type AgentBrowserConfiguration, type ApprovalMode } from "./config.ts";
@@ -355,6 +359,17 @@ async function driveRun(
   entry: string,
   browser: string,
 ): Promise<void> {
+  return withCapabilityLease("browser-agent", "browser-run", () =>
+    driveRunWithLease(run, config, entry, browser),
+  );
+}
+
+async function driveRunWithLease(
+  run: RunState,
+  config: AgentBrowserConfiguration,
+  entry: string,
+  browser: string,
+): Promise<void> {
   await mkdir(run.screenshotDir, { recursive: true }).catch(() => undefined);
   emit(run, "run.started", { task: run.task, operator: "browser" });
   run.status = "running";
@@ -449,7 +464,10 @@ async function driveRun(
     finish(run, "completed", { summary: run.finalText || "Step limit reached." });
   } catch (error) {
     if (run.aborted) return;
-    finish(run, "failed", { message: error instanceof Error ? error.message : "run failed" });
+    finish(run, "failed", {
+      message: error instanceof Error ? error.message : "run failed",
+      ...(error instanceof SupervisorResourceExhaustedError ? error.result : {}),
+    });
   }
 }
 

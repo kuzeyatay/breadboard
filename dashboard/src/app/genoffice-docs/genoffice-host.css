@@ -1,0 +1,25 @@
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #f5efe3;
+}
+
+.genoffice-host-state {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  background: #f5efe3;
+  color: #555147;
+  font: 14px/1.5 system-ui, sans-serif;
+}
+
+/* Keep GenOffice's complete Office chrome; only replace its cool canvas with
+   Breadboard's warm paper surround so the embedded suite belongs in the app. */
+body .workspace,
+body .editor-scroll,
+body .start-screen {
+  background-color: #f5efe3;
+}

@@ -11,6 +11,7 @@ import { goalModeSection, type GoalModeState } from "../goal-mode.ts";
 import { classifyResearch } from "../research/classify.ts";
 import { researchAnswerContract } from "../research/directive.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
+import { unlazySystemSection } from "./unlazy.ts";
 
 function readSystemPrompt(name: string): string {
   const file = path.join(
@@ -108,6 +109,11 @@ export function composeHermesSystemPrompt(input: {
     if (direct) sections.push(direct);
   }
   sections.push(surfacePrompt(input.surface));
+  // Completion discipline is innate to Hermes rather than a slash-selected
+  // capability. The skill itself keeps trivial turns lightweight, while every
+  // substantial turn gets the same acceptance and verification contract on
+  // Terminal, Garden Chat and Quartz.
+  sections.push(unlazySystemSection());
   // Meta prompting is innate rather than opt-in: the discipline ships on every
   // surface and every capability mode. See lib/hermes/meta-prompting.ts.
   if (metaPromptingEnabled()) {

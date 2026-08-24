@@ -5,6 +5,8 @@ import type { DesktopServiceDefinition } from "./service-manager";
 import type { ResolvedPaths } from "./path-resolver";
 import type { DesktopRuntimeConfig } from "./runtime-config";
 import { DEFAULT_BREADBOARD_SKILLS_CATALOG_URL } from "./skills-catalog-config";
+import { dashboardDevNodeOptions } from "./dashboard-heap-budget";
+import type { MemoryPolicy } from "./memory-policy";
 import { recallDataDir, recallHome } from "./recall";
 import {
   CLIPROXY_DEFAULT_PORT,
@@ -33,6 +35,13 @@ import {
  * In dev mode the system `node`, `bun`, and `python` are used, matching the
  * repository's existing scripts.
  */
+/**
+ * Scriberr's loopback port. Fixed rather than allocated: the bundled sidecar
+ * and every launcher (desktop, `npm run dev`, start.bat) agree on it, which is
+ * also why startup checks whether one is already listening there.
+ */
+export const SCRIBERR_PORT = 8091;
+
 export interface RuntimeBinaries {
   node: string;
   bun: string;
@@ -404,34 +413,15 @@ function baseEnv(paths: ResolvedPaths): Record<string, string> {
   return env;
 }
 
-/**
- * Give the supervised development dashboard enough heap for long, in-process
- * Learn runs. Next dev otherwise caps its server child at half of physical RAM
- * and deliberately restarts it at 80% of that cap. A valid large curriculum
- * run can cross that threshold and be mistaken for an abandoned worker.
- *
- * Seventy-five percent raises the watchdog boundary from roughly 40% to 60%
- * of physical RAM, while still leaving headroom for Electron and sidecars. The
- * cap prevents unusually large developer machines from granting an unbounded
- * heap. This is dev-only: packaged/standalone servers do not use Next's dev
- * restart watchdog.
- */
-function dashboardDevNodeOptions(inherited: string | undefined): string {
-  const totalMemoryMb = Math.floor(os.totalmem() / (1024 * 1024));
-  const maxOldSpaceMb = Math.min(24 * 1024, Math.max(1024, Math.floor(totalMemoryMb * 0.75)));
-  return [inherited?.trim(), `--max-old-space-size=${maxOldSpaceMb}`]
-    .filter((value): value is string => Boolean(value))
-    .join(" ");
-}
-
 export interface BuildDefinitionsInput {
   paths: ResolvedPaths;
   config: DesktopRuntimeConfig;
   binaries: RuntimeBinaries;
+  memoryPolicy?: MemoryPolicy;
 }
 
 export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopServiceDefinition[] {
-  const { paths, config, binaries } = input;
+  const { paths, config, binaries, memoryPolicy } = input;
   const urls = serviceUrls(config);
   const hermesUrl = hermesServiceUrl(config);
   const voiceboxUrl = voiceboxServiceUrl(config);
@@ -446,11 +436,32 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const scriberrBinary = bundledBinary("scriberr");
   const scriberrDataDir = path.join(paths.runtimeDir, "scriberr");
   const voiceboxDataDir = path.join(paths.runtimeDir, "voicebox");
+  // Council snapshots and strict recoverable-request receipts are mutable
+  // service state. Packaged appRoot lives under read-only app resources, so
+  // both locations must be rooted in Electron's writable user-data tree.
+  // Keeping the historical `.breadboard/council-runs` suffix preserves the
+  // existing development ledger when dataRoot is the repository root.
+  const councilLedgerDir = path.join(paths.dataRoot, ".breadboard", "council-runs");
+  const councilRequestReceiptDir = path.join(councilLedgerDir, "request-receipts");
 
   // GBrain (garden knowledge retrieval). On by default (`preferred`), and still
   // additive: it runs as a supervised loopback Bun sidecar with a per-install
   // secret, storing its mutable PGLite/index data under the desktop data dir,
   // and never blocks startup. `disabled` in desktop-config.json turns it off.
+  // Per-launch capability secret for the Postiz coordinator's control plane.
+  // Absent only in configurations that never minted launch secrets, in which
+  // case the coordinator fails closed and refuses every control request.
+  const postizCoordinatorToken = config.launchSecrets?.postizCoordinatorToken ?? "";
+  const supervisorControlToken = config.launchSecrets?.supervisorControlToken ?? "";
+  const supervisorControlUrl = `http://127.0.0.1:${config.ports.supervisorControl ?? 7739}`;
+  // How long a Breadboard-started, unused, draft-only stack may idle before it
+  // is brought down. Future scheduled publishing suppresses the stop regardless.
+  const postizIdleTimeoutOverride = Number(process.env["POSTIZ_IDLE_TIMEOUT_MS"]?.trim());
+  const postizIdleTimeoutMs =
+    Number.isFinite(postizIdleTimeoutOverride) && postizIdleTimeoutOverride >= 0
+      ? Math.floor(postizIdleTimeoutOverride)
+      : 25 * 60_000;
+
   const gbrainEnabled = persistent.gbrainMode !== "disabled";
   const gbrainPort = config.ports.gbrain ?? 7717;
   const gbrainUrl = `http://127.0.0.1:${gbrainPort}`;
@@ -553,6 +564,8 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       // Keep the serving process on it too, or Settings can show the newly
       // selected account while GPT requests continue using ~/.codex instead.
       CODEX_HOME: paths.codexHome,
+      COUNCIL_LEDGER_DIR: councilLedgerDir,
+      COUNCIL_REQUEST_RECEIPT_DIR: councilRequestReceiptDir,
       // ChatMock's `cliproxy` provider falls back to these when no base URL or
       // key is stored in providers.json, so a first-run install reaches the
       // proxy before any catalog sync has happened.
@@ -567,6 +580,9 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     startupTimeoutMs: 90_000,
     gracefulShutdownMs: 5_000,
     restartPolicy: "on-failure",
+    startPolicy: "eager",
+    estimatedColdStartCommitMb: 768,
+    priority: 100,
     // The dashboard hot-reloads in development, but the Python model gateway
     // does not. Provider catalog edits otherwise leave Settings talking to the
     // pre-edit process until the entire desktop app is restarted.
@@ -581,13 +597,26 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
         : undefined,
   };
 
+  // The Postiz *lifecycle coordinator* — not Postiz itself.
+  //
+  // This process is a few hundred kilobytes of Node that listens on loopback
+  // and waits. It runs no Docker command until an authenticated dashboard
+  // request asks for the stack, so starting Breadboard leaves Docker Desktop
+  // closed, the docker-desktop WSL VM stopped, and none of the nine Postiz
+  // Compose containers in existence.
+  //
+  // It is registered as a background start rather than on-demand because the
+  // coordinator itself must be alive to receive the activation request; what
+  // is on-demand is everything the coordinator owns. Its readiness therefore
+  // means "the coordinator answers", never "Postiz is running", and a stopped
+  // Postiz stack is the expected healthy state at launch.
   const postiz: DesktopServiceDefinition = {
     id: "postiz",
     displayName: "Social publishing (Postiz)",
     // Social publishing degrades to local drafts. Docker is external software,
     // so its absence or a slow first container pull must never block Breadboard.
     required: false,
-    startInBackground: true,
+    startPolicy: "eager",
     command: binaries.node,
     args: [
       "--experimental-strip-types",
@@ -605,19 +634,33 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       POSTIZ_SUPERVISOR_HOST: "127.0.0.1",
       POSTIZ_SUPERVISOR_PORT: String(config.ports.postizSupervisor),
       POSTIZ_SUPERVISOR_STARTUP_TIMEOUT_MS: String(18 * 60_000),
+      // The per-launch capability secret. It reaches exactly two processes:
+      // this coordinator and the dashboard server. Never a renderer, never
+      // endpoints.json, never an API response.
+      POSTIZ_COORDINATOR_TOKEN: postizCoordinatorToken,
+      POSTIZ_IDLE_TIMEOUT_MS: String(postizIdleTimeoutMs),
+      BREADBOARD_SUPERVISOR_CONTROL_URL: supervisorControlUrl,
+      BREADBOARD_SUPERVISOR_CONTROL_TOKEN: supervisorControlToken,
     },
     healthCheck: {
-      // The coordinator opens this endpoint only after Docker Compose, the web
-      // app, account bootstrap, and an authenticated integrations request pass.
+      // Liveness of the coordinator process, and nothing else. It answers
+      // within milliseconds of launch with the stack still stopped, which is
+      // exactly the state Breadboard should be in until someone asks for Postiz.
       type: "http",
       url: `http://127.0.0.1:${config.ports.postizSupervisor}/health`,
-      expectBodyIncludes: '"ready":true',
+      expectBodyIncludes: '"ok":true',
       timeoutMs: 3_000,
-      intervalMs: 1_500,
+      intervalMs: 500,
     },
-    startupTimeoutMs: 20 * 60_000,
-    gracefulShutdownMs: 8_000,
+    // Seconds, not minutes: nothing here waits for Docker, image pulls,
+    // migrations, Temporal, Elasticsearch or Postiz authentication.
+    startupTimeoutMs: 30_000,
+    // Long enough for the exit-time idle decision (which may run one
+    // `compose down`) before the tree is killed.
+    gracefulShutdownMs: 20_000,
     restartPolicy: "on-failure",
+    estimatedColdStartCommitMb: 128,
+    priority: 95,
   };
 
   const hermes: DesktopServiceDefinition = {
@@ -627,6 +670,13 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     // Breadboard features unusable. Agent API routes report the existing
     // sanitized runtime-unavailable error while the bounded supervisor retries.
     required: false,
+    startPolicy: "on-demand",
+    idleTtlMs: 10 * 60_000,
+    estimatedColdStartCommitMb: 1536,
+    softCommitLimitMb: 3072,
+    hardCommitLimitMb: 4096,
+    priority: 75,
+    concurrencyGroup: "large-generation",
     // Dev uses the hermes-agent virtualenv; packaged uses the bundled CPython.
     command: resolveHermesPython(paths, binaries),
     args: [
@@ -678,7 +728,13 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
         id: "voicebox",
         displayName: "Local speech (Voicebox)",
         required: false,
-        startInBackground: true,
+        startPolicy: "on-demand",
+        idleTtlMs: 10 * 60_000,
+        estimatedColdStartCommitMb: 6144,
+        softCommitLimitMb: 6144,
+        hardCommitLimitMb: 7168,
+        priority: 50,
+        concurrencyGroup: "media-processing",
         command: voiceboxRuntime.command,
         args: voiceboxRuntime.selfManaged
           ? voiceboxRuntime.argsPrefix
@@ -739,7 +795,14 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const quartz: DesktopServiceDefinition = {
     id: "quartz",
     displayName: "Garden site (Quartz)",
-    required: true,
+    required: false,
+    startPolicy: "on-demand",
+    idleTtlMs: 15 * 60_000,
+    estimatedColdStartCommitMb: 2048,
+    softCommitLimitMb: 3072,
+    hardCommitLimitMb: 4096,
+    priority: 70,
+    concurrencyGroup: "large-generation",
     command: binaries.node,
     args: quartzArgs,
     cwd: paths.quartzWorkspace,
@@ -764,8 +827,11 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
 
   const requestedDashboardMode =
     process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"]?.trim().toLowerCase();
+  const devStandaloneBuildRoot = paths.qaMode
+    ? path.join(paths.appRoot, "dashboard")
+    : paths.dashboardServerDir;
   const devStandaloneServer = path.join(
-    paths.dashboardServerDir,
+    devStandaloneBuildRoot,
     ".next-desktop",
     "standalone",
     "dashboard",
@@ -805,12 +871,12 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     // The selected runtime starts in the preceding supervisor wave because it
     // depends on ChatMock. It is intentionally not a hard dashboard dependency:
     // unrelated Breadboard features remain usable if the runtime is degraded.
-    dependsOn: ["chatmock", "quartz"],
+    dependsOn: ["chatmock"],
     env: {
       ...shared,
       NODE_ENV: dashboardProduction ? "production" : "development",
       ...(paths.mode === "dev" && !dashboardProduction
-        ? { NODE_OPTIONS: dashboardDevNodeOptions(shared["NODE_OPTIONS"]) }
+        ? { NODE_OPTIONS: dashboardDevNodeOptions(shared["NODE_OPTIONS"], process.env, undefined, memoryPolicy) }
         : {}),
       PORT: String(config.ports.dashboard),
       HOSTNAME: "127.0.0.1",
@@ -820,17 +886,39 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       // dashboard into the packaged `<data>/database` layout, so pointing it at
       // `<repo>/dashboard` would silently create `<repo>/dashboard/database`.
       // Explicitly clear it to prevent an inherited shell value doing the same.
-      BREADBOARD_DATA_DIR: paths.mode === "packaged" ? paths.dataRoot : "",
+      BREADBOARD_DATA_DIR:
+        paths.mode === "packaged" || paths.qaMode ? paths.dataRoot : "",
       // A dev standalone server changes cwd to its traced build directory.
       // Keep its mutable data in the same dashboard/db location as hot reload.
       BREADBOARD_DEVELOPMENT_DASHBOARD_DIR:
         paths.mode === "dev" ? path.join(paths.appRoot, "dashboard") : "",
+      BREADBOARD_LEARN_WORKER_DASHBOARD_ROOT:
+        paths.mode === "packaged"
+          ? paths.dashboardServerDir
+          : path.join(paths.appRoot, "dashboard"),
+      BREADBOARD_LEARN_SOURCE_ROOT:
+        paths.mode === "packaged"
+          ? path.join(paths.dashboardServerDir, "worker-src")
+          : path.join(paths.appRoot, "dashboard", "src"),
+      BREADBOARD_LEARN_WORKER_RUNTIME_DIR: path.join(
+        paths.runtimeDir,
+        "learn-workers",
+      ),
       BREADBOARD_REPO_ROOT: paths.appRoot,
-      // The desktop supervisor owns Postiz startup. The dashboard is a client,
-      // and always receives the exact dynamically allocated container port.
+      // Learn trace readers must inspect the same durable Council snapshots
+      // that ChatMock writes under the mutable desktop data root.
+      COUNCIL_LEDGER_DIR: councilLedgerDir,
+      // The coordinator owns Postiz startup; the dashboard is a client of it.
+      // Handing over the loopback URL and the capability token is what makes
+      // the dashboard route every activation, stop and status read through the
+      // one lifecycle owner instead of running Compose itself.
       SOCIALS_MANAGER_MODE: "stack",
       SOCIALS_MANAGER_URL: urls.postiz,
       SOCIALS_MANAGER_SUPPRESS_DOCKER_UI: "true",
+      POSTIZ_COORDINATOR_URL: `http://127.0.0.1:${config.ports.postizSupervisor}`,
+      POSTIZ_COORDINATOR_TOKEN: postizCoordinatorToken,
+      BREADBOARD_SUPERVISOR_CONTROL_URL: supervisorControlUrl,
+      BREADBOARD_SUPERVISOR_CONTROL_TOKEN: supervisorControlToken,
       BREADBOARD_SKILLS_CATALOG_URL:
         process.env["BREADBOARD_SKILLS_CATALOG_URL"]?.trim() ||
         DEFAULT_BREADBOARD_SKILLS_CATALOG_URL,
@@ -931,7 +1019,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       VIDEO_TRANSCRIPTION_ENABLED: persistent.scriberrEnabled ? "true" : "false",
       ...(persistent.scriberrEnabled
         ? {
-            SCRIBERR_BASE_URL: persistent.scriberrBaseUrl ?? "http://127.0.0.1:8091",
+            SCRIBERR_BASE_URL: persistent.scriberrBaseUrl ?? `http://127.0.0.1:${SCRIBERR_PORT}`,
             SCRIBERR_USERNAME: persistent.scriberrUsername,
             SCRIBERR_PASSWORD: persistent.scriberrPassword,
           }
@@ -1007,6 +1095,39 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     startupTimeoutMs: 180_000,
     gracefulShutdownMs: 8_000,
     restartPolicy: "on-failure",
+    startPolicy: "eager",
+    safeRecycleOnSoftLimit: paths.mode === "dev" && !dashboardProduction,
+    estimatedColdStartCommitMb: dashboardProduction ? 2048 : (memoryPolicy?.dashboardTreeSoftLimitMb ?? 8192),
+    priority: 100,
+    // Dev only, and deliberately a backstop rather than the primary control.
+    // The primary control is the heap budget in dashboard-heap-budget.ts, which
+    // restores Next's own "approaching the used memory threshold, restarting"
+    // guard to a trigger point this workstation can actually commit. This
+    // budget catches the cases that guard cannot see — native/external growth
+    // outside the V8 heap, and descendants such as compiler workers.
+    //
+    // Sized from burn-ins on a 32 GiB machine that swept every API route
+    // continuously — far harsher than real development. Under the 6 GiB
+    // old-space budget the tree runs as a bounded sawtooth: Next recycles its
+    // server child and the committed tree peaks around 9.0 GiB, never
+    // approaching the ~15-17 GiB that exhausted system commit.
+    //
+    // These thresholds sit above that measured ceiling so healthy development
+    // never trips them. They exist because a V8 heap cap cannot bound what
+    // lives outside the heap — at the peak the tree committed ~1.8x its heap,
+    // the excess being webpack's native buffers and source maps, which
+    // `used_heap_size` (and therefore Next's own watchdog) never sees. This is
+    // the backstop for growth that guard cannot observe, not the main control.
+    ...(dashboardProduction
+      ? {}
+      : {
+          resourceBudget: {
+            warningBytes: (memoryPolicy?.dashboardTreeSoftLimitMb ?? 11264) * 1024 * 1024,
+            hardLimitBytes: (memoryPolicy?.dashboardTreeHardLimitMb ?? 13312) * 1024 * 1024,
+            consecutiveSamplesBeforeAction: 3,
+            sampleIntervalMs: memoryPolicy?.sampleIntervalMs ?? 15_000,
+          },
+        }),
   };
 
   const gbrain: DesktopServiceDefinition = {
@@ -1015,6 +1136,13 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     // Never blocks startup even in `required` GBRAIN mode: the dashboard reports
     // a truthful unavailable/degraded state rather than failing the whole app.
     required: false,
+    startPolicy: "on-demand",
+    idleTtlMs: 10 * 60_000,
+    estimatedColdStartCommitMb: 1536,
+    softCommitLimitMb: 2048,
+    hardCommitLimitMb: 3072,
+    priority: 70,
+    concurrencyGroup: "document-model",
     command: binaries.bun,
     args: ["run", path.join(paths.appRoot, "gbrain-adapter", "src", "server.ts")],
     cwd: path.join(paths.appRoot, "gbrain-adapter"),
@@ -1056,6 +1184,13 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     // Never blocks startup: optional/required modes both degrade to a truthful
     // unavailable state in the dashboard rather than failing the whole app.
     required: false,
+    startPolicy: "on-demand",
+    idleTtlMs: 10 * 60_000,
+    estimatedColdStartCommitMb: 4096,
+    softCommitLimitMb: 6144,
+    hardCommitLimitMb: 7168,
+    priority: 60,
+    concurrencyGroup: "browser-automation",
     command: binaries.node,
     args: [
       "--experimental-strip-types",
@@ -1096,7 +1231,13 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
         // Never blocks startup: without it the CAD agent reports the service as
         // unavailable and every other capability is unaffected.
         required: false,
-        startInBackground: true,
+        startPolicy: "on-demand",
+        idleTtlMs: 10 * 60_000,
+        estimatedColdStartCommitMb: 3072,
+        softCommitLimitMb: 4096,
+        hardCommitLimitMb: 5120,
+        priority: 55,
+        concurrencyGroup: "local-model",
         command: cadPython!,
         args: [
           "-m",
@@ -1137,7 +1278,13 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
         // Never blocks startup: without it, attached documents are inlined
         // whole, which is what Breadboard did before this service existed.
         required: false,
-        startInBackground: true,
+        startPolicy: "on-demand",
+        idleTtlMs: 10 * 60_000,
+        estimatedColdStartCommitMb: 6144,
+        softCommitLimitMb: 6144,
+        hardCommitLimitMb: 7168,
+        priority: 50,
+        concurrencyGroup: "document-model",
         command: colpaliPython!,
         args: [
           "-m",
@@ -1175,6 +1322,13 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
         // installed, however, it participates in the startup sequence so the
         // first rewrite does not discover a cold checkpoint.
         required: false,
+        startPolicy: "on-demand",
+        idleTtlMs: 10 * 60_000,
+        estimatedColdStartCommitMb: 6144,
+        softCommitLimitMb: 6144,
+        hardCommitLimitMb: 7168,
+        priority: 50,
+        concurrencyGroup: "local-model",
         command: humanizerPython!,
         args: [
           "-m",
@@ -1228,6 +1382,9 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     // Never blocks startup, in any mode: subscriptions are an optional way to
     // reach models, and the rest of Breadboard works without them.
     required: false,
+    startPolicy: "eager",
+    estimatedColdStartCommitMb: 256,
+    priority: 85,
     command: cliproxyBinaryPath(cliproxyHomeDir),
     // Written by prepareDataLayer, not here: building definitions must stay
     // free of side effects. Port, auth-dir and the loopback secrets are
@@ -1278,13 +1435,20 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       id: "scriberr",
       displayName: "Video transcription (Scriberr)",
       required: false,
+      startPolicy: "on-demand",
+      idleTtlMs: 10 * 60_000,
+      estimatedColdStartCommitMb: 4096,
+      softCommitLimitMb: 4096,
+      hardCommitLimitMb: 6144,
+      priority: 55,
+      concurrencyGroup: "media-processing",
       command: scriberrBinary,
       args: [],
       cwd: paths.runtimeDir,
       env: {
         ...shared,
         HOST: "127.0.0.1",
-        PORT: "8091",
+        PORT: String(SCRIBERR_PORT),
         APP_ENV: "production",
         SCRIBERR_LAZY_MODEL_INIT: "true",
         SECURE_COOKIES: "false",

@@ -121,6 +121,32 @@ test("a preservation failure leaves the text exactly as it was", async () => {
   const result = await auto.humanizeStoredText(1, LONG_ENOUGH, "garden_note");
   assert.equal(result.humanized, false);
   assert.equal(result.text, LONG_ENOUGH);
+  assert.equal(seen.length, 2, "concrete preservation evidence permits one bounded repair");
+  assert.notEqual(seen[0].requestId, seen[1].requestId, "the repair is not a replay");
+  assert.equal(seen[0].maxChunkTokens, undefined);
+  assert.equal(seen[1].maxChunkTokens, 48);
+});
+
+test("terminal protocol responses cannot authorize the recovery request", async () => {
+  settings.setHermesUserSettings(1, { humanizerAuto: true });
+  const terminalBodies = [
+    {},
+    null,
+    "```json\nnull\n```",
+    rewriteBody({ rewrittenText: undefined }),
+    rewriteBody({ rewrittenText: "" }),
+    rewriteBody({ rewrittenText: "null" }),
+    rewriteBody({ rewrittenText: "```markdown\nnull\n```" }),
+  ];
+
+  for (const body of terminalBodies) {
+    seen.length = 0;
+    respond = () => ({ status: 200, body });
+    const result = await auto.humanizeStoredText(1, LONG_ENOUGH, "learn_page");
+    assert.equal(result.humanized, false);
+    assert.equal(result.text, LONG_ENOUGH);
+    assert.equal(seen.length, 1, `terminal body ${JSON.stringify(body)} must stay single-call`);
+  }
 });
 
 test("an unavailable or busy rewriter never fails the write", async () => {
@@ -166,6 +192,8 @@ test("an unchanged rewrite is not treated as a rewrite", async () => {
   const result = await auto.humanizeStoredText(1, LONG_ENOUGH, "artifact");
   assert.equal(result.humanized, false);
   assert.equal(result.text, LONG_ENOUGH);
+  assert.equal(seen.length, 2, "a valid non-improving candidate permits one bounded repair");
+  assert.notEqual(seen[0].requestId, seen[1].requestId, "the repair has a distinct request identity");
 });
 
 test("turning the humanizer off entirely outranks the preference", async () => {

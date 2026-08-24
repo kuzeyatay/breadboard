@@ -560,6 +560,7 @@ def request_chat(
     upstream_model: str,
     *,
     stream: bool,
+    allow_preconnect_retry: bool = True,
 ) -> requests.Response:
     body = _run_cli(payload, upstream_model)
     completion = _completion(body, upstream_model)

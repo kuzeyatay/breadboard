@@ -43,6 +43,15 @@ _MAX_FALLBACK_ATTEMPTS = 3
 _GOOGLE_MODEL_RECHECK_SECONDS = 15
 
 
+def _is_quota_error(status_code: int | None, message: str) -> bool:
+    try:
+        return failover.is_quota_error(status_code, message)
+    except Exception:
+        # Classification is control-plane bookkeeping. The provider's exact
+        # response remains authoritative if cooldown state is unavailable.
+        return False
+
+
 def _client_for(spec: ProviderSpec):
     if spec.kind == KIND_ANTHROPIC:
         return anthropic
@@ -63,6 +72,16 @@ def credentials_for(spec: ProviderSpec) -> ResolvedCredentials:
     if not credentials.usable:
         raise ProviderError(f"{spec.label} is not available: {credentials.reason}")
     return credentials
+
+
+def strict_single_attempt_supported(resolved: ResolvedModel) -> bool:
+    # The Claude Code CLI owns its own agent/session lifecycle. ChatMock cannot
+    # prove that one CLI invocation maps to exactly one upstream provider POST,
+    # so it is not an admissible target for Learn's one-call contract.
+    return not (
+        resolved.provider.id == "cliproxy"
+        and claude_code.is_claude_model(resolved.upstream_model)
+    )
 
 
 def _error_response(message: str, status: int) -> Response:
@@ -189,7 +208,11 @@ def _stand_ins(exhausted: str) -> List[ResolvedModel]:
     """
     exhausted_model = resolve_model(exhausted)
     out: List[ResolvedModel] = []
-    for candidate in healthy_fallbacks(exhausted):
+    try:
+        candidates = list(healthy_fallbacks(exhausted))
+    except Exception:
+        return []
+    for candidate in candidates:
         substitute = resolve_model(candidate)
         if substitute.is_chatgpt or substitute.is_unknown_external:
             continue
@@ -272,16 +295,25 @@ def _record_exhaustion(resolved: ResolvedModel, outcome: _Exhausted) -> None:
         if transient_google_refusal
         else outcome.seconds
     )
-    failover.note_exhausted(
-        resolved.public_model,
-        reason=outcome.message,
-        seconds=cooldown_seconds,
-    )
+    try:
+        failover.note_exhausted(
+            resolved.public_model,
+            reason=outcome.message,
+            seconds=cooldown_seconds,
+        )
+    except Exception:
+        # Cooldown state observes a terminal quota response. It cannot replace
+        # that response or prevent a safe stand-in from being attempted.
+        pass
 
 
 def clear_recovered_model(resolved: ResolvedModel) -> None:
     """Drop the exact model's stale cooldown after it answers successfully."""
-    failover.clear(resolved.public_model)
+    try:
+        failover.clear(resolved.public_model)
+    except Exception:
+        # Recovery bookkeeping cannot replace the provider's valid answer.
+        pass
 
 
 def chat_completion_response(
@@ -292,6 +324,7 @@ def chat_completion_response(
     requested_model: str | None = None,
     request_id: str | None = None,
     endpoint: str = "chat.completions",
+    strict_route: bool = False,
 ) -> Response:
     """Serve one ``/v1/chat/completions`` request from an external provider.
 
@@ -312,6 +345,11 @@ def chat_completion_response(
         if isinstance(requested_model, str)
         else payload.get("model") if isinstance(payload.get("model"), str) else None
     )
+    if strict_route and not strict_single_attempt_supported(resolved):
+        return _error_response(
+            "The requested model cannot prove strict single-attempt routing.",
+            409,
+        )
     cooldown = failover.cooldown_for(resolved.public_model)
     if cooldown is not None:
         # Hermes pins the concrete model id for a session instead of sending
@@ -334,11 +372,17 @@ def chat_completion_response(
             request_id=request_id,
             endpoint=endpoint,
             fallback=False,
+            strict_route=strict_route,
         )
     if isinstance(outcome, Response):
         return outcome
 
     _record_exhaustion(resolved, outcome)
+
+    if strict_route:
+        # Learn's job-level route fence makes the requested provider/model the
+        # whole logical call. A quota refusal is terminal for this call.
+        return _error_response(outcome.message, outcome.status)
 
     for substitute in _stand_ins(resolved.public_model):
         if verbose:
@@ -354,13 +398,16 @@ def chat_completion_response(
             request_id=request_id,
             endpoint=endpoint,
             fallback=True,
+            strict_route=False,
         )
         if isinstance(retried, Response):
-            if retried.status_code < 400:
-                return retried
-            # Unusable for its own reasons; the original explanation is the one
-            # that describes what the client actually asked for.
-            continue
+            # A failed stand-in is the last request whose acceptance state we
+            # actually know. In particular, a 502 synthesized from an
+            # ambiguous transport exception must stop the chain: trying another
+            # model could duplicate a request the stand-in already accepted.
+            # Return that exact failure instead of replacing it with the
+            # original quota response or walking to a third model.
+            return retried
         _record_exhaustion(substitute, retried)
 
     return _error_response(outcome.message, outcome.status)
@@ -375,6 +422,7 @@ def _attempt(
     request_id: str,
     endpoint: str,
     fallback: bool,
+    strict_route: bool,
 ) -> "Response | _Exhausted":
     """One try against one model."""
     spec = resolved.provider
@@ -391,6 +439,9 @@ def _attempt(
             fallback=fallback,
             status_code=503,
             error=str(exc),
+            failure_phase="prepare",
+            partial_output=False,
+            replay_safe=True,
         )
         return _annotate_response(
             _error_response(str(exc), 503),
@@ -417,17 +468,27 @@ def _attempt(
         print(f"[Providers] routing {resolved.public_model} to {spec.id} ({spec.kind})")
 
     try:
+        request_kwargs = {"stream": stream}
+        if strict_route:
+            request_kwargs["allow_preconnect_retry"] = False
         response = client.request_chat(
             credentials,
             payload,
             resolved.upstream_model,
-            stream=stream,
+            **request_kwargs,
         )
     except ProviderError as exc:
         # The transport gave up rather than returning a response. Some upstreams
         # report exhaustion this way, so read the text the same way the council
         # router does before calling it a plain transport failure.
-        if failover.is_quota_error(None, str(exc)):
+        # Quota wording alone is not non-acceptance proof. A transport can fail
+        # ambiguously after the POST was accepted and still mention quota in its
+        # exception; only a provider-classified terminal rejection may enter the
+        # stand-in chain.
+        if (
+            getattr(exc, "replay_safe", False)
+            and _is_quota_error(None, str(exc))
+        ):
             _record_attempt(
                 resolved,
                 requested_model=requested_model,
@@ -437,6 +498,10 @@ def _attempt(
                 fallback=fallback,
                 status_code=502,
                 error=str(exc),
+                failure_phase=getattr(exc, "phase", None),
+                partial_output=getattr(exc, "partial_output", False),
+                replay_safe=getattr(exc, "replay_safe", False),
+                error_code=getattr(exc, "code", None),
             )
             return _Exhausted(message=str(exc), status=502, seconds=None)
         _record_attempt(
@@ -448,6 +513,10 @@ def _attempt(
             fallback=fallback,
             status_code=502,
             error=str(exc),
+            failure_phase=getattr(exc, "phase", None),
+            partial_output=getattr(exc, "partial_output", False),
+            replay_safe=getattr(exc, "replay_safe", False),
+            error_code=getattr(exc, "code", None),
         )
         return _annotate_response(
             _error_response(str(exc), 502),
@@ -461,7 +530,7 @@ def _attempt(
         status = response.status_code
         message, seconds = _exhaustion_details(response, spec, resolved.public_model)
         transport.close_quietly(response)
-        if failover.is_quota_error(status, message):
+        if _is_quota_error(status, message):
             _record_attempt(
                 resolved,
                 requested_model=requested_model,
@@ -608,19 +677,32 @@ def _record_attempt(
     fallback: bool,
     status_code: int | None = None,
     error: str | None = None,
+    failure_phase: str | None = None,
+    partial_output: bool | None = None,
+    replay_safe: bool | None = None,
+    error_code: str | None = None,
 ) -> Dict[str, Any]:
-    return record_model_attempt(
-        request_id=request_id,
-        endpoint=endpoint,
-        requested_model=requested_model,
-        resolved_model=resolved.public_model,
-        upstream_model=resolved.upstream_model,
-        provider=resolved.provider.id,
-        outcome=outcome,
-        fallback=fallback,
-        status_code=status_code,
-        error=error,
-    )
+    try:
+        return record_model_attempt(
+            request_id=request_id,
+            endpoint=endpoint,
+            requested_model=requested_model,
+            resolved_model=resolved.public_model,
+            upstream_model=resolved.upstream_model,
+            provider=resolved.provider.id,
+            outcome=outcome,
+            fallback=fallback,
+            status_code=status_code,
+            error=error,
+            failure_phase=failure_phase,
+            partial_output=partial_output,
+            replay_safe=replay_safe,
+            error_code=error_code,
+        )
+    except Exception:
+        # Attempt telemetry is observational; it cannot be allowed to turn an
+        # already completed provider call into a client-visible failure.
+        return {}
 
 
 def _annotate_response(

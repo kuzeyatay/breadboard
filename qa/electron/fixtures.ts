@@ -545,6 +545,12 @@ export const test = playwrightTest.extend<QaTestFixtures, QaWorkerFixtures>({
             ? "always"
             : "on-failure",
         providerAuthFile: process.env["BREADBOARD_QA_PROVIDER_AUTH_FILE"],
+        env: {
+          BREADBOARD_DESKTOP_DASHBOARD_MODE:
+            process.env["BREADBOARD_QA_DASHBOARD_MODE"] === "hot"
+              ? "hot"
+              : "standalone",
+        },
       });
       const harness = new ElectronQaHarness(run);
       try {

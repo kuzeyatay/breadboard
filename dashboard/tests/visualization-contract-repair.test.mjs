@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   buildVisualizationPlanWithContractRepair,
   buildVisualizationContractRepairPrompt,
+  exactVisualizationContractRepairResponse,
   parseVisualizationContractRepairResponse,
   validateVisualizationContractUnitRepair,
 } from "../src/lib/visualization-contract-repair.ts";
@@ -582,6 +583,107 @@ test("structural repair provider transport failure escapes one semantic attempt"
   assert.equal(calls, 1);
   assert.equal(events.includes("visual_opportunity_contract_repair_transport_aborted"), true);
   assert.equal(events.includes("visual_opportunity_contract_repair_exhausted"), false);
+});
+
+test("repair transport identity survives throwing cancellation and event observers", async () => {
+  const unit = requiredU24();
+  const providerFailure = Object.assign(new Error("nested reset"), {
+    cause: { code: "ECONNRESET" },
+  });
+  let calls = 0;
+  let cancellationChecks = 0;
+  await assert.rejects(
+    buildVisualizationPlanWithContractRepair({
+      gardenId: "electromagnetism-1",
+      learningMap: mapFor(unit),
+      learningUnits: [unit],
+      visualBudget: VISUAL_BUDGET,
+      canonicalEvidenceByUnit: CANONICAL_EVIDENCE_BY_UNIT,
+      maxRepairAttempts: 3,
+      repairProvider: async () => {
+        calls += 1;
+        throw providerFailure;
+      },
+      checkCancelled: () => {
+        cancellationChecks += 1;
+        if (cancellationChecks > 1) {
+          throw new Error("post-provider cancellation must not replace provider failure");
+        }
+      },
+      onEvent: () => {
+        throw new Error("event sink must not replace provider failure");
+      },
+    }),
+    (error) => error === providerFailure,
+  );
+  assert.equal(calls, 1);
+  assert.equal(cancellationChecks, 1);
+});
+
+test("missing and literal-null exact repair responses are terminal after one provider call", async () => {
+  const unit = requiredU24();
+  for (const response of [undefined, "", "null", "```json\nnull\n```"]) {
+    let calls = 0;
+    await assert.rejects(
+      buildVisualizationPlanWithContractRepair({
+        gardenId: "electromagnetism-1",
+        learningMap: mapFor(unit),
+        learningUnits: [unit],
+        visualBudget: VISUAL_BUDGET,
+        canonicalEvidenceByUnit: CANONICAL_EVIDENCE_BY_UNIT,
+        maxRepairAttempts: 3,
+        repairProvider: async () => {
+          calls += 1;
+          return typeof response === "string"
+            ? exactVisualizationContractRepairResponse(response)
+            : response;
+        },
+      }),
+      /no candidate|empty response|literal JSON null/i,
+    );
+    assert.equal(calls, 1, `unexpected replay for ${JSON.stringify(response)}`);
+  }
+});
+
+test("nonempty malformed exact repair text permits one validation-targeted correction", async () => {
+  const unit = requiredU24();
+  let calls = 0;
+  const result = await buildVisualizationPlanWithContractRepair({
+    gardenId: "electromagnetism-1",
+    learningMap: mapFor(unit),
+    learningUnits: [unit],
+    visualBudget: VISUAL_BUDGET,
+    canonicalEvidenceByUnit: CANONICAL_EVIDENCE_BY_UNIT,
+    maxRepairAttempts: 2,
+    repairProvider: async () => {
+      calls += 1;
+      return calls === 1
+        ? exactVisualizationContractRepairResponse("{malformed")
+        : validU24Repair();
+    },
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.repairAudit.attempts[0].response, "{malformed");
+  assert.match(result.repairAudit.attempts[0].rejectionReasons.join(" "), /response must be an object/i);
+});
+
+test("a fulfilled valid repair is parsed before any later cancellation checkpoint", async () => {
+  const unit = requiredU24();
+  let cancellationChecks = 0;
+  const result = await buildVisualizationPlanWithContractRepair({
+    gardenId: "electromagnetism-1",
+    learningMap: mapFor(unit),
+    learningUnits: [unit],
+    visualBudget: VISUAL_BUDGET,
+    canonicalEvidenceByUnit: CANONICAL_EVIDENCE_BY_UNIT,
+    repairProvider: async () => validU24Repair(),
+    checkCancelled: () => {
+      cancellationChecks += 1;
+      if (cancellationChecks > 1) throw new Error("late cancellation observer");
+    },
+  });
+  assert.equal(result.repairSource, "model");
+  assert.equal(cancellationChecks, 1);
 });
 
 test("active repair parsing reports an incomplete replacement contract", () => {

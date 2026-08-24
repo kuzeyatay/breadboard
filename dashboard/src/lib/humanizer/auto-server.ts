@@ -84,7 +84,11 @@ async function humanizeEligibleStoredText(
         ))
     ) {
       const recovery = await humanizerRewrite({
-        requestId: id,
+        // This is a distinct semantic request, not a replay of the accepted
+        // primary request. Its separate identity makes the two outbound POSTs
+        // auditable while the local preservation/non-improvement evidence above
+        // remains the only thing that can authorize it.
+        requestId: `${id}r1`,
         text,
         maxChunkTokens: RECOVERY_CHUNK_TOKENS,
       });

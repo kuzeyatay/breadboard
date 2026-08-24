@@ -15,6 +15,7 @@ import {
   addMember,
   canonicalRoomSlug,
   createRoom,
+  ensureBreadMember,
   getRoomForUser,
   listAgentSeats,
   listMembers,
@@ -159,13 +160,40 @@ test("people and agents are peers in one member list", () => {
   });
 
   const members = listMembers(db, room.id);
-  assert.equal(members.length, 3);
+  // Four, not three: `createRoom` seats Bread, so every room has one agent
+  // before anybody adds one.
+  assert.equal(members.length, 4);
   assert.equal(members.filter((member) => member.kind === "human").length, 2);
-  assert.equal(members.filter((member) => member.kind === "agent").length, 1);
+  assert.equal(members.filter((member) => member.kind === "agent").length, 2);
 
   // A person joins with `never`: nothing may put words in a colleague's mouth.
   const ada = members.find((member) => member.userId === 1);
   assert.equal(ada.respondTo, "never");
+});
+
+test("every room is seated with Bread, once, answering by default", () => {
+  const db = createDatabase();
+  seed(db);
+  const room = createRoom(db, 10, 1, { name: "general" });
+
+  const bread = listMembers(db, room.id).filter(
+    (member) => member.personaSlug === "bread",
+  );
+  assert.equal(bread.length, 1);
+  assert.equal(bread[0].kind, "agent");
+  assert.equal(bread[0].handle, "bread");
+  // The one agent that speaks unasked — a new room answers its first message
+  // without anybody having to learn a handle first.
+  assert.equal(bread[0].respondTo, "always");
+
+  // Backfilling a room that already has it is a no-op rather than a clash, so
+  // two readers opening one room at once cannot seat it twice.
+  ensureBreadMember(db, room.id);
+  assert.equal(
+    listMembers(db, room.id).filter((member) => member.personaSlug === "bread")
+      .length,
+    1,
+  );
 });
 
 test("a clashing handle is suffixed rather than rejected", () => {
@@ -389,10 +417,13 @@ test("only mentioned agents answer, unless they are set to always", () => {
     ["editor"],
   );
 
-  // Naming an agent brings it in alongside the always-on one.
+  // Naming an agent hands the message to it alone. This used to bring it in
+  // *alongside* the always-on one, which was tolerable when nothing was
+  // always-on by default and became two answers to every addressed question
+  // once Bread was seated in every room.
   assert.deepEqual(
     resolveResponders(members, "@researcher take a look").map((m) => m.handle),
-    ["researcher", "editor"],
+    ["researcher"],
   );
 
   // `never` stays silent even when named, and a muted member never speaks.
@@ -568,13 +599,68 @@ test("the agent roster names every seat and the room it sits in", () => {
   }
   addMember(db, one.id, { kind: "human", userId: 1, displayName: "ada" });
 
-  // Grace can see the two public seats, not the private room's.
+  // Grace can see the two public rooms' seats, not the private room's. Each
+  // public room contributes two: the Researcher added above, and the Bread
+  // seat `createRoom` puts in every room.
   assert.deepEqual(
-    listAgentSeats(db, 2).map((seat) => seat.roomSlug).sort(),
+    listAgentSeats(db, 2)
+      .filter((seat) => seat.member.personaSlug === "researcher")
+      .map((seat) => seat.roomSlug)
+      .sort(),
+    ["field-notes", "ringing"],
+  );
+  assert.deepEqual(
+    listAgentSeats(db, 2)
+      .filter((seat) => seat.member.personaSlug === "bread")
+      .map((seat) => seat.roomSlug)
+      .sort(),
     ["field-notes", "ringing"],
   );
   assert.ok(listAgentSeats(db, 2).every((seat) => seat.member.kind === "agent"));
 
   // Lin is in another organization and sees none of them.
   assert.equal(listAgentSeats(db, 3).length, 0);
+});
+
+test("naming an agent hands the message to it alone", () => {
+  const bread = agent({ id: 1, handle: "bread", respondTo: "always" });
+  const researcher = agent({ id: 2, handle: "researcher", respondTo: "mention" });
+  const members = [bread, researcher];
+
+  // Nobody named: the room's always-on member takes it.
+  assert.deepEqual(
+    resolveResponders(members, "what did the survey say?").map((m) => m.handle),
+    ["bread"],
+  );
+
+  // A specialist named: it answers, and Bread does not talk over it.
+  assert.deepEqual(
+    resolveResponders(members, "@researcher what did the survey say?").map(
+      (m) => m.handle,
+    ),
+    ["researcher"],
+  );
+
+  // Bread named explicitly still answers, and only it.
+  assert.deepEqual(
+    resolveResponders(members, "@bread summarise that").map((m) => m.handle),
+    ["bread"],
+  );
+});
+
+test("naming somebody who cannot speak does not silence the room", () => {
+  const bread = agent({ id: 1, handle: "bread", respondTo: "always" });
+  const quiet = agent({ id: 2, handle: "quiet", respondTo: "never" });
+  const ada = { id: 3, kind: "human", handle: "ada", muted: false, respondTo: "never" };
+
+  // Naming a colleague notifies them; the question still gets answered.
+  assert.deepEqual(
+    resolveResponders([bread, ada], "@ada any thoughts?").map((m) => m.handle),
+    ["bread"],
+  );
+  // Same for an agent that has been told to stay quiet.
+  assert.deepEqual(
+    resolveResponders([bread, quiet], "@quiet any thoughts?").map((m) => m.handle),
+    ["bread"],
+  );
 });

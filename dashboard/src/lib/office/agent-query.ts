@@ -76,11 +76,16 @@ export async function runOfficeCommand(
     cwd: workspace,
     timeoutMs: OFFICE_RUN_TIMEOUT_MS,
   });
+  const breadboardExecutionNote =
+    validated.subcommand === "load_skill"
+      ? "[Breadboard execution note] office_run is a brokered agent call. For a new document, group planned paragraphs, table rows, and similar content into batch commands instead of issuing one office_run call per element. Reserve the final calls for view/validate and office_export; the task is incomplete until office_export returns the artifact."
+      : "";
   const output = [
     result.stdout.trim(),
     result.stderr.trim() ? `[stderr] ${result.stderr.trim()}` : "",
     result.truncated ? "[output truncated]" : "",
     result.timedOut ? "[the command timed out and was stopped]" : "",
+    breadboardExecutionNote,
   ].filter(Boolean).join("\n");
   return {
     command,
@@ -103,6 +108,13 @@ const EXPORT_KINDS = new Map<string, ArtifactKind>([
 
 /** Formats OfficeCLI can snapshot to HTML for an inline artifact preview. */
 const PREVIEWABLE_EXTENSIONS = new Set([".docx", ".pptx", ".xlsx"]);
+// Export is a one-shot handoff to a non-OfficeCLI consumer. A background
+// resident would retain a handle to the temporary editor workspace on Windows,
+// so export deliberately uses the direct, flush-on-return path.
+const OFFICE_EXPORT_ENV: NodeJS.ProcessEnv = {
+  ...process.env,
+  OFFICECLI_NO_AUTO_RESIDENT: "1",
+};
 
 export interface OfficeExportStaging {
   /** Absolute path of the document inside the workspace. */
@@ -142,9 +154,10 @@ export async function prepareOfficeExport(
       `Only ${[...EXPORT_KINDS.keys()].join(", ")} files can be exported as artifacts.`,
     );
   }
-  // Release the resident so the bytes on disk are final before anything else
-  // reads them. A file without a resident exits non-zero; that is fine.
-  await runOfficeCli(["close", filePath], { cwd: workspace, timeoutMs: 30_000 }).catch(() => undefined);
+  // Breadboard pins OFFICECLI_RESIDENT_FLUSH=each for every mutation, so the
+  // on-disk file is current here. The export itself is deliberately
+  // non-resident; closing a separately-owned resident from this one-shot
+  // staging path would make concurrent editor work disappear underneath it.
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
     throw new OfficeCliError(404, "office_file_not_found", `${file} does not exist in the workspace.`);
   }
@@ -164,7 +177,7 @@ export async function prepareOfficeExport(
     try {
       const rendered = await runOfficeCli(
         ["view", filePath, "html", "-o", candidate],
-        { cwd: workspace, timeoutMs: 60_000 },
+        { cwd: workspace, timeoutMs: 60_000, env: OFFICE_EXPORT_ENV },
       );
       if (rendered.code === 0 && fs.existsSync(candidate) && fs.statSync(candidate).size > 0) {
         previewFilePath = candidate;

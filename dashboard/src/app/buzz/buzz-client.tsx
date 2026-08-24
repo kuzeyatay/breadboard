@@ -17,7 +17,7 @@ import { BuzzThemeProvider, useTheme } from "@/app/buzz/lib/theme";
 import { SidebarProvider } from "@/app/buzz/ui/sidebar";
 import { CommunityRail } from "./components/community-rail";
 import { Composer } from "./components/composer";
-import { MembersPanel } from "./components/members-panel";
+import { MembersPanel, type AddPersonOutcome } from "./components/members-panel";
 import { MessageRow } from "./components/message-row";
 import { AgentsView, InboxView, useRailViews } from "./components/rail-views";
 import {
@@ -33,6 +33,7 @@ import { ThreadPanel } from "./components/thread-panel";
 import { useRoom } from "./use-room";
 import type {
   BuzzCommunity,
+  BuzzInvite,
   BuzzMessage,
   BuzzMessageHit,
   BuzzPersona,
@@ -311,15 +312,42 @@ function BuzzWorkspace({
     }
   };
 
-  const addMember = async (payload: Record<string, unknown>) => {
-    if (!roomId) return;
-    await fetch(`/api/buzz/rooms/${roomId}/members`, {
+  /**
+   * Add an agent, or offer a person a place in the room.
+   *
+   * Answers what happened rather than nothing, because the two person-shaped
+   * outcomes differ: a colleague already in the community is seated (201),
+   * while anybody else is only invited to it (202) and no member row appears
+   * until they accept. The panel has to be able to say which.
+   */
+  const addMember = async (
+    payload: Record<string, unknown>,
+  ): Promise<AddPersonOutcome> => {
+    if (!roomId) return { kind: "failed", message: "No room is open." };
+    const response = await fetch(`/api/buzz/rooms/${roomId}/members`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
+    if (!response.ok) {
+      return {
+        kind: "failed",
+        message: await failureMessage(response, "They could not be added."),
+      };
+    }
+    const body = (await response.json().catch(() => null)) as {
+      invited?: { username?: string; community?: string };
+    } | null;
+    if (body?.invited) {
+      return {
+        kind: "invited",
+        username: body.invited.username ?? "them",
+        community: body.invited.community ?? "this community",
+      };
+    }
     await room.refresh();
     await refreshRails();
+    return { kind: "seated" };
   };
 
   const setRespondTo = async (
@@ -348,6 +376,24 @@ function BuzzWorkspace({
       setThreadRootId(hit.message.parentId);
       setShowMembers(false);
     }
+  };
+
+  /**
+   * Answer a community invitation from the inbox.
+   *
+   * Accepting changes which rooms exist for this reader, so the rails are
+   * re-read rather than patched: the whole left-hand side of the page is
+   * different afterwards, and reconstructing that from one invite id would
+   * only be a slower way of asking the server the same question.
+   */
+  const respondToInvite = async (invite: BuzzInvite, accept: boolean) => {
+    const response = await fetch("/api/organizations/invites", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ inviteId: invite.id, accept }),
+    });
+    if (!response.ok) return;
+    await Promise.all([railViews.refresh(), accept ? refreshRails() : null]);
   };
 
   const unreadTotal = rooms.reduce((total, entry) => total + entry.unread, 0);
@@ -427,9 +473,11 @@ function BuzzWorkspace({
               {view === "inbox" ? (
                 <InboxView
                   unread={railViews.unread}
+                  invites={railViews.invites}
                   loading={railViews.loading}
                   onRefresh={() => void railViews.refresh()}
                   onOpen={openHit}
+                  onRespondToInvite={respondToInvite}
                 />
               ) : view === "agents" ? (
                 <AgentsView
@@ -508,7 +556,7 @@ function BuzzWorkspace({
                 rosterReady={rosterReady}
                 onClose={() => setShowMembers(false)}
                 onAddPersona={(slug) => void addMember({ personaSlug: slug })}
-                onAddPerson={(userId) => void addMember({ userId })}
+                onAddPerson={(userId) => addMember({ userId })}
                 onRemove={(memberId) => void removeMember(memberId)}
                 onRespondToChange={(memberId, respondTo) => {
                   if (!roomId) return;

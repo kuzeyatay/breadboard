@@ -16,6 +16,9 @@ import {
 import {
   persistedVisualizationControlContractProblems,
 } from "../src/lib/visualization-contract-validation.ts";
+import {
+  GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE,
+} from "../src/lib/generated-visual-capabilities.ts";
 
 function unit(overrides = {}) {
   return {
@@ -150,6 +153,7 @@ function proseDecision(candidate) {
 }
 
 function fixture(options = {}) {
+  const gardenId = options.gardenId ?? "electromagnetism-1";
   const second = unit({
     id: "U25",
     title: "Wave terminology",
@@ -161,7 +165,7 @@ function fixture(options = {}) {
   });
   const learningUnits = [unit(), second];
   const packet = buildModelVisualNecessityPacket({
-    gardenId: "electromagnetism-1",
+    gardenId,
     learningUnits,
     canonicalEvidenceByUnit: {
       U24: [{ anchor: "S1.P24", kind: "source_text", text: CANONICAL_U24_TEXT }],
@@ -178,7 +182,7 @@ function fixture(options = {}) {
   });
   const response = {
     schemaVersion: 1,
-    gardenId: "electromagnetism-1",
+    gardenId,
     gardenRationale: "The model selected one interaction and one prose explanation across the batch.",
     visualBudget: {
       targetMinimum: 1,
@@ -747,6 +751,108 @@ describe("model-authored visual necessity batch", () => {
     assert.doesNotMatch(prompt.system, /single-symbol labels that have no meaningful normalized token/i);
   });
 
+  test("prediction-role mismatch receives one bidirectional contract and converges by model-authored targeted replacement", async () => {
+    const { packet, learningUnits, response } = fixture({
+      gardenId: "generic-protocol-garden",
+    });
+    const invalid = structuredClone(response);
+    invalid.decisions[0].interaction.controls.push({
+      id: "advance_case",
+      kind: "protocol_action",
+      label: "Next case",
+      type: "button",
+      protocolRole: "reveal_outcome",
+      defaultValue: 0,
+      evidence: [],
+    });
+    const validation = validateModelVisualNecessityBatch({
+      packet,
+      learningUnits,
+      response: invalid,
+    });
+    assert.equal(validation.ok, false);
+    assert.equal(validation.problems.some((problem) =>
+      /prediction protocol roles require interactionGoal test_prediction/.test(problem.message) &&
+      /omit those optional roles/.test(problem.message)), true);
+
+    const targetedRequests = [];
+    const result = await runModelVisualNecessityPlanning({
+      packet,
+      learningUnits,
+      provider: async (request) => {
+        assert.equal(request.system.includes(GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE), true);
+        return invalid;
+      },
+      targetedRepairProvider: async (request) => {
+        targetedRequests.push(request);
+        assert.equal(request.system.includes(GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE), true);
+        assert.equal(request.problems.some((problem) =>
+          /prediction protocol roles require interactionGoal test_prediction/.test(problem.message)), true);
+        const replacement = structuredClone(invalid.decisions[0]);
+        delete replacement.interaction.controls[1].protocolRole;
+        return {
+          schemaVersion: 1,
+          gardenId: packet.gardenId,
+          decisions: [replacement],
+        };
+      },
+    });
+
+    assert.equal(result.calls, 2);
+    assert.equal(result.targetedRepairCalls, 1);
+    assert.equal(targetedRequests.length, 1);
+    assert.equal(result.plan.response.decisions[0].interaction.interactionGoal, "compare_cases");
+    assert.equal(
+      "protocolRole" in result.plan.response.decisions[0].interaction.controls[1],
+      false,
+    );
+  });
+
+  test("the five-call exhaustion path carries the same actionable rule into whole-batch repair", async () => {
+    const { packet, learningUnits, response } = fixture({
+      gardenId: "generic-five-call-garden",
+    });
+    const invalid = structuredClone(response);
+    invalid.decisions[0].interaction.controls.push({
+      id: "advance_case",
+      kind: "protocol_action",
+      label: "Next case",
+      type: "button",
+      protocolRole: "reveal_outcome",
+      defaultValue: 0,
+      evidence: [],
+    });
+    const fullRequests = [];
+    const targetedRequests = [];
+    const result = await runModelVisualNecessityPlanning({
+      packet,
+      learningUnits,
+      provider: async (request) => {
+        fullRequests.push(request);
+        if (request.attempt < 2) return invalid;
+        assert.equal(request.system.includes(GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE), true);
+        assert.equal(request.problems.some((problem) =>
+          /omit those optional roles for a non-prediction interaction/.test(problem.message)), true);
+        return response;
+      },
+      targetedRepairProvider: async (request) => {
+        targetedRequests.push(request);
+        return {
+          schemaVersion: 1,
+          gardenId: packet.gardenId,
+          decisions: [structuredClone(invalid.decisions[0])],
+        };
+      },
+    });
+
+    assert.equal(result.calls, 5);
+    assert.equal(result.targetedRepairCalls, 2);
+    assert.deepEqual(fullRequests.map((request) => request.attempt), [0, 1, 2]);
+    assert.equal(targetedRequests.every((request) =>
+      request.system.includes(GENERATED_VISUAL_PREDICTION_PROTOCOL_RULE)), true);
+    assert.equal(result.plan.response.decisions[0].interaction.interactionGoal, "compare_cases");
+  });
+
   test("targeted merge atomically replaces complete failed decisions and preserves every untouched record", () => {
     const { packet, response } = fixture();
     const invalid = structuredClone(response);
@@ -921,23 +1027,56 @@ describe("model-authored visual necessity batch", () => {
     assert.equal(targetedCalls, 0);
   });
 
-  test("absent structured model output consumes a semantic repair call instead of masquerading as transport failure", async () => {
-    const { packet, learningUnits, response } = fixture();
-    const requests = [];
-    const result = await runModelVisualNecessityPlanning({
-      packet,
-      learningUnits,
-      provider: async (request) => {
-        requests.push(request);
-        return request.attempt === 0 ? undefined : response;
-      },
-    });
-    assert.equal(result.calls, 2);
-    assert.equal(result.repairCalls, 1);
-    assert.equal(result.targetedRepairCalls, 0);
-    assert.deepEqual(requests.map((request) => request.attempt), [0, 1]);
-    assert.equal(requests[1].problems.some((problem) =>
-      problem.code === "invalid_response"), true);
+  test("absent or literal-null whole-batch output is terminal and cannot authorize semantic repair", async () => {
+    for (const output of [undefined, null, "", "  \n", "null", "```json\nnull\n```"]) {
+      const { packet, learningUnits } = fixture();
+      const requests = [];
+      await assert.rejects(
+        runModelVisualNecessityPlanning({
+          packet,
+          learningUnits,
+          provider: async (request) => {
+            requests.push(request);
+            return output;
+          },
+        }),
+        (error) =>
+          error instanceof ModelVisualNecessityPlanningError &&
+          error.calls === 1 &&
+          error.problems[0]?.code === "missing_provider_candidate",
+      );
+      assert.deepEqual(requests.map((request) => request.attempt), [0]);
+    }
+  });
+
+  test("absent or literal-null targeted output is terminal after one targeted call", async () => {
+    for (const output of [undefined, null, "", "  \n", "null", "```json\nnull\n```"]) {
+      const { packet, learningUnits, response } = fixture();
+      const invalid = structuredClone(response);
+      delete invalid.decisions[0].interaction;
+      let fullCalls = 0;
+      let targetedCalls = 0;
+      await assert.rejects(
+        runModelVisualNecessityPlanning({
+          packet,
+          learningUnits,
+          provider: async () => {
+            fullCalls += 1;
+            return invalid;
+          },
+          targetedRepairProvider: async () => {
+            targetedCalls += 1;
+            return output;
+          },
+        }),
+        (error) =>
+          error instanceof ModelVisualNecessityPlanningError &&
+          error.calls === 2 &&
+          error.problems[0]?.code === "missing_provider_candidate",
+      );
+      assert.equal(fullCalls, 1);
+      assert.equal(targetedCalls, 1);
+    }
   });
 
   test("targeted repair rejects missing, legacy, undeclared, or empty canonical evidence before a model call", () => {

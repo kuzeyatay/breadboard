@@ -8,11 +8,16 @@ from uuid import uuid4
 from flask import Blueprint, Response, current_app, jsonify, make_response, request
 
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
-from .council.gateway import maybe_handle_responses_with_council, maybe_handle_with_council
+from .council.gateway import (
+    maybe_handle_responses_with_council,
+    maybe_handle_with_council,
+    recoverable_council_passthrough_guard,
+)
 from .council.unslop import maybe_unslop_instructions, maybe_unslop_messages
 from .fast_mode import resolve_service_tier
 from .external_responses import external_responses_response
 from .limits import record_rate_limits_from_response
+from .learn_strict_route import LearnStrictRouteError, consume_learn_strict_route
 from .http import build_cors_headers
 from .model_identity import with_resolved_model_identity
 from .model_registry import list_public_models, uses_codex_instructions
@@ -88,7 +93,11 @@ def _instructions_for_model(model: str) -> str:
     return instructions_for_model(current_app.config, model)
 
 
-def _resolve_requested_model(requested_model: Any) -> tuple[ResolvedModel, Any, str]:
+def _resolve_requested_model(
+    requested_model: Any,
+    *,
+    strict_model_route: bool = False,
+) -> tuple[ResolvedModel, Any, str]:
     """Map the client's model id onto a provider.
 
     Returns the resolution, the id to echo back to the client (a `default`
@@ -101,7 +110,7 @@ def _resolve_requested_model(requested_model: Any) -> tuple[ResolvedModel, Any, 
     echo_model = resolved.public_model if is_default_sentinel(requested_model) else requested_model
     chatgpt_model = normalize_model_name(
         resolved.upstream_model if resolved.is_chatgpt else requested_model,
-        current_app.config.get("DEBUG_MODEL"),
+        None if strict_model_route else current_app.config.get("DEBUG_MODEL"),
     )
     return resolved, echo_model, chatgpt_model
 
@@ -153,6 +162,46 @@ def _service_tier_from_payload(
     return resolution.service_tier, None
 
 
+def _take_learn_strict_route(payload: Dict[str, Any]) -> tuple[bool, Response | None]:
+    """Consume Learn's internal single-provider dispatch policy.
+
+    The flag is deliberately removed before any passthrough payload is built.
+    Conflicting aliases or non-boolean values fail before Council/provider
+    selection so no downstream request can observe a weaker interpretation.
+    """
+    try:
+        value = consume_learn_strict_route(payload)
+    except LearnStrictRouteError as exc:
+        return False, make_response(
+            jsonify({"error": {"message": str(exc)}}),
+            400,
+        )
+    return value is True, None
+
+
+def _force_strict_direct_council(payload: Dict[str, Any]) -> Response | None:
+    camel_present = "councilModeOverride" in payload
+    snake_present = "council_mode_override" in payload
+    camel = payload.get("councilModeOverride")
+    snake = payload.get("council_mode_override")
+    if camel_present and snake_present and (
+        type(camel) is not type(snake) or camel != snake
+    ):
+        return make_response(
+            jsonify({"error": {"message": "Conflicting Council mode aliases for strict Learn routing."}}),
+            400,
+        )
+    requested = camel if camel_present else snake if snake_present else None
+    if requested is not None and requested != "direct_council":
+        return make_response(
+            jsonify({"error": {"message": "Strict Learn routing requires direct_council mode."}}),
+            409,
+        )
+    payload.pop("council_mode_override", None)
+    payload["councilModeOverride"] = "direct_council"
+    return None
+
+
 @openai_bp.route("/v1/chat/completions", methods=["POST"])
 def chat_completions() -> Response:
     verbose = bool(current_app.config.get("VERBOSE"))
@@ -177,11 +226,29 @@ def chat_completions() -> Response:
             if verbose:
                 _log_json("OUT POST /v1/chat/completions", err)
             return jsonify(err), 400
+    if not isinstance(payload, dict):
+        return jsonify({"error": {"message": "Request body must be a JSON object"}}), 400
+    learn_strict_route, strict_error = _take_learn_strict_route(payload)
+    if strict_error is not None:
+        return strict_error
+    if learn_strict_route:
+        direct_error = _force_strict_direct_council(payload)
+        if direct_error is not None:
+            return direct_error
 
     requested_model_alias = (
         payload.get("model") if isinstance(payload.get("model"), str) else None
     )
-    resolved_model, requested_model, model = _resolve_requested_model(requested_model_alias)
+    if learn_strict_route and (
+        requested_model_alias is None or is_default_sentinel(requested_model_alias)
+    ):
+        return jsonify({"error": {"message": "Strict Learn routing requires an explicit model."}}), 409
+    resolved_model, requested_model, model = _resolve_requested_model(
+        requested_model_alias,
+        strict_model_route=learn_strict_route,
+    )
+    if learn_strict_route and resolved_model.is_unknown_external:
+        return jsonify({"error": {"message": "Strict Learn routing requires a configured exact model route."}}), 409
     messages = payload.get("messages")
     if messages is None and isinstance(payload.get("prompt"), str):
         messages = [{"role": "user", "content": payload.get("prompt") or ""}]
@@ -209,6 +276,7 @@ def chat_completions() -> Response:
         requested_model=requested_model,
         model=model,
         requested_model_alias=requested_model_alias,
+        strict_model_route=learn_strict_route,
         verbose=verbose,
     )
     if council_response is not None:
@@ -238,6 +306,7 @@ def chat_completions() -> Response:
             verbose=verbose,
             requested_model=requested_model_alias,
             endpoint="chat.completions",
+            strict_route=learn_strict_route,
         )
 
     messages = resolved_messages
@@ -340,6 +409,7 @@ def chat_completions() -> Response:
         parallel_tool_calls=parallel_tool_calls,
         reasoning_param=reasoning_param,
         service_tier=service_tier,
+        strict_single_attempt=learn_strict_route,
     )
     if error_resp is not None:
         if verbose:
@@ -364,7 +434,7 @@ def chat_completions() -> Response:
             err_body = json.loads(raw.decode("utf-8", errors="ignore")) if raw else {"raw": upstream.text}
         except Exception:
             err_body = {"raw": upstream.text}
-        if had_responses_tools:
+        if had_responses_tools and upstream.status_code in (400, 422) and not learn_strict_route:
             if verbose:
                 print("[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)")
             base_tools_only = convert_tools_chat_to_responses(payload.get("tools"))
@@ -380,7 +450,13 @@ def chat_completions() -> Response:
                 service_tier=service_tier,
             )
             record_rate_limits_from_response(upstream2)
-            if err2 is None and upstream2 is not None and upstream2.status_code < 400:
+            if err2 is not None:
+                # The repaired POST may have been accepted even though its
+                # response was lost. Preserve that ambiguous transport failure
+                # verbatim; returning the first request's deterministic 400/422
+                # would invite a caller to submit the logical request again.
+                return err2
+            if upstream2 is not None and upstream2.status_code < 400:
                 upstream = upstream2
             else:
                 err = {
@@ -543,6 +619,21 @@ def completions() -> Response:
         if verbose:
             _log_json("OUT POST /v1/completions", err)
         return jsonify(err), 400
+
+    if not isinstance(payload, dict):
+        err = {"error": {"message": "Request body must be a JSON object"}}
+        if verbose:
+            _log_json("OUT POST /v1/completions", err)
+        return jsonify(err), 400
+    try:
+        strict_value = consume_learn_strict_route(payload)
+    except LearnStrictRouteError as exc:
+        return jsonify({"error": {"message": str(exc)}}), 400
+    if strict_value is not None:
+        return jsonify({"error": {"message": "Learn strict routing is unsupported on /v1/completions."}}), 409
+    recovery_guard = recoverable_council_passthrough_guard(payload)
+    if recovery_guard is not None:
+        return recovery_guard
 
     requested_model_alias = (
         payload.get("model") if isinstance(payload.get("model"), str) else None
@@ -732,9 +823,18 @@ def responses_create() -> Response:
         if verbose:
             _log_json("OUT POST /v1/responses", err)
         return jsonify(err), 400
+    try:
+        strict_value = consume_learn_strict_route(payload)
+    except LearnStrictRouteError as exc:
+        return jsonify({"error": {"message": str(exc)}}), 400
+    if strict_value is not None:
+        return jsonify({"error": {"message": "Learn strict routing is unsupported on /v1/responses."}}), 409
 
     responses_model = resolve_model(payload.get("model"))
     if not responses_model.is_chatgpt:
+        recovery_guard = recoverable_council_passthrough_guard(payload)
+        if recovery_guard is not None:
+            return recovery_guard
         return external_responses_response(responses_model, payload, verbose=verbose)
 
     payload = with_resolved_model_identity(

@@ -7,10 +7,12 @@ from typing import Any, Dict, List
 
 from flask import Blueprint, Response, current_app, jsonify, make_response, request, stream_with_context
 
+from .council.gateway import recoverable_council_passthrough_guard
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .fast_mode import resolve_service_tier
 from .limits import record_rate_limits_from_response
 from .http import build_cors_headers
+from .learn_strict_route import LearnStrictRouteError, consume_learn_strict_route
 from .model_registry import list_public_models, uses_codex_instructions
 from .responses_api import instructions_for_model
 from .reasoning import (
@@ -188,6 +190,18 @@ def ollama_chat() -> Response:
             _log_json("OUT POST /api/chat", err)
         return jsonify(err), 400
 
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+    try:
+        strict_value = consume_learn_strict_route(payload)
+    except LearnStrictRouteError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if strict_value is not None:
+        return jsonify({"error": "Learn strict routing is unsupported on /api/chat."}), 409
+    recovery_guard = recoverable_council_passthrough_guard(payload)
+    if recovery_guard is not None:
+        return recovery_guard
+
     model = payload.get("model")
     raw_messages = payload.get("messages")
     messages = convert_ollama_messages(
@@ -314,7 +328,7 @@ def ollama_chat() -> Response:
             err_body = json.loads(upstream.content.decode("utf-8", errors="ignore")) if upstream.content else {"raw": upstream.text}
         except Exception:
             err_body = {"raw": upstream.text}
-        if had_responses_tools:
+        if had_responses_tools and upstream.status_code in (400, 422):
             if verbose:
                 print("[Passthrough] Upstream rejected tools; retrying without extras (args redacted)")
             base_tools_only = convert_tools_chat_to_responses(normalize_ollama_tools(tools_req))
@@ -335,7 +349,12 @@ def ollama_chat() -> Response:
                 service_tier=service_tier_resolution.service_tier,
             )
             record_rate_limits_from_response(upstream2)
-            if err2 is None and upstream2 is not None and upstream2.status_code < 400:
+            if err2 is not None:
+                # Do not hide an accepted-unknown repaired POST behind the
+                # original validation response. The client must see the exact
+                # ambiguous failure so it cannot safely replay the request.
+                return err2
+            if upstream2 is not None and upstream2.status_code < 400:
                 upstream = upstream2
             else:
                 err = {"error": {"message": upstream_error_message(err_body), "code": "RESPONSES_TOOLS_REJECTED"}}

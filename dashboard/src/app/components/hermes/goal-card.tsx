@@ -61,26 +61,26 @@ function formatElapsed(totalSeconds: number): string {
   return parts.join(' ');
 }
 
-function statusLabel(status: GoalCardStatus, running: boolean): string {
+function statusLabel(status: GoalCardStatus): string {
   if (status === 'complete') return 'Goal complete';
   if (status === 'paused') return 'Goal paused';
   if (status === 'budget_limited') return 'Goal out of turns';
-  return running ? 'Goal running' : 'Goal stalled';
+  return 'Pursuing goal';
 }
 
 /**
- * Complete is the only state that earns the accent. A stalled goal is not an
- * error — nothing has gone wrong, the conversation simply moved on — so it
- * reads in the ordinary ink and lets the play button carry the invitation.
+ * Complete is the only state that earns the accent. An active goal remains a
+ * pursuit between turns, so it reads in ordinary ink while the play or pause
+ * button says whether work is in flight right now.
  */
-function statusTone(status: GoalCardStatus, running: boolean): string {
+function statusTone(status: GoalCardStatus): string {
   if (status === 'complete') return 'text-[var(--botanical)]';
   if (status === 'paused') return 'text-[var(--ink-muted)]';
   if (status === 'budget_limited') return 'text-[var(--danger)]';
-  return running ? 'text-[var(--botanical)]' : 'text-[var(--ink)]';
+  return 'text-[var(--ink)]';
 }
 
-function GoalIcon({ status, running }: { status: GoalCardStatus; running: boolean }) {
+function GoalIcon({ status }: { status: GoalCardStatus }) {
   if (status === 'complete') {
     return (
       <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -90,7 +90,7 @@ function GoalIcon({ status, running }: { status: GoalCardStatus; running: boolea
   }
   return (
     <svg
-      className={`h-4 w-4${running ? ' animate-pulse' : ''}`}
+      className="h-4 w-4"
       fill="none"
       viewBox="0 0 24 24"
       stroke="currentColor"
@@ -104,7 +104,7 @@ function GoalIcon({ status, running }: { status: GoalCardStatus; running: boolea
 }
 
 const ICON_BUTTON =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)] disabled:cursor-not-allowed disabled:opacity-40';
+  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-[color,background-color,transform] duration-150 ease-out hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] active:scale-[0.97] focus-visible:outline-2 focus-visible:outline-[var(--botanical)] disabled:cursor-not-allowed disabled:opacity-40';
 
 export default function GoalCard({
   sessionId,
@@ -150,7 +150,7 @@ export default function GoalCard({
 
   // A goal that is not moving does not need a ticking clock, and a complete one
   // has stopped counting for good.
-  const ticking = goal !== null && (goal.status === 'active' || goal.status === 'budget_limited');
+  const ticking = goal !== null && goal.status === 'active';
   useEffect(() => {
     if (!ticking) return;
     setNow(Date.now());
@@ -178,8 +178,8 @@ export default function GoalCard({
 
   if (!goal) return null;
 
-  const label = statusLabel(goal.status, running);
-  const tone = statusTone(goal.status, running);
+  const label = statusLabel(goal.status);
+  const tone = statusTone(goal.status);
   const createdAt = Date.parse(goal.createdAt);
   const updatedAt = Date.parse(goal.updatedAt);
   // Wall-clock since the goal was set, which is what someone means by "how long
@@ -223,14 +223,20 @@ export default function GoalCard({
     }
   };
 
+  const toggleDetails = () => {
+    setExpanded((open) => {
+      if (!open) setBudgetDraft(turnBudget === null ? '' : String(turnBudget));
+      return !open;
+    });
+  };
+
   return (
-    <div className="mb-1 border-b border-[var(--line)] px-1 pb-1.5">
-      <div className="neu-surface-subtle rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] px-2.5 py-1.5">
-        <div className="flex items-center gap-2">
+    <div className="border-b border-[var(--line)]">
+        <div className="flex min-h-9 items-center gap-1.5 px-2">
           <span className={`shrink-0 ${tone}`}>
-            <GoalIcon status={goal.status} running={running} />
+            <GoalIcon status={goal.status} />
           </span>
-          <span className={`shrink-0 text-xs font-semibold ${tone}`}>{label}</span>
+          <span className={`shrink-0 text-xs font-medium ${tone}`}>{label}</span>
           <span
             className="min-w-0 flex-1 truncate text-xs text-[var(--ink-muted)]"
             title={goal.objective}
@@ -240,11 +246,6 @@ export default function GoalCard({
           <span className="shrink-0 tabular-nums text-[11px] text-[var(--ink-muted)]">
             {formatElapsed(elapsedSeconds)}
           </span>
-          {goal.turnBudget !== null ? (
-            <span className="shrink-0 tabular-nums text-[11px] text-[var(--ink-muted)]">
-              {goal.turnsUsed}/{goal.turnBudget} turns
-            </span>
-          ) : null}
           <button
             type="button"
             className={ICON_BUTTON}
@@ -288,7 +289,7 @@ export default function GoalCard({
           <button
             type="button"
             className={ICON_BUTTON}
-            onClick={() => setExpanded((open) => !open)}
+            onClick={toggleDetails}
             aria-expanded={expanded}
             aria-label={expanded ? 'Hide goal detail' : 'Show goal detail'}
             title={expanded ? 'Hide goal detail' : 'Show goal detail'}
@@ -304,20 +305,20 @@ export default function GoalCard({
         </div>
 
         {confirmingAbandon ? (
-          <div className="mt-1.5 flex items-center gap-2 border-t border-[var(--line)] pt-1.5 text-xs">
+          <div className="flex items-center gap-2 border-t border-[var(--line)] px-2 py-1.5 text-xs">
             <span className="min-w-0 flex-1 text-[var(--ink-muted)]">
               Abandon this goal? The conversation carries on without it.
             </span>
             <button
               type="button"
-              className="rounded-lg px-2 py-1 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)]"
+              className="rounded-md px-2 py-1 text-[var(--ink-muted)] transition-[color,background-color,transform] duration-150 ease-out hover:bg-[var(--paper-strong)] active:scale-[0.97]"
               onClick={() => setConfirmingAbandon(false)}
             >
               Keep it
             </button>
             <button
               type="button"
-              className="rounded-lg px-2 py-1 font-medium text-[var(--danger)] transition hover:bg-[var(--paper-strong)]"
+              className="rounded-md px-2 py-1 font-medium text-[var(--danger)] transition-[color,background-color,transform] duration-150 ease-out hover:bg-[var(--paper-strong)] active:scale-[0.97]"
               disabled={busy}
               onClick={() => {
                 setConfirmingAbandon(false);
@@ -330,7 +331,7 @@ export default function GoalCard({
         ) : null}
 
         {expanded ? (
-          <div className="mt-1.5 space-y-1.5 border-t border-[var(--line)] pt-1.5">
+          <div className="space-y-1.5 border-t border-[var(--line)] px-2 py-2">
             <p className="whitespace-pre-wrap text-xs leading-relaxed text-[var(--ink)]">
               {goal.objective}
             </p>
@@ -380,11 +381,11 @@ export default function GoalCard({
                   onChange={(event) => setBudgetDraft(event.target.value)}
                   inputMode="numeric"
                   placeholder={goal.turnBudget === null ? 'unlimited' : String(goal.turnBudget)}
-                  className="neu-inset w-20 rounded-lg border border-[var(--line)] bg-[var(--paper-raised)] px-2 py-1 text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                  className="w-20 rounded-md border border-[var(--line)] bg-transparent px-2 py-1 text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
                 />
                 <button
                   type="submit"
-                  className="rounded-lg px-2 py-1 font-medium text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:opacity-40"
+                  className="rounded-md px-2 py-1 font-medium text-[var(--ink)] transition-[color,background-color,transform] duration-150 ease-out hover:bg-[var(--paper-strong)] active:scale-[0.97] disabled:opacity-40"
                   disabled={busy}
                 >
                   Set
@@ -395,9 +396,8 @@ export default function GoalCard({
         ) : null}
 
         {error ? (
-          <p className="mt-1 px-0.5 text-[11px] text-[var(--danger)]">{error}</p>
+          <p className="border-t border-[var(--line)] px-2 py-1.5 text-[11px] text-[var(--danger)]">{error}</p>
         ) : null}
-      </div>
     </div>
   );
 }

@@ -98,6 +98,7 @@ export interface VideoTranscriptionRunnerDeps {
     contentHash?: string | null;
   }): ExistingVideoSource | null;
   contentPath(): string;
+  withScriberrLease?<T>(reason: string, operation: () => Promise<T>): Promise<T>;
   sleep?(ms: number): Promise<void>;
   log?(message: string): void;
 }
@@ -354,6 +355,12 @@ export class VideoTranscriptionRunner {
     }
   }
 
+  private withScriberrLease<T>(reason: string, operation: () => Promise<T>): Promise<T> {
+    return this.deps.withScriberrLease
+      ? this.deps.withScriberrLease(reason, operation)
+      : operation();
+  }
+
   private startHeartbeat(jobId: string): () => void {
     const timer = setInterval(() => {
       try {
@@ -373,13 +380,15 @@ export class VideoTranscriptionRunner {
 
       if (job.inputKind === "upload") {
         await this.stageValidateUpload(job.id);
-        await this.stageUploadToScriberr(job.id);
       } else {
         await this.stageValidateYouTube(job.id);
-        await this.stageDownloadYouTube(job.id);
       }
-      await this.stageStartTranscription(job.id);
-      await this.stagePollTranscription(job.id);
+      await this.withScriberrLease(`transcription-${job.id}`, async () => {
+        if (job.inputKind === "upload") await this.stageUploadToScriberr(job.id);
+        else await this.stageDownloadYouTube(job.id);
+        await this.stageStartTranscription(job.id);
+        await this.stagePollTranscription(job.id);
+      });
       await this.executeFromTranscriptInner(job.id);
     } catch (error) {
       await this.handleFailure(job.id, error);
@@ -398,12 +407,14 @@ export class VideoTranscriptionRunner {
       }
       // The Scriberr job may still be waiting to start (e.g. resume after a
       // crash between upload and start, or a failed Scriberr-side run).
-      const client = this.deps.createScriberrClient();
-      const snapshot = await client.getJobStatus(job.scriberrJobId);
-      if (snapshot.status === "uploaded" || snapshot.status === "failed") {
-        await this.stageStartTranscription(jobId);
-      }
-      await this.stagePollTranscription(jobId);
+      await this.withScriberrLease(`transcription-resume-${jobId}`, async () => {
+        const client = this.deps.createScriberrClient();
+        const snapshot = await client.getJobStatus(job.scriberrJobId!);
+        if (snapshot.status === "uploaded" || snapshot.status === "failed") {
+          await this.stageStartTranscription(jobId);
+        }
+        await this.stagePollTranscription(jobId);
+      });
       await this.executeFromTranscriptInner(jobId);
     } catch (error) {
       await this.handleFailure(jobId, error);

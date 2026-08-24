@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { authOptions } from '@/lib/auth-options';
 import db from '@/lib/db';
 import { organizationClusterClause } from '@/lib/organizations/store';
+import { SupervisorResourceExhaustedError } from '@/lib/supervisor-control';
 
 export class RouteError extends Error {
   status: number;
@@ -82,6 +83,12 @@ export async function requireReadableClusterFromSlug(clusterSlug: string): Promi
 }
 
 export function routeErrorResponse(error: unknown): NextResponse {
+  if (error instanceof SupervisorResourceExhaustedError) {
+    return NextResponse.json(
+      { error: error.message, ...error.result },
+      { status: 503 },
+    );
+  }
   if (error instanceof RouteError) {
     return NextResponse.json({ error: error.message }, { status: error.status });
   }

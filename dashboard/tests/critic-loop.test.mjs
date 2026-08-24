@@ -1,6 +1,6 @@
 // End-stage ChatMock critic loop tests. A programmable FAKE critic stands in for
 // ChatMock: it returns structured issues per round so we can exercise the loop's
-// catch -> repair-request -> re-review -> acceptance behavior deterministically.
+// review -> repair-request -> re-review -> acceptance behavior deterministically.
 
 import test, { describe, before } from "node:test";
 import assert from "node:assert/strict";
@@ -15,6 +15,8 @@ import {
   criticIssuesToRepairRequests,
   parseCriticIssues,
   createChatMockCritic,
+  createChatMockAnchorCritic,
+  AnchorCriticProtocolError,
   createChatMockModelRepair,
   makeCriticArtifactRepair,
   computeIssueResolutions,
@@ -76,6 +78,79 @@ function mkTinyGarden(prefix = "bb-critic-tiny-") {
   return dir;
 }
 
+function writeTinyModelPage(dir, pageRel = "learning/1. Metrics/1.1 Replay.md") {
+  const markdown = `---
+title: "Replay"
+knowledge_type: "learning-page"
+breadboardType: "learning_page"
+generated_by: "learn_button"
+learningUnitId: "U1"
+sourceAnchors: []
+sourceFormulaAnchors: []
+tags: []
+---
+
+This opening paragraph is long enough to form a stable semantic page body for the critic repair test.
+`;
+  fs.writeFileSync(path.join(dir, ...pageRel.split("/")), markdown, "utf-8");
+  return { pageRel, markdown };
+}
+
+function writeTinyLowConfidenceAnchor(dir) {
+  const anchorId = "S1.P1.replay-risk";
+  const { pageRel } = writeTinyModelPage(dir);
+  const markdown = fs.readFileSync(path.join(dir, ...pageRel.split("/")), "utf-8")
+    .replace("sourceAnchors: []", `sourceAnchors: ["${anchorId}"]`);
+  fs.writeFileSync(path.join(dir, ...pageRel.split("/")), markdown, "utf-8");
+  fs.writeFileSync(path.join(dir, "sources", "S1.md"), `---
+title: "Replay source"
+sourceId: "S1"
+---
+
+# Page 1
+
+Transport ambiguity makes replay unsafe when request completion is unknown.
+`, "utf-8");
+  fs.writeFileSync(path.join(dir, ".breadboard", "source-anchors.json"), JSON.stringify({
+    sourceTextConceptAnchors: [{
+      id: anchorId,
+      kind: "text_concept",
+      sourceId: "S1",
+      page: 1,
+      title: "Replay risk",
+      exactText: "Transport ambiguity makes replay unsafe.",
+      semanticSummary: "Ambiguous transport completion makes replay unsafe.",
+      conceptKeywords: ["replay", "risk"],
+      confidence: "low",
+      evidence: {
+        keywordHits: ["replay"],
+        missingKeywords: ["risk"],
+        titleOverlapScore: 0.5,
+        keywordCoverageScore: 0.5,
+        pageMatchScore: 1,
+        contextSpecificityScore: 0.3,
+        negativeEvidencePenalty: 0,
+        totalScore: 0.4,
+        decision: "needs_critic_review",
+      },
+    }],
+    sourceStructuralAnchors: [],
+  }, null, 2) + "\n");
+  return { anchorId, pageRel };
+}
+
+function ambiguousModelFailures() {
+  const resetLeaf = Object.assign(new Error("socket reset after request write"), { code: "ECONNRESET" });
+  const reset = new Error("provider request failed", { cause: new AggregateError([resetLeaf], "nested transport failure") });
+  const timeout = Object.assign(new Error("provider request timed out"), { code: "ETIMEDOUT" });
+  const abort = new DOMException("provider request aborted", "AbortError");
+  return [
+    ["nested reset", reset],
+    ["timeout", timeout],
+    ["AbortError", abort],
+  ];
+}
+
 /** A critic that returns a fixed set of issues on every round. */
 const constantCritic = (issues) => () => issues;
 /** A critic that returns issues[round-1] (empty after list exhausts). */
@@ -88,7 +163,312 @@ const noopRepair = () => ({ attempted: 0, resolved: 0 });
 /** Repair that reports it attempted the requests but resolved none. */
 const countingRepair = (calls) => (dir, slug, requests) => { calls.push(requests); return { attempted: requests.length, resolved: 0 }; };
 
+describe("critic request fail-closed boundaries", () => {
+  test("prose critic propagates ambiguous provider failures by exact identity after one call", async () => {
+    for (const [label, providerError] of ambiguousModelFailures()) {
+      const dir = mkTinyGarden(`bb-prose-critic-${label.replace(/\W+/g, "-")}-`);
+      writeTinyModelPage(dir);
+      let calls = 0;
+
+      await assert.rejects(
+        () => runCriticLoop({
+          gardenDir: dir,
+          gardenSlug: "test-2",
+          critic: () => {
+            calls += 1;
+            throw providerError;
+          },
+          repair: noopRepair,
+          options: { strictPublish: true, maxRounds: 3 },
+          writeReports: false,
+        }),
+        (actual) => {
+          assert.equal(actual, providerError, `${label} identity must be preserved`);
+          return true;
+        },
+      );
+      assert.equal(calls, 1, `${label} must issue exactly one prose-critic request`);
+    }
+  });
+
+  test("prose critic empty and malformed fulfilled responses fail terminally after one POST", async () => {
+    for (const [label, raw, pattern] of [
+      ["empty", "   ", /response was empty/i],
+      ["malformed", '{"issues":[', /invalid JSON/i],
+    ]) {
+      const dir = mkTinyGarden(`bb-prose-protocol-${label}-`);
+      writeTinyModelPage(dir);
+      let calls = 0;
+      const critic = createChatMockCritic({
+        model: "chatmock",
+        client: {
+          chat: {
+            completions: {
+              create: async () => {
+                calls += 1;
+                return { choices: [{ message: { content: raw } }] };
+              },
+            },
+          },
+        },
+      });
+
+      await assert.rejects(
+        () => runCriticLoop({
+          gardenDir: dir,
+          gardenSlug: "test-2",
+          critic,
+          repair: noopRepair,
+          options: { strictPublish: true, maxRounds: 3 },
+          writeReports: false,
+        }),
+        pattern,
+      );
+      assert.equal(calls, 1, `${label} response must not trigger another prose-critic POST`);
+    }
+  });
+
+  test("final measurement critic failure retains exact identity and stops", async () => {
+    const dir = mkTinyGarden("bb-final-measurement-critic-");
+    const { pageRel } = writeTinyModelPage(dir);
+    const providerError = new DOMException("measurement request aborted", "AbortError");
+    const bad = issue({ id: "measurement", type: "other", pagePath: pageRel, repairTarget: "unit_page" });
+    let calls = 0;
+
+    await assert.rejects(
+      () => runCriticLoop({
+        gardenDir: dir,
+        gardenSlug: "test-2",
+        critic: () => {
+          calls += 1;
+          if (calls === 1) return [bad];
+          throw providerError;
+        },
+        repair: noopRepair,
+        options: { strictPublish: true, maxRounds: 1 },
+        writeReports: false,
+      }),
+      (actual) => {
+        assert.equal(actual, providerError);
+        return true;
+      },
+    );
+    assert.equal(calls, 2, "one initial review and one failed measurement; no later request");
+  });
+
+  test("anchor critic propagates ambiguous provider failures by exact identity after one call", async () => {
+    for (const [label, providerError] of ambiguousModelFailures()) {
+      const dir = mkTinyGarden(`bb-anchor-critic-${label.replace(/\W+/g, "-")}-`);
+      writeTinyLowConfidenceAnchor(dir);
+      let proseCalls = 0;
+      let anchorCalls = 0;
+
+      await assert.rejects(
+        () => runCriticLoop({
+          gardenDir: dir,
+          gardenSlug: "test-2",
+          critic: () => {
+            proseCalls += 1;
+            return [];
+          },
+          anchorConfirm: () => {
+            anchorCalls += 1;
+            throw providerError;
+          },
+          repair: noopRepair,
+          options: { strictPublish: true, maxRounds: 3 },
+          writeReports: false,
+        }),
+        (actual) => {
+          assert.equal(actual, providerError, `${label} identity must be preserved`);
+          return true;
+        },
+      );
+      assert.equal(anchorCalls, 1, `${label} must issue exactly one anchor-critic request`);
+      assert.equal(proseCalls, 1, `${label} must stop before another prose round`);
+    }
+  });
+
+  test("null, empty, and malformed anchor responses are terminal protocol failures", async () => {
+    for (const [label, makeAnchorCritic, pattern] of [
+      ["null", (count) => () => { count.calls += 1; return null; }, /returned no decision/i],
+      ["empty", (count) => createChatMockAnchorCritic({
+        model: "chatmock",
+        client: { chat: { completions: { create: async () => { count.calls += 1; return { choices: [{ message: { content: "  " } }] }; } } } },
+      }), /response was empty/i],
+      ["malformed", (count) => createChatMockAnchorCritic({
+        model: "chatmock",
+        client: { chat: { completions: { create: async () => { count.calls += 1; return { choices: [{ message: { content: '{"decision":' } }] }; } } } },
+      }), /did not contain a structured decision/i],
+    ]) {
+      const dir = mkTinyGarden(`bb-anchor-protocol-${label}-`);
+      writeTinyLowConfidenceAnchor(dir);
+      const count = { calls: 0 };
+
+      await assert.rejects(
+        () => runCriticLoop({
+          gardenDir: dir,
+          gardenSlug: "test-2",
+          critic: () => [],
+          anchorConfirm: makeAnchorCritic(count),
+          repair: noopRepair,
+          options: { strictPublish: true, maxRounds: 3 },
+          writeReports: false,
+        }),
+        (actual) => {
+          assert.ok(actual instanceof AnchorCriticProtocolError);
+          assert.match(actual.message, pattern);
+          return true;
+        },
+      );
+      assert.equal(count.calls, 1, `${label} response must not trigger another anchor-critic request`);
+    }
+  });
+});
+
 describe("targeted critic metadata repairs", () => {
+  test("critic repair propagates ambiguous model failures by exact identity and stops later rounds", async () => {
+    for (const [label, providerError] of ambiguousModelFailures()) {
+      const dir = mkTinyGarden(`bb-critic-${label.replace(/\W+/g, "-")}-`);
+      const { pageRel } = writeTinyModelPage(dir);
+      const bad = issue({
+        id: `transport-${label}`,
+        type: "other",
+        pagePath: pageRel,
+        repairTarget: "unit_page",
+      });
+      let criticCalls = 0;
+      let modelCalls = 0;
+      const repair = makeCriticArtifactRepair({
+        allowDeterministicRepairs: false,
+        modelRepair: () => {
+          modelCalls += 1;
+          throw providerError;
+        },
+      });
+
+      await assert.rejects(
+        () => runCriticLoop({
+          gardenDir: dir,
+          gardenSlug: "test-2",
+          critic: () => {
+            criticCalls += 1;
+            return [bad];
+          },
+          repair,
+          options: { strictPublish: true, maxRounds: 3 },
+          writeReports: false,
+        }),
+        (actual) => {
+          assert.equal(actual, providerError, `${label} identity must be preserved`);
+          return true;
+        },
+      );
+      assert.equal(modelCalls, 1, `${label} must issue exactly one repair request`);
+      assert.equal(criticCalls, 1, `${label} must stop before a later critic round`);
+    }
+  });
+
+  test("literal and fenced JSON null model repairs are terminal after one repair POST", async () => {
+    for (const [label, raw] of [
+      ["literal", "null"],
+      ["fenced", "```json\nnull\n```"],
+    ]) {
+      const dir = mkTinyGarden(`bb-critic-null-repair-${label}-`);
+      const { pageRel } = writeTinyModelPage(dir);
+      const bad = issue({
+        id: `null-repair-${label}`,
+        type: "other",
+        pagePath: pageRel,
+        repairTarget: "unit_page",
+      });
+      let criticCalls = 0;
+      let modelCalls = 0;
+      const modelRepair = createChatMockModelRepair({
+        model: "chatmock",
+        client: {
+          chat: {
+            completions: {
+              create: async () => {
+                modelCalls += 1;
+                return { choices: [{ message: { content: raw } }] };
+              },
+            },
+          },
+        },
+      });
+      const repair = makeCriticArtifactRepair({
+        allowDeterministicRepairs: false,
+        modelRepair,
+      });
+
+      await assert.rejects(
+        () => runCriticLoop({
+          gardenDir: dir,
+          gardenSlug: "test-2",
+          critic: () => {
+            criticCalls += 1;
+            return [bad];
+          },
+          repair,
+          options: { strictPublish: true, maxRounds: 3 },
+          writeReports: false,
+        }),
+        /returned no nonempty candidate; no semantic retry was issued/i,
+      );
+      assert.equal(modelCalls, 1, `${label} null must issue exactly one model-repair POST`);
+      assert.equal(criticCalls, 1, `${label} null must stop before another critic review`);
+    }
+  });
+
+  test("critic retries only after a nonempty returned candidate fails concrete validation", async () => {
+    const dir = mkTinyGarden("bb-critic-returned-invalid-");
+    const { pageRel, markdown } = writeTinyModelPage(dir);
+    const bad = issue({
+      id: "returned-invalid",
+      type: "other",
+      pagePath: pageRel,
+      repairTarget: "unit_page",
+    });
+    let criticCalls = 0;
+    let modelCalls = 0;
+    const repair = makeCriticArtifactRepair({
+      allowDeterministicRepairs: false,
+      modelRepair: () => {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          return { targetPath: pageRel, revisedMarkdown: "nonempty candidate without required frontmatter" };
+        }
+        return {
+          targetPath: pageRel,
+          revisedMarkdown: markdown.replace("This opening paragraph", "A validated replacement paragraph"),
+        };
+      },
+    });
+
+    const result = await runCriticLoop({
+      gardenDir: dir,
+      gardenSlug: "test-2",
+      critic: () => {
+        criticCalls += 1;
+        return criticCalls <= 2 ? [bad] : [];
+      },
+      repair,
+      options: { strictPublish: true, maxRounds: 2 },
+      writeReports: false,
+    });
+
+    assert.equal(modelCalls, 2, "a freshly re-observed blocker may authorize a second semantic repair");
+    assert.equal(criticCalls, 3, "the blocker is re-observed before retry and measured once after repair");
+    assert.match(
+      result.rounds[0].provenance[0].modelFailureReason ?? "",
+      /returned model candidate failed target or safety validation/,
+    );
+    assert.equal(result.rounds[0].provenance[0].changed, false);
+    assert.equal(result.rounds[1].provenance[0].executorUsed, "model");
+    assert.equal(result.rounds[1].provenance[0].changed, true);
+  });
+
   test("worked_example_misclassified repairs metadata and inserts symbolic source definition", async () => {
     const dir = mkTinyGarden();
     const pageRel = "learning/1. Metrics/1.1 Efficiency.md";
@@ -290,7 +670,7 @@ Original body.
     const provenance = outcome.provenance.find((p) => p.targetPath === pageRel);
     assert.equal(provenance.executorUsed, "deterministic");
     assert.equal(provenance.changed, false);
-    assert.match(provenance.modelFailureReason ?? "", /no valid candidate/);
+    assert.match(provenance.modelFailureReason ?? "", /returned model candidate failed target or safety validation/);
     assert.equal(read(dir, pageRel), original);
   });
 });
@@ -333,7 +713,7 @@ describe("strict ChatMock critic response parsing", () => {
     );
   });
 
-  test("the ChatMock critic propagates malformed output as critic unavailability", async () => {
+  test("the ChatMock critic propagates malformed output as a terminal protocol error", async () => {
     const fakeClient = {
       chat: { completions: { create: async () => ({ choices: [{ message: { content: '{"issues":[' } }] }) } },
     };
@@ -517,37 +897,34 @@ describe("ChatMock critic loop", { skip }, () => {
 });
 
 // ---------------------------------------------------------------------------
-// Fix 1: strict-mode critic availability
+// Fix 1: critic request failures are terminal in every publication mode
 // ---------------------------------------------------------------------------
-describe("Fix 1: critic availability in strict/non-strict mode", { skip }, () => {
-  const throwingCritic = () => { throw new Error("ECONNREFUSED chatmock"); };
+describe("Fix 1: critic failures in strict/non-strict mode", { skip }, () => {
 
-  test("1. strict + critic unavailable → publishReady false, criticPass false", async () => {
+  test("1. strict mode preserves the exact critic failure", async () => {
     const dir = freshCopy();
-    const res = await runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: throwingCritic, options: { strictPublish: true, maxRounds: 3 }, repair: noopRepair });
-    assert.equal(res.status.publishReady, false);
-    assert.equal(res.status.accepted, false);
-    assert.equal(res.status.criticPass, false);
-    assert.equal(res.status.criticAvailabilityStatus, "unavailable");
-    assert.equal(res.status.reason, "critic_unavailable");
-    assert.equal(res.status.draftGenerated, true);
-    assert.equal(res.status.deterministicPass, true); // deterministic still passes independently
+    const providerError = new Error("ECONNREFUSED chatmock");
+    await assert.rejects(
+      () => runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: () => { throw providerError; }, options: { strictPublish: true, maxRounds: 3 }, repair: noopRepair }),
+      (actual) => actual === providerError,
+    );
   });
 
-  test("2. non-strict + critic unavailable → draft exists, publishReady=deterministic, unavailability reported", async () => {
+  test("2. non-strict mode also preserves the exact critic failure", async () => {
     const dir = freshCopy();
-    const res = await runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: throwingCritic, options: { strictPublish: false }, repair: noopRepair });
-    assert.equal(res.status.publishReady, res.status.deterministicPass);
-    assert.equal(res.status.criticAvailable, false);
-    assert.equal(res.status.criticAvailabilityStatus, "unavailable");
-    assert.ok(res.status.criticUnavailableReason);
-    assert.equal(res.status.draftGenerated, true);
+    const providerError = new Error("ECONNREFUSED chatmock");
+    await assert.rejects(
+      () => runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: () => { throw providerError; }, options: { strictPublish: false }, repair: noopRepair }),
+      (actual) => actual === providerError,
+    );
   });
 
-  test("3. strict + critic throws → not a deterministic fallback", async () => {
+  test("3. a null critic result is a terminal protocol failure", async () => {
     const dir = freshCopy();
-    const res = await runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: throwingCritic, options: { strictPublish: true }, repair: noopRepair });
-    assert.equal(res.status.publishReady, false, "must not fall back to deterministic-only publish-ready");
+    await assert.rejects(
+      () => runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: () => null, options: { strictPublish: true }, repair: noopRepair }),
+      /no structured "issues" array/i,
+    );
   });
 
   test("4. strict + critic disabled → publishReady false; non-strict disabled → deterministic", async () => {
@@ -643,39 +1020,45 @@ describe("Fix 2: ChatMock model repair", { skip }, () => {
     assert.match(p.modelFailureReason ?? "", /no valid candidate/i);
   });
 
-  test("5. model unavailable in strict mode leaves publishReady false when blockers remain", async () => {
+  test("5. model repair failure propagates exactly and stops the critic loop", async () => {
     const dir = freshCopy();
-    // model repair throws; critic keeps reporting the blocker.
-    const modelRepair = () => { throw new Error("model timeout"); };
+    const providerError = new Error("model timeout");
+    let modelCalls = 0;
+    const modelRepair = () => { modelCalls += 1; throw providerError; };
     const repair = makeCriticArtifactRepair({ modelRepair, deterministicFinalize: noFinalize });
     const bad = issue({ type: "repeated_opening", severity: "blocking", pagePath: "learning/a.md", repairTarget: "unit_page" });
-    const res = await runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: constantCritic([bad]), options: { strictPublish: true, maxRounds: 2 }, repair });
-    assert.equal(res.status.publishReady, false);
-    assert.ok(res.rounds.some((r) => r.provenance.some((p) => (p.modelFailureReason ?? "").includes("model timeout"))));
+    await assert.rejects(
+      () => runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: constantCritic([bad]), options: { strictPublish: true, maxRounds: 2 }, repair }),
+      (actual) => actual === providerError,
+    );
+    assert.equal(modelCalls, 1);
   });
 
-  test("active Learn mode never falls back to deterministic semantic repair", async () => {
+  test("active Learn mode treats an empty repair response as terminal and never falls back", async () => {
     const dir = freshCopy();
     const pageRel = firstPage(dir)[0];
     let finalizeRan = false;
+    let modelCalls = 0;
     const repair = makeCriticArtifactRepair({
-      modelRepair: () => null,
+      modelRepair: () => { modelCalls += 1; return null; },
       deterministicFinalize: () => { finalizeRan = true; },
       allowDeterministicRepairs: false,
     });
     const issue = { id: "model-only", severity: "blocking", type: "repeated_opening", repairTarget: "unit_page", pagePath: pageRel, problem: "p", evidence: "e", expected: "x", suggestedRepair: "s" };
-    const outcome = await repair(dir, "test-2", criticIssuesToRepairRequests([issue]), { round: 1, issuesById: new Map([[issue.id, issue]]) });
+    await assert.rejects(
+      () => repair(dir, "test-2", criticIssuesToRepairRequests([issue]), { round: 1, issuesById: new Map([[issue.id, issue]]) }),
+      /returned no nonempty candidate; no semantic retry was issued/i,
+    );
     assert.equal(finalizeRan, false);
-    const provenance = outcome.provenance.find((entry) => entry.targetPath === pageRel);
-    assert.deepEqual(provenance.executorAttempted, ["model"]);
-    assert.equal(provenance.executorUsed, "none");
-    assert.equal(provenance.changed, false);
+    assert.equal(modelCalls, 1);
   });
 
   test("parseModelRepairOutput handles markdown and json targets", () => {
     assert.match(parseModelRepairOutput("```markdown\n---\ntitle: x\n---\n\nbody\n```", "learning/p.md").revisedMarkdown, /title: x/);
     assert.deepEqual(parseModelRepairOutput('{"a":1}', ".breadboard/visuals/v.json").revisedJson, { a: 1 });
     assert.equal(parseModelRepairOutput("not json", ".breadboard/visuals/v.json"), null);
+    assert.equal(parseModelRepairOutput("null", ".breadboard/visuals/v.json"), null);
+    assert.equal(parseModelRepairOutput("```json\nnull\n```", "learning/p.md"), null);
   });
 
   test("createChatMockModelRepair sends the repair prompt and parses output", async () => {
@@ -700,10 +1083,13 @@ describe("Fix 3: lifecycle status", { skip }, () => {
     assert.notEqual(res.status.lifecycleStatus, "publish_ready");
   });
 
-  test("2. critic unavailable in strict mode → needs_review", async () => {
+  test("2. critic failure in strict mode propagates exactly", async () => {
     const dir = freshCopy();
-    const res = await runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: () => { throw new Error("down"); }, options: { strictPublish: true }, repair: noopRepair });
-    assert.equal(res.status.lifecycleStatus, "needs_review");
+    const providerError = new Error("down");
+    await assert.rejects(
+      () => runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: () => { throw providerError; }, options: { strictPublish: true }, repair: noopRepair }),
+      (actual) => actual === providerError,
+    );
   });
 
   test("3. clean critic pass → publish_ready", async () => {

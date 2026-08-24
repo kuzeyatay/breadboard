@@ -61,6 +61,14 @@ const nextConfig: NextConfig = {
     ? { typescript: { tsconfigPath: "tsconfig.desktop.json" } }
     : {}),
   devIndicators: false,
+  experimental: {
+    // Next documents this as a low-risk reduction in webpack's peak memory.
+    // webpackBuildWorker is intentionally omitted: this repository has a
+    // custom webpack function, which is the incompatible case Next calls out.
+    webpackMemoryOptimizations: true,
+    // Do not eagerly retain every route graph in the long-running hot server.
+    preloadEntriesOnStart: false,
+  },
   // PDFKit reads its built-in AFM fonts and ICC profile relative to its own
   // package directory at runtime. Keep it external so Next does not relocate
   // the code into a server chunk while leaving those assets in node_modules.
@@ -112,31 +120,82 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(process.cwd(), ".."),
     resolveAlias: {
-      '@genoffice/docx-engine': path.resolve(process.cwd(), 'src/vendor/genoffice/docx-engine/src/index.ts'),
-      '@genoffice/font-metrics': path.resolve(process.cwd(), 'src/vendor/genoffice/font-metrics/src/index.ts'),
-      '@genoffice/pdf2docx': path.resolve(process.cwd(), 'src/vendor/genoffice/pdf2docx/src/index.ts'),
-      '@genoffice/pptx-engine/background-promote': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/background-promote.ts'),
-      '@genoffice/pptx-engine/identity': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/identity.ts'),
-      '@genoffice/pptx-engine/table-grid': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/table-grid.ts'),
-      '@genoffice/pptx-engine': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/index.ts'),
-      '@genoffice/pptx-render': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-render/src/index.ts'),
+      // Turbopack does not implement Windows absolute-path imports. Aliases are
+      // resolved from the Next project directory, so keep local targets
+      // project-relative and reserve absolute paths for webpack below.
+      'breadboard-learn-status-runtime': process.env.NODE_ENV === 'production'
+        ? './src/lib/learn-status-runtime.production.ts'
+        : './src/lib/learn-status-runtime.dev.ts',
+      'breadboard-learn-operation-runtime': process.env.NODE_ENV === 'production'
+        ? './src/lib/learn-operation-runtime.production.ts'
+        : './src/lib/learn-operation-runtime.dev.ts',
+      '@genoffice/docx-engine': './src/vendor/genoffice/docx-engine/src/index.ts',
+      '@genoffice/font-metrics': './src/vendor/genoffice/font-metrics/src/index.ts',
+      '@genoffice/i18n': './src/vendor/genoffice/i18n/src/index.ts',
+      '@genoffice/pdf2docx': './src/vendor/genoffice/pdf2docx/src/index.ts',
+      '@genoffice/pptx-engine/background-promote': './src/vendor/genoffice/pptx-engine/src/background-promote.ts',
+      '@genoffice/pptx-engine/identity': './src/vendor/genoffice/pptx-engine/src/identity.ts',
+      '@genoffice/pptx-engine/table-grid': './src/vendor/genoffice/pptx-engine/src/table-grid.ts',
+      '@genoffice/pptx-engine': './src/vendor/genoffice/pptx-engine/src/index.ts',
+      '@genoffice/pptx-render/preset-geometry': './src/vendor/genoffice/pptx-render/src/preset-geometry.ts',
+      '@genoffice/pptx-render': './src/vendor/genoffice/pptx-render/src/index.ts',
+      '@genoffice/ui': './src/vendor/genoffice/ui/src/index.ts',
       'pdf-parse': 'pdf-parse/dist/pdf-parse/cjs/index.cjs',
     },
   },
-  webpack: (config, { isServer, nextRuntime }) => {
+  webpack: (config, { dev, isServer, nextRuntime }) => {
+    // Next's webpack filesystem cache does not consistently include tsconfig's
+    // path mappings in its build dependencies. A removed mapping can otherwise
+    // keep resolving to its old file across a full `next dev` restart. Treat the
+    // resolver configuration as a cache input so runtime aliases cannot revive
+    // a stale, fail-closed implementation.
+    if (
+      config.cache &&
+      typeof config.cache === 'object' &&
+      config.cache.type === 'filesystem'
+    ) {
+      const buildDependencies = config.cache.buildDependencies ?? {};
+      config.cache.buildDependencies = {
+        ...buildDependencies,
+        config: Array.from(
+          new Set([
+            ...(buildDependencies.config ?? []),
+            path.resolve(process.cwd(), 'tsconfig.json'),
+          ]),
+        ),
+      };
+    }
     config.resolve.alias = {
       ...config.resolve.alias,
+      'breadboard-learn-status-runtime$': path.resolve(
+        process.cwd(),
+        'src/lib',
+        dev ? 'learn-status-runtime.dev.ts' : 'learn-status-runtime.production.ts',
+      ),
+      'breadboard-learn-operation-runtime$': path.resolve(
+        process.cwd(),
+        'src/lib',
+        dev ? 'learn-operation-runtime.dev.ts' : 'learn-operation-runtime.production.ts',
+      ),
       '@genoffice/docx-engine': path.resolve(process.cwd(), 'src/vendor/genoffice/docx-engine/src/index.ts'),
       '@genoffice/font-metrics': path.resolve(process.cwd(), 'src/vendor/genoffice/font-metrics/src/index.ts'),
+      '@genoffice/i18n': path.resolve(process.cwd(), 'src/vendor/genoffice/i18n/src/index.ts'),
       '@genoffice/pdf2docx': path.resolve(process.cwd(), 'src/vendor/genoffice/pdf2docx/src/index.ts'),
       '@genoffice/pptx-engine/background-promote': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/background-promote.ts'),
       '@genoffice/pptx-engine/identity': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/identity.ts'),
       '@genoffice/pptx-engine/table-grid': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/table-grid.ts'),
       '@genoffice/pptx-engine': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-engine/src/index.ts'),
+      '@genoffice/pptx-render/preset-geometry': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-render/src/preset-geometry.ts'),
       '@genoffice/pptx-render': path.resolve(process.cwd(), 'src/vendor/genoffice/pptx-render/src/index.ts'),
+      '@genoffice/ui': path.resolve(process.cwd(), 'src/vendor/genoffice/ui/src/index.ts'),
       'pdf-parse': 'pdf-parse/dist/pdf-parse/cjs/index.cjs',
     };
-    // `serverExternalPackages: ['mem0ai']` is not sufficient on its own here.
+    // `serverExternalPackages` is not sufficient on its own for the packages
+    // below. `pdf-parse` is aliased to its Node CJS entry so server routes do
+    // not select the browser export; without an explicit external, webpack
+    // follows that alias and tries to parse pdf.js's WASM binary as JavaScript.
+    //
+    // mem0ai has a separate junction-related resolution problem:
     // mem0ai is a `file:` dependency, so node_modules/mem0ai is a junction and
     // the resolver follows it to <repo>/mem0/mem0-ts — a path with no
     // node_modules segment, which is exactly what that check looks for. When it
@@ -158,7 +217,9 @@ const nextConfig: NextConfig = {
           { request }: { request?: string },
           callback: (error?: unknown, result?: string) => void,
         ) =>
-          request === 'mem0ai' || request?.startsWith('mem0ai/')
+          request === 'pdf-parse' ||
+          request === 'mem0ai' ||
+          request?.startsWith('mem0ai/')
             ? callback(undefined, `commonjs ${request}`)
             : callback(),
         ...existing,

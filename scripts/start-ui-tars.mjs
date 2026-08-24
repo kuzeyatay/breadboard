@@ -12,6 +12,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { loadRootEnv, loadDashboardEnv } from "./load-root-env.mjs";
+import { exitIfAlreadyRunning } from "./service-probe.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
@@ -46,6 +47,11 @@ const env = {
   UI_TARS_MAX_CONCURRENT_RUNS: process.env.UI_TARS_MAX_CONCURRENT_RUNS || "3",
   UI_TARS_SCREENSHOT_RETENTION_MS: process.env.UI_TARS_SCREENSHOT_RETENTION_MS || "0",
 };
+
+await exitIfAlreadyRunning("ui-tars", {
+  url: `http://127.0.0.1:${port}/health`,
+  headers: { Authorization: `Bearer ${secret}` },
+});
 
 const child = spawn(node, ["--experimental-strip-types", adapterEntry], {
   cwd: path.join(repoRoot, "ui-tars-adapter"),

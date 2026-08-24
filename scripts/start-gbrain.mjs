@@ -12,6 +12,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { loadRootEnv, loadDashboardEnv } from "./load-root-env.mjs";
+import { exitIfAlreadyRunning } from "./service-probe.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
@@ -57,6 +58,18 @@ const env = {
   GBRAIN_EMBEDDING_DIMENSIONS: process.env.GBRAIN_EMBEDDING_DIMENSIONS || "384",
   GBRAIN_QUERY_TIMEOUT_MS: process.env.GBRAIN_QUERY_TIMEOUT_MS || "15000",
 };
+
+// /health is unauthenticated and cannot tell our adapter from one holding a
+// different secret. Every other route is a POST behind the bearer: an empty
+// body reaches the handler (400) only once the secret matched, where a
+// stranger's adapter answers 401.
+await exitIfAlreadyRunning("gbrain", {
+  url: `http://127.0.0.1:${port}/search`,
+  method: "POST",
+  body: "{}",
+  headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+  acceptStatuses: [200, 204, 400, 404, 405],
+});
 
 const child = spawn(bun, ["run", adapterEntry], { cwd: repoRoot, env, stdio: "inherit" });
 child.on("error", (error) => {

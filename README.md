@@ -258,7 +258,7 @@ This makes the dashboard the orchestration layer for the whole workspace.
 
 ### Prerequisites
 
-- **Node.js 22+**
+- **Node.js 22.15+, 23.5+, or 24+** (the detached Learn worker requires synchronous module hooks)
 - **npm**
 - **Python 3.11+**
 - Windows PowerShell if you want to use the included startup script flow directly

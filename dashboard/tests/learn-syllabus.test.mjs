@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   excludeSyllabusFromSources,
+  persistedLearnSelection,
   selectLearnSources,
   selectLearnSyllabus,
   sourceSetHashForSources,
@@ -93,6 +94,175 @@ describe("Learn syllabus selection", () => {
       excludeSyllabusFromSources(selected, syllabus).map((s) => s.slug),
       ["lecture-1"],
     );
+  });
+
+  test("persisted selection fields come from one newest workflow owner", () => {
+    const proposedCoverage = { owner: "proposed" };
+    const confirmedCoverage = { owner: "confirmed" };
+
+    assert.deepEqual(
+      persistedLearnSelection(
+        { sourceIds: ["current-source"], syllabusSourceId: null },
+        {
+          sourceIds: ["proposed-source"],
+          syllabusSourceId: "proposed-guide",
+          syllabusCoverage: proposedCoverage,
+        },
+        {
+          sourceIds: ["confirmed-source"],
+          syllabusSourceId: "confirmed-guide",
+          syllabusCoverage: confirmedCoverage,
+        },
+      ),
+      {
+        sourceIds: ["current-source"],
+        syllabusSourceId: null,
+        syllabusCoverage: null,
+      },
+    );
+
+    assert.deepEqual(
+      persistedLearnSelection(
+        {
+          sourceIds: ["current-source"],
+          syllabusSourceId: "current-guide",
+        },
+        {
+          sourceIds: ["proposed-source"],
+          syllabusSourceId: "proposed-guide",
+          syllabusCoverage: proposedCoverage,
+        },
+        null,
+      ),
+      {
+        sourceIds: ["current-source"],
+        syllabusSourceId: "current-guide",
+        syllabusCoverage: null,
+      },
+    );
+
+    assert.deepEqual(
+      persistedLearnSelection(
+        null,
+        {
+          sourceIds: ["proposed-source"],
+          syllabusSourceId: " proposed-guide ",
+          syllabusCoverage: proposedCoverage,
+        },
+        {
+          sourceIds: ["confirmed-source"],
+          syllabusSourceId: "confirmed-guide",
+          syllabusCoverage: confirmedCoverage,
+        },
+      ),
+      {
+        sourceIds: ["proposed-source"],
+        syllabusSourceId: "proposed-guide",
+        syllabusCoverage: proposedCoverage,
+      },
+    );
+
+    assert.deepEqual(
+      persistedLearnSelection(null, null, {
+        sourceIds: ["confirmed-source"],
+        syllabusSourceId: "confirmed-guide",
+        syllabusCoverage: confirmedCoverage,
+      }),
+      {
+        sourceIds: ["confirmed-source"],
+        syllabusSourceId: "confirmed-guide",
+        syllabusCoverage: confirmedCoverage,
+      },
+    );
+    assert.equal(persistedLearnSelection(null, null, null), null);
+  });
+
+  test("an exact job-bound map supplies coverage without taking selection ownership", () => {
+    const exactCoverage = { owner: "exact-job-map" };
+    const currentJob = {
+      status: "awaiting_confirmation",
+      proposedLearningMapId: "map-current",
+      sourceIds: ["source-a", "source-b"],
+      syllabusSourceId: "guide-current",
+    };
+    const currentMap = {
+      id: "map-current",
+      sourceIds: ["source-a", "source-b"],
+      syllabusSourceId: "guide-current",
+      syllabusCoverage: exactCoverage,
+    };
+
+    assert.deepEqual(
+      persistedLearnSelection(currentJob, currentMap, {
+        id: "map-older",
+        sourceIds: ["source-older"],
+        syllabusSourceId: "guide-older",
+        syllabusCoverage: { owner: "older-confirmed" },
+      }),
+      {
+        sourceIds: ["source-a", "source-b"],
+        syllabusSourceId: "guide-current",
+        syllabusCoverage: exactCoverage,
+      },
+    );
+
+    assert.deepEqual(
+      persistedLearnSelection(
+        {
+          ...currentJob,
+          status: "complete",
+          proposedLearningMapId: undefined,
+          confirmedLearningMapId: "map-current",
+        },
+        currentMap,
+        null,
+      ),
+      {
+        sourceIds: ["source-a", "source-b"],
+        syllabusSourceId: "guide-current",
+        syllabusCoverage: exactCoverage,
+      },
+    );
+  });
+
+  test("mismatched, failed, or missing job maps mask coverage instead of borrowing it", () => {
+    const job = {
+      status: "awaiting_confirmation",
+      proposedLearningMapId: "map-current",
+      sourceIds: ["source-a", "source-b"],
+      syllabusSourceId: "guide-current",
+    };
+    const map = {
+      id: "map-current",
+      sourceIds: ["source-a", "source-b"],
+      syllabusSourceId: "guide-current",
+      syllabusCoverage: { owner: "candidate" },
+    };
+    const olderConfirmed = {
+      id: "map-older",
+      sourceIds: ["source-older"],
+      syllabusSourceId: "guide-older",
+      syllabusCoverage: { owner: "older-confirmed" },
+    };
+    const cases = [
+      ["map id", job, { ...map, id: "map-other" }],
+      ["source order", job, { ...map, sourceIds: ["source-b", "source-a"] }],
+      ["syllabus", job, { ...map, syllabusSourceId: "guide-other" }],
+      ["failed job", { ...job, status: "failed" }, map],
+      ["no proposal", job, null],
+    ];
+
+    for (const [label, candidateJob, candidateMap] of cases) {
+      assert.deepEqual(
+        persistedLearnSelection(candidateJob, candidateMap, olderConfirmed),
+        {
+          sourceIds: ["source-a", "source-b"],
+          syllabusSourceId: "guide-current",
+          syllabusCoverage: null,
+        },
+        label,
+      );
+    }
   });
 });
 
@@ -284,7 +454,7 @@ describe("Learn syllabus API surface", () => {
     ]) {
       assert.match(
         source,
-        /typeof body\.syllabusSourceId === "string" && body\.syllabusSourceId\.trim\(\)/,
+        /parseExplicitLearnPlanSelection\(body\)|typeof body\.syllabusSourceId === "string" && body\.syllabusSourceId\.trim\(\)/,
         `${name} route should parse syllabusSourceId`,
       );
       assert.match(source, /syllabusSourceId/, `${name} route should forward it`);
@@ -295,7 +465,11 @@ describe("Learn syllabus API surface", () => {
     assert.match(learnSource, /syllabusSourceId: string \| null;/);
     assert.match(
       learnSource,
-      /persistedSyllabusSourceId && availableSourceIdSet\.has\(persistedSyllabusSourceId\)/,
+      /const latestJobBoundMapId =[\s\S]*?latestJob\?\.proposedLearningMapId \?\? latestJob\?\.confirmedLearningMapId[\s\S]*?const persistedSelection = persistedLearnSelection<SyllabusCoverage>\(\s*latestJob,\s*latestJob \? latestJobBoundMap : contractProposed,\s*confirmedMap,/,
+    );
+    assert.match(
+      learnSource,
+      /const persistedCoverage = persistedSelection\?\.syllabusCoverage \?\? null/,
     );
   });
 });
@@ -326,7 +500,23 @@ describe("Learn panel syllabus controls", () => {
   test("the chosen syllabus is sent with every Learn action", () => {
     assert.match(
       workspaceSource,
-      /\.\.\.\(learnSyllabusSlug\s*\?\s*\{ syllabusSourceId: learnSyllabusSlug \}\s*:\s*\{\}\)/,
+      /syllabusSourceId:\s*learnSyllabusSlug/,
+    );
+  });
+
+  test("the panel sends an explicit selection only after status hydration", () => {
+    assert.match(
+      workspaceSource,
+      /includedSourceIds:\s*\([\s\S]*?learnIncludedSourceSlugs \?\?[\s\S]*?document\.type === "source-document"[\s\S]*?sourceSlug !== learnSyllabusSlug/,
+    );
+    assert.match(workspaceSource, /syllabusSourceId: learnSyllabusSlug/);
+    assert.match(
+      workspaceSource,
+      /const learnSelectionHydrated =[\s\S]*?lastSyncedLearnSelectionRef\.current[\s\S]*?lastSyncedLearnSyllabusRef\.current/,
+    );
+    assert.match(
+      workspaceSource,
+      /const canStart =[\s\S]*?learnSelectionHydrated[\s\S]*?hasSelectedLearnSources/,
     );
   });
 

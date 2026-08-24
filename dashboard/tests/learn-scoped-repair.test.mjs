@@ -23,6 +23,11 @@ import {
 } from "../src/lib/garden-build/scoped-files.ts";
 import { applyGardenBuildTransaction } from "../src/lib/garden-build/transactions.ts";
 import { IMPLEMENTED_VISUAL_TYPES } from "../src/lib/visual-spec.ts";
+import {
+  exactScopedModelRepairResponse,
+  reportLearnScopedRepairProgress,
+  requestScopedModelRepairCandidate,
+} from "../src/lib/learn-scoped-repair.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -76,9 +81,23 @@ describe("mode semantics", () => {
   });
   test("5. legacy regenerate route is repair-only and never invokes planning", () => {
     const route = fs.readFileSync(path.join(repoRoot, "src/app/api/gardens/[gardenId]/learn/regenerate/route.ts"), "utf8");
+    const executor = fs.readFileSync(
+      path.join(repoRoot, "src/lib/learn-operation-executor.ts"),
+      "utf8",
+    );
     assert.match(route, /legacyDefault: "repair"/);
-    assert.match(route, /runLearnRepairOperation/);
-    assert.doesNotMatch(route, /runLearnPlanning|runTextbookGeneration/);
+    assert.match(route, /operation\.mode !== "repair"/);
+    assert.match(
+      route,
+      /executeLearnOperationForRoute<[\s\S]*?>\(\{[\s\S]*?operation: "repair"/,
+    );
+    const repairBranch = executor.match(/case "repair":([\s\S]*?)case "rebuild":/)?.[1];
+    assert.ok(repairBranch, "the isolated executor should have a repair branch");
+    assert.match(repairBranch, /runLearnRepairOperation/);
+    assert.doesNotMatch(
+      `${route}\n${repairBranch}`,
+      /runLearnPlanning|runLearnPipeline|runTextbookGeneration|rebuildEntireGarden|operation: "plan"/,
+    );
   });
 });
 
@@ -198,6 +217,94 @@ describe("mutation and byte boundaries", () => {
 });
 
 describe("scoped ChatMock packets and decisions", () => {
+  test("provider rejection escapes with exact identity after one logical request", async () => {
+    const providerFailure = Object.assign(new Error("scoped reset"), {
+      cause: { code: "ECONNRESET" },
+    });
+    let calls = 0;
+    await assert.rejects(
+      requestScopedModelRepairCandidate(async () => {
+        calls += 1;
+        throw providerFailure;
+      }, { issue: "fixture" }, issue("scaffold_prose", { pageId: "page:U1", unitId: "U1" })),
+      (error) => error === providerFailure,
+    );
+    assert.equal(calls, 1);
+  });
+
+  test("missing, empty, and literal-null scoped responses are terminal", async () => {
+    for (const response of [undefined, null, "", "null", "```json\nnull\n```"]) {
+      let calls = 0;
+      await assert.rejects(
+        requestScopedModelRepairCandidate(async () => {
+          calls += 1;
+          return typeof response === "string"
+            ? exactScopedModelRepairResponse(response)
+            : response;
+        }, { issue: "fixture" }, issue("scaffold_prose", { pageId: "page:U1", unitId: "U1" })),
+        /no candidate|empty response|literal JSON null/i,
+      );
+      assert.equal(calls, 1, `unexpected replay for ${JSON.stringify(response)}`);
+    }
+  });
+
+  test("nonempty malformed scoped output remains deterministic validation evidence", async () => {
+    const decision = await requestScopedModelRepairCandidate(
+      async () => exactScopedModelRepairResponse("{malformed"),
+      { issue: "fixture" },
+      issue("scaffold_prose", { pageId: "page:U1", unitId: "U1" }),
+    );
+    assert.equal(decision, null);
+  });
+
+  test("pure progress observer failures cannot replace or replay a fulfilled decision", async () => {
+    const problem = issue("scaffold_prose", { pageId: "page:U1", unitId: "U1" });
+    const acceptedDecision = {
+      operations: [{
+        type: "set_page_body",
+        pageId: "page:U1",
+        body: "Repaired body",
+        justification: "fixture",
+      }],
+    };
+    let modelCalls = 0;
+    const settledDecision = await requestScopedModelRepairCandidate(async () => {
+      modelCalls += 1;
+      return acceptedDecision;
+    }, { issue: "fixture" }, problem);
+
+    const observerFailure = new Error("progress database unavailable");
+    assert.doesNotThrow(() => reportLearnScopedRepairProgress(
+      () => { throw observerFailure; },
+      { step: "Revalidating garden" },
+    ));
+    assert.strictEqual(settledDecision, acceptedDecision);
+    assert.equal(modelCalls, 1, "a progress observer cannot authorize a model replay");
+
+    const cancellation = new Error("cancelled before the next request");
+    cancellation.name = "LearnCancelledError";
+    assert.throws(
+      () => reportLearnScopedRepairProgress(
+        () => { throw cancellation; },
+        { step: "Repairing page:U1", issue: problem },
+      ),
+      (error) => error === cancellation,
+      "the pre-request cancellation gate remains authoritative",
+    );
+
+    const publicationFailure = new Error("publication compare-and-set failed");
+    assert.throws(
+      () => reportLearnScopedRepairProgress(
+        () => { throw publicationFailure; },
+        { step: "Publishing repaired projection" },
+        { publicationGate: true },
+      ),
+      (error) => error === publicationFailure,
+      "publication gates remain authoritative",
+    );
+    assert.equal(modelCalls, 1);
+  });
+
   test("17. packet contains only the affected unit/page evidence", () => {
     const state = canonicalState();
     state.pages["page:U2"].body = "SECRET UNRELATED PAGE";
@@ -251,7 +358,7 @@ describe("loop policy, UI, and regression scope", () => {
   test("23-29. repair is deterministic-first, globally audited, and has no full-generation fallback", () => {
     const source = fs.readFileSync(path.join(repoRoot, "src/lib/learn-scoped-repair.ts"), "utf8");
     const deterministic = source.indexOf("Deterministic operations always run before any model packet");
-    const model = source.indexOf("await input.modelRepair", deterministic);
+    const model = source.indexOf("await requestScopedModelRepairCandidate", deterministic);
     assert.ok(deterministic >= 0 && model > deterministic);
     assert.match(source, /maxIssuesPerRound/);
     assert.match(source, /maxModelCalls/);

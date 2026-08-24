@@ -3,12 +3,17 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { LogManager } from "./log-manager";
-import { ServiceManager, type ServiceStatus } from "./service-manager";
+import {
+  ServiceManager,
+  type DesktopServiceDefinition,
+  type ServiceStatus,
+} from "./service-manager";
 import {
   buildServiceDefinitions,
   missingRuntimes,
   resolveRuntimeBinaries,
   serviceUrls,
+  SCRIBERR_PORT,
 } from "./service-definitions";
 import {
   ensureMutableDirectories,
@@ -20,12 +25,18 @@ import { repairWhisperXFfmpeg } from "./whisperx-ffmpeg-repair";
 import {
   atomicWriteFile,
   loadOrCreatePersistentConfig,
+  mintLaunchSecrets,
   redactSecrets,
   redactedConfigSummary,
   savePersistentConfig,
   type DesktopRuntimeConfig,
 } from "./runtime-config";
-import { allocatePort } from "./ports";
+import {
+  stopDetachedLearnWorker,
+  stopDetachedLearnWorkerNow,
+} from "./learn-worker-cleanup";
+import { allocatePort, allocatePortOrAdopt } from "./ports";
+import { adoptionProbe, isOurServiceRunning, type AdoptionContext } from "./service-adoption";
 import {
   CLIPROXY_DEFAULT_PORT,
   cliproxyHome,
@@ -58,9 +69,14 @@ import {
   isWindowSurface,
   titleBarForSurface,
 } from "./window-options";
+import { installGpuDiagnostics } from "./gpu-diagnostics";
+import { claimDevInstance, duplicateStackWarning, releaseDevInstance } from "./dev-instance-lock";
 import { openMicrophoneSettings } from "./microphone-settings";
 import { stopRecallEngine } from "./recall";
 import { readLastWindowTheme, writeLastWindowTheme } from "./theme-state";
+import { policyFromSnapshot, sanitizedPolicySummary, type MemoryPolicy } from "./memory-policy";
+import { defaultSystemMemorySource } from "./system-memory-source";
+import { SupervisorControlPlane } from "./supervisor-control-plane";
 import { readStartupSoundEnabled, writeStartupSoundEnabled } from "./startup-sound";
 import { prepareQaServiceDefinitions } from "./qa-mode";
 import type { QaServiceProfile } from "./startup-options";
@@ -82,6 +98,8 @@ export interface StartupState {
     state: string;
     lastError: string | null;
     restarts: number;
+    /** Reused from an instance that was already running, not started here. */
+    adopted: boolean;
   }>;
   failure?: StartupFailure;
 }
@@ -144,6 +162,9 @@ export class AppLifecycle {
   private logs!: LogManager;
   private services!: ServiceManager;
   private windows!: WindowManager;
+  private memoryPolicy!: MemoryPolicy;
+  private systemMemorySource: ReturnType<typeof defaultSystemMemorySource> | null = null;
+  private controlPlane: SupervisorControlPlane | null = null;
   private startupState: StartupState = {
     phase: "preparing",
     message: "Preparing Breadboard",
@@ -151,6 +172,14 @@ export class AppLifecycle {
   };
   private quitting = false;
   private servicesStopped = false;
+  /**
+   * Services found already running at startup, mapped to the port they answered
+   * on. This launch reuses them instead of spawning a second copy. Populated
+   * during port allocation, consumed when the definitions are registered.
+   */
+  private readonly adoptedServicePorts = new Map<string, number>();
+  /** Set only in dev, non-QA mode, where the duplicate-stack guard applies. */
+  private devInstanceLockRepoRoot: string | null = null;
   private readonly moduleDir: string;
   private readonly forceDev: boolean;
   private readonly qaMode: boolean;
@@ -216,39 +245,68 @@ export class AppLifecycle {
     ensureMutableDirectories(this.paths);
 
     const persistent = loadOrCreatePersistentConfig(this.paths.configDir);
+    // Per-launch capability secrets. Minted here, in the process that owns the
+    // lifecycle, and handed only to the two server-side processes that need
+    // them. They are never persisted, never published to endpoints.json, and
+    // never reach a renderer.
+    const launchSecrets = mintLaunchSecrets();
     const taken = new Set<number>();
+    const adoptionContext: AdoptionContext = { persistent, paths: this.paths };
+    /**
+     * Claim a service's port, reusing the service when it is already there.
+     *
+     * A busy preferred port has two very different causes: an unrelated
+     * process squatting on it (relocate, as always), or this exact service
+     * already running from an earlier launch or a `npm run dev` stack (keep
+     * the port and adopt it, instead of running the same service twice).
+     */
+    const claimPort = async (serviceId: string, preferred: number): Promise<number> => {
+      // QA runs isolated profiles under their own data root and is deliberately
+      // parallel with whatever else is on the machine: adopting a service from
+      // outside the profile would silently destroy that isolation.
+      const identify = this.paths.qaMode
+        ? undefined
+        : (candidate: number) => isOurServiceRunning(serviceId, candidate, adoptionContext);
+      const { port, adopt } = await allocatePortOrAdopt(preferred, taken, identify);
+      if (adopt) this.adoptedServicePorts.set(serviceId, port);
+      return port;
+    };
     this.config = {
       persistent,
+      launchSecrets,
       ports: {
-        dashboard: await allocatePort(3000, taken),
-        chatmock: await allocatePort(8765, taken),
-        hermes: await allocatePort(9119, taken),
+        dashboard: await claimPort("dashboard", 3000),
+        chatmock: await claimPort("chatmock", 8765),
+        hermes: await claimPort("hermes", 9119),
+        // Postiz's coordinator is authorized by a per-launch token, so a
+        // running one can never answer this launch: it always starts fresh.
         postiz: await allocatePort(4007, taken),
         postizSupervisor: await allocatePort(7721, taken),
-        quartz: await allocatePort(8081, taken),
+        supervisorControl: await allocatePort(7739, taken),
+        quartz: await claimPort("quartz", 8081),
         quartzWs: await allocatePort(3001, taken),
-        voicebox: await allocatePort(17493, taken),
+        voicebox: await claimPort("voicebox", 17493),
         // GBrain adapter port is only allocated when GBrain is enabled.
-        ...(persistent.gbrainMode !== "disabled" ? { gbrain: await allocatePort(7717, taken) } : {}),
+        ...(persistent.gbrainMode !== "disabled" ? { gbrain: await claimPort("gbrain", 7717) } : {}),
         // UI-TARS adapter port is only allocated when UI-TARS is not disabled.
-        ...(persistent.uiTarsMode !== "disabled" ? { uiTars: await allocatePort(7719, taken) } : {}),
+        ...(persistent.uiTarsMode !== "disabled" ? { uiTars: await claimPort("ui-tars", 7719) } : {}),
         // Parametric CAD service. Allocated only when enabled; the definition
         // is registered only when its Python environment actually exists.
-        ...(persistent.cadMode !== "disabled" ? { cad: await allocatePort(7731, taken) } : {}),
+        ...(persistent.cadMode !== "disabled" ? { cad: await claimPort("cad", 7731) } : {}),
         ...(persistent.colpaliMode !== "disabled"
-          ? { colpali: await allocatePort(7733, taken) }
+          ? { colpali: await claimPort("colpali", 7733) }
           : {}),
         // Local text humanizer. 7735 is the documented development port, but
         // it is only a preference: anything already holding it moves this to an
         // OS-assigned one, and the dashboard is told which.
         ...(persistent.humanizerMode !== "disabled"
-          ? { humanizer: await allocatePort(7735, taken) }
+          ? { humanizer: await claimPort("humanizer", 7735) }
           : {}),
         // Subscription proxy port, allocated before the binary is known to
         // exist: provisioning happens later, and re-allocating afterwards would
         // mean the port could differ from the one already handed to ChatMock.
         ...(persistent.cliproxyMode !== "disabled"
-          ? { cliproxy: await allocatePort(CLIPROXY_DEFAULT_PORT, taken) }
+          ? { cliproxy: await claimPort("cliproxy", CLIPROXY_DEFAULT_PORT) }
           : {}),
       },
     };
@@ -266,14 +324,95 @@ export class AppLifecycle {
 
     this.logs = new LogManager({
       logsDir: this.paths.logsDir,
-      redact: (line) => redactSecrets(line, this.config.persistent),
+      redact: (line) =>
+        redactSecrets(
+          line,
+          this.config.persistent,
+          Object.values(this.config.launchSecrets ?? {}),
+        ),
     });
     const supervisorLog = this.logs.forService("desktop");
     supervisorLog.write(
       `[desktop] starting; mode=${this.paths.mode}${this.paths.qaMode ? `; qa-profile=${this.qaServiceProfile}` : ""}; config=${JSON.stringify(redactedConfigSummary(this.config))}`,
     );
 
-    this.services = new ServiceManager(this.logs);
+    // Dev, non-QA only: QA runs isolated profiles under their own data root and
+    // is deliberately parallel, so it must never be told it is a duplicate.
+    if (this.paths.mode === "dev" && !this.paths.qaMode) {
+      const repoRoot = repoRootFromModuleDir(this.moduleDir);
+      const claim = claimDevInstance({ repoRoot, owner: "desktop" });
+      if (claim.conflict && claim.existing) {
+        const warning = duplicateStackWarning(claim.existing);
+        supervisorLog.write(`[desktop] WARNING: ${warning}`);
+        console.warn(`[breadboard-desktop] ${warning}`);
+      } else if (claim.staleReplaced) {
+        supervisorLog.write("[desktop] replaced a stale development-instance lock");
+      }
+      this.devInstanceLockRepoRoot = repoRoot;
+    }
+
+    installGpuDiagnostics(
+      {
+        onChildProcessGone: (listener) =>
+          void app.on("child-process-gone", (_event, details) => listener(details)),
+        // GPUFeatureStatus is a fixed-key interface, not an index signature.
+        getGPUFeatureStatus: () => ({ ...app.getGPUFeatureStatus() }) as Record<string, unknown>,
+        getGPUInfo: (mode) => app.getGPUInfo(mode),
+      },
+      (line) => supervisorLog.write(line),
+    );
+
+    this.systemMemorySource = defaultSystemMemorySource();
+    const initialMemory = await this.systemMemorySource.sample();
+    this.memoryPolicy = policyFromSnapshot(initialMemory, process.env);
+    supervisorLog.write(
+      `[governor] memory policy=${JSON.stringify(sanitizedPolicySummary(this.memoryPolicy))}; ` +
+        `commitLimitMb=${Math.round(initialMemory.commitLimitMb)}; ` +
+        `freeCommitMb=${Math.round(initialMemory.commitLimitMb - initialMemory.commitTotalMb)}`,
+    );
+    this.services = new ServiceManager(this.logs, {
+      memoryPolicy: this.memoryPolicy,
+      systemMetrics: this.systemMemorySource,
+      runtimeSupervisorPath: path.join(
+        this.paths.binDir,
+        process.platform === "win32" ? "runtime-supervisor.exe" : "runtime-supervisor",
+      ),
+    });
+    this.services.registerCapability({
+      id: "learn-worker",
+      estimatedColdStartCommitMb: Math.min(6144, Math.round(initialMemory.physicalTotalMb * 0.19)),
+      priority: 70,
+      concurrencyGroup: "large-generation",
+      maxLeaseMs: 6 * 60 * 60_000,
+    });
+    this.services.registerCapability({
+      id: "document-ingestion",
+      estimatedColdStartCommitMb: Math.min(4096, Math.round(initialMemory.physicalTotalMb * 0.125)),
+      priority: 65,
+      concurrencyGroup: "document-model",
+      maxLeaseMs: 2 * 60 * 60_000,
+    });
+    this.services.registerCapability({
+      id: "artifact-render",
+      estimatedColdStartCommitMb: Math.min(4096, Math.round(initialMemory.physicalTotalMb * 0.125)),
+      priority: 60,
+      concurrencyGroup: "media-processing",
+      maxLeaseMs: 2 * 60 * 60_000,
+    });
+    this.services.registerCapability({
+      id: "browser-agent",
+      estimatedColdStartCommitMb: Math.min(6144, Math.round(initialMemory.physicalTotalMb * 0.19)),
+      priority: 60,
+      concurrencyGroup: "browser-automation",
+      maxLeaseMs: 2 * 60 * 60_000,
+    });
+    this.services.registerCapability({
+      id: "postiz-stack",
+      estimatedColdStartCommitMb: Math.min(8192, Math.round(initialMemory.physicalTotalMb * 0.25)),
+      priority: 55,
+      concurrencyGroup: "docker-stack",
+      maxLeaseMs: 24 * 60 * 60_000,
+    });
     const urls = serviceUrls(this.config);
     const startupHtmlPath = defaultStartupHtmlPath(this.moduleDir);
     const recoveryHtmlPath = path.join(path.dirname(startupHtmlPath), "recovery.html");
@@ -590,13 +729,26 @@ export class AppLifecycle {
         paths: this.paths,
         config: this.config,
         binaries,
+        memoryPolicy: this.memoryPolicy,
       }),
       this.paths,
       this.qaServiceProfile,
     );
+    // Scriberr's port is fixed rather than allocated, so nothing in the port
+    // pass could have noticed the sidecar a dev stack (or an earlier launch)
+    // left running on it. Spawning a second one just loses the race to bind.
+    await this.probeFixedPortService("scriberr", SCRIBERR_PORT);
     for (const definition of definitions) {
-      this.services.register(definition);
+      this.services.register(this.withAdoption(definition));
     }
+
+    this.controlPlane = new SupervisorControlPlane({
+      port: this.config.ports.supervisorControl ?? 7739,
+      secret: this.config.launchSecrets?.supervisorControlToken ?? "",
+      services: this.services,
+      logs: this.logs,
+    });
+    await this.controlPlane.start();
 
     this.services.on("state-changed", () => this.publishServiceStates());
     this.services.on("fatal", (serviceId: string, reason: string) => {
@@ -619,7 +771,11 @@ export class AppLifecycle {
 
     try {
       await this.services.startAll();
-    } catch {
+    } catch (error) {
+      const startupError = error instanceof Error ? error.message : String(error);
+      this.logs
+        .forService("desktop")
+        .write(`[desktop] service startup failed: ${startupError}`);
       const failed = this.services
         .allStatuses()
         .find((status) => status.required && status.state === "failed");
@@ -633,12 +789,60 @@ export class AppLifecycle {
             logTail: this.services.tailLog(failed.id),
           },
         });
+      } else {
+        // Fail closed even when the rejection happened outside a particular
+        // service (for example the control plane or memory sampler). A startup
+        // exception must never leave the renderer in its indeterminate
+        // "Starting local services" state.
+        this.setStartupState({
+          ...this.snapshotServices("failed", "Local services could not start"),
+          failure: {
+            serviceId: "desktop",
+            displayName: "Breadboard desktop",
+            reason: startupError,
+            logTail: this.services.tailLog("desktop"),
+          },
+        });
       }
       return;
     }
 
     this.setStartupState(this.snapshotServices("ready", "Ready"));
     await this.windows.showDashboard(serviceUrls(this.config).dashboard);
+  }
+
+  /**
+   * Note a service whose port is fixed (never allocated) and that is already
+   * answering on it, so registration can adopt it like any other.
+   */
+  private async probeFixedPortService(serviceId: string, port: number): Promise<void> {
+    if (this.paths.qaMode || this.adoptedServicePorts.has(serviceId)) return;
+    const persistent = this.config.persistent;
+    if (await isOurServiceRunning(serviceId, port, { persistent, paths: this.paths })) {
+      this.adoptedServicePorts.set(serviceId, port);
+    }
+  }
+
+  /**
+   * Hand the supervisor what it needs to reuse an already-running instance:
+   * the flag, and the check that proves the instance is still ours when the
+   * service is actually started. Definitions we found nothing for are returned
+   * untouched and start normally.
+   */
+  private withAdoption(definition: DesktopServiceDefinition): DesktopServiceDefinition {
+    const port = this.adoptedServicePorts.get(definition.id);
+    if (port === undefined) return definition;
+    const check = adoptionProbe(definition.id, port, {
+      persistent: this.config.persistent,
+      paths: this.paths,
+    });
+    if (check === null) return definition;
+    this.logs
+      .forService("desktop")
+      .write(
+        `[desktop] ${definition.displayName} is already running on 127.0.0.1:${port}; reusing it instead of starting another`,
+      );
+    return { ...definition, adoptExternal: true, adoptionCheck: check };
   }
 
   private snapshotServices(
@@ -656,6 +860,7 @@ export class AppLifecycle {
         state: status.state,
         lastError: status.lastError,
         restarts: status.restarts,
+        adopted: status.adopted,
       })),
     };
   }
@@ -942,7 +1147,25 @@ export class AppLifecycle {
       });
     });
     app.on("window-all-closed", () => {
-      app.quit();
+      if (this.quitting || this.windows.consumeMainWindowCloseRequest()) {
+        app.quit();
+        return;
+      }
+
+      // `window-all-closed` is not proof that the person closed Breadboard.
+      // Chromium can lose the native window when its renderer/GPU process is
+      // torn down under memory pressure. Keep the supervised services alive
+      // and create a fresh shell around the same dashboard in that case.
+      this.logs
+        ?.forService("desktop")
+        .write("[desktop] all windows disappeared unexpectedly; reopening the dashboard");
+      void this.windows.showDashboard(serviceUrls(this.config).dashboard).catch((error) => {
+        this.logs
+          ?.forService("desktop")
+          .write(
+            `[desktop] dashboard window reopen failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+      });
     });
     process.on("uncaughtException", (error) => {
       try {
@@ -951,12 +1174,50 @@ export class AppLifecycle {
         // Logging must not block emergency cleanup.
       }
       this.services?.killAllNow();
+      if (this.paths) stopDetachedLearnWorkerNow(this.paths.runtimeDir);
       process.exit(1);
     });
     process.on("exit", () => {
       // Last-resort synchronous path: ask the OS to reap known children.
       if (!this.servicesStopped) this.services?.killAllNow();
+      if (!this.servicesStopped && this.paths) {
+        stopDetachedLearnWorkerNow(this.paths.runtimeDir);
+      }
     });
+  }
+
+  /**
+   * Ask the Postiz coordinator whether it may bring its Compose project down.
+   *
+   * Bounded and best-effort: a coordinator that is absent, unreachable, slow or
+   * unconfigured must never delay Breadboard's own shutdown.
+   */
+  private async releasePostizStack(): Promise<void> {
+    const token = this.config?.launchSecrets?.postizCoordinatorToken;
+    const port = this.config?.ports.postizSupervisor;
+    if (!token || !port) return;
+    const log = this.logs?.forService("desktop");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25_000);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/shutdown`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+      if (!response.ok) return;
+      const body = (await response.json()) as { stopped?: boolean };
+      log?.write(
+        body.stopped
+          ? "[desktop] Postiz stack stopped on exit"
+          : "[desktop] Postiz stack left running on exit",
+      );
+    } catch {
+      // A coordinator that never started, or one already gone, is the common
+      // case and is not worth a log line on every quit.
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private async shutdownServices(): Promise<void> {
@@ -976,7 +1237,28 @@ export class AppLifecycle {
             `[desktop] recall shutdown error: ${error instanceof Error ? error.message : String(error)}`,
           );
       }
+      const learnWorkerPid = await stopDetachedLearnWorker(this.paths.runtimeDir);
+      if (learnWorkerPid !== null) {
+        this.logs
+          ?.forService("desktop")
+          .write(`[desktop] detached Learn worker tree stopped pid=${learnWorkerPid}`);
+      }
+      // Give the Postiz coordinator its exit decision before the supervisor
+      // terminates it. On Windows a service is ended with TerminateProcess, so
+      // an in-process SIGTERM handler would never run and a stack Breadboard
+      // started would be left behind on every quit. The coordinator still
+      // refuses for a pre-existing stack, an active hold, or pending
+      // scheduled publishing — this only asks the question.
+      await this.releasePostizStack();
       await this.services?.stopAll();
+      await this.controlPlane?.stop();
+      this.controlPlane = null;
+      this.systemMemorySource?.stop?.();
+      this.systemMemorySource = null;
+      if (this.devInstanceLockRepoRoot !== null) {
+        releaseDevInstance(this.devInstanceLockRepoRoot);
+        this.devInstanceLockRepoRoot = null;
+      }
       this.logs?.forService("desktop").write("[desktop] all services stopped");
     } catch (error) {
       this.logs

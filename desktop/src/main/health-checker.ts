@@ -6,10 +6,24 @@ export type HealthCheckSpec =
       type: "http";
       /** Full URL, e.g. http://127.0.0.1:8765/health */
       url: string;
+      /** Request method. Defaults to GET. */
+      method?: "GET" | "POST";
+      /** Request body, for POST probes. */
+      body?: string;
       /** Extra request headers (e.g. Basic auth). */
       headers?: Record<string, string>;
       /** Response-body substring that must be present, if any. */
       expectBodyIncludes?: string;
+      /**
+       * Exact status codes that count as healthy, replacing the 2xx/3xx rule.
+       *
+       * Used by adoption probes, where the interesting answer is "the service
+       * accepted our credentials" rather than "the request succeeded": a gated
+       * endpoint answers 401 to a foreign caller and 400/404/405 to an
+       * authenticated one, and only the second means the running instance is
+       * ours.
+       */
+      acceptStatuses?: number[];
       /**
        * Treat any HTTP response as healthy, including 4xx. Used where the
        * service is ready as soon as it answers, but the specific URL may
@@ -29,58 +43,80 @@ export type HealthCheckSpec =
       type: "process";
     };
 
-export async function runHealthCheck(spec: HealthCheckSpec): Promise<boolean> {
+/**
+ * What a probe actually learned, for callers that need more than pass/fail.
+ *
+ * - `pass`        — healthy per the spec.
+ * - `answered`    — the server replied, but not the way this spec expects.
+ *                   A definitive "not this service": a wrong status, a wrong
+ *                   body, a 401 from a gated route.
+ * - `timeout`     — the request was accepted and never answered in time. The
+ *                   signature of a server that is up but still warming: a cold
+ *                   `next dev` holds the request while it compiles the route.
+ * - `unreachable` — nothing to talk to: connection refused, reset, closed.
+ */
+export type HealthProbeResult = "pass" | "answered" | "timeout" | "unreachable";
+
+export async function runHealthProbe(spec: HealthCheckSpec): Promise<HealthProbeResult> {
   switch (spec.type) {
     case "http":
-      return httpCheck(
-        spec.url,
-        spec.headers ?? {},
-        spec.expectBodyIncludes,
-        spec.timeoutMs,
-        spec.acceptAnyStatus === true,
-      );
+      return httpProbe(spec);
     case "tcp":
-      return tcpCheck(spec.host, spec.port, spec.timeoutMs);
+      return (await tcpCheck(spec.host, spec.port, spec.timeoutMs)) ? "pass" : "unreachable";
     case "process":
       // Liveness of the child process is tracked by the supervisor itself.
-      return true;
+      return "pass";
   }
 }
 
-function httpCheck(
-  url: string,
-  headers: Record<string, string>,
-  expectBodyIncludes: string | undefined,
-  timeoutMs: number,
-  acceptAnyStatus = false,
-): Promise<boolean> {
+export async function runHealthCheck(spec: HealthCheckSpec): Promise<boolean> {
+  return (await runHealthProbe(spec)) === "pass";
+}
+
+function httpProbe(
+  spec: Extract<HealthCheckSpec, { type: "http" }>,
+): Promise<HealthProbeResult> {
+  const { url, timeoutMs, expectBodyIncludes } = spec;
+  const headers = { ...(spec.headers ?? {}) };
+  const method = spec.method ?? "GET";
+  const body = spec.body;
+  if (body !== undefined && headers["Content-Length"] === undefined) {
+    headers["Content-Length"] = String(Buffer.byteLength(body));
+  }
   return new Promise((resolve) => {
-    const request = http.get(url, { headers, timeout: timeoutMs }, (response) => {
+    const request = http.request(url, { method, headers, timeout: timeoutMs }, (response) => {
       const status = response.statusCode ?? 0;
-      const statusOk = acceptAnyStatus ? status > 0 : status >= 200 && status < 400;
+      const statusOk = spec.acceptStatuses
+        ? spec.acceptStatuses.includes(status)
+        : spec.acceptAnyStatus === true
+          ? status > 0
+          : status >= 200 && status < 400;
       if (!statusOk) {
         response.resume();
-        resolve(false);
+        resolve("answered");
         return;
       }
       if (!expectBodyIncludes) {
         response.resume();
-        resolve(true);
+        resolve("pass");
         return;
       }
-      let body = "";
+      let received = "";
       response.setEncoding("utf8");
       response.on("data", (chunk: string) => {
-        if (body.length < 512 * 1024) body += chunk;
+        if (received.length < 512 * 1024) received += chunk;
       });
-      response.on("end", () => resolve(body.includes(expectBodyIncludes)));
-      response.on("error", () => resolve(false));
+      response.on("end", () =>
+        resolve(received.includes(expectBodyIncludes) ? "pass" : "answered"),
+      );
+      response.on("error", () => resolve("unreachable"));
     });
     request.on("timeout", () => {
       request.destroy();
-      resolve(false);
+      resolve("timeout");
     });
-    request.on("error", () => resolve(false));
+    request.on("error", () => resolve("unreachable"));
+    request.end(body);
   });
 }
 
