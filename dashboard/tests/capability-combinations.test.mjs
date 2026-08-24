@@ -46,7 +46,6 @@ const RUN_ROUTES = {
   "trading-agent": ["tradingagents", "runs"],
   "vibe-trading": ["vibe-trading", "runs"],
   "stock-analyst": ["stock-analyst", "runs"],
-  "paper-trader": ["paper-trader", "runs"],
   "deer-flow": ["deer-flow", "runs"],
   "socials-manager": ["socials-manager", "runs"],
   "hardware-blueprint": ["hardware-blueprint", "runs"],

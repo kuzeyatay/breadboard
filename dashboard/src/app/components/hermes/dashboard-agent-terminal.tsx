@@ -155,12 +155,6 @@ import {
   stockAnalystUserMessage,
 } from "@/lib/stock-analyst/identity.ts";
 import {
-  PAPER_TRADER_AGENT_ID,
-  PAPER_TRADER_AGENT_NAME,
-  taskFromPaperTraderCommand,
-  paperTraderUserMessage,
-} from "@/lib/paper-trader/identity.ts";
-import {
   DEER_FLOW_AGENT_ID,
   DEER_FLOW_AGENT_NAME,
   taskFromDeerFlowCommand,
@@ -307,6 +301,13 @@ interface RuntimeHistorySession {
 
 const HEIGHT_KEY = "breadboard:knowledge-terminal-height";
 const OPEN_STATE_KEY = "breadboard:knowledge-terminal-open";
+/**
+ * Shown when a Recents refresh does not land. Named so the next successful
+ * refresh can retract exactly this note and leave a real error — a delete that
+ * failed, say — standing.
+ */
+const HISTORY_REFRESH_FAILED =
+  "The chat list could not be refreshed. Showing the last one that loaded.";
 const COLLAPSED_HEIGHT = 48;
 // The shortest the dock can stand open. The composer is anchored to the bottom
 // of the body (`.bb-composer-overlay`), so a body with no room for it does not
@@ -752,10 +753,6 @@ function RuntimeTerminal({
     id: string;
     name: string;
   } | null>(null);
-  const [paperTraderAgent, setPaperTraderAgent] = useState<{
-    id: string;
-    name: string;
-  } | null>(null);
   const [deerFlowAgent, setDeerFlowAgent] = useState<{
     id: string;
     name: string;
@@ -790,7 +787,6 @@ function RuntimeTerminal({
   const [launchingVibeTradingRun, setLaunchingVibeTradingRun] = useState(false);
   const [launchingStockAnalystRun, setLaunchingStockAnalystRun] =
     useState(false);
-  const [launchingPaperTraderRun, setLaunchingPaperTraderRun] = useState(false);
   const [launchingDeerFlowRun, setLaunchingDeerFlowRun] = useState(false);
   // A typed or pasted /agents:trading-agent command pre-fills the request form
   // rather than running: whatever it carries is a starting point, and anything
@@ -1034,7 +1030,6 @@ function RuntimeTerminal({
     launchingTradingAgentsRun ||
     launchingVibeTradingRun ||
     launchingStockAnalystRun ||
-    launchingPaperTraderRun ||
     launchingDeerFlowRun ||
     launchingShortsRun ||
     launchingFormsmithRun ||
@@ -1062,11 +1057,12 @@ function RuntimeTerminal({
     ruflo.launching;
   const currentChatActive =
     busy || externalRunLaunching || chatSessionIsActive(null, session.messages);
-  const blankSavedChatSelected =
-    !temporaryChat &&
+  const newChatPageSelected =
     session.sessionId === null &&
     session.messages.length === 0 &&
     !currentChatActive;
+  const blankSavedChatSelected =
+    !temporaryChat && newChatPageSelected;
   const isPublic = scope === "public";
 
   useLayoutEffect(() => {
@@ -1217,6 +1213,10 @@ function RuntimeTerminal({
       void loadHermesSessionSummaries("dashboard_terminal", { force })
         .then((sessions) => {
           if (cancelled || historyEpoch.current !== epoch) return;
+          // A list that lands clears the note a previous miss left behind.
+          setHistoryError((current) =>
+            current === HISTORY_REFRESH_FAILED ? null : current,
+          );
           setHistory(
             sessions
               .filter(
@@ -1241,7 +1241,17 @@ function RuntimeTerminal({
               }),
           );
         })
-        .catch(() => undefined)
+        .catch(() => {
+          // A refresh that does not land says nothing about which chats exist.
+          // Swallowing it left `history` at its empty initial value, and the
+          // rail renders an empty list as "No chats yet" — so one failed poll
+          // erased every conversation from view and left the reader on what
+          // looked like a fresh terminal. The chats are in the local database
+          // and are still there; keep showing the last list that did land and
+          // let the ten-second poll repair it.
+          if (cancelled || historyEpoch.current !== epoch) return;
+          setHistoryError(HISTORY_REFRESH_FAILED);
+        })
         .finally(() => {
           inFlight = false;
           if (!cancelled) setHistoryLoading(false);
@@ -2202,127 +2212,6 @@ function RuntimeTerminal({
     }
   }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
 
-  /**
-   * Selecting checks both clones, because this agent needs two: the arena it
-   * trades in, and the TradingAgents environment that decides for it. Saying
-   * which one is missing before a message is typed is the difference between a
-   * desk that will not start and a desk that starts and never trades.
-   */
-  const selectPaperTrader = useCallback(() => {
-    // Selecting is a local decision and it shows immediately.
-    //
-    // Every other agent here checks its health first and only then changes the
-    // composer, which is a round trip the person is left watching — and this
-    // agent's health route is the slowest of them to compile, so the pause was
-    // long enough to read as the app having hung. Nothing about the answer
-    // changes what selecting *means*, so the check runs behind the selection and
-    // reports into the same status line. An unusable desk still refuses at the
-    // point it would actually matter, when the run is started.
-    const selected = {
-      id: PAPER_TRADER_AGENT_ID,
-      name: PAPER_TRADER_AGENT_NAME,
-    };
-    setBrowserAgent(null);
-    setAgentBrowserAgent(null);
-    setOpenPlanterAgent(null);
-    setAgentReachAgent(null);
-    setGetDocAgent(null);
-    setMeetingNotesAgent(null);
-    setDeepTutorAgent(null);
-    setCareerOpsAgent(null);
-    setTradingAgentsAgent(null);
-    setVibeTradingAgent(null);
-    setStockAnalystAgent(null);
-    setDeerFlowAgent(null);
-    setShortsAgent(null);
-    setFormsmithAgent(null);
-    clearDeepResearch();
-    clearCodex();
-    clearOpenCode();
-    clearRuflo();
-    setPaperTraderAgent(selected);
-    setAttachmentStatus(
-      "Paper Trader selected. Send to start it. It runs while Breadboard is open and resumes next time unless you stop it.",
-    );
-
-    void (async () => {
-      try {
-        const response = await fetch("/api/paper-trader/health");
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || data.cloned !== true) {
-          setAttachmentStatus(
-            typeof data?.reason === "string"
-              ? data.reason
-              : typeof data?.error === "string"
-                ? data.error
-                : "Paper Trader is unavailable.",
-          );
-          return;
-        }
-        if (data.available !== true && typeof data.reason === "string") {
-          setAttachmentStatus(data.reason);
-        } else if (data?.desk?.running === true) {
-          setAttachmentStatus(
-            "The trading desk is already running. Send to see it, or say stop.",
-          );
-        }
-      } catch {
-        // The run route reports the real reason if it comes to that.
-      }
-    })();
-
-    return selected;
-  }, [clearCodex, clearDeepResearch, clearOpenCode, clearRuflo]);
-
-  // Selectors added before Paper Trader do not know its state, so fold it into
-  // the same one-runtime-at-a-time contract here.
-  useEffect(() => {
-    if (!paperTraderAgent) return;
-    if (
-      browserAgent ||
-      agentBrowserAgent ||
-      openPlanterAgent ||
-      agentReachAgent ||
-      getDocAgent ||
-      meetingNotesAgent ||
-      deepTutorAgent ||
-      careerOpsAgent ||
-      tradingAgentsAgent ||
-      vibeTradingAgent ||
-      stockAnalystAgent ||
-      deerFlowAgent ||
-      shortsAgent ||
-      formsmithAgent ||
-      deepResearch.agent ||
-      codex.agent ||
-      openCode.agent ||
-      ruflo.agent
-    ) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPaperTraderAgent(null);
-    }
-  }, [
-    agentBrowserAgent,
-    agentReachAgent,
-    browserAgent,
-    careerOpsAgent,
-    codex.agent,
-    deepResearch.agent,
-    deepTutorAgent,
-    deerFlowAgent,
-    formsmithAgent,
-    getDocAgent,
-    meetingNotesAgent,
-    openCode.agent,
-    openPlanterAgent,
-    paperTraderAgent,
-    ruflo.agent,
-    shortsAgent,
-    stockAnalystAgent,
-    tradingAgentsAgent,
-    vibeTradingAgent,
-  ]);
-
   // Selectors added before Stock Analyst do not know its state, so fold it into
   // the same one-runtime-at-a-time contract here.
   useEffect(() => {
@@ -3145,76 +3034,6 @@ function RuntimeTerminal({
   );
 
   /**
-   * Carry one instruction to the trading desk. Unlike every other launcher here
-   * the task may be empty — a bare `/agents:paper-trader` is how the desk is
-   * opened — so nothing refuses on a blank message.
-   */
-  const launchPaperTraderRun = useCallback(
-    async (task: string, agentOverride?: { id: string; name: string }) => {
-      const selectedAgent = agentOverride ?? paperTraderAgent;
-      if (!selectedAgent || launchingPaperTraderRun) return;
-      setLaunchingPaperTraderRun(true);
-      let clientMessageId = crypto.randomUUID();
-      const userContent = paperTraderUserMessage(task);
-      clientMessageId = session.previewExternalAgentTurn({
-        clientMessageId,
-        userContent,
-      });
-      let runStarted = false;
-      try {
-        const response = await fetch("/api/paper-trader/runs", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || !data?.run?.runId) {
-          throw new Error(
-            typeof data?.error === "string"
-              ? data.error
-              : "The trading desk could not start.",
-          );
-        }
-        runStarted = true;
-        await session.appendExternalAgentTurn({
-          clientMessageId,
-          userContent,
-          run: { kind: "paper_trader", runId: String(data.run.runId), task },
-        });
-      } catch (cause) {
-        if (runStarted) {
-          setAttachmentStatus(
-            cause instanceof Error
-              ? cause.message
-              : "The trading desk started, but its chat turn could not be saved.",
-          );
-          return;
-        }
-        const assistantContent = `The trading desk could not start: ${
-          cause instanceof Error ? cause.message : "unknown error"
-        }`;
-        try {
-          await session.appendExternalAgentTurn({
-            clientMessageId,
-            userContent,
-            assistantContent,
-            outcome: "failed",
-          });
-        } catch (persistenceError) {
-          setAttachmentStatus(
-            persistenceError instanceof Error
-              ? persistenceError.message
-              : "The Paper Trader turn could not be saved.",
-          );
-        }
-      } finally {
-        setLaunchingPaperTraderRun(false);
-      }
-    },
-    [launchingPaperTraderRun, paperTraderAgent, session],
-  );
-
-  /**
    * Start one DeerFlow task. The turn is recorded before the first event
    * arrives so the card streams into it. The conversation must exist first:
    * every file the run presents is stored as an artifact belonging to this chat.
@@ -3863,7 +3682,7 @@ function RuntimeTerminal({
   const launchOpenGymRun = useCallback(
     async (
       task: string,
-      options: { branchGroupId?: string; userContent?: string } = {},
+      options: { branchGroupId?: string; userContent?: string; quiet?: boolean } = {},
     ) => {
       if (openGymDispatchingRef.current) return;
       openGymDispatchingRef.current = true;
@@ -3903,7 +3722,12 @@ function RuntimeTerminal({
         await session.appendExternalAgentTurn({
           clientMessageId,
           userContent,
-          run: { kind: "open_gym", runId: String(data.run.runId), task: normalizedTask },
+          run: {
+            kind: "open_gym",
+            runId: String(data.run.runId),
+            task: normalizedTask,
+            ...(options.quiet === true ? { quiet: true } : {}),
+          },
           branchGroupId: options.branchGroupId,
         });
       } catch (cause) {
@@ -5469,7 +5293,6 @@ function RuntimeTerminal({
     (tradingAgentsAgent && "trading-agent") ||
     (vibeTradingAgent && "vibe-trading") ||
     (stockAnalystAgent && "stock-analyst") ||
-    (paperTraderAgent && "paper-trader") ||
     (deerFlowAgent && "deer-flow") ||
     (shortsAgent && "shorts") ||
     (formsmithAgent && "formsmith") ||
@@ -5695,20 +5518,6 @@ function RuntimeTerminal({
           // message carries the question.
           if (selected && stockAnalystTask)
             await launchStockAnalystRun(stockAnalystTask, selected);
-        })();
-        return;
-      }
-      const paperTraderTask = taskFromPaperTraderCommand(text);
-      if (paperTraderTask !== null) {
-        if (launchingPaperTraderRun) return;
-        setInput("");
-        setAttachmentStatus("");
-        void (async () => {
-          const selected = paperTraderAgent ?? selectPaperTrader();
-          // A bare token selects the agent and leaves the chip up, the same as
-          // every other agent. The composer then locks — the desk takes no
-          // instructions — and the send button is what opens it.
-          if (selected) await launchPaperTraderRun(paperTraderTask, selected);
         })();
         return;
       }
@@ -5949,14 +5758,6 @@ function RuntimeTerminal({
         void launchStockAnalystRun(text);
         return;
       }
-      if (paperTraderAgent) {
-        // No `!text` guard: an empty send is "start the desk".
-        if (launchingPaperTraderRun) return;
-        setInput("");
-        setAttachmentStatus("");
-        void launchPaperTraderRun(text);
-        return;
-      }
       if (deerFlowAgent) {
         if (!text || launchingDeerFlowRun) return;
         setInput("");
@@ -5998,7 +5799,7 @@ function RuntimeTerminal({
       // Exercise presentation is an output contract, not a model preference.
       // In Super Agent mode, resolve likely form/program prompts against the
       // registered catalogue before Hermes sees them. A match launches the
-      // visible openGym card directly, so no model response can replace it with
+      // quiet openGym result directly, so no model response can replace it with
       // prose. Explicit agent selections and attachments have already been
       // handled above and therefore retain their normal routing.
       if (
@@ -6018,7 +5819,7 @@ function RuntimeTerminal({
         if (routeToOpenGym) {
           setInput("");
           setAttachmentStatus("");
-          await launchOpenGymRun(text, { userContent: text });
+          await launchOpenGymRun(text, { userContent: text, quiet: true });
           return;
         }
       }
@@ -6087,10 +5888,6 @@ function RuntimeTerminal({
       selectStockAnalyst,
       launchStockAnalystRun,
       launchingStockAnalystRun,
-      paperTraderAgent,
-      selectPaperTrader,
-      launchPaperTraderRun,
-      launchingPaperTraderRun,
       deerFlowAgent,
       selectDeerFlow,
       launchDeerFlowRun,
@@ -6180,7 +5977,6 @@ function RuntimeTerminal({
       tradingAgents: tradingAgentsAgent,
       vibeTrading: vibeTradingAgent,
       stockAnalyst: stockAnalystAgent,
-      paperTrader: paperTraderAgent,
       deerFlow: deerFlowAgent,
       shorts: shortsAgent,
       formsmith: formsmithAgent,
@@ -6205,7 +6001,6 @@ function RuntimeTerminal({
     setTradingAgentsAgent(snapshot.tradingAgents);
     setVibeTradingAgent(snapshot.vibeTrading);
     setStockAnalystAgent(snapshot.stockAnalyst);
-    setPaperTraderAgent(snapshot.paperTrader);
     setDeerFlowAgent(snapshot.deerFlow);
     setShortsAgent(snapshot.shorts);
     setFormsmithAgent(snapshot.formsmith);
@@ -6324,7 +6119,7 @@ function RuntimeTerminal({
           return;
         }
         case "open-gym":
-          await launchOpenGymRun(request.brief);
+          await launchOpenGymRun(request.brief, { quiet: true });
           return;
         case "vibe-trading": {
           const selected = vibeTradingAgent ?? (await selectVibeTrading());
@@ -6334,11 +6129,6 @@ function RuntimeTerminal({
         case "stock-analyst": {
           const selected = stockAnalystAgent ?? (await selectStockAnalyst());
           if (selected) await launchStockAnalystRun(request.brief, selected);
-          return;
-        }
-        case "paper-trader": {
-          const selected = paperTraderAgent ?? selectPaperTrader();
-          if (selected) await launchPaperTraderRun(request.brief, selected);
           return;
         }
         case "deer-flow": {
@@ -6427,10 +6217,10 @@ function RuntimeTerminal({
     scopeKey: session.sessionId ?? null,
     ready: launchReady,
     onLaunched: (request) => {
-      // openGym owns a visible, self-contained result card. Treating it like a
-      // private worker would create a second Super Agent "Thinking" turn as
-      // soon as the card completes, replacing the requested presentation with
-      // a redundant prose synthesis.
+      // openGym owns the self-contained guidance-and-animation answer. Treating
+      // it like a private worker would create a second Super Agent "Thinking"
+      // turn as soon as it completes, replacing that answer with redundant
+      // prose synthesis.
       if (request.agentId === OPEN_GYM_AGENT_ID) {
         awaitedLaunchRef.current = null;
         return;
@@ -6491,7 +6281,7 @@ function RuntimeTerminal({
       if (session.messages[index + 1]) return;
       const continuationKey =
         message.clientMessageId ?? message.id ?? `delegated-${index}`;
-      // The visible openGym card is the terminal presentation. A refresh must
+      // The quiet openGym result is the terminal presentation. A refresh must
       // not reconstruct the private-worker hand-back it does not participate in.
       if (message.openGymRun) {
         continuedDelegatedTurnsRef.current.add(continuationKey);
@@ -6969,7 +6759,6 @@ function RuntimeTerminal({
     setShortsAgent(null);
     setFormsmithAgent(null);
     setStockAnalystAgent(null);
-    setPaperTraderAgent(null);
     // The retained text has already been written under the outgoing chat's
     // draft key. Release its in-memory shadow before changing keys so a late
     // acknowledgement cannot clear a newer submission with identical text.
@@ -7006,7 +6795,6 @@ function RuntimeTerminal({
     setShortsAgent(null);
     setFormsmithAgent(null);
     setStockAnalystAgent(null);
-    setPaperTraderAgent(null);
     if (sessionId !== session.sessionId) {
       // Let useChatDraft restore this text if the original request never became
       // durable. Keeping the shadow across chats would make the outgoing words
@@ -7806,55 +7594,57 @@ function RuntimeTerminal({
                 onChange={handleAttachmentInput}
                 className="hidden"
               />
-              {/* Temporary chat lives in the corner of the chat itself rather than
-                in the toolbar, because it is about this conversation and not
-                about the terminal. Floated, so an ordinary chat pays no vertical
-                space for a switch it is not using. */}
-              <button
-                type="button"
-                onClick={toggleTemporaryChat}
-                disabled={currentChatActive}
-                aria-pressed={temporaryChat}
-                className={`absolute right-3 top-2 z-20 flex h-10 w-10 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
-                  temporaryChat
-                    ? "text-[#2F5C41]"
-                    : "text-[#9AAAA1] hover:text-[#172A22]"
-                }`}
-                title={
-                  currentChatActive
-                    ? "Temporary chat can be changed after the current response finishes"
-                    : temporaryChat
-                    ? "Temporary chat is on — click to leave it. This chat is not in your history and is not used or saved as memory."
-                    : "Temporary chat: start a chat that is kept out of your history and out of memory, both ways"
-                }
-                aria-label={
-                  temporaryChat
-                    ? "Turn off temporary chat"
-                    : "Turn on temporary chat"
-                }
-              >
-                {/* A message bubble drawn as a broken line: the shape of a chat,
-                  without the part that lasts. While the mode is on it carries a
-                  tick, so "this is on" is legible without comparing shades. */}
-                <svg
-                  className="h-[26px] w-[26px]"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={1.7}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
+              {/* Temporary chat is a choice made before the first turn, so its
+                switch only belongs on the new-chat page. The banner below keeps
+                an active temporary conversation identified after the switch is
+                gone. */}
+              {newChatPageSelected ? (
+                <button
+                  type="button"
+                  onClick={toggleTemporaryChat}
+                  disabled={currentChatActive}
+                  aria-pressed={temporaryChat}
+                  className={`absolute right-3 top-2 z-20 flex h-10 w-10 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+                    temporaryChat
+                      ? "text-[#2F5C41]"
+                      : "text-[#9AAAA1] hover:text-[#172A22]"
+                  }`}
+                  title={
+                    currentChatActive
+                      ? "Temporary chat can be changed after the current response finishes"
+                      : temporaryChat
+                        ? "Temporary chat is on — click to leave it. This chat is not in your history and is not used or saved as memory."
+                        : "Temporary chat: start a chat that is kept out of your history and out of memory, both ways"
+                  }
+                  aria-label={
+                    temporaryChat
+                      ? "Turn off temporary chat"
+                      : "Turn on temporary chat"
+                  }
                 >
-                  <path
-                    strokeDasharray="3.6 3"
-                    d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
-                  />
-                  {temporaryChat ? (
-                    <path strokeWidth={2} d="M8.6 12.1l2.4 2.4 4.6-5" />
-                  ) : null}
-                </svg>
-              </button>
+                  {/* A message bubble drawn as a broken line: the shape of a chat,
+                    without the part that lasts. While the mode is on it carries a
+                    tick, so "this is on" is legible without comparing shades. */}
+                  <svg
+                    className="h-[26px] w-[26px]"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.7}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeDasharray="3.6 3"
+                      d="M20.25 12a8.25 8.25 0 01-11.9 7.4L4 20.5l1.16-4.2A8.25 8.25 0 1120.25 12z"
+                    />
+                    {temporaryChat ? (
+                      <path strokeWidth={2} d="M8.6 12.1l2.4 2.4 4.6-5" />
+                    ) : null}
+                  </svg>
+                </button>
+              ) : null}
               {/* The mode is a promise about what happens to what you type, so it
                 says so in words rather than only through a lit-up icon. The
                 right padding is the seat the floating switch occupies. */}
@@ -8062,11 +7852,6 @@ function RuntimeTerminal({
                 onSelectStockAnalyst={() => void selectStockAnalyst()}
                 onClearStockAnalyst={() => {
                   setStockAnalystAgent(null);
-                  setAttachmentStatus("");
-                }}
-                paperTraderAgent={paperTraderAgent}
-                onClearPaperTrader={() => {
-                  setPaperTraderAgent(null);
                   setAttachmentStatus("");
                 }}
                 deerFlowAgent={deerFlowAgent}

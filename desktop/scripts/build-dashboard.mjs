@@ -39,7 +39,11 @@ const genofficeEditor = spawnSync(
 );
 if (genofficeEditor.status !== 0) process.exit(genofficeEditor.status ?? 1);
 
-const result = spawnSync(process.execPath, [nextBin, "build"], {
+// Next 16 defaults production builds to Turbopack. Breadboard has an audited
+// custom webpack configuration and enables webpackMemoryOptimizations; make
+// the selected compiler explicit so the lean path actually receives those
+// settings instead of silently taking a different, higher-commit build path.
+const result = spawnSync(process.execPath, [nextBin, "build", "--webpack"], {
   cwd: dashboardDir,
   stdio: "inherit",
   env: {

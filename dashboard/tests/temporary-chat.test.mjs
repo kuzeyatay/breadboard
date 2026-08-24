@@ -263,7 +263,15 @@ const greetingEngine = fs.readFileSync(
   "utf8",
 );
 
-test("the switch floats in the corner of the chat, not in the toolbar", () => {
+test("the switch floats in the corner of the new chat page, not in the toolbar", () => {
+  assert.match(
+    terminal,
+    /const newChatPageSelected =\s*session\.sessionId === null &&\s*session\.messages\.length === 0 &&\s*!currentChatActive;/,
+  );
+  assert.match(
+    terminal,
+    /\{newChatPageSelected \? \(\s*<button[\s\S]{0,220}onClick=\{toggleTemporaryChat\}/,
+  );
   assert.match(terminal, /aria-pressed=\{temporaryChat\}/);
   assert.match(terminal, /onClick=\{toggleTemporaryChat\}/);
   // A bare glyph in the chat's own top-right corner: no raised button, no

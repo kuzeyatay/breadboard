@@ -3,7 +3,7 @@ import { isOpenGymSuperAgentRoutingCandidate } from "./identity.ts";
 /**
  * Resolve a likely fitness request against the server-owned catalogue. Once a
  * request has clear exercise-form intent, resolver failure is fail-open: the
- * openGym run can still render a card and explain a missing catalogue, whereas
+ * openGym run can still render its answer and explain a missing catalogue, whereas
  * handing the prompt to the model can silently lose the requested widget.
  */
 export async function shouldRouteOpenGymFromSuperAgent(

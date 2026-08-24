@@ -179,7 +179,7 @@ test("profile and programs persist per user across reads", async () => {
   }
 });
 
-test("both chat surfaces launch openGym and render its persistent animation card", () => {
+test("both chat surfaces persist the quiet Super Agent openGym presentation", () => {
   const terminal = source("src/app/components/hermes/dashboard-agent-terminal.tsx");
   const terminalPanel = source("src/app/components/hermes/agent-runtime-panel.tsx");
   const garden = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");
@@ -191,6 +191,7 @@ test("both chat surfaces launch openGym and render its persistent animation card
     assert.match(body, /shouldRouteOpenGymFromSuperAgent/);
     assert.match(body, /isSuperAgentEnabled\(\)/);
     assert.match(body, /userContent: text/);
+    assert.match(body, /userContent: text, quiet: true/);
   }
   const routingClient = source("src/lib/open-gym/routing-client.ts");
   const routingRoute = source("src/app/api/open-gym/route/route.ts");
@@ -201,6 +202,14 @@ test("both chat surfaces launch openGym and render its persistent animation card
   assert.match(card, /exercises\/\$\{encodeURIComponent\(exercise\.id\)\}\/animation/);
   assert.match(card, /new EventSource\(/);
   assert.match(card, /onerror/);
+  assert.match(card, /if \(quiet\)/);
+  assert.match(card, /hasExerciseDemonstration/);
+  assert.match(card, /rounded-\[12px\] border border-\[var\(--line\)\]/);
+  assert.match(card, /<ChatMarkdown content=\{result\} compact \/>/);
+  assert.ok(
+    card.indexOf("if (quiet)") < card.indexOf('className="bb-agent-run-card'),
+    "Super Agent's direct answer must render before the explicit-agent run card",
+  );
   assert.match(terminalPanel, /message\.delegatedAgentRun && !message\.openGymRun/);
   assert.match(garden, /msg\.delegatedAgentRun && !msg\.openGymRun/);
   assert.match(
@@ -217,12 +226,12 @@ test("Super Agent must delegate exercise demonstrations instead of substituting 
   const superAgent = source("src/lib/hermes/super-agent.ts");
   const briefs = source("src/lib/hermes/runtime-agent-briefs.ts");
   assert.match(superAgent, /Exercise demonstrations and workout programs go to openGym/);
-  assert.match(superAgent, /Do not answer with instructions instead/);
-  assert.match(superAgent, /openGym is the presentation-bearing exception/);
-  assert.match(briefs, /Its animation card is part of the user-facing result/);
+  assert.match(superAgent, /form guidance and framed animation are the requested result/);
+  assert.match(superAgent, /without an openGym run card/);
+  assert.match(briefs, /framed animation render directly without exposing the agent's run card/);
 });
 
-test("the visible openGym card does not spawn a second Super Agent thinking turn", () => {
+test("the direct openGym answer does not spawn a second Super Agent thinking turn", () => {
   const terminal = source("src/app/components/hermes/dashboard-agent-terminal.tsx");
   const terminalPanel = source("src/app/components/hermes/agent-runtime-panel.tsx");
   const garden = source("src/app/gardens/[clusterSlug]/workspace-client.tsx");

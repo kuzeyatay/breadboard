@@ -25,7 +25,6 @@ export default function AssistantResponseMeta({
   responseDurationMs,
   startedAt,
   completedAt,
-  summary,
   agentName = "Assistant",
   label = "Thinking",
   action,
@@ -165,11 +164,6 @@ export default function AssistantResponseMeta({
         </div>
         {action}
       </div>
-      {summary ? (
-        <p className="truncate text-[11px] text-[var(--ink)]" title={summary}>
-          {summary}
-        </p>
-      ) : null}
     </section>
   );
 }

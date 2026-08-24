@@ -61,11 +61,6 @@ import { OPEN_GYM_COMMAND } from '@/lib/open-gym/identity.ts';
 import { TRADINGAGENTS_AGENT_ID, TRADINGAGENTS_COMMAND } from '@/lib/tradingagents/identity.ts';
 import { VIBE_TRADING_COMMAND } from '@/lib/vibe-trading/identity.ts';
 import { STOCK_ANALYST_COMMAND } from '@/lib/stock-analyst/identity.ts';
-import {
-  PAPER_TRADER_AGENT_ID,
-  PAPER_TRADER_AGENT_NAME,
-  PAPER_TRADER_COMMAND,
-} from '@/lib/paper-trader/identity.ts';
 import { DEER_FLOW_COMMAND } from '@/lib/deer-flow/identity.ts';
 import { tradingAgentsSettingsFrom } from '@/lib/tradingagents/settings.ts';
 import { loadAgentSettings } from '@/lib/agent-settings/client.ts';
@@ -289,12 +284,6 @@ interface Props {
   stockAnalystAgent?: { id: string; name: string } | null;
   onClearStockAnalyst?: () => void;
   onSelectStockAnalyst?: () => void;
-  /**
-   * Active Paper Trader agent. The message is an instruction to a desk that is
-   * already running or about to be — start, stop, or show — rather than a task.
-   */
-  paperTraderAgent?: { id: string; name: string } | null;
-  onClearPaperTrader?: () => void;
   /**
    * Active DeerFlow agent. The message is the task, forwarded verbatim to the
    * cloned harness's own lead agent.
@@ -531,8 +520,6 @@ export default function AssistantComposer({
   stockAnalystAgent,
   onClearStockAnalyst,
   onSelectStockAnalyst,
-  paperTraderAgent,
-  onClearPaperTrader,
   deerFlowAgent,
   onClearDeerFlow,
   onSelectDeerFlow,
@@ -920,30 +907,12 @@ export default function AssistantComposer({
     : null;
   const shortsRequest = shortsAgent ? shortsRequestFrom(shortsForm) : null;
   const formsmithRequest = formsmithAgent ? formsmithRequestFrom(formsmithForm) : null;
-  // A typed bare Paper Trader command is already a complete selection. Waiting
-  // for Enter leaves a normal textarea on screen even though this agent accepts
-  // no prompt, which invites text that the desk will never read. Keep this as
-  // local derived state. Paper Trader is intentionally absent from the agent
-  // pickers, while manually typing its token still leaves Send as the explicit
-  // start action.
-  const typedPaperTraderCommand =
-    !paperTraderAgent && value.trim().toLowerCase() === PAPER_TRADER_COMMAND.toLowerCase();
-  const paperTraderSelection = paperTraderAgent ??
-    (typedPaperTraderCommand
-      ? { id: PAPER_TRADER_AGENT_ID, name: PAPER_TRADER_AGENT_NAME }
-      : null);
-  // Paper Trader belongs in this group for the same reason the other three do —
-  // it has no prompt — but it is the one member with nothing to fill in either.
-  // A desk is started, stopped or shown; there is no request to compose, so it
-  // gets the locked composer without a form above it, and Send is always ready.
-  const formAgent = tradingAgentsAgent ?? shortsAgent ?? formsmithAgent ?? paperTraderSelection ?? null;
+  const formAgent = tradingAgentsAgent ?? shortsAgent ?? formsmithAgent ?? null;
   const formRequestReady = tradingAgentsAgent
     ? Boolean(tradingAgentsRequest)
     : shortsAgent
       ? Boolean(shortsRequest)
-      : paperTraderSelection
-        ? true
-        : Boolean(formsmithRequest);
+      : Boolean(formsmithRequest);
   const submitTradingAgents = () => {
     if (!tradingAgentsRequest || isSending || disabled) return;
     onSubmitTradingAgents?.(tradingAgentsRequest);
@@ -960,8 +929,6 @@ export default function AssistantComposer({
     if (tradingAgentsAgent) submitTradingAgents();
     else if (shortsAgent) submitShorts();
     else if (formsmithAgent) submitFormsmith();
-    // The desk takes no request, so the send button is the whole instruction.
-    else if (paperTraderSelection) onSubmit();
   };
   const canSend = formAgent ? formRequestReady : canSubmit;
   // The goal card's play button sends this and nothing else. It is a message
@@ -1608,32 +1575,6 @@ export default function AssistantComposer({
             </span>
           </div>
         ) : null}
-        {paperTraderSelection ? (
-          <div className="flex items-center px-2 pb-1.5 pt-0.5">
-            <span
-              className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-[var(--paper-surface)] px-2 py-1 text-[10px] text-[var(--ink-muted)]"
-              title={`${PAPER_TRADER_COMMAND} · a paper trading desk that keeps running: send it to start, stop or show`}
-            >
-              <span className="truncate font-mono font-medium text-[var(--botanical)]">{PAPER_TRADER_COMMAND}</span>
-              {onClearPaperTrader || typedPaperTraderCommand ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (typedPaperTraderCommand) onChange('');
-                    else onClearPaperTrader?.();
-                  }}
-                  className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
-                  aria-label={`Clear ${paperTraderSelection.name}`}
-                  title="Clear Paper Trader"
-                >
-                  <svg aria-hidden className="h-2.5 w-2.5" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path strokeLinecap="round" d="m3 3 6 6m0-6-6 6" />
-                  </svg>
-                </button>
-              ) : null}
-            </span>
-          </div>
-        ) : null}
         {deerFlowAgent ? (
           <div className="flex items-center px-2 pb-1.5 pt-0.5">
             <span
@@ -2024,9 +1965,7 @@ export default function AssistantComposer({
                   ? 'Trading Agent reads a symbol and a date, not a message. Fill in the request above, or clear the agent to write normally.'
                   : shortsAgent
                     ? 'Shorts reads a video, not a message. Give it one above, or clear the agent to write normally.'
-                    : paperTraderSelection
-                      ? 'The trading desk takes no instructions — what it trades and how is set in its settings. Send to open it, or clear the agent to write normally.'
-                      : 'Formsmith reads one picture, not a message. Choose it above, or clear the agent to write normally.'}
+                    : 'Formsmith reads one picture, not a message. Choose it above, or clear the agent to write normally.'}
               </p>
             </div>
           ) : (
@@ -2095,11 +2034,6 @@ export default function AssistantComposer({
                     onChange={(event) => {
                       const next = event.target.value;
                       onChange(next);
-                      if (next.trim().toLowerCase() === PAPER_TRADER_COMMAND.toLowerCase()) {
-                        setShowSlashCommands(false);
-                        setShowCommandHub(false);
-                        return;
-                      }
                       // Typing in a leading slash token opens the direct command
                       // picker, never the full capability manager — including
                       // the token of a sentence that already has a body, which
@@ -2498,9 +2432,7 @@ export default function AssistantComposer({
                     ? 'Cut the clips'
                     : formsmithAgent
                       ? 'Reconstruct the picture'
-                      : paperTraderSelection
-                        ? 'Open the trading desk'
-                        : 'Send'
+                      : 'Send'
             }
             title={
               canQueueFollowUp
@@ -2514,9 +2446,7 @@ export default function AssistantComposer({
                       ? 'Run the analysis'
                       : shortsAgent
                         ? 'Cut the clips'
-                        : paperTraderSelection
-                          ? 'Open the trading desk'
-                          : 'Reconstruct the picture'
+                        : 'Reconstruct the picture'
                   : 'Send'
             }
           >

@@ -666,12 +666,14 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const hermes: DesktopServiceDefinition = {
     id: "hermes",
     displayName: "Agent runtime (Hermes)",
-    // Runtime unavailability must not make gardens and other unrelated
-    // Breadboard features unusable. Agent API routes report the existing
-    // sanitized runtime-unavailable error while the bounded supervisor retries.
+    // Hermes backs the primary Terminal/Garden Chat experience, so it belongs
+    // to the eager core. Making it on-demand created a readiness deadlock: the
+    // terminal disabled submission while Hermes was stopped, and submission
+    // was the only operation capable of acquiring the lease that started it.
+    // It remains optional at the process-supervisor boundary so an installation
+    // problem cannot hide unrelated gardens, artifacts, or settings.
     required: false,
-    startPolicy: "on-demand",
-    idleTtlMs: 10 * 60_000,
+    startPolicy: "eager",
     estimatedColdStartCommitMb: 1536,
     softCommitLimitMb: 3072,
     hardCommitLimitMb: 4096,
@@ -1097,7 +1099,13 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     restartPolicy: "on-failure",
     startPolicy: "eager",
     safeRecycleOnSoftLimit: paths.mode === "dev" && !dashboardProduction,
-    estimatedColdStartCommitMb: dashboardProduction ? 2048 : (memoryPolicy?.dashboardTreeSoftLimitMb ?? 8192),
+    // Cold-start admission is intentionally separate from the long-running
+    // tree ceiling. Charging the entire soft limit here made opening the lazy
+    // compiler require enough headroom to compile all 500+ routes at once,
+    // even though startup touches only the health and dashboard entries.
+    estimatedColdStartCommitMb: dashboardProduction
+      ? 2048
+      : Math.min(4096, memoryPolicy?.dashboardDevHeapMb ?? 4096),
     priority: 100,
     // Dev only, and deliberately a backstop rather than the primary control.
     // The primary control is the heap budget in dashboard-heap-budget.ts, which
@@ -1133,11 +1141,13 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const gbrain: DesktopServiceDefinition = {
     id: "gbrain",
     displayName: "Knowledge retrieval (GBrain)",
-    // Never blocks startup even in `required` GBRAIN mode: the dashboard reports
-    // a truthful unavailable/degraded state rather than failing the whole app.
+    // The Terminal folds knowledge health into its primary status indicator.
+    // Leaving GBrain stopped at startup therefore painted a permanent red dot
+    // even though the adapter could start on first retrieval. Keep the visible
+    // core truthful by warming it after ChatMock; failures remain non-fatal to
+    // gardens and other unrelated features.
     required: false,
-    startPolicy: "on-demand",
-    idleTtlMs: 10 * 60_000,
+    startPolicy: "eager",
     estimatedColdStartCommitMb: 1536,
     softCommitLimitMb: 2048,
     hardCommitLimitMb: 3072,
@@ -1146,6 +1156,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     command: binaries.bun,
     args: ["run", path.join(paths.appRoot, "gbrain-adapter", "src", "server.ts")],
     cwd: path.join(paths.appRoot, "gbrain-adapter"),
+    dependsOn: ["chatmock"],
     env: {
       ...shared,
       GBRAIN_ADAPTER_HOST: "127.0.0.1",

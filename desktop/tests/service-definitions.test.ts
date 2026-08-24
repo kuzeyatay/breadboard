@@ -425,6 +425,12 @@ test("Hermes is a hidden-loopback supervised runtime and its endpoint is not pub
   if (!hermes) throw new Error("Hermes service should be registered");
   assert.equal(hermes.command, "C:/rt/python.exe");
   assert.equal(hermes.required, false);
+  assert.equal(
+    hermes.startPolicy,
+    "eager",
+    "the primary agent runtime must be ready without a client-side lease deadlock",
+  );
+  assert.equal(hermes.idleTtlMs, undefined);
   assert.deepEqual(hermes.dependsOn, ["chatmock"]);
   assert.deepEqual(
     hermes.args.slice(0, 3),
@@ -569,7 +575,11 @@ test("no secret values leak into non-secret env keys or args", () => {
 test("GBrain is present by default, absent only when explicitly disabled", () => {
   // On by default: the sidecar is registered and the dashboard is told to use it.
   const byDefault = fixture("packaged");
-  assert.ok(byDefault.definitions.some((d) => d.id === "gbrain"));
+  const defaultGbrain = byDefault.definitions.find((d) => d.id === "gbrain");
+  assert.ok(defaultGbrain);
+  assert.equal(defaultGbrain.startPolicy, "eager");
+  assert.equal(defaultGbrain.idleTtlMs, undefined);
+  assert.deepEqual(defaultGbrain.dependsOn, ["chatmock"]);
   const dashDefault = byDefault.definitions.find((d) => d.id === "dashboard");
   assert.ok(dashDefault);
   assert.equal(dashDefault.env["GBRAIN_MODE"], "preferred");
@@ -821,6 +831,15 @@ test("the dev dashboard carries a memory budget; the packaged one does not", () 
     assert.ok(devDashboard);
     const budget = devDashboard.resourceBudget;
     assert.ok(budget, "the hot-reload dashboard must declare a budget");
+    assert.equal(
+      devDashboard.estimatedColdStartCommitMb,
+      4096,
+      "startup admission must charge the bounded cold-start estimate, not the whole tree ceiling",
+    );
+    assert.ok(
+      devDashboard.estimatedColdStartCommitMb * 1024 * 1024 < budget.warningBytes,
+      "cold-start demand and the long-running soft ceiling must remain separate",
+    );
     assert.ok(budget.warningBytes < budget.hardLimitBytes, "warn before killing");
     assert.ok(
       budget.hardLimitBytes <= 13 * 1024 * 1024 * 1024,

@@ -11,7 +11,6 @@ import { resolveDeerFlowRoot } from "../src/lib/deer-flow/runtime.ts";
 import { resolveLegalRoot } from "../src/lib/legal/runtime.ts";
 import { resolveMoneyPrinterRoot } from "../src/lib/money-printer/runtime.ts";
 import { resolveOpenMontageRoot } from "../src/lib/openmontage/runtime.ts";
-import { resolvePaperTraderRoot } from "../src/lib/paper-trader/runtime.ts";
 import { resolveResource2SkillRoot } from "../src/lib/resource2skill/runtime.ts";
 import { resolveShortsRoot } from "../src/lib/shorts/runtime.ts";
 import { resolveShapeRRoot } from "../src/lib/shaper/runtime.ts";
@@ -33,7 +32,6 @@ test("QA optional runtimes never fall through to installed checkout clones", (t)
     ["HARVEY_LABS_ROOT", resolveLegalRoot],
     ["MONEY_PRINTER_ROOT", resolveMoneyPrinterRoot],
     ["OPENMONTAGE_ROOT", resolveOpenMontageRoot],
-    ["PAPER_TRADER_ROOT", resolvePaperTraderRoot],
     ["RESOURCE2SKILL_ROOT", resolveResource2SkillRoot],
     ["SHORTS_ROOT", resolveShortsRoot],
     ["SHAPER_ROOT", resolveShapeRRoot],

@@ -4,7 +4,7 @@
 //
 // The clone is a pnpm project but has no workspace: dependencies, so npm
 // installs it fine (pnpm is not a Breadboard dependency — same doctrine as
-// paper-trader and openwork). The upstream `build` script pipes through
+// openwork). The upstream `build` script pipes through
 // `cat`/`chmod`, which does not exist under cmd.exe, so this uses `build:tsc`
 // (tsc + tsc-alias), which emits runnable CommonJS beside the sources —
 // `src/index.js` is the entry point Breadboard spawns.

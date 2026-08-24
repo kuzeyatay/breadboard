@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Fragment,
   memo,
   useState,
   useRef,
@@ -143,7 +142,6 @@ import InlineOpenGymRun from "@/app/components/hermes/inline-open-gym-run";
 import InlineTradingAgentsRun from "@/app/components/hermes/inline-tradingagents-run";
 import InlineVibeTradingRun from "@/app/components/hermes/inline-vibe-trading-run";
 import InlineStockAnalystRun from "@/app/components/hermes/inline-stock-analyst-run";
-import InlinePaperTraderRun from "@/app/components/hermes/inline-paper-trader-run";
 import InlineDeerFlowRun from "@/app/components/hermes/inline-deer-flow-run";
 import InlineOpenPlanterRun from "@/app/components/hermes/inline-openplanter-run";
 import InlineSocialsManagerRun from "@/app/components/hermes/inline-socials-manager-run";
@@ -365,12 +363,6 @@ import {
   stockAnalystUserMessage,
 } from "@/lib/stock-analyst/identity.ts";
 import {
-  PAPER_TRADER_AGENT_ID,
-  PAPER_TRADER_AGENT_NAME,
-  taskFromPaperTraderCommand,
-  paperTraderUserMessage,
-} from "@/lib/paper-trader/identity.ts";
-import {
   DEER_FLOW_AGENT_ID,
   DEER_FLOW_AGENT_NAME,
   taskFromDeerFlowCommand,
@@ -464,11 +456,10 @@ interface Message {
   meetingNotesRun?: { runId: string; task: string };
   deepTutorRun?: { runId: string; task: string; capability: string };
   careerOpsRun?: { runId: string; task: string };
-  openGymRun?: { runId: string; task: string };
+  openGymRun?: { runId: string; task: string; quiet?: boolean };
   tradingAgentsRun?: { runId: string; task: string };
   vibeTradingRun?: { runId: string; task: string };
   stockAnalystRun?: { runId: string; task: string };
-  paperTraderRun?: { runId: string; task: string };
   deerFlowRun?: { runId: string; task: string };
   socialsManagerRun?: { runId: string; brief: string };
   hardwareBlueprintRun?: { runId: string; brief: string };
@@ -1148,7 +1139,6 @@ function hasRunningExternalAgent(message: Message): boolean {
       message.tradingAgentsRun ||
       message.vibeTradingRun ||
       message.stockAnalystRun ||
-      message.paperTraderRun ||
       message.deerFlowRun ||
       message.socialsManagerRun ||
       message.hardwareBlueprintRun ||
@@ -1458,7 +1448,6 @@ const ChatTranscript = memo(function ChatTranscript({
                 msg.tradingAgentsRun ??
                 msg.vibeTradingRun ??
                 msg.stockAnalystRun ??
-                msg.paperTraderRun ??
                 msg.deerFlowRun ??
                 msg.socialsManagerRun ??
                 msg.hardwareBlueprintRun ??
@@ -2089,24 +2078,6 @@ const ChatTranscript = memo(function ChatTranscript({
                                     )
                                   }
                                 />
-                              ) : msg.paperTraderRun ? (
-                                <InlinePaperTraderRun
-                                  runId={msg.paperTraderRun.runId}
-                                  task={msg.paperTraderRun.task}
-                                  persistedContent={msg.content}
-                                  persistedOutcome={msg.externalAgentOutcome}
-                                  onRetry={
-                                    i === lastAssistantIndex && !isStreaming
-                                      ? () => onRetryAssistant(i)
-                                      : undefined
-                                  }
-                                  onTerminal={(result) =>
-                                    onExternalAgentTerminal(
-                                      msg.paperTraderRun!.runId,
-                                      result,
-                                    )
-                                  }
-                                />
                               ) : msg.deerFlowRun ? (
                                 <InlineDeerFlowRun
                                   runId={msg.deerFlowRun.runId}
@@ -2147,6 +2118,10 @@ const ChatTranscript = memo(function ChatTranscript({
                                 <InlineOpenGymRun
                                   runId={msg.openGymRun.runId}
                                   task={msg.openGymRun.task}
+                                  quiet={
+                                    msg.openGymRun.quiet === true ||
+                                    msg.delegatedAgentRun === true
+                                  }
                                   persistedContent={externalAgentCardContent(msg)}
                                   persistedOutcome={msg.externalAgentOutcome}
                                   onRetry={
@@ -2887,8 +2862,6 @@ export default function WorkspaceClient({
     useState<ExternalAgentSelection | null>(null);
   const [stockAnalystAgent, setStockAnalystAgent] =
     useState<ExternalAgentSelection | null>(null);
-  const [paperTraderAgent, setPaperTraderAgent] =
-    useState<ExternalAgentSelection | null>(null);
   const [deerFlowAgent, setDeerFlowAgent] =
     useState<ExternalAgentSelection | null>(null);
   // A pasted /agents:trading-agent command pre-fills the request form; it never
@@ -2924,7 +2897,6 @@ export default function WorkspaceClient({
     | "trading-agent"
     | "vibe-trading"
     | "stock-analyst"
-    | "paper-trader"
     | "deer-flow"
     | "hardware-blueprint"
     | "parametric-cad"
@@ -2963,7 +2935,6 @@ export default function WorkspaceClient({
     | "trading-agent"
     | "vibe-trading"
     | "stock-analyst"
-    | "paper-trader"
     | "deer-flow"
     | "hardware-blueprint"
     | "parametric-cad"
@@ -3850,7 +3821,6 @@ export default function WorkspaceClient({
       tradingAgents: tradingAgentsAgent,
       vibeTrading: vibeTradingAgent,
       stockAnalyst: stockAnalystAgent,
-      paperTrader: paperTraderAgent,
       deerFlow: deerFlowAgent,
       shorts: shortsAgent,
       formsmith: formsmithAgent,
@@ -3874,7 +3844,6 @@ export default function WorkspaceClient({
     setTradingAgentsAgent(snapshot.tradingAgents);
     setVibeTradingAgent(snapshot.vibeTrading);
     setStockAnalystAgent(snapshot.stockAnalyst);
-    setPaperTraderAgent(snapshot.paperTrader);
     setDeerFlowAgent(snapshot.deerFlow);
     setShortsAgent(snapshot.shorts);
     setFormsmithAgent(snapshot.formsmith);
@@ -3949,15 +3918,11 @@ export default function WorkspaceClient({
           await launchCareerOps(request.brief);
           return;
         case "open-gym":
-          await launchOpenGym(request.brief);
+          await launchOpenGym(request.brief, { quiet: true });
           return;
         case "vibe-trading":
           if (!vibeTradingAgent) await selectVibeTrading();
           await launchVibeTrading(request.brief);
-          return;
-        case "paper-trader":
-          if (!paperTraderAgent) selectPaperTrader();
-          await launchPaperTrader(request.brief);
           return;
         case "stock-analyst":
           if (!stockAnalystAgent) await selectStockAnalyst();
@@ -5107,7 +5072,6 @@ export default function WorkspaceClient({
     setTradingAgentsAgent(null);
     setVibeTradingAgent(null);
     setStockAnalystAgent(null);
-    setPaperTraderAgent(null);
     setDeerFlowAgent(null);
     setShortsAgent(null);
     setFormsmithAgent(null);
@@ -7587,117 +7551,6 @@ export default function WorkspaceClient({
     }
   }
 
-  /**
-   * Selecting is a local decision and it shows immediately; the health check
-   * runs behind it. See the note on the terminal's copy — the round trip was
-   * long enough to read as the app having hung, and nothing in the answer
-   * changes what selecting means.
-   */
-  function selectPaperTrader(): ExternalAgentSelection {
-    const selected = {
-      id: PAPER_TRADER_AGENT_ID,
-      name: PAPER_TRADER_AGENT_NAME,
-    };
-    setAgentBrowserAgent(null);
-    setDeepResearchAgent(null);
-    setCodexAgent(null);
-    setOpenCodeAgent(null);
-    setOpenPlanterAgent(null);
-    setRufloAgent(null);
-    setAgentReachAgent(null);
-    setGetDocAgent(null);
-    setMeetingNotesAgent(null);
-    setDeepTutorAgent(null);
-    setCareerOpsAgent(null);
-    setTradingAgentsAgent(null);
-    setVibeTradingAgent(null);
-    setStockAnalystAgent(null);
-    setDeerFlowAgent(null);
-    setShortsAgent(null);
-    setFormsmithAgent(null);
-    setPaperTraderAgent(selected);
-    setExternalAgentStatus(
-      "Paper Trader selected. Send to start it. It runs while Breadboard is open and resumes next time unless you stop it.",
-    );
-
-    void (async () => {
-      try {
-        const response = await fetch("/api/paper-trader/health");
-        const data = await response.json().catch(() => ({}));
-        // Two clones have to be ready for this one, and only one of them is the
-        // arena; saying which is missing beats a desk that starts and never trades.
-        if (!response.ok || data.cloned !== true) {
-          setExternalAgentStatus(
-            typeof data?.reason === "string"
-              ? data.reason
-              : typeof data?.error === "string"
-                ? data.error
-                : "Paper Trader is unavailable.",
-          );
-          return;
-        }
-        if (data.available !== true && typeof data.reason === "string") {
-          setExternalAgentStatus(data.reason);
-        } else if (data?.desk?.running === true) {
-          setExternalAgentStatus(
-            "The trading desk is already running. Send to see it, or say stop.",
-          );
-        }
-      } catch {
-        // The run route reports the real reason if it comes to that.
-      }
-    })();
-
-    return selected;
-  }
-
-  // Selectors written before Paper Trader do not know its state, so fold it
-  // into the same one-runtime-at-a-time contract here.
-  useEffect(() => {
-    if (!paperTraderAgent) return;
-    if (
-      agentBrowserAgent ||
-      deepResearchAgent ||
-      codexAgent ||
-      openCodeAgent ||
-      openPlanterAgent ||
-      rufloAgent ||
-      agentReachAgent ||
-      getDocAgent ||
-      meetingNotesAgent ||
-      deepTutorAgent ||
-      careerOpsAgent ||
-      tradingAgentsAgent ||
-      vibeTradingAgent ||
-      stockAnalystAgent ||
-      deerFlowAgent ||
-      shortsAgent ||
-      formsmithAgent
-    ) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPaperTraderAgent(null);
-    }
-  }, [
-    agentBrowserAgent,
-    agentReachAgent,
-    careerOpsAgent,
-    codexAgent,
-    deepResearchAgent,
-    deepTutorAgent,
-    deerFlowAgent,
-    formsmithAgent,
-    getDocAgent,
-    meetingNotesAgent,
-    openCodeAgent,
-    openPlanterAgent,
-    paperTraderAgent,
-    rufloAgent,
-    shortsAgent,
-    stockAnalystAgent,
-    tradingAgentsAgent,
-    vibeTradingAgent,
-  ]);
-
   async function selectStockAnalyst(): Promise<ExternalAgentSelection | null> {
     setExternalAgentStatus("");
     try {
@@ -8118,66 +7971,6 @@ export default function WorkspaceClient({
     }
   }
 
-  /**
-   * Carry one instruction to the trading desk. The task may be empty — a bare
-   * command is how the desk is opened — so nothing refuses on a blank message.
-   */
-  async function launchPaperTrader(task: string) {
-    if (externalAgentLaunchRef.current) return;
-    externalAgentLaunchRef.current = "paper-trader";
-    setLaunchingExternalAgent("paper-trader");
-    setExternalAgentStatus("");
-    const userContent = paperTraderUserMessage(task);
-    const prepared = await prepareExternalAgentSession(userContent);
-    if (!prepared) {
-      externalAgentLaunchRef.current = null;
-      setLaunchingExternalAgent(null);
-      return;
-    }
-    try {
-      const response = await fetch("/api/paper-trader/runs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ task }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.run?.runId) {
-        throw new Error(
-          typeof data?.error === "string"
-            ? data.error
-            : "The trading desk could not start.",
-        );
-      }
-      setChatStreaming(prepared.session.id, true);
-      await commitExternalAgentTurn(
-        prepared.session,
-        userContent,
-        {
-          role: "assistant",
-          content: "",
-          paperTraderRun: { runId: String(data.run.runId), task },
-          externalAgentOutcome: "running",
-        },
-        prepared.title,
-      );
-    } catch (error) {
-      await commitExternalAgentTurn(
-        prepared.session,
-        userContent,
-        {
-          role: "assistant",
-          content: `The trading desk could not start: ${
-            error instanceof Error ? error.message : "unknown error"
-          }`,
-        },
-        prepared.title,
-      );
-    } finally {
-      externalAgentLaunchRef.current = null;
-      setLaunchingExternalAgent(null);
-    }
-  }
-
   async function launchStockAnalyst(task: string) {
     if (!task || externalAgentLaunchRef.current) {
       if (!task) {
@@ -8474,7 +8267,7 @@ export default function WorkspaceClient({
 
   async function launchOpenGym(
     task: string,
-    options: { userContent?: string } = {},
+    options: { userContent?: string; quiet?: boolean } = {},
   ) {
     if (!task || externalAgentLaunchRef.current) {
       if (!task) setExternalAgentStatus("Tell openGym what exercise or program you need.");
@@ -8525,7 +8318,11 @@ export default function WorkspaceClient({
         {
           role: "assistant",
           content: "",
-          openGymRun: { runId: String(data.run.runId), task: normalizedTask },
+          openGymRun: {
+            runId: String(data.run.runId),
+            task: normalizedTask,
+            ...(options.quiet === true ? { quiet: true } : {}),
+          },
           externalAgentOutcome: "running",
         },
         prepared.title,
@@ -10149,7 +9946,6 @@ export default function WorkspaceClient({
         (formsmithAgent && "formsmith") ||
         (vibeTradingAgent && "vibe-trading") ||
         (stockAnalystAgent && "stock-analyst") ||
-        (paperTraderAgent && "paper-trader") ||
         (deerFlowAgent && "deer-flow") ||
         (agentBrowserAgent && "agent-browser") ||
         null,
@@ -10312,19 +10108,6 @@ export default function WorkspaceClient({
       })();
       return;
     }
-    const paperTraderTask = taskFromPaperTraderCommand(text);
-    if (paperTraderTask !== null) {
-      setInput("");
-      setChatAttachments([]);
-      void (async () => {
-        // A bare token selects and stops there; the locked composer's send
-        // button is what opens the desk.
-        const selected = paperTraderAgent ?? selectPaperTrader();
-        if (selected) await launchPaperTrader(paperTraderTask);
-      })();
-      return;
-    }
-
     const tradingAgents = parseTradingAgentsCommand(text);
     if (tradingAgents) {
       setInput("");
@@ -10602,14 +10385,6 @@ export default function WorkspaceClient({
       void launchStockAnalyst(text);
       return;
     }
-    if (paperTraderAgent) {
-      // An empty send is "start the desk", so unlike every other agent here
-      // there is nothing to refuse.
-      setInput("");
-      setChatAttachments([]);
-      void launchPaperTrader(text);
-      return;
-    }
     if (deepResearchAgent) {
       setInput("");
       setChatAttachments([]);
@@ -10625,7 +10400,7 @@ export default function WorkspaceClient({
 
     // Super Agent cannot opt out of a registered exercise presentation. Resolve
     // likely form/program requests before the model turn; a catalogue match
-    // starts the visible openGym card while preserving the user's own wording
+    // starts the quiet openGym result while preserving the user's own wording
     // in the transcript. Internal hand-back turns and attachment workflows are
     // excluded so this routing boundary cannot consume another capability.
     if (
@@ -10644,7 +10419,7 @@ export default function WorkspaceClient({
       if (routeToOpenGym) {
         setInput("");
         setChatAttachments([]);
-        await launchOpenGym(text, { userContent: text });
+        await launchOpenGym(text, { userContent: text, quiet: true });
         return;
       }
     }
@@ -12372,35 +12147,18 @@ export default function WorkspaceClient({
                     title: `${formatExactTokenCount(learnTokenUsage.totalTokens)} total tokens`,
                   },
                 ].map((metric) => (
-                  <Fragment key={metric.label}>
-                    <div className="flex items-baseline gap-1">
-                      <dt className="text-gray-600">{metric.label}</dt>
-                      <dd
-                        className="font-mono tabular-nums text-gray-200"
-                        title={metric.title}
-                      >
-                        {learnTokenUsage.estimated ? "~" : ""}
-                        {metric.label === "Total"
-                          ? formatLearnTotalTokenCount(metric.value)
-                          : formatLearnMetricTokenCount(metric.value)}
-                      </dd>
-                    </div>
-                    {metric.label === "Total" && learnPanelModel ? (
-                      <div className="flex items-baseline gap-1">
-                        <dt className="text-gray-600">Model:</dt>
-                        <dd
-                          className="font-mono tabular-nums text-gray-200"
-                          title={
-                            active
-                              ? `Model making these calls: ${learnPanelModel}`
-                              : `Model the next Learn run will use: ${learnPanelModel}`
-                          }
-                        >
-                          {formatAssistantModelName(learnPanelModel)}
-                        </dd>
-                      </div>
-                    ) : null}
-                  </Fragment>
+                  <div key={metric.label} className="flex items-baseline gap-1">
+                    <dt className="text-gray-600">{metric.label}</dt>
+                    <dd
+                      className="font-mono tabular-nums text-gray-200"
+                      title={metric.title}
+                    >
+                      {learnTokenUsage.estimated ? "~" : ""}
+                      {metric.label === "Total"
+                        ? formatLearnTotalTokenCount(metric.value)
+                        : formatLearnMetricTokenCount(metric.value)}
+                    </dd>
+                  </div>
                 ))}
               </dl>
             ) : (
@@ -12416,6 +12174,21 @@ export default function WorkspaceClient({
           ) : (
             <span className="text-gray-600">Waiting for usage</span>
           )}
+          {learnPanelModel ? (
+            <div className="flex items-baseline gap-1">
+              <span className="text-gray-600">Model:</span>
+              <span
+                className="font-mono tabular-nums text-gray-200"
+                title={
+                  active
+                    ? `Model making these calls: ${learnPanelModel}`
+                    : `Model the next Learn run will use: ${learnPanelModel}`
+                }
+              >
+                {formatAssistantModelName(learnPanelModel)}
+              </span>
+            </div>
+          ) : null}
           <button
             type="button"
             role="switch"
@@ -14537,11 +14310,6 @@ export default function WorkspaceClient({
               onSelectStockAnalyst={() => void selectStockAnalyst()}
               onClearStockAnalyst={() => {
                 setStockAnalystAgent(null);
-                setExternalAgentStatus("");
-              }}
-              paperTraderAgent={paperTraderAgent}
-              onClearPaperTrader={() => {
-                setPaperTraderAgent(null);
                 setExternalAgentStatus("");
               }}
               deerFlowAgent={deerFlowAgent}

@@ -97,6 +97,11 @@ test("thinking remains visible with response metadata and shimmers while active"
   );
 });
 
+test("thinking metadata never renders a second status-description line", () => {
+  assert.doesNotMatch(responseMeta, /\{summary \? \(/);
+  assert.doesNotMatch(responseMeta, /title=\{summary\}/);
+});
+
 test("live turns hold Thinking for five seconds, then settle on Thought", () => {
   // The row stays on the message for good, so once the turn is over it should
   // say what the assistant did rather than what it is doing.

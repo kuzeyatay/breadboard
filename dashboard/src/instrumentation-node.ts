@@ -16,7 +16,6 @@ import { autostartComfyUi } from "./lib/comfyui/autostart.ts";
 import { autostartTelegramGateway } from "./lib/telegram/service.ts";
 import { autostartWhatsAppGateway } from "./lib/whatsapp/service.ts";
 import { startIfixAiMaintenanceScheduler } from "./lib/ifixai-maintenance/scheduler.ts";
-import { autostartPaperTrader } from "./lib/paper-trader/autostart.ts";
 import { launchAbandonedLearnRecoveryWorker } from "./lib/learn-recovery-background.ts";
 
 const globalState = globalThis as typeof globalThis & {
@@ -124,8 +123,3 @@ autostartComfyUi();
 // Internal prompt maintenance is operator-configured and headless. It writes
 // only isolated evaluation artifacts and never activates a repair candidate.
 startIfixAiMaintenanceScheduler();
-
-// A trading desk someone started runs while Breadboard is open. Closing the app
-// tears its process down; this resumes it on the next launch only when its
-// durable flag is still set. It never starts one nobody asked for.
-autostartPaperTrader();

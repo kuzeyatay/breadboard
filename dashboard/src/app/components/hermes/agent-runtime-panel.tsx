@@ -74,7 +74,6 @@ import InlineCareerOpsRun from "./inline-career-ops-run";
 import InlineOpenGymRun from "./inline-open-gym-run";
 import InlineVibeTradingRun from "./inline-vibe-trading-run";
 import InlineStockAnalystRun from "./inline-stock-analyst-run";
-import InlinePaperTraderRun from "./inline-paper-trader-run";
 import InlineDeerFlowRun from "./inline-deer-flow-run";
 import InlineTradingAgentsRun from "./inline-tradingagents-run";
 import type { TradingAgentsRequest } from "@/lib/tradingagents/identity.ts";
@@ -301,8 +300,6 @@ interface Props {
   stockAnalystAgent?: { id: string; name: string } | null;
   onClearStockAnalyst?: () => void;
   onSelectStockAnalyst?: () => void;
-  paperTraderAgent?: { id: string; name: string } | null;
-  onClearPaperTrader?: () => void;
   deerFlowAgent?: { id: string; name: string } | null;
   onClearDeerFlow?: () => void;
   onSelectDeerFlow?: () => void;
@@ -651,8 +648,6 @@ export default function AgentRuntimePanel({
   stockAnalystAgent,
   onClearStockAnalyst,
   onSelectStockAnalyst,
-  paperTraderAgent,
-  onClearPaperTrader,
   deerFlowAgent,
   onClearDeerFlow,
   onSelectDeerFlow,
@@ -2391,6 +2386,10 @@ export default function AgentRuntimePanel({
                         <InlineOpenGymRun
                           runId={message.openGymRun.runId}
                           task={message.openGymRun.task}
+                          quiet={
+                            message.openGymRun.quiet === true ||
+                            message.delegatedAgentRun === true
+                          }
                           persistedContent={externalAgentCardContent(message)}
                           persistedOutcome={message.externalAgentOutcome}
                           onRetry={
@@ -2434,28 +2433,6 @@ export default function AgentRuntimePanel({
                         <InlineStockAnalystRun
                           runId={message.stockAnalystRun.runId}
                           task={message.stockAnalystRun.task}
-                          persistedContent={message.content}
-                          persistedOutcome={message.externalAgentOutcome}
-                          onRetry={
-                            onRetryMessage &&
-                            !activeRun &&
-                            (message.interrupted ||
-                              index === lastAssistantIndex)
-                              ? () => retryAssistantAsBranch(index)
-                              : undefined
-                          }
-                          onTerminal={(result) => {
-                            if (message.clientMessageId) {
-                              onExternalAgentTerminal?.(message.clientMessageId, result);
-                            }
-                          }}
-                        />
-                      </div>
-                    ) : message.paperTraderRun ? (
-                      <div className="text-sm leading-7 text-gray-200">
-                        <InlinePaperTraderRun
-                          runId={message.paperTraderRun.runId}
-                          task={message.paperTraderRun.task}
                           persistedContent={message.content}
                           persistedOutcome={message.externalAgentOutcome}
                           onRetry={
@@ -3397,8 +3374,6 @@ export default function AgentRuntimePanel({
           stockAnalystAgent={stockAnalystAgent}
           onClearStockAnalyst={onClearStockAnalyst}
           onSelectStockAnalyst={onSelectStockAnalyst}
-          paperTraderAgent={paperTraderAgent}
-          onClearPaperTrader={onClearPaperTrader}
           deerFlowAgent={deerFlowAgent}
           onClearDeerFlow={onClearDeerFlow}
           onSelectDeerFlow={onSelectDeerFlow}

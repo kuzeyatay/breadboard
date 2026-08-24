@@ -61,7 +61,6 @@ const WIRED = [
 const NO_PROMPT_SURFACE = [
   "shorts",
   "tradingagents",
-  "paper-trader",
   "shaper",
   "money-printer",
 ];

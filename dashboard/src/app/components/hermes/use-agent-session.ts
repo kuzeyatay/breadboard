@@ -282,7 +282,7 @@ export interface AgentMessage {
    */
   careerOpsRun?: { runId: string; task: string };
   /** Persistent openGym coaching/program run with catalogue animations. */
-  openGymRun?: { runId: string; task: string };
+  openGymRun?: { runId: string; task: string; quiet?: boolean };
   /**
    * Present when this assistant turn is a TradingAgents analysis (the cloned
    * multi-agent trading framework, driven by ChatMock). Renders the firm's
@@ -304,7 +304,6 @@ export interface AgentMessage {
    * analysis it wrote.
    */
   stockAnalystRun?: { runId: string; task: string };
-  paperTraderRun?: { runId: string; task: string };
   /**
    * Present when this assistant turn is a DeerFlow run. Rendered as a live task
    * card — its steps, the files it produced, and the answer as it is written —
@@ -880,7 +879,6 @@ const EXTERNAL_AGENT_RUN_FIELDS = [
   ["tradingAgentsRun", "trading_agents"],
   ["vibeTradingRun", "vibe_trading"],
   ["stockAnalystRun", "stock_analyst"],
-  ["paperTraderRun", "paper_trader"],
   ["deerFlowRun", "deer_flow"],
   ["deepResearchRun", "deep_research"],
   ["maxResearchRun", "max_research"],
