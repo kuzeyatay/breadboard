@@ -49,6 +49,9 @@ coverage/
 *.tsbuildinfo
 *.log
 
+# Rust workspace build output
+native/target/
+
 # App Router route segments are directories, and some of them are named after
 # build output ("…/api/document-skills/build"). Those are source, so the rules
 # above must not reach inside the dashboard's source tree.
@@ -115,12 +118,16 @@ hermes-skills/approved/
 # are deliberately committed and are not listed here.
 # ---------------------------------------------------------------------------
 /AI-Youtube-Shorts-Generator/
+/Cognivia/
 /DeepTutor/
+/MatrAIx-Persona-8B/
 /MoneyPrinterTurbo/
 /OpenMontage/
 /OpenPlanter/
 /ShapeR/
+/SolidworksMCP-python/
 /Vibe-Trading/
+/.tmp-tiktok-downloader/
 /agent-loop-engineering-kit/
 /agent-reach/
 /agent-skills/
@@ -128,7 +135,9 @@ hermes-skills/approved/
 /audio-analyzer-rs/
 /auto-claude-code-research-in-sleep/
 /book-to-skill/
+/bolt-slides/
 /bullshit-detector/
+/buzz/
 /career-ops/
 /codex/
 /comfyui/
@@ -141,9 +150,11 @@ hermes-skills/approved/
 # bluely/; the skill was re-authored clean into hermes-skills/prebuilt/.
 # Recommend deleting the directory outright.
 /github-explorer-skill/
+/goal/
 /hallmark/
 /harvey-labs/
 /hermes-agent/
+/human-review/
 /hyperframes/
 /Resource2Skill/
 /iFixAi/
@@ -156,6 +167,7 @@ hermes-skills/approved/
 /nango/
 /oh-my-hermes/
 /open-alpha-arena/
+/openGym/
 /opencode/
 /openscience/
 /openwork/
@@ -163,19 +175,25 @@ hermes-skills/approved/
 /postiz-app/
 /premortem/
 /prompt-engineering-guide/
+/pxpipe/
 /reverse-skill/
 /ruflo/
 /scientific-agent-skills/
 /screenpipe/
+/sim/
+/soundshuman/
 /stable-fast-3d/
+/stirling-pdf/
 /subsai/
 /tradingagents/
+/ts-fsrs/
 /unlazy/
 /unslop/
 /video-use/
 /vimax/
 /voicebox/
 /vox-director/
+/wardrobe/
 /watch/
 /watermarks-remover/
 
