@@ -62,10 +62,7 @@ impl ControlPlaneAuthority {
         )?)
     }
 
-    pub fn verify_bearer(
-        &self,
-        authorization: Option<&str>,
-    ) -> Result<(), AuthenticationError> {
+    pub fn verify_bearer(&self, authorization: Option<&str>) -> Result<(), AuthenticationError> {
         let Some(header) = authorization else {
             return Err(AuthenticationError::Unauthorized);
         };

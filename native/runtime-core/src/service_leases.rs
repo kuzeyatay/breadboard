@@ -33,10 +33,7 @@ pub enum ServiceLeaseError {
     #[error("lease {0} already exists")]
     DuplicateLease(String),
     #[error("service {service_id} already has its maximum {maximum} leases")]
-    LeaseLimitReached {
-        service_id: String,
-        maximum: u32,
-    },
+    LeaseLimitReached { service_id: String, maximum: u32 },
     #[error("service {0} is closed to new lease acquisitions")]
     AcquisitionClosed(String),
     #[error("service {0} is stopping and cannot acquire another lease")]
@@ -58,10 +55,7 @@ pub enum ServiceLeaseError {
     #[error("service {0} does not permit restart after failure")]
     RestartForbidden(String),
     #[error("service {service_id} reached its maximum {maximum} restarts")]
-    RestartLimitReached {
-        service_id: String,
-        maximum: u32,
-    },
+    RestartLimitReached { service_id: String, maximum: u32 },
     #[error("service generation counter is exhausted")]
     GenerationExhausted,
 }
@@ -410,10 +404,7 @@ impl ServiceLeaseMachine {
     /// Earliest bounded expiry for timer scheduling. Like `status`, this is a
     /// pure read and does not expire or otherwise mutate a lease.
     pub fn next_lease_expiry_ms(&self) -> Option<u64> {
-        self.claims
-            .values()
-            .map(|claim| claim.expires_at_ms)
-            .min()
+        self.claims.values().map(|claim| claim.expires_at_ms).min()
     }
 
     pub fn begin_acquire(
@@ -452,9 +443,7 @@ impl ServiceLeaseMachine {
         failure: &str,
         now_ms: u64,
     ) -> Result<ServiceLeaseEffects, ServiceLeaseError> {
-        self.transact(|candidate| {
-            candidate.startup_failed_inner(generation, failure, now_ms)
-        })
+        self.transact(|candidate| candidate.startup_failed_inner(generation, failure, now_ms))
     }
 
     pub fn release(
@@ -468,10 +457,7 @@ impl ServiceLeaseMachine {
 
     /// Applies bounded lease expirations. Runtime timer integration must call
     /// this at the earliest returned lease expiry even when no requests arrive.
-    pub fn advance_time(
-        &mut self,
-        now_ms: u64,
-    ) -> Result<ServiceLeaseEffects, ServiceLeaseError> {
+    pub fn advance_time(&mut self, now_ms: u64) -> Result<ServiceLeaseEffects, ServiceLeaseError> {
         self.transact(|candidate| candidate.advance_time_inner(now_ms))
     }
 
@@ -543,9 +529,7 @@ impl ServiceLeaseMachine {
     ) -> Result<BeginServiceAcquireOutcome, ServiceLeaseError> {
         validate_identifier("leaseId", lease_id)?;
         self.validate_now(now_ms)?;
-        if requested_lease_ms == 0
-            || requested_lease_ms > self.registration.limits.max_lease_ms
-        {
+        if requested_lease_ms == 0 || requested_lease_ms > self.registration.limits.max_lease_ms {
             return Err(ServiceLeaseError::InvalidLeaseDuration {
                 actual_ms: requested_lease_ms,
                 maximum_ms: self.registration.limits.max_lease_ms,
@@ -584,7 +568,12 @@ impl ServiceLeaseMachine {
         let (generation, state, start_required, restart) = match self.phase {
             ServicePhase::AvailableButStopped => {
                 let restart = self.retry_required;
-                (self.next_generation()?, ServiceLeaseClaimState::Pending, true, restart)
+                (
+                    self.next_generation()?,
+                    ServiceLeaseClaimState::Pending,
+                    true,
+                    restart,
+                )
             }
             ServicePhase::Failed { .. } => (
                 self.next_generation()?,
@@ -904,10 +893,9 @@ impl ServiceLeaseMachine {
             .collect();
         for lease_id in expired {
             if let Some(claim) = self.claims.remove(&lease_id) {
-                effects.resolved.push(Self::resolution(
-                    claim,
-                    ServiceLeaseReleaseReason::Timeout,
-                ));
+                effects
+                    .resolved
+                    .push(Self::resolution(claim, ServiceLeaseReleaseReason::Timeout));
             }
         }
         self.schedule_idle_if_eligible(now_ms, effects);
@@ -1009,11 +997,7 @@ impl ServiceLeaseMachine {
         (pending, active)
     }
 
-    fn schedule_idle_if_eligible(
-        &mut self,
-        now_ms: u64,
-        effects: &mut ServiceLeaseEffects,
-    ) {
+    fn schedule_idle_if_eligible(&mut self, now_ms: u64, effects: &mut ServiceLeaseEffects) {
         if self.idle_deadline.is_some()
             || !self.registration.permits_idle_stop()
             || !self.claims.is_empty()
@@ -1114,8 +1098,7 @@ mod tests {
         max_lease_ms: u64,
         max_restarts: u32,
     ) -> ServiceLeaseMachine {
-        let limits =
-            ServiceLeaseLimits::new(max_leases, max_lease_ms, max_restarts).unwrap();
+        let limits = ServiceLeaseLimits::new(max_leases, max_lease_ms, max_restarts).unwrap();
         let registration = ServiceLeaseRegistration::from_definition(
             &definition(startup_policy, restart_policy),
             true,
@@ -1135,11 +1118,7 @@ mod tests {
         )
     }
 
-    fn acquire_and_ready(
-        machine: &mut ServiceLeaseMachine,
-        lease_id: &str,
-        now_ms: u64,
-    ) -> u64 {
+    fn acquire_and_ready(machine: &mut ServiceLeaseMachine, lease_id: &str, now_ms: u64) -> u64 {
         let acquired = machine.begin_acquire(lease_id, 500, now_ms).unwrap();
         let generation = acquired.claim.generation;
         machine.confirm_ready(generation, now_ms + 1).unwrap();
@@ -1165,7 +1144,10 @@ mod tests {
     fn status_reads_are_observational_and_never_start() {
         let machine = on_demand_machine();
         let before = machine.snapshot();
-        assert_eq!(machine.status().state, RuntimeServiceState::AvailableButStopped);
+        assert_eq!(
+            machine.status().state,
+            RuntimeServiceState::AvailableButStopped
+        );
         assert!(!machine.status().adopted);
         assert_eq!(machine.snapshot(), before);
         assert_eq!(machine.snapshot().generation, 0);
@@ -1222,7 +1204,10 @@ mod tests {
         }));
         assert_eq!(machine.snapshot().pending_leases, 0);
         assert_eq!(machine.status().state, RuntimeServiceState::Failed);
-        assert_eq!(machine.status().last_error.as_deref(), Some("readiness failed"));
+        assert_eq!(
+            machine.status().last_error.as_deref(),
+            Some("readiness failed")
+        );
     }
 
     #[test]
@@ -1253,11 +1238,7 @@ mod tests {
         assert!(machine.snapshot().idle_deadline.is_none());
 
         let released = machine
-            .release(
-                "lease_1",
-                ServiceLeaseReleaseReason::Cancellation,
-                2,
-            )
+            .release("lease_1", ServiceLeaseReleaseReason::Cancellation, 2)
             .unwrap();
         assert!(released.effects.actions.is_empty());
         assert!(released.effects.scheduled_idle_deadline.is_none());
@@ -1344,7 +1325,10 @@ mod tests {
 
         let reacquired = machine.begin_acquire("lease_2", 500, 4).unwrap();
         assert_eq!(reacquired.claim.state, ServiceLeaseClaimState::Active);
-        assert_eq!(reacquired.effects.cancelled_idle_deadline, Some(stale.clone()));
+        assert_eq!(
+            reacquired.effects.cancelled_idle_deadline,
+            Some(stale.clone())
+        );
         let timer = machine.on_idle_deadline(&stale, stale.due_at_ms).unwrap();
         assert!(timer.actions.is_empty());
         assert_eq!(machine.status().state, RuntimeServiceState::Busy);
@@ -1422,9 +1406,10 @@ mod tests {
         machine.begin_acquire("lease_2", 500, 2).unwrap();
         let effects = machine.begin_shutdown(3).unwrap();
         assert_eq!(effects.resolved.len(), 2);
-        assert!(effects.resolved.iter().all(|resolution| {
-            resolution.reason == ServiceLeaseReleaseReason::Cancellation
-        }));
+        assert!(effects
+            .resolved
+            .iter()
+            .all(|resolution| { resolution.reason == ServiceLeaseReleaseReason::Cancellation }));
         assert_eq!(
             effects.actions,
             vec![ServiceLeaseAction::StopTree {
@@ -1441,12 +1426,7 @@ mod tests {
         assert!(machine.begin_shutdown(4).unwrap().actions.is_empty());
 
         let confirmation = machine
-            .confirm_tree_exit(
-                1,
-                ServiceLeaseReleaseReason::Cancellation,
-                None,
-                5,
-            )
+            .confirm_tree_exit(1, ServiceLeaseReleaseReason::Cancellation, None, 5)
             .unwrap();
         assert_eq!(
             confirmation.status.state,
@@ -1465,11 +1445,7 @@ mod tests {
         );
         acquire_and_ready(&mut scheduled, "scheduled_lease", 1);
         assert!(scheduled
-            .release(
-                "scheduled_lease",
-                ServiceLeaseReleaseReason::Success,
-                3
-            )
+            .release("scheduled_lease", ServiceLeaseReleaseReason::Success, 3)
             .unwrap()
             .effects
             .scheduled_idle_deadline
@@ -1488,11 +1464,7 @@ mod tests {
         eager.confirm_ready(1, 2).unwrap();
         eager.begin_acquire("eager_lease", 500, 3).unwrap();
         let release = eager
-            .release(
-                "eager_lease",
-                ServiceLeaseReleaseReason::Success,
-                4,
-            )
+            .release("eager_lease", ServiceLeaseReleaseReason::Success, 4)
             .unwrap();
         assert!(release.effects.scheduled_idle_deadline.is_none());
         assert_eq!(eager.status().state, RuntimeServiceState::Ready);

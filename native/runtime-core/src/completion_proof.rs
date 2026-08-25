@@ -124,15 +124,13 @@ impl WorkerCompletionProof {
         if normalize(intent.result_path()) != normalize(&expected.result_relative()) {
             return Err(CompletionProofError::IntentPathMismatch);
         }
-        let bytes = paths.read_bounded_data_file(
-            expected.result(),
-            MAX_DURABLE_WORKER_RESULT_BYTES,
-        )?;
+        let bytes =
+            paths.read_bounded_data_file(expected.result(), MAX_DURABLE_WORKER_RESULT_BYTES)?;
         if bytes.is_empty() {
             return Err(CompletionProofError::EmptyResult);
         }
-        let envelope: DurableWorkerResultEnvelope = serde_json::from_slice(&bytes)
-            .map_err(|_| CompletionProofError::InvalidEnvelope)?;
+        let envelope: DurableWorkerResultEnvelope =
+            serde_json::from_slice(&bytes).map_err(|_| CompletionProofError::InvalidEnvelope)?;
         if envelope.protocol_version != WIRE_PROTOCOL_VERSION {
             return Err(CompletionProofError::UnsupportedProtocol);
         }
@@ -196,10 +194,7 @@ fn validate_object(
         return Err(CompletionProofError::InvalidResultShape);
     }
     for (key, value) in object {
-        if key.is_empty()
-            || key.len() > MAX_RESULT_KEY_BYTES
-            || key.chars().any(char::is_control)
-        {
+        if key.is_empty() || key.len() > MAX_RESULT_KEY_BYTES || key.chars().any(char::is_control) {
             return Err(CompletionProofError::InvalidResultShape);
         }
         validate_value(value, depth + 1, remaining)?;

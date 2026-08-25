@@ -175,10 +175,7 @@ impl TrustedDirectoryPin {
     /// Establishes and pins one existing absolute directory root using the
     /// same canonical-path, open-handle, and filesystem-identity checks as
     /// `RuntimePaths`.
-    pub fn pin_existing(
-        kind: &'static str,
-        value: impl Into<PathBuf>,
-    ) -> Result<Self, PathError> {
+    pub fn pin_existing(kind: &'static str, value: impl Into<PathBuf>) -> Result<Self, PathError> {
         Ok(Self {
             root: establish_root(kind, value.into())?,
         })
@@ -526,10 +523,7 @@ impl RuntimePaths {
     /// Creates and pins a directory beneath the data root. Existing symlink,
     /// junction, or reparse components are rejected after creation and again
     /// after the directory handle is acquired.
-    pub fn prepare_data_directory(
-        &self,
-        relative: &str,
-    ) -> Result<TrustedDirectoryPin, PathError> {
+    pub fn prepare_data_directory(&self, relative: &str) -> Result<TrustedDirectoryPin, PathError> {
         let path = self.resolve_data(relative)?;
         self.data_root.revalidate()?;
         let directory = create_directory_chain(&self.data_root, &path)?;
@@ -608,20 +602,16 @@ impl RuntimePaths {
         let attempt = self.worker_attempt_paths(&manifest)?;
         validate_authority(&self.data_root, &attempt.checkpoint)?;
         validate_authority(&self.data_root, &attempt.result)?;
-        let job_directory = self.prepare_data_directory(&path_text(
-            attempt.job_directory.relative(),
-        ))?;
+        let job_directory =
+            self.prepare_data_directory(&path_text(attempt.job_directory.relative()))?;
         let input_manifest = self.pin_existing_data_file(&attempt.input_manifest)?;
-        let launch_directory = self.prepare_launch_directory(&path_text(
-            attempt.launch_directory.relative(),
-        ))?;
-        let workspace_directory = self.prepare_data_directory(&path_text(
-            attempt.workspace.relative(),
-        ))?;
+        let launch_directory =
+            self.prepare_launch_directory(&path_text(attempt.launch_directory.relative()))?;
+        let workspace_directory =
+            self.prepare_data_directory(&path_text(attempt.workspace.relative()))?;
 
-        let encoded = serde_json::to_vec(&manifest).map_err(|error| {
-            PathError::Io(io::Error::new(io::ErrorKind::InvalidData, error))
-        })?;
+        let encoded = serde_json::to_vec(&manifest)
+            .map_err(|error| PathError::Io(io::Error::new(io::ErrorKind::InvalidData, error)))?;
         let start_manifest = self.atomic_write_new_data_file(
             &attempt.start_manifest,
             &encoded,
@@ -668,9 +658,8 @@ impl RuntimePaths {
             workspace: self.resolve_data(&manifest.workspace_path)?,
             checkpoint: self.resolve_data(&manifest.checkpoint_path)?,
             result: self.resolve_data(&manifest.result_path)?,
-            start_manifest: self.resolve_data(&format!(
-                "{launch_directory}/{WORKER_START_MANIFEST_FILE}"
-            ))?,
+            start_manifest: self
+                .resolve_data(&format!("{launch_directory}/{WORKER_START_MANIFEST_FILE}"))?,
         })
     }
 
@@ -741,12 +730,8 @@ impl RuntimePaths {
         }
         staging.published = true;
         sync_installed_parent(destination.absolute())?;
-        let installed_identity = verify_regular_file(
-            &self.data_root,
-            destination,
-            &staging.file,
-            true,
-        )?;
+        let installed_identity =
+            verify_regular_file(&self.data_root, destination, &staging.file, true)?;
         drop(staging);
         let pinned = self.pin_existing_data_file(destination)?;
         let pinned_identity = file_identity(&pinned._file)?;
@@ -773,13 +758,12 @@ impl RuntimePaths {
                 reject_existing_destination(destination.absolute(), kind)?;
                 Ok(None)
             }
-            ExistingDestinationPolicy::MatchExactBytes => self
-                .pin_existing_data_file_if_exact(
-                    destination,
-                    expected_bytes,
-                    maximum_bytes,
-                    kind,
-                ),
+            ExistingDestinationPolicy::MatchExactBytes => self.pin_existing_data_file_if_exact(
+                destination,
+                expected_bytes,
+                maximum_bytes,
+                kind,
+            ),
         }
     }
 
@@ -794,9 +778,7 @@ impl RuntimePaths {
         self.data_root.revalidate()?;
         reject_parent_link_components(&self.data_root.canonical, path.absolute())?;
         match fs::symlink_metadata(path.absolute()) {
-            Ok(metadata) if is_link_or_reparse(&metadata) => {
-                return Err(PathError::ReparsePoint)
-            }
+            Ok(metadata) if is_link_or_reparse(&metadata) => return Err(PathError::ReparsePoint),
             Ok(metadata) if !metadata.is_file() => return Err(PathError::NotRegularFile),
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -819,9 +801,7 @@ impl RuntimePaths {
             .read_to_end(&mut actual)
             .map_err(PathError::Io)?;
         let after = verify_regular_file(&self.data_root, path, &file, true)?;
-        if before != after
-            || actual.len() as u64 != file.metadata().map_err(PathError::Io)?.len()
-        {
+        if before != after || actual.len() as u64 != file.metadata().map_err(PathError::Io)?.len() {
             return Err(PathError::FileChanged);
         }
         if actual.as_slice() != expected_bytes {
@@ -871,12 +851,8 @@ impl RuntimePaths {
                         identity,
                         published: false,
                     };
-                    let verified_identity = verify_regular_file(
-                        &self.data_root,
-                        &staging.path,
-                        &staging.file,
-                        true,
-                    )?;
+                    let verified_identity =
+                        verify_regular_file(&self.data_root, &staging.path, &staging.file, true)?;
                     if verified_identity != staging.identity {
                         return Err(PathError::FileChanged);
                     }
@@ -923,10 +899,10 @@ fn establish_root(kind: &'static str, value: PathBuf) -> Result<TrustedRoot, Pat
     if !value.is_absolute() {
         return Err(PathError::RelativeRoot(kind));
     }
-    let canonical = fs::canonicalize(&value)
-        .map_err(|error| PathError::RootUnavailable(kind, error))?;
-    let directory = open_directory(&canonical)
-        .map_err(|error| PathError::RootUnavailable(kind, error))?;
+    let canonical =
+        fs::canonicalize(&value).map_err(|error| PathError::RootUnavailable(kind, error))?;
+    let directory =
+        open_directory(&canonical).map_err(|error| PathError::RootUnavailable(kind, error))?;
     let metadata = directory
         .metadata()
         .map_err(|error| PathError::RootUnavailable(kind, error))?;
@@ -946,10 +922,7 @@ fn establish_root(kind: &'static str, value: PathBuf) -> Result<TrustedRoot, Pat
     })
 }
 
-fn resolve_inside(
-    root: &TrustedRoot,
-    relative: &str,
-) -> Result<ResolvedTrustedPath, PathError> {
+fn resolve_inside(root: &TrustedRoot, relative: &str) -> Result<ResolvedTrustedPath, PathError> {
     validate_relative_path("path", relative)?;
     let relative = PathBuf::from(relative);
     let absolute = root.canonical.join(&relative);
@@ -963,10 +936,7 @@ fn resolve_inside(
     })
 }
 
-fn validate_authority(
-    root: &TrustedRoot,
-    path: &ResolvedTrustedPath,
-) -> Result<(), PathError> {
+fn validate_authority(root: &TrustedRoot, path: &ResolvedTrustedPath) -> Result<(), PathError> {
     validate_relative_path("path", &path_text(path.relative()))?;
     let expected = root.canonical.join(path.relative());
     if !paths_equal(path.root(), &root.canonical) || !paths_equal(path.absolute(), &expected) {
@@ -1259,9 +1229,7 @@ fn open_or_create_pinned_file(path: &Path) -> io::Result<File> {
 #[cfg(windows)]
 fn open_new_staging_file(path: &Path) -> io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_SHARE_DELETE, FILE_SHARE_READ,
-    };
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ};
 
     OpenOptions::new()
         .read(true)
@@ -1283,9 +1251,7 @@ fn open_new_staging_file(path: &Path) -> io::Result<File> {
 #[cfg(windows)]
 fn install_file_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_WRITE_THROUGH,
-    };
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
 
     let source = source
         .as_os_str()
@@ -1336,9 +1302,7 @@ fn sync_installed_parent(_destination: &Path) -> Result<(), PathError> {
 
 #[cfg(unix)]
 fn sync_installed_parent(destination: &Path) -> Result<(), PathError> {
-    let parent = destination
-        .parent()
-        .ok_or(PathError::EscapedRoot("data"))?;
+    let parent = destination.parent().ok_or(PathError::EscapedRoot("data"))?;
     File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(PathError::Io)
@@ -1358,16 +1322,14 @@ fn file_identity(file: &File) -> Result<FileIdentity, PathError> {
     };
 
     let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
-    let success = unsafe {
-        GetFileInformationByHandle(file.as_raw_handle() as _, &mut information)
-    };
+    let success =
+        unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut information) };
     if success == 0 {
         return Err(PathError::Io(io::Error::last_os_error()));
     }
     Ok(FileIdentity {
         volume: u64::from(information.dwVolumeSerialNumber),
-        file: (u64::from(information.nFileIndexHigh) << 32)
-            | u64::from(information.nFileIndexLow),
+        file: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
         links: u64::from(information.nNumberOfLinks),
     })
 }
@@ -1563,10 +1525,7 @@ mod tests {
             .unwrap();
 
         let pin = paths.stage_job_input("job_1", canonical).unwrap();
-        assert_eq!(
-            pin.relative(),
-            Path::new("runtime/jobs/job_1/input.json")
-        );
+        assert_eq!(pin.relative(), Path::new("runtime/jobs/job_1/input.json"));
         pin.revalidate().unwrap();
         assert_eq!(fs::read(pin.absolute()).unwrap(), canonical);
         assert!(stale_fixed_pending.exists());
@@ -1597,19 +1556,11 @@ mod tests {
     #[test]
     fn temporary_staging_siblings_are_unique_and_raii_cleaned() {
         let (_directory, paths) = roots("breadboard-runtime-staging-sibling");
-        paths
-            .prepare_data_directory("runtime/jobs/job_1")
-            .unwrap();
-        let destination = paths
-            .resolve_data("runtime/jobs/job_1/input.json")
-            .unwrap();
+        paths.prepare_data_directory("runtime/jobs/job_1").unwrap();
+        let destination = paths.resolve_data("runtime/jobs/job_1/input.json").unwrap();
 
-        let first = paths
-            .create_temporary_staging_file(&destination)
-            .unwrap();
-        let second = paths
-            .create_temporary_staging_file(&destination)
-            .unwrap();
+        let first = paths.create_temporary_staging_file(&destination).unwrap();
+        let second = paths.create_temporary_staging_file(&destination).unwrap();
         let first_path = first.path.absolute().to_path_buf();
         let second_path = second.path.absolute().to_path_buf();
         assert_ne!(first_path, second_path);
@@ -1650,7 +1601,11 @@ mod tests {
     #[test]
     fn worker_start_is_fenced_to_one_exact_attempt_root_and_fixed_argv() {
         let (_directory, paths) = roots("breadboard-runtime-worker-start");
-        drop(paths.stage_job_input("job_1", br#"{"sourceIds":["one"]}"#).unwrap());
+        drop(
+            paths
+                .stage_job_input("job_1", br#"{"sourceIds":["one"]}"#)
+                .unwrap(),
+        );
         let identity = WorkerIdentity {
             job_id: "job_1".into(),
             attempt: 2,
@@ -1804,7 +1759,9 @@ mod tests {
     #[test]
     fn bounded_reads_use_the_minting_authority_and_exact_size_limit() {
         let (_directory, paths) = roots("breadboard-runtime-bounded-read");
-        let file_path = paths.runtime_root().join("runtime-v2/manifests/workers.json");
+        let file_path = paths
+            .runtime_root()
+            .join("runtime-v2/manifests/workers.json");
         fs::create_dir_all(file_path.parent().unwrap()).unwrap();
         File::create(&file_path).unwrap().write_all(b"{}").unwrap();
         let resolved = paths
@@ -1854,11 +1811,7 @@ mod tests {
         let outside_job = directory.path().join("outside-job");
         fs::create_dir(&outside_job).unwrap();
         fs::create_dir_all(paths.data_root().join("runtime/jobs")).unwrap();
-        symlink(
-            &outside_job,
-            paths.data_root().join("runtime/jobs/job_1"),
-        )
-        .unwrap();
+        symlink(&outside_job, paths.data_root().join("runtime/jobs/job_1")).unwrap();
         assert!(matches!(
             paths.stage_job_input("job_1", b"{}"),
             Err(PathError::ReparsePoint)

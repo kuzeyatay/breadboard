@@ -2,27 +2,16 @@
   "schemaVersion": 1,
   "updatedAt": "2026-08-25",
   "operatorConstraint": {
-    "status": "ACTIVE",
-    "instruction": "stop compilation",
-    "prohibitedUntilExplicitlyReauthorized": [
-      "cargo",
-      "rustc",
-      "rustfmt",
-      "Next.js compilation",
-      "Quartz compilation",
-      "Electron compilation or packaging",
-      "bundlers",
-      "compiler-backed tests",
-      "application QA",
-      "service or worker QA",
-      "memory QA"
-    ]
+    "status": "RELEASED",
+    "instruction": "native compilation explicitly reauthorized",
+    "prohibitedUntilExplicitlyReauthorized": []
   },
   "currentVerificationBoundary": {
-    "sourceOnly": true,
-    "nativeSourceCompiled": false,
+    "sourceOnly": false,
+    "nativeSourceCompiled": true,
     "nativeSourceWiredIntoProductRuntime": false,
-    "startedCompilerBundlerBuildApplicationServiceWorkerOrMemoryQa": false
+    "startedCompilerBundlerBuildApplicationServiceWorkerOrMemoryQa": true,
+    "boundaryNote": "Rust compilation and tests ran with CARGO_BUILD_JOBS=2; no Next, Quartz, Electron, application, service, worker, packaging, or memory QA ran"
   },
   "checks": [
     {
@@ -32,7 +21,7 @@
       "scope": "source-only drift validation across the machine-readable contract, Rust protocol and public-projection source, Electron adapter source, and bounded Next compatibility client",
       "startedCompilerOrApplication": false,
       "summary": "exact 25-event typed payload/fence matrix; 8 closed public stages; 10 closed artifact kinds; 5 closed failure codes; raw private stage, artifact, failure-code, and failure-message values fail closed or map to runtime-owned public fallbacks",
-      "nativeStatus": "Rust/native source is uncompiled and is not wired into the product runtime"
+      "nativeStatus": "Rust/native source is compiled and tested but is not wired into the product runtime"
     },
     {
       "id": "runtime-execution-inventory-source",
@@ -204,12 +193,19 @@
     {
       "id": "rust-required-checks",
       "commands": [
-        "cargo test",
-        "cargo fmt --check",
-        "cargo clippy --all-targets --all-features -- -D warnings"
+        "cargo test --workspace --no-fail-fast",
+        "cargo fmt --all --check",
+        "cargo clippy --workspace --all-targets --all-features --no-deps",
+        "cargo clippy --workspace --all-targets --all-features -- -D warnings"
       ],
-      "result": "NOT RUN",
-      "reason": "operator explicitly stopped compilation"
+      "result": "PARTIAL",
+      "results": [
+        "PASS: cargo test --workspace --no-fail-fast (223 tests, 0 failed)",
+        "PASS: cargo fmt --all --check",
+        "PASS WITH WARNINGS: cargo clippy --workspace --all-targets --all-features --no-deps",
+        "FAIL: strict -D warnings gate; unwired future dispatcher/service paths and existing supervisor lint debt remain visible"
+      ],
+      "resourcePolicy": "GNU stable toolchain with CARGO_BUILD_JOBS=2; no dashboard or Electron compiler ran"
     },
     {
       "id": "existing-compiled-and-application-checks",
@@ -235,7 +231,7 @@
         "worker",
         "memory"
       ],
-      "reason": "operator explicitly stopped compilation; no build, application, service, worker, or memory QA was started"
+      "reason": "native compilation was reauthorized and completed; no Next/Electron build, application, service, worker, packaging, or memory QA was started"
     }
   ]
 }

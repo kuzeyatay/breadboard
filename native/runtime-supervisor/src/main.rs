@@ -61,8 +61,7 @@ where
                     .copied()
                     .find(|trusted| trusted.eq_ignore_ascii_case(&name))
                     .ok_or_else(|| {
-                        "inherited environment variable is outside the trusted policy"
-                            .to_string()
+                        "inherited environment variable is outside the trusted policy".to_string()
                     })?;
                 if inherited_environment
                     .iter()
@@ -79,12 +78,17 @@ where
             _ => return Err(format!("unknown option {value}")),
         }
     }
-    let command = target.first().cloned().ok_or_else(|| "missing target command".to_string())?;
+    let command = target
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing target command".to_string())?;
     if command.is_empty() {
         return Err("target command must not be empty".to_string());
     }
     if target.len() > MAX_TARGET_ARGUMENTS + 1 {
-        return Err(format!("target has more than {MAX_TARGET_ARGUMENTS} arguments"));
+        return Err(format!(
+            "target has more than {MAX_TARGET_ARGUMENTS} arguments"
+        ));
     }
     if target.iter().any(|value| value.contains('\0')) {
         return Err("target command and arguments must not contain NUL".to_string());
@@ -196,8 +200,8 @@ mod windows_runtime {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle};
     use std::ptr::{null, null_mut};
-    use std::sync::mpsc::{self, TryRecvError};
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{self, TryRecvError};
     use std::sync::{Arc, Condvar, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -208,31 +212,30 @@ mod windows_runtime {
     use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
     use windows_sys::Win32::System::JobObjects::{
-        CreateJobObjectW, IsProcessInJob, QueryInformationJobObject, SetInformationJobObject,
-        TerminateJobObject, JobObjectAssociateCompletionPortInformation,
+        CreateJobObjectW, IsProcessInJob, JobObjectAssociateCompletionPortInformation,
         JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation,
         JobObjectLimitViolationInformation, JobObjectNotificationLimitInformation,
+        QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
         JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_PROCESS_ID_LIST,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOBOBJECT_LIMIT_VIOLATION_INFORMATION,
         JOBOBJECT_NOTIFICATION_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_JOB_MEMORY,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
-    use windows_sys::Win32::System::IO::{
-        CancelSynchronousIo, CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
-    };
     use windows_sys::Win32::System::Pipes::CreatePipe;
     use windows_sys::Win32::System::ProcessStatus::{
-        GetPerformanceInfo, GetProcessMemoryInfo, PERFORMANCE_INFORMATION,
-        PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+        GetPerformanceInfo, GetProcessMemoryInfo, PERFORMANCE_INFORMATION, PROCESS_MEMORY_COUNTERS,
+        PROCESS_MEMORY_COUNTERS_EX,
     };
     use windows_sys::Win32::System::Threading::{
         CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
         InitializeProcThreadAttributeList, OpenProcess, ResumeThread, TerminateProcess,
-        UpdateProcThreadAttribute, WaitForSingleObject, CREATE_NEW_PROCESS_GROUP,
-        CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT,
-        PROCESS_INFORMATION,
+        UpdateProcThreadAttribute, WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED,
+        CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
         PROC_THREAD_ATTRIBUTE_JOB_LIST, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    };
+    use windows_sys::Win32::System::IO::{
+        CancelSynchronousIo, CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
     };
 
     const ACTIVATION_PROTOCOL_VERSION: u32 = 1;
@@ -317,9 +320,7 @@ mod windows_runtime {
         if line.len() as u64 > MAX_ACTIVATION_LINE_BYTES {
             return Err((
                 "ACTIVATION_TOO_LARGE",
-                format!(
-                    "supervisor activation exceeds {MAX_ACTIVATION_LINE_BYTES} bytes"
-                ),
+                format!("supervisor activation exceeds {MAX_ACTIVATION_LINE_BYTES} bytes"),
             ));
         }
         if line.last() != Some(&b'\n') {
@@ -345,9 +346,7 @@ mod windows_runtime {
             }
             ActivationMessage::Activate { protocol_version } => Err((
                 "MALFORMED_ACTIVATION",
-                format!(
-                    "unsupported supervisor activation protocol version {protocol_version}"
-                ),
+                format!("unsupported supervisor activation protocol version {protocol_version}"),
             )),
         }
     }
@@ -372,8 +371,7 @@ mod windows_runtime {
     }
 
     fn start_control_input() -> Result<ControlInput, SupervisorError> {
-        let (activation_tx, activation_rx) =
-            mpsc::sync_channel::<Result<(), SupervisorError>>(1);
+        let (activation_tx, activation_rx) = mpsc::sync_channel::<Result<(), SupervisorError>>(1);
         let (stop_tx, stop_rx) = mpsc::sync_channel::<bool>(1);
         let control_thread = thread::Builder::new()
             .name("runtime-supervisor-control".into())
@@ -407,7 +405,11 @@ mod windows_runtime {
     struct Handle(HANDLE);
     impl Drop for Handle {
         fn drop(&mut self) {
-            if !self.0.is_null() { unsafe { CloseHandle(self.0); } }
+            if !self.0.is_null() {
+                unsafe {
+                    CloseHandle(self.0);
+                }
+            }
         }
     }
 
@@ -494,9 +496,7 @@ mod windows_runtime {
     /// complete ambient block. The trusted caller passes names only; values
     /// remain in the supervisor environment and never enter argv or protocol
     /// output.
-    fn child_environment_block(
-        allowlist: &[String],
-    ) -> Result<Vec<u16>, SupervisorError> {
+    fn child_environment_block(allowlist: &[String]) -> Result<Vec<u16>, SupervisorError> {
         let mut names = REQUIRED_CHILD_ENVIRONMENT
             .iter()
             .map(|name| (*name).to_string())
@@ -646,11 +646,7 @@ mod windows_runtime {
             }
         }
 
-        fn enqueue(
-            &self,
-            line: QueuedProtocolLine,
-            is_log: bool,
-        ) -> Result<bool, SupervisorError> {
+        fn enqueue(&self, line: QueuedProtocolLine, is_log: bool) -> Result<bool, SupervisorError> {
             let mut state = self.state.lock().map_err(|_| {
                 (
                     "PROTOCOL_WRITE_FAILED",
@@ -731,10 +727,7 @@ mod windows_runtime {
             Ok(stats)
         }
 
-        fn commit_terminal(
-            &self,
-            line: QueuedProtocolLine,
-        ) -> Result<(), SupervisorError> {
+        fn commit_terminal(&self, line: QueuedProtocolLine) -> Result<(), SupervisorError> {
             let mut state = self.state.lock().map_err(|_| {
                 (
                     "PROTOCOL_WRITE_FAILED",
@@ -856,9 +849,7 @@ mod windows_runtime {
             if bytes.len() > MAX_PROTOCOL_LINE_BYTES {
                 return Err((
                     "PROTOCOL_EVENT_TOO_LARGE",
-                    format!(
-                        "serialized protocol event exceeded {MAX_PROTOCOL_LINE_BYTES} bytes"
-                    ),
+                    format!("serialized protocol event exceeded {MAX_PROTOCOL_LINE_BYTES} bytes"),
                 ));
             }
             Ok(bytes)
@@ -897,10 +888,7 @@ mod windows_runtime {
                     "droppedProtocolLogEvents".to_string(),
                     dropped.events.into(),
                 );
-                object.insert(
-                    "droppedProtocolLogBytes".to_string(),
-                    dropped.bytes.into(),
-                );
+                object.insert("droppedProtocolLogBytes".to_string(), dropped.bytes.into());
             }
             let bytes = match Self::serialize(value) {
                 Ok(bytes) => bytes,
@@ -941,9 +929,7 @@ mod windows_runtime {
                             stdout
                                 .write_all(&line.bytes)
                                 .and_then(|_| stdout.flush())
-                                .map_err(|error| {
-                                    format!("writing protocol event failed: {error}")
-                                })
+                                .map_err(|error| format!("writing protocol event failed: {error}"))
                         };
                         match result {
                             Ok(()) => {
@@ -1135,9 +1121,7 @@ mod windows_runtime {
         Fail,
     }
 
-    pub(super) fn classify_stream_read_error(
-        error: &std::io::Error,
-    ) -> StreamReadErrorDisposition {
+    pub(super) fn classify_stream_read_error(error: &std::io::Error) -> StreamReadErrorDisposition {
         match error.kind() {
             std::io::ErrorKind::Interrupted => StreamReadErrorDisposition::Retry,
             std::io::ErrorKind::BrokenPipe => StreamReadErrorDisposition::EndOfStream,
@@ -1220,11 +1204,14 @@ mod windows_runtime {
             return Ok(());
         }
         *pressure_reported = true;
-        emit(output, json!({
-            "type": "stream-pressure",
-            "stream": stream,
-            "message": "forwarded output was dropped because the bounded protocol queue was full",
-        }))
+        emit(
+            output,
+            json!({
+                "type": "stream-pressure",
+                "stream": stream,
+                "message": "forwarded output was dropped because the bounded protocol queue was full",
+            }),
+        )
     }
 
     fn forward_pending(
@@ -1283,10 +1270,10 @@ mod windows_runtime {
                                 // the lifetime forwarding bound.
                                 continue;
                             }
-                            let remaining = MAX_FORWARDED_STREAM_BYTES
-                                .saturating_sub(forwarded_bytes);
-                            let accepted = usize::try_from(remaining.min(count as u64))
-                                .unwrap_or(count);
+                            let remaining =
+                                MAX_FORWARDED_STREAM_BYTES.saturating_sub(forwarded_bytes);
+                            let accepted =
+                                usize::try_from(remaining.min(count as u64)).unwrap_or(count);
                             if accepted > 0 {
                                 pending.extend_from_slice(&buffer[..accepted]);
                                 forwarded_bytes += accepted as u64;
@@ -1310,12 +1297,15 @@ mod windows_runtime {
                                     true,
                                     &mut pressure_reported,
                                 )?;
-                                emit(&output, json!({
-                                    "type": "stream-truncated",
-                                    "stream": stream,
-                                    "forwardedBytes": forwarded_bytes,
-                                    "limitBytes": MAX_FORWARDED_STREAM_BYTES,
-                                }))?;
+                                emit(
+                                    &output,
+                                    json!({
+                                        "type": "stream-truncated",
+                                        "stream": stream,
+                                        "forwardedBytes": forwarded_bytes,
+                                        "limitBytes": MAX_FORWARDED_STREAM_BYTES,
+                                    }),
+                                )?;
                                 forwarding_enabled = false;
                             }
                         }
@@ -1358,9 +1348,14 @@ mod windows_runtime {
     unsafe fn system_commit() -> Option<(u64, u64)> {
         let mut info: PERFORMANCE_INFORMATION = zeroed();
         info.cb = size_of::<PERFORMANCE_INFORMATION>() as u32;
-        if GetPerformanceInfo(&mut info, info.cb) == 0 { return None; }
+        if GetPerformanceInfo(&mut info, info.cb) == 0 {
+            return None;
+        }
         let page = info.PageSize as u64;
-        Some((info.CommitTotal as u64 * page, info.CommitLimit as u64 * page))
+        Some((
+            info.CommitTotal as u64 * page,
+            info.CommitLimit as u64 * page,
+        ))
     }
 
     unsafe fn terminate_owned_job(
@@ -1431,8 +1426,7 @@ mod windows_runtime {
             if SetInformationJobObject(
                 job,
                 JobObjectNotificationLimitInformation,
-                (&notification as *const JOBOBJECT_NOTIFICATION_LIMIT_INFORMATION)
-                    .cast::<c_void>(),
+                (&notification as *const JOBOBJECT_NOTIFICATION_LIMIT_INFORMATION).cast::<c_void>(),
                 size_of::<JOBOBJECT_NOTIFICATION_LIMIT_INFORMATION>() as u32,
             ) == 0
             {
@@ -1471,9 +1465,7 @@ mod windows_runtime {
                 }
                 return Err((
                     "JOB_NOTIFICATION_FAILED",
-                    format!(
-                        "GetQueuedCompletionStatus failed with Windows error {error}"
-                    ),
+                    format!("GetQueuedCompletionStatus failed with Windows error {error}"),
                 ));
             }
             if completion_key != JOB_COMPLETION_KEY {
@@ -1535,14 +1527,12 @@ mod windows_runtime {
         let mut capacity = 16usize;
         loop {
             let bytes = size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()
-                .checked_add(
-                    capacity
-                        .checked_sub(1)?
-                        .checked_mul(size_of::<usize>())?,
-                )?;
+                .checked_add(capacity.checked_sub(1)?.checked_mul(size_of::<usize>())?)?;
             let words = bytes.checked_add(size_of::<usize>() - 1)? / size_of::<usize>();
             let mut storage = vec![0usize; words];
-            let list = storage.as_mut_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+            let list = storage
+                .as_mut_ptr()
+                .cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
             let mut returned_bytes = 0u32;
             let queried = QueryInformationJobObject(
                 job,
@@ -1682,12 +1672,15 @@ mod windows_runtime {
         output: &ProtocolSink,
         evidence: HardLimitEvidence,
     ) -> Result<(), SupervisorError> {
-        emit(output, json!({
-            "type": "hard-limit",
-            "jobCommitBytes": evidence.observed_job_commit_bytes,
-            "configuredHardLimitBytes": evidence.configured_hard_limit_bytes,
-            "source": evidence.source,
-        }))
+        emit(
+            output,
+            json!({
+                "type": "hard-limit",
+                "jobCommitBytes": evidence.observed_job_commit_bytes,
+                "configuredHardLimitBytes": evidence.configured_hard_limit_bytes,
+                "source": evidence.source,
+            }),
+        )
     }
 
     fn report_hard_limit(
@@ -1727,8 +1720,7 @@ mod windows_runtime {
         hard_trip: u64,
         final_peak_job_commit_bytes: Option<u64>,
     ) -> bool {
-        hard_trip > 0
-            && final_peak_job_commit_bytes.is_some_and(|peak| peak >= hard_trip)
+        hard_trip > 0 && final_peak_job_commit_bytes.is_some_and(|peak| peak >= hard_trip)
     }
 
     pub(super) fn hard_trip_for_limit(hard_limit_bytes: u64) -> u64 {
@@ -1853,10 +1845,7 @@ mod windows_runtime {
         }
     }
 
-    pub(super) fn normalize_terminal_code(
-        target_code: u32,
-        resource_exhausted: bool,
-    ) -> u32 {
+    pub(super) fn normalize_terminal_code(target_code: u32, resource_exhausted: bool) -> u32 {
         if resource_exhausted {
             73
         } else {
@@ -2025,9 +2014,7 @@ mod windows_runtime {
                     (None, false)
                 }
             };
-        if !hard_reported
-            && final_peak_reaches_hard_trip(hard_trip, final_peak_job_commit_bytes)
-        {
+        if !hard_reported && final_peak_reaches_hard_trip(hard_trip, final_peak_job_commit_bytes) {
             record_hard_limit(
                 &mut hard_reported,
                 &mut pending_hard_limit,
@@ -2057,11 +2044,7 @@ mod windows_runtime {
         // KILL_ON_JOB_CLOSE the last tree-containment backstop even when an
         // earlier TerminateJobObject call or cleanup observation failed.
         drop(job);
-        let _ = finish_forwarders_after_job_close(
-            stdout_forward,
-            stderr_forward,
-            &mut errors,
-        );
+        let _ = finish_forwarders_after_job_close(stdout_forward, stderr_forward, &mut errors);
         if let Some(evidence) = pending_hard_limit {
             if let Err(error) = emit_hard_limit(output, evidence) {
                 errors.push(error);
@@ -2089,7 +2072,9 @@ mod windows_runtime {
             let protocol_writer = ProtocolWriter::start()?;
             let output = protocol_writer.sink();
             let job = Handle(CreateJobObjectW(null(), null()));
-            if job.0.is_null() { return Err(("JOB_CREATE_FAILED", "CreateJobObjectW failed".into())); }
+            if job.0.is_null() {
+                return Err(("JOB_CREATE_FAILED", "CreateJobObjectW failed".into()));
+            }
 
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = zeroed();
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -2103,7 +2088,8 @@ mod windows_runtime {
                 JobObjectExtendedLimitInformation,
                 &limits as *const _ as *const c_void,
                 size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            ) == 0 {
+            ) == 0
+            {
                 return Err(("JOB_CONFIG_FAILED", "SetInformationJobObject failed".into()));
             }
             let hard_trip = hard_trip_for_limit(options.hard_limit_bytes);
@@ -2146,13 +2132,19 @@ mod windows_runtime {
             startup.lpAttributeList = attributes.pointer;
             let mut process_info: PROCESS_INFORMATION = zeroed();
             let created = CreateProcessW(
-                application.as_ptr(), command_line_wide.as_mut_ptr(), null(), null(), 1,
+                application.as_ptr(),
+                command_line_wide.as_mut_ptr(),
+                null(),
+                null(),
+                1,
                 CREATE_SUSPENDED
                     | CREATE_NEW_PROCESS_GROUP
                     | CREATE_UNICODE_ENVIRONMENT
                     | EXTENDED_STARTUPINFO_PRESENT,
-                environment.as_ptr().cast::<c_void>(), cwd_wide.as_ptr(),
-                &startup.StartupInfo, &mut process_info,
+                environment.as_ptr().cast::<c_void>(),
+                cwd_wide.as_ptr(),
+                &startup.StartupInfo,
+                &mut process_info,
             );
             // The target has its private OS-owned copy now. Erase the temporary
             // block immediately, including on CreateProcess failure.
@@ -2200,10 +2192,7 @@ mod windows_runtime {
                 if ResumeThread(thread_handle.0) == u32::MAX {
                     break 'supervision Err((
                         "RESUME_FAILED",
-                        format!(
-                            "ResumeThread failed with Windows error {}",
-                            GetLastError()
-                        ),
+                        format!("ResumeThread failed with Windows error {}", GetLastError()),
                     ));
                 }
 
@@ -2295,9 +2284,8 @@ mod windows_runtime {
                                         }
                                     }
                                 } else {
-                                    let cooperative_stop = child_control
-                                        .as_mut()
-                                        .is_some_and(|control| {
+                                    let cooperative_stop =
+                                        child_control.as_mut().is_some_and(|control| {
                                             control
                                                 .write_all(b"{\"type\":\"stop\",\"force\":false}\n")
                                                 .and_then(|_| control.flush())
@@ -2312,10 +2300,13 @@ mod windows_runtime {
                                         stop_outcome = Some("graceful");
                                     }
                                     if !cooperative_stop && !console_stop {
-                                        if let Err(error) = emit(&output, json!({
-                                            "type": "stop-escalated",
-                                            "reason": "cooperative stdin and console stop delivery failed",
-                                        })) {
+                                        if let Err(error) = emit(
+                                            &output,
+                                            json!({
+                                                "type": "stop-escalated",
+                                                "reason": "cooperative stdin and console stop delivery failed",
+                                            }),
+                                        ) {
                                             break 'supervision Err(error);
                                         }
                                         if !termination_sent {
@@ -2371,15 +2362,18 @@ mod windows_runtime {
                     let usage = job_memory(job.0);
                     if let Some(current) = usage.current_private_commit_bytes {
                         let system = system_commit();
-                        if let Err(error) = emit_memory_sample(&output, json!({
-                            "type": "memory",
-                            "jobCommitBytes": current,
-                            "peakJobCommitBytes": usage.peak_job_commit_bytes,
-                            "processCount": usage.process_count,
-                            "accountingComplete": usage.accounting_complete,
-                            "systemCommitBytes": system.map(|value| value.0),
-                            "systemCommitLimitBytes": system.map(|value| value.1),
-                        })) {
+                        if let Err(error) = emit_memory_sample(
+                            &output,
+                            json!({
+                                "type": "memory",
+                                "jobCommitBytes": current,
+                                "peakJobCommitBytes": usage.peak_job_commit_bytes,
+                                "processCount": usage.process_count,
+                                "accountingComplete": usage.accounting_complete,
+                                "systemCommitBytes": system.map(|value| value.0),
+                                "systemCommitLimitBytes": system.map(|value| value.1),
+                            }),
+                        ) {
                             break 'supervision Err(error);
                         }
                         if usage.accounting_complete
@@ -2388,10 +2382,13 @@ mod windows_runtime {
                             && !soft_reported
                         {
                             soft_reported = true;
-                            if let Err(error) = emit(&output, json!({
-                                "type": "soft-limit",
-                                "jobCommitBytes": current,
-                            })) {
+                            if let Err(error) = emit(
+                                &output,
+                                json!({
+                                    "type": "soft-limit",
+                                    "jobCommitBytes": current,
+                                }),
+                            ) {
                                 break 'supervision Err(error);
                             }
                         } else if usage.accounting_complete
@@ -2471,10 +2468,9 @@ mod windows_runtime {
             if resource_exhausted {
                 let (target_exit_code, mut supervisor_errors) = match primary_result {
                     Ok(target_exit_code) => (Some(target_exit_code), Vec::new()),
-                    Err((code, message)) => (
-                        None,
-                        vec![json!({ "code": code, "message": message })],
-                    ),
+                    Err((code, message)) => {
+                        (None, vec![json!({ "code": code, "message": message })])
+                    }
                 };
                 supervisor_errors.extend(
                     cleanup
@@ -2503,11 +2499,7 @@ mod windows_runtime {
                     }))
                     .ok();
                 let terminal_delivered = protocol_writer.finish(terminal_receipt);
-                return Ok(terminal_delivery_exit_code(
-                    code,
-                    true,
-                    terminal_delivered,
-                ));
+                return Ok(terminal_delivery_exit_code(code, true, terminal_delivered));
             }
 
             let target_exit_code = primary_result.as_ref().ok().copied();
@@ -2534,11 +2526,7 @@ mod windows_runtime {
                         }))
                         .ok();
                     let terminal_delivered = protocol_writer.finish(terminal_receipt);
-                    Ok(terminal_delivery_exit_code(
-                        code,
-                        false,
-                        terminal_delivered,
-                    ))
+                    Ok(terminal_delivery_exit_code(code, false, terminal_delivered))
                 }
                 Err((code, message)) => {
                     let terminal_receipt = output
@@ -2559,11 +2547,7 @@ mod windows_runtime {
                         }))
                         .ok();
                     let terminal_delivered = protocol_writer.finish(terminal_receipt);
-                    Ok(terminal_delivery_exit_code(
-                        1,
-                        false,
-                        terminal_delivered,
-                    ))
+                    Ok(terminal_delivery_exit_code(1, false, terminal_delivered))
                 }
             }
         }
@@ -2602,10 +2586,7 @@ mod windows_runtime {
                 event_type(queue.next_line().unwrap().unwrap()),
                 "soft-limit"
             );
-            assert_eq!(
-                event_type(queue.next_line().unwrap().unwrap()),
-                "stdout"
-            );
+            assert_eq!(event_type(queue.next_line().unwrap().unwrap()), "stdout");
         }
 
         #[test]
@@ -2665,38 +2646,45 @@ mod tests {
 
     #[test]
     fn limits_are_validated_without_inspecting_environment() {
-        let result = parse_options([
-            "--soft-limit-bytes",
-            "200",
-            "--hard-limit-bytes",
-            "100",
-            "--cwd",
-            "C:\\trusted",
-            "--",
-            "cmd.exe",
-        ]
-        .into_iter()
-        .map(str::to_string));
-        assert_eq!(result.unwrap_err(), "soft limit must be lower than hard limit");
+        let result = parse_options(
+            [
+                "--soft-limit-bytes",
+                "200",
+                "--hard-limit-bytes",
+                "100",
+                "--cwd",
+                "C:\\trusted",
+                "--",
+                "cmd.exe",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "soft limit must be lower than hard limit"
+        );
     }
 
     #[test]
     fn target_arguments_are_preserved() {
-        let result = parse_options([
-            "--soft-limit-bytes",
-            "100",
-            "--hard-limit-bytes",
-            "200",
-            "--cwd",
-            "C:\\trusted",
-            "--inherit-env",
-            "SystemRoot",
-            "--",
-            "tool.exe",
-            "a b",
-        ]
-        .into_iter()
-        .map(str::to_string))
+        let result = parse_options(
+            [
+                "--soft-limit-bytes",
+                "100",
+                "--hard-limit-bytes",
+                "200",
+                "--cwd",
+                "C:\\trusted",
+                "--inherit-env",
+                "SystemRoot",
+                "--",
+                "tool.exe",
+                "a b",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
         .unwrap();
         assert_eq!(result.cwd, "C:\\trusted");
         assert_eq!(result.inherited_environment, vec!["SystemRoot"]);
@@ -2835,10 +2823,22 @@ mod tests {
         assert_eq!(windows_runtime::hard_trip_for_limit(0), 0);
         assert_eq!(windows_runtime::hard_trip_for_limit(100), 98);
         assert!(windows_runtime::hard_trip_for_limit(u64::MAX) > u64::MAX / 2);
-        assert!(!windows_runtime::final_peak_reaches_hard_trip(0, Some(1_000)));
-        assert!(!windows_runtime::final_peak_reaches_hard_trip(980, Some(979)));
-        assert!(windows_runtime::final_peak_reaches_hard_trip(980, Some(980)));
-        assert!(windows_runtime::final_peak_reaches_hard_trip(980, Some(1_000)));
+        assert!(!windows_runtime::final_peak_reaches_hard_trip(
+            0,
+            Some(1_000)
+        ));
+        assert!(!windows_runtime::final_peak_reaches_hard_trip(
+            980,
+            Some(979)
+        ));
+        assert!(windows_runtime::final_peak_reaches_hard_trip(
+            980,
+            Some(980)
+        ));
+        assert!(windows_runtime::final_peak_reaches_hard_trip(
+            980,
+            Some(1_000)
+        ));
         assert!(!windows_runtime::final_peak_reaches_hard_trip(980, None));
     }
 
@@ -2846,10 +2846,7 @@ mod tests {
     #[test]
     fn zero_resident_receipt_requires_exact_tree_and_root_evidence() {
         assert!(windows_runtime::zero_resident_receipt_allowed(
-            true,
-            true,
-            None,
-            false,
+            true, true, None, false,
         ));
         assert!(windows_runtime::zero_resident_receipt_allowed(
             true,
@@ -2864,10 +2861,7 @@ mod tests {
             true,
         ));
         assert!(!windows_runtime::zero_resident_receipt_allowed(
-            true,
-            false,
-            None,
-            true,
+            true, false, None, true,
         ));
         assert!(!windows_runtime::zero_resident_receipt_allowed(
             false,

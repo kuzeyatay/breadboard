@@ -397,11 +397,7 @@ impl RuntimeReadyMessage {
         }
         validate_loopback_http_url("controlBaseUrl", control_base_url)?;
         validate_loopback_http_url("dashboardUrl", dashboard_url)?;
-        validate_bounded_text(
-            "controlToken",
-            control_token,
-            MAX_CONTROL_TOKEN_BYTES,
-        )?;
+        validate_bounded_text("controlToken", control_token, MAX_CONTROL_TOKEN_BYTES)?;
         if control_token.len() < MIN_CONTROL_TOKEN_BYTES
             || !control_token.bytes().all(|byte| byte.is_ascii_graphic())
         {
@@ -616,21 +612,17 @@ impl RuntimeJobStatus {
             || self.started_at.is_some_and(|value| value <= 0)
             || self.finished_at.is_some_and(|value| value <= 0)
             || self.last_heartbeat_at.is_some_and(|value| value <= 0)
-            || self
-                .started_at
-                .is_some_and(|value| {
-                    value < self.created_at
-                        || value > self.updated_at
-                        || value > MAX_JSON_SAFE_INTEGER as i64
-                })
+            || self.started_at.is_some_and(|value| {
+                value < self.created_at
+                    || value > self.updated_at
+                    || value > MAX_JSON_SAFE_INTEGER as i64
+            })
             || self.updated_at > MAX_JSON_SAFE_INTEGER as i64
-            || self
-                .finished_at
-                .is_some_and(|value| {
-                    value < self.created_at
-                        || value > self.updated_at
-                        || value > MAX_JSON_SAFE_INTEGER as i64
-                })
+            || self.finished_at.is_some_and(|value| {
+                value < self.created_at
+                    || value > self.updated_at
+                    || value > MAX_JSON_SAFE_INTEGER as i64
+            })
             || self.last_heartbeat_at.is_some_and(|value| {
                 value < self.created_at
                     || value > self.updated_at
@@ -703,9 +695,7 @@ impl RuntimeJobEventPayload {
         let valid = match event_type {
             Event::Queued => self.is_exact_state(JobState::Queued),
             Event::Admitted => self.is_exact_state(JobState::Admitted),
-            Event::WorkerAssigned | Event::JobStarting => {
-                self.is_exact_state(JobState::Starting)
-            }
+            Event::WorkerAssigned | Event::JobStarting => self.is_exact_state(JobState::Starting),
             Event::CancellationRequested
             | Event::WorkerCancellationAcknowledged
             | Event::JobCancelling => self.is_exact_state(JobState::Cancelling),
@@ -929,9 +919,7 @@ impl RuntimeJobEventsResponse {
             previous = event.sequence;
         }
         if previous != *next_after {
-            return Err(ValidationError::InvalidRange {
-                field: "nextAfter",
-            });
+            return Err(ValidationError::InvalidRange { field: "nextAfter" });
         }
         Ok(())
     }
@@ -989,16 +977,13 @@ impl RuntimeControlErrorResponse {
         }
         validate_bounded_text("error message", message, MAX_FAILURE_MESSAGE_BYTES)?;
         if *retryable {
-            return Err(ValidationError::InvalidRange {
-                field: "retryable",
-            });
+            return Err(ValidationError::InvalidRange { field: "retryable" });
         }
         if code == "BREADBOARD_RESOURCE_EXHAUSTED" {
             if resource.as_deref() != Some("windows_commit")
                 || !required_headroom_mb
                     .is_some_and(|value| value > 0 && value <= MAX_COMMIT_LIMIT_MB)
-                || !available_headroom_mb
-                    .is_some_and(|value| value <= MAX_COMMIT_LIMIT_MB)
+                || !available_headroom_mb.is_some_and(|value| value <= MAX_COMMIT_LIMIT_MB)
             {
                 return Err(ValidationError::InvalidRange {
                     field: "resource exhaustion evidence",
@@ -1174,9 +1159,7 @@ impl WorkerDefinition {
             return Err(ValidationError::EmptyField { field: "jobTypes" });
         }
         if self.job_types.len() > MAX_JOB_TYPES_PER_WORKER {
-            return Err(ValidationError::InvalidRange {
-                field: "jobTypes",
-            });
+            return Err(ValidationError::InvalidRange { field: "jobTypes" });
         }
         validate_unique_identifiers("jobType", &self.job_types)?;
         if self.capability_ids.is_empty() {
@@ -1219,9 +1202,7 @@ impl WorkerDefinition {
                 field: "worker limits",
             });
         }
-        if self.hard_commit_limit_mb > 0
-            && self.soft_commit_limit_mb >= self.hard_commit_limit_mb
-        {
+        if self.hard_commit_limit_mb > 0 && self.soft_commit_limit_mb >= self.hard_commit_limit_mb {
             return Err(ValidationError::InvalidRange {
                 field: "worker commit limits",
             });
@@ -1352,9 +1333,7 @@ impl ServiceDefinition {
                 field: "service limits",
             });
         }
-        if self.hard_commit_limit_mb > 0
-            && self.soft_commit_limit_mb >= self.hard_commit_limit_mb
-        {
+        if self.hard_commit_limit_mb > 0 && self.soft_commit_limit_mb >= self.hard_commit_limit_mb {
             return Err(ValidationError::InvalidRange {
                 field: "service commit limits",
             });
@@ -1372,11 +1351,7 @@ impl ServiceDefinition {
         ) {
             match self.idle_ttl_ms {
                 Some(value) if value > 0 && value <= MAX_TIMEOUT_MS => {}
-                Some(_) => {
-                    return Err(ValidationError::InvalidRange {
-                        field: "idleTtlMs",
-                    })
-                }
+                Some(_) => return Err(ValidationError::InvalidRange { field: "idleTtlMs" }),
                 None => return Err(ValidationError::EmptyField { field: "idleTtlMs" }),
             }
         }
@@ -1573,17 +1548,13 @@ pub fn parse_worker_event(line: &[u8]) -> Result<WorkerEvent, ProtocolError> {
     Ok(event)
 }
 
-pub fn parse_worker_start_manifest(
-    bytes: &[u8],
-) -> Result<WorkerStartManifest, ProtocolError> {
+pub fn parse_worker_start_manifest(bytes: &[u8]) -> Result<WorkerStartManifest, ProtocolError> {
     if bytes.len() > MAX_WORKER_START_MANIFEST_BYTES {
         return Err(ProtocolError::OversizedBody(bytes.len()));
     }
     let manifest: WorkerStartManifest =
         serde_json::from_slice(bytes).map_err(ProtocolError::MalformedJson)?;
-    manifest
-        .validate()
-        .map_err(ProtocolError::InvalidPayload)?;
+    manifest.validate().map_err(ProtocolError::InvalidPayload)?;
     Ok(manifest)
 }
 
@@ -1632,9 +1603,7 @@ pub fn parse_runtime_control_error_response(
 /// Rejects an oversized HTTP/IPC body before serde can allocate its object
 /// graph. The returned value contains request data only and cannot assert a
 /// user or internal principal.
-pub fn parse_job_submission_payload(
-    bytes: &[u8],
-) -> Result<JobSubmissionPayload, ProtocolError> {
+pub fn parse_job_submission_payload(bytes: &[u8]) -> Result<JobSubmissionPayload, ProtocolError> {
     parse_bounded_json(bytes, JobSubmissionPayload::validate)
 }
 
@@ -1731,10 +1700,7 @@ fn validate_unique_capability_ids(
 /// Capability IDs are stable, namespaced product identifiers rather than
 /// executable names. Preserve the inventory's `family:slug[:slug]` form while
 /// rejecting whitespace, paths, empty namespace segments, and control bytes.
-pub fn validate_capability_id(
-    field: &'static str,
-    value: &str,
-) -> Result<(), ValidationError> {
+pub fn validate_capability_id(field: &'static str, value: &str) -> Result<(), ValidationError> {
     let valid_segment = |segment: &str| {
         segment
             .as_bytes()
@@ -1744,9 +1710,9 @@ pub fn validate_capability_id(
                 .as_bytes()
                 .last()
                 .is_some_and(u8::is_ascii_alphanumeric)
-            && segment.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-            })
+            && segment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     };
     if value.is_empty()
         || value.len() > MAX_IDENTIFIER_BYTES
@@ -1759,9 +1725,8 @@ pub fn validate_capability_id(
 
 pub fn validate_relative_path(field: &'static str, value: &str) -> Result<(), ValidationError> {
     let bytes = value.as_bytes();
-    let has_windows_drive_prefix = bytes.len() >= 2
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':';
+    let has_windows_drive_prefix =
+        bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
     let has_root_prefix = matches!(bytes.first().copied(), Some(b'/') | Some(b'\\'));
     let invalid_component = value.split(['/', '\\']).any(|component| {
         component.is_empty()
@@ -1789,15 +1754,15 @@ fn is_windows_device_component(component: &str) -> bool {
     let stem = component
         .split_once('.')
         .map_or(component, |(value, _)| value)
-        .trim_end_matches(|character: char| character == '.' || character == ' ')
+        .trim_end_matches(['.', ' '])
         .to_ascii_uppercase();
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || stem
-            .strip_prefix("COM")
-            .is_some_and(|suffix| matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
-        || stem
-            .strip_prefix("LPT")
-            .is_some_and(|suffix| matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
+        || stem.strip_prefix("COM").is_some_and(|suffix| {
+            matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        })
+        || stem.strip_prefix("LPT").is_some_and(|suffix| {
+            matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        })
 }
 
 pub fn validate_bounded_text(
@@ -1849,10 +1814,7 @@ fn validate_root_text(field: &'static str, value: &str) -> Result<(), Validation
     Ok(())
 }
 
-fn validate_loopback_http_url(
-    field: &'static str,
-    value: &str,
-) -> Result<(), ValidationError> {
+fn validate_loopback_http_url(field: &'static str, value: &str) -> Result<(), ValidationError> {
     validate_bounded_text(field, value, MAX_LOOPBACK_URL_BYTES)?;
     let port_and_suffix = value
         .strip_prefix("http://127.0.0.1:")
@@ -1863,19 +1825,14 @@ fn validate_loopback_http_url(
     let (port, suffix) = port_and_suffix
         .split_once('/')
         .unwrap_or((port_and_suffix, ""));
-    let valid_port = port
-        .parse::<u16>()
-        .ok()
-        .is_some_and(|port| port > 0);
+    let valid_port = port.parse::<u16>().ok().is_some_and(|port| port > 0);
     if !valid_port || !suffix.is_empty() || value.chars().any(char::is_control) {
         return Err(ValidationError::InvalidIdentifier { field });
     }
     Ok(())
 }
 
-fn validate_runtime_services(
-    services: &[RuntimeServiceStatus],
-) -> Result<(), ValidationError> {
+fn validate_runtime_services(services: &[RuntimeServiceStatus]) -> Result<(), ValidationError> {
     if services.len() > MAX_MANIFEST_ENTRIES {
         return Err(ValidationError::InvalidRange {
             field: "runtime service count",
@@ -1973,7 +1930,6 @@ mod tests {
             parse_job_submission_payload(empty_key),
             Err(ProtocolError::InvalidPayload(_))
         ));
-
     }
 
     #[test]
@@ -2030,8 +1986,7 @@ mod tests {
         ));
 
         let mut wrong_attempt = manifest.clone();
-        wrong_attempt.workspace_path =
-            "runtime/jobs/job_1/attempts/2/worker_1/workspace".into();
+        wrong_attempt.workspace_path = "runtime/jobs/job_1/attempts/2/worker_1/workspace".into();
         assert!(matches!(
             wrong_attempt.validate(),
             Err(ValidationError::InvalidRelativePath {
@@ -2053,10 +2008,7 @@ mod tests {
             ("environment", serde_json::json!({"SECRET": "private"})),
         ] {
             let mut encoded = serde_json::to_value(&manifest).unwrap();
-            encoded
-                .as_object_mut()
-                .unwrap()
-                .insert(field.into(), value);
+            encoded.as_object_mut().unwrap().insert(field.into(), value);
             let encoded = serde_json::to_vec(&encoded).unwrap();
             assert!(matches!(
                 parse_worker_start_manifest(&encoded),
@@ -2272,12 +2224,10 @@ mod tests {
         }"#;
         assert!(parse_runtime_job_response(valid).is_ok());
 
-        let leaked_path = String::from_utf8(valid.to_vec())
-            .unwrap()
-            .replace(
-                "\"cancellationRequested\":false",
-                "\"cancellationRequested\":false,\"workspacePath\":\"runtime/jobs/job_1\"",
-            );
+        let leaked_path = String::from_utf8(valid.to_vec()).unwrap().replace(
+            "\"cancellationRequested\":false",
+            "\"cancellationRequested\":false,\"workspacePath\":\"runtime/jobs/job_1\"",
+        );
         assert!(matches!(
             parse_runtime_job_response(leaked_path.as_bytes()),
             Err(ProtocolError::MalformedJson(_))
@@ -2317,9 +2267,11 @@ mod tests {
             .replace("\"terminal\":false", "\"terminal\":true");
         assert!(parse_runtime_job_events_response(sealed.as_bytes()).is_ok());
 
-        let wrong_job = String::from_utf8(valid.to_vec())
-            .unwrap()
-            .replacen("\"jobId\":\"job_1\"", "\"jobId\":\"job_2\"", 1);
+        let wrong_job = String::from_utf8(valid.to_vec()).unwrap().replacen(
+            "\"jobId\":\"job_1\"",
+            "\"jobId\":\"job_2\"",
+            1,
+        );
         assert!(matches!(
             parse_runtime_job_events_response(wrong_job.as_bytes()),
             Err(ProtocolError::InvalidPayload(_))
@@ -2333,13 +2285,11 @@ mod tests {
             Err(ProtocolError::InvalidPayload(_))
         ));
 
-        let leaked_path = String::from_utf8(valid.to_vec())
-            .unwrap()
-            .replacen(
-                "\"payload\":{\"state\":\"running\"}",
-                "\"payload\":{\"state\":\"running\",\"path\":\"runtime/jobs/job_1/result.json\"}",
-                1,
-            );
+        let leaked_path = String::from_utf8(valid.to_vec()).unwrap().replacen(
+            "\"payload\":{\"state\":\"running\"}",
+            "\"payload\":{\"state\":\"running\",\"path\":\"runtime/jobs/job_1/result.json\"}",
+            1,
+        );
         assert!(matches!(
             parse_runtime_job_events_response(leaked_path.as_bytes()),
             Err(ProtocolError::MalformedJson(_))
@@ -2430,9 +2380,9 @@ mod tests {
                     state: Some(JobState::Uncertain),
                     ..RuntimeJobEventPayload::default()
                 },
-                Event::ReservationSettled
-                | Event::ReservationReleased
-                | Event::WorkerComplete => RuntimeJobEventPayload::default(),
+                Event::ReservationSettled | Event::ReservationReleased | Event::WorkerComplete => {
+                    RuntimeJobEventPayload::default()
+                }
                 Event::WorkerHeartbeat => RuntimeJobEventPayload {
                     stage: Some(RuntimePublicStage::Working),
                     ..RuntimeJobEventPayload::default()
@@ -2461,12 +2411,8 @@ mod tests {
             let (attempt, worker_instance_id, worker_sequence) = match event_type.fence_kind() {
                 RuntimeJobEventFenceKind::RuntimeZero => (0, None, None),
                 RuntimeJobEventFenceKind::RuntimeAttempt
-                | RuntimeJobEventFenceKind::RuntimeCurrent => {
-                    (1, Some("worker_1".into()), None)
-                }
-                RuntimeJobEventFenceKind::Worker => {
-                    (1, Some("worker_1".into()), Some(1))
-                }
+                | RuntimeJobEventFenceKind::RuntimeCurrent => (1, Some("worker_1".into()), None),
+                RuntimeJobEventFenceKind::Worker => (1, Some("worker_1".into()), Some(1)),
             };
             let record = RuntimeJobEventRecord {
                 sequence: u64::try_from(index + 1).unwrap(),
@@ -2536,7 +2482,11 @@ mod tests {
                 "failureMessage":"Runtime job execution failed."},"createdAt":100
         }"#;
 
-        for encoded in [private_stage.as_slice(), private_artifact.as_slice(), private_failure.as_slice()] {
+        for encoded in [
+            private_stage.as_slice(),
+            private_artifact.as_slice(),
+            private_failure.as_slice(),
+        ] {
             assert!(serde_json::from_slice::<RuntimeJobEventRecord>(encoded).is_err());
         }
 
@@ -2667,10 +2617,7 @@ mod tests {
     #[test]
     fn resource_class_names_are_stable_for_persistence() {
         assert_eq!(ResourceClass::Core.as_str(), "core");
-        assert_eq!(
-            ResourceClass::LargeGeneration.as_str(),
-            "large-generation"
-        );
+        assert_eq!(ResourceClass::LargeGeneration.as_str(), "large-generation");
         assert_eq!(ResourceClass::DockerStack.as_str(), "docker-stack");
     }
 
@@ -2762,6 +2709,9 @@ mod tests {
         // Runtime V2 protocol adapters. An empty manifest is safer than a
         // launch definition that would hang waiting for the wrong transport.
         assert!(workers.workers.is_empty());
-        assert!(services.services.iter().any(|service| service.id == "dashboard"));
+        assert!(services
+            .services
+            .iter()
+            .any(|service| service.id == "dashboard"));
     }
 }

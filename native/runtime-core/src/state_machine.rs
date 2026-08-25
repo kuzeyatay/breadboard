@@ -15,8 +15,14 @@ pub fn can_transition(from: JobState, to: JobState) -> bool {
         // A queued job may become resource-exhausted only when serialized
         // admission records a permanent denial before creating a reservation.
         (Queued, Admitted | Cancelling | ResourceExhausted)
-            | (Admitted, Starting | Cancelling | ResourceExhausted | Interrupted)
-            | (Starting, Running | Cancelling | Failed | ResourceExhausted | Interrupted | Uncertain)
+            | (
+                Admitted,
+                Starting | Cancelling | ResourceExhausted | Interrupted
+            )
+            | (
+                Starting,
+                Running | Cancelling | Failed | ResourceExhausted | Interrupted | Uncertain
+            )
             | (
                 Running,
                 Checkpointing | Cancelling | Failed | ResourceExhausted | Interrupted | Uncertain
@@ -25,7 +31,10 @@ pub fn can_transition(from: JobState, to: JobState) -> bool {
                 Checkpointing,
                 Running | Cancelling | Failed | ResourceExhausted | Interrupted | Uncertain
             )
-            | (Cancelling, Cancelled | Failed | ResourceExhausted | Interrupted | Uncertain)
+            | (
+                Cancelling,
+                Cancelled | Failed | ResourceExhausted | Interrupted | Uncertain
+            )
     )
 }
 
@@ -33,9 +42,7 @@ pub fn can_transition(from: JobState, to: JobState) -> bool {
 /// worker's `complete` line is only an intent; only the process owner may use
 /// this transition after it has validated the durable result and observed the
 /// complete owned process tree exit.
-pub(crate) fn validate_completion_confirmation(
-    from: JobState,
-) -> Result<(), StateTransitionError> {
+pub(crate) fn validate_completion_confirmation(from: JobState) -> Result<(), StateTransitionError> {
     if matches!(from, JobState::Running | JobState::Checkpointing) {
         Ok(())
     } else {

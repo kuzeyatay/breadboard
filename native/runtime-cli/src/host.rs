@@ -8,8 +8,8 @@ use breadboard_runtime_core::{
 };
 use breadboard_runtime_protocol::{
     parse_service_manifest, parse_worker_manifest, RuntimeBootstrapMessage, RuntimeMode,
-    RuntimeReadyMessage, RuntimeServiceStatus, RUNTIME_CONTROL_PROTOCOL_VERSION,
-    MAX_PROTOCOL_LINE_BYTES, MAX_REQUEST_BODY_BYTES,
+    RuntimeReadyMessage, RuntimeServiceStatus, MAX_PROTOCOL_LINE_BYTES, MAX_REQUEST_BODY_BYTES,
+    RUNTIME_CONTROL_PROTOCOL_VERSION,
 };
 use serde::Serialize;
 use std::io::{self, Write};
@@ -153,8 +153,7 @@ impl RuntimeEngine for UnavailableRuntimeEngine {
 
 pub(crate) fn run_authoritative_host() -> Result<(), HostError> {
     let shutdown = Arc::new(ShutdownCoordinator::default());
-    let (bootstrap_receiver, _parent_watch) =
-        start_parent_stdin_reader(Arc::clone(&shutdown))?;
+    let (bootstrap_receiver, _parent_watch) = start_parent_stdin_reader(Arc::clone(&shutdown))?;
     let bootstrap = receive_bootstrap(bootstrap_receiver)?;
     run_after_bootstrap(bootstrap, shutdown, &UnavailableRuntimeEngine)
 }
@@ -193,14 +192,10 @@ fn run_after_bootstrap(
     let config_root =
         TrustedDirectoryPin::pin_existing("configuration", PathBuf::from(config_root))?;
 
-    let workers_path = paths
-        .resolve_runtime(WORKER_MANIFEST_PATH)?;
-    let services_path = paths
-        .resolve_runtime(SERVICE_MANIFEST_PATH)?;
-    let workers_bytes =
-        paths.read_bounded_runtime_file(&workers_path, MAX_REQUEST_BODY_BYTES)?;
-    let services_bytes =
-        paths.read_bounded_runtime_file(&services_path, MAX_REQUEST_BODY_BYTES)?;
+    let workers_path = paths.resolve_runtime(WORKER_MANIFEST_PATH)?;
+    let services_path = paths.resolve_runtime(SERVICE_MANIFEST_PATH)?;
+    let workers_bytes = paths.read_bounded_runtime_file(&workers_path, MAX_REQUEST_BODY_BYTES)?;
+    let services_bytes = paths.read_bounded_runtime_file(&services_path, MAX_REQUEST_BODY_BYTES)?;
     let workers = parse_worker_manifest(&workers_bytes)
         .map_err(|error| HostError::WorkerManifest(error.to_string()))?;
     let services = parse_service_manifest(&services_bytes)
@@ -211,9 +206,8 @@ fn run_after_bootstrap(
         return Err(HostError::ParentDisconnected);
     }
     let runtime_data = paths.prepare_data_directory(RUNTIME_DATA_DIRECTORY)?;
-    let database_path = paths.resolve_data(&format!(
-        "{RUNTIME_DATA_DIRECTORY}/{RUNTIME_DATABASE_NAME}"
-    ))?;
+    let database_path =
+        paths.resolve_data(&format!("{RUNTIME_DATA_DIRECTORY}/{RUNTIME_DATABASE_NAME}"))?;
     let database_pin = paths.pin_data_file_for_update(&database_path)?;
     let context = TrustedRuntimeContext {
         mode,
@@ -367,8 +361,8 @@ fn emit_private_ready(value: RuntimeReadyMessage) -> Result<(), HostError> {
 }
 
 fn write_private_ready(value: &impl Serialize) -> Result<(), HostError> {
-    let mut line = serde_json::to_vec(value)
-        .map_err(|error| HostError::InvalidReady(error.to_string()))?;
+    let mut line =
+        serde_json::to_vec(value).map_err(|error| HostError::InvalidReady(error.to_string()))?;
     line.push(b'\n');
     let result = if line.len() > MAX_PROTOCOL_LINE_BYTES {
         Err(HostError::OversizedReady)

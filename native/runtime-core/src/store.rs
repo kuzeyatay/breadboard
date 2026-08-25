@@ -1,18 +1,18 @@
 use crate::admission::RegisteredJobAdmission;
 use crate::state_machine::validate_completion_confirmation;
 use crate::system_commit::SystemCommitReadError;
+#[cfg(test)]
+use crate::RuntimePaths;
 use crate::{
     validate_transition, AdmissionDecision, AdmissionDenial, AdmissionPolicy, AdmissionRequest,
     PriorGenerationDrained, ProcessExitClassification, ProcessTreeAccounting, ProcessTreeExit,
-    RuntimeGenerationScope, RuntimeLoad, SystemCommit, WorkerCompletionProof,
+    ProcessTreeResidency, RuntimeGenerationScope, RuntimeLoad, SystemCommit, WorkerCompletionProof,
 };
-#[cfg(test)]
-use crate::RuntimePaths;
 use breadboard_runtime_protocol::{
     validate_bounded_text, validate_identifier, validate_relative_path, validate_scope_id,
     JobState, ResourceClass, WorkerEvent, WorkerIdentity, MAX_COMMIT_LIMIT_MB, MAX_CONCURRENCY,
-    MAX_FAILURE_MESSAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES, MAX_PROTOCOL_LINE_BYTES,
-    MAX_JOB_EVENT_REPLAY_RECORDS, MAX_REQUEST_BODY_BYTES,
+    MAX_FAILURE_MESSAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES, MAX_JOB_EVENT_REPLAY_RECORDS,
+    MAX_PROTOCOL_LINE_BYTES, MAX_REQUEST_BODY_BYTES,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -24,12 +24,12 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const JOB_COLUMNS: &str = "job_id, job_type, worker_kind, resource_class, owner_principal, user_id, garden_id, conversation_id, state, stage, attempt, worker_instance_id, input_manifest_path, workspace_path, checkpoint_path, result_path, created_at, started_at, updated_at, finished_at, last_heartbeat_at, last_worker_sequence, progress_current, progress_total, failure_code, failure_message, cancellation_requested, idempotency_key, request_digest";
 const ADMISSION_RESOURCE_EXHAUSTED_FAILURE_CODE: &str = "BREADBOARD_RESOURCE_EXHAUSTED";
 const ADMISSION_RESOURCE_EXHAUSTED_FAILURE_MESSAGE: &str =
     "Runtime resource admission was permanently denied";
-pub(crate) const MAX_DISPATCH_CANDIDATES: usize = 32;
+pub const MAX_DISPATCH_CANDIDATES: usize = 32;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -71,7 +71,9 @@ pub enum StoreError {
     InvalidInput(String),
     #[error(transparent)]
     SystemCommitRead(#[from] SystemCommitReadError),
-    #[error("runtime database has unsupported schema version {found}; this binary supports {supported}")]
+    #[error(
+        "runtime database has unsupported schema version {found}; this binary supports {supported}"
+    )]
     UnsupportedSchemaVersion { found: i64, supported: i64 },
     #[error("runtime database has schema objects but no schema version; refusing an unsafe implicit migration")]
     UnversionedSchema,
@@ -155,11 +157,7 @@ impl AuthenticatedJobContext {
         garden_id: Option<&str>,
         conversation_id: Option<&str>,
     ) -> Result<Self, StoreError> {
-        Self::new(
-            JobOwner::user(user_id)?,
-            garden_id,
-            conversation_id,
-        )
+        Self::new(JobOwner::user(user_id)?, garden_id, conversation_id)
     }
 
     /// Creates an authority for a trusted runtime-owned scheduler or adapter,
@@ -169,11 +167,7 @@ impl AuthenticatedJobContext {
         garden_id: Option<&str>,
         conversation_id: Option<&str>,
     ) -> Result<Self, StoreError> {
-        Self::new(
-            JobOwner::internal(id)?,
-            garden_id,
-            conversation_id,
-        )
+        Self::new(JobOwner::internal(id)?, garden_id, conversation_id)
     }
 
     fn new(
@@ -293,8 +287,7 @@ impl NewJob {
         )?;
         if !is_valid_request_digest(&self.request_digest) {
             return Err(StoreError::InvalidInput(
-                "request digest must be a 64-character lowercase hexadecimal SHA-256 digest"
-                    .into(),
+                "request digest must be a 64-character lowercase hexadecimal SHA-256 digest".into(),
             ));
         }
         validate_canonical_request_payload(&self.canonical_request_payload)?;
@@ -499,27 +492,60 @@ pub enum JobAdmissionResult {
 /// carries no launch authority: only `try_claim_admitted_worker` can mint the
 /// non-cloneable claim required to continue a launch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WorkerDispatchCandidate {
+pub struct WorkerDispatchCandidate {
     job_id: String,
     worker_kind: String,
     resource_class: String,
     created_at: i64,
 }
 
-impl WorkerDispatchCandidate {
-    pub(crate) fn job_id(&self) -> &str {
+/// Advisory queued work for the admission scheduler. This record carries no
+/// admission reservation and no dispatch authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedAdmissionCandidate {
+    job_id: String,
+    job_type: String,
+    worker_kind: String,
+    resource_class: String,
+    created_at: i64,
+}
+
+impl QueuedAdmissionCandidate {
+    pub fn job_id(&self) -> &str {
         &self.job_id
     }
 
-    pub(crate) fn worker_kind(&self) -> &str {
+    pub fn job_type(&self) -> &str {
+        &self.job_type
+    }
+
+    pub fn worker_kind(&self) -> &str {
         &self.worker_kind
     }
 
-    pub(crate) fn resource_class(&self) -> &str {
+    pub fn resource_class(&self) -> &str {
         &self.resource_class
     }
 
-    pub(crate) fn created_at(&self) -> i64 {
+    pub fn created_at(&self) -> i64 {
+        self.created_at
+    }
+}
+
+impl WorkerDispatchCandidate {
+    pub fn job_id(&self) -> &str {
+        &self.job_id
+    }
+
+    pub fn worker_kind(&self) -> &str {
+        &self.worker_kind
+    }
+
+    pub fn resource_class(&self) -> &str {
+        &self.resource_class
+    }
+
+    pub fn created_at(&self) -> i64 {
         self.created_at
     }
 }
@@ -528,34 +554,45 @@ impl WorkerDispatchCandidate {
 /// atomically bound to one exact worker attempt. It is intentionally neither
 /// cloneable nor serializable; a candidate, job replay, or admission result is
 /// never equivalent to this value.
-#[derive(Debug)]
-pub(crate) struct WorkerDispatchClaim {
+#[must_use = "a dispatch claim must reach authoritative residency or be terminalized before residency"]
+pub struct WorkerDispatchClaim {
     generation_scope: RuntimeGenerationScope,
     identity: WorkerIdentity,
     job: JobRecord,
 }
 
+impl std::fmt::Debug for WorkerDispatchClaim {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("WorkerDispatchClaim")
+            .field(&"<opaque durable dispatch authority>")
+            .finish()
+    }
+}
+
 impl WorkerDispatchClaim {
-    pub(crate) fn identity(&self) -> &WorkerIdentity {
+    pub fn identity(&self) -> &WorkerIdentity {
         &self.identity
     }
 
-    pub(crate) fn job(&self) -> &JobRecord {
+    pub fn job(&self) -> &JobRecord {
         &self.job
     }
 }
 
 #[derive(Debug)]
-pub(crate) enum WorkerClaimOutcome {
+#[must_use = "a claim outcome must be handled; dropping Claimed can strand a pending attempt"]
+pub enum WorkerClaimOutcome {
     Claimed(WorkerDispatchClaim),
     NotClaimable,
 }
 
-/// Closed reasons for ending a claimed attempt before any authoritative
-/// process-tree residency. Free-form caller failure text is intentionally not
-/// accepted, keeping durable terminal evidence deterministic.
+/// Test-only model for the future launch-bound no-process-created authority.
+/// Production must not expose a caller-selected pre-residency finalizer: a
+/// dispatch claim alone cannot prove that no helper or target exists.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PreResidencyClaimDisposition {
+enum PreResidencyClaimDisposition {
     Cancellation,
     SpawnFailed,
     SpawnResourceExhausted,
@@ -891,11 +928,44 @@ impl JobStore {
         Ok(JobAdmissionResult::Admitted(admitted))
     }
 
+    /// Returns bounded FIFO queued work for the admission scheduler. This is a
+    /// read-only snapshot and cannot create a reservation or claim authority.
+    pub fn queued_admission_candidates(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<QueuedAdmissionCandidate>, StoreError> {
+        if !(1..=MAX_DISPATCH_CANDIDATES).contains(&limit) {
+            return Err(StoreError::InvalidInput(format!(
+                "queued admission candidate limit must be between 1 and {MAX_DISPATCH_CANDIDATES}"
+            )));
+        }
+        let connection = self.connection.lock().expect("job store mutex poisoned");
+        let mut statement = connection.prepare(
+            "SELECT jobs.job_id, jobs.job_type, jobs.worker_kind, jobs.resource_class,
+                    jobs.created_at
+             FROM runtime_jobs AS jobs INDEXED BY runtime_jobs_queued_fifo_idx
+             WHERE jobs.state='queued'
+             ORDER BY jobs.created_at ASC, jobs.job_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map(params![limit as i64], |row| {
+            Ok(QueuedAdmissionCandidate {
+                job_id: row.get(0)?,
+                job_type: row.get(1)?,
+                worker_kind: row.get(2)?,
+                resource_class: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
     /// Returns a bounded FIFO snapshot of admitted jobs. Enumeration is
     /// advisory only and never changes durable state or creates launch
     /// authority. Queued jobs are intentionally excluded: the admission
     /// governor must first create their matching durable pending reservation.
-    pub(crate) fn dispatch_candidates(
+    pub fn dispatch_candidates(
         &self,
         limit: usize,
     ) -> Result<Vec<WorkerDispatchCandidate>, StoreError> {
@@ -907,7 +977,7 @@ impl JobStore {
         let connection = self.connection.lock().expect("job store mutex poisoned");
         let mut statement = connection.prepare(
             "SELECT jobs.job_id, jobs.worker_kind, jobs.resource_class, jobs.created_at
-             FROM runtime_jobs AS jobs
+             FROM runtime_jobs AS jobs INDEXED BY runtime_jobs_admitted_fifo_idx
              WHERE jobs.state='admitted'
              ORDER BY jobs.created_at ASC, jobs.job_id ASC
              LIMIT ?1",
@@ -920,7 +990,8 @@ impl JobStore {
                 created_at: row.get(3)?,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(StoreError::from)
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
     }
 
     /// Atomically claims an admitted job for one fresh worker identity. The
@@ -928,7 +999,7 @@ impl JobStore {
     /// giving shutdown and launch a deterministic order. Exactly one caller can
     /// change `admitted -> starting`; every later or stale caller receives no
     /// authority. The matching admission hold must still be pending.
-    pub(crate) fn try_claim_admitted_worker(
+    pub fn try_claim_admitted_worker(
         &self,
         job_id: &str,
         worker_instance_id: &str,
@@ -1008,35 +1079,38 @@ impl JobStore {
         }))
     }
 
-    /// Marks the owned process tree resident. The reservation remains active
-    /// for concurrency, but its estimate is no longer added to sampled system
-    /// commit because the resident tree is now present in that measurement.
+    /// Consumes both the durable dispatch claim and the exact live-owner
+    /// `started` authority before marking its process tree resident. Neither a
+    /// replayed job identity nor a caller-supplied PID can settle a reservation.
     pub fn settle_job_reservation(
         &self,
-        identity: &WorkerIdentity,
-    ) -> Result<(), StoreError> {
-        identity.validate()?;
+        claim: WorkerDispatchClaim,
+        residency: ProcessTreeResidency,
+    ) -> Result<WorkerIdentity, StoreError> {
+        if claim.generation_scope != self.generation_scope
+            || !residency.matches_generation_scope(&self.generation_scope)
+        {
+            return Err(StoreError::GenerationAuthorityMismatch);
+        }
+        claim.identity.validate()?;
+        let resident_identity = residency.worker_identity().ok_or_else(|| {
+            StoreError::InvalidInput(
+                "service process-tree residency cannot settle a worker reservation".into(),
+            )
+        })?;
+        if resident_identity != &claim.identity {
+            return Err(StoreError::StaleWorker(claim.identity.job_id.clone()));
+        }
         let mut connection = self.connection.lock().expect("job store mutex poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current = query_job(&transaction, &identity.job_id)?;
-        require_identity(&current, identity)?;
-        require_worker_event_state(
-            &current,
-            &[
-                JobState::Starting,
-                JobState::Running,
-                JobState::Checkpointing,
-                JobState::Cancelling,
-            ],
-        )?;
+        let current = query_job(&transaction, &claim.identity.job_id)?;
+        require_identity(&current, &claim.identity)?;
+        require_dispatch_claim_matches_job(&claim, &current)?;
+        require_worker_event_state(&current, &[JobState::Starting, JobState::Cancelling])?;
         let reservation = require_active_job_reservation_matches_job_tx(&transaction, &current)?;
-        if reservation.lifecycle_state == "resident" {
-            transaction.commit()?;
-            return Ok(());
-        }
         if reservation.lifecycle_state != "pending" {
             return Err(StoreError::InvalidAdmissionReservationState {
-                job_id: identity.job_id.clone(),
+                job_id: claim.identity.job_id.clone(),
                 state: reservation.lifecycle_state,
             });
         }
@@ -1045,25 +1119,25 @@ impl JobStore {
             "UPDATE runtime_admission_reservations
              SET lifecycle_state='resident', settled_at=?2, updated_at=?2
              WHERE subject_kind='job' AND subject_id=?1 AND lifecycle_state='pending'",
-            params![identity.job_id, now],
+            params![claim.identity.job_id, now],
         )?;
         if changed != 1 {
             return Err(StoreError::CorruptState(format!(
                 "pending admission reservation for job {} changed while being settled",
-                identity.job_id
+                claim.identity.job_id
             )));
         }
         append_event_tx(
             &transaction,
-            &identity.job_id,
-            identity.attempt,
-            Some(&identity.worker_instance_id),
+            &claim.identity.job_id,
+            claim.identity.attempt,
+            Some(&claim.identity.worker_instance_id),
             "reservation-settled",
             &serde_json::json!({ "reservationState": "resident" }),
             now,
         )?;
         transaction.commit()?;
-        Ok(())
+        Ok(claim.identity)
     }
 
     /// Borrows the opaque zero-resident process-tree receipt while releasing
@@ -1133,7 +1207,9 @@ impl JobStore {
             .map_err(|error| StoreError::InvalidInput(error.to_string()))?;
         let payload_json = canonical_json_string(&payload)?;
         if payload_json.len() > MAX_PROTOCOL_LINE_BYTES {
-            return Err(StoreError::InvalidInput("event payload is oversized".into()));
+            return Err(StoreError::InvalidInput(
+                "event payload is oversized".into(),
+            ));
         }
         let sequence = event.sequence();
         if sequence <= current.last_worker_sequence {
@@ -1164,7 +1240,9 @@ impl JobStore {
             if intent.sequence != current.last_worker_sequence {
                 return Err(StoreError::CorruptState(identity.job_id.clone()));
             }
-            return Err(StoreError::WorkerEventAfterCompletionIntent(identity.job_id.clone()));
+            return Err(StoreError::WorkerEventAfterCompletionIntent(
+                identity.job_id.clone(),
+            ));
         }
 
         match event {
@@ -1184,7 +1262,14 @@ impl JobStore {
                 )?;
             }
             WorkerEvent::Heartbeat { stage, .. } => {
-                require_worker_event_state(&current, &[JobState::Running, JobState::Checkpointing, JobState::Cancelling])?;
+                require_worker_event_state(
+                    &current,
+                    &[
+                        JobState::Running,
+                        JobState::Checkpointing,
+                        JobState::Cancelling,
+                    ],
+                )?;
                 let state = if current.state == JobState::Checkpointing {
                     "running"
                 } else {
@@ -1201,7 +1286,14 @@ impl JobStore {
                 total,
                 ..
             } => {
-                require_worker_event_state(&current, &[JobState::Running, JobState::Checkpointing, JobState::Cancelling])?;
+                require_worker_event_state(
+                    &current,
+                    &[
+                        JobState::Running,
+                        JobState::Checkpointing,
+                        JobState::Cancelling,
+                    ],
+                )?;
                 let progress_current = u64_to_i64(*progress_current, "progress current")?;
                 let total = u64_to_i64(*total, "progress total")?;
                 transaction.execute(
@@ -1211,7 +1303,14 @@ impl JobStore {
                 )?;
             }
             WorkerEvent::Checkpoint { kind, path, .. } => {
-                require_worker_event_state(&current, &[JobState::Running, JobState::Checkpointing, JobState::Cancelling])?;
+                require_worker_event_state(
+                    &current,
+                    &[
+                        JobState::Running,
+                        JobState::Checkpointing,
+                        JobState::Cancelling,
+                    ],
+                )?;
                 require_path_in_job_namespace(&current.job_id, path)?;
                 if current.state == JobState::Running {
                     validate_transition(current.state, JobState::Checkpointing)?;
@@ -1236,7 +1335,14 @@ impl JobStore {
                 )?;
             }
             WorkerEvent::Artifact { path, .. } => {
-                require_worker_event_state(&current, &[JobState::Running, JobState::Checkpointing, JobState::Cancelling])?;
+                require_worker_event_state(
+                    &current,
+                    &[
+                        JobState::Running,
+                        JobState::Checkpointing,
+                        JobState::Cancelling,
+                    ],
+                )?;
                 require_path_in_job_namespace(&current.job_id, path)?;
                 transaction.execute(
                     "UPDATE runtime_jobs SET last_heartbeat_at=?2, updated_at=?2 WHERE job_id=?1",
@@ -1318,8 +1424,7 @@ impl JobStore {
         tree_exit: &ProcessTreeExit,
     ) -> Result<JobRecord, StoreError> {
         let code = "WORKER_COMPLETION_VALIDATION_FAILED";
-        let message =
-            "Durable worker completion could not be validated after process-tree exit";
+        let message = "Durable worker completion could not be validated after process-tree exit";
         let identity = tree_exit.worker_identity().cloned().ok_or_else(|| {
             StoreError::InvalidInput(
                 "service process-tree exit cannot reject worker completion".into(),
@@ -1455,8 +1560,7 @@ impl JobStore {
         validate_completion_confirmation(current.state)?;
         let intent = completion_intent_tx(&transaction, identity)?
             .ok_or_else(|| StoreError::MissingCompletionIntent(identity.job_id.clone()))?;
-        if intent.sequence != current.last_worker_sequence
-            || intent.sequence != completion_sequence
+        if intent.sequence != current.last_worker_sequence || intent.sequence != completion_sequence
         {
             return Err(StoreError::CorruptState(identity.job_id.clone()));
         }
@@ -1657,10 +1761,7 @@ impl JobStore {
     /// Borrows the zero-resident receipt for the exact cancelling
     /// worker. Cancellation becomes terminal and its resident reservation is
     /// released in the same transaction.
-    pub fn confirm_cancelled(
-        &self,
-        tree_exit: &ProcessTreeExit,
-    ) -> Result<JobRecord, StoreError> {
+    pub fn confirm_cancelled(&self, tree_exit: &ProcessTreeExit) -> Result<JobRecord, StoreError> {
         let identity = tree_exit.worker_identity().cloned().ok_or_else(|| {
             StoreError::InvalidInput(
                 "service process-tree exit cannot confirm worker cancellation".into(),
@@ -1833,73 +1934,348 @@ impl JobStore {
         Ok(updated)
     }
 
-    /// Records a spawn failure after a fenced identity was assigned but before
-    /// the reservation was settled as a resident process tree. Requiring the
-    /// reservation to remain `pending` makes this fail closed if a process may
-    /// have become resident; that case must first use the process owner to kill
-    /// and confirm the complete tree, then pass its opaque receipt to
-    /// `worker_exited_without_terminal`.
-    pub fn worker_start_failed_after_assignment_before_tree_residency(
+    /// Exercises the future no-process-created transition in unit tests only.
+    /// The production API stays closed until the launch boundary can return a
+    /// one-shot authority that cannot be retained across a successful retry.
+    #[cfg(test)]
+    fn finish_worker_claim_before_residency(
         &self,
-        identity: &WorkerIdentity,
-        resource_exhausted: bool,
+        claim: WorkerDispatchClaim,
+        disposition: PreResidencyClaimDisposition,
     ) -> Result<JobRecord, StoreError> {
-        identity.validate()?;
-        let target = if resource_exhausted {
-            JobState::ResourceExhausted
-        } else {
-            JobState::Interrupted
-        };
-        let code = if resource_exhausted {
-            "WORKER_START_RESOURCE_EXHAUSTED_AFTER_ASSIGNMENT"
-        } else {
-            "WORKER_START_FAILED_AFTER_ASSIGNMENT"
-        };
-        let message = "Worker failed to start after identity assignment and before tree residency";
+        if claim.generation_scope != self.generation_scope {
+            return Err(StoreError::GenerationAuthorityMismatch);
+        }
+        claim.identity.validate()?;
         let mut connection = self.connection.lock().expect("job store mutex poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current = query_job(&transaction, &identity.job_id)?;
-        require_identity(&current, identity)?;
-        require_worker_event_state(&current, &[JobState::Starting])?;
+        let current = query_job(&transaction, &claim.identity.job_id)?;
+        require_identity(&current, &claim.identity)?;
+        if current.request_digest != claim.job.request_digest
+            || current.workspace_path != claim.job.workspace_path
+            || current.workspace_path != worker_attempt_workspace_path(&claim.identity)?
+        {
+            return Err(StoreError::StaleWorker(claim.identity.job_id.clone()));
+        }
+        require_worker_event_state(&current, &[JobState::Starting, JobState::Cancelling])?;
+        match current.state {
+            JobState::Starting if current.cancellation_requested => {
+                return Err(StoreError::CorruptState(current.job_id.clone()))
+            }
+            JobState::Cancelling if !current.cancellation_requested => {
+                return Err(StoreError::CorruptState(current.job_id.clone()))
+            }
+            _ => {}
+        }
         require_pending_job_reservation_tx(&transaction, &current)?;
-        validate_transition(current.state, target)?;
+
+        let cancellation_wins = current.state == JobState::Cancelling
+            || disposition == PreResidencyClaimDisposition::Cancellation;
         let now = now_ms();
-        transaction.execute(
-            "UPDATE runtime_jobs SET state=?2, failure_code=?3, failure_message=?4,
-             updated_at=?5, finished_at=?5 WHERE job_id=?1",
-            params![identity.job_id, state_name(target), code, message, now],
+        if cancellation_wins && current.state == JobState::Starting {
+            validate_transition(JobState::Starting, JobState::Cancelling)?;
+            let changed = transaction.execute(
+                "UPDATE runtime_jobs SET state='cancelling', cancellation_requested=1, updated_at=?5
+                 WHERE job_id=?1 AND state='starting' AND attempt=?2
+                   AND worker_instance_id=?3 AND workspace_path=?4
+                   AND cancellation_requested=0",
+                params![
+                    claim.identity.job_id,
+                    claim.identity.attempt,
+                    claim.identity.worker_instance_id,
+                    current.workspace_path,
+                    now,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(StoreError::StaleWorker(claim.identity.job_id.clone()));
+            }
+            append_event_tx(
+                &transaction,
+                &claim.identity.job_id,
+                claim.identity.attempt,
+                Some(&claim.identity.worker_instance_id),
+                "cancellation-requested",
+                &serde_json::json!({
+                    "state": "cancelling",
+                    "code": "WORKER_CANCELLED_BEFORE_TREE_RESIDENCY",
+                    "treeBecameResident": false,
+                }),
+                now,
+            )?;
+        }
+
+        let (target, code, message, release_reason) = if cancellation_wins {
+            (
+                JobState::Cancelled,
+                "WORKER_CANCELLED_BEFORE_TREE_RESIDENCY",
+                "Worker dispatch was cancelled before authoritative tree residency",
+                "cancelled-before-tree-residency",
+            )
+        } else {
+            match disposition {
+                PreResidencyClaimDisposition::SpawnFailed => (
+                    JobState::Interrupted,
+                    "WORKER_START_FAILED_BEFORE_TREE_RESIDENCY",
+                    "Worker failed to start before authoritative tree residency",
+                    "spawn-failed-before-tree-residency",
+                ),
+                PreResidencyClaimDisposition::SpawnResourceExhausted => (
+                    JobState::ResourceExhausted,
+                    "WORKER_START_RESOURCE_EXHAUSTED_BEFORE_TREE_RESIDENCY",
+                    "Worker start exhausted resources before authoritative tree residency",
+                    "spawn-resource-exhausted-before-tree-residency",
+                ),
+                PreResidencyClaimDisposition::Cancellation => unreachable!(
+                    "the cancellation disposition always selects the cancellation path"
+                ),
+            }
+        };
+        let expected_state = if cancellation_wins {
+            validate_transition(JobState::Cancelling, JobState::Cancelled)?;
+            "cancelling"
+        } else {
+            validate_transition(JobState::Starting, target)?;
+            "starting"
+        };
+        let (failure_code, failure_message): (Option<&str>, Option<&str>) = if cancellation_wins {
+            (None, None)
+        } else {
+            (Some(code), Some(message))
+        };
+        let changed = transaction.execute(
+            "UPDATE runtime_jobs SET state=?5, failure_code=?6, failure_message=?7,
+             updated_at=?8, finished_at=?8
+             WHERE job_id=?1 AND attempt=?2 AND worker_instance_id=?3
+               AND workspace_path=?4 AND state=?9
+               AND cancellation_requested=?10",
+            params![
+                claim.identity.job_id,
+                claim.identity.attempt,
+                claim.identity.worker_instance_id,
+                current.workspace_path,
+                state_name(target),
+                failure_code,
+                failure_message,
+                now,
+                expected_state,
+                cancellation_wins,
+            ],
         )?;
+        if changed != 1 {
+            return Err(StoreError::StaleWorker(claim.identity.job_id.clone()));
+        }
         append_event_tx(
             &transaction,
-            &identity.job_id,
-            identity.attempt,
-            Some(&identity.worker_instance_id),
+            &claim.identity.job_id,
+            claim.identity.attempt,
+            Some(&claim.identity.worker_instance_id),
             state_name(target),
             &serde_json::json!({
+                "state": state_name(target),
                 "code": code,
                 "message": message,
-                "treeBecameResident": false
+                "treeBecameResident": false,
             }),
             now,
         )?;
-        if !release_active_job_reservation_tx(&transaction, &identity.job_id, now)? {
+        let released = transaction.execute(
+            "UPDATE runtime_admission_reservations
+             SET lifecycle_state='released', released_at=?2, updated_at=?2
+             WHERE subject_kind='job' AND subject_id=?1 AND lifecycle_state='pending'",
+            params![claim.identity.job_id, now],
+        )?;
+        if released != 1 {
             return Err(StoreError::MissingAdmissionReservation(
-                identity.job_id.clone(),
+                claim.identity.job_id.clone(),
             ));
         }
         append_event_tx(
             &transaction,
-            &identity.job_id,
-            identity.attempt,
-            Some(&identity.worker_instance_id),
+            &claim.identity.job_id,
+            claim.identity.attempt,
+            Some(&claim.identity.worker_instance_id),
             "reservation-released",
             &serde_json::json!({
                 "reservationState": "released",
-                "reason": "spawn-failed-before-tree-residency"
+                "reason": release_reason,
+                "treeBecameResident": false,
             }),
             now,
         )?;
-        let updated = query_job(&transaction, &identity.job_id)?;
+        let updated = query_job(&transaction, &claim.identity.job_id)?;
+        transaction.commit()?;
+        Ok(updated)
+    }
+
+    /// Consumes a dispatch claim and the exact zero-resident receipt for the
+    /// race where the helper was activated but its target never produced an
+    /// accepted `started` boundary. The pending hold proves the runtime never
+    /// accepted residency; any worker event, resident hold, mismatched purpose,
+    /// service receipt, or replay fails closed.
+    pub fn finish_worker_claim_after_tree_exit(
+        &self,
+        claim: WorkerDispatchClaim,
+        tree_exit: ProcessTreeExit,
+    ) -> Result<JobRecord, StoreError> {
+        if claim.generation_scope != self.generation_scope
+            || !tree_exit.matches_generation_scope(&self.generation_scope)
+        {
+            return Err(StoreError::GenerationAuthorityMismatch);
+        }
+        let exit_identity = tree_exit.worker_identity().ok_or_else(|| {
+            StoreError::InvalidInput(
+                "service process-tree exit cannot finish a worker dispatch claim".into(),
+            )
+        })?;
+        if exit_identity != &claim.identity {
+            return Err(StoreError::StaleWorker(claim.identity.job_id.clone()));
+        }
+        if tree_exit.started_boundary_accepted() {
+            return Err(StoreError::InvalidInput(
+                "a started process-tree exit cannot use the pre-start claim finalizer".into(),
+            ));
+        }
+        let classification = tree_exit.classification();
+        let mut connection = self.connection.lock().expect("job store mutex poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = query_job(&transaction, &claim.identity.job_id)?;
+        require_identity(&current, &claim.identity)?;
+        require_dispatch_claim_matches_job(&claim, &current)?;
+        require_worker_event_state(&current, &[JobState::Starting, JobState::Cancelling])?;
+        require_pending_job_reservation_tx(&transaction, &current)?;
+        let accepted_worker_events: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM runtime_job_events
+             WHERE job_id=?1 AND attempt=?2 AND worker_instance_id=?3
+               AND worker_sequence IS NOT NULL",
+            params![
+                claim.identity.job_id,
+                claim.identity.attempt,
+                claim.identity.worker_instance_id,
+            ],
+            |row| row.get(0),
+        )?;
+        if current.last_worker_sequence != 0 || accepted_worker_events != 0 {
+            return Err(StoreError::CorruptState(format!(
+                "job {} accepted worker data before a pre-start tree exit",
+                current.job_id
+            )));
+        }
+        match current.state {
+            JobState::Starting if current.cancellation_requested => {
+                return Err(StoreError::CorruptState(current.job_id.clone()))
+            }
+            JobState::Cancelling if !current.cancellation_requested => {
+                return Err(StoreError::CorruptState(current.job_id.clone()))
+            }
+            _ => {}
+        }
+
+        let cancellation_wins = current.state == JobState::Cancelling;
+        let (target, code, message) = if cancellation_wins {
+            (
+                JobState::Cancelled,
+                "WORKER_CANCELLED_BEFORE_STARTED",
+                "Worker dispatch was cancelled before the target started",
+            )
+        } else {
+            match classification {
+                ProcessExitClassification::ResourceExhausted => (
+                    JobState::ResourceExhausted,
+                    "WORKER_START_RESOURCE_EXHAUSTED_BEFORE_STARTED",
+                    "Worker process tree exhausted resources before the target started",
+                ),
+                ProcessExitClassification::Stopped => (
+                    JobState::Interrupted,
+                    "WORKER_STOPPED_BEFORE_STARTED",
+                    "Worker process tree stopped before the target started",
+                ),
+                ProcessExitClassification::SupervisorFailure => (
+                    JobState::Failed,
+                    "WORKER_SUPERVISION_FAILED_BEFORE_STARTED",
+                    "Authoritative worker supervision failed before the target started",
+                ),
+                ProcessExitClassification::WorkerProtocolFault => (
+                    JobState::Failed,
+                    "WORKER_PROTOCOL_FAULT_BEFORE_STARTED",
+                    "Worker process tree produced invalid protocol data before started",
+                ),
+                ProcessExitClassification::TargetExit => (
+                    JobState::Failed,
+                    "WORKER_EXITED_BEFORE_STARTED",
+                    "Worker target exited without an accepted started boundary",
+                ),
+            }
+        };
+        validate_transition(current.state, target)?;
+        let now = now_ms();
+        let (failure_code, failure_message): (Option<&str>, Option<&str>) = if cancellation_wins {
+            (None, None)
+        } else {
+            (Some(code), Some(message))
+        };
+        let changed = transaction.execute(
+            "UPDATE runtime_jobs SET state=?5, failure_code=?6, failure_message=?7,
+             updated_at=?8, finished_at=?8
+             WHERE job_id=?1 AND attempt=?2 AND worker_instance_id=?3
+               AND workspace_path=?4 AND state=?9 AND cancellation_requested=?10",
+            params![
+                claim.identity.job_id,
+                claim.identity.attempt,
+                claim.identity.worker_instance_id,
+                current.workspace_path,
+                state_name(target),
+                failure_code,
+                failure_message,
+                now,
+                state_name(current.state),
+                cancellation_wins,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::StaleWorker(claim.identity.job_id.clone()));
+        }
+        append_event_tx(
+            &transaction,
+            &claim.identity.job_id,
+            claim.identity.attempt,
+            Some(&claim.identity.worker_instance_id),
+            state_name(target),
+            &serde_json::json!({
+                "state": state_name(target),
+                "code": code,
+                "message": message,
+                "treeExitConfirmed": true,
+                "treeBecameResident": false,
+                "classification": process_exit_classification_name(classification),
+            }),
+            now,
+        )?;
+        let released = transaction.execute(
+            "UPDATE runtime_admission_reservations
+             SET lifecycle_state='released', released_at=?2, updated_at=?2
+             WHERE subject_kind='job' AND subject_id=?1 AND lifecycle_state='pending'",
+            params![claim.identity.job_id, now],
+        )?;
+        if released != 1 {
+            return Err(StoreError::MissingAdmissionReservation(
+                claim.identity.job_id.clone(),
+            ));
+        }
+        append_event_tx(
+            &transaction,
+            &claim.identity.job_id,
+            claim.identity.attempt,
+            Some(&claim.identity.worker_instance_id),
+            "reservation-released",
+            &serde_json::json!({
+                "reservationState": "released",
+                "reason": "tree-exited-before-started",
+                "treeExitConfirmed": true,
+            }),
+            now,
+        )?;
+        let updated = query_job(&transaction, &claim.identity.job_id)?;
         transaction.commit()?;
         Ok(updated)
     }
@@ -2036,7 +2412,8 @@ impl JobStore {
                 })
             },
         )?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(StoreError::from)
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
     }
 
     /// Reconciles durable state only after consuming the one-shot proof that
@@ -2115,11 +2492,9 @@ impl JobStore {
                 None => None,
             };
             let latest_worker_event = match &identity {
-                Some(identity) => latest_worker_event_name_tx(
-                    &transaction,
-                    identity,
-                    job.last_worker_sequence,
-                )?,
+                Some(identity) => {
+                    latest_worker_event_name_tx(&transaction, identity, job.last_worker_sequence)?
+                }
                 None => None,
             };
 
@@ -2222,13 +2597,7 @@ impl JobStore {
             transaction.execute(
                 "UPDATE runtime_jobs SET state=?2, failure_code=?3, failure_message=?4,
                  finished_at=?5, updated_at=?5 WHERE job_id=?1",
-                params![
-                    job.job_id,
-                    state_name(target),
-                    code,
-                    message,
-                    now,
-                ],
+                params![job.job_id, state_name(target), code, message, now,],
             )?;
             append_event_tx(
                 &transaction,
@@ -2312,9 +2681,8 @@ impl JobStore {
             }
             job.state = JobState::Interrupted;
             job.failure_code = Some("ADMISSION_RESERVATION_MISSING_ON_RESTART".into());
-            job.failure_message = Some(
-                "Runtime restarted without a resumable pending admission reservation".into(),
-            );
+            job.failure_message =
+                Some("Runtime restarted without a resumable pending admission reservation".into());
             job.finished_at = Some(now);
             job.updated_at = now;
             reconciled.push(job);
@@ -2366,9 +2734,7 @@ impl JobStore {
             return Ok(current);
         }
         if completion_intent_tx(&transaction, identity)?.is_some() {
-            return Err(StoreError::PendingCompletionIntent(
-                identity.job_id.clone(),
-            ));
+            return Err(StoreError::PendingCompletionIntent(identity.job_id.clone()));
         }
         validate_transition(current.state, target)?;
         let now = now_ms();
@@ -3001,13 +3367,11 @@ fn query_owned_events_after(
             })
         },
     )?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(StoreError::from)
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(StoreError::from)
 }
 
-fn query_bound_job_input(
-    connection: &Connection,
-    job: &JobRecord,
-) -> Result<Vec<u8>, StoreError> {
+fn query_bound_job_input(connection: &Connection, job: &JobRecord) -> Result<Vec<u8>, StoreError> {
     let input = connection
         .query_row(
             "SELECT request_digest,
@@ -3086,7 +3450,10 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<JobRecord> {
     }
     let request_digest: String = row.get(28)?;
     if !is_valid_request_digest(&request_digest) {
-        return Err(text_conversion_error(28, "persisted request digest is invalid"));
+        return Err(text_conversion_error(
+            28,
+            "persisted request digest is invalid",
+        ));
     }
     let cancellation_requested = match row.get::<_, i64>(26)? {
         0 => false,
@@ -3124,8 +3491,7 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<JobRecord> {
         idempotency_key: row.get(27)?,
         request_digest,
     };
-    validate_persisted_job_record(&job)
-        .map_err(|message| text_conversion_error(0, &message))?;
+    validate_persisted_job_record(&job).map_err(|message| text_conversion_error(0, &message))?;
     Ok(job)
 }
 
@@ -3136,8 +3502,7 @@ fn validate_persisted_job_record(job: &JobRecord) -> Result<(), String> {
         ("workerKind", job.worker_kind.as_str()),
         ("resourceClass", job.resource_class.as_str()),
     ] {
-        validate_identifier(field, value)
-            .map_err(|_| format!("persisted {field} is invalid"))?;
+        validate_identifier(field, value).map_err(|_| format!("persisted {field} is invalid"))?;
     }
     if let Some(value) = &job.garden_id {
         validate_scope_id("gardenId", value)
@@ -3158,7 +3523,6 @@ fn validate_persisted_job_record(job: &JobRecord) -> Result<(), String> {
     }
     let root = format!("runtime/jobs/{}", job.job_id);
     if normalized_relative_path(&job.input_manifest_path) != format!("{root}/input.json")
-        || normalized_relative_path(&job.workspace_path) != format!("{root}/workspace")
         || normalized_relative_path(&job.result_path) != format!("{root}/result.json")
     {
         return Err("persisted job paths do not match the trusted job layout".into());
@@ -3188,14 +3552,30 @@ fn validate_persisted_job_record(job: &JobRecord) -> Result<(), String> {
         return Err("persisted progress exceeds its total".into());
     }
     match (job.attempt, &job.worker_instance_id) {
-        (0, None) => {}
-        (attempt, Some(worker_instance_id)) if attempt > 0 => WorkerIdentity {
-            job_id: job.job_id.clone(),
-            attempt,
-            worker_instance_id: worker_instance_id.clone(),
+        (0, None) => {
+            if normalized_relative_path(&job.workspace_path) != format!("{root}/workspace") {
+                return Err("unclaimed job workspace is not the trusted staging path".into());
+            }
         }
-        .validate()
-        .map_err(|_| "persisted worker fence is invalid".to_string())?,
+        (attempt, Some(worker_instance_id)) if attempt > 0 => {
+            let identity = WorkerIdentity {
+                job_id: job.job_id.clone(),
+                attempt,
+                worker_instance_id: worker_instance_id.clone(),
+            };
+            identity
+                .validate()
+                .map_err(|_| "persisted worker fence is invalid".to_string())?;
+            let expected = worker_attempt_workspace_path(&identity)
+                .map_err(|_| "persisted worker workspace is invalid".to_string())?;
+            let actual = normalized_relative_path(&job.workspace_path);
+            // Older schema-v3 writers kept the fixed job workspace after
+            // assignment. Accept those rows only for restart compatibility;
+            // every newly claimed attempt persists the exact fenced path.
+            if actual != expected && actual != format!("{root}/workspace") {
+                return Err("persisted worker workspace does not match its attempt fence".into());
+            }
+        }
         _ => return Err("persisted attempt and worker fence disagree".into()),
     }
     if job.last_worker_sequence > 0 && job.worker_instance_id.is_none() {
@@ -3261,10 +3641,7 @@ fn bounded_payload_json(
         ));
     }
     String::from_utf8(prefix).map_err(|_| {
-        text_conversion_error(
-            payload_column,
-            "persisted event payload is not valid UTF-8",
-        )
+        text_conversion_error(payload_column, "persisted event payload is not valid UTF-8")
     })
 }
 
@@ -3367,6 +3744,16 @@ fn normalized_relative_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
+fn worker_attempt_workspace_path(identity: &WorkerIdentity) -> Result<String, StoreError> {
+    identity.validate()?;
+    let workspace = format!(
+        "runtime/jobs/{}/attempts/{}/{}/workspace",
+        identity.job_id, identity.attempt, identity.worker_instance_id
+    );
+    validate_relative_path("workspacePath", &workspace)?;
+    Ok(workspace)
+}
+
 fn require_path_in_job_namespace(job_id: &str, path: &str) -> Result<(), StoreError> {
     let normalized = normalized_relative_path(path);
     let prefix = format!("runtime/jobs/{job_id}/");
@@ -3379,10 +3766,7 @@ fn require_path_in_job_namespace(job_id: &str, path: &str) -> Result<(), StoreEr
     }
 }
 
-fn require_exact_job_result_path(
-    current: &JobRecord,
-    result_path: &str,
-) -> Result<(), StoreError> {
+fn require_exact_job_result_path(current: &JobRecord, result_path: &str) -> Result<(), StoreError> {
     require_path_in_job_namespace(&current.job_id, result_path)?;
     if normalized_relative_path(result_path) == normalized_relative_path(&current.result_path) {
         Ok(())
@@ -3400,6 +3784,19 @@ fn require_identity(current: &JobRecord, identity: &WorkerIdentity) -> Result<()
         || current.worker_instance_id.as_deref() != Some(identity.worker_instance_id.as_str())
     {
         return Err(StoreError::StaleWorker(identity.job_id.clone()));
+    }
+    Ok(())
+}
+
+fn require_dispatch_claim_matches_job(
+    claim: &WorkerDispatchClaim,
+    current: &JobRecord,
+) -> Result<(), StoreError> {
+    if current.request_digest != claim.job.request_digest
+        || current.workspace_path != claim.job.workspace_path
+        || current.workspace_path != worker_attempt_workspace_path(&claim.identity)?
+    {
+        return Err(StoreError::StaleWorker(claim.identity.job_id.clone()));
     }
     Ok(())
 }
@@ -3425,7 +3822,12 @@ fn transition_worker_tx(
     transaction.execute(
         "UPDATE runtime_jobs SET state=?2, updated_at=?3,
          finished_at=CASE WHEN ?4 THEN ?3 ELSE finished_at END WHERE job_id=?1",
-        params![current.job_id, state_name(target), now, target.is_terminal()],
+        params![
+            current.job_id,
+            state_name(target),
+            now,
+            target.is_terminal()
+        ],
     )?;
     Ok(())
 }
@@ -3468,8 +3870,8 @@ fn completion_intent_tx(
     if payload_json.len() > MAX_PROTOCOL_LINE_BYTES {
         return Err(StoreError::CorruptState(identity.job_id.clone()));
     }
-    let stored_sequence = stored_sequence
-        .ok_or_else(|| StoreError::CorruptState(identity.job_id.clone()))?;
+    let stored_sequence =
+        stored_sequence.ok_or_else(|| StoreError::CorruptState(identity.job_id.clone()))?;
     let stored_sequence = u64::try_from(stored_sequence)
         .map_err(|_| StoreError::CorruptState(identity.job_id.clone()))?;
     let event: WorkerEvent = serde_json::from_str(&payload_json)
@@ -3691,7 +4093,9 @@ fn append_worker_event_tx(
     validate_identifier("eventType", event_type)?;
     let worker_sequence = u64_to_i64(worker_sequence, "worker event sequence")?;
     if payload_json.len() > MAX_PROTOCOL_LINE_BYTES {
-        return Err(StoreError::InvalidInput("event payload is oversized".into()));
+        return Err(StoreError::InvalidInput(
+            "event payload is oversized".into(),
+        ));
     }
     transaction.execute(
         "INSERT INTO runtime_job_events
@@ -3722,7 +4126,9 @@ fn append_event_tx(
     validate_identifier("eventType", event_type)?;
     let payload_json = canonical_json_string(payload)?;
     if payload_json.len() > MAX_PROTOCOL_LINE_BYTES {
-        return Err(StoreError::InvalidInput("event payload is oversized".into()));
+        return Err(StoreError::InvalidInput(
+            "event payload is oversized".into(),
+        ));
     }
     transaction.execute(
         "INSERT INTO runtime_job_events
@@ -3772,6 +4178,16 @@ fn worker_event_name(event: &WorkerEvent) -> &'static str {
         WorkerEvent::Complete { .. } => "complete",
         WorkerEvent::Failed { .. } => "failed",
         WorkerEvent::CancellationAcknowledged { .. } => "cancellation-acknowledged",
+    }
+}
+
+fn process_exit_classification_name(classification: ProcessExitClassification) -> &'static str {
+    match classification {
+        ProcessExitClassification::TargetExit => "target-exit",
+        ProcessExitClassification::Stopped => "stopped",
+        ProcessExitClassification::ResourceExhausted => "resource-exhausted",
+        ProcessExitClassification::SupervisorFailure => "supervisor-failure",
+        ProcessExitClassification::WorkerProtocolFault => "worker-protocol-fault",
     }
 }
 
@@ -3851,16 +4267,21 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
         // V2 never persisted request bytes, so only an empty V2 job ledger can
         // be upgraded without inventing or losing submission authority.
         validate_schema_v2_shape(&transaction, 2, SCHEMA_V2_OBJECTS)?;
-        let legacy_jobs: i64 = transaction.query_row(
-            "SELECT COUNT(*) FROM runtime_jobs",
-            [],
-            |row| row.get(0),
-        )?;
+        let legacy_jobs: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM runtime_jobs", [], |row| row.get(0))?;
         if legacy_jobs != 0 {
             return Err(StoreError::LegacyJobInputsUnavailable { jobs: legacy_jobs });
         }
         transaction.execute_batch(SCHEMA_V3)?;
         version = 3;
+    }
+    if version == 3 {
+        // V4 adds only the validated admitted-work FIFO index. Validate the
+        // complete v3 shape first so a database cannot smuggle arbitrary
+        // schema objects through this otherwise metadata-only migration.
+        validate_schema_v3_shape(&transaction, 3, SCHEMA_V3_OBJECTS)?;
+        transaction.execute_batch(SCHEMA_V4)?;
+        version = 4;
     }
     if version != SCHEMA_VERSION {
         return Err(StoreError::UnsupportedSchemaVersion {
@@ -3876,7 +4297,7 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
             supported: SCHEMA_VERSION,
         });
     }
-    validate_schema_v3_shape(&transaction)?;
+    validate_schema_v4_shape(&transaction)?;
     transaction.commit()?;
     Ok(())
 }
@@ -3892,13 +4313,7 @@ fn validate_schema_v1_shape(connection: &Connection, version: i64) -> Result<(),
         ("table", "runtime_job_checkpoints"),
         ("index", "runtime_job_checkpoints_job_idx"),
     ] {
-        require_schema_object_matches(
-            connection,
-            version,
-            object_type,
-            object_name,
-            SCHEMA_V1,
-        )?;
+        require_schema_object_matches(connection, version, object_type, object_name, SCHEMA_V1)?;
     }
     for (table, required_columns) in [
         (
@@ -3975,12 +4390,7 @@ fn validate_schema_v1_shape(connection: &Connection, version: i64) -> Result<(),
         connection,
         version,
         "runtime_job_events",
-        &[
-            "job_id",
-            "attempt",
-            "worker_instance_id",
-            "worker_sequence",
-        ],
+        &["job_id", "attempt", "worker_instance_id", "worker_sequence"],
         true,
         Some(
             "CREATE UNIQUE INDEX runtime_job_events_worker_sequence_idx
@@ -4017,10 +4427,7 @@ fn validate_schema_v2_shape(
     validate_schema_v1_shape(connection, version)?;
     for (object_type, object_name) in [
         ("table", "runtime_admission_reservations"),
-        (
-            "index",
-            "runtime_admission_reservations_active_subject_idx",
-        ),
+        ("index", "runtime_admission_reservations_active_subject_idx"),
         (
             "index",
             "runtime_admission_reservations_active_definition_idx",
@@ -4062,27 +4469,27 @@ fn validate_schema_v2_shape(
     Ok(())
 }
 
-fn validate_schema_v3_shape(connection: &Connection) -> Result<(), StoreError> {
-    validate_schema_v2_shape(connection, 3, SCHEMA_V3_OBJECTS)?;
+fn validate_schema_v3_shape(
+    connection: &Connection,
+    version: i64,
+    expected_objects: &[&str],
+) -> Result<(), StoreError> {
+    validate_schema_v2_shape(connection, version, expected_objects)?;
     for (object_type, object_name) in [
         ("index", "runtime_jobs_request_binding_idx"),
         ("table", "runtime_job_inputs"),
     ] {
-        require_schema_object_matches(connection, 3, object_type, object_name, SCHEMA_V3)?;
+        require_schema_object_matches(connection, version, object_type, object_name, SCHEMA_V3)?;
     }
     require_table_columns(
         connection,
-        3,
+        version,
         "runtime_job_inputs",
-        &[
-            "job_id",
-            "request_digest",
-            "canonical_request_payload",
-        ],
+        &["job_id", "request_digest", "canonical_request_payload"],
     )?;
     require_unique_index_columns(
         connection,
-        3,
+        version,
         "runtime_jobs",
         &["job_id", "request_digest"],
         false,
@@ -4093,13 +4500,33 @@ fn validate_schema_v3_shape(connection: &Connection) -> Result<(), StoreError> {
     )?;
     require_composite_foreign_key(
         connection,
-        3,
+        version,
         "runtime_job_inputs",
         "runtime_jobs",
         &[("job_id", "job_id"), ("request_digest", "request_digest")],
         "CASCADE",
     )?;
-    require_no_unexpected_schema_objects(connection, 3, SCHEMA_V3_OBJECTS)?;
+    require_no_unexpected_schema_objects(connection, version, expected_objects)?;
+    Ok(())
+}
+
+fn validate_schema_v4_shape(connection: &Connection) -> Result<(), StoreError> {
+    validate_schema_v3_shape(connection, 4, SCHEMA_V4_OBJECTS)?;
+    require_schema_object_matches(
+        connection,
+        4,
+        "index",
+        "runtime_jobs_admitted_fifo_idx",
+        SCHEMA_V4,
+    )?;
+    require_schema_object_matches(
+        connection,
+        4,
+        "index",
+        "runtime_jobs_queued_fifo_idx",
+        SCHEMA_V4,
+    )?;
+    require_no_unexpected_schema_objects(connection, 4, SCHEMA_V4_OBJECTS)?;
     Ok(())
 }
 
@@ -4278,12 +4705,15 @@ fn require_foreign_key(
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    if foreign_keys.iter().any(|(actual_table, actual_from, actual_to, actual_delete)| {
-        actual_table == target_table
-            && actual_from == from
-            && actual_to == target_column
-            && actual_delete.eq_ignore_ascii_case(on_delete)
-    }) {
+    if foreign_keys
+        .iter()
+        .any(|(actual_table, actual_from, actual_to, actual_delete)| {
+            actual_table == target_table
+                && actual_from == from
+                && actual_to == target_column
+                && actual_delete.eq_ignore_ascii_case(on_delete)
+        })
+    {
         Ok(())
     } else {
         Err(StoreError::SchemaMismatch {
@@ -4332,15 +4762,13 @@ fn require_composite_foreign_key(
             .collect::<Vec<_>>();
         actual.sort_unstable_by_key(|(sequence, _, _)| *sequence);
         actual.len() == columns.len()
-            && actual
-                .iter()
-                .zip(columns.iter())
-                .enumerate()
-                .all(|(index, (actual_column, expected_column))| {
+            && actual.iter().zip(columns.iter()).enumerate().all(
+                |(index, (actual_column, expected_column))| {
                     actual_column.0 == index as i64
                         && actual_column.1 == expected_column.0
                         && actual_column.2 == expected_column.1
-                })
+                },
+            )
     }) {
         Ok(())
     } else {
@@ -4406,6 +4834,24 @@ const SCHEMA_V3_OBJECTS: &[&str] = &[
     "runtime_admission_reservations_active_definition_idx",
     "runtime_jobs_request_binding_idx",
     "runtime_job_inputs",
+];
+
+const SCHEMA_V4_OBJECTS: &[&str] = &[
+    "runtime_jobs",
+    "runtime_jobs_state_idx",
+    "runtime_jobs_owner_idx",
+    "runtime_job_events",
+    "runtime_job_events_replay_idx",
+    "runtime_job_events_worker_sequence_idx",
+    "runtime_job_checkpoints",
+    "runtime_job_checkpoints_job_idx",
+    "runtime_admission_reservations",
+    "runtime_admission_reservations_active_subject_idx",
+    "runtime_admission_reservations_active_definition_idx",
+    "runtime_jobs_request_binding_idx",
+    "runtime_job_inputs",
+    "runtime_jobs_admitted_fifo_idx",
+    "runtime_jobs_queued_fifo_idx",
 ];
 
 const SCHEMA_V1: &str = r#"
@@ -4526,6 +4972,14 @@ CREATE TABLE runtime_job_inputs (
 PRAGMA user_version = 3;
 "#;
 
+const SCHEMA_V4: &str = r#"
+CREATE INDEX runtime_jobs_admitted_fifo_idx
+    ON runtime_jobs(created_at, job_id) WHERE state='admitted';
+CREATE INDEX runtime_jobs_queued_fifo_idx
+    ON runtime_jobs(created_at, job_id) WHERE state='queued';
+PRAGMA user_version = 4;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4550,6 +5004,12 @@ mod tests {
         connection.execute_batch(SCHEMA_V2).unwrap();
     }
 
+    fn create_v3_database(path: &Path) {
+        create_v2_database(path);
+        let connection = Connection::open(path).unwrap();
+        connection.execute_batch(SCHEMA_V3).unwrap();
+    }
+
     fn owner(user_id: i64) -> JobOwner {
         JobOwner::user(user_id).unwrap()
     }
@@ -4558,12 +5018,7 @@ mod tests {
         AuthenticatedJobContext::for_verified_user(user_id, Some("garden-1"), None).unwrap()
     }
 
-    fn input_for(
-        job_id: &str,
-        key: &str,
-        job_owner: JobOwner,
-        payload: Value,
-    ) -> NewJob {
+    fn input_for(job_id: &str, key: &str, job_owner: JobOwner, payload: Value) -> NewJob {
         let canonical_request_payload = canonicalize_request_payload(&payload).unwrap();
         let request_digest = compute_submission_digest(
             &job_owner,
@@ -4616,12 +5071,7 @@ mod tests {
     }
 
     fn default_admission() -> RegisteredJobAdmission {
-        registered_admission(
-            "learn-node",
-            ResourceClass::LargeGeneration,
-            128,
-            1,
-        )
+        registered_admission("learn-node", ResourceClass::LargeGeneration, 128, 1)
     }
 
     fn admit(store: &JobStore, job_id: &str, admission: &RegisteredJobAdmission) -> JobRecord {
@@ -4691,10 +5141,40 @@ mod tests {
             .unwrap()
     }
 
+    fn claim(store: &JobStore, job_id: &str, worker: &str) -> WorkerDispatchClaim {
+        match store.try_claim_admitted_worker(job_id, worker).unwrap() {
+            WorkerClaimOutcome::Claimed(claim) => claim,
+            WorkerClaimOutcome::NotClaimable => panic!("job {job_id} was not claimable"),
+        }
+    }
+
+    fn claim_identity(store: &JobStore, job_id: &str, worker: &str) -> WorkerIdentity {
+        claim(store, job_id, worker).identity().clone()
+    }
+
+    fn illicit_replay_claim(claim: &WorkerDispatchClaim) -> WorkerDispatchClaim {
+        WorkerDispatchClaim {
+            generation_scope: claim.generation_scope.clone(),
+            identity: claim.identity.clone(),
+            job: claim.job.clone(),
+        }
+    }
+
+    fn settle_claim(store: &JobStore, claim: WorkerDispatchClaim) -> WorkerIdentity {
+        let residency = ProcessTreeResidency::worker_for_test(
+            store.generation_scope.clone(),
+            claim.identity().clone(),
+        );
+        store.settle_job_reservation(claim, residency).unwrap()
+    }
+
+    fn claim_and_settle(store: &JobStore, job_id: &str, worker: &str) -> WorkerIdentity {
+        settle_claim(store, claim(store, job_id, worker))
+    }
+
     fn start(store: &JobStore, job_id: &str, worker: &str) -> WorkerIdentity {
         admit(store, job_id, &default_admission());
-        let identity = store.assign_worker(job_id, worker).unwrap();
-        store.settle_job_reservation(&identity).unwrap();
+        let identity = claim_and_settle(store, job_id, worker);
         store
             .apply_worker_event(&WorkerEvent::Ready {
                 identity: identity.clone(),
@@ -4763,10 +5243,7 @@ mod tests {
             "UPDATE runtime_job_inputs SET request_digest=?2 WHERE job_id=?1",
             params!["job_1", "b".repeat(64)],
         );
-        assert!(matches!(
-            result,
-            Err(rusqlite::Error::SqliteFailure(_, _))
-        ));
+        assert!(matches!(result, Err(rusqlite::Error::SqliteFailure(_, _))));
     }
 
     #[test]
@@ -4796,12 +5273,7 @@ mod tests {
         store.submit_raw(&input("job_2", "request_2")).unwrap();
         let store = Arc::new(store);
         let barrier = Arc::new(Barrier::new(3));
-        let admission = registered_admission(
-            "learn-node",
-            ResourceClass::LargeGeneration,
-            128,
-            2,
-        );
+        let admission = registered_admission("learn-node", ResourceClass::LargeGeneration, 128, 2);
         let mut handles = Vec::new();
         for job_id in ["job_1", "job_2"] {
             let store = Arc::clone(&store);
@@ -4810,17 +5282,12 @@ mod tests {
             handles.push(thread::spawn(move || {
                 barrier.wait();
                 store
-                    .try_admit_job(
-                        job_id,
-                        &admission,
-                        AdmissionPolicy::default(),
-                        || {
-                            Ok(SystemCommit {
-                                total_mb: 0,
-                                limit_mb: 64 * 1024,
-                            })
-                        },
-                    )
+                    .try_admit_job(job_id, &admission, AdmissionPolicy::default(), || {
+                        Ok(SystemCommit {
+                            total_mb: 0,
+                            limit_mb: 64 * 1024,
+                        })
+                    })
                     .unwrap()
             }));
         }
@@ -4844,8 +5311,7 @@ mod tests {
             1
         );
         assert_eq!(active_reservation_count(store.as_ref()), 1);
-        let states = ["job_1", "job_2"]
-            .map(|job_id| store.get(&context(1), job_id).unwrap().state);
+        let states = ["job_1", "job_2"].map(|job_id| store.get(&context(1), job_id).unwrap().state);
         assert_eq!(
             states
                 .iter()
@@ -4887,7 +5353,12 @@ mod tests {
                     one_heavyweight_at_a_time: false,
                     ..AdmissionPolicy::default()
                 },
-                || Ok(SystemCommit { total_mb: 0, limit_mb: 64 * 1024 }),
+                || {
+                    Ok(SystemCommit {
+                        total_mb: 0,
+                        limit_mb: 64 * 1024,
+                    })
+                },
             )
             .unwrap();
         let JobAdmissionResult::Denied(denial) = result else {
@@ -4930,17 +5401,12 @@ mod tests {
         let admission = registered_admission("learn-node", ResourceClass::Core, 128, 1);
         admit(&store, "job_1", &admission);
         let denial = store
-            .try_admit_job(
-                "job_2",
-                &admission,
-                AdmissionPolicy::default(),
-                || {
-                    Ok(SystemCommit {
-                        total_mb: 0,
-                        limit_mb: 64 * 1024,
-                    })
-                },
-            )
+            .try_admit_job("job_2", &admission, AdmissionPolicy::default(), || {
+                Ok(SystemCommit {
+                    total_mb: 0,
+                    limit_mb: 64 * 1024,
+                })
+            })
             .unwrap();
         let JobAdmissionResult::Denied(denial) = denial else {
             panic!("expected worker-concurrency denial")
@@ -4953,12 +5419,9 @@ mod tests {
         );
         assert_eq!(active_job_reservation_count(&store, "job_2"), 0);
         assert!(matches!(
-            store.try_admit_job(
-                "job_2",
-                &admission,
-                AdmissionPolicy::default(),
-                || panic!("a terminal admission denial must not be sampled again"),
-            ),
+            store.try_admit_job("job_2", &admission, AdmissionPolicy::default(), || panic!(
+                "a terminal admission denial must not be sampled again"
+            ),),
             Err(StoreError::Transition(_))
         ));
     }
@@ -4983,9 +5446,15 @@ mod tests {
         assert!(denial.is_runtime_shutdown_gate());
         assert!(!denial.retryable);
         assert_eq!(active_reservation_count(&store), 0);
-        assert_eq!(store.get(&context(1), "job_1").unwrap().state, JobState::Queued);
         assert_eq!(
-            store.events_after(&context(1), "job_1", 0, 10).unwrap().len(),
+            store.get(&context(1), "job_1").unwrap().state,
+            JobState::Queued
+        );
+        assert_eq!(
+            store
+                .events_after(&context(1), "job_1", 0, 10)
+                .unwrap()
+                .len(),
             1
         );
     }
@@ -5076,8 +5545,7 @@ mod tests {
             JobAdmissionResult::Admitted(_) => {}
             JobAdmissionResult::Denied(denial) => panic!("unexpected denial: {}", denial.reason),
         }
-        let identity = store.assign_worker("job_1", "worker_1").unwrap();
-        store.settle_job_reservation(&identity).unwrap();
+        claim_and_settle(&store, "job_1", "worker_1");
         assert_eq!(latest_reservation_state(&store, "job_1"), "resident");
 
         let same_worker = store
@@ -5117,6 +5585,34 @@ mod tests {
     }
 
     #[test]
+    fn resident_heavyweight_still_blocks_a_conflicting_heavyweight_admission() {
+        let (_directory, store) = store();
+        for (job_id, key) in [("job_1", "request_1"), ("job_2", "request_2")] {
+            store.submit_raw(&input(job_id, key)).unwrap();
+        }
+        let first = registered_admission("learn-node", ResourceClass::LargeGeneration, 2_000, 2);
+        admit(&store, "job_1", &first);
+        claim_and_settle(&store, "job_1", "worker_1");
+        assert_eq!(latest_reservation_state(&store, "job_1"), "resident");
+
+        let denial = match store
+            .try_admit_job("job_2", &first, AdmissionPolicy::default(), || {
+                Ok(SystemCommit {
+                    total_mb: 0,
+                    limit_mb: 64 * 1024,
+                })
+            })
+            .unwrap()
+        {
+            JobAdmissionResult::Denied(denial) => denial,
+            JobAdmissionResult::Admitted(_) => {
+                panic!("resident heavyweight must keep the global class occupied")
+            }
+        };
+        assert_eq!(denial.resource, "heavyweight_concurrency");
+    }
+
+    #[test]
     fn complete_tree_exit_releases_the_concurrency_hold() {
         let (_directory, store) = store();
         for (job_id, key) in [("job_1", "request_1"), ("job_2", "request_2")] {
@@ -5126,25 +5622,25 @@ mod tests {
         }
         let admission = registered_admission("learn-node", ResourceClass::Core, 128, 1);
         admit(&store, "job_1", &admission);
-        let identity = store.assign_worker("job_1", "worker_1").unwrap();
-        store.settle_job_reservation(&identity).unwrap();
+        let identity = claim_and_settle(&store, "job_1", "worker_1");
         let tree_exit = ProcessTreeExit::worker_release_for_test(identity.clone());
-        store
-            .worker_exited_without_terminal(&tree_exit)
-            .unwrap();
+        store.worker_exited_without_terminal(&tree_exit).unwrap();
         assert_eq!(
-            store.worker_exited_without_terminal(&tree_exit).unwrap().state,
+            store
+                .worker_exited_without_terminal(&tree_exit)
+                .unwrap()
+                .state,
             JobState::Failed
         );
         assert_eq!(latest_reservation_state(&store, "job_1"), "released");
         assert!(matches!(
             store
-                .try_admit_job(
-                    "job_2",
-                    &admission,
-                    AdmissionPolicy::default(),
-                    || Ok(SystemCommit { total_mb: 0, limit_mb: 64 * 1024 }),
-                )
+                .try_admit_job("job_2", &admission, AdmissionPolicy::default(), || Ok(
+                    SystemCommit {
+                        total_mb: 0,
+                        limit_mb: 64 * 1024
+                    }
+                ),)
                 .unwrap(),
             JobAdmissionResult::Admitted(_)
         ));
@@ -5167,15 +5663,640 @@ mod tests {
         assert_eq!(latest_reservation_state(&store, "job_1"), "released");
         assert!(matches!(
             store
-                .try_admit_job(
-                    "job_2",
-                    &admission,
-                    AdmissionPolicy::default(),
-                    || Ok(SystemCommit { total_mb: 0, limit_mb: 64 * 1024 }),
-                )
+                .try_admit_job("job_2", &admission, AdmissionPolicy::default(), || Ok(
+                    SystemCommit {
+                        total_mb: 0,
+                        limit_mb: 64 * 1024
+                    }
+                ),)
                 .unwrap(),
             JobAdmissionResult::Admitted(_)
         ));
+    }
+
+    #[test]
+    fn queued_admission_candidates_are_bounded_fifo_and_advisory() {
+        let (_directory, store) = store();
+        for (job_id, key) in [
+            ("job_b", "request_b"),
+            ("job_a", "request_a"),
+            ("job_admitted", "request_admitted"),
+        ] {
+            store.submit_raw(&input(job_id, key)).unwrap();
+        }
+        {
+            let connection = store.connection.lock().unwrap();
+            connection
+                .execute(
+                    "UPDATE runtime_jobs SET created_at=100, updated_at=100
+                     WHERE job_id IN ('job_a','job_b')",
+                    [],
+                )
+                .unwrap();
+            let mut plan = connection
+                .prepare(
+                    "EXPLAIN QUERY PLAN
+                     SELECT jobs.job_id, jobs.job_type, jobs.worker_kind, jobs.resource_class,
+                            jobs.created_at
+                     FROM runtime_jobs AS jobs INDEXED BY runtime_jobs_queued_fifo_idx
+                     WHERE jobs.state='queued'
+                     ORDER BY jobs.created_at ASC, jobs.job_id ASC
+                     LIMIT ?1",
+                )
+                .unwrap();
+            let details = plan
+                .query_map(params![2_i64], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(details
+                .iter()
+                .any(|detail| detail.contains("runtime_jobs_queued_fifo_idx")));
+        }
+        admit(&store, "job_admitted", &default_admission());
+
+        assert!(matches!(
+            store.queued_admission_candidates(0),
+            Err(StoreError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            store.queued_admission_candidates(MAX_DISPATCH_CANDIDATES + 1),
+            Err(StoreError::InvalidInput(_))
+        ));
+        let candidates = store.queued_admission_candidates(2).unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(QueuedAdmissionCandidate::job_id)
+                .collect::<Vec<_>>(),
+            vec!["job_a", "job_b"]
+        );
+        assert!(candidates.iter().all(|candidate| {
+            candidate.job_type() == "learn"
+                && candidate.worker_kind() == "learn-node"
+                && candidate.resource_class() == "large-generation"
+                && candidate.created_at() == 100
+        }));
+        assert_eq!(
+            store.get(&context(1), "job_a").unwrap().state,
+            JobState::Queued
+        );
+        assert_eq!(store.get(&context(1), "job_a").unwrap().attempt, 0);
+        assert_eq!(job_reservation_count(&store, "job_a"), 0);
+        assert!(!candidates
+            .iter()
+            .any(|candidate| candidate.job_id() == "job_admitted"));
+    }
+
+    #[test]
+    fn dispatch_candidates_are_bounded_admitted_only_and_fifo() {
+        let (_directory, store) = store();
+        let admission = registered_admission("learn-node", ResourceClass::Core, 128, 16);
+        for (job_id, key) in [
+            ("job_b", "request_b"),
+            ("job_a", "request_a"),
+            ("job_c", "request_c"),
+            ("job_queued", "request_queued"),
+        ] {
+            let mut job = input(job_id, key);
+            job.resource_class = "core".into();
+            store.submit_raw(&job).unwrap();
+        }
+        for job_id in ["job_b", "job_a", "job_c"] {
+            admit(&store, job_id, &admission);
+        }
+        {
+            let connection = store.connection.lock().unwrap();
+            connection
+                .execute(
+                    "UPDATE runtime_jobs
+                     SET created_at=CASE job_id
+                         WHEN 'job_a' THEN 100 WHEN 'job_b' THEN 100 ELSE 200 END
+                     WHERE job_id IN ('job_a','job_b','job_c')",
+                    [],
+                )
+                .unwrap();
+            let mut plan = connection
+                .prepare(
+                    "EXPLAIN QUERY PLAN
+                     SELECT jobs.job_id, jobs.worker_kind, jobs.resource_class, jobs.created_at
+                     FROM runtime_jobs AS jobs INDEXED BY runtime_jobs_admitted_fifo_idx
+                     WHERE jobs.state='admitted'
+                     ORDER BY jobs.created_at ASC, jobs.job_id ASC
+                     LIMIT ?1",
+                )
+                .unwrap();
+            let details = plan
+                .query_map(params![2_i64], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(details
+                .iter()
+                .any(|detail| detail.contains("runtime_jobs_admitted_fifo_idx")));
+        }
+
+        assert!(matches!(
+            store.dispatch_candidates(0),
+            Err(StoreError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            store.dispatch_candidates(MAX_DISPATCH_CANDIDATES + 1),
+            Err(StoreError::InvalidInput(_))
+        ));
+        let candidates = store.dispatch_candidates(2).unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(WorkerDispatchCandidate::job_id)
+                .collect::<Vec<_>>(),
+            vec!["job_a", "job_b"]
+        );
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.worker_kind() == "learn-node"
+                && candidate.resource_class() == "core"
+                && candidate.created_at() == 100));
+        assert_eq!(
+            store.get(&context(1), "job_a").unwrap().state,
+            JobState::Admitted
+        );
+        assert_eq!(store.get(&context(1), "job_a").unwrap().attempt, 0);
+        assert!(!candidates
+            .iter()
+            .any(|candidate| candidate.job_id() == "job_queued"));
+
+        store.set_accepting_work(false);
+        assert!(matches!(
+            store
+                .try_claim_admitted_worker("job_b", "worker_shutdown")
+                .unwrap(),
+            WorkerClaimOutcome::NotClaimable
+        ));
+        assert_eq!(
+            store.get(&context(1), "job_b").unwrap().state,
+            JobState::Admitted
+        );
+        store.set_accepting_work(true);
+
+        let claim = claim(&store, candidates[0].job_id(), "worker_fifo");
+        let cancelled = store
+            .finish_worker_claim_before_residency(claim, PreResidencyClaimDisposition::Cancellation)
+            .unwrap();
+        assert_eq!(cancelled.state, JobState::Cancelled);
+    }
+
+    #[test]
+    fn concurrent_dispatch_claimers_mint_exactly_one_attempt_authority() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("runtime-v2.sqlite3");
+        let first = Arc::new(JobStore::open_for_test(&database).unwrap());
+        let mut job = input("job_1", "request_1");
+        job.resource_class = "core".into();
+        first.submit_raw(&job).unwrap();
+        admit(
+            first.as_ref(),
+            "job_1",
+            &registered_admission("learn-node", ResourceClass::Core, 128, 2),
+        );
+        let second = Arc::new(JobStore::open_for_test(&database).unwrap());
+        let barrier = Arc::new(Barrier::new(3));
+        let mut handles = Vec::new();
+        for (store, worker) in [
+            (Arc::clone(&first), "worker_a"),
+            (Arc::clone(&second), "worker_b"),
+        ] {
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                store.try_claim_admitted_worker("job_1", worker).unwrap()
+            }));
+        }
+        barrier.wait();
+        let mut claims = handles
+            .into_iter()
+            .filter_map(|handle| match handle.join().unwrap() {
+                WorkerClaimOutcome::Claimed(claim) => Some(claim),
+                WorkerClaimOutcome::NotClaimable => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(claims.len(), 1);
+        let claim = claims.pop().unwrap();
+        let debug_claim = format!("{claim:?}");
+        assert_eq!(
+            debug_claim,
+            "WorkerDispatchClaim(\"<opaque durable dispatch authority>\")"
+        );
+        assert!(!debug_claim.contains("job_1"));
+        assert!(!debug_claim.contains("worker_"));
+        assert_eq!(claim.identity().attempt, 1);
+        assert!(matches!(
+            claim.identity().worker_instance_id.as_str(),
+            "worker_a" | "worker_b"
+        ));
+        assert_eq!(
+            claim.job().workspace_path,
+            format!(
+                "runtime/jobs/job_1/attempts/1/{}/workspace",
+                claim.identity().worker_instance_id
+            )
+        );
+        assert!(matches!(
+            first
+                .try_claim_admitted_worker("job_1", "worker_replay")
+                .unwrap(),
+            WorkerClaimOutcome::NotClaimable
+        ));
+        let persisted = first.get(&context(1), "job_1").unwrap();
+        assert_eq!(persisted.state, JobState::Starting);
+        assert_eq!(persisted.workspace_path, claim.job().workspace_path);
+
+        first
+            .finish_worker_claim_before_residency(claim, PreResidencyClaimDisposition::SpawnFailed)
+            .unwrap();
+        assert_eq!(
+            latest_reservation_state(first.as_ref(), "job_1"),
+            "released"
+        );
+    }
+
+    #[test]
+    fn dispatch_claim_requires_the_matching_pending_admission_hold() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        admit(&store, "job_1", &default_admission());
+        {
+            let connection = store.connection.lock().unwrap();
+            connection
+                .execute(
+                    "UPDATE runtime_admission_reservations
+                     SET definition_key='other-node'
+                     WHERE subject_kind='job' AND subject_id='job_1'
+                       AND lifecycle_state='pending'",
+                    [],
+                )
+                .unwrap();
+        }
+
+        assert!(matches!(
+            store.try_claim_admitted_worker("job_1", "worker_1"),
+            Err(StoreError::CorruptState(_))
+        ));
+        let unchanged = store.get(&context(1), "job_1").unwrap();
+        assert_eq!(unchanged.state, JobState::Admitted);
+        assert_eq!(unchanged.attempt, 0);
+        assert_eq!(unchanged.worker_instance_id, None);
+        assert_eq!(unchanged.workspace_path, "runtime/jobs/job_1/workspace");
+        assert_eq!(latest_reservation_state(&store, "job_1"), "pending");
+    }
+
+    #[test]
+    fn reservation_settlement_consumes_exact_claim_and_started_authority() {
+        let (_directory, store) = store();
+        let admission = registered_admission("learn-node", ResourceClass::Core, 128, 8);
+        for (job_id, key) in [
+            ("job_exact", "request_exact"),
+            ("job_scope", "request_scope"),
+            ("job_identity", "request_identity"),
+            ("job_service", "request_service"),
+        ] {
+            let mut job = input(job_id, key);
+            job.resource_class = "core".into();
+            store.submit_raw(&job).unwrap();
+            admit(&store, job_id, &admission);
+        }
+
+        let exact = claim(&store, "job_exact", "worker_exact");
+        let replay = illicit_replay_claim(&exact);
+        let exact_identity = exact.identity().clone();
+        let settled = store
+            .settle_job_reservation(
+                exact,
+                ProcessTreeResidency::worker_for_test(
+                    store.generation_scope.clone(),
+                    exact_identity.clone(),
+                ),
+            )
+            .unwrap();
+        assert_eq!(settled, exact_identity);
+        assert!(matches!(
+            store.settle_job_reservation(
+                replay,
+                ProcessTreeResidency::worker_for_test(
+                    store.generation_scope.clone(),
+                    settled.clone(),
+                ),
+            ),
+            Err(StoreError::InvalidAdmissionReservationState { .. })
+        ));
+
+        let wrong_scope = claim(&store, "job_scope", "worker_scope");
+        let foreign_scope = RuntimeGenerationScope::from_trusted_data_root_identity(7, 11);
+        assert_ne!(foreign_scope, store.generation_scope);
+        let wrong_scope_identity = wrong_scope.identity().clone();
+        assert!(matches!(
+            store.settle_job_reservation(
+                wrong_scope,
+                ProcessTreeResidency::worker_for_test(foreign_scope, wrong_scope_identity),
+            ),
+            Err(StoreError::GenerationAuthorityMismatch)
+        ));
+
+        let wrong_identity = claim(&store, "job_identity", "worker_identity");
+        let mismatched = WorkerIdentity {
+            job_id: wrong_identity.identity().job_id.clone(),
+            attempt: wrong_identity.identity().attempt,
+            worker_instance_id: "other_worker".into(),
+        };
+        assert!(matches!(
+            store.settle_job_reservation(
+                wrong_identity,
+                ProcessTreeResidency::worker_for_test(store.generation_scope.clone(), mismatched,),
+            ),
+            Err(StoreError::StaleWorker(_))
+        ));
+
+        let service = claim(&store, "job_service", "worker_service");
+        assert!(matches!(
+            store.settle_job_reservation(
+                service,
+                ProcessTreeResidency::service_for_test(
+                    store.generation_scope.clone(),
+                    "hermes",
+                    "service_1",
+                ),
+            ),
+            Err(StoreError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn legacy_v3_assigned_workspace_remains_readable_for_safe_restart_drain() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        admit(&store, "job_1", &default_admission());
+        let claim = claim(&store, "job_1", "worker_1");
+        assert_eq!(
+            claim.job().workspace_path,
+            "runtime/jobs/job_1/attempts/1/worker_1/workspace"
+        );
+        drop(claim);
+        {
+            let connection = store.connection.lock().unwrap();
+            connection
+                .execute(
+                    "UPDATE runtime_jobs SET workspace_path='runtime/jobs/job_1/workspace'
+                     WHERE job_id='job_1' AND state='starting'",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let legacy = store.get(&context(1), "job_1").unwrap();
+        assert_eq!(legacy.state, JobState::Starting);
+        assert_eq!(legacy.attempt, 1);
+        assert_eq!(legacy.worker_instance_id.as_deref(), Some("worker_1"));
+        assert_eq!(legacy.workspace_path, "runtime/jobs/job_1/workspace");
+        let reconciled = reconcile_after_restart(&store).unwrap();
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].state, JobState::Interrupted);
+        assert_eq!(latest_reservation_state(&store, "job_1"), "released");
+    }
+
+    #[test]
+    fn replayed_dispatch_claim_is_rejected_and_releases_only_once() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        admit(&store, "job_1", &default_admission());
+        let claim = claim(&store, "job_1", "worker_1");
+        // Safe callers cannot clone this authority. Constructing a duplicate is
+        // possible only here, inside the defining module, to verify that the
+        // durable predicates also reject an illicit replay.
+        let replay = WorkerDispatchClaim {
+            generation_scope: claim.generation_scope.clone(),
+            identity: claim.identity.clone(),
+            job: claim.job.clone(),
+        };
+
+        let failed = store
+            .finish_worker_claim_before_residency(claim, PreResidencyClaimDisposition::SpawnFailed)
+            .unwrap();
+        assert_eq!(failed.state, JobState::Interrupted);
+        assert!(matches!(
+            store.finish_worker_claim_before_residency(
+                replay,
+                PreResidencyClaimDisposition::SpawnFailed,
+            ),
+            Err(StoreError::WorkerEventInState { .. })
+        ));
+        assert_eq!(active_job_reservation_count(&store, "job_1"), 0);
+        assert_eq!(latest_reservation_state(&store, "job_1"), "released");
+        let events = store.events_after(&context(1), "job_1", 0, 20).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "reservation-released")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn cancellation_wins_a_claimed_pre_residency_spawn_failure() {
+        let (_directory, store) = store();
+        let job_owner = context(1);
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        admit(&store, "job_1", &default_admission());
+        let claim = claim(&store, "job_1", "worker_1");
+
+        let cancelling = store.request_cancellation(&job_owner, "job_1").unwrap();
+        assert_eq!(cancelling.state, JobState::Cancelling);
+        let cancelled = store
+            .finish_worker_claim_before_residency(
+                claim,
+                PreResidencyClaimDisposition::SpawnResourceExhausted,
+            )
+            .unwrap();
+        assert_eq!(cancelled.state, JobState::Cancelled);
+        assert!(cancelled.cancellation_requested);
+        assert_eq!(cancelled.failure_code, None);
+        assert_eq!(cancelled.failure_message, None);
+        assert_eq!(active_job_reservation_count(&store, "job_1"), 0);
+        assert_eq!(latest_reservation_state(&store, "job_1"), "released");
+        let events = store.events_after(&job_owner, "job_1", 0, 20).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "cancellation-requested")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .find(|event| event.event_type == "cancelled")
+                .unwrap()
+                .payload["code"],
+            "WORKER_CANCELLED_BEFORE_TREE_RESIDENCY"
+        );
+    }
+
+    #[test]
+    fn pre_started_tree_exit_finalizer_is_exact_cancel_safe_and_single_use() {
+        let (_directory, store) = store();
+        let admission = registered_admission("learn-node", ResourceClass::Core, 128, 8);
+        for (job_id, key) in [
+            ("job_exit", "request_exit"),
+            ("job_cancel", "request_cancel"),
+            ("job_started", "request_started"),
+            ("job_mismatch", "request_mismatch"),
+            ("job_service", "request_service"),
+            ("job_scope", "request_scope"),
+            ("job_resident", "request_resident"),
+        ] {
+            let mut job = input(job_id, key);
+            job.resource_class = "core".into();
+            store.submit_raw(&job).unwrap();
+            admit(&store, job_id, &admission);
+        }
+
+        let exited = claim(&store, "job_exit", "worker_exit");
+        let replay = illicit_replay_claim(&exited);
+        let exited_identity = exited.identity().clone();
+        let failed = store
+            .finish_worker_claim_after_tree_exit(
+                exited,
+                ProcessTreeExit::worker_release_for_test_in_scope(
+                    store.generation_scope.clone(),
+                    exited_identity.clone(),
+                    ProcessExitClassification::SupervisorFailure,
+                ),
+            )
+            .unwrap();
+        assert_eq!(failed.state, JobState::Failed);
+        assert_eq!(
+            failed.failure_code.as_deref(),
+            Some("WORKER_SUPERVISION_FAILED_BEFORE_STARTED")
+        );
+        assert_eq!(latest_reservation_state(&store, "job_exit"), "released");
+        assert!(matches!(
+            store.finish_worker_claim_after_tree_exit(
+                replay,
+                ProcessTreeExit::worker_release_for_test_in_scope(
+                    store.generation_scope.clone(),
+                    exited_identity,
+                    ProcessExitClassification::SupervisorFailure,
+                ),
+            ),
+            Err(StoreError::WorkerEventInState { .. })
+        ));
+        assert_eq!(
+            store
+                .events_after(&context(1), "job_exit", 0, 20)
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "reservation-released")
+                .count(),
+            1
+        );
+
+        let cancelled_claim = claim(&store, "job_cancel", "worker_cancel");
+        let cancelled_identity = cancelled_claim.identity().clone();
+        store
+            .request_cancellation(&context(1), "job_cancel")
+            .unwrap();
+        let cancelled = store
+            .finish_worker_claim_after_tree_exit(
+                cancelled_claim,
+                ProcessTreeExit::worker_release_for_test_in_scope(
+                    store.generation_scope.clone(),
+                    cancelled_identity,
+                    ProcessExitClassification::ResourceExhausted,
+                ),
+            )
+            .unwrap();
+        assert_eq!(cancelled.state, JobState::Cancelled);
+        assert_eq!(cancelled.failure_code, None);
+        assert_eq!(latest_reservation_state(&store, "job_cancel"), "released");
+
+        let started_claim = claim(&store, "job_started", "worker_started");
+        let started_identity = started_claim.identity().clone();
+        assert!(matches!(
+            store.finish_worker_claim_after_tree_exit(
+                started_claim,
+                ProcessTreeExit::worker_release_after_started_for_test_in_scope(
+                    store.generation_scope.clone(),
+                    started_identity,
+                ),
+            ),
+            Err(StoreError::InvalidInput(_))
+        ));
+        assert_eq!(
+            store.get(&context(1), "job_started").unwrap().state,
+            JobState::Starting
+        );
+        assert_eq!(latest_reservation_state(&store, "job_started"), "pending");
+
+        let mismatch_claim = claim(&store, "job_mismatch", "worker_mismatch");
+        let mismatch_identity = WorkerIdentity {
+            job_id: mismatch_claim.identity().job_id.clone(),
+            attempt: mismatch_claim.identity().attempt,
+            worker_instance_id: "other_worker".into(),
+        };
+        assert!(matches!(
+            store.finish_worker_claim_after_tree_exit(
+                mismatch_claim,
+                ProcessTreeExit::worker_release_for_test_in_scope(
+                    store.generation_scope.clone(),
+                    mismatch_identity,
+                    ProcessExitClassification::SupervisorFailure,
+                ),
+            ),
+            Err(StoreError::StaleWorker(_))
+        ));
+
+        let service_claim = claim(&store, "job_service", "worker_service");
+        assert!(matches!(
+            store.finish_worker_claim_after_tree_exit(
+                service_claim,
+                ProcessTreeExit::service_release_for_test_in_scope(
+                    store.generation_scope.clone(),
+                    "hermes",
+                    "service_1",
+                ),
+            ),
+            Err(StoreError::InvalidInput(_))
+        ));
+
+        let scope_claim = claim(&store, "job_scope", "worker_scope");
+        let scope_identity = scope_claim.identity().clone();
+        assert!(matches!(
+            store.finish_worker_claim_after_tree_exit(
+                scope_claim,
+                ProcessTreeExit::worker_release_for_test_in_scope(
+                    RuntimeGenerationScope::from_trusted_data_root_identity(7, 11),
+                    scope_identity,
+                    ProcessExitClassification::SupervisorFailure,
+                ),
+            ),
+            Err(StoreError::GenerationAuthorityMismatch)
+        ));
+
+        let resident_claim = claim(&store, "job_resident", "worker_resident");
+        let resident_replay = illicit_replay_claim(&resident_claim);
+        let resident_identity = settle_claim(&store, resident_claim);
+        assert!(matches!(
+            store.finish_worker_claim_after_tree_exit(
+                resident_replay,
+                ProcessTreeExit::worker_release_for_test_in_scope(
+                    store.generation_scope.clone(),
+                    resident_identity,
+                    ProcessExitClassification::SupervisorFailure,
+                ),
+            ),
+            Err(StoreError::InvalidAdmissionReservationState { .. })
+        ));
+        assert_eq!(latest_reservation_state(&store, "job_resident"), "resident");
     }
 
     #[test]
@@ -5183,15 +6304,15 @@ mod tests {
         let (_directory, store) = store();
         store.submit_raw(&input("job_1", "request_1")).unwrap();
         admit(&store, "job_1", &default_admission());
-        let identity = store.assign_worker("job_1", "worker_1").unwrap();
+        let claim = claim(&store, "job_1", "worker_1");
 
         let failed = store
-            .worker_start_failed_after_assignment_before_tree_residency(&identity, false)
+            .finish_worker_claim_before_residency(claim, PreResidencyClaimDisposition::SpawnFailed)
             .unwrap();
         assert_eq!(failed.state, JobState::Interrupted);
         assert_eq!(
             failed.failure_code.as_deref(),
-            Some("WORKER_START_FAILED_AFTER_ASSIGNMENT")
+            Some("WORKER_START_FAILED_BEFORE_TREE_RESIDENCY")
         );
         assert_eq!(latest_reservation_state(&store, "job_1"), "released");
     }
@@ -5201,15 +6322,26 @@ mod tests {
         let (_directory, store) = store();
         store.submit_raw(&input("job_1", "request_1")).unwrap();
         admit(&store, "job_1", &default_admission());
-        let identity = store.assign_worker("job_1", "worker_1").unwrap();
-        store.settle_job_reservation(&identity).unwrap();
+        let claim = claim(&store, "job_1", "worker_1");
+        let replay = WorkerDispatchClaim {
+            generation_scope: claim.generation_scope.clone(),
+            identity: claim.identity.clone(),
+            job: claim.job.clone(),
+        };
+        settle_claim(&store, claim);
 
         assert!(matches!(
-            store.worker_start_failed_after_assignment_before_tree_residency(&identity, false),
+            store.finish_worker_claim_before_residency(
+                replay,
+                PreResidencyClaimDisposition::SpawnFailed,
+            ),
             Err(StoreError::InvalidAdmissionReservationState { .. })
         ));
         assert_eq!(latest_reservation_state(&store, "job_1"), "resident");
-        assert_eq!(store.get(&context(1), "job_1").unwrap().state, JobState::Starting);
+        assert_eq!(
+            store.get(&context(1), "job_1").unwrap().state,
+            JobState::Starting
+        );
     }
 
     #[test]
@@ -5217,7 +6349,8 @@ mod tests {
         let (_directory, store) = store();
         store.submit_raw(&input("job_1", "request_1")).unwrap();
         admit(&store, "job_1", &default_admission());
-        let identity = store.assign_worker("job_1", "worker_1").unwrap();
+        let claim = claim(&store, "job_1", "worker_1");
+        let identity = claim.identity().clone();
         let ready = WorkerEvent::Ready {
             identity: identity.clone(),
             sequence: 1,
@@ -5232,8 +6365,11 @@ mod tests {
         assert_eq!(unchanged.state, JobState::Starting);
         assert_eq!(unchanged.last_worker_sequence, 0);
 
-        store.settle_job_reservation(&identity).unwrap();
-        assert_eq!(store.apply_worker_event(&ready).unwrap().state, JobState::Running);
+        settle_claim(&store, claim);
+        assert_eq!(
+            store.apply_worker_event(&ready).unwrap().state,
+            JobState::Running
+        );
     }
 
     #[test]
@@ -5251,21 +6387,21 @@ mod tests {
         assert_eq!(intent.state, JobState::Running);
         assert_eq!(intent.finished_at, None);
         assert_eq!(latest_reservation_state(&store, "job_1"), "resident");
-        assert_eq!(store.apply_worker_event(&completion).unwrap().state, JobState::Running);
+        assert_eq!(
+            store.apply_worker_event(&completion).unwrap().state,
+            JobState::Running
+        );
         let pending = store
             .pending_worker_completion_intents_for_recovery()
             .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].identity(), &identity);
         assert_eq!(pending[0].sequence(), 2);
-        assert_eq!(
-            pending[0].result_path(),
-            "runtime/jobs/job_1/result.json"
-        );
+        assert_eq!(pending[0].result_path(), "runtime/jobs/job_1/result.json");
         assert!(matches!(
-            store.worker_exited_without_terminal(
-                &ProcessTreeExit::worker_release_for_test(identity.clone()),
-            ),
+            store.worker_exited_without_terminal(&ProcessTreeExit::worker_release_for_test(
+                identity.clone()
+            ),),
             Err(StoreError::PendingCompletionIntent(_))
         ));
 
@@ -5367,12 +6503,7 @@ mod tests {
             .unwrap()
             .is_empty());
         let replay = store
-            .replay_job_events_snapshot(
-                &context(1),
-                "job_1",
-                0,
-                MAX_JOB_EVENT_REPLAY_RECORDS,
-            )
+            .replay_job_events_snapshot(&context(1), "job_1", 0, MAX_JOB_EVENT_REPLAY_RECORDS)
             .unwrap();
         assert!(replay
             .events
@@ -5420,7 +6551,10 @@ mod tests {
             store.confirm_validated_worker_completion(&identity, 2, &wrong_path, None),
             Err(StoreError::InvalidInput(_))
         ));
-        assert_eq!(store.get(&context(1), "job_1").unwrap().state, JobState::Running);
+        assert_eq!(
+            store.get(&context(1), "job_1").unwrap().state,
+            JobState::Running
+        );
         assert_eq!(latest_reservation_state(&store, "job_1"), "resident");
     }
 
@@ -5447,7 +6581,10 @@ mod tests {
         let cancelled = store.confirm_cancelled(&tree_exit).unwrap();
         assert_eq!(cancelled.state, JobState::Cancelled);
         assert_eq!(latest_reservation_state(&store, "job_1"), "released");
-        assert_eq!(store.confirm_cancelled(&tree_exit).unwrap().state, JobState::Cancelled);
+        assert_eq!(
+            store.confirm_cancelled(&tree_exit).unwrap().state,
+            JobState::Cancelled
+        );
     }
 
     #[test]
@@ -5466,7 +6603,10 @@ mod tests {
                     "job_2",
                     &default_admission(),
                     AdmissionPolicy::default(),
-                    || Ok(SystemCommit { total_mb: 0, limit_mb: 64 * 1024 }),
+                    || Ok(SystemCommit {
+                        total_mb: 0,
+                        limit_mb: 64 * 1024
+                    }),
                 )
                 .unwrap(),
             JobAdmissionResult::Admitted(_)
@@ -5574,37 +6714,33 @@ mod tests {
         assert_eq!(lookahead.events.len(), 2);
 
         let before_release = store
-            .replay_job_events_snapshot(
-                &context(1),
-                "job_1",
-                0,
-                MAX_JOB_EVENT_REPLAY_RECORDS,
-            )
+            .replay_job_events_snapshot(&context(1), "job_1", 0, MAX_JOB_EVENT_REPLAY_RECORDS)
             .unwrap();
         assert_eq!(before_release.job.state, JobState::Failed);
         assert!(!before_release.public_event_stream_sealed);
         assert_eq!(
-            before_release.events.last().map(|event| event.event_type.as_str()),
+            before_release
+                .events
+                .last()
+                .map(|event| event.event_type.as_str()),
             Some("failed")
         );
 
         store
-            .release_job_reservation_after_tree_exit(
-                &ProcessTreeExit::worker_release_for_test(identity),
-            )
+            .release_job_reservation_after_tree_exit(&ProcessTreeExit::worker_release_for_test(
+                identity,
+            ))
             .unwrap();
         let after_release = store
-            .replay_job_events_snapshot(
-                &context(1),
-                "job_1",
-                0,
-                MAX_JOB_EVENT_REPLAY_RECORDS,
-            )
+            .replay_job_events_snapshot(&context(1), "job_1", 0, MAX_JOB_EVENT_REPLAY_RECORDS)
             .unwrap();
         assert!(after_release.public_event_stream_sealed);
         assert_eq!(after_release.events.len(), before_release.events.len() + 1);
         assert_eq!(
-            after_release.events.last().map(|event| event.event_type.as_str()),
+            after_release
+                .events
+                .last()
+                .map(|event| event.event_type.as_str()),
             Some("reservation-released")
         );
     }
@@ -5623,23 +6759,13 @@ mod tests {
             })
             .unwrap();
         let before_restart = store
-            .replay_job_events_snapshot(
-                &context(1),
-                "job_1",
-                0,
-                MAX_JOB_EVENT_REPLAY_RECORDS,
-            )
+            .replay_job_events_snapshot(&context(1), "job_1", 0, MAX_JOB_EVENT_REPLAY_RECORDS)
             .unwrap();
         assert!(!before_restart.public_event_stream_sealed);
 
         assert!(reconcile_after_restart(&store).unwrap().is_empty());
         let after_restart = store
-            .replay_job_events_snapshot(
-                &context(1),
-                "job_1",
-                0,
-                MAX_JOB_EVENT_REPLAY_RECORDS,
-            )
+            .replay_job_events_snapshot(&context(1), "job_1", 0, MAX_JOB_EVENT_REPLAY_RECORDS)
             .unwrap();
         assert!(after_restart.public_event_stream_sealed);
         assert_eq!(after_restart.events, before_restart.events);
@@ -5690,7 +6816,13 @@ mod tests {
         let reopened =
             JobStore::open_for_test(directory.path().join("runtime-v2.sqlite3")).unwrap();
         assert_eq!(reopened.checkpoints(&job_owner, "job_1").unwrap().len(), 1);
-        assert!(reopened.events_after(&job_owner, "job_1", 0, 100).unwrap().len() >= 3);
+        assert!(
+            reopened
+                .events_after(&job_owner, "job_1", 0, 100)
+                .unwrap()
+                .len()
+                >= 3
+        );
     }
 
     #[test]
@@ -5757,7 +6889,13 @@ mod tests {
             store.request_cancellation(&job_owner, "job_1").unwrap(),
             cancelled
         );
-        assert_eq!(store.events_after(&job_owner, "job_1", 0, 10).unwrap().len(), 3);
+        assert_eq!(
+            store
+                .events_after(&job_owner, "job_1", 0, 10)
+                .unwrap()
+                .len(),
+            3
+        );
         assert!(reconcile_after_restart(&store).unwrap().is_empty());
     }
 
@@ -5807,7 +6945,10 @@ mod tests {
                     "job_2",
                     &default_admission(),
                     AdmissionPolicy::default(),
-                    || Ok(SystemCommit { total_mb: 0, limit_mb: 64 * 1024 }),
+                    || Ok(SystemCommit {
+                        total_mb: 0,
+                        limit_mb: 64 * 1024
+                    }),
                 )
                 .unwrap(),
             JobAdmissionResult::Admitted(_)
@@ -5820,7 +6961,8 @@ mod tests {
         let job_owner = context(1);
         store.submit_raw(&input("job_1", "request_1")).unwrap();
         admit(&store, "job_1", &default_admission());
-        let identity = store.assign_worker("job_1", "worker_1").unwrap();
+        let claim = claim(&store, "job_1", "worker_1");
+        let identity = claim.identity().clone();
 
         let cancelling = store.request_cancellation(&job_owner, "job_1").unwrap();
         assert_eq!(cancelling.state, JobState::Cancelling);
@@ -5840,10 +6982,13 @@ mod tests {
             store.confirm_cancelled(&tree_exit),
             Err(StoreError::InvalidAdmissionReservationState { .. })
         ));
-        assert_eq!(store.get(&job_owner, "job_1").unwrap().state, JobState::Cancelling);
+        assert_eq!(
+            store.get(&job_owner, "job_1").unwrap().state,
+            JobState::Cancelling
+        );
         assert_eq!(latest_reservation_state(&store, "job_1"), "pending");
 
-        store.settle_job_reservation(&identity).unwrap();
+        settle_claim(&store, claim);
         let cancelled = store.confirm_cancelled(&tree_exit).unwrap();
         assert_eq!(cancelled.state, JobState::Cancelled);
         assert_eq!(latest_reservation_state(&store, "job_1"), "released");
@@ -5912,11 +7057,10 @@ mod tests {
         }
         let admission = registered_admission("learn-node", ResourceClass::Core, 128, 2);
         admit(&store, "job_1", &admission);
-        store.assign_worker("job_1", "worker_1").unwrap();
+        claim_identity(&store, "job_1", "worker_1");
 
         admit(&store, "job_2", &admission);
-        let cancelling_identity = store.assign_worker("job_2", "worker_2").unwrap();
-        store.settle_job_reservation(&cancelling_identity).unwrap();
+        let cancelling_identity = claim_and_settle(&store, "job_2", "worker_2");
         store
             .apply_worker_event(&WorkerEvent::Ready {
                 identity: cancelling_identity,
@@ -5928,19 +7072,13 @@ mod tests {
 
         let reconciled = reconcile_after_restart(&store).unwrap();
         assert_eq!(reconciled.len(), 2);
-        let pre_ready = reconciled
-            .iter()
-            .find(|job| job.job_id == "job_1")
-            .unwrap();
+        let pre_ready = reconciled.iter().find(|job| job.job_id == "job_1").unwrap();
         assert_eq!(pre_ready.state, JobState::Interrupted);
         assert_eq!(
             pre_ready.failure_code.as_deref(),
             Some("RUNTIME_RESTART_BEFORE_WORKER_READY")
         );
-        let cancelling = reconciled
-            .iter()
-            .find(|job| job.job_id == "job_2")
-            .unwrap();
+        let cancelling = reconciled.iter().find(|job| job.job_id == "job_2").unwrap();
         assert_eq!(cancelling.state, JobState::Cancelled);
         assert_eq!(cancelling.failure_code, None);
         assert_eq!(latest_reservation_state(&store, "job_2"), "released");
@@ -6040,7 +7178,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_v1_schema_is_explicitly_migrated_through_v3() {
+    fn valid_v1_schema_is_explicitly_migrated_through_v4() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("runtime-v1.sqlite3");
         let connection = Connection::open(&path).unwrap();
@@ -6071,9 +7209,18 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, 3);
+        let dispatch_index: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='runtime_jobs_admitted_fifo_idx'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 4);
         assert_eq!(reservation_table, 1);
         assert_eq!(input_table, 1);
+        assert_eq!(dispatch_index, 1);
     }
 
     #[test]
@@ -6172,24 +7319,44 @@ mod tests {
     fn malformed_v3_input_binding_schema_is_rejected() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("malformed-v3.sqlite3");
+        create_v3_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE runtime_job_inputs;
+                 CREATE TABLE runtime_job_inputs (
+                     job_id TEXT PRIMARY KEY,
+                     request_digest TEXT NOT NULL,
+                     canonical_request_payload BLOB NOT NULL
+                 );",
+            )
+            .unwrap();
+        drop(connection);
+        assert!(matches!(
+            JobStore::open_for_test(path),
+            Err(StoreError::SchemaMismatch { version: 3, .. })
+        ));
+    }
+
+    #[test]
+    fn malformed_v4_dispatch_fifo_index_is_rejected() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("malformed-v4-index.sqlite3");
         let store = JobStore::open_for_test(&path).unwrap();
         {
             let connection = store.connection.lock().unwrap();
             connection
                 .execute_batch(
-                    "DROP TABLE runtime_job_inputs;
-                     CREATE TABLE runtime_job_inputs (
-                         job_id TEXT PRIMARY KEY,
-                         request_digest TEXT NOT NULL,
-                         canonical_request_payload BLOB NOT NULL
-                     );",
+                    "DROP INDEX runtime_jobs_admitted_fifo_idx;
+                     CREATE INDEX runtime_jobs_admitted_fifo_idx
+                     ON runtime_jobs(updated_at, job_id) WHERE state='queued';",
                 )
                 .unwrap();
         }
         drop(store);
         assert!(matches!(
             JobStore::open_for_test(path),
-            Err(StoreError::SchemaMismatch { version: 3, .. })
+            Err(StoreError::SchemaMismatch { version: 4, .. })
         ));
     }
 
@@ -6198,12 +7365,14 @@ mod tests {
         let directory = tempdir().unwrap();
         let future_path = directory.path().join("future.sqlite3");
         let connection = Connection::open(&future_path).unwrap();
-        connection.execute_batch("PRAGMA user_version = 4;").unwrap();
+        connection
+            .execute_batch("PRAGMA user_version = 5;")
+            .unwrap();
         drop(connection);
         assert!(matches!(
             JobStore::open_for_test(future_path),
             Err(StoreError::UnsupportedSchemaVersion {
-                found: 4,
+                found: 5,
                 supported: SCHEMA_VERSION
             })
         ));

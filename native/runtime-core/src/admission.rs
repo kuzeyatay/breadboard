@@ -92,10 +92,7 @@ pub struct AdmissionPolicy {
 
 impl Default for AdmissionPolicy {
     fn default() -> Self {
-        Self::with_reserve_floors(
-            ADMISSION_RESERVE_FLOOR_MB,
-            ADMISSION_RESERVE_FLOOR_MB,
-        )
+        Self::with_reserve_floors(ADMISSION_RESERVE_FLOOR_MB, ADMISSION_RESERVE_FLOOR_MB)
     }
 }
 
@@ -166,10 +163,7 @@ impl AdmissionPolicy {
     /// This seam is crate-private because reserve configuration is resource
     /// authority. Both inputs are clamped so even a malformed future trusted
     /// configuration fails safe instead of weakening the architecture floor.
-    pub(crate) fn with_reserve_floors(
-        minimum_reserve_mb: u64,
-        critical_reserve_mb: u64,
-    ) -> Self {
+    pub(crate) fn with_reserve_floors(minimum_reserve_mb: u64, critical_reserve_mb: u64) -> Self {
         Self {
             minimum_reserve_mb: minimum_reserve_mb.max(ADMISSION_RESERVE_FLOOR_MB),
             critical_reserve_mb: critical_reserve_mb.max(ADMISSION_RESERVE_FLOOR_MB),
@@ -314,14 +308,8 @@ mod tests {
     #[test]
     fn policy_construction_clamps_both_architecture_reserves() {
         let policy = AdmissionPolicy::with_reserve_floors(0, 1);
-        assert_eq!(
-            policy.minimum_reserve_mb(),
-            ADMISSION_RESERVE_FLOOR_MB
-        );
-        assert_eq!(
-            policy.critical_reserve_mb(),
-            ADMISSION_RESERVE_FLOOR_MB
-        );
+        assert_eq!(policy.minimum_reserve_mb(), ADMISSION_RESERVE_FLOOR_MB);
+        assert_eq!(policy.critical_reserve_mb(), ADMISSION_RESERVE_FLOOR_MB);
         assert!(policy.one_heavyweight_at_a_time());
     }
 

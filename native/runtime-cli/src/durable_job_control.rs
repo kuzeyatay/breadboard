@@ -1,7 +1,7 @@
 use crate::control::{RuntimeJobControl, RuntimeJobControlError};
 use breadboard_runtime_core::{
-    runtime_job_events_response, runtime_job_response, AuthenticatedJobContext, JobStore,
-    Registry, RegistryError, RuntimePaths, StoreError,
+    runtime_job_events_response, runtime_job_response, AuthenticatedJobContext, JobStore, Registry,
+    RegistryError, RuntimePaths, StoreError,
 };
 use breadboard_runtime_protocol::{
     JobSubmissionPayload, RuntimeJobEventsResponse, RuntimeJobResponse,
@@ -94,10 +94,7 @@ impl RuntimeJobControl for DurableRuntimeJobControl {
     }
 }
 
-fn replay_query_bounds(
-    after: u64,
-    requested_limit: usize,
-) -> Result<i64, RuntimeJobControlError> {
+fn replay_query_bounds(after: u64, requested_limit: usize) -> Result<i64, RuntimeJobControlError> {
     if after > MAX_JSON_SAFE_INTEGER
         || requested_limit == 0
         || requested_limit > MAX_JOB_EVENT_REPLAY_RECORDS
