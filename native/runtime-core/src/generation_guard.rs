@@ -91,6 +91,10 @@ pub enum GenerationGuardError {
     OwnerWait { code: u32 },
     #[error("waiting for the Runtime V2 generation owner returned unexpected status {status}")]
     OwnerWaitStatus { status: u32 },
+    #[error("starting the Runtime V2 generation-owner keeper failed with Windows error {code}")]
+    OwnerKeeperStart { code: u32 },
+    #[error("the Runtime V2 generation-owner keeper exited before returning authority")]
+    OwnerKeeperDisconnected,
     #[error(
         "creating or opening the Runtime V2 generation drain job failed with Windows error {code}"
     )]
@@ -109,19 +113,17 @@ pub enum GenerationGuardError {
 
 /// Process-lifetime ownership of one Runtime V2 generation.
 ///
-/// On Windows the mutex and outer Job Object handles are intentionally wrapped
-/// in `ManuallyDrop`: an accidental Rust drop must not release the generation
-/// boundary while this process can still execute. The operating system closes
-/// both handles at process termination. Normal host integration must therefore
-/// retain this value for the entire process and must never call `ReleaseMutex`.
+/// On Windows a dedicated keeper thread owns the named mutex until process
+/// termination. The outer Job Object handle is intentionally wrapped in
+/// `ManuallyDrop`; dropping this Rust value cannot release either generation
+/// boundary while another thread in this process can still execute. The
+/// operating system closes both handles when the process terminates.
 pub struct RuntimeGenerationGuard {
     scope: RuntimeGenerationScope,
-    // A Windows mutex is owned by the acquiring thread. Preventing this guard
-    // from becoming Send/Sync keeps that thread affinity explicit even though
-    // launch membership below is safe to clone onto dispatcher threads.
+    // Keep the primary authority non-Send/Sync. Dispatcher threads receive only
+    // the weaker cloneable launch membership below; kernel mutex ownership is
+    // independently retained by the dedicated process-lifetime keeper.
     _thread_affinity: std::marker::PhantomData<std::rc::Rc<()>>,
-    #[cfg(windows)]
-    owner_mutex: std::mem::ManuallyDrop<windows::OwnedHandle>,
     #[cfg(windows)]
     drain_job: std::mem::ManuallyDrop<std::sync::Arc<windows::OwnedHandle>>,
 }
@@ -130,7 +132,7 @@ impl fmt::Debug for RuntimeGenerationGuard {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let _ = (&self.scope, &self._thread_affinity);
         #[cfg(windows)]
-        let _ = (&self.owner_mutex, &self.drain_job);
+        let _ = &self.drain_job;
         formatter.write_str("RuntimeGenerationGuard(<process-lifetime kernel authority>)")
     }
 }
@@ -158,10 +160,10 @@ impl RuntimeGenerationGuard {
         let result: Result<(Self, PriorGenerationDrained), GenerationGuardError> = (|| {
             let owner_wait_ms = bounded_wait_millis(owner_wait, true)?;
             let drain_wait = validate_drain_wait(drain_wait)?;
-            let owner_mutex =
-                windows::acquire_owner_mutex(&scope.owner_object_name(), owner_wait_ms)?;
-            let drain_job = std::sync::Arc::new(windows::open_and_drain_job(
+            let drain_job = std::sync::Arc::new(windows::acquire_generation_authority(
+                &scope.owner_object_name(),
                 &scope.drain_object_name(),
+                owner_wait_ms,
                 drain_wait,
             )?);
             let proof = PriorGenerationDrained {
@@ -172,7 +174,6 @@ impl RuntimeGenerationGuard {
                 Self {
                     scope,
                     _thread_affinity: std::marker::PhantomData,
-                    owner_mutex: std::mem::ManuallyDrop::new(owner_mutex),
                     drain_job: std::mem::ManuallyDrop::new(drain_job),
                 },
                 proof,
@@ -292,6 +293,7 @@ mod windows {
     use std::ffi::c_void;
     use std::mem::{size_of, zeroed};
     use std::ptr::{null, null_mut};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
     use windows_sys::Win32::Foundation::{
@@ -306,7 +308,7 @@ mod windows {
         JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
     };
-    use windows_sys::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+    use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
     const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -330,10 +332,65 @@ mod windows {
         }
     }
 
-    pub(super) fn acquire_owner_mutex(
-        name: &str,
-        wait_ms: u32,
+    /// Starts the sole thread that owns the named mutex, then performs the
+    /// bounded prior-generation drain on that same thread. On success the
+    /// drained Job handle is transferred to the caller and the keeper parks
+    /// forever with the mutex handle live on its stack. If any step fails, the
+    /// thread exits and Windows releases/abandons the mutex before process work
+    /// can continue.
+    pub(super) fn acquire_generation_authority(
+        owner_name: &str,
+        drain_name: &str,
+        owner_wait_ms: u32,
+        drain_wait: Duration,
     ) -> Result<OwnedHandle, GenerationGuardError> {
+        let owner_name = owner_name.to_owned();
+        let drain_name = drain_name.to_owned();
+        let (sender, receiver) = mpsc::sync_channel(0);
+        thread::Builder::new()
+            .name("runtime-generation-owner".into())
+            .spawn(move || {
+                let owner = match acquire_owner_mutex(&owner_name, owner_wait_ms) {
+                    Ok(owner) => owner,
+                    Err(error) => {
+                        let _ = sender.send(Err(error));
+                        return;
+                    }
+                };
+                let drain = match open_and_drain_job(&drain_name, drain_wait) {
+                    Ok(drain) => drain,
+                    Err(error) => {
+                        release_owned_mutex(&owner);
+                        let _ = sender.send(Err(error));
+                        return;
+                    }
+                };
+                if sender.send(Ok(drain)).is_err() {
+                    release_owned_mutex(&owner);
+                    return;
+                }
+
+                // The successful generation boundary is process-lifetime, not
+                // guard-lifetime. No sender or Rust drop can ask this thread to
+                // release the mutex while the process remains executable.
+                let _owner = std::mem::ManuallyDrop::new(owner);
+                loop {
+                    thread::park();
+                }
+            })
+            .map_err(|error| GenerationGuardError::OwnerKeeperStart {
+                code: error
+                    .raw_os_error()
+                    .and_then(|code| u32::try_from(code).ok())
+                    .unwrap_or(u32::MAX),
+            })?;
+
+        receiver
+            .recv()
+            .map_err(|_| GenerationGuardError::OwnerKeeperDisconnected)?
+    }
+
+    fn acquire_owner_mutex(name: &str, wait_ms: u32) -> Result<OwnedHandle, GenerationGuardError> {
         let name = wide_name(name);
         unsafe { SetLastError(ERROR_SUCCESS) };
         let raw = unsafe { CreateMutexW(null(), 1, name.as_ptr()) };
@@ -355,7 +412,13 @@ mod windows {
         }
     }
 
-    pub(super) fn open_and_drain_job(
+    fn release_owned_mutex(handle: &OwnedHandle) {
+        unsafe {
+            let _ = ReleaseMutex(handle.raw());
+        }
+    }
+
+    fn open_and_drain_job(
         name: &str,
         drain_wait: Duration,
     ) -> Result<OwnedHandle, GenerationGuardError> {

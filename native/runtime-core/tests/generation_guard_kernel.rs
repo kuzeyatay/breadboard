@@ -41,6 +41,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ChildMode {
     Hold,
+    HoldAfterAcquireThreadExit,
     ExpectBusy,
     AcquireOnce,
 }
@@ -50,6 +51,7 @@ impl ChildMode {
     fn as_env(self) -> &'static str {
         match self {
             Self::Hold => "hold",
+            Self::HoldAfterAcquireThreadExit => "hold-after-acquire-thread-exit",
             Self::ExpectBusy => "expect-busy",
             Self::AcquireOnce => "acquire-once",
         }
@@ -58,6 +60,7 @@ impl ChildMode {
     fn from_env(value: &str) -> Self {
         match value {
             "hold" => Self::Hold,
+            "hold-after-acquire-thread-exit" => Self::HoldAfterAcquireThreadExit,
             "expect-busy" => Self::ExpectBusy,
             "acquire-once" => Self::AcquireOnce,
             other => panic!("unknown generation-guard child mode {other:?}"),
@@ -327,14 +330,13 @@ fn run_child(mode: ChildMode) {
     let runtime_root = env::var_os(RUNTIME_ROOT_ENV).expect("child runtime-root environment");
     let paths = RuntimePaths::new(data_root, app_root, runtime_root)
         .expect("establish child RuntimePaths authority");
-    let result = RuntimeGenerationGuard::acquire(
-        paths.runtime_generation_scope(),
-        Duration::ZERO,
-        DRAIN_TIMEOUT,
-    );
 
     match mode {
-        ChildMode::ExpectBusy => match result {
+        ChildMode::ExpectBusy => match RuntimeGenerationGuard::acquire(
+            paths.runtime_generation_scope(),
+            Duration::ZERO,
+            DRAIN_TIMEOUT,
+        ) {
             Err(GenerationGuardError::OwnerBusy) => {
                 eprintln!("OWNER_BUSY");
             }
@@ -342,15 +344,49 @@ fn run_child(mode: ChildMode) {
             Ok(_) => panic!("competing child acquired an already-owned generation scope"),
         },
         ChildMode::AcquireOnce => {
-            let (_guard, proof) = result.expect("fresh child must acquire generation scope");
+            let (_guard, proof) = RuntimeGenerationGuard::acquire(
+                paths.runtime_generation_scope(),
+                Duration::ZERO,
+                DRAIN_TIMEOUT,
+            )
+            .expect("fresh child must acquire generation scope");
             assert!(proof.matches_scope(&paths.runtime_generation_scope()));
             eprintln!("ACQUIRED");
         }
         ChildMode::Hold => {
-            let (_guard, proof) = result.expect("owner child must acquire generation scope");
+            let (_guard, proof) = RuntimeGenerationGuard::acquire(
+                paths.runtime_generation_scope(),
+                Duration::ZERO,
+                DRAIN_TIMEOUT,
+            )
+            .expect("owner child must acquire generation scope");
             assert!(proof.matches_scope(&paths.runtime_generation_scope()));
             eprintln!("READY");
             std::io::stderr().flush().expect("flush READY marker");
+
+            let mut command = String::new();
+            std::io::stdin()
+                .read_line(&mut command)
+                .expect("read release marker");
+            assert_eq!(command, "RELEASE\n", "unexpected parent command");
+            eprintln!("RELEASED");
+        }
+        ChildMode::HoldAfterAcquireThreadExit => {
+            let scope = paths.runtime_generation_scope();
+            let acquiring_thread = thread::spawn(move || {
+                let (guard, proof) =
+                    RuntimeGenerationGuard::acquire(scope.clone(), Duration::ZERO, DRAIN_TIMEOUT)
+                        .expect("owner thread must acquire generation scope");
+                assert!(proof.matches_scope(&scope));
+                drop(guard);
+            });
+            acquiring_thread
+                .join()
+                .expect("generation acquiring thread must exit normally");
+            eprintln!("READY_AFTER_ACQUIRE_THREAD_EXIT");
+            std::io::stderr()
+                .flush()
+                .expect("flush thread-exit READY marker");
 
             let mut command = String::new();
             std::io::stdin()
@@ -397,12 +433,12 @@ fn runtime_generation_guard_uses_real_cross_process_kernel_authority() {
 
     let mut owner_a = ChildSession::spawn(
         "first-scope owner",
-        ChildMode::Hold,
+        ChildMode::HoldAfterAcquireThreadExit,
         &data_a,
         &app,
         &runtime,
     );
-    owner_a.wait_for_stderr("READY", CHILD_START_TIMEOUT);
+    owner_a.wait_for_stderr("READY_AFTER_ACQUIRE_THREAD_EXIT", CHILD_START_TIMEOUT);
 
     let mut competing_a = ChildSession::spawn(
         "first-scope competitor",
