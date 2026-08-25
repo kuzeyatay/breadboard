@@ -1,11 +1,11 @@
 use crate::shutdown::ShutdownCoordinator;
 use breadboard_runtime_core::{AuthenticatedJobContext, ControlPlaneAuthority};
 use breadboard_runtime_protocol::{
-    parse_job_submission_payload, validate_identifier, validate_scope_id, JobSubmissionPayload, RuntimeCommandAck,
-    RuntimeControlErrorResponse, RuntimeJobEventsResponse, RuntimeJobResponse, RuntimeServiceStatus,
-    RuntimeStatusMessage, RUNTIME_CONTROL_PROTOCOL_VERSION, MAX_CONTROL_TOKEN_BYTES,
+    parse_job_submission_payload, validate_identifier, validate_scope_id, JobSubmissionPayload,
+    RuntimeCommandAck, RuntimeControlErrorResponse, RuntimeJobEventsResponse, RuntimeJobResponse,
+    RuntimeServiceStatus, RuntimeStatusMessage, MAX_CONTROL_TOKEN_BYTES,
     MAX_JOB_EVENT_REPLAY_RECORDS, MAX_JSON_SAFE_INTEGER, MAX_PROTOCOL_LINE_BYTES,
-    MAX_REQUEST_BODY_BYTES, MAX_SCOPE_ID_BYTES,
+    MAX_REQUEST_BODY_BYTES, MAX_SCOPE_ID_BYTES, RUNTIME_CONTROL_PROTOCOL_VERSION,
 };
 use serde::Serialize;
 use std::io::{self, Read, Write};
@@ -115,13 +115,17 @@ pub(crate) enum RuntimeJobControlError {
 
 enum JobRoute {
     Submit,
-    Inspect { job_id: String },
+    Inspect {
+        job_id: String,
+    },
     Events {
         job_id: String,
         after: u64,
         limit: usize,
     },
-    Cancel { job_id: String },
+    Cancel {
+        job_id: String,
+    },
 }
 
 /// Owns the complete untrusted request buffer so that a bearer token is
@@ -293,8 +297,19 @@ where
     let request = match read_request(stream, expected_authority, deadline) {
         Ok(request) => request,
         Err(RequestError::Io(error)) => return Err(ControlError::Connection(error)),
-        Err(RequestError::Deadline | RequestError::Closed | RequestError::Oversized | RequestError::Malformed) => {
-            let _ = write_response(stream, deadline, 400, "Bad Request", b"{\"error\":\"bad-request\"}");
+        Err(
+            RequestError::Deadline
+            | RequestError::Closed
+            | RequestError::Oversized
+            | RequestError::Malformed,
+        ) => {
+            let _ = write_response(
+                stream,
+                deadline,
+                400,
+                "Bad Request",
+                b"{\"error\":\"bad-request\"}",
+            );
             return Ok(());
         }
     };
@@ -314,14 +329,7 @@ where
     }
 
     if request.path == "/v1/jobs" || request.path.starts_with("/v1/jobs/") {
-        return serve_job_request(
-            stream,
-            deadline,
-            authority,
-            shutdown,
-            job_control,
-            &request,
-        );
+        return serve_job_request(stream, deadline, authority, shutdown, job_control, &request);
     }
 
     match (request.method.as_str(), request.path.as_str()) {
@@ -410,11 +418,7 @@ fn serve_job_request(
     };
 
     let Some(user_id) = request.user_id else {
-        return write_job_control_error(
-            stream,
-            deadline,
-            RuntimeJobControlError::InvalidRequest,
-        );
+        return write_job_control_error(stream, deadline, RuntimeJobControlError::InvalidRequest);
     };
     let context = match authority.authenticate_user(
         request.authorization.as_deref(),
@@ -424,11 +428,7 @@ fn serve_job_request(
     ) {
         Ok(context) => context,
         Err(_) => {
-            return write_job_control_error(
-                stream,
-                deadline,
-                RuntimeJobControlError::Forbidden,
-            )
+            return write_job_control_error(stream, deadline, RuntimeJobControlError::Forbidden)
         }
     };
 
@@ -639,7 +639,9 @@ fn parse_event_query(query: &str) -> Result<(u64, usize), JobRouteError> {
                 }
             }
             "limit" => {
-                let value = value.parse::<usize>().map_err(|_| JobRouteError::Malformed)?;
+                let value = value
+                    .parse::<usize>()
+                    .map_err(|_| JobRouteError::Malformed)?;
                 if value == 0
                     || value > MAX_JOB_EVENT_REPLAY_RECORDS
                     || limit.replace(value).is_some()
@@ -817,9 +819,7 @@ fn read_request(
         let remaining = expected_total - received.len();
         let mut chunk = [0_u8; 4096];
         let take = remaining.min(chunk.len());
-        let count = stream
-            .read(&mut chunk[..take])
-            .map_err(map_read_error)?;
+        let count = stream.read(&mut chunk[..take]).map_err(map_read_error)?;
         if count == 0 {
             return Err(RequestError::Closed);
         }
@@ -925,7 +925,9 @@ fn parse_request_head(
             if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
                 return Err(RequestError::Malformed);
             }
-            let length = value.parse::<usize>().map_err(|_| RequestError::Oversized)?;
+            let length = value
+                .parse::<usize>()
+                .map_err(|_| RequestError::Oversized)?;
             set_once(&mut content_length, length)?;
         } else if name.eq_ignore_ascii_case("content-type") {
             if value.len() > 128 {
@@ -945,9 +947,7 @@ fn parse_request_head(
             }
             set_once(&mut user_id, parsed)?;
         } else if name.eq_ignore_ascii_case(GARDEN_ID_HEADER) {
-            if value.len() > MAX_SCOPE_ID_BYTES
-                || validate_scope_id("gardenId", value).is_err()
-            {
+            if value.len() > MAX_SCOPE_ID_BYTES || validate_scope_id("gardenId", value).is_err() {
                 return Err(RequestError::Malformed);
             }
             set_once(&mut garden_id, value.to_string())?;
@@ -991,26 +991,33 @@ fn is_header_name(name: &str) -> bool {
             byte.is_ascii_alphanumeric()
                 || matches!(
                     byte,
-                    b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.'
-                        | b'^' | b'_' | b'`' | b'|' | b'~'
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
                 )
         })
 }
 
 fn invalid_header_value_character(character: char) -> bool {
-    !character.is_ascii()
-        || character == '\u{7f}'
-        || (character.is_control() && character != '\t')
+    !character.is_ascii() || character == '\u{7f}' || (character.is_control() && character != '\t')
 }
 
 fn find_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
-fn set_remaining_read_timeout(
-    stream: &TcpStream,
-    deadline: Instant,
-) -> Result<(), RequestError> {
+fn set_remaining_read_timeout(stream: &TcpStream, deadline: Instant) -> Result<(), RequestError> {
     let remaining = deadline
         .checked_duration_since(Instant::now())
         .filter(|duration| !duration.is_zero())
@@ -1073,15 +1080,13 @@ mod tests {
     fn core_authority_rejects_prefixes_suffixes_and_differences() {
         let authority = ControlPlaneAuthority::new("0123456789abcdef0123456789abcdef").unwrap();
         assert!(authority
-            .verify_bearer(Some(
-                "Bearer 0123456789abcdef0123456789abcdef"
-            ))
+            .verify_bearer(Some("Bearer 0123456789abcdef0123456789abcdef"))
             .is_ok());
-        assert!(authority.verify_bearer(Some("Bearer 0123456789abcdef")).is_err());
         assert!(authority
-            .verify_bearer(Some(
-                "Bearer 0123456789abcdef0123456789abcdef-extra"
-            ))
+            .verify_bearer(Some("Bearer 0123456789abcdef"))
+            .is_err());
+        assert!(authority
+            .verify_bearer(Some("Bearer 0123456789abcdef0123456789abcdef-extra"))
             .is_err());
     }
 
@@ -1133,10 +1138,7 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.user_id, Some(42));
         assert_eq!(parsed.garden_id.as_deref(), Some("garden-1"));
-        assert_eq!(
-            parsed.conversation_id.as_deref(),
-            Some("conversation-1")
-        );
+        assert_eq!(parsed.conversation_id.as_deref(), Some("conversation-1"));
         assert_eq!(parsed.content_type.as_deref(), Some("application/json"));
 
         assert!(parse_request_head(
@@ -1170,18 +1172,17 @@ mod tests {
             Ok(JobRoute::Events { job_id, after: 0, limit: 256 }) if job_id == "job_1"
         ));
         assert!(parse_job_route("GET", "/v1/jobs/job%5f1").is_err());
-        assert!(parse_job_route(
-            "GET",
-            "/v1/jobs/job_1/events?after=0&after=1&limit=2"
-        )
-        .is_err());
+        assert!(parse_job_route("GET", "/v1/jobs/job_1/events?after=0&after=1&limit=2").is_err());
         assert!(parse_job_route("GET", "/v1/jobs/job_1/events?limit=2").is_err());
         assert!(parse_job_route("GET", "/v1/jobs/job_1/events?after=0&limit=257").is_err());
     }
 
     #[test]
     fn only_submission_accepts_a_bounded_request_body() {
-        assert_eq!(request_body_limit("POST", "/v1/jobs"), MAX_REQUEST_BODY_BYTES);
+        assert_eq!(
+            request_body_limit("POST", "/v1/jobs"),
+            MAX_REQUEST_BODY_BYTES
+        );
         assert_eq!(request_body_limit("GET", "/v1/jobs/job_1"), 0);
         assert_eq!(request_body_limit("POST", "/v1/jobs/job_1/cancel"), 0);
         assert_eq!(request_body_limit("POST", "/v1/shutdown"), 0);

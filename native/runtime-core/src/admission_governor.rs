@@ -47,10 +47,7 @@ impl<'store> AdmissionGovernor<'store> {
     ) -> Self {
         Self {
             store,
-            policy: AdmissionPolicy::with_reserve_floors(
-                minimum_reserve_mb,
-                critical_reserve_mb,
-            ),
+            policy: AdmissionPolicy::with_reserve_floors(minimum_reserve_mb, critical_reserve_mb),
         }
     }
 
@@ -79,9 +76,10 @@ impl<'store> AdmissionGovernor<'store> {
     where
         F: FnOnce() -> Result<SystemCommitSnapshot, SystemCommitReadError>,
     {
-        self.store.try_admit_job(job_id, admission, self.policy, || {
-            sample()?.admission_value().map_err(StoreError::from)
-        })
+        self.store
+            .try_admit_job(job_id, admission, self.policy, || {
+                sample()?.admission_value().map_err(StoreError::from)
+            })
     }
 }
 
@@ -187,7 +185,10 @@ mod tests {
 
         assert_eq!(calls.get(), 1);
         assert!(matches!(result, JobAdmissionResult::Admitted(_)));
-        assert_eq!(store.get(&context, &job_id).unwrap().state, JobState::Admitted);
+        assert_eq!(
+            store.get(&context, &job_id).unwrap().state,
+            JobState::Admitted
+        );
     }
 
     #[test]
@@ -199,7 +200,10 @@ mod tests {
         });
 
         assert!(matches!(result, Err(StoreError::SystemCommitRead(_))));
-        assert_eq!(store.get(&context, &job_id).unwrap().state, JobState::Queued);
+        assert_eq!(
+            store.get(&context, &job_id).unwrap().state,
+            JobState::Queued
+        );
     }
 
     #[test]

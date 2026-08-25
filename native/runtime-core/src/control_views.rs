@@ -2,9 +2,8 @@ use crate::store::{JobEventRecord, JobRecord, StoreError};
 use breadboard_runtime_protocol::{
     JobState, ResourceClass, RuntimeJobEventPayload, RuntimeJobEventRecord, RuntimeJobEventType,
     RuntimeJobEventsResponse, RuntimeJobResponse, RuntimeJobStatus, RuntimePublicArtifactKind,
-    RuntimePublicFailureCode, RuntimePublicStage, WorkerEvent,
-    RUNTIME_CONTROL_PROTOCOL_VERSION, SANITIZED_RUNTIME_FAILURE_MESSAGE,
-    MAX_JOB_EVENT_REPLAY_RECORDS, MAX_PROTOCOL_LINE_BYTES,
+    RuntimePublicFailureCode, RuntimePublicStage, WorkerEvent, MAX_JOB_EVENT_REPLAY_RECORDS,
+    MAX_PROTOCOL_LINE_BYTES, RUNTIME_CONTROL_PROTOCOL_VERSION, SANITIZED_RUNTIME_FAILURE_MESSAGE,
 };
 
 const EVENT_REPLAY_ENVELOPE_RESERVE_BYTES: usize = 4 * 1024;
@@ -14,20 +13,16 @@ const EVENT_REPLAY_ENVELOPE_RESERVE_BYTES: usize = 4 * 1024;
 /// path, credential-shaped string, or provider detail) is never inspected or
 /// echoed and instead becomes the fixed `working` fallback.
 fn public_stage(internal_stage: Option<&str>) -> Option<RuntimePublicStage> {
-    internal_stage.map(|stage| {
-        match stage {
-            "prepare" | "preparing" => RuntimePublicStage::Preparing,
-            "work" | "working" => RuntimePublicStage::Working,
-            "generate" | "generating" => RuntimePublicStage::Generating,
-            "provider-call" | "waiting-external" => RuntimePublicStage::WaitingExternal,
-            "process" | "processing" => RuntimePublicStage::Processing,
-            "checkpoint" | "checkpointing" | "persist" | "persisting" => {
-                RuntimePublicStage::Persisting
-            }
-            "finalize" | "finalizing" => RuntimePublicStage::Finalizing,
-            "cancel" | "cancelling" => RuntimePublicStage::Cancelling,
-            _ => RuntimePublicStage::Working,
-        }
+    internal_stage.map(|stage| match stage {
+        "prepare" | "preparing" => RuntimePublicStage::Preparing,
+        "work" | "working" => RuntimePublicStage::Working,
+        "generate" | "generating" => RuntimePublicStage::Generating,
+        "provider-call" | "waiting-external" => RuntimePublicStage::WaitingExternal,
+        "process" | "processing" => RuntimePublicStage::Processing,
+        "checkpoint" | "checkpointing" | "persist" | "persisting" => RuntimePublicStage::Persisting,
+        "finalize" | "finalizing" => RuntimePublicStage::Finalizing,
+        "cancel" | "cancelling" => RuntimePublicStage::Cancelling,
+        _ => RuntimePublicStage::Working,
     })
 }
 
@@ -143,7 +138,9 @@ fn build_runtime_job_events_response(
 
     let event_byte_budget = MAX_PROTOCOL_LINE_BYTES
         .checked_sub(EVENT_REPLAY_ENVELOPE_RESERVE_BYTES)
-        .ok_or_else(|| StoreError::InvalidInput("runtime event envelope reserve is invalid".into()))?;
+        .ok_or_else(|| {
+            StoreError::InvalidInput("runtime event envelope reserve is invalid".into())
+        })?;
     let mut projected = Vec::with_capacity(events.len().min(requested_limit));
     let mut projected_bytes = 0_usize;
     for event in events.iter().take(requested_limit) {
@@ -594,8 +591,7 @@ mod tests {
     #[test]
     fn replay_terminal_bit_is_the_explicit_public_stream_seal() {
         for (sealed, expected_terminal) in [(false, false), (true, true)] {
-            let response =
-                build_runtime_job_events_response("job_1", sealed, 0, 1, &[]).unwrap();
+            let response = build_runtime_job_events_response("job_1", sealed, 0, 1, &[]).unwrap();
             let RuntimeJobEventsResponse::RuntimeJobEvents { terminal, .. } = response;
             assert_eq!(terminal, expected_terminal);
         }

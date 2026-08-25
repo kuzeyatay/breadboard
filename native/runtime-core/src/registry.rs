@@ -8,8 +8,8 @@ use breadboard_runtime_protocol::{
     validate_bounded_text, JobSubmissionPayload, ServiceDefinition, ServiceManifest,
     ValidationError, WorkerDefinition, WorkerManifest, MAX_IDEMPOTENCY_KEY_BYTES,
 };
-use std::collections::{HashMap, HashSet};
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -46,10 +46,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn new(
-        workers: WorkerManifest,
-        services: ServiceManifest,
-    ) -> Result<Self, RegistryError> {
+    pub fn new(workers: WorkerManifest, services: ServiceManifest) -> Result<Self, RegistryError> {
         workers.validate()?;
         services.validate()?;
         ensure_acyclic(&services.services)?;
@@ -57,7 +54,9 @@ impl Registry {
         let mut workers_by_job_type = HashMap::new();
         for worker in &workers.workers {
             for job_type in &worker.job_types {
-                if let Some(first) = workers_by_job_type.insert(job_type.clone(), worker.kind.clone()) {
+                if let Some(first) =
+                    workers_by_job_type.insert(job_type.clone(), worker.kind.clone())
+                {
                     return Err(RegistryError::DuplicateJobType {
                         job_type: job_type.clone(),
                         first,
@@ -87,10 +86,7 @@ impl Registry {
             .ok_or_else(|| RegistryError::UnknownWorker(kind.to_string()))
     }
 
-    pub fn worker_for_job_type(
-        &self,
-        job_type: &str,
-    ) -> Result<&WorkerDefinition, RegistryError> {
+    pub fn worker_for_job_type(&self, job_type: &str) -> Result<&WorkerDefinition, RegistryError> {
         let kind = self
             .workers_by_job_type
             .get(job_type)
@@ -167,9 +163,7 @@ impl Registry {
         request.validate()?;
         context.validate()?;
         if request.garden_id.as_deref() != context.garden_id() {
-            return Err(RegistryError::AuthenticatedScopeMismatch {
-                field: "gardenId",
-            });
+            return Err(RegistryError::AuthenticatedScopeMismatch { field: "gardenId" });
         }
         if request.conversation_id.as_deref() != context.conversation_id() {
             return Err(RegistryError::AuthenticatedScopeMismatch {
@@ -490,8 +484,10 @@ mod tests {
                 "job input"
             )))
         ));
-        assert_eq!(store.get(&context, &first.job_id).unwrap().state,
-            breadboard_runtime_protocol::JobState::Queued);
+        assert_eq!(
+            store.get(&context, &first.job_id).unwrap().state,
+            breadboard_runtime_protocol::JobState::Queued
+        );
     }
 
     #[test]
@@ -521,12 +517,9 @@ mod tests {
             Err(RegistryError::AuthenticatedScopeMismatch { field: "gardenId" })
         ));
 
-        let scoped_conversation = AuthenticatedJobContext::for_verified_user(
-            1,
-            Some("garden-1"),
-            Some("conversation-1"),
-        )
-        .unwrap();
+        let scoped_conversation =
+            AuthenticatedJobContext::for_verified_user(1, Some("garden-1"), Some("conversation-1"))
+                .unwrap();
         assert!(matches!(
             registry().submit_job(
                 &store,

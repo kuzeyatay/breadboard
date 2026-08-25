@@ -161,7 +161,7 @@ impl ChildSession {
                 Ok(OutputEvent::Eof(StreamKind::Stderr)) => {
                     self.transcript.push("Stderr: <EOF>".to_owned());
                     panic!(
-                        "{} closed stdout before exact marker {expected:?}; transcript:\n{}",
+                        "{} closed stderr before exact marker {expected:?}; transcript:\n{}",
                         self.label,
                         self.transcript_text()
                     );

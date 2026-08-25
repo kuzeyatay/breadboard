@@ -46,9 +46,8 @@ impl RuntimeGenerationScope {
     }
 
     fn object_name(&self, suffix: &str) -> String {
-        let mut name = String::with_capacity(
-            OBJECT_NAME_PREFIX.len() + self.digest.len() * 2 + suffix.len(),
-        );
+        let mut name =
+            String::with_capacity(OBJECT_NAME_PREFIX.len() + self.digest.len() * 2 + suffix.len());
         name.push_str(OBJECT_NAME_PREFIX);
         const HEX: &[u8; 16] = b"0123456789abcdef";
         for byte in self.digest {
@@ -92,7 +91,9 @@ pub enum GenerationGuardError {
     OwnerWait { code: u32 },
     #[error("waiting for the Runtime V2 generation owner returned unexpected status {status}")]
     OwnerWaitStatus { status: u32 },
-    #[error("creating or opening the Runtime V2 generation drain job failed with Windows error {code}")]
+    #[error(
+        "creating or opening the Runtime V2 generation drain job failed with Windows error {code}"
+    )]
     DrainJobCreate { code: u32 },
     #[error("the existing Runtime V2 generation drain job has incompatible containment limits")]
     IncompatibleDrainJob,
@@ -258,10 +259,7 @@ impl fmt::Debug for PriorGenerationDrained {
 }
 
 #[cfg(windows)]
-fn bounded_wait_millis(
-    wait: Duration,
-    allow_zero: bool,
-) -> Result<u32, GenerationGuardError> {
+fn bounded_wait_millis(wait: Duration, allow_zero: bool) -> Result<u32, GenerationGuardError> {
     if (!allow_zero && wait.is_zero()) || wait > MAX_GENERATION_WAIT {
         return Err(if allow_zero {
             GenerationGuardError::InvalidOwnerWait
@@ -301,12 +299,12 @@ mod windows {
         WAIT_ABANDONED, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::System::JobObjects::{
-        CreateJobObjectW, QueryInformationJobObject, SetInformationJobObject,
-        TerminateJobObject, JobObjectBasicAccountingInformation,
-        JobObjectBasicUIRestrictions, JobObjectExtendedLimitInformation,
-        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_BASIC_UI_RESTRICTIONS,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+        CreateJobObjectW, JobObjectBasicAccountingInformation, JobObjectBasicUIRestrictions,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+        TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
     };
     use windows_sys::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
 
@@ -340,8 +338,9 @@ mod windows {
         unsafe { SetLastError(ERROR_SUCCESS) };
         let raw = unsafe { CreateMutexW(null(), 1, name.as_ptr()) };
         let created_error = unsafe { GetLastError() };
-        let handle = OwnedHandle::from_raw(raw)
-            .ok_or(GenerationGuardError::OwnerCreate { code: created_error })?;
+        let handle = OwnedHandle::from_raw(raw).ok_or(GenerationGuardError::OwnerCreate {
+            code: created_error,
+        })?;
         if created_error != ERROR_ALREADY_EXISTS {
             return Ok(handle);
         }
@@ -364,8 +363,9 @@ mod windows {
         unsafe { SetLastError(ERROR_SUCCESS) };
         let raw = unsafe { CreateJobObjectW(null(), name.as_ptr()) };
         let created_error = unsafe { GetLastError() };
-        let job = OwnedHandle::from_raw(raw)
-            .ok_or(GenerationGuardError::DrainJobCreate { code: created_error })?;
+        let job = OwnedHandle::from_raw(raw).ok_or(GenerationGuardError::DrainJobCreate {
+            code: created_error,
+        })?;
         let existed = created_error == ERROR_ALREADY_EXISTS;
 
         if !existed {
@@ -566,11 +566,7 @@ mod tests {
     fn unsupported_platform_fails_honestly() {
         let scope = RuntimeGenerationScope::from_trusted_data_root_identity(7, 11);
         assert!(matches!(
-            RuntimeGenerationGuard::acquire(
-                scope,
-                Duration::ZERO,
-                Duration::from_secs(1)
-            ),
+            RuntimeGenerationGuard::acquire(scope, Duration::ZERO, Duration::from_secs(1)),
             Err(GenerationGuardError::UnsupportedPlatform)
         ));
     }

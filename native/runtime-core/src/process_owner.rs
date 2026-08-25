@@ -1,5 +1,6 @@
 use crate::{
-    CurrentGenerationMembership, PathError, TrustedFilePin, TrustedLaunchDirectory,
+    CurrentGenerationMembership, PathError, RuntimeGenerationScope, TrustedFilePin,
+    TrustedLaunchDirectory,
 };
 use breadboard_runtime_protocol::{
     parse_worker_event, validate_identifier, WorkerEvent, WorkerIdentity,
@@ -10,11 +11,11 @@ use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read, Write};
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::process::{Child, ChildStdin, ChildStdout, ExitStatus};
 #[cfg(windows)]
 use std::process::{Command, Stdio};
-#[cfg(windows)]
-use std::os::windows::io::AsRawHandle;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -34,8 +35,7 @@ const SUPERVISOR_TERMINAL_CLEANUP_BUDGET: Duration = Duration::from_secs(8);
 const MAX_PROCESS_OWNER_EVENT_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
 const FORCED_REAP_TIMEOUT: Duration = Duration::from_secs(1);
 const CHILD_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const SUPERVISOR_ACTIVATION_RECORD: &[u8] =
-    b"{\"type\":\"activate\",\"protocolVersion\":1}\n";
+const SUPERVISOR_ACTIVATION_RECORD: &[u8] = b"{\"type\":\"activate\",\"protocolVersion\":1}\n";
 
 #[derive(Debug, Error)]
 pub enum ProcessOwnerError {
@@ -88,13 +88,126 @@ pub enum ProcessOwnerPurpose {
     },
 }
 
+enum ProcessAuthorityGeneration {
+    Live(CurrentGenerationMembership),
+    #[cfg(test)]
+    Test(RuntimeGenerationScope),
+}
+
+impl ProcessAuthorityGeneration {
+    fn matches_scope(&self, scope: &RuntimeGenerationScope) -> bool {
+        match self {
+            Self::Live(membership) => membership.matches_scope(scope),
+            #[cfg(test)]
+            Self::Test(test_scope) => test_scope == scope,
+        }
+    }
+}
+
+impl fmt::Debug for ProcessAuthorityGeneration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProcessAuthorityGeneration(<opaque generation fence>)")
+    }
+}
+
+/// One-shot authority proving that the pinned supervisor accepted its exact
+/// target into the private Job Object and emitted the first valid `started`
+/// boundary for this launch purpose. It cannot be constructed from a PID or a
+/// JSON value and is intentionally neither cloneable nor serializable.
+#[must_use = "process-tree residency must settle the matching durable dispatch claim"]
+pub struct ProcessTreeResidency {
+    generation: ProcessAuthorityGeneration,
+    supervisor_pid: u32,
+    root_pid: u32,
+    purpose: ProcessOwnerPurpose,
+}
+
+impl fmt::Debug for ProcessTreeResidency {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = (
+            &self.generation,
+            self.supervisor_pid,
+            self.root_pid,
+            &self.purpose,
+        );
+        formatter.write_str("ProcessTreeResidency(<opaque started-tree authority>)")
+    }
+}
+
+impl ProcessTreeResidency {
+    fn from_accepted_started(
+        generation: CurrentGenerationMembership,
+        supervisor_pid: u32,
+        root_pid: u32,
+        purpose: ProcessOwnerPurpose,
+    ) -> Self {
+        Self {
+            generation: ProcessAuthorityGeneration::Live(generation),
+            supervisor_pid,
+            root_pid,
+            purpose,
+        }
+    }
+
+    pub(crate) fn matches_generation_scope(&self, scope: &RuntimeGenerationScope) -> bool {
+        self.generation.matches_scope(scope)
+    }
+
+    pub(crate) fn worker_identity(&self) -> Option<&WorkerIdentity> {
+        match &self.purpose {
+            ProcessOwnerPurpose::Worker(identity) => Some(identity),
+            ProcessOwnerPurpose::Service { .. } => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn worker_for_test(scope: RuntimeGenerationScope, identity: WorkerIdentity) -> Self {
+        Self {
+            generation: ProcessAuthorityGeneration::Test(scope),
+            supervisor_pid: 7,
+            root_pid: 42,
+            purpose: ProcessOwnerPurpose::Worker(identity),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn service_for_test(
+        scope: RuntimeGenerationScope,
+        service_id: &str,
+        instance_id: &str,
+    ) -> Self {
+        Self {
+            generation: ProcessAuthorityGeneration::Test(scope),
+            supervisor_pid: 7,
+            root_pid: 42,
+            purpose: ProcessOwnerPurpose::Service {
+                service_id: service_id.into(),
+                instance_id: instance_id.into(),
+            },
+        }
+    }
+}
+
+fn take_residency_authority(
+    pending: &mut Option<ProcessTreeResidency>,
+    already_taken: &mut bool,
+) -> Result<ProcessTreeResidency, ProcessOwnerError> {
+    if let Some(residency) = pending.take() {
+        *already_taken = true;
+        return Ok(residency);
+    }
+    Err(ProcessOwnerError::InvalidState(if *already_taken {
+        "process-tree residency authority was already taken"
+    } else {
+        "process-tree residency authority is unavailable before started"
+    }))
+}
+
 impl fmt::Debug for ProcessOwnerPurpose {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Worker(_) => formatter.write_str("ProcessOwnerPurpose::Worker(<fenced>)"),
-            Self::Service { .. } => {
-                formatter.write_str("ProcessOwnerPurpose::Service(<fenced>)")
-            }
+            Self::Service { .. } => formatter.write_str("ProcessOwnerPurpose::Service(<fenced>)"),
         }
     }
 }
@@ -136,9 +249,7 @@ impl ProcessOwnerLimits {
                 "hard commit limit cannot be represented on this platform",
             ));
         }
-        if !(MIN_GRACEFUL_TIMEOUT..=MAX_GRACEFUL_TIMEOUT)
-            .contains(&self.graceful_shutdown)
-        {
+        if !(MIN_GRACEFUL_TIMEOUT..=MAX_GRACEFUL_TIMEOUT).contains(&self.graceful_shutdown) {
             return Err(ProcessOwnerError::InvalidLaunch(
                 "graceful shutdown deadline is outside the supported bounds",
             ));
@@ -214,9 +325,7 @@ impl TrustedProcessLaunch {
         arguments: Vec<OsString>,
         limits: ProcessOwnerLimits,
     ) -> Result<Self, ProcessOwnerError> {
-        if supervisor.authority_kind() != "runtime"
-            || executable.authority_kind() != "runtime"
-        {
+        if supervisor.authority_kind() != "runtime" || executable.authority_kind() != "runtime" {
             return Err(ProcessOwnerError::InvalidLaunch(
                 "supervisor and executable must come from runtime-root authority",
             ));
@@ -339,10 +448,7 @@ impl WorkerEventStream {
         }
     }
 
-    fn push_stdout_chunk_unpoisoned(
-        &mut self,
-        data: &str,
-    ) -> Result<(), WorkerProtocolFault> {
+    fn push_stdout_chunk_unpoisoned(&mut self, data: &str) -> Result<(), WorkerProtocolFault> {
         let mut remaining = data.as_bytes();
         while let Some(newline) = remaining.iter().position(|byte| *byte == b'\n') {
             self.extend_pending(&remaining[..newline])?;
@@ -439,9 +545,7 @@ fn private_diagnostic_data(value: &Value) -> Result<&str, ProcessOwnerError> {
 }
 
 fn is_worker_stdout_loss_event(kind: &str, stream: Option<&str>, worker: bool) -> bool {
-    worker
-        && stream == Some("stdout")
-        && matches!(kind, "stream-truncated" | "stream-pressure")
+    worker && stream == Some("stdout") && matches!(kind, "stream-truncated" | "stream-pressure")
 }
 
 fn is_known_supervisor_lifecycle_kind(kind: &str) -> bool {
@@ -523,9 +627,13 @@ pub struct RunningProcessOwner {
     observed_terminal: Option<ProcessOwnerTerminal>,
     supervisor_protocol_poisoned: bool,
     exit_confirmation_minted: bool,
+    generation: CurrentGenerationMembership,
     launch: TrustedProcessLaunch,
     supervisor_pid: u32,
     root_pid: Option<u32>,
+    pending_residency: Option<ProcessTreeResidency>,
+    residency_taken: bool,
+    started_boundary_accepted: bool,
     terminal_seen: bool,
     stop_requested: bool,
 }
@@ -541,8 +649,14 @@ impl fmt::Debug for RunningProcessOwner {
             .field("private_diagnostic_count", &self.private_diagnostics.len())
             .field("typed_worker_event_stream", &self.worker_events.is_some())
             .field("worker_protocol_fault", &self.worker_protocol_fault)
-            .field("supervisor_protocol_poisoned", &self.supervisor_protocol_poisoned)
+            .field(
+                "supervisor_protocol_poisoned",
+                &self.supervisor_protocol_poisoned,
+            )
             .field("exit_confirmation_minted", &self.exit_confirmation_minted)
+            .field("residency_available", &self.pending_residency.is_some())
+            .field("residency_taken", &self.residency_taken)
+            .field("started_boundary_accepted", &self.started_boundary_accepted)
             .field("launch", &"<redacted trusted launch>")
             .finish()
     }
@@ -624,9 +738,7 @@ impl RunningProcessOwner {
             return Err(ProcessOwnerError::Control(error));
         }
         let worker_events = match &launch.purpose {
-            ProcessOwnerPurpose::Worker(identity) => {
-                Some(WorkerEventStream::new(identity.clone()))
-            }
+            ProcessOwnerPurpose::Worker(identity) => Some(WorkerEventStream::new(identity.clone())),
             ProcessOwnerPurpose::Service { .. } => None,
         };
         Ok(Self {
@@ -640,9 +752,13 @@ impl RunningProcessOwner {
             observed_terminal: None,
             supervisor_protocol_poisoned: false,
             exit_confirmation_minted: false,
+            generation: generation.clone(),
             launch,
             supervisor_pid,
             root_pid: None,
+            pending_residency: None,
+            residency_taken: false,
+            started_boundary_accepted: false,
             terminal_seen: false,
             stop_requested: false,
         })
@@ -668,6 +784,15 @@ impl RunningProcessOwner {
         self.root_pid
     }
 
+    /// Takes the one residency authority minted by this live owner after its
+    /// exact first `started` record was accepted. A PID, lifecycle `Value`, or
+    /// repeated call cannot mint another authority.
+    pub fn take_process_tree_residency(
+        &mut self,
+    ) -> Result<ProcessTreeResidency, ProcessOwnerError> {
+        take_residency_authority(&mut self.pending_residency, &mut self.residency_taken)
+    }
+
     pub fn request_stop(&mut self, force: bool) -> Result<(), ProcessOwnerError> {
         if self.terminal_seen {
             return Err(ProcessOwnerError::InvalidState(
@@ -690,10 +815,7 @@ impl RunningProcessOwner {
     /// Returns the bounded terminal budget without consuming live ownership.
     /// Callers retain `self` across stop-write, event, and timeout failures and
     /// can therefore escalate or continue draining toward containment proof.
-    pub fn stop_terminal_wait_timeout(
-        &self,
-        force: bool,
-    ) -> Result<Duration, ProcessOwnerError> {
+    pub fn stop_terminal_wait_timeout(&self, force: bool) -> Result<Duration, ProcessOwnerError> {
         terminal_wait_timeout(self.launch.limits, force)
     }
 
@@ -755,15 +877,15 @@ impl RunningProcessOwner {
             while matches!(line.last(), Some(b'\n' | b'\r')) {
                 line.pop();
             }
-            let value: Value = serde_json::from_slice(&line).map_err(|_| {
-                ProcessOwnerError::Protocol("supervisor record was not valid JSON")
-            })?;
-            let kind = value
-                .get("type")
-                .and_then(Value::as_str)
-                .ok_or(ProcessOwnerError::Protocol(
-                    "supervisor record had no event type",
-                ))?;
+            let value: Value = serde_json::from_slice(&line)
+                .map_err(|_| ProcessOwnerError::Protocol("supervisor record was not valid JSON"))?;
+            let kind =
+                value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .ok_or(ProcessOwnerError::Protocol(
+                        "supervisor record had no event type",
+                    ))?;
             if self.root_pid.is_none() && !matches!(kind, "started" | "error") {
                 return Err(ProcessOwnerError::Protocol(
                     "supervisor emitted lifecycle data before the started boundary",
@@ -815,6 +937,18 @@ impl RunningProcessOwner {
                             "supervisor emitted more than one started event",
                         ));
                     }
+                    if self.pending_residency.is_some() || self.residency_taken {
+                        return Err(ProcessOwnerError::Protocol(
+                            "supervisor attempted to mint residency more than once",
+                        ));
+                    }
+                    self.pending_residency = Some(ProcessTreeResidency::from_accepted_started(
+                        self.generation.clone(),
+                        self.supervisor_pid,
+                        pid,
+                        self.launch.purpose.clone(),
+                    ));
+                    self.started_boundary_accepted = true;
                     Ok(ProcessOwnerEvent::Lifecycle(value))
                 }
                 "exit" => {
@@ -923,19 +1057,15 @@ impl RunningProcessOwner {
                 "observed terminal receipt no longer matched the started process",
             ));
         }
-        let status = wait_for_child_exit(
-            &mut self.child,
-            self.launch.limits.supervisor_exit_timeout,
-        )?;
+        let status =
+            wait_for_child_exit(&mut self.child, self.launch.limits.supervisor_exit_timeout)?;
         verify_supervisor_exit(status, terminal.code)?;
 
         // The reader owns the pipe and must confirm EOF within a second
         // bounded deadline. Any queued record after the terminal boundary
         // invalidates the receipt.
-        let reader_end = confirm_supervisor_reader_end(
-            &self.events,
-            self.launch.limits.supervisor_exit_timeout,
-        );
+        let reader_end =
+            confirm_supervisor_reader_end(&self.events, self.launch.limits.supervisor_exit_timeout);
         if matches!(&reader_end, Err(ProcessOwnerError::Protocol(_))) {
             self.supervisor_protocol_poisoned = true;
         }
@@ -953,6 +1083,8 @@ impl RunningProcessOwner {
             ProcessExitClassification::TargetExit
         };
         let receipt = ProcessTreeExit {
+            generation: Some(ProcessAuthorityGeneration::Live(self.generation.clone())),
+            started_boundary_accepted: self.started_boundary_accepted,
             supervisor_pid: self.supervisor_pid,
             root_pid: terminal.root_pid,
             purpose: self.launch.purpose.clone(),
@@ -979,9 +1111,7 @@ fn assign_supervisor_to_generation(
     generation: &CurrentGenerationMembership,
 ) -> Result<(), ProcessOwnerError> {
     use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, IsProcessInJob,
-    };
+    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, IsProcessInJob};
 
     let process = child.as_raw_handle() as HANDLE;
     let job = generation.raw_job_handle();
@@ -1282,9 +1412,7 @@ impl ProcessOwnerTerminal {
             .ok_or(ProcessOwnerError::Protocol(
                 "terminal receipt omitted zero-resident confirmation",
             ))?;
-        let peak_job_commit_bytes = value
-            .get("peakJobCommitBytes")
-            .and_then(Value::as_u64);
+        let peak_job_commit_bytes = value.get("peakJobCommitBytes").and_then(Value::as_u64);
         let peak_accounting_complete = value
             .get("peakJobCommitAccountingComplete")
             .and_then(Value::as_bool)
@@ -1411,6 +1539,8 @@ pub struct ProcessTreeAccounting {
 }
 
 pub struct ProcessTreeExit {
+    generation: Option<ProcessAuthorityGeneration>,
+    started_boundary_accepted: bool,
     supervisor_pid: u32,
     root_pid: u32,
     purpose: ProcessOwnerPurpose,
@@ -1447,10 +1577,9 @@ impl ProcessTreeExit {
     /// invalid worker event stream, and a nonzero target exit remain valid
     /// zero-resident release receipts but can never become
     /// `WorkerCompletionProof` authority.
-    pub fn into_completion_authority(
-        self,
-    ) -> Result<AuthoritativeProcessOwner, ProcessTreeExit> {
-        if self.classification != ProcessExitClassification::TargetExit
+    pub fn into_completion_authority(self) -> Result<AuthoritativeProcessOwner, ProcessTreeExit> {
+        if !self.started_boundary_accepted
+            || self.classification != ProcessExitClassification::TargetExit
             || self.root_exit_code != Some(0)
             || !self.accounting.complete
             || self.accounting.peak_private_commit_bytes.is_none()
@@ -1460,6 +1589,7 @@ impl ProcessTreeExit {
             return Err(self);
         }
         Ok(AuthoritativeProcessOwner {
+            generation: self.generation,
             supervisor_pid: self.supervisor_pid,
             root_pid: self.root_pid,
             purpose: self.purpose,
@@ -1499,9 +1629,21 @@ impl ProcessTreeExit {
         }
     }
 
+    pub(crate) fn matches_generation_scope(&self, scope: &RuntimeGenerationScope) -> bool {
+        self.generation
+            .as_ref()
+            .is_some_and(|generation| generation.matches_scope(scope))
+    }
+
+    pub(crate) fn started_boundary_accepted(&self) -> bool {
+        self.started_boundary_accepted
+    }
+
     #[cfg(test)]
     pub(crate) fn worker_release_for_test(identity: WorkerIdentity) -> Self {
         Self {
+            generation: None,
+            started_boundary_accepted: true,
             supervisor_pid: 7,
             root_pid: 42,
             purpose: ProcessOwnerPurpose::Worker(identity),
@@ -1521,6 +1663,86 @@ impl ProcessTreeExit {
             worker_protocol_fault: None,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn worker_release_for_test_in_scope(
+        scope: RuntimeGenerationScope,
+        identity: WorkerIdentity,
+        classification: ProcessExitClassification,
+    ) -> Self {
+        Self {
+            generation: Some(ProcessAuthorityGeneration::Test(scope)),
+            started_boundary_accepted: false,
+            supervisor_pid: 7,
+            root_pid: 42,
+            purpose: ProcessOwnerPurpose::Worker(identity),
+            root_exit_code: (classification == ProcessExitClassification::TargetExit).then_some(1),
+            classification,
+            failure: (classification == ProcessExitClassification::SupervisorFailure).then(|| {
+                ProcessSupervisorFailure {
+                    code: "TEST_SUPERVISION_FAILED".into(),
+                    message: "test-only supervisor failure before started".into(),
+                }
+            }),
+            stop_outcome: (classification == ProcessExitClassification::Stopped)
+                .then_some(ProcessStopOutcome::Forced),
+            accounting: ProcessTreeAccounting {
+                peak_private_commit_bytes: Some(0),
+                complete: true,
+            },
+            supervisor_error_count: 0,
+            cleanup_error_count: 0,
+            worker_protocol_fault: (classification
+                == ProcessExitClassification::WorkerProtocolFault)
+                .then_some(WorkerProtocolFault::InvalidRecord),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn worker_release_after_started_for_test_in_scope(
+        scope: RuntimeGenerationScope,
+        identity: WorkerIdentity,
+    ) -> Self {
+        let mut receipt = Self::worker_release_for_test_in_scope(
+            scope,
+            identity,
+            ProcessExitClassification::TargetExit,
+        );
+        receipt.started_boundary_accepted = true;
+        receipt
+    }
+
+    #[cfg(test)]
+    pub(crate) fn service_release_for_test_in_scope(
+        scope: RuntimeGenerationScope,
+        service_id: &str,
+        instance_id: &str,
+    ) -> Self {
+        Self {
+            generation: Some(ProcessAuthorityGeneration::Test(scope)),
+            started_boundary_accepted: false,
+            supervisor_pid: 7,
+            root_pid: 42,
+            purpose: ProcessOwnerPurpose::Service {
+                service_id: service_id.into(),
+                instance_id: instance_id.into(),
+            },
+            root_exit_code: None,
+            classification: ProcessExitClassification::SupervisorFailure,
+            failure: Some(ProcessSupervisorFailure {
+                code: "TEST_SUPERVISION_FAILED".into(),
+                message: "test-only service supervisor failure".into(),
+            }),
+            stop_outcome: None,
+            accounting: ProcessTreeAccounting {
+                peak_private_commit_bytes: Some(0),
+                complete: true,
+            },
+            supervisor_error_count: 0,
+            cleanup_error_count: 0,
+            worker_protocol_fault: None,
+        }
+    }
 }
 
 /// Opaque worker-completion capability minted only after the existing native
@@ -1529,6 +1751,7 @@ impl ProcessTreeExit {
 /// target exit. It is neither serializable nor constructible by downstream
 /// crates.
 pub struct AuthoritativeProcessOwner {
+    generation: Option<ProcessAuthorityGeneration>,
     supervisor_pid: u32,
     root_pid: u32,
     purpose: ProcessOwnerPurpose,
@@ -1539,6 +1762,7 @@ pub struct AuthoritativeProcessOwner {
 impl fmt::Debug for AuthoritativeProcessOwner {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let _ = (
+            &self.generation,
             self.supervisor_pid,
             self.root_pid,
             &self.purpose,
@@ -1576,6 +1800,8 @@ impl AuthoritativeProcessOwner {
     /// reservation must still be released by exact process-tree evidence.
     pub fn into_zero_resident_release(self) -> ProcessTreeExit {
         ProcessTreeExit {
+            generation: self.generation,
+            started_boundary_accepted: true,
             supervisor_pid: self.supervisor_pid,
             root_pid: self.root_pid,
             purpose: self.purpose,
@@ -1640,6 +1866,8 @@ mod tests {
         root_exit_code: Option<u32>,
     ) -> ProcessTreeExit {
         ProcessTreeExit {
+            generation: None,
+            started_boundary_accepted: true,
             supervisor_pid: 7,
             root_pid: 42,
             purpose: ProcessOwnerPurpose::Worker(WorkerIdentity {
@@ -1671,10 +1899,7 @@ mod tests {
 
     #[test]
     fn launch_environment_policy_is_closed_and_minimal() {
-        assert_eq!(
-            TrustedEnvironmentPolicy::minimal().names(),
-            &["SystemRoot"]
-        );
+        assert_eq!(TrustedEnvironmentPolicy::minimal().names(), &["SystemRoot"]);
     }
 
     #[test]
@@ -1724,9 +1949,48 @@ mod tests {
     }
 
     #[test]
+    fn fake_started_json_cannot_mint_and_residency_authority_is_single_use() {
+        let fake_started = serde_json::json!({ "type": "started", "pid": 42 });
+        assert_eq!(bounded_pid(fake_started.get("pid")).unwrap(), 42);
+
+        let mut pending = None;
+        let mut already_taken = false;
+        assert!(matches!(
+            take_residency_authority(&mut pending, &mut already_taken),
+            Err(ProcessOwnerError::InvalidState(
+                "process-tree residency authority is unavailable before started"
+            ))
+        ));
+
+        let scope = RuntimeGenerationScope::from_trusted_data_root_identity(7, 11);
+        let identity = WorkerIdentity {
+            job_id: "job_1".into(),
+            attempt: 1,
+            worker_instance_id: "worker_1".into(),
+        };
+        pending = Some(ProcessTreeResidency::worker_for_test(
+            scope.clone(),
+            identity.clone(),
+        ));
+        let residency = take_residency_authority(&mut pending, &mut already_taken).unwrap();
+        assert!(residency.matches_generation_scope(&scope));
+        assert_eq!(residency.worker_identity(), Some(&identity));
+        assert_eq!(
+            format!("{residency:?}"),
+            "ProcessTreeResidency(<opaque started-tree authority>)"
+        );
+        assert!(matches!(
+            take_residency_authority(&mut pending, &mut already_taken),
+            Err(ProcessOwnerError::InvalidState(
+                "process-tree residency authority was already taken"
+            ))
+        ));
+    }
+
+    #[test]
     fn terminal_receipt_requires_exact_started_root_and_zero_residents() {
-        let valid = ProcessOwnerTerminal::parse(&terminal(serde_json::json!({})), Some(42))
-            .unwrap();
+        let valid =
+            ProcessOwnerTerminal::parse(&terminal(serde_json::json!({})), Some(42)).unwrap();
         assert!(valid.validate_zero_resident_release().is_ok());
         assert!(ProcessOwnerTerminal::parse(&terminal(serde_json::json!({})), Some(43)).is_err());
 
@@ -1740,8 +2004,8 @@ mod tests {
 
     #[test]
     fn terminal_binding_covers_the_complete_opaque_receipt() {
-        let observed = ProcessOwnerTerminal::parse(&terminal(serde_json::json!({})), Some(42))
-            .unwrap();
+        let observed =
+            ProcessOwnerTerminal::parse(&terminal(serde_json::json!({})), Some(42)).unwrap();
         assert_eq!(observed, observed.clone());
         let different_accounting = ProcessOwnerTerminal::parse(
             &terminal(serde_json::json!({ "peakJobCommitBytes": 2048 })),
@@ -1762,8 +2026,7 @@ mod tests {
         )
         .unwrap();
         assert!(incomplete.validate_zero_resident_release().is_ok());
-        let mut incomplete_receipt =
-            exit_receipt(ProcessExitClassification::TargetExit, Some(0));
+        let mut incomplete_receipt = exit_receipt(ProcessExitClassification::TargetExit, Some(0));
         incomplete_receipt.accounting = ProcessTreeAccounting {
             peak_private_commit_bytes: None,
             complete: false,
@@ -1806,11 +2069,8 @@ mod tests {
 
     #[test]
     fn complete_post_spawn_failure_is_release_evidence_not_completion_authority() {
-        let failure = ProcessOwnerTerminal::parse(
-            &failure_terminal(serde_json::json!({})),
-            None,
-        )
-        .unwrap();
+        let failure =
+            ProcessOwnerTerminal::parse(&failure_terminal(serde_json::json!({})), None).unwrap();
         assert!(failure.validate_zero_resident_release().is_ok());
         assert_eq!(failure.root_pid, 42);
         assert_eq!(failure.failure().unwrap().code(), "SUPERVISION_FAILED");
@@ -1824,6 +2084,18 @@ mod tests {
         assert!(exit_receipt(ProcessExitClassification::TargetExit, Some(0))
             .into_completion_authority()
             .is_ok());
+        let scope = RuntimeGenerationScope::from_trusted_data_root_identity(7, 11);
+        let mut pre_started_exit = ProcessTreeExit::worker_release_for_test_in_scope(
+            scope,
+            WorkerIdentity {
+                job_id: "job_1".into(),
+                attempt: 1,
+                worker_instance_id: "worker_1".into(),
+            },
+            ProcessExitClassification::TargetExit,
+        );
+        pre_started_exit.root_exit_code = Some(0);
+        assert!(pre_started_exit.into_completion_authority().is_err());
         for (classification, code) in [
             (ProcessExitClassification::TargetExit, Some(23)),
             (ProcessExitClassification::Stopped, Some(0)),
@@ -1843,7 +2115,10 @@ mod tests {
             .into_completion_authority()
             .unwrap();
         let receipt = authority.into_zero_resident_release();
-        assert_eq!(receipt.classification(), ProcessExitClassification::TargetExit);
+        assert_eq!(
+            receipt.classification(),
+            ProcessExitClassification::TargetExit
+        );
         assert_eq!(receipt.root_exit_code(), Some(0));
         assert_eq!(receipt.accounting().peak_private_commit_bytes, Some(1024));
     }
@@ -1863,18 +2138,18 @@ mod tests {
 
     #[test]
     fn stopped_classification_requires_a_helper_authored_outcome() {
-        let ordinary = ProcessOwnerTerminal::parse(
-            &terminal(serde_json::json!({})),
-            Some(42),
-        )
-        .unwrap();
+        let ordinary =
+            ProcessOwnerTerminal::parse(&terminal(serde_json::json!({})), Some(42)).unwrap();
         assert_eq!(ordinary.stop_outcome, None);
         let stopped = ProcessOwnerTerminal::parse(
             &terminal(serde_json::json!({ "stopOutcome": "forced-after-grace" })),
             Some(42),
         )
         .unwrap();
-        assert_eq!(stopped.stop_outcome, Some(ProcessStopOutcome::ForcedAfterGrace));
+        assert_eq!(
+            stopped.stop_outcome,
+            Some(ProcessStopOutcome::ForcedAfterGrace)
+        );
     }
 
     #[test]
@@ -2019,14 +2294,7 @@ mod tests {
         ] {
             assert!(is_known_supervisor_lifecycle_kind(kind), "{kind}");
         }
-        for kind in [
-            "unknown",
-            "started",
-            "exit",
-            "error",
-            "stdout",
-            "stderr",
-        ] {
+        for kind in ["unknown", "started", "exit", "error", "stdout", "stderr"] {
             assert!(!is_known_supervisor_lifecycle_kind(kind), "{kind}");
         }
     }
@@ -2058,8 +2326,9 @@ mod tests {
     fn event_wait_deadlines_are_explicitly_bounded() {
         assert!(bounded_event_deadline(Duration::ZERO).is_err());
         assert!(bounded_event_deadline(MAX_PROCESS_OWNER_EVENT_WAIT).is_ok());
-        assert!(bounded_event_deadline(MAX_PROCESS_OWNER_EVENT_WAIT + Duration::from_secs(1))
-            .is_err());
+        assert!(
+            bounded_event_deadline(MAX_PROCESS_OWNER_EVENT_WAIT + Duration::from_secs(1)).is_err()
+        );
     }
 
     #[test]

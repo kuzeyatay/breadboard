@@ -44,8 +44,8 @@ impl SystemCommitSnapshot {
         if self.limit_bytes == 0 || self.total_bytes > self.limit_bytes {
             return Err(SystemCommitReadError::InvalidSnapshot);
         }
-        let total_mb = self.total_bytes / MEBIBYTE_BYTES
-            + u64::from(self.total_bytes % MEBIBYTE_BYTES != 0);
+        let total_mb =
+            self.total_bytes / MEBIBYTE_BYTES + u64::from(self.total_bytes % MEBIBYTE_BYTES != 0);
         let limit_mb = self.limit_bytes / MEBIBYTE_BYTES;
         if limit_mb == 0 {
             return Err(SystemCommitReadError::InvalidSnapshot);
@@ -95,9 +95,7 @@ pub enum SystemCommitReadError {
 #[cfg(windows)]
 pub fn read_system_commit() -> Result<SystemCommitSnapshot, SystemCommitReadError> {
     use std::mem::{size_of, zeroed};
-    use windows_sys::Win32::System::ProcessStatus::{
-        GetPerformanceInfo, PERFORMANCE_INFORMATION,
-    };
+    use windows_sys::Win32::System::ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
 
     // SAFETY: PERFORMANCE_INFORMATION is a plain C data structure whose `cb`
     // field is initialized to the exact structure size required by the API.
@@ -107,7 +105,9 @@ pub fn read_system_commit() -> Result<SystemCommitSnapshot, SystemCommitReadErro
     information.cb = u32::try_from(size_of::<PERFORMANCE_INFORMATION>())
         .map_err(|_| SystemCommitReadError::CounterOverflow)?;
     if unsafe { GetPerformanceInfo(&mut information, information.cb) } == 0 {
-        return Err(SystemCommitReadError::QueryFailed(io::Error::last_os_error()));
+        return Err(SystemCommitReadError::QueryFailed(
+            io::Error::last_os_error(),
+        ));
     }
 
     SystemCommitSnapshot::from_pages(
