@@ -1,5 +1,7 @@
 #[cfg(windows)]
-use breadboard_runtime_core::{GenerationGuardError, RuntimeGenerationGuard, RuntimePaths};
+use breadboard_runtime_core::{
+    CurrentGenerationMembership, GenerationGuardError, RuntimeGenerationGuard, RuntimePaths,
+};
 
 #[cfg(windows)]
 use std::env;
@@ -44,6 +46,7 @@ enum ChildMode {
     HoldAfterAcquireThreadExit,
     ExpectBusy,
     AcquireOnce,
+    InheritedProbe,
 }
 
 #[cfg(windows)]
@@ -54,6 +57,7 @@ impl ChildMode {
             Self::HoldAfterAcquireThreadExit => "hold-after-acquire-thread-exit",
             Self::ExpectBusy => "expect-busy",
             Self::AcquireOnce => "acquire-once",
+            Self::InheritedProbe => "inherited-probe",
         }
     }
 
@@ -63,6 +67,7 @@ impl ChildMode {
             "hold-after-acquire-thread-exit" => Self::HoldAfterAcquireThreadExit,
             "expect-busy" => Self::ExpectBusy,
             "acquire-once" => Self::AcquireOnce,
+            "inherited-probe" => Self::InheritedProbe,
             other => panic!("unknown generation-guard child mode {other:?}"),
         }
     }
@@ -324,6 +329,59 @@ fn assert_success(label: &str, status: ExitStatus, transcript: &[String]) {
 }
 
 #[cfg(windows)]
+fn assert_spawn_inherits_generation(
+    membership: &CurrentGenerationMembership,
+    paths: &RuntimePaths,
+) {
+    let mut probe = Command::new(env::current_exe().expect("resolve integration-test binary"))
+        .arg("--exact")
+        .arg(TEST_NAME)
+        .arg("--nocapture")
+        .arg("--test-threads=1")
+        .env(CHILD_MODE_ENV, ChildMode::InheritedProbe.as_env())
+        .env(DATA_ROOT_ENV, paths.data_root())
+        .env(APP_ROOT_ENV, paths.app_root())
+        .env(RUNTIME_ROOT_ENV, paths.runtime_root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn inherited-membership probe");
+    assert!(
+        membership
+            .contains_child_process(&probe)
+            .expect("query inherited child generation membership"),
+        "a child must be born inside the generation job before any explicit assignment"
+    );
+    probe
+        .stdin
+        .take()
+        .expect("probe stdin")
+        .write_all(b"RELEASE\n")
+        .expect("release inherited-membership probe");
+
+    let deadline = Instant::now() + CHILD_EXIT_TIMEOUT;
+    loop {
+        match probe.try_wait() {
+            Ok(Some(status)) => {
+                assert!(
+                    status.success(),
+                    "inherited-membership probe failed: {status}"
+                );
+                break;
+            }
+            Ok(None) if Instant::now() < deadline => thread::sleep(POLL_INTERVAL),
+            Ok(None) => {
+                let _ = probe.kill();
+                let _ = probe.wait();
+                panic!("inherited-membership probe did not exit before timeout");
+            }
+            Err(error) => panic!("poll inherited-membership probe: {error}"),
+        }
+    }
+}
+
+#[cfg(windows)]
 fn run_child(mode: ChildMode) {
     let data_root = env::var_os(DATA_ROOT_ENV).expect("child data-root environment");
     let app_root = env::var_os(APP_ROOT_ENV).expect("child app-root environment");
@@ -354,13 +412,14 @@ fn run_child(mode: ChildMode) {
             eprintln!("ACQUIRED");
         }
         ChildMode::Hold => {
-            let (_guard, proof) = RuntimeGenerationGuard::acquire(
+            let (guard, proof) = RuntimeGenerationGuard::acquire(
                 paths.runtime_generation_scope(),
                 Duration::ZERO,
                 DRAIN_TIMEOUT,
             )
             .expect("owner child must acquire generation scope");
             assert!(proof.matches_scope(&paths.runtime_generation_scope()));
+            assert_spawn_inherits_generation(&guard.membership(), &paths);
             eprintln!("READY");
             std::io::stderr().flush().expect("flush READY marker");
 
@@ -374,11 +433,10 @@ fn run_child(mode: ChildMode) {
         ChildMode::HoldAfterAcquireThreadExit => {
             let scope = paths.runtime_generation_scope();
             let acquiring_thread = thread::spawn(move || {
-                let (guard, proof) =
+                let (_guard, proof) =
                     RuntimeGenerationGuard::acquire(scope.clone(), Duration::ZERO, DRAIN_TIMEOUT)
                         .expect("owner thread must acquire generation scope");
                 assert!(proof.matches_scope(&scope));
-                drop(guard);
             });
             acquiring_thread
                 .join()
@@ -394,6 +452,13 @@ fn run_child(mode: ChildMode) {
                 .expect("read release marker");
             assert_eq!(command, "RELEASE\n", "unexpected parent command");
             eprintln!("RELEASED");
+        }
+        ChildMode::InheritedProbe => {
+            let mut command = String::new();
+            std::io::stdin()
+                .read_line(&mut command)
+                .expect("read inherited-probe release marker");
+            assert_eq!(command, "RELEASE\n", "unexpected probe command");
         }
     }
     std::io::stderr().flush().expect("flush child marker");

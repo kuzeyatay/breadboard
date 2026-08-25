@@ -1,8 +1,12 @@
 #![cfg(windows)]
 
 use breadboard_runtime_core::{
-    ProcessExitClassification, ProcessOwnerEvent, ProcessOwnerLimits, ProcessOwnerPurpose,
-    RunningProcessOwner, RuntimeGenerationGuard, RuntimePaths, TrustedProcessLaunch,
+    ProcessExitClassification, ProcessOwnerError, ProcessOwnerEvent, Registry, RunningProcessOwner,
+    RuntimeGenerationGuard, RuntimePaths, ServiceLaunchOutcome,
+};
+use breadboard_runtime_protocol::{
+    ResourceClass, RestartPolicy, ServiceDefinition, ServiceManifest, ServiceStartupPolicy,
+    WorkerManifest, SERVICE_MANIFEST_VERSION, WORKER_MANIFEST_VERSION,
 };
 use std::ffi::OsString;
 use std::fs;
@@ -295,6 +299,35 @@ fn generation_test_paths(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (root.join("app"), root.join("data"), root.join("runtime"))
 }
 
+fn service_registry(service_id: &str, allowed_executable: &str) -> Registry {
+    Registry::new(
+        WorkerManifest {
+            version: WORKER_MANIFEST_VERSION,
+            workers: vec![],
+        },
+        ServiceManifest {
+            version: SERVICE_MANIFEST_VERSION,
+            services: vec![ServiceDefinition {
+                id: service_id.into(),
+                display_name: "Process owner test service".into(),
+                capability_ids: vec!["process-owner-test".into()],
+                allowed_executable: allowed_executable.into(),
+                allowed_entrypoint: None,
+                startup_policy: ServiceStartupPolicy::Eager,
+                resource_class: ResourceClass::Core,
+                dependencies: vec![],
+                estimated_cold_start_commit_mb: 1,
+                soft_commit_limit_mb: 0,
+                hard_commit_limit_mb: 0,
+                idle_ttl_ms: None,
+                graceful_shutdown_ms: 500,
+                restart_policy: RestartPolicy::Never,
+            }],
+        },
+    )
+    .unwrap()
+}
+
 fn write_pipe_marker(marker: &str) {
     let stderr = std::io::stderr();
     let mut stderr = stderr.lock();
@@ -310,41 +343,27 @@ fn run_generation_owner_child(root: &Path) -> ! {
         RuntimeGenerationGuard::acquire(generation_scope, Duration::ZERO, TEST_PROCESS_TIMEOUT)
             .unwrap();
     let generation_membership = generation_guard.membership();
-    let supervisor = paths
-        .pin_runtime_file_for_launch(&paths.resolve_runtime("bin/runtime-supervisor.exe").unwrap())
+    let nested_cwd = data
+        .join("runtime/services/outer_generation_test/outer_generation_owner_1")
+        .into_os_string();
+    let nested_command = runtime.join("bin/long-lived-target.exe").into_os_string();
+    let launch = service_registry("outer_generation_test", "bin/long-lived-target.exe")
+        .prepare_service_launch(
+            &paths,
+            "outer_generation_test",
+            "outer_generation_owner_1",
+            vec![
+                OsString::from("--cwd"),
+                nested_cwd,
+                OsString::from("--"),
+                nested_command,
+            ],
+        )
         .unwrap();
-    let target = paths
-        .pin_runtime_file_for_launch(&paths.resolve_runtime("bin/long-lived-target.exe").unwrap())
-        .unwrap();
-    let cwd = paths
-        .prepare_launch_directory("runtime/outer-generation-test")
-        .unwrap();
-    let nested_cwd = cwd.absolute().as_os_str().to_owned();
-    let nested_command = target.absolute().as_os_str().to_owned();
-    let launch = TrustedProcessLaunch::new(
-        ProcessOwnerPurpose::Service {
-            service_id: "outer_generation_test".into(),
-            instance_id: "outer_generation_owner_1".into(),
-        },
-        supervisor,
-        target,
-        None,
-        cwd,
-        vec![
-            OsString::from("--cwd"),
-            nested_cwd,
-            OsString::from("--"),
-            nested_command,
-        ],
-        ProcessOwnerLimits {
-            soft_commit_bytes: 0,
-            hard_commit_bytes: 0,
-            graceful_shutdown: Duration::from_millis(500),
-            supervisor_exit_timeout: TEST_PROCESS_TIMEOUT,
-        },
-    )
-    .unwrap();
-    let mut owner = RunningProcessOwner::spawn(&generation_membership, launch).unwrap();
+    let mut owner = match RunningProcessOwner::spawn_service(&generation_membership, launch) {
+        ServiceLaunchOutcome::Running(owner) => owner,
+        unexpected => panic!("service launch did not create its contained owner: {unexpected:?}"),
+    };
     let target_pid = loop {
         match owner.read_event(TEST_PROCESS_TIMEOUT).unwrap() {
             ProcessOwnerEvent::Lifecycle(event)
@@ -430,35 +449,40 @@ fn pinned_existing_supervisor_returns_a_bounded_zero_resident_exit_receipt() {
         RuntimeGenerationGuard::acquire(generation_scope, Duration::ZERO, Duration::from_secs(10))
             .unwrap();
     let generation_membership = generation_guard.membership();
-    let supervisor = paths
-        .pin_runtime_file_for_launch(&paths.resolve_runtime("bin/runtime-supervisor.exe").unwrap())
+    let registry = service_registry("process_owner_test", "bin/finite-target.exe");
+    let foreign_data = directory.path().join("foreign-data");
+    fs::create_dir_all(&foreign_data).unwrap();
+    let foreign_paths = RuntimePaths::new(&foreign_data, &app, &runtime).unwrap();
+    let foreign_request = registry
+        .prepare_service_launch(
+            &foreign_paths,
+            "process_owner_test",
+            "foreign_service_process_owner_test",
+            vec![OsString::from("--not-an-option")],
+        )
         .unwrap();
-    let target = paths
-        .pin_runtime_file_for_launch(&paths.resolve_runtime("bin/finite-target.exe").unwrap())
-        .unwrap();
-    let cwd = paths
-        .prepare_launch_directory("runtime/process-owner-test")
-        .unwrap();
-    let launch = TrustedProcessLaunch::new(
-        ProcessOwnerPurpose::Service {
-            service_id: "process_owner_test".into(),
-            instance_id: "service_process_owner_test".into(),
-        },
-        supervisor,
-        target,
-        None,
-        cwd,
-        vec![OsString::from("--not-an-option")],
-        ProcessOwnerLimits {
-            soft_commit_bytes: 0,
-            hard_commit_bytes: 0,
-            graceful_shutdown: Duration::from_millis(500),
-            supervisor_exit_timeout: Duration::from_secs(10),
-        },
-    )
-    .unwrap();
+    assert!(matches!(
+        RunningProcessOwner::spawn_service(&generation_membership, foreign_request),
+        ServiceLaunchOutcome::NotCreated(ref denied)
+            if matches!(denied.error(), ProcessOwnerError::GenerationScopeMismatch)
+    ));
+    assert!(!foreign_data
+        .join("runtime/services/process_owner_test/foreign_service_process_owner_test")
+        .exists());
 
-    let mut owner = RunningProcessOwner::spawn(&generation_membership, launch).unwrap();
+    let launch = registry
+        .prepare_service_launch(
+            &paths,
+            "process_owner_test",
+            "service_process_owner_test",
+            vec![OsString::from("--not-an-option")],
+        )
+        .unwrap();
+
+    let mut owner = match RunningProcessOwner::spawn_service(&generation_membership, launch) {
+        ServiceLaunchOutcome::Running(owner) => owner,
+        unexpected => panic!("service launch did not create its contained owner: {unexpected:?}"),
+    };
     let mut started_pid = None;
     let terminal = owner
         .wait_for_terminal(Duration::from_secs(10), |event| {

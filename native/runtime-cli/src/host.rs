@@ -1,6 +1,8 @@
 use crate::bootstrap::{receive_bootstrap, start_parent_stdin_reader, BootstrapError};
 use crate::control::{BoundControlListener, ControlError, RuntimeJobControl};
+use crate::durable_job_control::DurableRuntimeJobControl;
 use crate::shutdown::ShutdownCoordinator;
+use crate::worker_dispatcher::{WorkerDispatcher, WorkerDispatcherError};
 use breadboard_runtime_core::{
     ControlPlaneAuthority, CurrentGenerationMembership, GenerationGuardError, JobStore, PathError,
     PriorGenerationDrained, Registry, RegistryError, RuntimeGenerationGuard, RuntimePaths,
@@ -69,6 +71,8 @@ pub(crate) enum HostError {
     InvalidControlAuthority,
     #[error(transparent)]
     Control(#[from] ControlError),
+    #[error("the authoritative disposable-worker dispatcher failed")]
+    WorkerDispatcher(#[source] WorkerDispatcherError),
     #[error("runtime-ready record is invalid: {0}")]
     InvalidReady(String),
     #[error("runtime-ready record exceeds its protocol bound")]
@@ -109,10 +113,6 @@ trait PreparedRuntimeEngine {
     /// Returns an already-sanitized in-memory snapshot. Implementations must
     /// not perform health polling, cold-start services, or block on I/O here.
     fn service_statuses(&self) -> Result<Vec<RuntimeServiceStatus>, String>;
-    /// Returns the sole authenticated job authority for submission,
-    /// inspection, replay, and cancellation. The host performs bearer and
-    /// user-scope authentication before invoking it.
-    fn job_control(&self) -> &dyn RuntimeJobControl;
     /// Must implement the architecture's bounded graceful/forced drain and
     /// full-tree exit confirmation before returning.
     fn shutdown(&mut self) -> Result<(), String>;
@@ -229,12 +229,39 @@ fn run_after_bootstrap(
     }
 
     context.config_root.revalidate()?;
-    let mut prepared = engine.prepare(&context, &registry, &store, &shutdown)?;
-    let serve_result = run_prepared_runtime(&mut *prepared, &shutdown);
+    // The dispatcher starts while durable admission is still closed. It can
+    // therefore establish its sole ownership thread before readiness without
+    // starting user work. `run_prepared_runtime` opens the shared gate only
+    // after the real dashboard and required service state have been emitted.
+    let mut dispatcher = WorkerDispatcher::start(
+        registry.clone(),
+        Arc::clone(&store),
+        context.paths.clone(),
+        context.generation_membership.clone(),
+        Arc::clone(&shutdown),
+    )
+    .map_err(HostError::WorkerDispatcher)?;
+    let mut prepared = match engine.prepare(&context, &registry, &store, &shutdown) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            shutdown.request_shutdown();
+            // Admission has never opened on this path. Joining is still
+            // mandatory; even if an authority-bearing dispatcher error were
+            // returned, the engine error below commits main to process exit
+            // and cannot resume this generation.
+            let _ = dispatcher.shutdown();
+            return Err(error);
+        }
+    };
+    let job_control =
+        DurableRuntimeJobControl::new(registry, Arc::clone(&store), context.paths.clone());
+    let serve_result = run_prepared_runtime(&mut *prepared, &shutdown, &job_control);
     shutdown.request_shutdown();
+    let dispatcher_result = dispatcher.shutdown().map_err(HostError::WorkerDispatcher);
     let engine_result = prepared
         .shutdown()
         .map_err(|_| HostError::Engine("bounded shutdown did not complete"));
+    dispatcher_result?;
     serve_result?;
     engine_result
 }
@@ -267,6 +294,7 @@ fn inspect_completion_intents_then_reconcile(
 fn run_prepared_runtime(
     prepared: &mut dyn PreparedRuntimeEngine,
     shutdown: &Arc<ShutdownCoordinator>,
+    job_control: &dyn RuntimeJobControl,
 ) -> Result<(), HostError> {
     if shutdown.is_requested() {
         return Err(HostError::ParentDisconnected);
@@ -303,7 +331,7 @@ fn run_prepared_runtime(
             std::process::id(),
             shutdown,
             || prepared.service_statuses(),
-            prepared.job_control(),
+            job_control,
         )
         .map_err(HostError::from)
 }

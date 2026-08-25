@@ -11,6 +11,9 @@ use thiserror::Error;
 
 const BOOTSTRAP_DEADLINE: Duration = Duration::from_secs(30);
 
+type BootstrapReceiver = mpsc::Receiver<Result<RuntimeBootstrapMessage, BootstrapError>>;
+type ParentStdinReader = (BootstrapReceiver, JoinHandle<()>);
+
 #[derive(Debug, Error)]
 pub(crate) enum BootstrapError {
     #[error("bootstrap stdin closed before one complete line was received")]
@@ -67,13 +70,7 @@ pub(crate) fn read_bootstrap<R: BufRead>(
 /// discard bytes it had already buffered beyond the first newline.
 pub(crate) fn start_parent_stdin_reader(
     shutdown: Arc<ShutdownCoordinator>,
-) -> Result<
-    (
-        mpsc::Receiver<Result<RuntimeBootstrapMessage, BootstrapError>>,
-        JoinHandle<()>,
-    ),
-    BootstrapError,
-> {
+) -> Result<ParentStdinReader, BootstrapError> {
     let (bootstrap_sender, bootstrap_receiver) = mpsc::sync_channel(1);
     let handle = thread::Builder::new()
         .name("runtime-parent-watch".into())
@@ -94,7 +91,7 @@ pub(crate) fn start_parent_stdin_reader(
 }
 
 pub(crate) fn receive_bootstrap(
-    receiver: mpsc::Receiver<Result<RuntimeBootstrapMessage, BootstrapError>>,
+    receiver: BootstrapReceiver,
 ) -> Result<RuntimeBootstrapMessage, BootstrapError> {
     match receiver.recv_timeout(BOOTSTRAP_DEADLINE) {
         Ok(result) => result,

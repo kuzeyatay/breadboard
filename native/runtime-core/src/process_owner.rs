@@ -1,6 +1,6 @@
 use crate::{
-    CurrentGenerationMembership, PathError, RuntimeGenerationScope, TrustedFilePin,
-    TrustedLaunchDirectory,
+    paths::PreparedWorkerStart, CurrentGenerationMembership, PathError, RuntimeGenerationScope,
+    RuntimePaths, TrustedFilePin, TrustedLaunchDirectory,
 };
 use breadboard_runtime_protocol::{
     parse_worker_event, validate_identifier, WorkerEvent, WorkerIdentity,
@@ -23,12 +23,13 @@ use thiserror::Error;
 pub const RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE: u32 = 73;
 pub const MAX_PROCESS_OWNER_PROTOCOL_LINE_BYTES: u64 = 64 * 1024;
 const MAX_TARGET_ARGUMENTS: usize = 4_096;
+const RUNTIME_SUPERVISOR_RELATIVE_PATH: &str = "bin/runtime-supervisor.exe";
 const TRUSTED_WINDOWS_ENVIRONMENT_NAMES: &[&str] = &["SystemRoot"];
 const MAX_BUFFERED_PROCESS_OWNER_EVENTS: usize = 32;
 const MAX_PRIVATE_DIAGNOSTIC_RECORDS: usize = 16;
 const MAX_PRIVATE_DIAGNOSTIC_BYTES: usize = 256 * 1024;
-const MIN_GRACEFUL_TIMEOUT: Duration = Duration::from_millis(100);
-const MAX_GRACEFUL_TIMEOUT: Duration = Duration::from_secs(300);
+pub const MIN_PROCESS_OWNER_GRACEFUL_SHUTDOWN: Duration = Duration::from_millis(100);
+pub const MAX_PROCESS_OWNER_GRACEFUL_SHUTDOWN: Duration = Duration::from_secs(300);
 const MIN_SUPERVISOR_EXIT_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_SUPERVISOR_EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 const SUPERVISOR_TERMINAL_CLEANUP_BUDGET: Duration = Duration::from_secs(8);
@@ -53,6 +54,8 @@ pub enum ProcessOwnerError {
     Spawn(#[source] io::Error),
     #[error("authoritative process supervisor could not enter the outer generation job")]
     GenerationContainment(#[source] io::Error),
+    #[error("process launch authorities belong to different Runtime V2 data roots")]
+    GenerationScopeMismatch,
     #[error("authoritative process supervisor control failed")]
     Control(#[source] io::Error),
     #[error("authoritative process supervisor protocol failed: {0}")]
@@ -249,7 +252,9 @@ impl ProcessOwnerLimits {
                 "hard commit limit cannot be represented on this platform",
             ));
         }
-        if !(MIN_GRACEFUL_TIMEOUT..=MAX_GRACEFUL_TIMEOUT).contains(&self.graceful_shutdown) {
+        if !(MIN_PROCESS_OWNER_GRACEFUL_SHUTDOWN..=MAX_PROCESS_OWNER_GRACEFUL_SHUTDOWN)
+            .contains(&self.graceful_shutdown)
+        {
             return Err(ProcessOwnerError::InvalidLaunch(
                 "graceful shutdown deadline is outside the supported bounds",
             ));
@@ -269,29 +274,256 @@ impl ProcessOwnerLimits {
 /// authorities. Arguments are caller data, but the supervisor, executable,
 /// optional language entrypoint, and working directory cannot be supplied as
 /// untrusted strings.
-pub struct TrustedProcessLaunch {
+pub(crate) struct TrustedProcessLaunch {
     purpose: ProcessOwnerPurpose,
+    generation_scope: RuntimeGenerationScope,
     supervisor: TrustedFilePin,
     executable: TrustedFilePin,
     entrypoint: Option<TrustedFilePin>,
-    working_directory: TrustedLaunchDirectory,
-    arguments: Vec<OsString>,
+    target: TrustedProcessTarget,
     environment: TrustedEnvironmentPolicy,
     limits: ProcessOwnerLimits,
 }
 
+/// Claim-independent, fully pinned worker launch material. The attempt-specific
+/// `start.json` and workspace are deliberately not prepared here: that happens
+/// only after this value and the exact durable dispatch claim are consumed by
+/// `WorkerDispatchClaim::launch`.
+pub struct WorkerLaunchRequest {
+    inner: Box<WorkerLaunchRequestInner>,
+}
+
+/// Registry-selected service launch material bound to one exact Runtime V2
+/// data-root authority. Downstream callers may supply only a validated service
+/// instance identifier and bounded target arguments; executable identity,
+/// entrypoint, supervisor, limits, and working-directory layout remain closed.
+pub struct ServiceLaunchRequest {
+    inner: Box<ServiceLaunchRequestInner>,
+}
+
+struct ServiceLaunchRequestInner {
+    service_id: String,
+    instance_id: String,
+    paths: RuntimePaths,
+    executable_relative: String,
+    entrypoint_relative: Option<String>,
+    arguments: Vec<OsString>,
+    limits: ProcessOwnerLimits,
+}
+
+struct WorkerLaunchRequestInner {
+    worker_kind: String,
+    paths: RuntimePaths,
+    supervisor: TrustedFilePin,
+    executable: TrustedFilePin,
+    entrypoint: Option<TrustedFilePin>,
+    limits: ProcessOwnerLimits,
+}
+
+impl fmt::Debug for WorkerLaunchRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = (
+            &self.inner.worker_kind,
+            &self.inner.paths,
+            &self.inner.supervisor,
+            &self.inner.executable,
+            &self.inner.entrypoint,
+        );
+        formatter
+            .debug_struct("WorkerLaunchRequest")
+            .field("authority", &"<opaque pinned worker launch material>")
+            .field("limits", &self.inner.limits)
+            .finish()
+    }
+}
+
+impl WorkerLaunchRequest {
+    /// The trusted registry is the sole constructor. Keeping this crate-private
+    /// prevents downstream callers from pairing arbitrary pins or limits with
+    /// a durable worker claim while preserving an opaque public return type for
+    /// the native CLI.
+    pub(crate) fn from_registry(
+        worker_kind: String,
+        paths: RuntimePaths,
+        supervisor: TrustedFilePin,
+        executable: TrustedFilePin,
+        entrypoint: Option<TrustedFilePin>,
+        limits: ProcessOwnerLimits,
+    ) -> Self {
+        Self {
+            inner: Box::new(WorkerLaunchRequestInner {
+                worker_kind,
+                paths,
+                supervisor,
+                executable,
+                entrypoint,
+                limits,
+            }),
+        }
+    }
+
+    pub(crate) fn generation_scope(&self) -> RuntimeGenerationScope {
+        self.inner.paths.runtime_generation_scope()
+    }
+
+    pub(crate) fn worker_kind(&self) -> &str {
+        &self.inner.worker_kind
+    }
+
+    #[cfg(test)]
+    pub(crate) fn limits_for_test(&self) -> ProcessOwnerLimits {
+        self.inner.limits
+    }
+}
+
+impl fmt::Debug for ServiceLaunchRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = (
+            &self.inner.service_id,
+            &self.inner.instance_id,
+            &self.inner.paths,
+            &self.inner.executable_relative,
+            &self.inner.entrypoint_relative,
+            &self.inner.arguments,
+        );
+        formatter
+            .debug_struct("ServiceLaunchRequest")
+            .field("authority", &"<opaque registry service launch material>")
+            .field("argument_count", &self.inner.arguments.len())
+            .field("limits", &self.inner.limits)
+            .finish()
+    }
+}
+
+impl ServiceLaunchRequest {
+    pub(crate) fn from_registry(
+        service_id: String,
+        instance_id: String,
+        paths: RuntimePaths,
+        executable_relative: String,
+        entrypoint_relative: Option<String>,
+        arguments: Vec<OsString>,
+        limits: ProcessOwnerLimits,
+    ) -> Result<Self, ProcessOwnerError> {
+        let purpose = ProcessOwnerPurpose::Service {
+            service_id: service_id.clone(),
+            instance_id: instance_id.clone(),
+        };
+        purpose.validate()?;
+        if arguments.len() > MAX_TARGET_ARGUMENTS {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "target argument count exceeded its bound",
+            ));
+        }
+        if arguments.iter().any(|argument| contains_nul(argument)) {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "target argument contained NUL",
+            ));
+        }
+        Ok(Self {
+            inner: Box::new(ServiceLaunchRequestInner {
+                service_id,
+                instance_id,
+                paths,
+                executable_relative,
+                entrypoint_relative,
+                arguments,
+                limits: limits.validate()?,
+            }),
+        })
+    }
+
+    pub(crate) fn generation_scope(&self) -> RuntimeGenerationScope {
+        self.inner.paths.runtime_generation_scope()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn service_id_for_test(&self) -> &str {
+        &self.inner.service_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn limits_for_test(&self) -> ProcessOwnerLimits {
+        self.inner.limits
+    }
+}
+
+enum TrustedProcessTarget {
+    Worker(Box<PreparedWorkerStart>),
+    Service {
+        working_directory: Box<TrustedLaunchDirectory>,
+        arguments: Vec<OsString>,
+    },
+}
+
+impl TrustedProcessTarget {
+    fn working_directory(&self) -> &TrustedLaunchDirectory {
+        match self {
+            Self::Worker(start) => start.launch_directory(),
+            Self::Service {
+                working_directory, ..
+            } => working_directory,
+        }
+    }
+
+    fn arguments(&self) -> WorkerOrServiceArguments<'_> {
+        match self {
+            Self::Worker(start) => {
+                WorkerOrServiceArguments::Worker(start.start_manifest_argument())
+            }
+            Self::Service { arguments, .. } => WorkerOrServiceArguments::Service(arguments),
+        }
+    }
+
+    fn argument_count(&self) -> usize {
+        match self {
+            Self::Worker(_) => 1,
+            Self::Service { arguments, .. } => arguments.len(),
+        }
+    }
+
+    fn revalidate(&self) -> Result<(), ProcessOwnerError> {
+        match self {
+            Self::Worker(start) => start.revalidate().map_err(ProcessOwnerError::from),
+            Self::Service {
+                working_directory, ..
+            } => working_directory
+                .revalidate()
+                .map_err(ProcessOwnerError::from),
+        }
+    }
+}
+
+enum WorkerOrServiceArguments<'a> {
+    Worker(&'static str),
+    Service(&'a [OsString]),
+}
+
+impl WorkerOrServiceArguments<'_> {
+    #[cfg(windows)]
+    fn apply_to(self, command: &mut Command) {
+        match self {
+            Self::Worker(argument) => {
+                command.arg(argument);
+            }
+            Self::Service(arguments) => {
+                command.args(arguments);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct TrustedEnvironmentPolicy {
-    private: (),
+    _private: (),
 }
 
 impl TrustedEnvironmentPolicy {
     fn minimal() -> Self {
-        Self { private: () }
+        Self { _private: () }
     }
 
     fn names(self) -> &'static [&'static str] {
-        let _ = self.private;
         TRUSTED_WINDOWS_ENVIRONMENT_NAMES
     }
 }
@@ -308,7 +540,7 @@ impl fmt::Debug for TrustedProcessLaunch {
                 &self.entrypoint.as_ref().map(|_| "<redacted pinned file>"),
             )
             .field("working_directory", &"<redacted pinned directory>")
-            .field("argument_count", &self.arguments.len())
+            .field("argument_count", &self.target.argument_count())
             .field("environment", &"<fixed trusted policy>")
             .field("limits", &self.limits)
             .finish()
@@ -316,51 +548,25 @@ impl fmt::Debug for TrustedProcessLaunch {
 }
 
 impl TrustedProcessLaunch {
-    pub fn new(
-        purpose: ProcessOwnerPurpose,
+    fn from_validated_claimed_worker(
+        identity: WorkerIdentity,
+        generation_scope: RuntimeGenerationScope,
         supervisor: TrustedFilePin,
         executable: TrustedFilePin,
         entrypoint: Option<TrustedFilePin>,
-        working_directory: TrustedLaunchDirectory,
-        arguments: Vec<OsString>,
+        start: PreparedWorkerStart,
         limits: ProcessOwnerLimits,
-    ) -> Result<Self, ProcessOwnerError> {
-        if supervisor.authority_kind() != "runtime" || executable.authority_kind() != "runtime" {
-            return Err(ProcessOwnerError::InvalidLaunch(
-                "supervisor and executable must come from runtime-root authority",
-            ));
-        }
-        if entrypoint
-            .as_ref()
-            .is_some_and(|entrypoint| entrypoint.authority_kind() != "application")
-        {
-            return Err(ProcessOwnerError::InvalidLaunch(
-                "entrypoint must come from application-root authority",
-            ));
-        }
-        if arguments.len() > MAX_TARGET_ARGUMENTS {
-            return Err(ProcessOwnerError::InvalidLaunch(
-                "target argument count exceeded its bound",
-            ));
-        }
-        if arguments.iter().any(|argument| contains_nul(argument)) {
-            return Err(ProcessOwnerError::InvalidLaunch(
-                "target argument contained NUL",
-            ));
-        }
-        purpose.validate()?;
-        let launch = Self {
-            purpose,
+    ) -> Self {
+        Self {
+            purpose: ProcessOwnerPurpose::Worker(identity),
+            generation_scope,
             supervisor,
             executable,
             entrypoint,
-            working_directory,
-            arguments,
+            target: TrustedProcessTarget::Worker(Box::new(start)),
             environment: TrustedEnvironmentPolicy::minimal(),
-            limits: limits.validate()?,
-        };
-        launch.revalidate_pins()?;
-        Ok(launch)
+            limits,
+        }
     }
 
     fn revalidate_pins(&self) -> Result<(), ProcessOwnerError> {
@@ -369,7 +575,7 @@ impl TrustedProcessLaunch {
         if let Some(entrypoint) = &self.entrypoint {
             entrypoint.revalidate()?;
         }
-        self.working_directory.revalidate()?;
+        self.target.revalidate()?;
         Ok(())
     }
 
@@ -387,6 +593,190 @@ impl TrustedProcessLaunch {
         });
         Ok(values)
     }
+
+    pub(crate) fn generation_scope(&self) -> &RuntimeGenerationScope {
+        &self.generation_scope
+    }
+}
+
+fn prepare_service_launch(
+    request: ServiceLaunchRequest,
+) -> Result<TrustedProcessLaunch, (ServiceLaunchRequest, ProcessOwnerError)> {
+    let pre_file_validation = (|| {
+        ProcessOwnerPurpose::Service {
+            service_id: request.inner.service_id.clone(),
+            instance_id: request.inner.instance_id.clone(),
+        }
+        .validate()?;
+        if request.inner.arguments.len() > MAX_TARGET_ARGUMENTS {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "target argument count exceeded its bound",
+            ));
+        }
+        if request
+            .inner
+            .arguments
+            .iter()
+            .any(|argument| contains_nul(argument))
+        {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "target argument contained NUL",
+            ));
+        }
+        request.inner.limits.validate()?;
+        Ok(())
+    })();
+    if let Err(error) = pre_file_validation {
+        return Err((request, error));
+    }
+
+    let generation_scope = request.generation_scope();
+    let pinned = (|| {
+        let supervisor = request.inner.paths.pin_runtime_file_for_launch(
+            &request
+                .inner
+                .paths
+                .resolve_runtime(RUNTIME_SUPERVISOR_RELATIVE_PATH)?,
+        )?;
+        let executable = request.inner.paths.pin_runtime_file_for_launch(
+            &request
+                .inner
+                .paths
+                .resolve_runtime(&request.inner.executable_relative)?,
+        )?;
+        let entrypoint = request
+            .inner
+            .entrypoint_relative
+            .as_deref()
+            .map(|relative| {
+                request
+                    .inner
+                    .paths
+                    .pin_app_file_for_launch(&request.inner.paths.resolve_app(relative)?)
+            })
+            .transpose()?;
+        Ok::<_, PathError>((supervisor, executable, entrypoint))
+    })();
+    let (supervisor, executable, entrypoint) = match pinned {
+        Ok(pinned) => pinned,
+        Err(error) => return Err((request, ProcessOwnerError::Path(error))),
+    };
+    let working_relative = format!(
+        "runtime/services/{}/{}",
+        request.inner.service_id, request.inner.instance_id
+    );
+    let working_directory = match request
+        .inner
+        .paths
+        .prepare_launch_directory(&working_relative)
+    {
+        Ok(working_directory) => working_directory,
+        Err(error) => return Err((request, ProcessOwnerError::Path(error))),
+    };
+    let ServiceLaunchRequest { inner } = request;
+    let ServiceLaunchRequestInner {
+        service_id,
+        instance_id,
+        paths: _,
+        executable_relative: _,
+        entrypoint_relative: _,
+        arguments,
+        limits,
+    } = *inner;
+    Ok(TrustedProcessLaunch {
+        purpose: ProcessOwnerPurpose::Service {
+            service_id,
+            instance_id,
+        },
+        generation_scope,
+        supervisor,
+        executable,
+        entrypoint,
+        target: TrustedProcessTarget::Service {
+            working_directory: Box::new(working_directory),
+            arguments,
+        },
+        environment: TrustedEnvironmentPolicy::minimal(),
+        limits,
+    })
+}
+
+pub(crate) fn prepare_claimed_worker_launch(
+    identity: &WorkerIdentity,
+    request: WorkerLaunchRequest,
+) -> Result<TrustedProcessLaunch, (WorkerLaunchRequest, ProcessOwnerError)> {
+    let generation_scope = request.generation_scope();
+    let pre_file_validation = (|| {
+        identity
+            .validate()
+            .map_err(|_| ProcessOwnerError::InvalidLaunch("worker ownership fence was invalid"))?;
+        if request.inner.supervisor.authority_kind() != "runtime"
+            || request.inner.executable.authority_kind() != "runtime"
+        {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "supervisor and executable must come from runtime-root authority",
+            ));
+        }
+        if request
+            .inner
+            .entrypoint
+            .as_ref()
+            .is_some_and(|entrypoint| entrypoint.authority_kind() != "application")
+        {
+            return Err(ProcessOwnerError::InvalidLaunch(
+                "entrypoint must come from application-root authority",
+            ));
+        }
+        request.inner.limits.validate()?;
+        Ok(())
+    })();
+    if let Err(error) = pre_file_validation {
+        return Err((request, error));
+    }
+    let pin_validation = (|| {
+        request.inner.supervisor.revalidate()?;
+        request.inner.executable.revalidate()?;
+        if let Some(entrypoint) = &request.inner.entrypoint {
+            entrypoint.revalidate()?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = pin_validation {
+        return Err((request, error));
+    }
+    let start = match request.inner.paths.prepare_worker_start(identity) {
+        Ok(start) => start,
+        Err(error) => return Err((request, ProcessOwnerError::Path(error))),
+    };
+    if &start.manifest().identity != identity {
+        return Err((
+            request,
+            ProcessOwnerError::InvalidLaunch(
+                "worker start authority did not match the durable dispatch claim",
+            ),
+        ));
+    }
+    if let Err(error) = start.revalidate() {
+        return Err((request, ProcessOwnerError::Path(error)));
+    }
+    let WorkerLaunchRequest { inner } = request;
+    let WorkerLaunchRequestInner {
+        worker_kind: _,
+        paths: _,
+        supervisor,
+        executable,
+        entrypoint,
+        limits,
+    } = *inner;
+    Ok(TrustedProcessLaunch::from_validated_claimed_worker(
+        identity.clone(),
+        generation_scope,
+        supervisor,
+        executable,
+        entrypoint,
+        start,
+        limits,
+    ))
 }
 
 fn contains_nul(value: &OsStr) -> bool {
@@ -416,6 +806,7 @@ pub enum WorkerProtocolFault {
     RecordTooLarge,
     PartialRecord,
     OutputLost,
+    DurableStateViolation,
 }
 
 struct WorkerEventStream {
@@ -500,6 +891,20 @@ impl WorkerEventStream {
         self.ready.clear();
         Some(fault)
     }
+}
+
+fn reject_worker_event_for_durable_state(
+    stream: Option<&mut WorkerEventStream>,
+    worker_protocol_fault: &mut Option<WorkerProtocolFault>,
+) -> Result<(), ProcessOwnerError> {
+    let stream = stream.ok_or(ProcessOwnerError::InvalidState(
+        "a service process has no worker event stream",
+    ))?;
+    let _ = stream.poison(WorkerProtocolFault::DurableStateViolation);
+    if worker_protocol_fault.is_none() {
+        *worker_protocol_fault = Some(WorkerProtocolFault::DurableStateViolation);
+    }
+    Ok(())
 }
 
 impl PrivateDiagnosticBuffer {
@@ -638,6 +1043,163 @@ pub struct RunningProcessOwner {
     stop_requested: bool,
 }
 
+pub(crate) enum ProcessSpawnAttempt {
+    Running(Box<RunningProcessOwner>),
+    NotCreated {
+        launch: Box<TrustedProcessLaunch>,
+        error: ProcessOwnerError,
+    },
+    Uncertain(Box<ProcessCreationUncertain>),
+}
+
+/// Owns the exact child handle, inherited generation containment, and trusted
+/// launch after `CreateProcess` succeeded but launch setup could not establish
+/// the ordinary supervisor protocol. Runtime bootstrap placed the creating
+/// process in the non-breakaway generation Job before minting membership, so
+/// even a defense-in-depth membership-query failure cannot create an
+/// uncontained-child window. This deliberately cannot mint a no-process-
+/// created receipt. Dropping it performs bounded emergency cleanup without
+/// relabeling that best-effort attempt as tree-exit proof; authoritative proof
+/// remains the next generation's kernel Job drain.
+pub(crate) struct ProcessCreationUncertain {
+    child: Option<Child>,
+    generation: CurrentGenerationMembership,
+    launch: Box<TrustedProcessLaunch>,
+    supervisor_pid: u32,
+    error: ProcessOwnerError,
+}
+
+impl fmt::Debug for ProcessCreationUncertain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = (&self.generation, &self.launch);
+        formatter
+            .debug_struct("ProcessCreationUncertain")
+            .field("supervisor_pid", &self.supervisor_pid)
+            .field("authority", &"<opaque live cleanup authority>")
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
+impl ProcessCreationUncertain {
+    fn new(
+        child: Child,
+        generation: CurrentGenerationMembership,
+        launch: TrustedProcessLaunch,
+        error: ProcessOwnerError,
+    ) -> Self {
+        let supervisor_pid = child.id();
+        Self {
+            child: Some(child),
+            generation,
+            launch: Box::new(launch),
+            supervisor_pid,
+            error,
+        }
+    }
+
+    pub(crate) fn error(&self) -> &ProcessOwnerError {
+        &self.error
+    }
+
+    pub(crate) fn request_emergency_termination(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            terminate_and_reap_bounded(child, FORCED_REAP_TIMEOUT);
+        }
+    }
+}
+
+impl Drop for ProcessCreationUncertain {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            terminate_and_reap_bounded(&mut child, FORCED_REAP_TIMEOUT);
+        }
+    }
+}
+
+#[must_use = "every service launch outcome owns process or retry authority and must be handled"]
+pub enum ServiceLaunchOutcome {
+    Running(Box<RunningProcessOwner>),
+    NotCreated(ServiceLaunchNotCreated),
+    Uncertain(ServiceLaunchUncertain),
+}
+
+impl fmt::Debug for ServiceLaunchOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Running(_) => formatter.write_str("ServiceLaunchOutcome::Running(<opaque>)"),
+            Self::NotCreated(_) => {
+                formatter.write_str("ServiceLaunchOutcome::NotCreated(<opaque>)")
+            }
+            Self::Uncertain(_) => formatter.write_str("ServiceLaunchOutcome::Uncertain(<opaque>)"),
+        }
+    }
+}
+
+#[must_use = "a no-process-created service launch may be retried"]
+pub struct ServiceLaunchNotCreated {
+    retry: ServiceLaunchRetryMaterial,
+    error: ProcessOwnerError,
+}
+
+enum ServiceLaunchRetryMaterial {
+    Request(ServiceLaunchRequest),
+    Prepared(Box<TrustedProcessLaunch>),
+}
+
+impl fmt::Debug for ServiceLaunchNotCreated {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = &self.retry;
+        formatter
+            .debug_struct("ServiceLaunchNotCreated")
+            .field("authority", &"<opaque no-process-created authority>")
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
+impl ServiceLaunchNotCreated {
+    pub fn error(&self) -> &ProcessOwnerError {
+        &self.error
+    }
+
+    pub fn retry(self, generation: &CurrentGenerationMembership) -> ServiceLaunchOutcome {
+        match self.retry {
+            ServiceLaunchRetryMaterial::Request(request) => {
+                RunningProcessOwner::spawn_service(generation, request)
+            }
+            ServiceLaunchRetryMaterial::Prepared(launch) => {
+                RunningProcessOwner::spawn_prepared_service(generation, *launch)
+            }
+        }
+    }
+}
+
+#[must_use = "an uncertain service launch must remain owned through runtime shutdown"]
+pub struct ServiceLaunchUncertain {
+    owner: Box<ProcessCreationUncertain>,
+}
+
+impl fmt::Debug for ServiceLaunchUncertain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = &self.owner;
+        formatter.write_str("ServiceLaunchUncertain(<opaque live cleanup authority>)")
+    }
+}
+
+impl ServiceLaunchUncertain {
+    pub fn error(&self) -> &ProcessOwnerError {
+        self.owner.error()
+    }
+
+    /// Requests bounded emergency termination without consuming the child
+    /// handle or implying that zero residents were proved. The caller must
+    /// retain this object while it closes admission and shuts the runtime down.
+    pub fn request_runtime_shutdown(&mut self) {
+        self.owner.request_emergency_termination();
+    }
+}
+
 impl fmt::Debug for RunningProcessOwner {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -663,13 +1225,102 @@ impl fmt::Debug for RunningProcessOwner {
 }
 
 impl RunningProcessOwner {
-    #[cfg(windows)]
-    pub fn spawn(
+    /// Starts only service-purpose launches. Worker launches must consume the
+    /// exact durable `WorkerDispatchClaim` through `WorkerDispatchClaim::launch`;
+    /// accepting a raw worker purpose here would recreate the stale
+    /// no-process-proof race that the claim-owned launch boundary prevents.
+    pub fn spawn_service(
+        generation: &CurrentGenerationMembership,
+        request: ServiceLaunchRequest,
+    ) -> ServiceLaunchOutcome {
+        if !generation.matches_scope(&request.generation_scope()) {
+            return ServiceLaunchOutcome::NotCreated(ServiceLaunchNotCreated {
+                retry: ServiceLaunchRetryMaterial::Request(request),
+                error: ProcessOwnerError::GenerationScopeMismatch,
+            });
+        }
+        match prepare_service_launch(request) {
+            Ok(launch) => Self::spawn_prepared_service(generation, launch),
+            Err((request, error)) => ServiceLaunchOutcome::NotCreated(ServiceLaunchNotCreated {
+                retry: ServiceLaunchRetryMaterial::Request(request),
+                error,
+            }),
+        }
+    }
+
+    fn spawn_prepared_service(
         generation: &CurrentGenerationMembership,
         launch: TrustedProcessLaunch,
-    ) -> Result<Self, ProcessOwnerError> {
-        launch.revalidate_pins()?;
-        let environment = launch.child_environment()?;
+    ) -> ServiceLaunchOutcome {
+        if !matches!(&launch.purpose, ProcessOwnerPurpose::Service { .. }) {
+            return ServiceLaunchOutcome::NotCreated(ServiceLaunchNotCreated {
+                retry: ServiceLaunchRetryMaterial::Prepared(Box::new(launch)),
+                error: ProcessOwnerError::InvalidLaunch(
+                    "service launch did not carry service purpose",
+                ),
+            });
+        }
+        if !generation.matches_scope(launch.generation_scope()) {
+            return ServiceLaunchOutcome::NotCreated(ServiceLaunchNotCreated {
+                retry: ServiceLaunchRetryMaterial::Prepared(Box::new(launch)),
+                error: ProcessOwnerError::GenerationScopeMismatch,
+            });
+        }
+        match Self::spawn_classified(generation, launch) {
+            ProcessSpawnAttempt::Running(owner) => ServiceLaunchOutcome::Running(owner),
+            ProcessSpawnAttempt::NotCreated { launch, error } => {
+                ServiceLaunchOutcome::NotCreated(ServiceLaunchNotCreated {
+                    retry: ServiceLaunchRetryMaterial::Prepared(launch),
+                    error,
+                })
+            }
+            ProcessSpawnAttempt::Uncertain(owner) => {
+                ServiceLaunchOutcome::Uncertain(ServiceLaunchUncertain { owner })
+            }
+        }
+    }
+
+    pub(crate) fn spawn_claimed_worker(
+        generation: &CurrentGenerationMembership,
+        launch: TrustedProcessLaunch,
+    ) -> ProcessSpawnAttempt {
+        if !matches!(&launch.purpose, ProcessOwnerPurpose::Worker(_)) {
+            return ProcessSpawnAttempt::NotCreated {
+                launch: Box::new(launch),
+                error: ProcessOwnerError::InvalidLaunch(
+                    "claimed worker launch did not carry worker purpose",
+                ),
+            };
+        }
+        if !generation.matches_scope(launch.generation_scope()) {
+            return ProcessSpawnAttempt::NotCreated {
+                launch: Box::new(launch),
+                error: ProcessOwnerError::GenerationScopeMismatch,
+            };
+        }
+        Self::spawn_classified(generation, launch)
+    }
+
+    #[cfg(windows)]
+    fn spawn_classified(
+        generation: &CurrentGenerationMembership,
+        launch: TrustedProcessLaunch,
+    ) -> ProcessSpawnAttempt {
+        if let Err(error) = launch.revalidate_pins() {
+            return ProcessSpawnAttempt::NotCreated {
+                launch: Box::new(launch),
+                error,
+            };
+        }
+        let environment = match launch.child_environment() {
+            Ok(environment) => environment,
+            Err(error) => {
+                return ProcessSpawnAttempt::NotCreated {
+                    launch: Box::new(launch),
+                    error,
+                }
+            }
+        };
         let mut command = Command::new(launch.supervisor.absolute());
         command
             .env_clear()
@@ -684,7 +1335,7 @@ impl RunningProcessOwner {
             .arg("--graceful-timeout-ms")
             .arg(launch.limits.graceful_shutdown.as_millis().to_string())
             .arg("--cwd")
-            .arg(launch.working_directory.absolute());
+            .arg(launch.target.working_directory().absolute());
         for &name in launch.environment.names() {
             command.arg("--inherit-env").arg(name);
         }
@@ -692,56 +1343,90 @@ impl RunningProcessOwner {
         if let Some(entrypoint) = &launch.entrypoint {
             command.arg(entrypoint.absolute());
         }
-        command.args(&launch.arguments);
+        launch.target.arguments().apply_to(&mut command);
 
         // All launch authorities are revalidated immediately before the OS
         // opens the pinned supervisor image. The supervisor repeats the target
         // containment sequence as CREATE_SUSPENDED + atomic Job assignment +
         // membership verification + ResumeThread.
-        launch.revalidate_pins()?;
-        let mut child = command.spawn().map_err(ProcessOwnerError::Spawn)?;
+        if let Err(error) = launch.revalidate_pins() {
+            return ProcessSpawnAttempt::NotCreated {
+                launch: Box::new(launch),
+                error,
+            };
+        }
+        // RuntimeGenerationGuard assigned this runtime process to the
+        // non-breakaway generation Job Object before it minted `generation`.
+        // Windows therefore creates this supervisor inside that boundary
+        // atomically. No descendant can exist in a post-create/pre-assignment
+        // gap; the membership check below is defense in depth.
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                return ProcessSpawnAttempt::NotCreated {
+                    launch: Box::new(launch),
+                    error: ProcessOwnerError::Spawn(error),
+                }
+            }
+        };
         let supervisor_pid = child.id();
-        if let Err(error) = assign_supervisor_to_generation(&child, generation) {
-            terminate_and_reap_bounded(&mut child, FORCED_REAP_TIMEOUT);
-            return Err(error);
+        if let Err(error) = verify_or_assign_supervisor_generation(&child, generation) {
+            return ProcessSpawnAttempt::Uncertain(Box::new(ProcessCreationUncertain::new(
+                child,
+                generation.clone(),
+                launch,
+                error,
+            )));
         }
         let mut control = match child.stdin.take() {
             Some(control) => control,
             None => {
-                terminate_and_reap_bounded(&mut child, FORCED_REAP_TIMEOUT);
-                return Err(ProcessOwnerError::Protocol(
-                    "supervisor stdin was unavailable",
-                ));
+                return ProcessSpawnAttempt::Uncertain(Box::new(ProcessCreationUncertain::new(
+                    child,
+                    generation.clone(),
+                    launch,
+                    ProcessOwnerError::Protocol("supervisor stdin was unavailable"),
+                )));
             }
         };
         let stdout = match child.stdout.take() {
             Some(stdout) => stdout,
             None => {
-                terminate_and_reap_bounded(&mut child, FORCED_REAP_TIMEOUT);
-                return Err(ProcessOwnerError::Protocol(
-                    "supervisor stdout was unavailable",
-                ));
+                return ProcessSpawnAttempt::Uncertain(Box::new(ProcessCreationUncertain::new(
+                    child,
+                    generation.clone(),
+                    launch,
+                    ProcessOwnerError::Protocol("supervisor stdout was unavailable"),
+                )));
             }
         };
         let events = match start_supervisor_reader(stdout) {
             Ok(events) => events,
             Err(error) => {
-                terminate_and_reap_bounded(&mut child, FORCED_REAP_TIMEOUT);
-                return Err(ProcessOwnerError::Control(error));
+                return ProcessSpawnAttempt::Uncertain(Box::new(ProcessCreationUncertain::new(
+                    child,
+                    generation.clone(),
+                    launch,
+                    ProcessOwnerError::Control(error),
+                )));
             }
         };
         if let Err(error) = control
             .write_all(SUPERVISOR_ACTIVATION_RECORD)
             .and_then(|_| control.flush())
         {
-            terminate_and_reap_bounded(&mut child, FORCED_REAP_TIMEOUT);
-            return Err(ProcessOwnerError::Control(error));
+            return ProcessSpawnAttempt::Uncertain(Box::new(ProcessCreationUncertain::new(
+                child,
+                generation.clone(),
+                launch,
+                ProcessOwnerError::Control(error),
+            )));
         }
         let worker_events = match &launch.purpose {
             ProcessOwnerPurpose::Worker(identity) => Some(WorkerEventStream::new(identity.clone())),
             ProcessOwnerPurpose::Service { .. } => None,
         };
-        Ok(Self {
+        ProcessSpawnAttempt::Running(Box::new(Self {
             child,
             control,
             events,
@@ -761,19 +1446,22 @@ impl RunningProcessOwner {
             started_boundary_accepted: false,
             terminal_seen: false,
             stop_requested: false,
-        })
+        }))
     }
 
     #[cfg(not(windows))]
-    pub fn spawn(
+    fn spawn_classified(
         _generation: &CurrentGenerationMembership,
-        _launch: TrustedProcessLaunch,
-    ) -> Result<Self, ProcessOwnerError> {
+        launch: TrustedProcessLaunch,
+    ) -> ProcessSpawnAttempt {
         // Process groups alone cannot prove that a descendant did not call
         // setsid/setpgid and escape. Until the native runtime has an OS-backed
         // containment implementation for the target platform, refusing launch
         // is safer than minting false complete-tree authority.
-        Err(ProcessOwnerError::UnsupportedPlatform)
+        ProcessSpawnAttempt::NotCreated {
+            launch: Box::new(launch),
+            error: ProcessOwnerError::UnsupportedPlatform,
+        }
     }
 
     pub fn supervisor_pid(&self) -> u32 {
@@ -862,7 +1550,9 @@ impl RunningProcessOwner {
             .as_mut()
             .and_then(WorkerEventStream::pop_ready)
         {
-            return Ok(ProcessOwnerEvent::Worker(event));
+            return Ok(ProcessOwnerEvent::Worker(
+                OwnedWorkerEvent::from_process_owner(self.generation.clone(), event),
+            ));
         }
         loop {
             let mut line = match recv_supervisor_read_until(&self.events, deadline)? {
@@ -910,7 +1600,9 @@ impl RunningProcessOwner {
                     .as_mut()
                     .and_then(WorkerEventStream::pop_ready)
                 {
-                    return Ok(ProcessOwnerEvent::Worker(event));
+                    return Ok(ProcessOwnerEvent::Worker(
+                        OwnedWorkerEvent::from_process_owner(self.generation.clone(), event),
+                    ));
                 }
                 continue;
             }
@@ -1023,6 +1715,18 @@ impl RunningProcessOwner {
         }
     }
 
+    pub(crate) fn reject_current_worker_event(&mut self) -> Result<(), ProcessOwnerError> {
+        if self.terminal_seen {
+            return Err(ProcessOwnerError::InvalidState(
+                "worker event was rejected after the terminal boundary",
+            ));
+        }
+        reject_worker_event_for_durable_state(
+            self.worker_events.as_mut(),
+            &mut self.worker_protocol_fault,
+        )
+    }
+
     pub fn confirm_exit(
         &mut self,
         terminal: &ProcessOwnerTerminal,
@@ -1071,17 +1775,7 @@ impl RunningProcessOwner {
         }
         reader_end?;
 
-        let classification = if terminal.failure.is_some() {
-            ProcessExitClassification::SupervisorFailure
-        } else if terminal.resource_exhausted {
-            ProcessExitClassification::ResourceExhausted
-        } else if self.worker_protocol_fault.is_some() {
-            ProcessExitClassification::WorkerProtocolFault
-        } else if terminal.stop_outcome.is_some() {
-            ProcessExitClassification::Stopped
-        } else {
-            ProcessExitClassification::TargetExit
-        };
+        let classification = classify_process_exit(terminal, self.worker_protocol_fault);
         let receipt = ProcessTreeExit {
             generation: Some(ProcessAuthorityGeneration::Live(self.generation.clone())),
             started_boundary_accepted: self.started_boundary_accepted,
@@ -1106,7 +1800,7 @@ impl RunningProcessOwner {
 }
 
 #[cfg(windows)]
-fn assign_supervisor_to_generation(
+fn verify_or_assign_supervisor_generation(
     child: &Child,
     generation: &CurrentGenerationMembership,
 ) -> Result<(), ProcessOwnerError> {
@@ -1115,20 +1809,32 @@ fn assign_supervisor_to_generation(
 
     let process = child.as_raw_handle() as HANDLE;
     let job = generation.raw_job_handle();
-    if unsafe { AssignProcessToJobObject(job, process) } == 0 {
-        return Err(ProcessOwnerError::GenerationContainment(
-            io::Error::last_os_error(),
-        ));
-    }
     let mut assigned = 0;
     if unsafe { IsProcessInJob(process, job, &mut assigned) } == 0 {
         return Err(ProcessOwnerError::GenerationContainment(
             io::Error::last_os_error(),
         ));
     }
+    if assigned != 0 {
+        return Ok(());
+    }
+
+    // This fallback is conservative: ordinary supervisors inherit membership
+    // at CreateProcess because the runtime itself is already resident and the
+    // generation job forbids breakaway. Retain the explicit assignment for an
+    // anomalous platform result, then verify before sending activation.
+    if unsafe { AssignProcessToJobObject(job, process) } == 0 {
+        return Err(ProcessOwnerError::GenerationContainment(
+            io::Error::last_os_error(),
+        ));
+    }
+    if unsafe { IsProcessInJob(process, job, &mut assigned) } == 0 {
+        return Err(ProcessOwnerError::GenerationContainment(
+            io::Error::last_os_error(),
+        ));
+    }
     if assigned == 0 {
-        return Err(ProcessOwnerError::GenerationContainment(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(ProcessOwnerError::GenerationContainment(io::Error::other(
             "Windows did not confirm outer generation membership",
         )));
     }
@@ -1264,12 +1970,90 @@ fn bounded_pid(value: Option<&Value>) -> Result<u32, ProcessOwnerError> {
     Ok(pid)
 }
 
+/// A worker event parsed from the exact live owner's bounded stdout stream and
+/// coupled to that owner's generation membership. Callers may inspect the
+/// typed event, but only `process_owner` can mint the authority required for a
+/// production durable transition.
+pub struct OwnedWorkerEvent {
+    generation: ProcessAuthorityGeneration,
+    event: WorkerEvent,
+}
+
+impl OwnedWorkerEvent {
+    fn from_process_owner(generation: CurrentGenerationMembership, event: WorkerEvent) -> Self {
+        Self {
+            generation: ProcessAuthorityGeneration::Live(generation),
+            event,
+        }
+    }
+
+    pub fn event(&self) -> &WorkerEvent {
+        &self.event
+    }
+
+    pub(crate) fn matches_generation_scope(&self, scope: &RuntimeGenerationScope) -> bool {
+        self.generation.matches_scope(scope)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(scope: RuntimeGenerationScope, event: WorkerEvent) -> Self {
+        Self {
+            generation: ProcessAuthorityGeneration::Test(scope),
+            event,
+        }
+    }
+}
+
+impl fmt::Debug for OwnedWorkerEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = &self.generation;
+        formatter
+            .debug_struct("OwnedWorkerEvent")
+            .field("event_kind", &owned_worker_event_kind(&self.event))
+            .field("payload", &"<redacted typed worker event>")
+            .field("generation", &"<opaque generation authority>")
+            .finish()
+    }
+}
+
+fn owned_worker_event_kind(event: &WorkerEvent) -> &'static str {
+    match event {
+        WorkerEvent::Ready { .. } => "ready",
+        WorkerEvent::Heartbeat { .. } => "heartbeat",
+        WorkerEvent::Progress { .. } => "progress",
+        WorkerEvent::Checkpoint { .. } => "checkpoint",
+        WorkerEvent::Artifact { .. } => "artifact",
+        WorkerEvent::Complete { .. } => "complete",
+        WorkerEvent::Failed { .. } => "failed",
+        WorkerEvent::CancellationAcknowledged { .. } => "cancellation-acknowledged",
+    }
+}
+
 #[derive(Debug)]
 pub enum ProcessOwnerEvent {
     Lifecycle(Value),
-    Worker(WorkerEvent),
+    Worker(OwnedWorkerEvent),
     WorkerProtocolFault(WorkerProtocolFault),
     Terminal(ProcessOwnerTerminal),
+}
+
+fn classify_process_exit(
+    terminal: &ProcessOwnerTerminal,
+    worker_protocol_fault: Option<WorkerProtocolFault>,
+) -> ProcessExitClassification {
+    if terminal.failure.is_some() {
+        ProcessExitClassification::SupervisorFailure
+    } else if terminal.resource_exhausted {
+        ProcessExitClassification::ResourceExhausted
+    } else if worker_protocol_fault.is_some() {
+        ProcessExitClassification::WorkerProtocolFault
+    } else if terminal.supervisor_error_count != 0 || terminal.cleanup_error_count != 0 {
+        ProcessExitClassification::SupervisorFailure
+    } else if terminal.stop_outcome.is_some() {
+        ProcessExitClassification::Stopped
+    } else {
+        ProcessExitClassification::TargetExit
+    }
 }
 
 /// An opaque parsed terminal record. It is not itself tree-exit authority:
@@ -1577,7 +2361,9 @@ impl ProcessTreeExit {
     /// invalid worker event stream, and a nonzero target exit remain valid
     /// zero-resident release receipts but can never become
     /// `WorkerCompletionProof` authority.
-    pub fn into_completion_authority(self) -> Result<AuthoritativeProcessOwner, ProcessTreeExit> {
+    pub fn into_completion_authority(
+        self,
+    ) -> Result<AuthoritativeProcessOwner, Box<ProcessTreeExit>> {
         if !self.started_boundary_accepted
             || self.classification != ProcessExitClassification::TargetExit
             || self.root_exit_code != Some(0)
@@ -1586,7 +2372,7 @@ impl ProcessTreeExit {
             || self.supervisor_error_count != 0
             || self.cleanup_error_count != 0
         {
-            return Err(self);
+            return Err(Box::new(self));
         }
         Ok(AuthoritativeProcessOwner {
             generation: self.generation,
@@ -1637,31 +2423,6 @@ impl ProcessTreeExit {
 
     pub(crate) fn started_boundary_accepted(&self) -> bool {
         self.started_boundary_accepted
-    }
-
-    #[cfg(test)]
-    pub(crate) fn worker_release_for_test(identity: WorkerIdentity) -> Self {
-        Self {
-            generation: None,
-            started_boundary_accepted: true,
-            supervisor_pid: 7,
-            root_pid: 42,
-            purpose: ProcessOwnerPurpose::Worker(identity),
-            root_exit_code: Some(1),
-            classification: ProcessExitClassification::SupervisorFailure,
-            failure: Some(ProcessSupervisorFailure {
-                code: "TEST_FAILURE".into(),
-                message: "test-only zero-resident release receipt".into(),
-            }),
-            stop_outcome: None,
-            accounting: ProcessTreeAccounting {
-                peak_private_commit_bytes: Some(0),
-                complete: true,
-            },
-            supervisor_error_count: 0,
-            cleanup_error_count: 0,
-            worker_protocol_fault: None,
-        }
     }
 
     #[cfg(test)]
@@ -1774,6 +2535,12 @@ impl fmt::Debug for AuthoritativeProcessOwner {
 }
 
 impl AuthoritativeProcessOwner {
+    pub(crate) fn matches_generation_scope(&self, scope: &RuntimeGenerationScope) -> bool {
+        self.generation
+            .as_ref()
+            .is_some_and(|generation| generation.matches_scope(scope))
+    }
+
     pub(crate) fn worker_identity(&self) -> Option<&WorkerIdentity> {
         match &self.purpose {
             ProcessOwnerPurpose::Worker(identity) => Some(identity),
@@ -1813,6 +2580,21 @@ impl AuthoritativeProcessOwner {
             supervisor_error_count: 0,
             cleanup_error_count: 0,
             worker_protocol_fault: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn worker_for_test(scope: RuntimeGenerationScope, identity: WorkerIdentity) -> Self {
+        Self {
+            generation: Some(ProcessAuthorityGeneration::Test(scope)),
+            supervisor_pid: 7,
+            root_pid: 42,
+            purpose: ProcessOwnerPurpose::Worker(identity),
+            accounting: ProcessTreeAccounting {
+                peak_private_commit_bytes: Some(1),
+                complete: true,
+            },
+            private: (),
         }
     }
 }
@@ -2041,6 +2823,21 @@ mod tests {
         )
         .unwrap();
         assert!(cleanup_failure.validate_zero_resident_release().is_ok());
+        assert_eq!(
+            classify_process_exit(&cleanup_failure, None),
+            ProcessExitClassification::SupervisorFailure
+        );
+        let cleanup_error = ProcessOwnerTerminal::parse(
+            &terminal(serde_json::json!({
+                "cleanupErrors": [{"code":"HANDLE_CLEANUP_FAILED"}]
+            })),
+            Some(42),
+        )
+        .unwrap();
+        assert_eq!(
+            classify_process_exit(&cleanup_error, None),
+            ProcessExitClassification::SupervisorFailure
+        );
         let mut cleanup_receipt = exit_receipt(ProcessExitClassification::TargetExit, Some(0));
         cleanup_receipt.supervisor_error_count = 1;
         assert!(cleanup_receipt.into_completion_authority().is_err());
@@ -2055,6 +2852,10 @@ mod tests {
         assert!(post_spawn_cleanup_failure
             .validate_zero_resident_release()
             .is_ok());
+        assert_eq!(
+            classify_process_exit(&post_spawn_cleanup_failure, None),
+            ProcessExitClassification::SupervisorFailure
+        );
         let mut failure_receipt = exit_receipt(ProcessExitClassification::SupervisorFailure, None);
         failure_receipt.cleanup_error_count = 1;
         assert!(failure_receipt.into_completion_authority().is_err());
@@ -2217,6 +3018,72 @@ mod tests {
     }
 
     #[test]
+    fn owned_worker_event_retains_generation_and_exposes_only_typed_observation() {
+        let scope = RuntimeGenerationScope::from_trusted_data_root_identity(7, 11);
+        let other = RuntimeGenerationScope::from_trusted_data_root_identity(7, 12);
+        let event = WorkerEvent::Ready {
+            identity: WorkerIdentity {
+                job_id: "job_1".into(),
+                attempt: 1,
+                worker_instance_id: "worker_1".into(),
+            },
+            sequence: 1,
+            protocol_version: breadboard_runtime_protocol::WIRE_PROTOCOL_VERSION,
+        };
+        let owned = OwnedWorkerEvent::for_test(scope.clone(), event.clone());
+
+        assert_eq!(owned.event(), &event);
+        assert!(owned.matches_generation_scope(&scope));
+        assert!(!owned.matches_generation_scope(&other));
+        assert!(!format!("{owned:?}").contains("job_1"));
+
+        let failure = OwnedWorkerEvent::for_test(
+            scope,
+            WorkerEvent::Failed {
+                identity: event.identity().clone(),
+                sequence: 2,
+                code: "PRIVATE_CODE".into(),
+                message: "private worker failure text".into(),
+            },
+        );
+        let debug = format!("{failure:?}");
+        assert!(debug.contains("failed"));
+        assert!(!debug.contains("PRIVATE_CODE"));
+        assert!(!debug.contains("private worker failure text"));
+    }
+
+    #[test]
+    fn durable_state_rejection_poison_is_fixed_and_blocks_completion_authority() {
+        let identity = WorkerIdentity {
+            job_id: "job_1".into(),
+            attempt: 1,
+            worker_instance_id: "worker_1".into(),
+        };
+        let ready = WorkerEvent::Ready {
+            identity: identity.clone(),
+            sequence: 1,
+            protocol_version: breadboard_runtime_protocol::WIRE_PROTOCOL_VERSION,
+        };
+        let mut stream = WorkerEventStream::new(identity);
+        assert_eq!(
+            stream.push_stdout_chunk(&format!("{}\n", serde_json::to_string(&ready).unwrap())),
+            None
+        );
+        let mut fault = None;
+        reject_worker_event_for_durable_state(Some(&mut stream), &mut fault).unwrap();
+        assert_eq!(fault, Some(WorkerProtocolFault::DurableStateViolation));
+        assert!(stream.pop_ready().is_none());
+        assert_eq!(stream.push_stdout_chunk("still invalid\n"), None);
+
+        let terminal =
+            ProcessOwnerTerminal::parse(&terminal(serde_json::json!({})), Some(42)).unwrap();
+        assert_eq!(
+            classify_process_exit(&terminal, Some(WorkerProtocolFault::DurableStateViolation)),
+            ProcessExitClassification::WorkerProtocolFault
+        );
+    }
+
+    #[test]
     fn worker_stdout_partial_and_oversized_lines_fail_closed() {
         let identity = WorkerIdentity {
             job_id: "job_1".into(),
@@ -2336,7 +3203,7 @@ mod tests {
         let limits = ProcessOwnerLimits {
             soft_commit_bytes: 0,
             hard_commit_bytes: 0,
-            graceful_shutdown: MIN_GRACEFUL_TIMEOUT,
+            graceful_shutdown: MIN_PROCESS_OWNER_GRACEFUL_SHUTDOWN,
             supervisor_exit_timeout: MIN_SUPERVISOR_EXIT_TIMEOUT,
         }
         .validate()
@@ -2347,7 +3214,7 @@ mod tests {
         );
         assert_eq!(
             terminal_wait_timeout(limits, false).unwrap(),
-            SUPERVISOR_TERMINAL_CLEANUP_BUDGET + MIN_GRACEFUL_TIMEOUT
+            SUPERVISOR_TERMINAL_CLEANUP_BUDGET + MIN_PROCESS_OWNER_GRACEFUL_SHUTDOWN
         );
     }
 

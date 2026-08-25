@@ -3,14 +3,24 @@ use crate::store::{
     canonicalize_request_payload, compute_submission_digest, AuthenticatedJobContext, JobRecord,
     JobStore, NewJob, StoreError,
 };
-use crate::{RuntimePaths, TrustedFilePin};
+use crate::{
+    ProcessOwnerError, ProcessOwnerLimits, RuntimePaths, ServiceLaunchRequest, TrustedFilePin,
+    WorkerLaunchRequest, MAX_PROCESS_OWNER_GRACEFUL_SHUTDOWN, MIN_PROCESS_OWNER_GRACEFUL_SHUTDOWN,
+};
 use breadboard_runtime_protocol::{
     validate_bounded_text, JobSubmissionPayload, ServiceDefinition, ServiceManifest,
     ValidationError, WorkerDefinition, WorkerManifest, MAX_IDEMPOTENCY_KEY_BYTES,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
+use std::time::Duration;
 use thiserror::Error;
+
+const MEBIBYTE_BYTES: u64 = 1024 * 1024;
+const WORKER_SUPERVISOR_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
+const SERVICE_SUPERVISOR_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
+const RUNTIME_SUPERVISOR_RELATIVE_PATH: &str = "bin/runtime-supervisor.exe";
 
 #[derive(Debug, Error)]
 pub enum RegistryError {
@@ -30,6 +40,12 @@ pub enum RegistryError {
     UnknownJobType(String),
     #[error("unknown service id {0}")]
     UnknownService(String),
+    #[error("worker {0} has a graceful cancellation policy outside process-owner bounds")]
+    InvalidWorkerProcessLimits(String),
+    #[error("service {0} has process limits outside process-owner bounds")]
+    InvalidServiceProcessLimits(String),
+    #[error(transparent)]
+    ProcessOwner(#[from] ProcessOwnerError),
     #[error("submitted {field} does not exactly match the authenticated scope")]
     AuthenticatedScopeMismatch { field: &'static str },
     #[error(transparent)]
@@ -50,6 +66,13 @@ impl Registry {
         workers.validate()?;
         services.validate()?;
         ensure_acyclic(&services.services)?;
+
+        for worker in &workers.workers {
+            worker_process_owner_limits(worker)?;
+        }
+        for service in &services.services {
+            service_process_owner_limits(service)?;
+        }
 
         let mut workers_by_job_type = HashMap::new();
         for worker in &workers.workers {
@@ -132,6 +155,34 @@ impl Registry {
         Ok(paths.pin_app_file_for_launch(&path)?)
     }
 
+    /// Produces the only public worker-launch material accepted by the process
+    /// owner. Every executable, entrypoint, and limit is derived from this
+    /// validated registry entry. Callers choose only a known worker kind; the
+    /// privileged native supervisor path is fixed inside this trusted module.
+    pub fn prepare_worker_launch(
+        &self,
+        paths: &RuntimePaths,
+        kind: &str,
+    ) -> Result<WorkerLaunchRequest, RegistryError> {
+        let worker = self.worker(kind)?;
+        let supervisor = paths.pin_runtime_file_for_launch(
+            &paths.resolve_runtime(RUNTIME_SUPERVISOR_RELATIVE_PATH)?,
+        )?;
+        let executable = paths
+            .pin_runtime_file_for_launch(&paths.resolve_runtime(&worker.allowed_executable)?)?;
+        let entrypoint =
+            paths.pin_app_file_for_launch(&paths.resolve_app(&worker.allowed_entrypoint)?)?;
+        let limits = worker_process_owner_limits(worker)?;
+        Ok(WorkerLaunchRequest::from_registry(
+            worker.kind.clone(),
+            paths.clone(),
+            supervisor,
+            executable,
+            Some(entrypoint),
+            limits,
+        ))
+    }
+
     pub fn pin_service_executable_for_launch(
         &self,
         paths: &RuntimePaths,
@@ -151,6 +202,31 @@ impl Registry {
         };
         let path = paths.resolve_app(entrypoint)?;
         Ok(Some(paths.pin_app_file_for_launch(&path)?))
+    }
+
+    /// Returns opaque service launch material derived from one validated
+    /// service definition. No filesystem path is resolved, pinned, or created
+    /// here: the process owner first proves exact generation/data-root scope,
+    /// then performs all launch filesystem work. A worker kind cannot be used
+    /// as a service id, and callers cannot provide executable pins or limits.
+    pub fn prepare_service_launch(
+        &self,
+        paths: &RuntimePaths,
+        id: &str,
+        instance_id: &str,
+        arguments: Vec<OsString>,
+    ) -> Result<ServiceLaunchRequest, RegistryError> {
+        let service = self.service(id)?;
+        ServiceLaunchRequest::from_registry(
+            service.id.clone(),
+            instance_id.to_owned(),
+            paths.clone(),
+            service.allowed_executable.clone(),
+            service.allowed_entrypoint.clone(),
+            arguments,
+            service_process_owner_limits(service)?,
+        )
+        .map_err(RegistryError::from)
     }
 
     pub fn submit_job(
@@ -206,6 +282,50 @@ impl Registry {
             })
             .map_err(RegistryError::from)
     }
+}
+
+fn worker_process_owner_limits(
+    worker: &WorkerDefinition,
+) -> Result<ProcessOwnerLimits, RegistryError> {
+    let invalid = || RegistryError::InvalidWorkerProcessLimits(worker.kind.clone());
+    let graceful_shutdown = Duration::from_millis(worker.graceful_cancellation_ms);
+    if !(MIN_PROCESS_OWNER_GRACEFUL_SHUTDOWN..=MAX_PROCESS_OWNER_GRACEFUL_SHUTDOWN)
+        .contains(&graceful_shutdown)
+    {
+        return Err(invalid());
+    }
+    let limits = ProcessOwnerLimits {
+        soft_commit_bytes: worker
+            .soft_commit_limit_mb
+            .checked_mul(MEBIBYTE_BYTES)
+            .ok_or_else(&invalid)?,
+        hard_commit_bytes: worker
+            .hard_commit_limit_mb
+            .checked_mul(MEBIBYTE_BYTES)
+            .ok_or_else(&invalid)?,
+        graceful_shutdown,
+        supervisor_exit_timeout: WORKER_SUPERVISOR_EXIT_TIMEOUT,
+    };
+    limits.validate().map_err(|_| invalid())
+}
+
+fn service_process_owner_limits(
+    service: &ServiceDefinition,
+) -> Result<ProcessOwnerLimits, RegistryError> {
+    let invalid = || RegistryError::InvalidServiceProcessLimits(service.id.clone());
+    let limits = ProcessOwnerLimits {
+        soft_commit_bytes: service
+            .soft_commit_limit_mb
+            .checked_mul(MEBIBYTE_BYTES)
+            .ok_or_else(&invalid)?,
+        hard_commit_bytes: service
+            .hard_commit_limit_mb
+            .checked_mul(MEBIBYTE_BYTES)
+            .ok_or_else(&invalid)?,
+        graceful_shutdown: Duration::from_millis(service.graceful_shutdown_ms),
+        supervisor_exit_timeout: SERVICE_SUPERVISOR_EXIT_TIMEOUT,
+    };
+    limits.validate().map_err(|_| invalid())
 }
 
 fn submission_job_id(
@@ -271,8 +391,8 @@ fn visit<'a>(
 mod tests {
     use super::*;
     use breadboard_runtime_protocol::{
-        ResourceClass, WorkspacePolicy, SERVICE_MANIFEST_VERSION, WIRE_PROTOCOL_VERSION,
-        WORKER_MANIFEST_VERSION,
+        ResourceClass, RestartPolicy, ServiceStartupPolicy, WorkspacePolicy,
+        SERVICE_MANIFEST_VERSION, WIRE_PROTOCOL_VERSION, WORKER_MANIFEST_VERSION,
     };
     use std::fs;
     use tempfile::tempdir;
@@ -303,7 +423,22 @@ mod tests {
             },
             ServiceManifest {
                 version: SERVICE_MANIFEST_VERSION,
-                services: vec![],
+                services: vec![ServiceDefinition {
+                    id: "search-service".into(),
+                    display_name: "Search Service".into(),
+                    capability_ids: vec!["search".into()],
+                    allowed_executable: "services/search.exe".into(),
+                    allowed_entrypoint: Some("services/search.mjs".into()),
+                    startup_policy: ServiceStartupPolicy::OnDemand,
+                    resource_class: ResourceClass::Core,
+                    dependencies: vec![],
+                    estimated_cold_start_commit_mb: 64,
+                    soft_commit_limit_mb: 128,
+                    hard_commit_limit_mb: 256,
+                    idle_ttl_ms: Some(60_000),
+                    graceful_shutdown_ms: 2_000,
+                    restart_policy: RestartPolicy::OnFailure,
+                }],
             },
         )
         .unwrap()
@@ -376,6 +511,50 @@ mod tests {
     }
 
     #[test]
+    fn registry_rejects_worker_cancellation_outside_process_owner_bounds() {
+        let worker = registry().worker("learn-node").unwrap().clone();
+        for graceful_cancellation_ms in [99, 300_001] {
+            let mut invalid = worker.clone();
+            invalid.graceful_cancellation_ms = graceful_cancellation_ms;
+            assert!(matches!(
+                Registry::new(
+                    WorkerManifest {
+                        version: WORKER_MANIFEST_VERSION,
+                        workers: vec![invalid],
+                    },
+                    ServiceManifest {
+                        version: SERVICE_MANIFEST_VERSION,
+                        services: vec![],
+                    },
+                ),
+                Err(RegistryError::InvalidWorkerProcessLimits(kind)) if kind == "learn-node"
+            ));
+        }
+    }
+
+    #[test]
+    fn registry_rejects_service_shutdown_outside_process_owner_bounds() {
+        let service = registry().service("search-service").unwrap().clone();
+        for graceful_shutdown_ms in [99, 300_001] {
+            let mut invalid = service.clone();
+            invalid.graceful_shutdown_ms = graceful_shutdown_ms;
+            assert!(matches!(
+                Registry::new(
+                    WorkerManifest {
+                        version: WORKER_MANIFEST_VERSION,
+                        workers: vec![],
+                    },
+                    ServiceManifest {
+                        version: SERVICE_MANIFEST_VERSION,
+                        services: vec![invalid],
+                    },
+                ),
+                Err(RegistryError::InvalidServiceProcessLimits(id)) if id == "search-service"
+            ));
+        }
+    }
+
+    #[test]
     fn executable_and_entrypoint_pins_use_distinct_root_authorities() {
         let directory = tempdir().unwrap();
         let paths = runtime_paths(&directory);
@@ -409,6 +588,89 @@ mod tests {
             .unwrap()
             .revalidate()
             .unwrap();
+    }
+
+    #[test]
+    fn opaque_worker_launch_material_is_registry_and_data_root_bound() {
+        let directory = tempdir().unwrap();
+        let paths = runtime_paths(&directory);
+        let app = directory.path().join("app");
+        let runtime = directory.path().join("runtime-root");
+        fs::create_dir_all(app.join("workers")).unwrap();
+        fs::create_dir_all(runtime.join("bin")).unwrap();
+        fs::create_dir_all(runtime.join("node")).unwrap();
+        fs::write(
+            runtime.join("bin/runtime-supervisor.exe"),
+            b"trusted supervisor",
+        )
+        .unwrap();
+        fs::write(runtime.join("node/node.exe"), b"trusted executable").unwrap();
+        fs::write(app.join("workers/learn.js"), b"trusted entrypoint").unwrap();
+
+        let request = registry()
+            .prepare_worker_launch(&paths, "learn-node")
+            .unwrap();
+        assert_eq!(request.worker_kind(), "learn-node");
+        assert_eq!(request.generation_scope(), paths.runtime_generation_scope());
+        assert_eq!(
+            request.limits_for_test(),
+            ProcessOwnerLimits {
+                soft_commit_bytes: 256 * MEBIBYTE_BYTES,
+                hard_commit_bytes: 512 * MEBIBYTE_BYTES,
+                graceful_shutdown: Duration::from_secs(10),
+                supervisor_exit_timeout: WORKER_SUPERVISOR_EXIT_TIMEOUT,
+            }
+        );
+        assert!(matches!(
+            registry().prepare_worker_launch(&paths, "caller-selected-worker"),
+            Err(RegistryError::UnknownWorker(kind)) if kind == "caller-selected-worker"
+        ));
+    }
+
+    #[test]
+    fn opaque_service_launch_material_is_registry_scoped_without_filesystem_preparation() {
+        let directory = tempdir().unwrap();
+        let paths = runtime_paths(&directory);
+        let request = registry()
+            .prepare_service_launch(
+                &paths,
+                "search-service",
+                "search_instance_1",
+                vec![OsString::from("--bounded-option")],
+            )
+            .unwrap();
+
+        assert_eq!(request.service_id_for_test(), "search-service");
+        assert_eq!(request.generation_scope(), paths.runtime_generation_scope());
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("search-service"));
+        assert!(!debug.contains("search_instance_1"));
+        assert!(!debug.contains("--bounded-option"));
+        assert_eq!(
+            request.limits_for_test(),
+            ProcessOwnerLimits {
+                soft_commit_bytes: 128 * MEBIBYTE_BYTES,
+                hard_commit_bytes: 256 * MEBIBYTE_BYTES,
+                graceful_shutdown: Duration::from_secs(2),
+                supervisor_exit_timeout: SERVICE_SUPERVISOR_EXIT_TIMEOUT,
+            }
+        );
+        assert!(
+            !paths.data_root().join("runtime/services").exists(),
+            "request construction must not prepare mutable service state"
+        );
+        assert!(matches!(
+            registry().prepare_service_launch(
+                &paths,
+                "learn-node",
+                "worker_relabel",
+                Vec::new(),
+            ),
+            Err(RegistryError::UnknownService(id)) if id == "learn-node"
+        ));
+        assert!(registry()
+            .prepare_service_launch(&paths, "search-service", "../escape", Vec::new())
+            .is_err());
     }
 
     #[test]

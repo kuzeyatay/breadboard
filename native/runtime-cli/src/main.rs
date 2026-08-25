@@ -3,6 +3,7 @@ mod control;
 mod durable_job_control;
 mod host;
 mod shutdown;
+mod worker_dispatcher;
 
 fn main() {
     if std::env::args_os().count() != 1 {

@@ -105,10 +105,6 @@ pub(crate) enum RuntimeJobControlError {
     Forbidden,
     NotFound,
     Conflict,
-    ResourceExhausted {
-        required_headroom_mb: u64,
-        available_headroom_mb: u64,
-    },
     Unavailable,
     Internal,
 }
@@ -522,8 +518,8 @@ fn validate_job_response_binding(
     expected_job_type: Option<&str>,
 ) -> Result<(), ControlError> {
     let RuntimeJobResponse::RuntimeJob { job, .. } = response;
-    let matches_request = expected_job_id.map_or(true, |value| job.job_id == value)
-        && expected_job_type.map_or(true, |value| job.job_type == value)
+    let matches_request = expected_job_id.is_none_or(|value| job.job_id == value)
+        && expected_job_type.is_none_or(|value| job.job_type == value)
         && job.garden_id.as_deref() == request.garden_id.as_deref()
         && job.conversation_id.as_deref() == request.conversation_id.as_deref();
     if !matches_request {
@@ -699,18 +695,6 @@ fn write_job_control_error(
             None,
             None,
             None,
-        ),
-        RuntimeJobControlError::ResourceExhausted {
-            required_headroom_mb,
-            available_headroom_mb,
-        } => (
-            503,
-            "Service Unavailable",
-            "BREADBOARD_RESOURCE_EXHAUSTED",
-            "Windows commit reserve cannot be preserved.",
-            Some("windows_commit".to_string()),
-            Some(required_headroom_mb),
-            Some(available_headroom_mb),
         ),
         RuntimeJobControlError::Unavailable => (
             503,
