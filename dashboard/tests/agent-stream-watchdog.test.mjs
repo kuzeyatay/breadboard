@@ -6,6 +6,7 @@ import {
   AgentStreamTimeoutError,
   agentStreamReconnectDelay,
   agentStreamTimeout,
+  disposeAgentStreamReader,
   isRecoverableAgentStreamDisconnect,
   isAgentStreamTurnActivity,
   waitForAgentStreamReconnect,
@@ -117,4 +118,31 @@ test("agent stream reconnect delay remains abortable", async () => {
   const waiting = waitForAgentStreamReconnect(10_000, controller.signal);
   controller.abort();
   await assert.rejects(waiting, (error) => error?.name === "AbortError");
+});
+
+test("terminal stream cleanup cancels the body before releasing its reader", async () => {
+  const calls = [];
+  await disposeAgentStreamReader({
+    async cancel() {
+      calls.push("cancel");
+    },
+    releaseLock() {
+      calls.push("release");
+    },
+  });
+  assert.deepEqual(calls, ["cancel", "release"]);
+});
+
+test("an already-failed stream still releases its reader lock", async () => {
+  const calls = [];
+  await disposeAgentStreamReader({
+    async cancel() {
+      calls.push("cancel");
+      throw new Error("already aborted");
+    },
+    releaseLock() {
+      calls.push("release");
+    },
+  });
+  assert.deepEqual(calls, ["cancel", "release"]);
 });

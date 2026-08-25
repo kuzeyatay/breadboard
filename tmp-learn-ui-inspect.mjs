@@ -34,10 +34,16 @@ function readEnvFile(filePath) {
 }
 
 const gardenId = "electromagnetism-1";
+const priorGardenDisplayName = "Electromagnetism 1";
+const expectedGardenDisplayName = "Electromagnetics 1";
 const expectedTeachingSourceIds = [
   "engineering-electromagnetics-9th-ed-9nbsped-compress",
 ];
+const expectedTeachingSourceFile =
+  "engineering-electromagnetics-9th-ed-9nbsped-compress-source-2.pdf";
 const expectedSyllabusSourceId = "studyguide-5epf0";
+const expectedSyllabusSourceFile = "studyguide-5epf0-source.pdf";
+const expectedSyllabusDisplayName = "StudyGuide_5EPF0.pdf";
 const defaultExpectedModel = "gpt-5.6-sol";
 const expectedModelArgument = argumentValue("expected-model");
 const expectedModel = expectedModelArgument ?? defaultExpectedModel;
@@ -723,12 +729,16 @@ const desktopConfigPath = path.join(
 const desktopConfig = fs.existsSync(desktopConfigPath)
   ? JSON.parse(fs.readFileSync(desktopConfigPath, "utf8"))
   : null;
-const nextAuthSecret =
-  (typeof desktopConfig?.nextAuthSecret === "string" &&
-  desktopConfig.nextAuthSecret.length >= 32
-    ? desktopConfig.nextAuthSecret
-    : env.NEXTAUTH_SECRET) ?? "";
-if (!nextAuthSecret) throw new Error("NEXTAUTH_SECRET is unavailable");
+const authCandidates = [
+  { source: "dashboard-env", secret: env.NEXTAUTH_SECRET },
+  { source: "desktop-config", secret: desktopConfig?.nextAuthSecret },
+].filter(
+  (candidate, index, candidates) =>
+    typeof candidate.secret === "string" &&
+    candidate.secret.trim().length > 0 &&
+    candidates.findIndex((other) => other.secret === candidate.secret) === index,
+);
+if (authCandidates.length === 0) throw new Error("NEXTAUTH_SECRET is unavailable");
 const dashboardBaseUrl = "http://127.0.0.1:3000";
 const gardenWorkspaceUrl = `${dashboardBaseUrl}/gardens/${gardenId}`;
 const learnStatusUrl = `${dashboardBaseUrl}/api/gardens/${gardenId}/learn/status`;
@@ -737,28 +747,42 @@ const appDb = new DatabaseSync(path.join("dashboard", "db", "brain.db"), { readO
 const user = appDb.prepare("SELECT id, username, email FROM users WHERE id = 1").get();
 appDb.close();
 if (!user) throw new Error("Breadboard user 1 is unavailable");
-const value = await encode({
-  secret: nextAuthSecret,
-  token: {
-    id: String(user.id),
-    sub: String(user.id),
-    name: user.username ?? user.email,
-    email: user.email,
-  },
-  maxAge: 10 * 60,
-});
-await context.addCookies([{
-  name: "next-auth.session-token",
-  value,
-  url: dashboardBaseUrl,
-  httpOnly: true,
-  sameSite: "Lax",
-}]);
-const sessionResponse = await context.request.get(`${dashboardBaseUrl}/api/auth/session`);
-const session = await sessionResponse.json().catch(() => ({}));
-if (String(session?.user?.id ?? "") !== "1") {
+const authAttempts = [];
+let acceptedAuthSource = null;
+let acceptedSession = null;
+let acceptedSessionStatus = null;
+for (const candidate of authCandidates) {
+  const value = await encode({
+    secret: candidate.secret,
+    token: {
+      id: String(user.id),
+      sub: String(user.id),
+      name: user.username ?? user.email,
+      email: user.email,
+    },
+    maxAge: 10 * 60,
+  });
+  await context.addCookies([{
+    name: "next-auth.session-token",
+    value,
+    url: dashboardBaseUrl,
+    httpOnly: true,
+    sameSite: "Lax",
+  }]);
+  const response = await context.request.get(`${dashboardBaseUrl}/api/auth/session`);
+  const session = await response.json().catch(() => ({}));
+  const userId = String(session?.user?.id ?? "");
+  authAttempts.push({ source: candidate.source, httpStatus: response.status(), userId });
+  if (response.ok() && userId === "1") {
+    acceptedAuthSource = candidate.source;
+    acceptedSession = session;
+    acceptedSessionStatus = response.status();
+    break;
+  }
+}
+if (!acceptedAuthSource) {
   throw new Error(
-    `Authenticated user-1 session was not accepted: HTTP ${sessionResponse.status()} ${JSON.stringify(session)}`,
+    `Authenticated user-1 session was not accepted: ${JSON.stringify(authAttempts)}`,
   );
 }
 const shouldStatusOnly = process.argv.includes("--status-only");
@@ -771,6 +795,7 @@ const shouldReplanStaleCancelledGeneration = process.argv.includes(
 const shouldPrepareSelection = process.argv.includes("--prepare-selection");
 const shouldValidateInvalidPlan = process.argv.includes("--validate-invalid-plan");
 const shouldDiagnoseUi = process.argv.includes("--diagnose-ui");
+const shouldDiagnoseSettings = process.argv.includes("--diagnose-settings");
 const shouldDiagnoseSelection = process.argv.includes("--diagnose-selection");
 const shouldAuditConfirmation = process.argv.includes("--audit-confirmation");
 const shouldConfirmOnce = process.argv.includes("--confirm-once");
@@ -786,6 +811,7 @@ const primaryModes = [
   shouldReplanStaleCancelledGeneration,
   shouldValidateInvalidPlan,
   shouldDiagnoseUi,
+  shouldDiagnoseSettings,
   shouldDiagnoseSelection,
   shouldAuditConfirmation,
   shouldConfirmOnce,
@@ -793,6 +819,16 @@ const primaryModes = [
   shouldRetryGenerationOnce,
 ].filter(Boolean).length;
 if (primaryModes > 1) throw new Error("Choose only one Learn runner mode");
+if (shouldStart && (!expectedJobId || !expectedModelArgument)) {
+  throw new Error(
+    "--start requires --expected-job-id=<rolled-back predecessor> and --expected-model=<exact model>",
+  );
+}
+if (shouldStart && expectedModelArgument !== defaultExpectedModel) {
+  throw new Error(
+    `--start is sealed to ${defaultExpectedModel}; received ${expectedModelArgument}`,
+  );
+}
 if (shouldCancel && !expectedJobId) {
   throw new Error("--cancel requires --expected-job-id=<current durable job id>");
 }
@@ -898,6 +934,373 @@ async function readLessonInventory() {
     );
   }
   return normalizedLessonInventory(data);
+}
+
+async function openGardenSettingsDialog(timeoutMs = 120_000) {
+  const settingsButton = page.getByRole("button", {
+    name: "Garden settings",
+    exact: true,
+  });
+  await settingsButton.waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const buttons = [...document.querySelectorAll('button[aria-label="Garden settings"]')];
+    if (buttons.length !== 1) return false;
+    const button = buttons[0];
+    const reactPropsKey = Object.getOwnPropertyNames(button).find((key) =>
+      key.startsWith("__reactProps$"),
+    );
+    return Boolean(reactPropsKey) && typeof button[reactPropsKey]?.onClick === "function";
+  }, null, { timeout: timeoutMs });
+  const dialog = page.getByRole("dialog", {
+    name: "Garden settings",
+    exact: true,
+  });
+  await settingsButton.click({ timeout: timeoutMs });
+  await dialog.waitFor({ state: "visible", timeout: timeoutMs });
+  return dialog;
+}
+
+function waitForWorkspaceHydration(timeoutMs = 120_000) {
+  // WorkspaceClient requests Learn status from a React effect. A successful
+  // response is therefore a public readiness signal that hydration committed
+  // and event handlers own the server-rendered controls. Merely seeing the
+  // always-enabled settings gear is insufficient and can discard its click.
+  return page.waitForResponse(
+    (response) => {
+      const url = new URL(response.url());
+      return response.request().method() === "GET" &&
+        url.pathname === `/api/gardens/${gardenId}/learn/status` &&
+        response.ok();
+    },
+    { timeout: timeoutMs },
+  ).catch((error) => {
+    throw new Error(
+      `Workspace hydration signal failed at ${page.url()}: ${error instanceof Error ? error.message : String(error)}; ` +
+      `responses=${JSON.stringify(responseEntries)}; requestFailures=${JSON.stringify(requestFailures)}; ` +
+      `console=${JSON.stringify(consoleEntries)}`,
+    );
+  });
+}
+
+async function gardenNameInput(dialog) {
+  // GardenSettingsDialog's visual label is not associated with the input, so
+  // scope structurally from that label inside the exact dialog. Do not depend
+  // on a course-specific placeholder.
+  const input = dialog
+    .getByText("Garden name", { exact: true })
+    .locator("..")
+    .locator("input");
+  const count = await input.count();
+  if (count !== 1) {
+    throw new Error(`Expected one scoped garden-name input, found ${count}`);
+  }
+  await input.waitFor({ state: "visible" });
+  await input.click();
+  return input;
+}
+
+async function ensureExpectedGardenDisplayName() {
+  const initialDialog = await openGardenSettingsDialog();
+  const initialInput = await gardenNameInput(initialDialog);
+  const initialName = (await initialInput.inputValue()).trim();
+  if (
+    initialName !== priorGardenDisplayName &&
+    initialName !== expectedGardenDisplayName
+  ) {
+    throw new Error(
+      `Refusing to rename unexpected garden ${JSON.stringify(initialName)}`,
+    );
+  }
+
+  let renamed = false;
+  if (initialName === priorGardenDisplayName) {
+    await initialInput.fill(expectedGardenDisplayName);
+    const saveButton = initialDialog.getByRole("button", {
+      name: "Save name and description",
+      exact: true,
+    });
+    await saveButton.waitFor({ state: "visible" });
+    if (!(await saveButton.isEnabled())) {
+      throw new Error("Garden-name save control is disabled");
+    }
+    const responsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname ===
+          `/api/gardens/${gardenId}/settings`,
+    );
+    await saveButton.click();
+    const response = await responsePromise;
+    const data = await response.json().catch(() => ({}));
+    if (
+      !response.ok() ||
+      data?.settings?.slug !== gardenId ||
+      data?.settings?.name !== expectedGardenDisplayName
+    ) {
+      throw new Error(
+        `Garden rename was not durably accepted: HTTP ${response.status()} ${JSON.stringify(data)}`,
+      );
+    }
+    await initialDialog
+      .getByText("Saved", { exact: true })
+      .waitFor({ state: "visible" });
+    renamed = true;
+  }
+  await initialDialog
+    .getByRole("button", { name: "Close garden settings", exact: true })
+    .click();
+  await initialDialog.waitFor({ state: "hidden" });
+
+  const rehydrated = waitForWorkspaceHydration();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator("body").waitFor({ state: "visible" });
+  await rehydrated;
+  await page
+    .getByRole("link", { name: expectedGardenDisplayName, exact: true })
+    .first()
+    .waitFor({ state: "visible" });
+
+  const persistedDialog = await openGardenSettingsDialog();
+  const persistedInput = await gardenNameInput(persistedDialog);
+  const persistedName = (await persistedInput.inputValue()).trim();
+  if (persistedName !== expectedGardenDisplayName) {
+    throw new Error(
+      `Garden name did not survive reload/reopen: ${JSON.stringify(persistedName)}`,
+    );
+  }
+  await persistedDialog
+    .getByRole("button", { name: "Close garden settings", exact: true })
+    .click();
+  await persistedDialog.waitFor({ state: "hidden" });
+
+  return {
+    initialName,
+    expectedName: expectedGardenDisplayName,
+    renamed,
+    persistedAcrossReloadAndReopen: true,
+  };
+}
+
+async function readAssistantPreferences() {
+  const response = await context.request.get(
+    `${dashboardBaseUrl}/api/assistant-preferences`,
+    { headers: { "Cache-Control": "no-cache" } },
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok()) {
+    throw new Error(
+      `Assistant preferences failed: HTTP ${response.status()} ${JSON.stringify(data)}`,
+    );
+  }
+  return data;
+}
+
+async function auditFreshPlanningUi(status) {
+  const problems = [];
+  const preferences = await readAssistantPreferences();
+  if (preferences?.model !== expectedModel) {
+    problems.push(
+      `active model is ${preferences?.model ?? "none"}, expected ${expectedModel}`,
+    );
+  }
+  if (preferences?.reasoningEffort !== "max") {
+    problems.push(
+      `active reasoning is ${preferences?.reasoningEffort ?? "none"}, expected max/Ultra`,
+    );
+  }
+  if (preferences?.reasoningEffortByModel?.[expectedModel] !== "max") {
+    problems.push(`remembered ${expectedModel} reasoning is not max/Ultra`);
+  }
+  if (!sameOrderedStrings(status?.selectedSourceIds, expectedTeachingSourceIds)) {
+    problems.push(
+      `durable teaching-source selection is ${JSON.stringify(status?.selectedSourceIds ?? null)}`,
+    );
+  }
+  if (status?.syllabusSourceId !== expectedSyllabusSourceId) {
+    problems.push(
+      `durable syllabus is ${status?.syllabusSourceId ?? "none"}, expected ${expectedSyllabusSourceId}`,
+    );
+  }
+
+  const intelligenceTitle = `Ultra reasoning · GPT-5.6 Sol`;
+  const intelligenceButton = page.getByTitle(intelligenceTitle, { exact: true });
+  await intelligenceButton.first().waitFor({ state: "visible" });
+  if ((await intelligenceButton.count()) !== 1) {
+    problems.push(
+      `expected one exact ${JSON.stringify(intelligenceTitle)} picker`,
+    );
+  }
+
+  const learnPanel = page.locator("section.bb-neu-learn-tray").first();
+  await learnPanel.waitFor({ state: "visible" });
+  const sourceOnlyCheckbox = learnPanel.getByRole("checkbox", {
+    name: "Source-only",
+    exact: true,
+  });
+  const skipReviewCheckbox = learnPanel.getByRole("checkbox", {
+    name: "Skip review",
+    exact: true,
+  });
+  if (!(await sourceOnlyCheckbox.isChecked())) {
+    problems.push("Source-only is not checked");
+  }
+  if (!(await sourceOnlyCheckbox.isEnabled())) {
+    problems.push("Source-only is disabled before planning");
+  }
+  if (await skipReviewCheckbox.isChecked()) {
+    problems.push("Skip review is checked");
+  }
+  if (!(await skipReviewCheckbox.isEnabled())) {
+    problems.push("Skip review is disabled before planning");
+  }
+
+  const documentsButton = learnPanel.getByTitle(
+    "Choose which source documents Learn may use",
+    { exact: true },
+  );
+  await documentsButton.waitFor({ state: "visible" });
+  if (normalizedUiText(await documentsButton.innerText()) !== "Documents 1/1") {
+    problems.push(
+      `document control is ${JSON.stringify(normalizedUiText(await documentsButton.innerText()))}, expected Documents 1/1`,
+    );
+  }
+  await documentsButton.click();
+  const documentsMenu = page.locator(
+    '[aria-label="Documents included in Learn"]',
+  );
+  await documentsMenu.waitFor({ state: "visible" });
+  const documentOptions = await documentsMenu.locator("label").evaluateAll(
+    (labels) =>
+      labels
+        .map((label) => {
+          const input = label.querySelector('input[type="checkbox"]');
+          return input instanceof HTMLInputElement
+            ? {
+                label: (label.textContent ?? "").replace(/\s+/g, " ").trim(),
+                checked: input.checked,
+                disabled: input.disabled,
+              }
+            : null;
+        })
+        .filter(Boolean),
+  );
+  const teachingMatches = documentOptions.filter((option) =>
+    option.label.includes(expectedTeachingSourceFile),
+  );
+  const syllabusDocumentMatches = documentOptions.filter((option) =>
+    option.label.includes(expectedSyllabusSourceFile),
+  );
+  if (teachingMatches.length !== 1) {
+    problems.push(
+      `expected one ${expectedTeachingSourceFile} checkbox, found ${teachingMatches.length}`,
+    );
+  } else if (
+    teachingMatches[0].checked !== true ||
+    teachingMatches[0].disabled !== false
+  ) {
+    problems.push("the exact teaching-source checkbox is not enabled and checked");
+  }
+  if (syllabusDocumentMatches.length !== 1) {
+    problems.push(
+      `expected one ${expectedSyllabusSourceFile} document checkbox, found ${syllabusDocumentMatches.length}`,
+    );
+  } else if (
+    syllabusDocumentMatches[0].checked !== false ||
+    syllabusDocumentMatches[0].disabled !== true
+  ) {
+    problems.push("the selected syllabus is not excluded and locked as teaching material");
+  }
+  const unexpectedCheckedDocuments = documentOptions.filter(
+    (option) =>
+      !option.disabled &&
+      option.checked &&
+      !option.label.includes(expectedTeachingSourceFile),
+  );
+  if (unexpectedCheckedDocuments.length > 0) {
+    problems.push(
+      `unexpected teaching documents are checked: ${JSON.stringify(unexpectedCheckedDocuments.map((option) => option.label))}`,
+    );
+  }
+  await documentsButton.click();
+  await documentsMenu.waitFor({ state: "hidden" });
+
+  const expectedSyllabusText = `Syllabus: ${expectedSyllabusDisplayName}`;
+  await learnPanel
+    .getByText(expectedSyllabusText, { exact: true })
+    .waitFor({ state: "visible" });
+  const syllabusButton = learnPanel.getByTitle(
+    "Choose a syllabus or study guide for Learn to plan against",
+    { exact: true },
+  );
+  await syllabusButton.click();
+  const syllabusMenu = page.locator('[aria-label="Syllabus for Learn"]');
+  await syllabusMenu.waitFor({ state: "visible" });
+  const syllabusOptions = await syllabusMenu.locator("label").evaluateAll(
+    (labels) =>
+      labels
+        .map((label) => {
+          const input = label.querySelector('input[type="radio"]');
+          return input instanceof HTMLInputElement
+            ? {
+                label: (label.textContent ?? "").replace(/\s+/g, " ").trim(),
+                checked: input.checked,
+                disabled: input.disabled,
+              }
+            : null;
+        })
+        .filter(Boolean),
+  );
+  const syllabusMatches = syllabusOptions.filter((option) =>
+    option.label.includes(expectedSyllabusSourceFile),
+  );
+  if (syllabusMatches.length !== 1) {
+    problems.push(
+      `expected one ${expectedSyllabusSourceFile} syllabus radio, found ${syllabusMatches.length}`,
+    );
+  } else if (
+    syllabusMatches[0].checked !== true ||
+    syllabusMatches[0].disabled !== false
+  ) {
+    problems.push("the exact syllabus radio is not enabled and checked");
+  }
+  const unexpectedCheckedSyllabi = syllabusOptions.filter(
+    (option) =>
+      option.checked && !option.label.includes(expectedSyllabusSourceFile),
+  );
+  if (unexpectedCheckedSyllabi.length > 0) {
+    problems.push(
+      `unexpected syllabus choices are checked: ${JSON.stringify(unexpectedCheckedSyllabi.map((option) => option.label))}`,
+    );
+  }
+  await syllabusButton.click();
+  await syllabusMenu.waitFor({ state: "hidden" });
+
+  const learnModelIndicator = learnPanel.locator(
+    `[title="Model the next Learn run will use: ${expectedModel}"]`,
+  );
+  if ((await learnModelIndicator.count()) !== 1) {
+    problems.push("Learn does not show the exact model for the next run");
+  } else if (
+    normalizedUiText(await learnModelIndicator.innerText()) !== "GPT-5.6 Sol"
+  ) {
+    problems.push("Learn's next-run model label is not GPT-5.6 Sol");
+  }
+
+  if (problems.length > 0) {
+    throw new Error(`Refusing fresh Learn start: ${problems.join("; ")}`);
+  }
+  return {
+    model: expectedModel,
+    reasoningEffort: "max",
+    reasoningLabel: "Ultra",
+    selectedSourceIds: [...expectedTeachingSourceIds],
+    teachingSourceFile: expectedTeachingSourceFile,
+    syllabusSourceId: expectedSyllabusSourceId,
+    syllabusSourceFile: expectedSyllabusSourceFile,
+    sourceOnly: true,
+    skipManualReview: false,
+    exactUiControls: true,
+  };
 }
 
 async function openLearnPanel() {
@@ -1068,8 +1471,69 @@ async function auditConfirmationUi(status, expectedJobId, expectedMapId) {
   };
 }
 
+const workspaceHydrated = waitForWorkspaceHydration();
 await page.goto(gardenWorkspaceUrl, { waitUntil: "domcontentloaded" });
 await page.locator("body").waitFor({ state: "visible" });
+await workspaceHydrated;
+if (shouldDiagnoseSettings) {
+  try {
+    const dialog = await openGardenSettingsDialog(20_000);
+    const input = await gardenNameInput(dialog);
+    console.log(JSON.stringify({
+      settingsDialog: {
+        visible: await dialog.isVisible(),
+        currentGardenName: (await input.inputValue()).trim(),
+        settingsGetResponses: responseEntries.filter(
+          (entry) =>
+            entry.method === "GET" &&
+            entry.path === `/api/gardens/${gardenId}/settings`,
+        ),
+        learnMutations: requestEntries.filter((entry) => entry.method === "POST"),
+      },
+      consoleEntries,
+      requestFailures,
+    }, null, 2));
+    await browser.close();
+    process.exit(0);
+  } catch (error) {
+    const settingsButton = page.getByRole("button", {
+      name: "Garden settings",
+      exact: true,
+    });
+    const buttonDiagnostics = await settingsButton.evaluate((button) => {
+      const reactPropsKey = Object.getOwnPropertyNames(button).find((key) =>
+        key.startsWith("__reactProps$"),
+      );
+      const reactProps = reactPropsKey ? button[reactPropsKey] : null;
+      const rect = button.getBoundingClientRect();
+      return {
+        disabled: button.disabled,
+        connected: button.isConnected,
+        outerHTML: button.outerHTML.slice(0, 2_000),
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        reactPropsPresent: Boolean(reactPropsKey),
+        reactOnClickPresent: typeof reactProps?.onClick === "function",
+      };
+    }).catch((cause) => ({ evaluationError: String(cause) }));
+    console.log(JSON.stringify({
+      settingsDialogFailure: error instanceof Error ? error.message : String(error),
+      url: page.url(),
+      buttonDiagnostics,
+      visibleDialogs: await page.getByRole("dialog").allInnerTexts().catch(() => []),
+      body: (await page.locator("body").innerText().catch(() => "")).slice(0, 8_000),
+      consoleEntries,
+      requestFailures,
+      responseEntries,
+      learnMutations: requestEntries.filter((entry) => entry.method === "POST"),
+    }, null, 2));
+    await browser.close();
+    process.exit(1);
+  }
+}
+let gardenNamePreparation = null;
+if (shouldStart) {
+  gardenNamePreparation = await ensureExpectedGardenDisplayName();
+}
 const { response: preStatusResponse, data: preStatus } = await readLearnStatus();
 if (shouldValidateInvalidPlan) {
   const invalidResponse = await context.request.post(
@@ -2061,6 +2525,16 @@ if (shouldStart) {
   if (activeStatuses.has(preStatus?.job?.status)) {
     throw new Error(`Refusing duplicate Learn start while ${preStatus.job.status}`);
   }
+  if (preStatus?.job?.id !== expectedJobId) {
+    throw new Error(
+      `Refusing fresh Learn start from ${preStatus?.job?.id ?? "no job"}; expected rolled-back predecessor ${expectedJobId}`,
+    );
+  }
+  if (preStatus.job.model !== expectedModel) {
+    throw new Error(
+      `Refusing fresh Learn start after unexpected predecessor model ${preStatus.job.model ?? "none"}`,
+    );
+  }
   const isCancelledPlan =
     preStatus?.job?.status === "cancelled" && preStatus.job.mode === "plan";
   const isRolledBackFailedPlan =
@@ -2079,64 +2553,152 @@ if (shouldStart) {
       "Refusing Learn start outside a rolled-back planning safe checkpoint",
     );
   }
-  if (!shouldPrepareSelection) {
-    if (preStatus?.syllabusSourceId !== "studyguide-5epf0") {
-      throw new Error(`Expected studyguide-5epf0 syllabus, got ${preStatus?.syllabusSourceId ?? "none"}`);
-    }
-    if (!Array.isArray(preStatus?.selectedSourceIds) ||
-        preStatus.selectedSourceIds.length !== 1 ||
-        preStatus.selectedSourceIds[0] !== "engineering-electromagnetics-9th-ed-9nbsped-compress") {
-      throw new Error(`Unexpected teaching-source selection: ${JSON.stringify(preStatus?.selectedSourceIds ?? null)}`);
-    }
+  if (!gardenNamePreparation?.persistedAcrossReloadAndReopen) {
+    throw new Error("Garden-name persistence was not proven before Learn start");
   }
-  await page.getByText("Syllabus: StudyGuide_5EPF0.pdf", { exact: true }).waitFor({ state: "visible" });
-  let rejectGuardedRequest;
+  const freshPlanningUiAudit = await auditFreshPlanningUi(preStatus);
+
+  const { data: clickStatus } = await readLearnStatus();
+  if (
+    clickStatus?.job?.id !== preStatus.job.id ||
+    clickStatus.job.updatedAt !== preStatus.job.updatedAt ||
+    clickStatus.job.status !== preStatus.job.status ||
+    clickStatus.job.mode !== preStatus.job.mode
+  ) {
+    throw new Error(
+      `Refusing fresh Learn start because the predecessor changed during UI audit: ${JSON.stringify({
+        before: {
+          id: preStatus.job.id,
+          status: preStatus.job.status,
+          mode: preStatus.job.mode,
+          updatedAt: preStatus.job.updatedAt,
+        },
+        after: clickStatus?.job
+          ? {
+              id: clickStatus.job.id,
+              status: clickStatus.job.status,
+              mode: clickStatus.job.mode,
+              updatedAt: clickStatus.job.updatedAt,
+            }
+          : null,
+      })}`,
+    );
+  }
+  const earlierLearnPosts = requestEntries.filter(
+    (entry) => entry.method === "POST",
+  );
+  if (earlierLearnPosts.length > 0) {
+    throw new Error(
+      `Refusing fresh Learn start because the page already issued Learn POSTs: ${JSON.stringify(earlierLearnPosts)}`,
+    );
+  }
+
+  let guardedPostCount = 0;
+  let capturedPlanBody = null;
+  let resolveGuardedRequestFailure;
   const guardedRequestFailure = new Promise((resolve) => {
-    rejectGuardedRequest = resolve;
+    resolveGuardedRequestFailure = resolve;
   });
-  await page.route(/\/api\/gardens\/electromagnetism-1\/learn\/(plan|generate)$/, async (route) => {
+  const learnActionPattern = new RegExp(
+    `/api/gardens/${gardenId}/learn(?:/[^/?]+)?(?:\\?.*)?$`,
+  );
+  const guardedPlanRoute = async (route) => {
     const request = route.request();
     if (request.method() !== "POST") {
       await route.continue();
       return;
     }
+    guardedPostCount += 1;
     const endpoint = new URL(request.url()).pathname;
-    const body = request.postDataJSON();
-    const exactSources =
-      Array.isArray(body?.includedSourceIds) &&
-      body.includedSourceIds.length === 1 &&
-      body.includedSourceIds[0] ===
-        "engineering-electromagnetics-9th-ed-9nbsped-compress";
+    let body = null;
+    try {
+      body = request.postDataJSON();
+    } catch {
+      // The closed-schema check below rejects missing or non-JSON bodies.
+    }
+    const expectedKeys = [
+      "includeSourceSnapshots",
+      "includedSourceIds",
+      "skipManualReview",
+      "sourceOnly",
+      "syllabusSourceId",
+    ].sort();
+    const actualKeys =
+      body && typeof body === "object" && !Array.isArray(body)
+        ? Object.keys(body).sort()
+        : [];
+    const expectedEndpoint = `/api/gardens/${gardenId}/learn/plan`;
     const issue =
-      !endpoint.endsWith("/learn/plan")
-        ? `Expected direct planning recovery, got ${endpoint}`
-        : !exactSources
-          ? `Unexpected teaching-source payload: ${JSON.stringify(body?.includedSourceIds ?? null)}`
-          : body?.syllabusSourceId !== "studyguide-5epf0"
-            ? `Unexpected syllabus payload: ${JSON.stringify(body?.syllabusSourceId ?? null)}`
-            : body?.sourceOnly !== true ||
-                body?.includeSourceSnapshots !== false ||
-                body?.skipManualReview !== false
-              ? `Unexpected Learn planning flags: ${JSON.stringify(body)}`
-              : null;
+      guardedPostCount !== 1
+        ? `Unexpected Learn mutation ${guardedPostCount}: ${endpoint}`
+        : endpoint !== expectedEndpoint
+          ? `Expected one direct planning recovery, got ${endpoint}`
+          : !sameOrderedStrings(actualKeys, expectedKeys)
+            ? `Learn planning body is not closed-schema: ${JSON.stringify(actualKeys)}`
+            : !sameOrderedStrings(
+                  body?.includedSourceIds,
+                  expectedTeachingSourceIds,
+                )
+              ? `Unexpected teaching-source payload: ${JSON.stringify(body?.includedSourceIds ?? null)}`
+              : body?.syllabusSourceId !== expectedSyllabusSourceId
+                ? `Unexpected syllabus payload: ${JSON.stringify(body?.syllabusSourceId ?? null)}`
+                : body?.sourceOnly !== true ||
+                    body?.includeSourceSnapshots !== false ||
+                    body?.skipManualReview !== false
+                  ? `Unexpected Learn planning flags: ${JSON.stringify(body)}`
+                  : null;
     if (issue) {
-      rejectGuardedRequest(new Error(issue));
+      resolveGuardedRequestFailure(new Error(issue));
       await route.abort("blockedbyclient");
       return;
     }
+    capturedPlanBody = body;
     await route.continue();
+  };
+  await page.route(learnActionPattern, guardedPlanRoute);
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        `/api/gardens/${gardenId}/learn/plan`,
+    {
+      // A cold development route compile plus the worker's heavy-module import
+      // can legitimately precede its durable receipt. The production UI does
+      // not impose a shorter timeout, so align this harness with the 3-minute
+      // worker startup contract and leave one minute for route compilation.
+      timeout: 4 * 60_000,
+    },
+  );
+  let acceptedPlanResponseSeen = false;
+  const postPlanUiStatusResponsePromise = page.waitForResponse(
+    (candidate) => {
+      const request = candidate.request();
+      const pathname = new URL(candidate.url()).pathname;
+      if (
+        request.method() === "POST" &&
+        pathname === `/api/gardens/${gardenId}/learn/plan`
+      ) {
+        acceptedPlanResponseSeen = candidate.status() === 202;
+        return false;
+      }
+      return (
+        acceptedPlanResponseSeen &&
+        request.method() === "GET" &&
+        pathname === `/api/gardens/${gardenId}/learn/status`
+      );
+    },
+    { timeout: 5 * 60_000 },
+  );
+  const learnPanel = page.locator("section.bb-neu-learn-tray").first();
+  const startButton = learnPanel.getByRole("button", {
+    name: "Restart planning",
+    exact: true,
   });
-  const responsePromise = page.waitForResponse((response) => {
-    const request = response.request();
-    return request.method() === "POST" &&
-      /\/api\/gardens\/electromagnetism-1\/learn\/(plan|generate)$/.test(new URL(response.url()).pathname);
-  // A cold development route compile plus the worker's heavy-module import can
-  // legitimately precede its durable receipt. The production UI does not impose
-  // a shorter timeout, so keep this audit harness aligned with the 3-minute
-  // worker startup contract and leave one minute for the cold route compile.
-  }, { timeout: 4 * 60_000 });
-  const startButtonLabel = "Restart planning";
-  await page.getByRole("button", { name: startButtonLabel, exact: true }).click();
+  await startButton.waitFor({ state: "visible" });
+  if (!(await startButton.isEnabled())) {
+    throw new Error("Refusing fresh Learn start because Restart planning is disabled");
+  }
+  await startButton.click();
   const guardedOutcome = await Promise.race([
     responsePromise.then((response) => ({ response })),
     guardedRequestFailure.then((error) => ({ error })),
@@ -2148,21 +2710,64 @@ if (shouldStart) {
     response.status() !== 202 ||
     data?.accepted !== true ||
     typeof data?.jobId !== "string" ||
-    !data.jobId.trim()
+    !data.jobId.trim() ||
+    data.jobId === expectedJobId
   ) {
     throw new Error(`Learn start was not accepted: HTTP ${response.status()} ${JSON.stringify(data)}`);
   }
-  if (!new URL(response.url()).pathname.endsWith("/learn/plan")) {
-    throw new Error(`Cancelled planning recovery used the wrong endpoint: ${response.url()}`);
+  const postPlanUiStatusResponse = await postPlanUiStatusResponsePromise;
+  if (!postPlanUiStatusResponse.ok()) {
+    throw new Error(
+      `Post-plan UI status refresh failed: HTTP ${postPlanUiStatusResponse.status()}`,
+    );
+  }
+  // The UI consumes the accepted response and performs its own status refresh.
+  // Read the same durable status before counting so any accidental follow-up
+  // mutation dispatched by that response handler is also seen by the route
+  // guard instead of escaping between the response and this proof.
+  const { data: postStatus } = await readLearnStatus();
+  if (
+    postStatus?.job?.id !== data.jobId ||
+    postStatus.job.id === expectedJobId ||
+    postStatus.job.mode !== "plan" ||
+    postStatus.job.model !== expectedModel ||
+    !sameOrderedStrings(postStatus.job.sourceIds, expectedTeachingSourceIds) ||
+    postStatus.job.syllabusSourceId !== expectedSyllabusSourceId ||
+    postStatus.job.sourceOnly !== true ||
+    postStatus.job.includeSourceSnapshots !== false
+  ) {
+    throw new Error(
+      `Fresh planning durable binding mismatch: ${JSON.stringify(postStatus?.job ?? null)}`,
+    );
+  }
+  const learnPosts = requestEntries.filter((entry) => entry.method === "POST");
+  if (
+    guardedPostCount !== 1 ||
+    learnPosts.length !== 1 ||
+    learnPosts[0].path !== `/api/gardens/${gardenId}/learn/plan`
+  ) {
+    throw new Error(
+      `Expected exactly one direct Learn plan POST: ${JSON.stringify({ guardedPostCount, learnPosts })}`,
+    );
   }
   startResult = {
     endpoint: new URL(response.url()).pathname,
-    request: response.request().postDataJSON(),
+    request: capturedPlanBody,
     httpStatus: response.status(),
     accepted: data.accepted,
+    predecessorJobId: expectedJobId,
     job: {
       id: data.jobId,
+      status: postStatus.job.status,
+      mode: postStatus.job.mode,
+      model: postStatus.job.model,
+      sourceIds: postStatus.job.sourceIds,
+      syllabusSourceId: postStatus.job.syllabusSourceId,
     },
+    exactlyOneLearnPost: true,
+    learnPosts,
+    gardenNamePreparation,
+    freshPlanningUiAudit,
   };
 }
 if (shouldCancel) {
@@ -2239,9 +2844,9 @@ if (shouldCancelActiveGeneration) {
 if (startResult || cancelResult) {
   console.log(JSON.stringify({
     session: {
-      status: sessionResponse.status(),
-      authenticated: Boolean(session?.user),
-      userId: session?.user?.id ?? null,
+      status: acceptedSessionStatus,
+      authenticated: Boolean(acceptedSession?.user),
+      userId: acceptedSession?.user?.id ?? null,
       bootstrap: desktopConfig ? "desktop-persistent-user-1" : "env-signed-user-1",
     },
     preLearnState: {
@@ -2264,9 +2869,9 @@ console.log(JSON.stringify({
   url: page.url(),
   title: await page.title(),
   session: {
-    status: sessionResponse.status(),
-    authenticated: Boolean(session?.user),
-    userId: session?.user?.id ?? null,
+    status: acceptedSessionStatus,
+    authenticated: Boolean(acceptedSession?.user),
+    userId: acceptedSession?.user?.id ?? null,
     bootstrap: desktopConfig ? "desktop-persistent-user-1" : "env-signed-user-1",
   },
   preLearnState: {

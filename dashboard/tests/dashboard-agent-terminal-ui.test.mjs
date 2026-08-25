@@ -6,6 +6,10 @@ const terminal = fs.readFileSync(
   new URL("../src/app/components/hermes/dashboard-agent-terminal.tsx", import.meta.url),
   "utf8",
 );
+const lazyTerminal = fs.readFileSync(
+  new URL("../src/app/components/hermes/lazy-dashboard-agent-terminal.tsx", import.meta.url),
+  "utf8",
+);
 const legacyTerminal = fs.readFileSync(
   new URL("../src/app/components/knowledge-terminal.tsx", import.meta.url),
   "utf8",
@@ -38,6 +42,14 @@ const composer = fs.readFileSync(
   new URL("../src/app/components/assistant-composer.tsx", import.meta.url),
   "utf8",
 );
+const runtimeHealthRoute = fs.readFileSync(
+  new URL("../src/app/api/hermes/health/route.ts", import.meta.url),
+  "utf8",
+);
+const developmentRuntime = fs.readFileSync(
+  new URL("../src/lib/hermes/development-runtime.ts", import.meta.url),
+  "utf8",
+);
 
 test("Hermes terminal uses the original Breadboard terminal shell", () => {
   assert.match(terminal, /breadboard:knowledge-terminal-height/);
@@ -61,7 +73,8 @@ test("Hermes terminal uses the original Breadboard terminal shell", () => {
 
 test("the header conceals on close the way it reveals on open", () => {
   // Items stay mounted through the exit animation instead of vanishing.
-  assert.match(terminal, /headerMounted \? "py-2\.5"/);
+  assert.match(terminal, /flex h-12 shrink-0/);
+  assert.match(terminal, /headerMounted \? "" : "justify-center"/);
   assert.match(terminal, /\{headerMounted \? \(/);
   assert.match(
     terminal,
@@ -142,6 +155,11 @@ test("the terminal always starts collapsed and uses saved height only after open
   }
 });
 
+test("the collapsed terminal bar has no implementation-status copy", () => {
+  assert.match(lazyTerminal, />\s*Terminal\s*<\/button>/);
+  assert.doesNotMatch(lazyTerminal, /open when needed/i);
+});
+
 test("an open Hermes terminal survives a renderer reload", () => {
   assert.match(
     terminal,
@@ -155,6 +173,40 @@ test("an open Hermes terminal survives a renderer reload", () => {
   assert.match(
     terminal,
     /if \(!openStatePersistenceReadyRef\.current\)[\s\S]*?return;/,
+  );
+});
+
+test("the selected Terminal chat survives a renderer reload without changing fresh-launch behavior", () => {
+  assert.match(terminal, /const ACTIVE_CHAT_KEY = "breadboard:terminal:active-chat"/);
+  assert.match(terminal, /restoreLastConversation: false/);
+  assert.match(
+    terminal,
+    /readActiveTerminalChatId\(restoreOwnerKey\)[\s\S]*?openTerminalSession\([\s\S]*?savedSessionId,[\s\S]*?readActiveTerminalChatSnapshot\(restoreOwnerKey, savedSessionId\)/,
+  );
+  assert.match(
+    terminal,
+    /if \([\s\S]*?!activeChatPersistenceReadyRef\.current[\s\S]*?session\.loadingSession[\s\S]*?\) \{\s*return;/,
+  );
+  assert.match(
+    terminal,
+    /JSON\.stringify\(\{ ownerKey: restoreOwnerKey, sessionId: session\.sessionId \}\)/,
+  );
+  assert.match(
+    terminal,
+    /if \(temporaryChat \|\| !session\.sessionId\) \{\s*window\.sessionStorage\.removeItem\(ACTIVE_CHAT_KEY\)/,
+  );
+  assert.match(
+    terminal,
+    /const ACTIVE_CHAT_SNAPSHOT_MAX_CHARS = 1_500_000/,
+  );
+  assert.match(
+    terminal,
+    /writeActiveTerminalChatSnapshot\([\s\S]*?restoreOwnerKey,[\s\S]*?session\.sessionId!,[\s\S]*?session\.messages/,
+  );
+  assert.match(terminal, /window\.addEventListener\("pagehide", persist\)/);
+  assert.match(
+    terminal,
+    /parsed\?\.ownerKey === ownerKey[\s\S]*?parsed\.sessionId === sessionId/,
   );
 });
 
@@ -177,19 +229,37 @@ test("the terminal header uses a runtime-neutral health dot without an engine ba
     terminal,
     /runtimeOnline = !runtimeUnavailable && session\.connection !== "error"/,
   );
-  assert.match(terminal, /aria-label=\{`Agent runtime is/);
+  assert.match(terminal, /aria-label="Agent runtime is unavailable"/);
   assert.doesNotMatch(terminal, /function runtimeLabel/);
-  assert.match(
-    terminal,
-    /runtimeOnline && !knowledgeUnavailable\s*\?\s*"bg-\[#4F805E\]"\s*:\s*"bg-\[#B65B5B\]"/,
-  );
+  assert.match(terminal, /\{!runtimeOnline \? \(/);
+  assert.doesNotMatch(terminal, /knowledgeUnavailable/);
   assert.doesNotMatch(terminal, /session\.connection === "idle" \? "ready"/);
 });
 
 test("the red terminal status offers a transcript-preserving reconnect action", () => {
+  const refreshHealth = terminal.slice(
+    terminal.indexOf("const refreshRuntimeHealth"),
+    terminal.indexOf("// Route-owned panels"),
+  );
   assert.match(terminal, /\{!runtimeOnline \? \(/);
   assert.match(terminal, /"Reconnect terminal"/);
   assert.match(terminal, /const runtimeReady = await onRefreshRuntime\(\)/);
+  assert.match(terminal, /loadRuntimeHealth\(\{ reconnect: true \}\)/);
+  assert.match(terminal, /method: reconnect \? "POST" : "GET"/);
+  assert.match(runtimeHealthRoute, /export async function POST\(\)/);
+  assert.match(
+    runtimeHealthRoute,
+    /acquireServiceLease\("hermes", "terminal-reconnect"\)/,
+  );
+  assert.match(runtimeHealthRoute, /releaseSupervisorLease\(lease\)/);
+  assert.match(
+    runtimeHealthRoute,
+    /if \(!lease\) \{[\s\S]*ensureDevelopmentHermesRuntime/,
+  );
+  assert.match(developmentRuntime, /process\.env\.NODE_ENV !== "development"/);
+  assert.match(developmentRuntime, /scripts", "start-hermes\.mjs"/);
+  assert.match(developmentRuntime, /__breadboardHermesDevelopmentStart/);
+  assert.doesNotMatch(refreshHealth, /status: "checking"/);
   assert.match(terminal, /if \(!runtimeReady\) return/);
   assert.match(
     terminal,
@@ -203,10 +273,23 @@ test("the red terminal status offers a transcript-preserving reconnect action", 
     terminal,
     /className="neu-button inline-flex h-7 w-7/,
   );
+  assert.match(terminal, /flex h-12 shrink-0/);
   assert.doesNotMatch(
     terminal,
     /<span>\{refreshingTerminal \? "Refreshing" : "Reconnect"\}<\/span>/,
   );
+});
+
+test("mount polling is passive and a stopped Hermes service remains submit-ready", () => {
+  const healthEffect = terminal.slice(
+    terminal.indexOf("async function checkHealth()"),
+    terminal.indexOf("const refreshRuntimeHealth"),
+  );
+  assert.match(healthEffect, /loadRuntimeHealth\(\)/);
+  assert.doesNotMatch(healthEffect, /reconnect: true/);
+  assert.match(runtimeHealthRoute, /readSupervisedServiceSnapshot\("hermes"\)/);
+  assert.match(runtimeHealthRoute, /serviceState: "available-but-stopped"/);
+  assert.match(runtimeHealthRoute, /available: true/);
 });
 
 test("runtime startup never disables drafting and retries a transient failed health check", () => {

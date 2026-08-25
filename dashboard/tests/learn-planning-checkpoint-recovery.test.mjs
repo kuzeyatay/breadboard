@@ -14,6 +14,7 @@ import {
 } from "../src/lib/council-request-hash.ts";
 import {
   appendDurablePlanningIssuanceEvent,
+  classifyRecoveredLegacyPlanningOrigin,
   classifyLegacyStageIssuanceEvidence,
   completePlanningCheckpoint,
   completePlanningCheckpointWithAdoption,
@@ -474,7 +475,10 @@ test("prior checkpoint projection retains user, source, syllabus, policy, and no
 
 test("the promptless resolver is GET-only and exact routing is retained for validation", () => {
   const resolverStart = learnSource.indexOf("async function promptlessCouncilResultGet");
-  const resolverEnd = learnSource.indexOf("function recoveredCouncilCallResult", resolverStart);
+  const resolverEnd = learnSource.indexOf(
+    "async function observeOrdinaryCouncilReceipt",
+    resolverStart,
+  );
   const resolver = learnSource.slice(resolverStart, resolverEnd);
   assert.match(resolver, /method: "GET"/);
   assert.match(resolver, /await fetch\(/);
@@ -482,6 +486,214 @@ test("the promptless resolver is GET-only and exact routing is retained for vali
   assert.match(learnSource, /row\.state === "started"/);
   assert.match(learnSource, /planningReceiptProvesOneExactModelCall\(result, expectedModel\)/);
   assert.match(learnSource, /A clean completed receipt from an ordinary semantic-failure job is not/);
+});
+
+function recoveredLegacyOriginFixture(overrides = {}) {
+  return {
+    job_id: "job-legacy-origin",
+    garden_id: "fixture-garden",
+    job_garden_id: "fixture-garden",
+    job_status: "failed",
+    job_current_step: "Unresponsive Learn worker recovered; prior Learn state restored",
+    job_error: "Learn stopped responding before completion. Your garden was restored and is safe to retry.",
+    job_user_id: 7,
+    job_model: "gpt-fixture",
+    job_source_set_hash: "a".repeat(64),
+    job_source_ids_json: '["source-a"]',
+    job_syllabus_source_id: "fixture-syllabus",
+    job_source_only: 1,
+    job_include_source_snapshots: 0,
+    job_created_at: "2030-01-01T00:02:00.000Z",
+    job_updated_at: "2030-01-01T00:03:00.000Z",
+    started_requests: 2,
+    completed_requests: 2,
+    reported_requests: 1,
+    request_model: "gpt-fixture",
+    reasoning_effort: "max",
+    reasoning_summary: "detailed",
+    policy_observed_requests: 2,
+    policy_mismatch_requests: 0,
+    usage_updated_at: "2030-01-01T00:02:30.000Z",
+    map_count: 0,
+    version_count: 0,
+    ...overrides,
+  };
+}
+
+function currentPlanningBindingFixture(overrides = {}) {
+  return {
+    garden_id: "fixture-garden",
+    user_id: 7,
+    model: "gpt-fixture",
+    source_set_hash: "a".repeat(64),
+    source_ids_json: '["source-a"]',
+    syllabus_source_id: "fixture-syllabus",
+    source_only: 1,
+    include_source_snapshots: 0,
+    created_at: "2030-01-01T00:04:00.000Z",
+    ...overrides,
+  };
+}
+
+function classifyRecoveredOrigin({
+  origin = recoveredLegacyOriginFixture(),
+  current = currentPlanningBindingFixture(),
+  checkpointCount = 0,
+  migrationSealedAt = null,
+} = {}) {
+  return classifyRecoveredLegacyPlanningOrigin({
+    origin,
+    current,
+    checkpointCount,
+    migrationSealedAt,
+    expectedRequestModel: "gpt-fixture",
+    expectedReasoningEffort: "max",
+    expectedReasoningSummary: "detailed",
+  });
+}
+
+test("legacy recovery classification excludes a complete, different source-set epoch", () => {
+  assert.equal(
+    classifyRecoveredOrigin({
+      origin: recoveredLegacyOriginFixture({
+        job_source_set_hash: "b".repeat(64),
+        started_requests: null,
+        completed_requests: null,
+        reported_requests: null,
+        request_model: null,
+        reasoning_effort: null,
+        reasoning_summary: null,
+        policy_observed_requests: null,
+        policy_mismatch_requests: null,
+        usage_updated_at: null,
+      }),
+    }),
+    "unrelated",
+  );
+});
+
+test("legacy recovery classification fails closed on a missing or corrupt source-set hash", () => {
+  for (const [originHash, currentHash] of [
+    [null, "a".repeat(64)],
+    ["not-a-sha256", "a".repeat(64)],
+    ["a".repeat(64), null],
+    ["a".repeat(64), "A".repeat(64)],
+  ]) {
+    assert.equal(
+      classifyRecoveredOrigin({
+        origin: recoveredLegacyOriginFixture({ job_source_set_hash: originHash }),
+        current: currentPlanningBindingFixture({ source_set_hash: currentHash }),
+      }),
+      "conflict",
+    );
+  }
+});
+
+test("a post-seal strict job with exact zero durable issuance evidence is proven unissued", () => {
+  const zeroObservation = recoveredLegacyOriginFixture({
+    started_requests: 0,
+    completed_requests: 0,
+    reported_requests: 0,
+    request_model: null,
+    reasoning_effort: null,
+    reasoning_summary: null,
+    policy_observed_requests: 0,
+    policy_mismatch_requests: 0,
+    usage_updated_at: "2030-01-01T00:02:00.000Z",
+  });
+  assert.equal(
+    classifyRecoveredOrigin({
+      origin: zeroObservation,
+      migrationSealedAt: "2030-01-01T00:01:00.000Z",
+    }),
+    "proven_unissued",
+  );
+
+  for (const mutation of [
+    { started_requests: 1 },
+    { started_requests: null },
+    { policy_observed_requests: null },
+    { request_model: "gpt-fixture" },
+    { usage_updated_at: null },
+    { usage_updated_at: "2030-01-01T00:01:59.999Z" },
+    { map_count: 1 },
+    { version_count: 1 },
+    { job_updated_at: "2030-01-01T00:05:00.000Z" },
+  ]) {
+    assert.equal(
+      classifyRecoveredOrigin({
+        origin: { ...zeroObservation, ...mutation },
+        migrationSealedAt: "2030-01-01T00:01:00.000Z",
+      }),
+      "conflict",
+    );
+  }
+  assert.equal(
+    classifyRecoveredOrigin({
+      origin: zeroObservation,
+      checkpointCount: 1,
+      migrationSealedAt: "2030-01-01T00:01:00.000Z",
+    }),
+    "conflict",
+  );
+});
+
+test("same-epoch legacy policy evidence must be complete and exact", () => {
+  assert.equal(classifyRecoveredOrigin(), "exact");
+  assert.equal(
+    classifyRecoveredOrigin({
+      origin: recoveredLegacyOriginFixture({
+        started_requests: 0,
+        completed_requests: 0,
+        reported_requests: 0,
+        request_model: null,
+        reasoning_effort: null,
+        reasoning_summary: null,
+        policy_observed_requests: 0,
+        policy_mismatch_requests: 0,
+      }),
+    }),
+    "conflict",
+  );
+  assert.equal(
+    classifyRecoveredOrigin({
+      origin: recoveredLegacyOriginFixture({ policy_mismatch_requests: 1 }),
+    }),
+    "conflict",
+  );
+});
+
+test("the resolver discovers the sealed migration epoch before classifying newer recovered jobs", () => {
+  const resolverStart = learnSource.indexOf("async function resolvePriorPlanningResult");
+  const resolverEnd = learnSource.indexOf("function sourceMapPlanProblems", resolverStart);
+  const resolver = learnSource.slice(resolverStart, resolverEnd);
+  const epochDeclaration = resolver.indexOf("let migrationSealedAt: string | null = null");
+  const waiverDiscovery = resolver.indexOf(
+    "waiver = readExactLegacyPlanningWaiver",
+    epochDeclaration,
+  );
+  const originClassification = resolver.indexOf(
+    "classifyRecoveredLegacyPlanningOrigin",
+    waiverDiscovery,
+  );
+  const provenUnissuedBranch = resolver.indexOf(
+    'originDisposition === "proven_unissued"',
+    originClassification,
+  );
+
+  assert.ok(resolverStart >= 0 && resolverEnd > resolverStart);
+  assert.ok(epochDeclaration >= 0);
+  assert.ok(waiverDiscovery > epochDeclaration);
+  assert.ok(originClassification > waiverDiscovery);
+  assert.ok(provenUnissuedBranch > originClassification);
+  assert.match(
+    resolver,
+    /checkpointCount:\s*originCounts\.nativeReceiptCount \+ originCounts\.materializedLegacyCount/,
+  );
+  assert.match(
+    resolver.slice(provenUnissuedBranch),
+    /exactAbandonedPlanningRecoveryLineage[\s\S]*?fence\.malformedEvents[\s\S]*?continue;/,
+  );
 });
 
 function strictRouteReceipt({

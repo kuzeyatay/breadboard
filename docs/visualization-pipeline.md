@@ -291,16 +291,16 @@ and publication.
 | --- | --- | --- |
 | `LEARN_GENERATED_VISUALS_ENABLED` | `true` | Enable generated-module routing. |
 | `LEARN_VISUAL_COVERAGE_GATE` | `warning` | `off`, `warning`, or `fail`; critical gaps fail only in `fail`. |
-| `LEARN_GENERATED_VISUAL_MAX_ATTEMPTS` | `3` | Bounded generation/repair attempts (hard cap 5). |
+| `LEARN_GENERATED_VISUAL_MAX_ATTEMPTS` | `3` | Bounded semantic generation/repair attempts (hard cap 8). |
 | `LEARN_GENERATED_VISUAL_CRITIC_ATTEMPTS` | `2` | Structured critic retries (hard cap 3). |
 | `LEARN_GENERATED_VISUAL_CONCURRENCY` | `2` | Independent generated visuals in flight (hard cap 8). |
 | `LEARN_GENERATED_VISUAL_MAX_PER_GARDEN` | `12` | Published generated modules per Learn run. |
 | `LEARN_GENERATED_VISUAL_MAX_PER_PAGE` | `3` | Published generated modules on one page. |
-| `LEARN_GENERATED_VISUAL_TIMEOUT_MS` | `90000` | Per model/critic request timeout. |
+| `LEARN_GENERATED_VISUAL_TIMEOUT_MS` | `1200000` | Soft observability threshold for one author/critic request. |
+| `LEARN_GENERATED_VISUAL_LATE_RESULT_GRACE_MS` | `660000` | Additional wait for the same request; combined wait is capped at 31 minutes. |
 | `LEARN_GENERATED_VISUAL_BROWSER_TESTS` | `true` | Real browser publication gate; keep enabled in production. |
 | `LEARN_GENERATED_VISUAL_MAX_OUTPUT_TOKENS` | provider bounded | Candidate token ceiling. |
 | `LEARN_GENERATED_VISUAL_CRITIC_MAX_OUTPUT_TOKENS` | provider bounded | Critic token ceiling. |
-| `LEARN_GENERATED_VISUAL_CRITIC_MODEL` | generator model | Optional independent critic model. |
 | `BREADBOARD_VISUAL_BROWSER_PATH` | auto-detect | Edge/Chromium executable used by the gate. |
 
 Recommended rollout keeps the coverage gate at `warning` while observing
@@ -311,9 +311,11 @@ not reliable.
 
 ## Operational runbook
 
-- **Generation timeout/429/5xx:** the attempt record and exact provider error
-  are retained and the bounded repair loop retries. The garden continues with
-  fallback/coverage behavior after exhaustion.
+- **Generation transport ambiguity:** the exact request ID/hash and bounded
+  routing/usage evidence are retained without prompt or image payloads. The
+  original request is observed through the finite grace period and later runs
+  may adopt only its exact durable receipt; transport failure never becomes a
+  semantic repair request or an unbound retry.
 - **AST or schema rejection:** inspect `validation.json` and `rejection.json`;
   do not relax the forbidden-global policy to admit an individual candidate.
 - **Browser failure:** inspect `tests.json` and `preview.png`, verify the browser

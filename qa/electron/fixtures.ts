@@ -539,6 +539,20 @@ interface QaWorkerFixtures {
 export const test = playwrightTest.extend<QaTestFixtures, QaWorkerFixtures>({
   qa: [
     async ({}, use) => {
+      // Constrained developer workstations may need a smaller disposable hot
+      // dashboard than the machine-wide default. These three bounded numeric
+      // controls are safe to forward into the already-isolated QA process;
+      // credential-like environment remains filtered by createQaEnvironment.
+      const dashboardMemoryOverrides = Object.fromEntries(
+        [
+          "BREADBOARD_DASHBOARD_DEV_HEAP_MB",
+          "BREADBOARD_DASHBOARD_TREE_SOFT_LIMIT_MB",
+          "BREADBOARD_DASHBOARD_TREE_HARD_LIMIT_MB",
+        ].flatMap((key) => {
+          const value = process.env[key]?.trim();
+          return value ? [[key, value]] : [];
+        }),
+      );
       const run = createQaEnvironment({
         preserve:
           process.env["BREADBOARD_QA_PRESERVE_RUNTIME"] === "1"
@@ -546,6 +560,7 @@ export const test = playwrightTest.extend<QaTestFixtures, QaWorkerFixtures>({
             : "on-failure",
         providerAuthFile: process.env["BREADBOARD_QA_PROVIDER_AUTH_FILE"],
         env: {
+          ...dashboardMemoryOverrides,
           BREADBOARD_DESKTOP_DASHBOARD_MODE:
             process.env["BREADBOARD_QA_DASHBOARD_MODE"] === "hot"
               ? "hot"

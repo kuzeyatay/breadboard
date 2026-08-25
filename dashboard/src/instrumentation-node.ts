@@ -1,5 +1,10 @@
 import "server-only";
 
+// This is intentionally loaded by scripts/background-coordinator.mjs, not by
+// Next instrumentation. Its imports span schedulers, gateways, recovery, and
+// model integrations; keeping that graph in a separate process prevents the
+// hot compiler from retaining it for the lifetime of the dev server.
+
 import {
   configuredStaleMs,
   getSkillsCatalogStore,

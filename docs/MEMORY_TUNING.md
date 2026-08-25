@@ -14,10 +14,14 @@ a ceiling is not a repair for monotonic growth.
 | `BREADBOARD_MIN_FREE_COMMIT_MB` | 1024–32768 MB | Normal admission reserve |
 | `BREADBOARD_CRITICAL_FREE_COMMIT_MB` | 512–16384 MB | Critical-pressure threshold |
 | `BREADBOARD_MEMORY_SAMPLE_INTERVAL_MS` | 1000–300000 ms | Supervisor sampling interval |
+| `BREADBOARD_MEMORY_TELEMETRY_INTERVAL_MS` | 1000–300000 ms | In-process dashboard sample interval; default 15000 ms |
+| `BREADBOARD_MEMORY_TELEMETRY_SAMPLES` | 12–720 | Bounded in-process history; default 240 samples |
+| `BREADBOARD_BACKGROUND_COORDINATOR_HEAP_MB` | 256–2048 MB | Scheduler/gateway child old-space; default 1024 MB |
 | `BREADBOARD_INGEST_MAX_UPLOAD_MB` | 16–2048 MB | Streamed ingestion byte limit; default 512 MB |
 
 | `BREADBOARD_MEMORY_QA_COLD_START_MB` | 512-16384 MB | Burn-in admission estimate; default 6144 MB |
 | `BREADBOARD_MEMORY_QA_PROJECT` | `exploratory`, `critical`, or `hermes` | Burn-in workload; default `exploratory` |
+| `BREADBOARD_LEAN_BUILD_ESTIMATE_MB` | 4096-16384 MB | Lean dashboard build admission estimate; default 11264 MB after measured Next 16 build peak |
 
 Values must be plain whole numbers. Invalid input stops startup with the exact
 key; it is never silently ignored. Memory ordering must be `heap < soft < hard`,
@@ -82,9 +86,27 @@ npm run desktop:dev:lean   # build and run the standalone dashboard
 npm run desktop:dev:hot    # Next development server for active UI/API work
 npm run qa:memory:smoke    # safe short GetPerformanceInfo baseline
 npm run qa:memory:burn-in  # reserve-gated integrated QA
+npm run qa:memory:dashboard -- --cycles=30                 # Turbopack rebuild receipt
+npm run qa:memory:dashboard -- --bundler=both --cycles=30  # reserve-gated A/B receipt
 npm run desktop:verify     # staged/package resource verification
 ```
 
 `desktop:dev:hot` is intentionally the expensive option. Use it only while
 editing dashboard UI/API code; ordinary desktop work and memory QA use lean
 mode.
+
+Lean mode never starts a hot compiler. If inputs changed but Windows cannot
+safely admit a rebuild, it reuses the last complete, compatible standalone
+artifact and says that recent source edits are not included. If no such
+artifact exists, it fails with an actionable message. The explicit
+`desktop:dev:lean:rebuild` command remains fail-closed. Rebuilds keep the last
+complete artifact in a rollback slot until the replacement server, assets, and
+manifest are all complete, so a reserve-triggered kill cannot destroy it.
+
+The V8 heap setting is not a process limit. RSS/private bytes can be materially
+higher because source maps, native allocations, `Buffer`/`ArrayBuffer` data,
+mapped files, and compiler descendants are outside old-space. Use the dashboard
+receipt for the in-process breakdown and `qa:memory:burn-in` for the complete
+owned tree and Windows commit signal. The diagnostic endpoint is disabled
+without a per-launch supervisor or benchmark token and keeps only a bounded
+in-memory history.

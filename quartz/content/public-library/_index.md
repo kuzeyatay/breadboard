@@ -1,6 +1,6 @@
 ---
 title: "Public garden"
-date: "2026-07-25"
+date: "2026-08-24"
 description: "Shared gardens ranked by popularity."
 knowledge_type: "garden-overview"
 garden_scope: "public"

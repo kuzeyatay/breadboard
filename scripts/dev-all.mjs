@@ -362,10 +362,10 @@ async function waitFor(url, options = {}, timeoutMs = 60_000) {
 /**
  * Warn when a desktop stack is already supervising this same checkout.
  *
- * Both launchers run `next dev --webpack` plus the same sidecars against the
- * same `dashboard/db`, and the desktop supervisor silently moves the dashboard
- * to a spare port when 3000 is taken — so the duplication is invisible until
- * two multi-gigabyte dev servers are competing for the machine's commit budget.
+ * Both launchers run `next dev` plus the same sidecars against the
+ * same `dashboard/db`. The desktop supervisor now refuses to adopt an
+ * uncontained dashboard, but this early warning remains useful because the
+ * existing stack has to be stopped before desktop startup can continue.
  * Advisory only: parallel runs are sometimes deliberate. Shares the record
  * format written by desktop/src/main/dev-instance-lock.ts.
  */
@@ -674,7 +674,7 @@ async function main() {
     "dashboard",
     { url: "http://127.0.0.1:3000/api/health", expectBodyIncludes: '"status":"ok"' },
     process.execPath,
-    [dashboardDir("node_modules", "next", "dist", "bin", "next"), "dev", "--webpack"],
+    [dashboardDir("node_modules", "next", "dist", "bin", "next"), "dev"],
     { cwd: dashboardDir() },
   );
   process.stdout.write("[stack] Agent runtime: Hermes\n");

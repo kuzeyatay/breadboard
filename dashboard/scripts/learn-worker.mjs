@@ -243,6 +243,13 @@ function promoteConcurrencyMarker(concurrencyPath, message) {
   }
 }
 
+function learnWorkerRuntimeRoot() {
+  const configured = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR?.trim();
+  return configured
+    ? path.resolve(configured)
+    : path.resolve(process.cwd(), "..", ".runtime", "learn-workers");
+}
+
 function assertTrustedStartEnvelope(message) {
   if (
     !message ||
@@ -260,7 +267,7 @@ function assertTrustedStartEnvelope(message) {
   ) {
     throw new Error("The Learn worker startup envelope is invalid.");
   }
-  const runtimeRoot = path.resolve(process.cwd(), "..", ".runtime", "learn-workers");
+  const runtimeRoot = learnWorkerRuntimeRoot();
   const receiptPath = path.resolve(message.receiptPath);
   const concurrencyPath = path.resolve(message.concurrencyPath);
   const relativeReceipt = path.relative(runtimeRoot, receiptPath);
@@ -311,9 +318,6 @@ function writeReadyReceipt(receiptPath, message) {
 
 async function execute(rawRequest) {
   const request = assertRequest(rawRequest);
-  const { executeLearnOperation } = await import(
-    "../src/lib/learn-operation-executor.ts"
-  );
   const yieldToResponse = async (jobId) => {
     if (typeof jobId !== "string" || !jobId.trim()) {
       throw new Error("The Learn worker reached handoff without a durable job ID.");
@@ -337,7 +341,32 @@ async function execute(rawRequest) {
     if (process.connected) process.disconnect();
   };
 
-  return executeLearnOperation(request, yieldToResponse);
+  // Admission must precede the heavyweight Learn import graph. Acquiring from
+  // inside learn-operation-executor.ts is too late: its top-level imports have
+  // already committed db, source-processing, and pipeline state by then.
+  const { acquireCapabilityLease, releaseSupervisorLease } = await import(
+    "../src/lib/supervisor-control.ts"
+  );
+  const lease = await acquireCapabilityLease(
+    "learn-worker",
+    `learn-${request.operation}`,
+  );
+  try {
+    const { executeAdmittedLearnOperation } = await import(
+      "../src/lib/learn-operation-executor.ts"
+    );
+    // The await is intentional: the finally below must retain the capability
+    // through work that continues after the durable response handoff.
+    return await executeAdmittedLearnOperation(request, yieldToResponse);
+  } finally {
+    // JS completion precedes OS process teardown. Ask Electron to acknowledge
+    // now but, within the bounded lease lifetime, retain the hold until it
+    // observes this recorded PID exit. Reclaimed services cannot return while
+    // ordinary native/runtime teardown still owns commit.
+    await releaseSupervisorLease(lease, process.env, {
+      afterOwnerPidExit: process.pid,
+    });
+  }
 }
 
 function startWorker(message, durableStartup) {
@@ -435,7 +464,7 @@ function startupFilePath() {
     throw new Error("The Learn worker startup-file argument is invalid.");
   }
   const startupPath = path.resolve(process.argv[indexes[0] + 1]);
-  const runtimeRoot = path.resolve(process.cwd(), "..", ".runtime", "learn-workers");
+  const runtimeRoot = learnWorkerRuntimeRoot();
   const relative = path.relative(runtimeRoot, startupPath);
   if (
     !relative ||

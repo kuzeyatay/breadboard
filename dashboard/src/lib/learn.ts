@@ -143,13 +143,16 @@ import {
 } from "@/lib/http-502-retry";
 import {
   ensureLearnTokenUsagePersistenceSchema,
+  discardPersistedLearnTokenUsageForProvenMissingReceipt,
   persistedLearnTokenUsageForJob,
+  reconcilePersistedLearnTokenUsageFromReceipt,
   reconcilePersistedLearnTokenUsageForTerminalJob,
   reconcilePersistedLearnTokenUsageForStaleTerminalJobs,
   recordPersistedLearnTokenUsageEvent,
 } from "@/lib/learn-token-usage-persistence";
 import {
   appendDurablePlanningIssuanceEvent,
+  classifyRecoveredLegacyPlanningOrigin,
   classifyLegacyStageIssuanceEvidence,
   completePlanningCheckpoint,
   completePlanningCheckpointWithAdoption,
@@ -173,6 +176,43 @@ import {
   type PriorRecoveredPlanningJobRow,
 } from "@/lib/learn-planning-checkpoints";
 import {
+  adoptCompletedLearnCouncilCheckpoint,
+  adoptCompletedLearnCouncilCheckpointWithBoundary,
+  adoptClaimedLearnCouncilRedispatch,
+  assertUniqueLegacyLearnCouncilFailureWithoutCompletion,
+  canStartLearnCouncilAfterLegacyAbsence,
+  claimLearnCouncilMissingReceiptRecovery,
+  claimLearnCouncilRedispatch,
+  completeLearnCouncilReceiptChain,
+  createStartedLearnCouncilCheckpoint,
+  createStartedLearnCouncilCheckpointAfterLegacyFailure,
+  currentLearnCouncilCheckpoint,
+  ensureLearnCouncilCheckpointSchema,
+  exactFailedLearnCouncilLineage,
+  exactLearnCouncilRetryJobBinding,
+  isExactLegacyLearnCouncilFailureShape,
+  learnCouncilDispatchGenerationOwners,
+  legacyLearnCouncilLineageIsQuiescent,
+  learnCouncilRetryJob,
+  materializeCompletedLegacyLearnCouncilCheckpoint,
+  materializeCompletedLegacyLearnCouncilCheckpointAfterFailure,
+  priorLearnCouncilCheckpoints,
+  recordLearnCouncilNativeLineageBoundary,
+  selectNewestCompletedLearnCouncilCheckpoint,
+  type LearnCouncilCheckpointRow,
+  type LearnCouncilDispatchGenerationOwnerRow,
+  type LegacyLearnCouncilFailureProof,
+  type NativeLearnCouncilBoundaryProof,
+} from "@/lib/learn-council-checkpoints";
+import {
+  assertExactOrdinaryLearnCouncilReceiptAttempt,
+  completedLearnCouncilReceiptAttemptMatchesResult,
+  learnCouncilReceiptOwnerPrefixIsExact,
+  parseLearnCouncilReceiptAttempts,
+  sumLearnCouncilReceiptAttemptUsage,
+  type LearnCouncilReceiptAttempt,
+} from "@/lib/learn-council-receipt-accounting";
+import {
   assertLegacyPlanningWaiverContainsResult,
   assertLegacyPlanningWaiverFullyMaterialized,
   assertLegacyPlanningWaiverMatchesInventory,
@@ -184,7 +224,10 @@ import {
 } from "@/lib/learn-planning-legacy-waiver";
 import { strictChatMockInternalRecoveryUrl } from "@/lib/learn-planning-internal-url";
 import { auditedLegacyPlanningInventory } from "@/lib/learn-planning-legacy-inventory";
-import { planningReceiptProvesOneExactModelCall } from "@/lib/learn-planning-route-proof";
+import {
+  expectedStrictLearnModelRoute,
+  planningReceiptProvesOneExactModelCall,
+} from "@/lib/learn-planning-route-proof";
 import { transitionLearnTimer } from "@/lib/learn-timer";
 import { failedGenerationRequiresReplanFromEvents } from "@/lib/learn-replan-recovery";
 import {
@@ -283,6 +326,7 @@ import {
   createGeneratedVisualization,
   GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS,
 } from "@/lib/generated-visuals";
+import { stableGeneratedVisualCouncilRecoveryRoot } from "@/lib/generated-visual-council-receipts";
 import {
   persistLearnVisualRejectedAttemptAudit,
   removeAllLearnVisualRejectedAttemptAudits,
@@ -573,6 +617,14 @@ interface LearnPlanningRequestCheckpoint {
   semanticAttempt: number;
 }
 
+interface LearnOrdinaryRequestCheckpoint {
+  jobId: string;
+  contentPath: string;
+  stageKey: string;
+  stageLabel: string;
+  semanticAttempt: number;
+}
+
 interface PromptlessCouncilRecoveryResult {
   councilRunId: string;
   councilMode?: string;
@@ -581,10 +633,34 @@ interface PromptlessCouncilRecoveryResult {
   requestedModel?: string;
   resolvedModel?: string;
   modelRouting: Array<Record<string, unknown>>;
+  usageEstimated?: boolean;
+  createdAt: string;
+  updatedAt: string;
   usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cachedInputTokens: number;
+    reasoningTokens: number;
     callCount: number;
     reportedCallCount: number;
   };
+}
+
+interface StrictCouncilReceiptMetadata {
+  dispatchGeneration: number;
+  dispatchCount: number;
+  redispatchCount: number;
+  redispatchAllowed: boolean;
+  failureCode?: string;
+  attempts: LearnCouncilReceiptAttempt[];
+}
+
+interface LegacyCouncilFailureOutcome extends LegacyLearnCouncilFailureProof {
+  finalAnswerPresent: false;
+  candidateCount: 0;
+  outcome: "failed";
+  modelRouting: Array<Record<string, unknown>>;
 }
 
 interface PlanningReceiptRedispatch {
@@ -1228,6 +1304,7 @@ function ensureLearnTables(): void {
 
   ensureLearnTokenUsagePersistenceSchema(db);
   ensureLearnPlanningCheckpointSchema(db);
+  ensureLearnCouncilCheckpointSchema(db);
 
   const duplicateClearJournal = db
     .prepare(
@@ -1631,8 +1708,35 @@ export class LearnCancelledError extends Error {
 }
 
 const activeLearnAbortControllers = new Map<string, AbortController>();
-const activeLearnPlanningDispatchAuthorities = new Map<string, () => boolean>();
+const activeLearnCouncilDispatchAuthorities = new Map<string, () => boolean>();
 const leaseLostLearnJobs = new Set<string>();
+const LEARN_FAILURE_OWNERSHIP_RETRY_DELAYS_MS = [10, 25, 50, 100] as const;
+const learnFailureOwnershipWait = new Int32Array(new SharedArrayBuffer(4));
+
+/** Failure cleanup may mutate both SQLite and the garden, so it still requires
+ * a freshly renewed exact lease. A mutation-guard collision or transient read
+ * is uncertainty, though, not proof that another worker owns the garden. Give
+ * those short-lived states a bounded chance to clear; only an exact renewed
+ * token authorizes cleanup and a proven token mismatch fences it immediately. */
+function confirmLearnLeaseForFailureCleanup(
+  lease: GardenLearnLease,
+  jobId: string,
+): boolean {
+  for (let attempt = 0; ; attempt += 1) {
+    if (lease.lost || leaseLostLearnJobs.has(jobId)) return false;
+    let ownership: ReturnType<GardenLearnLease["confirmOwnership"]>;
+    try {
+      ownership = lease.confirmOwnership();
+    } catch {
+      ownership = "uncertain";
+    }
+    if (ownership === "owned") return true;
+    if (ownership === "lost") return false;
+    const delay = LEARN_FAILURE_OWNERSHIP_RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) return false;
+    Atomics.wait(learnFailureOwnershipWait, 0, 0, delay);
+  }
+}
 const LEARN_JOB_HEARTBEAT_INTERVAL_MS = 15_000;
 const LEARN_CANCELLATION_REQUESTED_STEP =
   "Cancellation requested; waiting for the Learn worker to stop";
@@ -1750,7 +1854,7 @@ function exactPlanningDispatchAuthority(
   const row = db.prepare(
     "SELECT id, garden_id, status FROM learn_jobs WHERE id = ?",
   ).get(jobId) as { id: string; garden_id: string; status: string } | undefined;
-  const ownsLease = activeLearnPlanningDispatchAuthorities.get(jobId);
+  const ownsLease = activeLearnCouncilDispatchAuthorities.get(jobId);
   return hasExactPlanningDispatchAuthority({
     job: row
       ? { id: row.id, gardenId: row.garden_id, status: row.status }
@@ -1759,6 +1863,32 @@ function exactPlanningDispatchAuthority(
     expectedGardenId: gardenId,
     ownsLease: ownsLease ?? (() => false),
   });
+}
+
+function exactOrdinaryCouncilDispatchAuthority(
+  jobId: string,
+  gardenId: string,
+): boolean {
+  const row = db.prepare(
+    "SELECT id, garden_id, status FROM learn_jobs WHERE id = ?",
+  ).get(jobId) as { id: string; garden_id: string; status: string } | undefined;
+  const ownsLease = activeLearnCouncilDispatchAuthorities.get(jobId);
+  return Boolean(
+    row &&
+      row.id === jobId &&
+      row.garden_id === gardenId &&
+      !["failed", "cancelled", "complete", "paused"].includes(row.status) &&
+      ownsLease?.(),
+  );
+}
+
+function assertExactOrdinaryCouncilAuthority(
+  jobId: string,
+  gardenId: string,
+): void {
+  if (!exactOrdinaryCouncilDispatchAuthority(jobId, gardenId)) {
+    throw new PlanningRecoveryBoundaryError("dispatch_authority_lost");
+  }
 }
 
 function isLearnCancellationWithoutMaskingFailure(
@@ -3281,6 +3411,7 @@ async function callCouncilText({
   timeoutMs,
   preserveExactContent = false,
   planningCheckpoint,
+  ordinaryCheckpoint,
 }: {
   client: OpenAI;
   model: string;
@@ -3299,7 +3430,14 @@ async function callCouncilText({
   preserveExactContent?: boolean;
   /** Present only for authoritative planning JSON calls. */
   planningCheckpoint?: LearnPlanningRequestCheckpoint;
+  /** Durable identity for every other Learn Council call. */
+  ordinaryCheckpoint?: LearnOrdinaryRequestCheckpoint;
 }): Promise<CouncilCallResult> {
+  if (ordinaryCheckpoint && councilModeOverride !== "direct_council") {
+    throw new LearnPlanningRecoveryConflictError(
+      "Durable ordinary Learn Council calls require the explicit direct_council route.",
+    );
+  }
   logPromptBudget(
     `${taskType}${pageId ? ` ${pageId}` : ""} (${councilModeOverride ?? "default"})`,
     system,
@@ -3316,6 +3454,11 @@ async function callCouncilText({
     sourceContext,
     councilModeOverride,
   });
+  if (Boolean(planningCheckpoint) === Boolean(ordinaryCheckpoint)) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Every Learn Council request requires exactly one durable checkpoint kind.",
+    );
+  }
   const dispatchCouncilRequest = async (
     requestToDispatch: CouncilCompletionRequest,
     bindingToComplete: {
@@ -3407,7 +3550,24 @@ async function callCouncilText({
       councilMode: typed.councilMode,
     };
   };
-  if (!planningCheckpoint) return dispatchCouncilRequest(completionRequest, null);
+  if (ordinaryCheckpoint) {
+    return callOrdinaryCouncilTextWithReceipt({
+      client,
+      model,
+      // The caller supplied direct_council and the check above failed closed on
+      // any environment-driven policy drift. Hash and dispatch the unchanged
+      // canonical request so the local checkpoint and server receipt agree.
+      request: completionRequest,
+      checkpoint: ordinaryCheckpoint,
+      preserveExactContent,
+      timeoutMs,
+    });
+  }
+  if (!planningCheckpoint) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Learn Council planning checkpoint is missing.",
+    );
+  }
 
   const requestHash = councilRequestHashV1(recoverablePlanningEnvelope(completionRequest));
   let sameReceiptRedispatch: PlanningReceiptRedispatch | null = null;
@@ -3469,6 +3629,7 @@ async function callCouncilJson({
   timeoutMs,
   preserveExactContent = false,
   planningCheckpoint,
+  ordinaryCheckpoint,
 }: {
   client: OpenAI;
   model: string;
@@ -3481,6 +3642,7 @@ async function callCouncilJson({
   timeoutMs?: number;
   preserveExactContent?: boolean;
   planningCheckpoint?: LearnPlanningRequestCheckpoint;
+  ordinaryCheckpoint?: LearnOrdinaryRequestCheckpoint;
 }): Promise<CouncilJsonResult> {
   const result = await callCouncilText({
     client,
@@ -3494,6 +3656,7 @@ async function callCouncilJson({
     timeoutMs,
     preserveExactContent,
     planningCheckpoint,
+    ordinaryCheckpoint,
   });
   return { ...result, parsed: parseJsonCandidate(result.content) };
 }
@@ -3502,6 +3665,9 @@ async function requestVisualizationContractRepair(input: {
   client: OpenAI;
   model: string;
   gardenId: string;
+  contentPath: string;
+  jobId: string;
+  semanticAttempt: number;
   packet: VisualizationContractRepairPacket;
 }): Promise<unknown> {
   const result = await callCouncilJson({
@@ -3515,6 +3681,13 @@ async function requestVisualizationContractRepair(input: {
     councilModeOverride: "direct_council",
     timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
     preserveExactContent: true,
+    ordinaryCheckpoint: {
+      jobId: input.jobId,
+      contentPath: input.contentPath,
+      stageKey: "planning:visual_contract_repair",
+      stageLabel: "visualization contract repair",
+      semanticAttempt: input.semanticAttempt,
+    },
   });
   return exactVisualizationContractRepairResponse(result.content);
 }
@@ -3523,6 +3696,8 @@ async function requestVisualizationContractExecutabilityReview(input: {
   client: OpenAI;
   model: string;
   gardenId: string;
+  contentPath: string;
+  jobId: string;
   request: VisualContractExecutabilityProviderRequest;
 }): Promise<unknown> {
   const result = await callCouncilText({
@@ -3547,6 +3722,13 @@ async function requestVisualizationContractExecutabilityReview(input: {
     councilModeOverride: "direct_council",
     timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
     preserveExactContent: true,
+    ordinaryCheckpoint: {
+      jobId: input.jobId,
+      contentPath: input.contentPath,
+      stageKey: "planning:visual_contract_executability",
+      stageLabel: "visual contract executability review",
+      semanticAttempt: input.request.attempt,
+    },
   });
   // Preserve exact provider text—even valid JSON—so the bounded reviewer can
   // separate raw protocol retries from parsed semantic candidates without
@@ -3605,6 +3787,13 @@ async function planAndReviewVisualNecessity(input: {
         },
         councilModeOverride: "direct_council",
         timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+        ordinaryCheckpoint: {
+          jobId: input.jobId,
+          contentPath: input.contentPath,
+          stageKey: "planning:visual_necessity:batch",
+          stageLabel: "visual necessity review",
+          semanticAttempt: request.attempt,
+        },
       });
       // Malformed/absent structured model output is a semantic validation
       // failure and must enter the bounded model-repair loop. Only an actual
@@ -3631,6 +3820,15 @@ async function planAndReviewVisualNecessity(input: {
         },
         councilModeOverride: "direct_council",
         timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+        ordinaryCheckpoint: {
+          jobId: input.jobId,
+          contentPath: input.contentPath,
+          stageKey: `planning:visual_necessity:targeted:${createHash("sha256")
+            .update(JSON.stringify([...request.unitIds].sort()))
+            .digest("hex")}`,
+          stageLabel: "targeted visual necessity repair",
+          semanticAttempt: request.attempt,
+        },
       });
       // Let the targeted response validator reject malformed model output;
       // transport exceptions still propagate from callCouncilJson unchanged.
@@ -4269,11 +4467,99 @@ function chatMockInternalUrl(client: OpenAI, pathname: string): URL {
   }
 }
 
+function parsePromptlessCouncilRecoveryResult(
+  value: unknown,
+): PromptlessCouncilRecoveryResult {
+  const result = recordValue(value);
+  const finalAnswer = result?.finalAnswer;
+  const councilRunId = result?.councilRunId;
+  const responseHash = result?.responseHash;
+  const createdAt = result?.createdAt;
+  const updatedAt = result?.updatedAt;
+  const modelRouting = Array.isArray(result?.modelRouting)
+    ? result.modelRouting
+        .map(recordValue)
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    : [];
+  const usageRecord = recordValue(result?.usage);
+  const usageEstimated = result?.usageEstimated;
+  const inputTokens = usageRecord?.inputTokens;
+  const outputTokens = usageRecord?.outputTokens;
+  const totalTokens = usageRecord?.totalTokens;
+  const cachedInputTokens = usageRecord?.cachedInputTokens;
+  const reasoningTokens = usageRecord?.reasoningTokens;
+  const callCount = usageRecord?.callCount;
+  const reportedCallCount = usageRecord?.reportedCallCount;
+  if (
+    typeof finalAnswer !== "string" ||
+    !finalAnswer.trim() ||
+    typeof councilRunId !== "string" ||
+    !councilRunId ||
+    typeof responseHash !== "string" ||
+    responseHash !== createHash("sha256").update(finalAnswer, "utf8").digest("hex") ||
+    typeof createdAt !== "string" ||
+    typeof updatedAt !== "string" ||
+    (usageEstimated !== undefined && typeof usageEstimated !== "boolean") ||
+    !Number.isFinite(Date.parse(createdAt)) ||
+    !Number.isFinite(Date.parse(updatedAt)) ||
+    Date.parse(createdAt) > Date.parse(updatedAt) ||
+    ![
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      cachedInputTokens,
+      reasoningTokens,
+      callCount,
+      reportedCallCount,
+    ].every((entry) => Number.isSafeInteger(entry) && Number(entry) >= 0) ||
+    Number(totalTokens) < Number(inputTokens) + Number(outputTokens) ||
+    Number(cachedInputTokens) > Number(inputTokens) ||
+    Number(reasoningTokens) > Number(outputTokens) ||
+    Number(reportedCallCount) > Number(callCount)
+  ) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Durable Council result resolution returned an invalid result binding.",
+    );
+  }
+  return {
+    councilRunId,
+    finalAnswer,
+    responseHash,
+    modelRouting,
+    ...(typeof usageEstimated === "boolean" ? { usageEstimated } : {}),
+    createdAt,
+    updatedAt,
+    usage: {
+      inputTokens: Number(inputTokens),
+      outputTokens: Number(outputTokens),
+      totalTokens: Number(totalTokens),
+      cachedInputTokens: Number(cachedInputTokens),
+      reasoningTokens: Number(reasoningTokens),
+      callCount: Number(callCount),
+      reportedCallCount: Number(reportedCallCount),
+    },
+    ...(typeof result?.councilMode === "string"
+      ? { councilMode: result.councilMode }
+      : {}),
+    ...(typeof result?.requestedModel === "string"
+      ? { requestedModel: result.requestedModel }
+      : {}),
+    ...(typeof result?.resolvedModel === "string"
+      ? { resolvedModel: result.resolvedModel }
+      : {}),
+  };
+}
+
 async function promptlessCouncilResultGet(
   client: OpenAI,
   pathname: string,
   query: Record<string, string>,
-): Promise<{ status: number; code?: string; result?: PromptlessCouncilRecoveryResult }> {
+): Promise<{
+  status: number;
+  code?: string;
+  result?: PromptlessCouncilRecoveryResult;
+  receipt?: StrictCouncilReceiptMetadata;
+}> {
   const url = chatMockInternalUrl(client, pathname);
   for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
   let response: Response;
@@ -4301,52 +4587,1438 @@ async function promptlessCouncilResultGet(
   const record = recordValue(body);
   const error = recordValue(record?.error);
   const result = recordValue(record?.result);
+  const receipt = recordValue(record?.receipt);
+  const dispatchGeneration = receipt?.dispatchGeneration;
+  const dispatchCount = receipt?.dispatchCount;
+  const redispatchCount = receipt?.redispatchCount;
+  const redispatchAllowed = receipt?.redispatchAllowed;
+  const failureCode = receipt?.failureCode;
+  const strictMetadataScalars =
+    Number.isSafeInteger(dispatchGeneration) &&
+    (dispatchGeneration === 1 || dispatchGeneration === 2) &&
+    Number.isSafeInteger(dispatchCount) &&
+    (dispatchCount === 1 || dispatchCount === 2) &&
+    dispatchGeneration === dispatchCount &&
+    Number.isSafeInteger(redispatchCount) &&
+    (redispatchCount === 0 || redispatchCount === 1) &&
+    Number(redispatchCount) === Number(dispatchCount) - 1 &&
+    typeof redispatchAllowed === "boolean";
+  let strictReceiptMetadata: StrictCouncilReceiptMetadata | undefined;
+  if (strictMetadataScalars) {
+    const receiptState = record?.state;
+    if (
+      receiptState !== "started" &&
+      receiptState !== "failed" &&
+      receiptState !== "completed"
+    ) {
+      throw new LearnPlanningRecoveryConflictError(
+        "Durable Council receipt metadata has no exact terminal state.",
+      );
+    }
+    try {
+      strictReceiptMetadata = {
+        dispatchGeneration: Number(dispatchGeneration),
+        dispatchCount: Number(dispatchCount),
+        redispatchCount: Number(redispatchCount),
+        redispatchAllowed: Boolean(redispatchAllowed),
+        attempts: parseLearnCouncilReceiptAttempts(
+          receipt?.attempts,
+          Number(dispatchCount) as 1 | 2,
+          receiptState,
+        ),
+        ...(typeof failureCode === "string" && failureCode
+          ? { failureCode }
+          : {}),
+      };
+    } catch (parseError) {
+      throw new LearnPlanningRecoveryConflictError(
+        `Durable Council receipt attempt accounting is invalid: ${errorMessage(parseError)}`,
+      );
+    }
+  }
   if (!response.ok || !result) {
+    return {
+      status: response.status,
+      ...(typeof error?.code === "string" ? { code: error.code } : {}),
+      ...(strictReceiptMetadata ? { receipt: strictReceiptMetadata } : {}),
+    };
+  }
+  const parsedResult = parsePromptlessCouncilRecoveryResult(result);
+  return {
+    status: response.status,
+    result: parsedResult,
+    ...(strictReceiptMetadata ? { receipt: strictReceiptMetadata } : {}),
+  };
+}
+
+async function observeOrdinaryCouncilReceipt(input: {
+  client: OpenAI;
+  jobId: string;
+  gardenId: string;
+  requestId: string;
+  requestHash: string;
+  observationTimeoutMs: number;
+}): Promise<Awaited<ReturnType<typeof promptlessCouncilResultGet>>> {
+  const deadline = Date.now() + Math.max(1, input.observationTimeoutMs);
+  for (;;) {
+    assertExactOrdinaryCouncilAuthority(input.jobId, input.gardenId);
+    const lookup = await promptlessCouncilResultGet(
+      input.client,
+      "/internal/council-results/resolve",
+      { requestId: input.requestId, requestHash: input.requestHash },
+    );
+    assertExactOrdinaryCouncilAuthority(input.jobId, input.gardenId);
+    if (
+      lookup.status !== 409 ||
+      lookup.code !== "request_started" ||
+      Date.now() >= deadline
+    ) {
+      return lookup;
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(250, Math.max(1, deadline - Date.now()))),
+    );
+    assertExactOrdinaryCouncilAuthority(input.jobId, input.gardenId);
+  }
+}
+
+async function promptlessLegacyCouncilOutcomeGet(
+  client: OpenAI,
+  query: {
+    requestHash: string;
+    createdAfter: string;
+    createdBefore: string;
+    reasoningEffort: string;
+    reasoningSummary: string;
+  },
+): Promise<{
+  status: number;
+  code?: string;
+  state?: "completed" | "failed";
+  result?: PromptlessCouncilRecoveryResult;
+  failure?: LegacyCouncilFailureOutcome;
+}> {
+  const url = chatMockInternalUrl(
+    client,
+    "/internal/council-results/legacy-outcome",
+  );
+  for (const [key, value] of Object.entries(query)) {
+    url.searchParams.set(key, value);
+  }
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      cache: "no-store",
+      redirect: "error",
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    throw new LearnPlanningRecoveryConflictError(
+      `Legacy Council outcome resolution could not be observed: ${errorMessage(error)}`,
+    );
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new LearnPlanningRecoveryConflictError(
+      `Legacy Council outcome resolution returned non-JSON HTTP ${response.status}.`,
+    );
+  }
+  const record = recordValue(body);
+  const error = recordValue(record?.error);
+  if (!response.ok) {
     return {
       status: response.status,
       ...(typeof error?.code === "string" ? { code: error.code } : {}),
     };
   }
-  const finalAnswer = result.finalAnswer;
-  const councilRunId = result.councilRunId;
-  const responseHash = result.responseHash;
-  const modelRouting = Array.isArray(result.modelRouting)
-    ? result.modelRouting.map(recordValue).filter((entry): entry is Record<string, unknown> => Boolean(entry))
+  if (record?.legacy !== true || (record.state !== "completed" && record.state !== "failed")) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Legacy Council outcome resolution returned an invalid envelope.",
+    );
+  }
+  if (record.state === "completed") {
+    return {
+      status: response.status,
+      state: "completed",
+      result: parsePromptlessCouncilRecoveryResult(record.result),
+    };
+  }
+  const failure = recordValue(record.failure);
+  if (!isExactLegacyLearnCouncilFailureShape(record.failure)) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Legacy Council outcome resolution returned an invalid failure proof.",
+    );
+  }
+  const usage = recordValue(failure?.usage);
+  const rawModelRouting = failure?.modelRouting;
+  const modelRoutingValid =
+    Array.isArray(rawModelRouting) &&
+    rawModelRouting.every((entry) => recordValue(entry) !== null);
+  const modelRouting = modelRoutingValid
+    ? rawModelRouting.map((entry) => recordValue(entry)!)
     : [];
-  const usageRecord = recordValue(result.usage);
-  const callCount = usageRecord?.callCount;
-  const reportedCallCount = usageRecord?.reportedCallCount;
+  const failurePhase = failure?.failurePhase;
+  const partialOutput = failure?.partialOutput;
+  const replaySafe = failure?.replaySafe;
+  const parsed: LegacyCouncilFailureOutcome = {
+    outcome: "failed",
+    councilRunId: typeof failure?.councilRunId === "string"
+      ? failure.councilRunId
+      : "",
+    finalAnswerPresent: false,
+    candidateCount: 0,
+    failureCode: typeof failure?.failureCode === "string"
+      ? failure.failureCode
+      : "",
+    failurePhase: typeof failurePhase === "string" ? failurePhase : null,
+    partialOutput: typeof partialOutput === "boolean" ? partialOutput : null,
+    replaySafe: typeof replaySafe === "boolean" ? replaySafe : null,
+    councilMode: typeof failure?.councilMode === "string"
+      ? failure.councilMode
+      : "",
+    requestedModel: typeof failure?.requestedModel === "string"
+      ? failure.requestedModel
+      : "",
+    resolvedModel: typeof failure?.resolvedModel === "string"
+      ? failure.resolvedModel
+      : "",
+    callCount: typeof usage?.callCount === "number" ? usage.callCount : Number.NaN,
+    reportedCallCount:
+      typeof usage?.reportedCallCount === "number"
+        ? usage.reportedCallCount
+        : Number.NaN,
+    modelRouting,
+    createdAt: typeof failure?.createdAt === "string" ? failure.createdAt : "",
+    updatedAt: typeof failure?.updatedAt === "string" ? failure.updatedAt : "",
+  };
   if (
-    typeof finalAnswer !== "string" ||
-    !finalAnswer.trim() ||
-    typeof councilRunId !== "string" ||
-    !councilRunId ||
-    typeof responseHash !== "string" ||
-    responseHash !== createHash("sha256").update(finalAnswer, "utf8").digest("hex")
+    failure?.outcome !== "failed" ||
+    failure?.finalAnswerPresent !== false ||
+    failure?.candidateCount !== 0 ||
+    !modelRoutingValid ||
+    !(
+      failurePhase === null ||
+      typeof failurePhase === "string"
+    ) ||
+    !(partialOutput === null || typeof partialOutput === "boolean") ||
+    !(replaySafe === null || typeof replaySafe === "boolean") ||
+    !parsed.councilRunId ||
+    !parsed.failureCode ||
+    !parsed.councilMode ||
+    !parsed.requestedModel ||
+    !parsed.resolvedModel ||
+    !Number.isSafeInteger(parsed.callCount) ||
+    parsed.callCount < 0 ||
+    !Number.isSafeInteger(parsed.reportedCallCount) ||
+    parsed.reportedCallCount < 0 ||
+    parsed.reportedCallCount > parsed.callCount ||
+    !Number.isFinite(Date.parse(parsed.createdAt)) ||
+    !Number.isFinite(Date.parse(parsed.updatedAt)) ||
+    Date.parse(parsed.createdAt) > Date.parse(parsed.updatedAt)
   ) {
     throw new LearnPlanningRecoveryConflictError(
-      "Durable Council result resolution returned an invalid result binding.",
+      "Legacy Council outcome resolution returned an invalid failure proof.",
+    );
+  }
+  return { status: response.status, state: "failed", failure: parsed };
+}
+
+function assertCouncilOutcomeInsideJob(
+  result: { createdAt: string; updatedAt: string },
+  job: { created_at: string; updated_at: string },
+): void {
+  const createdAt = Date.parse(result.createdAt);
+  const updatedAt = Date.parse(result.updatedAt);
+  const jobCreatedAt = Date.parse(job.created_at);
+  const jobUpdatedAt = Date.parse(job.updated_at);
+  if (
+    !Number.isFinite(createdAt) ||
+    !Number.isFinite(updatedAt) ||
+    !Number.isFinite(jobCreatedAt) ||
+    !Number.isFinite(jobUpdatedAt) ||
+    createdAt < jobCreatedAt ||
+    updatedAt > jobUpdatedAt ||
+    createdAt > updatedAt
+  ) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Council outcome timestamps escape their exact Learn job fence.",
+    );
+  }
+}
+
+function assertExactOrdinaryCouncilResult(
+  result: PromptlessCouncilRecoveryResult,
+  expectedModel: string,
+): void {
+  if (!planningReceiptProvesOneExactModelCall(result, expectedModel)) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Recovered ordinary Learn Council result does not prove one exact successful non-fallback direct-model call.",
+    );
+  }
+}
+
+function assertExactLegacyCouncilFailure(
+  failure: LegacyCouncilFailureOutcome,
+  expectedModel: string,
+): void {
+  const expected = expectedStrictLearnModelRoute(expectedModel);
+  if (
+    !expected ||
+    failure.councilMode !== "direct_council" ||
+    failure.requestedModel !== expected.requestedModel ||
+    failure.resolvedModel !== expected.resolvedModel ||
+    failure.finalAnswerPresent !== false ||
+    failure.candidateCount !== 0 ||
+    failure.callCount !== 1 ||
+    (failure.reportedCallCount !== 0 && failure.reportedCallCount !== 1) ||
+    failure.modelRouting.length !== 1 ||
+    failure.modelRouting.some((route) =>
+      route.endpoint !== "council" ||
+      route.requestedModel !== expected.requestedModel ||
+      route.resolvedModel !== expected.resolvedModel ||
+      route.provider !== expected.provider ||
+      route.upstreamModel !== expected.upstreamModel ||
+      route.fallback !== false ||
+      route.requestId !== failure.councilRunId ||
+      route.outcome !== "failed")
+  ) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Legacy ordinary Learn Council failure does not prove an exact non-fallback no-result call.",
+    );
+  }
+}
+
+function reconcileOrdinaryCouncilUsage(input: {
+  jobId: string;
+  accountingId: string;
+  lifecycleRequestId?: string;
+  requestHash: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cachedInputTokens: number;
+    reasoningTokens: number;
+  };
+  providerCallCount: 1 | 2;
+  reportedCallCount: 0 | 1 | 2;
+  estimatedCallCount: 0 | 1 | 2;
+  model: string;
+  dispatchCount: 0 | 1 | 2;
+  httpCompletionObserved: boolean;
+}): void {
+  reconcilePersistedLearnTokenUsageFromReceipt(
+    db,
+    input.jobId,
+    {
+      receiptId: input.accountingId,
+      requestHash: input.requestHash,
+      usage: input.usage,
+      providerCallCount: input.providerCallCount,
+      reportedCallCount: input.reportedCallCount,
+      estimatedCallCount: input.estimatedCallCount,
+      dispatchCount: input.dispatchCount,
+      httpCompletionObserved: input.httpCompletionObserved,
+      ...(input.lifecycleRequestId
+        ? { lifecycleRequestId: input.lifecycleRequestId }
+        : {}),
+      requestEvidence: {
+        model: input.model,
+        reasoningEffort: LEARN_REASONING.effort,
+        reasoningSummary: LEARN_REASONING.summary,
+      },
+    },
+    nowIso(),
+  );
+}
+
+function ordinaryGenerationAccountingId(
+  receiptRequestId: string,
+  ownerJobId: string,
+  generations: readonly number[],
+): string {
+  return `lrga_${createHash("sha256")
+    .update(JSON.stringify([receiptRequestId, ownerJobId, generations]), "utf8")
+    .digest("hex")}`;
+}
+
+function assertCompletedReceiptAttemptMatchesResult(
+  receipt: StrictCouncilReceiptMetadata,
+  result: PromptlessCouncilRecoveryResult,
+): void {
+  const attempt = receipt.attempts.at(-1);
+  if (!completedLearnCouncilReceiptAttemptMatchesResult(attempt, result)) {
+    throw new LearnPlanningRecoveryConflictError(
+      "The completed Council result conflicts with its per-generation receipt accounting.",
+    );
+  }
+}
+
+function reconcileOrdinaryCouncilReceiptAttempts(input: {
+  receiptRequestId: string;
+  requestHash: string;
+  receipt: StrictCouncilReceiptMetadata;
+  model: string;
+  currentJobId: string;
+  currentCheckpointId?: string;
+  adoptFinalIntoCurrentJob: boolean;
+  httpCompletionObserved: boolean;
+  allowClaimedNextGeneration?: boolean;
+}): void {
+  const durableOwners = learnCouncilDispatchGenerationOwners(
+    db,
+    input.receiptRequestId,
+  );
+  if (
+    !learnCouncilReceiptOwnerPrefixIsExact(
+      durableOwners.map((owner) => Number(owner.dispatch_generation)),
+      input.receipt.attempts.length,
+      input.allowClaimedNextGeneration === true,
+    ) ||
+    durableOwners.some((owner) => owner.request_hash !== input.requestHash)
+  ) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Council receipt attempts have no exact durable job-generation ownership.",
+    );
+  }
+  const owners = durableOwners.slice(0, input.receipt.attempts.length);
+  for (const attempt of input.receipt.attempts) {
+    try {
+      assertExactOrdinaryLearnCouncilReceiptAttempt(attempt, input.model);
+    } catch (error) {
+      throw new LearnPlanningRecoveryConflictError(errorMessage(error));
+    }
+  }
+
+  const ownersByJob = new Map<string, LearnCouncilDispatchGenerationOwnerRow[]>();
+  for (const owner of owners) {
+    const rows = ownersByJob.get(owner.job_id) ?? [];
+    rows.push(owner);
+    ownersByJob.set(owner.job_id, rows);
+  }
+  for (const [ownerJobId, jobOwners] of ownersByJob) {
+    const ownedAttempts = jobOwners.map((owner) => {
+      const attempt = input.receipt.attempts[Number(owner.dispatch_generation) - 1];
+      if (!attempt) {
+        throw new LearnPlanningRecoveryConflictError(
+          "Council receipt generation ownership references a missing attempt.",
+        );
+      }
+      return attempt;
+    });
+    const accounting = sumLearnCouncilReceiptAttemptUsage(ownedAttempts);
+    const generations = jobOwners.map((owner) => Number(owner.dispatch_generation));
+    const ownsTerminalAttempt = generations.includes(input.receipt.dispatchCount);
+    reconcileOrdinaryCouncilUsage({
+      jobId: ownerJobId,
+      accountingId: ordinaryGenerationAccountingId(
+        input.receiptRequestId,
+        ownerJobId,
+        generations,
+      ),
+      lifecycleRequestId: input.receiptRequestId,
+      requestHash: input.requestHash,
+      usage: accounting.usage,
+      providerCallCount: accounting.providerCallCount,
+      reportedCallCount: accounting.reportedCallCount,
+      estimatedCallCount: accounting.estimatedCallCount,
+      model: input.model,
+      dispatchCount: accounting.providerCallCount,
+      httpCompletionObserved:
+        ownerJobId === input.currentJobId &&
+        ownsTerminalAttempt &&
+        input.httpCompletionObserved,
+    });
+  }
+
+  if (input.adoptFinalIntoCurrentJob && !ownersByJob.has(input.currentJobId)) {
+    const finalAttempt = input.receipt.attempts.at(-1);
+    if (!finalAttempt || !input.currentCheckpointId) {
+      throw new LearnPlanningRecoveryConflictError(
+        "Cross-job Council result adoption has no exact final-attempt alias.",
+      );
+    }
+    const accounting = sumLearnCouncilReceiptAttemptUsage([finalAttempt]);
+    reconcileOrdinaryCouncilUsage({
+      jobId: input.currentJobId,
+      accountingId: input.currentCheckpointId,
+      requestHash: input.requestHash,
+      usage: accounting.usage,
+      providerCallCount: accounting.providerCallCount,
+      reportedCallCount: accounting.reportedCallCount,
+      estimatedCallCount: accounting.estimatedCallCount,
+      model: input.model,
+      dispatchCount: 0,
+      httpCompletionObserved: false,
+    });
+  }
+}
+
+async function resolveCompletedOrdinaryReceipt(input: {
+  client: OpenAI;
+  model: string;
+  source: LearnCouncilCheckpointRow;
+  checkpoint: LearnOrdinaryRequestCheckpoint;
+  preserveExactContent: boolean;
+  /** HTTP POSTs observed by this invocation. The durable receipt remains the
+   * authority for whether those reached Council generation 1 or 2. */
+  executionDispatchCount: number;
+  httpCompletionObserved: boolean;
+  expectedHttpResult?: { councilRunId: string; responseHash: string };
+}): Promise<CouncilCallResult> {
+  const receiptRequestId = input.source.receipt_request_id;
+  if (!receiptRequestId) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Ordinary Learn receipt recovery has no strict request id.",
+    );
+  }
+  const lookup = await observeOrdinaryCouncilReceipt({
+    client: input.client,
+    jobId: input.checkpoint.jobId,
+    gardenId: input.source.garden_id,
+    requestId: receiptRequestId,
+    requestHash: input.source.request_hash,
+    observationTimeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+  });
+  if (
+    lookup.status !== 200 ||
+    !lookup.result ||
+    !lookup.receipt ||
+    lookup.receipt.dispatchGeneration !== lookup.receipt.dispatchCount
+  ) {
+    throw new LearnPlanningRecoveryConflictError(
+      `The exact ordinary Learn Council receipt is not completed (${lookup.code ?? `HTTP ${lookup.status}`}).`,
+    );
+  }
+  assertExactOrdinaryCouncilResult(lookup.result, input.model);
+  assertCompletedReceiptAttemptMatchesResult(lookup.receipt, lookup.result);
+  if (
+    input.expectedHttpResult &&
+    (input.expectedHttpResult.councilRunId !== lookup.result.councilRunId ||
+      input.expectedHttpResult.responseHash !== lookup.result.responseHash)
+  ) {
+    throw new LearnPlanningRecoveryConflictError(
+      "The ordinary Learn HTTP response conflicts with its durable Council receipt.",
+    );
+  }
+  if (
+    input.source.state === "completed" &&
+    (input.source.council_run_id !== lookup.result.councilRunId ||
+      input.source.response_hash !== lookup.result.responseHash ||
+      input.source.receipt_dispatch_count !== lookup.receipt.dispatchCount)
+  ) {
+    throw new LearnPlanningRecoveryConflictError(
+      "The local ordinary Learn checkpoint conflicts with its Council receipt.",
+    );
+  }
+  const completedRows = completeLearnCouncilReceiptChain(db, {
+    receiptRequestId,
+    requestHash: input.source.request_hash,
+    councilRunId: lookup.result.councilRunId,
+    responseHash: lookup.result.responseHash,
+    receiptDispatchCount: lookup.receipt.dispatchCount,
+    now: nowIso(),
+  });
+  let current = completedRows.find(
+    (row) => row.job_id === input.checkpoint.jobId,
+  );
+  if (!current) {
+    const completedSource = completedRows.find(
+      (row) => row.checkpoint_id === input.source.checkpoint_id,
+    );
+    if (!completedSource) {
+      throw new LearnPlanningRecoveryConflictError(
+        "Completed ordinary Learn receipt lost its source checkpoint.",
+      );
+    }
+    current = adoptCompletedLearnCouncilCheckpoint(db, {
+      checkpointId: makeId("lrqa"),
+      source: completedSource,
+      jobId: input.checkpoint.jobId,
+      gardenId: input.source.garden_id,
+      stageKey: input.checkpoint.stageKey,
+      semanticAttempt: input.checkpoint.semanticAttempt,
+      now: nowIso(),
+    });
+  }
+  assertExactOrdinaryCouncilAuthority(
+    input.checkpoint.jobId,
+    input.source.garden_id,
+  );
+  reconcileOrdinaryCouncilReceiptAttempts({
+    receiptRequestId,
+    requestHash: input.source.request_hash,
+    receipt: lookup.receipt,
+    model: input.model,
+    currentJobId: input.checkpoint.jobId,
+    currentCheckpointId: current.checkpoint_id,
+    adoptFinalIntoCurrentJob: true,
+    httpCompletionObserved: input.httpCompletionObserved,
+  });
+  assertExactOrdinaryCouncilAuthority(
+    input.checkpoint.jobId,
+    input.source.garden_id,
+  );
+  return recoveredCouncilCallResult(
+    lookup.result,
+    input.preserveExactContent,
+    !input.httpCompletionObserved,
+  );
+}
+
+async function resolveCompletedLegacyOrdinaryCheckpoint(input: {
+  client: OpenAI;
+  model: string;
+  source: LearnCouncilCheckpointRow;
+  checkpoint: LearnOrdinaryRequestCheckpoint;
+  preserveExactContent: boolean;
+}): Promise<CouncilCallResult> {
+  const origin = learnCouncilRetryJob(db, input.source.origin_job_id);
+  const current = learnCouncilRetryJob(db, input.checkpoint.jobId);
+  if (
+    !origin ||
+    !current ||
+    !exactLearnCouncilRetryJobBinding(origin, current)
+  ) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Legacy ordinary Learn checkpoint has no exact failed-job lineage.",
+    );
+  }
+  const outcome = await promptlessLegacyCouncilOutcomeGet(input.client, {
+    requestHash: input.source.request_hash,
+    createdAfter: origin.created_at,
+    createdBefore: origin.updated_at,
+    reasoningEffort: LEARN_REASONING.effort,
+    reasoningSummary: LEARN_REASONING.summary,
+  });
+  assertExactOrdinaryCouncilAuthority(
+    input.checkpoint.jobId,
+    input.source.garden_id,
+  );
+  if (outcome.status !== 200 || outcome.state !== "completed" || !outcome.result) {
+    throw new LearnPlanningRecoveryConflictError(
+      `Materialized legacy Learn result is no longer uniquely completed (${outcome.code ?? `HTTP ${outcome.status}`}).`,
+    );
+  }
+  assertExactOrdinaryCouncilResult(outcome.result, input.model);
+  assertCouncilOutcomeInsideJob(outcome.result, origin);
+  if (
+    input.source.council_run_id !== outcome.result.councilRunId ||
+    input.source.response_hash !== outcome.result.responseHash
+  ) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Materialized legacy Learn result conflicts with its durable checkpoint.",
+    );
+  }
+  let currentCheckpoint = input.source;
+  if (input.source.job_id !== input.checkpoint.jobId) {
+    currentCheckpoint = adoptCompletedLearnCouncilCheckpointWithBoundary(db, {
+      checkpointId: makeId("lrqa_legacy"),
+      boundaryProofId: makeId("lrqba_legacy"),
+      source: input.source,
+      jobId: input.checkpoint.jobId,
+      gardenId: input.source.garden_id,
+      stageKey: input.checkpoint.stageKey,
+      semanticAttempt: input.checkpoint.semanticAttempt,
+      now: nowIso(),
+    });
+  }
+  reconcileOrdinaryCouncilUsage({
+    jobId: input.checkpoint.jobId,
+    accountingId: currentCheckpoint.checkpoint_id,
+    requestHash: input.source.request_hash,
+    usage: outcome.result.usage!,
+    providerCallCount: 1,
+    reportedCallCount: 1,
+    estimatedCallCount: 0,
+    model: input.model,
+    dispatchCount: 0,
+    httpCompletionObserved: false,
+  });
+  assertExactOrdinaryCouncilAuthority(
+    input.checkpoint.jobId,
+    input.source.garden_id,
+  );
+  return recoveredCouncilCallResult(
+    outcome.result,
+    input.preserveExactContent,
+    true,
+  );
+}
+
+function ordinaryHttpResultProof(response: unknown): {
+  councilRunId: string;
+  responseHash: string;
+} {
+  const record = recordValue(response);
+  const choices = Array.isArray(record?.choices) ? record.choices : [];
+  const first = recordValue(choices[0]);
+  const message = recordValue(first?.message);
+  const content = message?.content;
+  const councilRunId = record?.councilRunId ?? record?.id;
+  if (
+    typeof content !== "string" ||
+    !content.trim() ||
+    typeof councilRunId !== "string" ||
+    !councilRunId
+  ) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Ordinary Learn Council HTTP response has no exact content/run binding.",
     );
   }
   return {
-    status: response.status,
-    result: {
-      councilRunId,
-      finalAnswer,
-      responseHash,
-      modelRouting,
-      ...(typeof callCount === "number" && typeof reportedCallCount === "number"
-        ? { usage: { callCount, reportedCallCount } }
-        : {}),
-      ...(typeof result.councilMode === "string" ? { councilMode: result.councilMode } : {}),
-      ...(typeof result.requestedModel === "string"
-        ? { requestedModel: result.requestedModel }
-        : {}),
-      ...(typeof result.resolvedModel === "string"
-        ? { resolvedModel: result.resolvedModel }
-        : {}),
-    },
+    councilRunId,
+    responseHash: createHash("sha256").update(content, "utf8").digest("hex"),
   };
+}
+
+function learnCouncilStageComponent(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+async function callOrdinaryCouncilTextWithReceipt(input: {
+  client: OpenAI;
+  model: string;
+  request: CouncilCompletionRequest;
+  checkpoint: LearnOrdinaryRequestCheckpoint;
+  preserveExactContent: boolean;
+  timeoutMs?: number;
+}): Promise<CouncilCallResult> {
+  const gardenId = input.request.gardenId;
+  if (typeof gardenId !== "string" || !gardenId) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Ordinary Learn Council request has no garden binding.",
+    );
+  }
+  assertExactOrdinaryCouncilAuthority(input.checkpoint.jobId, gardenId);
+  const requestHash = councilRequestHashV1(recoverablePlanningEnvelope(input.request));
+  const execution = { dispatchCount: 0 };
+
+  const reconcileFailedReceipt = (
+    source: LearnCouncilCheckpointRow,
+    receipt: StrictCouncilReceiptMetadata,
+  ): void => {
+    assertExactOrdinaryCouncilAuthority(input.checkpoint.jobId, gardenId);
+    reconcileOrdinaryCouncilReceiptAttempts({
+      receiptRequestId: source.receipt_request_id!,
+      requestHash,
+      receipt,
+      model: input.model,
+      currentJobId: input.checkpoint.jobId,
+      currentCheckpointId: source.checkpoint_id,
+      adoptFinalIntoCurrentJob: false,
+      httpCompletionObserved: false,
+      allowClaimedNextGeneration:
+        source.redispatch_count === 1 &&
+        source.redispatch_reason === "request_failed" &&
+        receipt.dispatchCount === 1,
+    });
+  };
+
+  const reconcileBeforeRedispatchOwnerTransfer = (
+    source: LearnCouncilCheckpointRow,
+    receipt: StrictCouncilReceiptMetadata,
+    priorOwnerJobId: string,
+    receiptRequestId: string,
+    exactRequestHash: string,
+  ): void => {
+    // First account every provider generation the server proves exists. A
+    // same-job owner of generations 1 and 2 is normalized here, including a
+    // later generation-2 HTTP attempt which never reached the server.
+    reconcileFailedReceipt(source, receipt);
+    const observedOwnerJobs = new Set(
+      learnCouncilDispatchGenerationOwners(db, receiptRequestId)
+        .filter((owner) =>
+          Number(owner.dispatch_generation) <= receipt.attempts.length)
+        .map((owner) => owner.job_id),
+    );
+    if (!observedOwnerJobs.has(priorOwnerJobId)) {
+      // In a chained handoff, generation 1 can belong to A while the unaccepted
+      // generation-2 POST belongs to B. The gen-1 reconciliation cannot touch
+      // B's exact zero-usage HTTP phantom, so remove it before owner 2 moves to
+      // C. This callback runs inside the checkpoint transfer transaction.
+      discardPersistedLearnTokenUsageForProvenMissingReceipt(
+        db,
+        priorOwnerJobId,
+        receiptRequestId,
+        exactRequestHash,
+        nowIso(),
+      );
+    }
+  };
+
+  const dispatch = async (
+    source: LearnCouncilCheckpointRow,
+    redispatchReason?: "receipt_not_found" | "request_failed",
+  ): Promise<CouncilCallResult> => {
+    if (!source.receipt_request_id) {
+      throw new LearnPlanningRecoveryConflictError(
+        "Ordinary Learn dispatch has no strict receipt id.",
+      );
+    }
+    const dispatchedRequest = {
+      ...input.request,
+      clientRequestId: source.receipt_request_id,
+      clientRequestHash: requestHash,
+      ...(redispatchReason === "request_failed"
+        ? { clientRequestRedispatch: true }
+        : {}),
+    };
+    let response: unknown;
+    let attemptedThisDispatch = false;
+    try {
+      response = await dispatchAfterExactPlanningAuthority({
+        authorized: () => exactOrdinaryCouncilDispatchAuthority(
+          input.checkpoint.jobId,
+          gardenId,
+        ),
+        dispatch: async () => {
+          if (execution.dispatchCount >= 3) {
+            throw new LearnPlanningRecoveryConflictError(
+              "Ordinary Learn Council request exhausted its bounded dispatch budget.",
+            );
+          }
+          attemptedThisDispatch = true;
+          execution.dispatchCount += 1;
+          return input.client.chat.completions.create(
+            dispatchedRequest as Parameters<typeof input.client.chat.completions.create>[0],
+            input.timeoutMs
+              ? { timeout: input.timeoutMs, maxRetries: 0 }
+              : { maxRetries: 0 },
+          );
+        },
+      });
+    } catch (dispatchError) {
+      // Authority is checked before the callback increments this counter. A
+      // denied lease/cancellation fence is not a transport attempt and must
+      // never be reinterpreted as receipt absence or redispatch permission.
+      if (!attemptedThisDispatch) throw dispatchError;
+      const lookup = await observeOrdinaryCouncilReceipt({
+        client: input.client,
+        jobId: input.checkpoint.jobId,
+        gardenId,
+        requestId: source.receipt_request_id,
+        requestHash,
+        observationTimeoutMs: input.timeoutMs ?? LEARN_PLANNING_TIMEOUT_MS,
+      });
+      if (lookup.status === 200 && lookup.result) {
+        return resolveCompletedOrdinaryReceipt({
+          client: input.client,
+          model: input.model,
+          source,
+          checkpoint: input.checkpoint,
+          preserveExactContent: input.preserveExactContent,
+          executionDispatchCount: execution.dispatchCount,
+          httpCompletionObserved: false,
+        });
+      }
+      if (
+        lookup.status === 409 &&
+        lookup.code === "request_failed" &&
+        lookup.receipt
+      ) {
+        reconcileFailedReceipt(source, lookup.receipt);
+      }
+      const mayRedispatchMissing =
+        !redispatchReason &&
+        lookup.status === 404 &&
+        lookup.code === "receipt_not_found";
+      const mayRedispatchFailed =
+        redispatchReason !== "request_failed" &&
+        lookup.status === 409 &&
+        lookup.code === "request_failed" &&
+        lookup.receipt?.dispatchGeneration === 1 &&
+        lookup.receipt.dispatchCount === 1 &&
+        lookup.receipt.redispatchCount === 0 &&
+        lookup.receipt.redispatchAllowed === true &&
+        typeof lookup.receipt.failureCode === "string" &&
+        Boolean(lookup.receipt.failureCode);
+      if (mayRedispatchMissing || mayRedispatchFailed) {
+        const reason = mayRedispatchFailed
+          ? "request_failed"
+          : "receipt_not_found";
+        const checkpointId = source.job_id === input.checkpoint.jobId
+          ? source.checkpoint_id
+          : makeId("lrqa");
+        const claimed = reason === "request_failed"
+          ? claimLearnCouncilRedispatch(db, {
+              checkpointId,
+              source,
+              jobId: input.checkpoint.jobId,
+              gardenId,
+              stageKey: input.checkpoint.stageKey,
+              semanticAttempt: input.checkpoint.semanticAttempt,
+              requestHash,
+              reason,
+              now: nowIso(),
+            })
+          : claimLearnCouncilMissingReceiptRecovery(db, {
+              claimId: makeId("lrqm"),
+              checkpointId,
+              source,
+              jobId: input.checkpoint.jobId,
+              gardenId,
+              stageKey: input.checkpoint.stageKey,
+              semanticAttempt: input.checkpoint.semanticAttempt,
+              requestHash,
+              now: nowIso(),
+              beforeOwnerTransfer: (
+                priorOwnerJobId,
+                receiptRequestId,
+                exactRequestHash,
+              ) => {
+                discardPersistedLearnTokenUsageForProvenMissingReceipt(
+                  db,
+                  priorOwnerJobId,
+                  receiptRequestId,
+                  exactRequestHash,
+                  nowIso(),
+                );
+              },
+            });
+        return dispatch(claimed, reason);
+      }
+      throw new LearnPlanningRecoveryConflictError(
+        `Ordinary Learn Council dispatch ended as ${lookup.code ?? `HTTP ${lookup.status}`}; no further model request was authorized (${errorMessage(dispatchError)}).`,
+      );
+    }
+    const proof = ordinaryHttpResultProof(response);
+    assertExactOrdinaryCouncilAuthority(input.checkpoint.jobId, gardenId);
+    return resolveCompletedOrdinaryReceipt({
+      client: input.client,
+      model: input.model,
+      source,
+      checkpoint: input.checkpoint,
+      preserveExactContent: input.preserveExactContent,
+      executionDispatchCount: execution.dispatchCount,
+      httpCompletionObserved: true,
+      expectedHttpResult: proof,
+    });
+  };
+
+  const resolveStarted = async (
+    source: LearnCouncilCheckpointRow,
+  ): Promise<CouncilCallResult> => {
+    if (!source.receipt_request_id) {
+      throw new LearnPlanningRecoveryConflictError(
+        "Started ordinary Learn checkpoint is not a strict receipt.",
+      );
+    }
+    const lookup = await observeOrdinaryCouncilReceipt({
+      client: input.client,
+      jobId: input.checkpoint.jobId,
+      gardenId,
+      requestId: source.receipt_request_id,
+      requestHash,
+      observationTimeoutMs: input.timeoutMs ?? LEARN_PLANNING_TIMEOUT_MS,
+    });
+    if (lookup.status === 200 && lookup.result) {
+      return resolveCompletedOrdinaryReceipt({
+        client: input.client,
+        model: input.model,
+        source,
+        checkpoint: input.checkpoint,
+        preserveExactContent: input.preserveExactContent,
+        executionDispatchCount: 0,
+        httpCompletionObserved: false,
+      });
+    }
+    if (
+      lookup.status === 409 &&
+      lookup.code === "request_failed" &&
+      lookup.receipt
+    ) {
+      reconcileFailedReceipt(source, lookup.receipt);
+    }
+    const missing =
+      lookup.status === 404 && lookup.code === "receipt_not_found";
+    const failed =
+      lookup.status === 409 &&
+      lookup.code === "request_failed" &&
+      lookup.receipt?.dispatchGeneration === 1 &&
+      lookup.receipt.dispatchCount === 1 &&
+      lookup.receipt.redispatchCount === 0 &&
+      lookup.receipt.redispatchAllowed === true &&
+      typeof lookup.receipt.failureCode === "string" &&
+      Boolean(lookup.receipt.failureCode);
+    if (missing) {
+      const claimed = claimLearnCouncilMissingReceiptRecovery(db, {
+        claimId: makeId("lrqm"),
+        checkpointId:
+          source.job_id === input.checkpoint.jobId
+            ? source.checkpoint_id
+            : makeId("lrqa"),
+        source,
+        jobId: input.checkpoint.jobId,
+        gardenId,
+        stageKey: input.checkpoint.stageKey,
+        semanticAttempt: input.checkpoint.semanticAttempt,
+        requestHash,
+        now: nowIso(),
+        beforeOwnerTransfer: (
+          priorOwnerJobId,
+          receiptRequestId,
+          exactRequestHash,
+        ) => {
+          discardPersistedLearnTokenUsageForProvenMissingReceipt(
+            db,
+            priorOwnerJobId,
+            receiptRequestId,
+            exactRequestHash,
+            nowIso(),
+          );
+        },
+      });
+      return dispatch(claimed, "receipt_not_found");
+    }
+    const failedClaimAvailable =
+      failed &&
+      (source.redispatch_count === 0 ||
+        (source.redispatch_count === 1 &&
+          source.redispatch_reason === "receipt_not_found"));
+    const failedClaimAlreadyDurable =
+      failed &&
+      source.redispatch_count === 1 &&
+      source.redispatch_reason === "request_failed";
+    if (failedClaimAvailable) {
+      const reason = failed ? "request_failed" : "receipt_not_found";
+      const claimed = claimLearnCouncilRedispatch(db, {
+        checkpointId:
+          source.job_id === input.checkpoint.jobId
+            ? source.checkpoint_id
+            : makeId("lrqa"),
+        source,
+        jobId: input.checkpoint.jobId,
+        gardenId,
+        stageKey: input.checkpoint.stageKey,
+        semanticAttempt: input.checkpoint.semanticAttempt,
+        requestHash,
+        reason,
+        now: nowIso(),
+      });
+      return dispatch(claimed, reason);
+    }
+    if (failedClaimAlreadyDurable) {
+      // The process may have died after the local generation-2 claim but before
+      // its POST. The server still proves generation 1 is the exact eligible
+      // failure, so resume that already-claimed POST without another DB claim.
+      const claimed = source.job_id === input.checkpoint.jobId
+        ? source
+        : adoptClaimedLearnCouncilRedispatch(db, {
+            checkpointId: makeId("lrqa"),
+            source,
+            jobId: input.checkpoint.jobId,
+            gardenId,
+            stageKey: input.checkpoint.stageKey,
+            semanticAttempt: input.checkpoint.semanticAttempt,
+            requestHash,
+            now: nowIso(),
+            beforeOwnerTransfer: (
+              priorOwnerJobId,
+              receiptRequestId,
+              exactRequestHash,
+            ) =>
+              reconcileBeforeRedispatchOwnerTransfer(
+                source,
+                lookup.receipt!,
+                priorOwnerJobId,
+                receiptRequestId,
+                exactRequestHash,
+              ),
+          });
+      return dispatch(claimed, "request_failed");
+    }
+    throw new LearnPlanningRecoveryConflictError(
+      `Ordinary Learn Council checkpoint is ${lookup.code ?? `HTTP ${lookup.status}`}; no model request was authorized.`,
+    );
+  };
+
+  const current = currentLearnCouncilCheckpoint(db, {
+    jobId: input.checkpoint.jobId,
+    gardenId,
+    stageKey: input.checkpoint.stageKey,
+    semanticAttempt: input.checkpoint.semanticAttempt,
+  });
+  if (current) {
+    if (current.request_hash !== requestHash) {
+      throw new LearnPlanningRecoveryConflictError(
+        "Current ordinary Learn checkpoint request hash changed; no model request was issued.",
+      );
+    }
+    return current.result_origin === "legacy"
+      ? resolveCompletedLegacyOrdinaryCheckpoint({
+          client: input.client,
+          model: input.model,
+          source: current,
+          checkpoint: input.checkpoint,
+          preserveExactContent: input.preserveExactContent,
+        })
+      : current.state === "completed"
+        ? resolveCompletedOrdinaryReceipt({
+            client: input.client,
+            model: input.model,
+            source: current,
+            checkpoint: input.checkpoint,
+            preserveExactContent: input.preserveExactContent,
+            executionDispatchCount: 0,
+            httpCompletionObserved: false,
+          })
+        : resolveStarted(current);
+  }
+
+  const currentJob = learnCouncilRetryJob(db, input.checkpoint.jobId);
+  if (!currentJob || currentJob.garden_id !== gardenId) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Current ordinary Learn checkpoint job binding is invalid.",
+    );
+  }
+  const prior = priorLearnCouncilCheckpoints(db, {
+    currentJobId: input.checkpoint.jobId,
+    gardenId,
+    stageKey: input.checkpoint.stageKey,
+    semanticAttempt: input.checkpoint.semanticAttempt,
+  }).filter((candidate) =>
+    exactLearnCouncilRetryJobBinding(candidate.job, currentJob),
+  );
+  const mismatched = prior.filter((candidate) => candidate.request_hash !== requestHash);
+  if (mismatched.length > 0) {
+    throw new LearnPlanningRecoveryConflictError(
+      "An exact prior ordinary Learn stage has a different request hash; no model request was issued.",
+    );
+  }
+  const candidates = prior.filter((candidate) => candidate.request_hash === requestHash);
+  if (candidates.length > 0) {
+    const nativeBoundaryByCheckpoint = new Map<string, {
+      source: LearnCouncilCheckpointRow & { job: { id: string } };
+      proof: NativeLearnCouncilBoundaryProof;
+    }>();
+    const selection = await selectNewestCompletedLearnCouncilCheckpoint(
+      candidates,
+      async (source) => {
+        if (!source.receipt_request_id) {
+          throw new LearnPlanningRecoveryConflictError(
+            "Prior ordinary Learn native checkpoint has no receipt id.",
+          );
+        }
+        const lookup = await observeOrdinaryCouncilReceipt({
+          client: input.client,
+          jobId: input.checkpoint.jobId,
+          gardenId,
+          requestId: source.receipt_request_id,
+          requestHash,
+          observationTimeoutMs: input.timeoutMs ?? LEARN_PLANNING_TIMEOUT_MS,
+        });
+        if (lookup.status === 200 && lookup.result) return "completed";
+        const missing =
+          lookup.status === 404 && lookup.code === "receipt_not_found";
+        const started =
+          lookup.status === 409 && lookup.code === "request_started";
+        const failed = lookup.status === 409 && lookup.code === "request_failed";
+        if (failed) {
+          const owners = source.receipt_request_id
+            ? learnCouncilDispatchGenerationOwners(db, source.receipt_request_id)
+            : [];
+          const exactCompletedLocalGeneration = Boolean(
+            lookup.receipt &&
+            lookup.receipt.dispatchCount === source.dispatch_attempt_count &&
+            lookup.receipt.redispatchCount === source.redispatch_count,
+          );
+          const exactClaimedButUnpostedGenerationTwo = Boolean(
+            lookup.receipt &&
+            lookup.receipt.dispatchCount === 1 &&
+            lookup.receipt.redispatchCount === 0 &&
+            lookup.receipt.redispatchAllowed === true &&
+            source.dispatch_attempt_count === 2 &&
+            source.redispatch_count === 1 &&
+            source.redispatch_reason === "request_failed" &&
+            learnCouncilReceiptOwnerPrefixIsExact(
+              owners.map((owner) => Number(owner.dispatch_generation)),
+              lookup.receipt.attempts.length,
+              true,
+            ) &&
+            owners.at(-1)?.job_id === source.job_id,
+          );
+          if (
+            !lookup.receipt ||
+            (!exactCompletedLocalGeneration &&
+              !exactClaimedButUnpostedGenerationTwo) ||
+            typeof lookup.receipt.failureCode !== "string" ||
+            !lookup.receipt.failureCode
+          ) {
+            throw new LearnPlanningRecoveryConflictError(
+              "Prior ordinary Learn failed receipt metadata conflicts with its checkpoint.",
+            );
+          }
+          // A newer terminal failure may be skipped in favor of an older exact
+          // completion, but its provider attempts still belong to their
+          // durable generation owners. Account them before returning the
+          // disposition so selection cannot silently lose failed-call usage.
+          assertExactOrdinaryCouncilAuthority(input.checkpoint.jobId, gardenId);
+          reconcileFailedReceipt(source, lookup.receipt);
+        }
+        if (!missing && !started && !failed) {
+          throw new LearnPlanningRecoveryConflictError(
+            `Prior ordinary Learn receipt is not safely resolvable (${lookup.code ?? `HTTP ${lookup.status}`}).`,
+          );
+        }
+        if (!started && nativeBoundaryByCheckpoint.size === 0) {
+          nativeBoundaryByCheckpoint.set(source.checkpoint_id, {
+            source,
+            proof: missing
+              ? {
+                  outcome: "receipt_not_found",
+                  receiptRequestId: source.receipt_request_id,
+                  dispatchGeneration: null,
+                  dispatchCount: null,
+                  redispatchCount: null,
+                  redispatchAllowed: null,
+                  failureCode: null,
+                }
+              : {
+                  outcome: "request_failed",
+                  receiptRequestId: source.receipt_request_id,
+                  dispatchGeneration: lookup.receipt!.dispatchGeneration,
+                  dispatchCount: lookup.receipt!.dispatchCount,
+                  redispatchCount: lookup.receipt!.redispatchCount,
+                  redispatchAllowed: lookup.receipt!.redispatchAllowed,
+                  failureCode: lookup.receipt!.failureCode!,
+                },
+          });
+        }
+        return started
+          ? "request_started"
+          : failed
+            ? "failed"
+            : "receipt_not_found";
+      },
+    );
+    const completed = selection.completed;
+    if (completed) {
+      if (selection.newestIncomplete) {
+        const newestNativeBoundary = nativeBoundaryByCheckpoint.get(
+          selection.newestIncomplete.checkpoint_id,
+        );
+        if (
+          !newestNativeBoundary ||
+          newestNativeBoundary.source.checkpoint_id !==
+            selection.newestIncomplete.checkpoint_id
+        ) {
+          throw new LearnPlanningRecoveryConflictError(
+            "Skipped native Learn boundary lost its exact observation proof.",
+          );
+        }
+        assertExactOrdinaryCouncilAuthority(input.checkpoint.jobId, gardenId);
+        recordLearnCouncilNativeLineageBoundary(db, {
+          boundaryId: makeId("lrqnb"),
+          originJobId: newestNativeBoundary.source.job.id,
+          jobId: input.checkpoint.jobId,
+          gardenId,
+          stageKey: input.checkpoint.stageKey,
+          semanticAttempt: input.checkpoint.semanticAttempt,
+          requestHash,
+          proof: newestNativeBoundary.proof,
+          now: nowIso(),
+        });
+      }
+      if (completed.result_origin === "legacy") {
+        return resolveCompletedLegacyOrdinaryCheckpoint({
+          client: input.client,
+          model: input.model,
+          source: completed,
+          checkpoint: input.checkpoint,
+          preserveExactContent: input.preserveExactContent,
+        });
+      }
+      return resolveCompletedOrdinaryReceipt({
+        client: input.client,
+        model: input.model,
+        source: completed,
+        checkpoint: input.checkpoint,
+        preserveExactContent: input.preserveExactContent,
+        executionDispatchCount: 0,
+        httpCompletionObserved: false,
+      });
+    }
+    if (!selection.newestIncomplete) {
+      throw new LearnPlanningRecoveryConflictError(
+        "Prior ordinary Learn checkpoint lineage has no resolvable outcome.",
+      );
+    }
+    if (selection.newestIncomplete.result_origin !== "receipt") {
+        throw new LearnPlanningRecoveryConflictError(
+          "Incomplete ordinary Learn checkpoint is not a native receipt.",
+        );
+    }
+    return resolveStarted(selection.newestIncomplete);
+  }
+
+  const lineage = exactFailedLearnCouncilLineage(db, input.checkpoint.jobId);
+  if (
+    lineage.some((job, index) =>
+      index > 0 && job.created_at === lineage[index - 1].created_at)
+  ) {
+    throw new LearnPlanningRecoveryConflictError(
+      "Ordinary Learn legacy lineage has ambiguous job ordering; no model request was issued.",
+    );
+  }
+  let newestFailure: { originJobId: string; failure: LegacyCouncilFailureOutcome } | null = null;
+  let legacyFailureCount = 0;
+  let newestCompleted: {
+    originJobId: string;
+    result: PromptlessCouncilRecoveryResult;
+  } | null = null;
+  for (const origin of lineage) {
+    const outcome = await promptlessLegacyCouncilOutcomeGet(input.client, {
+      requestHash,
+      createdAfter: origin.created_at,
+      createdBefore: origin.updated_at,
+      reasoningEffort: LEARN_REASONING.effort,
+      reasoningSummary: LEARN_REASONING.summary,
+    });
+    assertExactOrdinaryCouncilAuthority(input.checkpoint.jobId, gardenId);
+    if (outcome.status === 404 && outcome.code === "legacy_not_found") {
+      continue;
+    }
+    if (outcome.status !== 200 || !outcome.state) {
+      throw new LearnPlanningRecoveryConflictError(
+        `Ordinary Learn legacy outcome is not uniquely resolvable (${outcome.code ?? `HTTP ${outcome.status}`}); no model request was issued.`,
+      );
+    }
+    if (outcome.state === "failed" && outcome.failure) {
+      assertExactLegacyCouncilFailure(outcome.failure, input.model);
+      assertCouncilOutcomeInsideJob(outcome.failure, origin);
+      newestFailure ??= { originJobId: origin.id, failure: outcome.failure };
+      legacyFailureCount += 1;
+      continue;
+    }
+    if (outcome.state === "completed" && outcome.result) {
+      assertExactOrdinaryCouncilResult(outcome.result, input.model);
+      assertCouncilOutcomeInsideJob(outcome.result, origin);
+      newestCompleted = { originJobId: origin.id, result: outcome.result };
+      break;
+    }
+    throw new LearnPlanningRecoveryConflictError(
+      "Ordinary Learn legacy outcome is malformed; no model request was issued.",
+    );
+  }
+
+  try {
+    assertUniqueLegacyLearnCouncilFailureWithoutCompletion(
+      legacyFailureCount,
+      Boolean(newestCompleted),
+    );
+  } catch {
+    throw new LearnPlanningRecoveryConflictError(
+      "Multiple legacy failed/no-final outcomes match this ordinary Learn stage; no fresh receipt was authorized.",
+    );
+  }
+
+  if (newestCompleted) {
+    assertExactOrdinaryCouncilAuthority(input.checkpoint.jobId, gardenId);
+    const now = nowIso();
+    const materialized = newestFailure
+      ? materializeCompletedLegacyLearnCouncilCheckpointAfterFailure(db, {
+          proofId: makeId("lrqf_legacy"),
+          failureOriginJobId: newestFailure.originJobId,
+          completionOriginJobId: newestCompleted.originJobId,
+          jobId: input.checkpoint.jobId,
+          gardenId,
+          stageKey: input.checkpoint.stageKey,
+          semanticAttempt: input.checkpoint.semanticAttempt,
+          requestHash,
+          proof: newestFailure.failure,
+          checkpointId: makeId("lrqa_legacy"),
+          councilRunId: newestCompleted.result.councilRunId,
+          responseHash: newestCompleted.result.responseHash,
+          now,
+        })
+      : materializeCompletedLegacyLearnCouncilCheckpoint(db, {
+          checkpointId: makeId("lrqa_legacy"),
+          originJobId: newestCompleted.originJobId,
+          jobId: input.checkpoint.jobId,
+          gardenId,
+          stageKey: input.checkpoint.stageKey,
+          semanticAttempt: input.checkpoint.semanticAttempt,
+          requestHash,
+          councilRunId: newestCompleted.result.councilRunId,
+          responseHash: newestCompleted.result.responseHash,
+          now,
+        });
+    reconcileOrdinaryCouncilUsage({
+      jobId: input.checkpoint.jobId,
+      accountingId: materialized.checkpoint_id,
+      requestHash,
+      usage: newestCompleted.result.usage!,
+      providerCallCount: 1,
+      reportedCallCount: 1,
+      estimatedCallCount: 0,
+      model: input.model,
+      dispatchCount: 0,
+      httpCompletionObserved: false,
+    });
+    appendLearnEvent(
+      input.checkpoint.contentPath,
+      gardenId,
+      "learn_council_legacy_result_recovered",
+      {
+        jobId: input.checkpoint.jobId,
+        originJobId: newestCompleted.originJobId,
+        stageKey: input.checkpoint.stageKey,
+        semanticAttempt: input.checkpoint.semanticAttempt,
+        councilRunId: newestCompleted.result.councilRunId,
+      },
+    );
+    assertExactOrdinaryCouncilAuthority(input.checkpoint.jobId, gardenId);
+    return recoveredCouncilCallResult(
+      newestCompleted.result,
+      input.preserveExactContent,
+      true,
+    );
+  }
+
+  let started: LearnCouncilCheckpointRow;
+  assertExactOrdinaryCouncilAuthority(input.checkpoint.jobId, gardenId);
+  if (newestFailure) {
+    started = createStartedLearnCouncilCheckpointAfterLegacyFailure(db, {
+      proofId: makeId("lrqf_legacy"),
+      requestId: makeId("lrq"),
+      originJobId: newestFailure.originJobId,
+      jobId: input.checkpoint.jobId,
+      gardenId,
+      stageKey: input.checkpoint.stageKey,
+      semanticAttempt: input.checkpoint.semanticAttempt,
+      requestHash,
+      proof: newestFailure.failure,
+      now: nowIso(),
+    });
+  } else {
+    if (
+      lineage.length > 0 &&
+      (!legacyLearnCouncilLineageIsQuiescent(lineage, Date.now()) ||
+        !canStartLearnCouncilAfterLegacyAbsence(db, input.checkpoint.jobId, {
+          hasCompletedNativePlanningCheckpoint:
+            hasCompletedNativePlanningCheckpoint(db, input.checkpoint.jobId),
+        }))
+    ) {
+      throw new LearnPlanningRecoveryConflictError(
+        "Prior exact Learn jobs are not durably quiescent or have no completed failure boundary; 404 absence cannot authorize a model request.",
+      );
+    }
+    started = createStartedLearnCouncilCheckpoint(db, {
+      requestId: makeId("lrq"),
+      jobId: input.checkpoint.jobId,
+      gardenId,
+      stageKey: input.checkpoint.stageKey,
+      semanticAttempt: input.checkpoint.semanticAttempt,
+      requestHash,
+      now: nowIso(),
+    });
+  }
+  return dispatch(started);
 }
 
 async function promptlessLegacyPlanningInventoryGet(
@@ -4774,9 +6446,62 @@ async function resolvePriorPlanningResult({
     currentJobId: checkpoint.jobId,
     gardenId: current.garden_id,
   });
+  const currentHasNativePlanningEpoch = hasCompletedNativePlanningCheckpoint(
+    db,
+    checkpoint.jobId,
+  );
+  let migrationSealedAt: string | null = null;
+  let migrationOriginJobId: string | null = null;
+  if (!currentHasNativePlanningEpoch) {
+    // A legacy waiver is also the explicit pre-run boundary after which every
+    // planning POST uses the strict checkpoint-before-dispatch protocol. Find
+    // that boundary before classifying any newer recovered job: the newer job
+    // may itself be a zero-dispatch failure from this migration attempt.
+    for (const origin of recoveredOrigins) {
+      if (
+        checkpointedOriginIds.has(origin.job_id) ||
+        !exactPlanningOriginBinding(origin, current)
+      ) {
+        continue;
+      }
+      const originCounts = planningCheckpointOriginCounts(db, origin.job_id);
+      if (originCounts.nativeReceiptCount > 0) continue;
+      const fence = exactAbandonedPlanningRecoveryLineage(
+        origin,
+        current,
+        checkpoint.contentPath,
+      );
+      if (!fence || fence.malformedEvents || !fence.recoveredAt) continue;
+      let waiver: ReturnType<typeof readExactLegacyPlanningWaiver>;
+      try {
+        waiver = readExactLegacyPlanningWaiver({
+          contentPath: checkpoint.contentPath,
+          expectedBinding: legacyPlanningWaiverBinding(origin, fence.recoveredAt),
+        });
+        if (waiver) {
+          assertLegacyPlanningWaiverPredatesCurrentJob({
+            receipt: waiver,
+            currentJobCreatedAt: current.created_at,
+          });
+        }
+      } catch (error) {
+        throw new LearnPlanningRecoveryConflictError(
+          `The explicit legacy planning migration waiver is corrupt or stale (${errorMessage(error)}); no model request was issued.`,
+        );
+      }
+      if (!waiver) continue;
+      if (migrationOriginJobId !== null) {
+        throw new LearnPlanningRecoveryConflictError(
+          "Multiple legacy planning migration boundaries match this retry; no model request was issued.",
+        );
+      }
+      migrationOriginJobId = origin.job_id;
+      migrationSealedAt = waiver.createdAt;
+    }
+  }
   for (const origin of recoveredOrigins) {
     if (checkpointedOriginIds.has(origin.job_id)) continue;
-    if (hasCompletedNativePlanningCheckpoint(db, checkpoint.jobId)) {
+    if (currentHasNativePlanningEpoch) {
       // One completed/adopted native receipt is the durable post-migration
       // epoch for this retry job. The singular legacy waiver may authorize
       // only the first exact boundary; downstream stages use native receipts.
@@ -4787,16 +6512,40 @@ async function resolvePriorPlanningResult({
     // source/policy evidence is missing or corrupt, it is ambiguity rather
     // than permission to send another request.
     if (!exactStrictReceiptOriginBinding(origin, current)) continue;
-    if (!exactPlanningOriginBinding(origin, current)) {
-      throw new LearnPlanningRecoveryConflictError(
-        "An abandoned pre-receipt Learn job matches this selection but its legacy source/model policy evidence is incomplete; no model request was issued.",
-      );
-    }
     const originCounts = planningCheckpointOriginCounts(db, origin.job_id);
     if (originCounts.nativeReceiptCount > 0) {
       // Native receipt rows are handled only by the strict request-id resolver;
       // never mix post-deployment jobs into the pre-receipt ledger bridge.
       continue;
+    }
+    const originDisposition = classifyRecoveredLegacyPlanningOrigin({
+      origin,
+      current,
+      checkpointCount:
+        originCounts.nativeReceiptCount + originCounts.materializedLegacyCount,
+      migrationSealedAt,
+      expectedRequestModel: request.model,
+      expectedReasoningEffort: LEARN_REASONING.effort,
+      expectedReasoningSummary: LEARN_REASONING.summary,
+    });
+    if (originDisposition === "unrelated") continue;
+    if (originDisposition === "proven_unissued") {
+      const fence = exactAbandonedPlanningRecoveryLineage(
+        origin,
+        current,
+        checkpoint.contentPath,
+      );
+      if (!fence || fence.malformedEvents || !fence.recoveredAt) {
+        throw new LearnPlanningRecoveryConflictError(
+          "A post-migration Learn job has no exact durable recovery/time fence; no model request was issued.",
+        );
+      }
+      continue;
+    }
+    if (originDisposition !== "exact") {
+      throw new LearnPlanningRecoveryConflictError(
+        "An abandoned pre-receipt Learn job matches this selection but its legacy source/model policy evidence is incomplete; no model request was issued.",
+      );
     }
     const fence = exactAbandonedPlanningRecoveryLineage(
       origin,
@@ -6400,7 +8149,7 @@ export async function runLearnPlanning({
       gardenId,
       contentPath,
     });
-    activeLearnPlanningDispatchAuthorities.set(
+    activeLearnCouncilDispatchAuthorities.set(
       job.id,
       () => !lease.lost && lease.heartbeat(),
     );
@@ -7829,6 +9578,7 @@ export async function runLearnPlanning({
       };
     })();
     const visualizationPlanningStartedAt = Date.now();
+    let visualContractRepairSemanticAttempt = 0;
     const canonicalVisualEvidence = canonicalVisualizationEvidenceByUnit(
       clusterPath(contentPath, gardenId),
       learningUnits,
@@ -7846,6 +9596,9 @@ export async function runLearnPlanning({
         client,
         model,
         gardenId,
+        contentPath,
+        jobId: job.id,
+        semanticAttempt: visualContractRepairSemanticAttempt++,
         packet,
       }),
       maxRepairAttempts: 2,
@@ -7874,6 +9627,8 @@ export async function runLearnPlanning({
         client,
         model,
         gardenId,
+        contentPath,
+        jobId: job.id,
         request,
       }),
       checkCancelled: () => throwIfLearnCancelled(job.id),
@@ -8082,13 +9837,7 @@ export async function runLearnPlanning({
     };
   } catch (error) {
     const stillOwnPlanningLease = (): boolean => {
-      try {
-        return !lease.lost &&
-          !leaseLostLearnJobs.has(job.id) &&
-          lease.heartbeat();
-      } catch {
-        return false;
-      }
+      return confirmLearnLeaseForFailureCleanup(lease, job.id);
     };
     if (!stillOwnPlanningLease()) {
       // A fenced recovery/takeover now owns cleanup. The stale worker must not
@@ -8240,7 +9989,7 @@ export async function runLearnPlanning({
       }
     });
   } finally {
-    activeLearnPlanningDispatchAuthorities.delete(job.id);
+    activeLearnCouncilDispatchAuthorities.delete(job.id);
     try {
       disposeModelTracking();
     } catch {
@@ -9722,6 +11471,10 @@ async function reconcileInteractiveVisuals({
       client,
       model,
       gardenDir: path.join(contentPath, gardenId),
+      durableRecoveryDir: stableGeneratedVisualCouncilRecoveryRoot(
+        path.join(durableEventContentPath ?? contentPath, gardenId),
+      ),
+      recoveryOwnerId: jobId,
       opportunity,
       pageMarkdown: nextMarkdown,
       sourceContext,
@@ -9745,6 +11498,37 @@ async function reconcileInteractiveVisuals({
               }),
           }
         : {}),
+      onCouncilReceipt: (receipt) => {
+        if (
+          receipt.dispatchCount !== 0 &&
+          receipt.dispatchCount !== 1 &&
+          receipt.dispatchCount !== 2
+        ) {
+          throw new Error(
+            `Generated-visual Council receipt reported invalid dispatch count ${receipt.dispatchCount}.`,
+          );
+        }
+        reconcilePersistedLearnTokenUsageFromReceipt(
+          db,
+          jobId,
+          {
+            receiptId: receipt.requestId,
+            requestHash: receipt.requestHash,
+            usage: receipt.usage,
+            providerCallCount: 1,
+            reportedCallCount: 1,
+            estimatedCallCount: 0,
+            dispatchCount: receipt.dispatchCount,
+            httpCompletionObserved: receipt.httpCompletionObserved,
+            requestEvidence: {
+              model: receipt.requestedModel,
+              reasoningEffort: "max",
+              reasoningSummary: "detailed",
+            },
+          },
+          nowIso(),
+        );
+      },
       onEvent: (event) => {
         const eventData = {
           ...event.data,
@@ -10631,6 +12415,10 @@ export async function runTextbookGeneration({
   let workspace: LearnBuildWorkspace | null = null;
   let disposeModelTracking = (): void => {};
   try {
+    activeLearnCouncilDispatchAuthorities.set(
+      job.id,
+      () => !lease.lost && lease.heartbeat(),
+    );
     updateLearnJob(job.id, {
       status: "generating_learning_pages",
       currentStep: "Preparing isolated lesson workspace",
@@ -10746,13 +12534,7 @@ export async function runTextbookGeneration({
       }
     }
     const stillOwnSetupLease = (): boolean => {
-      try {
-        return !lease.lost &&
-          !leaseLostLearnJobs.has(job.id) &&
-          lease.heartbeat();
-      } catch {
-        return false;
-      }
+      return confirmLearnLeaseForFailureCleanup(lease, job.id);
     };
     if (!stillOwnSetupLease()) {
       if (ownsLease) {
@@ -11250,6 +13032,13 @@ export async function runTextbookGeneration({
             repairAttempt: attempt - 1,
           },
           councilModeOverride: LEARN_GENERATION_COUNCIL_MODE,
+          ordinaryCheckpoint: {
+            jobId: job.id,
+            contentPath,
+            stageKey: "generation:topic_overview",
+            stageLabel: "topic overview",
+            semanticAttempt: attempt - 1,
+          },
         });
         return overviewCall.content;
       },
@@ -11532,6 +13321,13 @@ export async function runTextbookGeneration({
               ),
               sourceContext: { ...pageSourceMeta, taskType: "subsection_generation" },
               councilModeOverride: LEARN_GENERATION_COUNCIL_MODE,
+              ordinaryCheckpoint: {
+                jobId: job.id,
+                contentPath,
+                stageKey: `generation:page:${learnCouncilStageComponent(pageId)}:draft`,
+                stageLabel: `lesson draft ${pageId}`,
+                semanticAttempt: attempt,
+              },
           });
           subsectionRunId = generated.councilRunId;
           attemptBody = modelTextCandidateOrThrow(
@@ -11597,6 +13393,13 @@ export async function runTextbookGeneration({
                   failedProblemCount: quality.problems.length,
                 },
                 councilModeOverride: LEARN_REVISION_COUNCIL_MODE,
+                ordinaryCheckpoint: {
+                  jobId: job.id,
+                  contentPath,
+                  stageKey: `generation:page:${learnCouncilStageComponent(pageId)}:quality_repair`,
+                  stageLabel: `lesson quality repair ${pageId}`,
+                  semanticAttempt: attempt,
+                },
             });
             revisionRunId = repaired.councilRunId ?? revisionRunId;
             const repairedBody = modelTextCandidateOrThrow(
@@ -12469,13 +14272,7 @@ export async function runTextbookGeneration({
     };
   } catch (error) {
     const stillOwnGenerationLease = (): boolean => {
-      try {
-        return !lease.lost &&
-          !leaseLostLearnJobs.has(job.id) &&
-          lease.heartbeat();
-      } catch {
-        return false;
-      }
+      return confirmLearnLeaseForFailureCleanup(lease, job.id);
     };
     if (!stillOwnGenerationLease()) {
       throw error;
@@ -12631,6 +14428,7 @@ export async function runTextbookGeneration({
     });
   } finally {
     committingLearnJobs.delete(job.id);
+    activeLearnCouncilDispatchAuthorities.delete(job.id);
     try {
       disposeModelTracking();
     } catch {
@@ -13155,13 +14953,7 @@ export async function rebuildEntireGarden(
   } catch (error) {
     const stillOwnRebuildLease = (): boolean => {
       if (!planningJobId || !rebuildLease) return false;
-      try {
-        return !rebuildLease.lost &&
-          !leaseLostLearnJobs.has(planningJobId) &&
-          rebuildLease.heartbeat();
-      } catch {
-        return false;
-      }
+      return confirmLearnLeaseForFailureCleanup(rebuildLease, planningJobId);
     };
     if (
       planningJobId &&
@@ -13372,10 +15164,15 @@ export async function runLearnRepairOperation({
   let previousRepairGardenDir: string | undefined;
   let repairCommitRecorded = false;
   try {
+    activeLearnCouncilDispatchAuthorities.set(
+      job.id,
+      () => !lease.lost && lease.heartbeat(),
+    );
     updateLearnJob(job.id, {
       status: "analyzing_issues",
       currentStep: "Analyzing validation issues",
       progressPercent: 5,
+      sourceSetHash: context.sourceSetHash,
     });
     await yieldToResponse?.(job.id);
     disposeModelTracking = attachLearnJobModelTracking({
@@ -13392,6 +15189,7 @@ export async function runLearnRepairOperation({
       );
     }
     appendLearnEvent(contentPath, gardenId, "learn_scoped_repair_started", { jobId: job.id, request });
+    const scopedRepairAttemptsByIssue = new Map<string, number>();
     const repair = await executeLearnScopedRepair({
       gardenDir,
       gardenId,
@@ -13399,6 +15197,8 @@ export async function runLearnRepairOperation({
       recoveryOwnerId: job.id,
       verifyLease: () => lease.heartbeat(),
       modelRepair: async (packet: unknown, issue: GardenIssue) => {
+        const semanticAttempt = scopedRepairAttemptsByIssue.get(issue.issueId) ?? 0;
+        scopedRepairAttemptsByIssue.set(issue.issueId, semanticAttempt + 1);
         const result = await callCouncilJson({
           client,
           model,
@@ -13416,6 +15216,13 @@ export async function runLearnRepairOperation({
           councilModeOverride: "direct_council",
           timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
           preserveExactContent: true,
+          ordinaryCheckpoint: {
+            jobId: job.id,
+            contentPath,
+            stageKey: `repair:issue:${learnCouncilStageComponent(issue.issueId)}`,
+            stageLabel: `scoped repair ${issue.issueId}`,
+            semanticAttempt,
+          },
         });
         try {
           appendLearnEvent(contentPath, gardenId, "learn_scoped_model_decision", {
@@ -13507,13 +15314,7 @@ export async function runLearnRepairOperation({
     return { job: finalJob, repair };
   } catch (error) {
     const stillOwnRepairLease = (): boolean => {
-      try {
-        return !lease.lost &&
-          !leaseLostLearnJobs.has(job.id) &&
-          lease.heartbeat();
-      } catch {
-        return false;
-      }
+      return confirmLearnLeaseForFailureCleanup(lease, job.id);
     };
     if (!stillOwnRepairLease()) {
       throw error;
@@ -13668,6 +15469,7 @@ export async function runLearnRepairOperation({
       }
     }
     committingLearnJobs.delete(job.id);
+    activeLearnCouncilDispatchAuthorities.delete(job.id);
     try {
       disposeModelTracking();
     } catch {

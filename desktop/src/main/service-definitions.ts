@@ -666,14 +666,14 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const hermes: DesktopServiceDefinition = {
     id: "hermes",
     displayName: "Agent runtime (Hermes)",
-    // Hermes backs the primary Terminal/Garden Chat experience, so it belongs
-    // to the eager core. Making it on-demand created a readiness deadlock: the
-    // terminal disabled submission while Hermes was stopped, and submission
-    // was the only operation capable of acquiring the lease that started it.
-    // It remains optional at the process-supervisor boundary so an installation
-    // problem cannot hide unrelated gardens, artifacts, or settings.
+    // Hermes backs the primary Terminal/Garden Chat experience, but the
+    // dashboard now treats a stopped service as available and the first real
+    // server-side session acquisition starts it single-flight. Status polling
+    // therefore stays observational and startup no longer retains Hermes when
+    // no turn needs it.
     required: false,
-    startPolicy: "eager",
+    startPolicy: "on-demand",
+    idleTtlMs: 10 * 60_000,
     estimatedColdStartCommitMb: 1536,
     softCommitLimitMb: 3072,
     hardCommitLimitMb: 4096,
@@ -852,7 +852,6 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       : [
           path.join(paths.dashboardServerDir, "node_modules", "next", "dist", "bin", "next"),
           "dev",
-          "--webpack",
           "--port",
           String(config.ports.dashboard),
           "--hostname",
@@ -878,7 +877,10 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       ...shared,
       NODE_ENV: dashboardProduction ? "production" : "development",
       ...(paths.mode === "dev" && !dashboardProduction
-        ? { NODE_OPTIONS: dashboardDevNodeOptions(shared["NODE_OPTIONS"], process.env, undefined, memoryPolicy) }
+        ? {
+            NODE_OPTIONS: dashboardDevNodeOptions(shared["NODE_OPTIONS"], process.env, undefined, memoryPolicy),
+            BREADBOARD_DASHBOARD_BUNDLER: "turbopack",
+          }
         : {}),
       PORT: String(config.ports.dashboard),
       HOSTNAME: "127.0.0.1",
@@ -906,6 +908,12 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
         paths.runtimeDir,
         "learn-workers",
       ),
+      BREADBOARD_BACKGROUND_COORDINATOR_HEAP_MB:
+        process.env["BREADBOARD_BACKGROUND_COORDINATOR_HEAP_MB"] ?? "1024",
+      BREADBOARD_MEMORY_TELEMETRY_INTERVAL_MS:
+        process.env["BREADBOARD_MEMORY_TELEMETRY_INTERVAL_MS"] ?? "15000",
+      BREADBOARD_MEMORY_TELEMETRY_SAMPLES:
+        process.env["BREADBOARD_MEMORY_TELEMETRY_SAMPLES"] ?? "240",
       BREADBOARD_REPO_ROOT: paths.appRoot,
       // Learn trace readers must inspect the same durable Council snapshots
       // that ChatMock writes under the mutable desktop data root.
@@ -1123,7 +1131,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     // These thresholds sit above that measured ceiling so healthy development
     // never trips them. They exist because a V8 heap cap cannot bound what
     // lives outside the heap — at the peak the tree committed ~1.8x its heap,
-    // the excess being webpack's native buffers and source maps, which
+    // the excess being compiler-native buffers and source maps, which
     // `used_heap_size` (and therefore Next's own watchdog) never sees. This is
     // the backstop for growth that guard cannot observe, not the main control.
     ...(dashboardProduction
@@ -1141,18 +1149,20 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const gbrain: DesktopServiceDefinition = {
     id: "gbrain",
     displayName: "Knowledge retrieval (GBrain)",
-    // The Terminal folds knowledge health into its primary status indicator.
-    // Leaving GBrain stopped at startup therefore painted a permanent red dot
-    // even though the adapter could start on first retrieval. Keep the visible
-    // core truthful by warming it after ChatMock; failures remain non-fatal to
-    // gardens and other unrelated features.
+    // Retrieval operations already hold a supervisor lease. A passive status
+    // read now distinguishes available-but-stopped from failure, so this model
+    // service no longer needs to retain its Bun/model tree at app startup.
     required: false,
-    startPolicy: "eager",
+    startPolicy: "on-demand",
+    idleTtlMs: 10 * 60_000,
     estimatedColdStartCommitMb: 1536,
     softCommitLimitMb: 2048,
     hardCommitLimitMb: 3072,
     priority: 70,
     concurrencyGroup: "document-model",
+    // Retrieval is stateless between requests. Admission may also reclaim a
+    // warm, unleased tree before its ordinary idle deadline.
+    pressureSheddable: true,
     command: binaries.bun,
     args: ["run", path.join(paths.appRoot, "gbrain-adapter", "src", "server.ts")],
     cwd: path.join(paths.appRoot, "gbrain-adapter"),

@@ -11,6 +11,12 @@ interface BridgeOptions {
   initialVersion: number;
 }
 
+const SAVE_COMPLETE_EVENT = "breadboard:genoffice-save-complete";
+
+function reportSave(result: { ok: boolean; error?: string }): void {
+  window.dispatchEvent(new CustomEvent(SAVE_COMPLETE_EVENT, { detail: result }));
+}
+
 function noopSubscription(): () => void {
   return () => {};
 }
@@ -88,16 +94,22 @@ export function installGenOfficeBridge({
         error?: string;
       } | null;
       if (!response.ok || !payload?.artifact) {
-        return { ok: false, error: payload?.error || `Save failed (${response.status}).` };
+        const result = { ok: false, error: payload?.error || `Save failed (${response.status}).` };
+        reportSave(result);
+        return result;
       }
       version = payload.artifact.version;
       window.parent.postMessage(
         { type: "breadboard:genoffice-artifact-saved", artifact: payload.artifact },
         window.location.origin,
       );
-      return { ok: true };
+      const result = { ok: true };
+      reportSave(result);
+      return result;
     } catch (error) {
-      return { ok: false, error: errorText(error) };
+      const result = { ok: false, error: errorText(error) };
+      reportSave(result);
+      return result;
     }
   };
 
@@ -133,6 +145,17 @@ export function installGenOfficeBridge({
       provider: "breadboard",
       providers: { breadboard: { apiKey: "", model: "workspace" } },
     }),
+    webSearch: async () => ({
+      results: [],
+      method: "error",
+      error: "Web search is not available in the contained document editor.",
+    }),
+    imageSearch: async () => ({
+      images: [],
+      method: "error",
+      error: "Image search is not available in the contained document editor.",
+    }),
+    fetchImage: async () => null,
     print: async () => {
       window.print();
       return { ok: true };

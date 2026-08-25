@@ -53,6 +53,36 @@ test('Learn client tracking reports start and normalized provider usage', async 
   ]);
 });
 
+test('Learn client tracking emits the exact durable request binding on both events', async () => {
+  const events = [];
+  const client = fakeClient(async () => ({
+    usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
+  }));
+  const requestIdentity = {
+    clientRequestId: 'lrq_tracked_exact_request_0001',
+    clientRequestHash: 'a'.repeat(64),
+  };
+
+  attachLearnTokenUsageTracking(client, (event) => events.push(event), {
+    completionRequestOverrides: {
+      reasoning: { effort: 'max', summary: 'detailed' },
+    },
+  });
+  await client.chat.completions.create({
+    model: 'gpt-5.6-sol',
+    ...requestIdentity,
+  });
+
+  assert.deepEqual(events.map((event) => event.requestIdentity), [
+    requestIdentity,
+    requestIdentity,
+  ]);
+  assert.strictEqual(events[0].requestIdentity, events[1].requestIdentity);
+  assert.throws(() => {
+    events[0].requestIdentity.clientRequestId = 'changed';
+  }, TypeError);
+});
+
 test('Learn workflow usage accumulates planning and generation jobs', () => {
   const usage = sumLearnTokenUsage([
     {
@@ -873,7 +903,12 @@ test('Learn panel renders live job usage without Council activity', () => {
   );
   assert.match(
     source,
-    /metric\.label === "Total" && learnPanelModel[\s\S]*?<dt className="text-gray-600">Model:<\/dt>[\s\S]*?<dd[\s\S]*?className="font-mono tabular-nums text-gray-200"[\s\S]*?formatAssistantModelName\(learnPanelModel\)/,
+    /\{learnPanelModel \? \([\s\S]*?<span className="text-gray-600">Model:<\/span>[\s\S]*?<span[\s\S]*?className="font-mono tabular-nums text-gray-200"[\s\S]*?formatAssistantModelName\(learnPanelModel\)/,
+  );
+  assert.ok(
+    usagePanelSource.indexOf("{learnPanelModel ? (") >
+      usagePanelSource.lastIndexOf("Waiting for usage"),
+    "the next-run model must remain visible before the first token-usage call",
   );
   assert.match(
     usagePanelSource,

@@ -6,7 +6,7 @@ function requiredPath(name) {
   return value;
 }
 
-export async function executeLearnOperation(_request, yieldToResponse) {
+export async function executeAdmittedLearnOperation(_request, yieldToResponse) {
   const releasePath = requiredPath("LEARN_WORKER_TEST_RELEASE_PATH");
   const completionPath = requiredPath("LEARN_WORKER_TEST_COMPLETION_PATH");
   await yieldToResponse("learn_job_parent_death_fixture");
@@ -33,3 +33,5 @@ export async function executeLearnOperation(_request, yieldToResponse) {
   );
   return { completed: true };
 }
+
+export const executeLearnOperation = executeAdmittedLearnOperation;

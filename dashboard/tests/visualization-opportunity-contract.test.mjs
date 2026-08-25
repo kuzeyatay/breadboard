@@ -380,6 +380,13 @@ test("generated-visual regeneration derives anchor availability from the canonic
     /buildCanonicalSourceAnchors\(gardenDir, \{ allowInferredFormulaText: false \}\)/,
   );
   assert.match(routeSource, /persistedVisualizationOpportunityContractProblems/);
+  assert.match(routeSource, /acquireGardenLearnLease\(gardenDir,/);
+  assert.match(
+    routeSource,
+    /durableRecoveryDir:\s*stableGeneratedVisualCouncilRecoveryRoot\(gardenDir\)/,
+  );
+  assert.match(routeSource, /if \(!lease\.heartbeat\(\)\)/);
+  assert.match(routeSource, /finally \{\s*lease\.release\(\);\s*\}/);
   assert.doesNotMatch(
     routeSource,
     /availableSourceAnchorIds:\s*new Set\(opportunity\.sourceAnchorIds\)/,

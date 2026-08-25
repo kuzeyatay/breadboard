@@ -5,15 +5,17 @@ import * as path from "node:path";
  * Detects a second development stack running against the same checkout.
  *
  * `npm run dev` (scripts/dev-all.mjs) and `npm run desktop:dev` both launch
- * `next dev --webpack` plus the same sidecars. Neither used to check for the
+ * `next dev` plus the same sidecars. Neither used to check for the
  * other: dev-all.mjs spawns unconditionally, and the desktop supervisor's
- * `allocatePort` quietly moves the dashboard to a free port when 3000 is taken.
+ * `allocatePort` quietly moved the dashboard to a free port when 3000 was taken.
  * The result is two independent dev servers sharing one `dashboard/db`, each
  * able to grow into the gigabytes — doubling exactly the exposure that
  * exhausted the system commit limit.
  *
- * This is a warning, not a block. Isolated QA profiles and deliberately
+ * This lock is a warning, not a block. Isolated QA profiles and deliberately
  * parallel test runs are legitimate, so the guard reports and steps aside.
+ * Separately, an identified dashboard already holding the preferred port is
+ * refused because an externally owned compiler cannot be memory-supervised.
  */
 
 export interface DevInstanceRecord {

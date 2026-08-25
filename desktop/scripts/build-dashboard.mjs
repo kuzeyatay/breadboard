@@ -4,6 +4,9 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  beginDashboardBuild,
+  completeDashboardBuild,
+  recoverInterruptedDashboardBuild,
   refreshStandaloneDashboardAssets,
   writeDashboardBuildManifest,
 } from "./dashboard-build-cache.mjs";
@@ -11,6 +14,7 @@ import {
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const dashboardDir = path.join(repoRoot, "dashboard");
 const nextBin = path.join(dashboardDir, "node_modules", "next", "dist", "bin", "next");
+const traceGuard = path.join(repoRoot, "desktop", "scripts", "next-trace-guard.cjs");
 
 // The vendored mem0 engine has to exist before the build, not after: file
 // tracing can only follow `import("mem0ai/oss")` into the package if the clone
@@ -39,11 +43,20 @@ const genofficeEditor = spawnSync(
 );
 if (genofficeEditor.status !== 0) process.exit(genofficeEditor.status ?? 1);
 
-// Next 16 defaults production builds to Turbopack. Breadboard has an audited
-// custom webpack configuration and enables webpackMemoryOptimizations; make
-// the selected compiler explicit so the lean path actually receives those
-// settings instead of silently taking a different, higher-commit build path.
-const result = spawnSync(process.execPath, [nextBin, "build", "--webpack"], {
+// The 518-route production graph needs more than V8's default ~4 GiB heap, but
+// this allowance exists only for the one-time transactional build. The lean
+// runtime keeps its independently bounded heap, and dev-fast's commit monitor
+// still terminates this exact tree before it consumes the Windows reserve.
+const dashboardBuildHeapMb = 8_192;
+beginDashboardBuild(repoRoot);
+const result = spawnSync(process.execPath, [
+  `--max-old-space-size=${dashboardBuildHeapMb}`,
+  "--require",
+  traceGuard,
+  nextBin,
+  "build",
+  "--webpack",
+], {
   cwd: dashboardDir,
   stdio: "inherit",
   env: {
@@ -52,10 +65,19 @@ const result = spawnSync(process.execPath, [nextBin, "build", "--webpack"], {
     BREADBOARD_NEXT_DIST_DIR: ".next-desktop",
   },
 });
-if (result.status !== 0) process.exit(result.status ?? 1);
+if (result.status !== 0) {
+  recoverInterruptedDashboardBuild(repoRoot);
+  process.exit(result.status ?? 1);
+}
 
 // Next intentionally leaves static/public assets beside standalone output.
 // Complete the runnable tree here so every caller (lean dev, QA, packaging)
 // gets the same production-like artifact rather than each copying a subset.
-refreshStandaloneDashboardAssets(repoRoot);
-writeDashboardBuildManifest(repoRoot);
+try {
+  refreshStandaloneDashboardAssets(repoRoot);
+  writeDashboardBuildManifest(repoRoot);
+  completeDashboardBuild(repoRoot);
+} catch (error) {
+  recoverInterruptedDashboardBuild(repoRoot);
+  throw error;
+}

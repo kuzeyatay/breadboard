@@ -25,6 +25,8 @@ from ..reasoning import request_reasoning_overrides
 from .policy import choose_council_mode, council_enabled
 from .request_receipts import (
     CouncilReceiptConflict,
+    CouncilReceiptCorrupt,
+    CouncilReceiptNotFound,
     StrictCouncilReceiptStore,
     council_request_hash_v1,
     default_receipt_store,
@@ -45,6 +47,7 @@ def _payload_flag(payload: Dict[str, Any], *names: str) -> Any:
 
 
 ReceiptBinding = Tuple[str, str, StrictCouncilReceiptStore]
+RequestedReceiptBinding = Tuple[str, str, bool]
 
 
 def _strict_alias_value(
@@ -77,7 +80,7 @@ def _strict_alias_value(
 
 def recoverable_council_binding_values(
     payload: Dict[str, Any],
-) -> Tuple[Optional[Tuple[str, str]], Optional[Response]]:
+) -> Tuple[Optional[RequestedReceiptBinding], Optional[Response]]:
     try:
         client_request_id, has_id = _strict_alias_value(
             payload,
@@ -89,22 +92,28 @@ def recoverable_council_binding_values(
             "clientRequestHash",
             "client_request_hash",
         )
+        redispatch, has_redispatch = _strict_alias_value(
+            payload,
+            "clientRequestRedispatch",
+            "client_request_redispatch",
+        )
     except ValueError as exc:
         return None, _error_response(str(exc), status=400)
 
-    if not has_id and not has_hash:
+    if not has_id and not has_hash and not has_redispatch:
         return None, None
     if (
         not has_id
         or not has_hash
         or not valid_request_id(client_request_id)
         or not valid_request_hash(client_request_hash)
+        or (has_redispatch and type(redispatch) is not bool)
     ):
         return None, _error_response(
             "Invalid recoverable Council request binding.",
             status=400,
         )
-    return (client_request_id, client_request_hash), None
+    return (client_request_id, client_request_hash, redispatch is True), None
 
 
 def recoverable_council_passthrough_guard(
@@ -129,12 +138,12 @@ def recoverable_council_passthrough_guard(
 
 def _reserve_recoverable_request(
     council_input: CouncilInput,
-    requested_binding: Optional[Tuple[str, str]],
+    requested_binding: Optional[RequestedReceiptBinding],
 ) -> Tuple[Optional[ReceiptBinding], Optional[Response]]:
     if requested_binding is None:
         return None, None
 
-    client_request_id, client_request_hash = requested_binding
+    client_request_id, client_request_hash, redispatch_requested = requested_binding
     try:
         effective_mode = choose_council_mode(
             council_input,
@@ -157,12 +166,21 @@ def _reserve_recoverable_request(
 
     try:
         store = default_receipt_store()
-        # This strict exclusive-create is the dispatch fence. No provider call
-        # is reachable unless the started receipt is durable.
-        store.reserve(client_request_id, server_hash)
-    except CouncilReceiptConflict:
+        # Both paths are durable dispatch fences. Initial requests need an
+        # exclusive receipt. An explicit redispatch must consume the one
+        # failed/no-answer generation via its own O_EXCL claim before the
+        # receipt advances to generation two.
+        if redispatch_requested:
+            store.claim_failed_redispatch(client_request_id, server_hash)
+        else:
+            store.reserve(
+                client_request_id,
+                server_hash,
+                dispatch_mode=effective_mode,
+            )
+    except (CouncilReceiptConflict, CouncilReceiptCorrupt, CouncilReceiptNotFound):
         return None, _error_response(
-            "Recoverable Council request id/hash is already in use.",
+            "Recoverable Council request id/hash cannot cross its durable dispatch fence.",
             status=409,
         )
     except Exception:
@@ -187,28 +205,69 @@ def _request_reasoning(
     )
 
 
-def _non_text_content_part(messages: List[Dict[str, Any]]) -> Optional[str]:
-    """Name the first content part the council cannot carry, or None.
+_SUPPORTED_IMAGE_DETAILS = frozenset(("auto", "low", "high", "original"))
 
-    The council reasons over flattened text (`types.message_text`), which turns
-    an image part into the literal string "[image attachment]": every candidate
-    model answers as if nothing were attached, and the user gets a confident
-    "I can't see the image" back. So a message carrying anything that isn't
-    text belongs on the raw passthrough, which forwards the part upstream
-    intact. The Responses path already bypasses for the same reason — see
-    `_responses_input_to_messages`.
+
+def _explicit_direct_council_mode(payload: Dict[str, Any]) -> bool:
+    """Return true only when every supplied mode alias requests direct."""
+    requested = [
+        payload[name]
+        for name in ("councilModeOverride", "council_mode_override")
+        if name in payload
+    ]
+    return bool(requested) and all(value == "direct_council" for value in requested)
+
+
+def _supported_image_url_part(part: Dict[str, Any]) -> bool:
+    if set(part) - {"type", "image_url"}:
+        return False
+    image = part.get("image_url")
+    if isinstance(image, str):
+        return bool(image)
+    if not isinstance(image, dict) or set(image) - {"url", "detail"}:
+        return False
+    if not isinstance(image.get("url"), str) or not image["url"]:
+        return False
+    detail = image.get("detail")
+    return detail is None or (
+        isinstance(detail, str) and detail in _SUPPORTED_IMAGE_DETAILS
+    )
+
+
+def _unsupported_content_part(
+    messages: List[Dict[str, Any]],
+    *,
+    allow_image_url: bool,
+) -> Optional[str]:
+    """Name the first content part the selected Council route cannot carry.
+
+    Only direct Council forwards the original messages to one provider call.
+    Multi-seat modes flatten images while constructing their review prompts, so
+    they must retain the legacy raw passthrough.
     """
     for message in messages:
         if not isinstance(message, dict):
-            continue
+            return "unknown"
         content = message.get("content")
-        if not isinstance(content, list):
+        if isinstance(content, str):
             continue
+        if not isinstance(content, list):
+            return "unknown"
         for part in content:
             if not isinstance(part, dict):
                 return "unknown"
             part_type = part.get("type")
-            if part_type in _TEXT_PART_TYPES and isinstance(part.get("text"), str):
+            if (
+                part_type in _TEXT_PART_TYPES
+                and isinstance(part.get("text"), str)
+                and not (set(part) - {"type", "text"})
+            ):
+                continue
+            if (
+                allow_image_url
+                and part_type == "image_url"
+                and _supported_image_url_part(part)
+            ):
                 continue
             return str(part_type or "unknown")
     return None
@@ -229,9 +288,12 @@ def council_bypass_reason(payload: Dict[str, Any], messages: List[Dict[str, Any]
         return "explicit tool_choice"
     if not messages:
         return "no messages"
-    non_text = _non_text_content_part(messages)
-    if non_text is not None:
-        return f"non-text content part ({non_text})"
+    unsupported = _unsupported_content_part(
+        messages,
+        allow_image_url=_explicit_direct_council_mode(payload),
+    )
+    if unsupported is not None:
+        return f"non-text content part ({unsupported})"
     return None
 
 
@@ -302,25 +364,25 @@ def _finalize_recoverable_result(
 
     receipt_id, receipt_hash, store = receipt_binding
     try:
+        persisted_result = safe_result_from_run(run)
+        persisted_usage, persisted_usage_estimated = _resolved_usage(run)
+        persisted_result["usage"] = {
+            "inputTokens": persisted_usage.input_tokens,
+            "outputTokens": persisted_usage.output_tokens,
+            "totalTokens": persisted_usage.total_tokens,
+            "cachedInputTokens": persisted_usage.cached_input_tokens,
+            "reasoningTokens": persisted_usage.reasoning_tokens,
+            "callCount": persisted_usage.call_count,
+            "reportedCallCount": persisted_usage.reported_call_count,
+        }
+        persisted_result["usageEstimated"] = persisted_usage_estimated
         if not (run.final_answer or "").strip():
-            store.fail(
+            store.fail_no_final_answer(
                 receipt_id,
                 receipt_hash,
-                "council_no_final_answer",
+                persisted_result,
             )
         else:
-            persisted_result = safe_result_from_run(run)
-            persisted_usage, persisted_usage_estimated = _resolved_usage(run)
-            persisted_result["usage"] = {
-                "inputTokens": persisted_usage.input_tokens,
-                "outputTokens": persisted_usage.output_tokens,
-                "totalTokens": persisted_usage.total_tokens,
-                "cachedInputTokens": persisted_usage.cached_input_tokens,
-                "reasoningTokens": persisted_usage.reasoning_tokens,
-                "callCount": persisted_usage.call_count,
-                "reportedCallCount": persisted_usage.reported_call_count,
-            }
-            persisted_result["usageEstimated"] = persisted_usage_estimated
             store.complete(
                 receipt_id,
                 receipt_hash,
@@ -634,6 +696,8 @@ _COUNCIL_FIELD_NAMES = (
     "client_request_id",
     "clientRequestHash",
     "client_request_hash",
+    "clientRequestRedispatch",
+    "client_request_redispatch",
     "council",
 )
 

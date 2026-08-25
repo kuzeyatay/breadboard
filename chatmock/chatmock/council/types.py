@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import datetime as _dt
+import hashlib
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -65,6 +68,80 @@ def last_user_text(messages: List[ChatMessage]) -> str:
         if isinstance(msg, dict) and msg.get("role") == "user":
             return message_text(msg.get("content"))
     return ""
+
+
+_IMAGE_IDENTITY_CHUNK_CHARS = 16 * 1024
+_STORED_IMAGE_DETAILS = frozenset(("auto", "low", "high", "original"))
+
+
+def _decoded_data_url_identity(url: Any) -> Dict[str, Any]:
+    """Return a bounded-memory identity for a valid base64 data URL."""
+    if not isinstance(url, str):
+        return {}
+    separator_index = url.find(",")
+    header = url[:separator_index] if separator_index >= 0 else ""
+    encoded_start = separator_index + 1
+    encoded_length = len(url) - encoded_start
+    if (
+        separator_index < 0
+        or not header.lower().startswith("data:")
+        or "base64" not in {part.lower() for part in header[5:].split(";")[1:]}
+        or encoded_length <= 0
+        or encoded_length % 4 != 0
+    ):
+        return {}
+
+    digest = hashlib.sha256()
+    byte_length = 0
+    try:
+        for offset in range(encoded_start, len(url), _IMAGE_IDENTITY_CHUNK_CHARS):
+            chunk = url[offset : offset + _IMAGE_IDENTITY_CHUNK_CHARS]
+            if offset + len(chunk) < len(url) and "=" in chunk:
+                return {}
+            decoded = base64.b64decode(chunk, validate=True)
+            digest.update(decoded)
+            byte_length += len(decoded)
+    except (binascii.Error, ValueError):
+        return {}
+    return {"sha256": digest.hexdigest(), "byteLength": byte_length}
+
+
+def _stored_image_identity(part: Dict[str, Any]) -> Dict[str, Any]:
+    """Allowlisted ledger identity; never retain an image URL or data payload."""
+    image = part.get("image_url")
+    url = image.get("url") if isinstance(image, dict) else image
+    detail = image.get("detail") if isinstance(image, dict) else None
+    identity: Dict[str, Any] = {"type": "image_url"}
+    if isinstance(detail, str) and detail in _STORED_IMAGE_DETAILS:
+        identity["detail"] = detail
+    identity.update(_decoded_data_url_identity(url))
+    return identity
+
+
+def messages_for_council_run_snapshot(messages: List[ChatMessage]) -> List[ChatMessage]:
+    """Copy messages for persistence, replacing images with safe identities.
+
+    Text-only messages serialize exactly as before. The runtime retains and
+    forwards the original CouncilInput messages; this copy exists only at the
+    run snapshot boundary.
+    """
+    snapshot: List[ChatMessage] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            snapshot.append(message)
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            snapshot.append(dict(message))
+            continue
+        stored_content = [
+            _stored_image_identity(part)
+            if isinstance(part, dict) and part.get("type") == "image_url"
+            else part
+            for part in content
+        ]
+        snapshot.append({**message, "content": stored_content})
+    return snapshot
 
 
 @dataclass
@@ -262,7 +339,7 @@ class CouncilRun:
             "gardenId": self.garden_id,
             "pageId": self.page_id,
             "userPrompt": self.user_prompt,
-            "messages": self.messages,
+            "messages": messages_for_council_run_snapshot(self.messages),
             "taskType": self.task_type,
             "councilMode": self.council_mode,
             "requestedModel": self.requested_model,

@@ -85,12 +85,17 @@ function processIsAlive(pid) {
 }
 
 describe("handOffLearnTask runtime behavior", () => {
-  test("production uses the explicitly configured dedicated worker instead of the legacy development root", async () => {
+  test("production uses the explicitly configured dedicated worker and runtime root", async () => {
     resetAfterCallbacks();
+    const temporaryRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "learn-worker-production-runtime-"),
+    );
+    const runtimeRoot = path.join(temporaryRoot, "desktop runtime with spaces", "learn-workers");
     const previousNodeEnv = process.env.NODE_ENV;
     const previousRoot = process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR;
     const previousWorkerRoot = process.env.BREADBOARD_LEARN_WORKER_DASHBOARD_ROOT;
     const previousSourceRoot = process.env.BREADBOARD_LEARN_SOURCE_ROOT;
+    const previousRuntimeRoot = process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
     process.env.NODE_ENV = "production";
     process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR = path.join(
       os.tmpdir(),
@@ -98,6 +103,7 @@ describe("handOffLearnTask runtime behavior", () => {
     );
     process.env.BREADBOARD_LEARN_WORKER_DASHBOARD_ROOT = dashboardRoot;
     process.env.BREADBOARD_LEARN_SOURCE_ROOT = path.join(dashboardRoot, "src");
+    process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = runtimeRoot;
     try {
       await assert.rejects(
         () => handOffDedicatedLearnTask(
@@ -105,6 +111,11 @@ describe("handOffLearnTask runtime behavior", () => {
           "production configured-worker test",
         ),
         /missing its garden, user, or content path/,
+      );
+      assert.equal(
+        fs.readdirSync(runtimeRoot).some((name) => name.endsWith(".ready.json")),
+        true,
+        "the real worker must write its failure receipt under the configured runtime root",
       );
     } finally {
       if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
@@ -124,6 +135,12 @@ describe("handOffLearnTask runtime behavior", () => {
       } else {
         process.env.BREADBOARD_LEARN_SOURCE_ROOT = previousSourceRoot;
       }
+      if (previousRuntimeRoot === undefined) {
+        delete process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR;
+      } else {
+        process.env.BREADBOARD_LEARN_WORKER_RUNTIME_DIR = previousRuntimeRoot;
+      }
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
     }
   });
 
@@ -1009,6 +1026,93 @@ test("worker promotion collision never overwrites a replacement marker", async (
   }
 });
 
+test("durable workers honor a configured runtime root", async () => {
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "learn-worker-configured-runtime-"),
+  );
+  const runtimeRoot = path.join(
+    temporaryRoot,
+    "desktop runtime with spaces",
+    "learn-workers",
+  );
+  const contentPath = path.join(temporaryRoot, "content");
+  const markerPath = path.join(runtimeRoot, "learn-worker.active.json");
+  const startupPath = path.join(runtimeRoot, "learn-worker-configured.start.json");
+  const receiptPath = path.join(runtimeRoot, "learn-worker-configured.ready.json");
+  const requestId = "configured-runtime-request";
+  const nonce = "configured-runtime-nonce";
+  fs.mkdirSync(runtimeRoot, { recursive: true });
+  fs.mkdirSync(contentPath, { recursive: true });
+  fs.writeFileSync(
+    markerPath,
+    `${JSON.stringify({
+      protocolVersion: 1,
+      requestId,
+      nonce,
+      pid: process.pid,
+      state: "launching",
+    })}\n`,
+    "utf8",
+  );
+  fs.writeFileSync(
+    startupPath,
+    `${JSON.stringify({
+      protocolVersion: 1,
+      type: "start",
+      requestId,
+      receiptPath,
+      concurrencyPath: markerPath,
+      concurrencyNonce: nonce,
+      request: {
+        operation: "humanizer",
+        gardenId: "configured-runtime-garden",
+        userId: 1,
+        contentPath,
+        enabled: "invalid-on-purpose",
+      },
+    })}\n`,
+    "utf8",
+  );
+
+  const child = spawn(
+    process.execPath,
+    [
+      path.join(dashboardRoot, "scripts", "learn-worker.mjs"),
+      "--breadboard-learn-start-file",
+      startupPath,
+    ],
+    {
+      cwd: dashboardRoot,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        BREADBOARD_LEARN_WORKER_RUNTIME_DIR: runtimeRoot,
+        QUARTZ_CONTENT_PATH: contentPath,
+      },
+      stdio: ["ignore", "ignore", "ignore"],
+    },
+  );
+  try {
+    const exit = await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    assert.deepEqual(exit, { code: 1, signal: null });
+    assert.equal(fs.existsSync(startupPath), false);
+    const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
+    assert.equal(receipt.type, "failed");
+    assert.equal(receipt.requestId, requestId);
+    assert.match(receipt.error.message, /Learn humanizer request is invalid/i);
+    assert.doesNotMatch(receipt.error.message, /outside its runtime root/i);
+    const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+    assert.equal(marker.state, "running");
+    assert.equal(marker.pid, child.pid);
+  } finally {
+    if (child.exitCode === null) child.kill();
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 describe("long Learn route handoff contracts", () => {
   const routes = [
     ["plan", "plan"],
@@ -1099,7 +1203,7 @@ test("development Learn workers are detached, IPC-gated, and load the same sourc
   assert.match(worker, /renameSync\(concurrencyPath, transitionPath\)/);
   assert.match(worker, /openSync\(concurrencyPath, "wx"\)/);
   assert.match(worker, /const keepalive = setInterval/);
-  assert.match(worker, /executeLearnOperation/);
+  assert.match(worker, /executeAdmittedLearnOperation/);
   assert.doesNotMatch(worker, /getLearnStatusSnapshot/);
   assert.match(executor, /runLearnPipeline/);
   assert.match(executor, /runTextbookGeneration/);

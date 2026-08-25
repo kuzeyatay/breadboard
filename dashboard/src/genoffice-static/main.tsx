@@ -17,6 +17,8 @@ const artifactId = params.get('artifactId')?.trim() ?? ''
 const conversationId = params.get('conversationId')?.trim() ?? ''
 const version = Number(params.get('version') ?? '0')
 const root = document.getElementById('root')
+const autoSaveDefaultVersionKey = 'breadboard.genoffice.autoSaveDefaultVersion'
+const autoSaveDefaultVersion = '1'
 
 if (!root || !artifactId || !conversationId) {
   document.body.textContent = 'This editor link is missing its artifact conversation.'
@@ -27,7 +29,10 @@ if (!root || !artifactId || !conversationId) {
     initialVersion: Number.isInteger(version) ? version : 0,
   })
   localStorage.setItem('aidocs.showAi', '1')
-  localStorage.setItem('aidocs.autoSave', '0')
+  if (localStorage.getItem(autoSaveDefaultVersionKey) !== autoSaveDefaultVersion) {
+    localStorage.setItem('aidocs.autoSave', '1')
+    localStorage.setItem(autoSaveDefaultVersionKey, autoSaveDefaultVersion)
+  }
   setModuleLang('en')
   document.documentElement.lang = htmlLang('en')
   document.documentElement.setAttribute('data-theme', 'light')

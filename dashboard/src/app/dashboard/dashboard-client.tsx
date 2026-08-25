@@ -32,7 +32,7 @@ import {
 } from "@/lib/cluster-folders";
 import NavBar from "@/app/components/navbar";
 import type { NavbarShortcuts } from "@/lib/profile/navbar-shortcuts.ts";
-import DashboardAgentTerminal from "@/app/components/hermes/dashboard-agent-terminal";
+import LazyDashboardAgentTerminal from "@/app/components/hermes/lazy-dashboard-agent-terminal";
 import type { TerminalPanel } from "@/app/components/hermes/terminal-sidebar";
 import ScheduledChatsDock from "@/app/components/scheduled-chats-dock";
 import PersonProfileDialog from "@/app/components/person-profile-dialog.tsx";
@@ -329,8 +329,21 @@ export default function DashboardClient({
   const bgFileInputRef = useRef<HTMLInputElement>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
   const resizeSessionRef = useRef<ResizeSession | null>(null);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
   // Per-file upload start timestamps (ms) for the live duration markers.
   const uploadStartedAtRef = useRef<Record<string, number>>({});
+
+  // A pointer-up normally owns this cleanup. Route changes and a replacement
+  // gesture do not necessarily deliver one, so keep the listener disposer with
+  // the dashboard that installed it.
+  useEffect(
+    () => () => {
+      resizeCleanupRef.current?.();
+      resizeCleanupRef.current = null;
+      resizeSessionRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     const stored = localStorage.getItem("dashboard:bg-image");
@@ -361,16 +374,29 @@ export default function DashboardClient({
   // re-rendered the entire dashboard — every garden card — once per frame. A
   // variable moves the padding without React hearing about it at all.
   useEffect(() => {
-    const dock = document.querySelector("[data-terminal-dock]");
-    if (!dock) return;
+    let dock: Element | null = null;
     const observer = new ResizeObserver(([entry]) => {
       document.documentElement.style.setProperty(
         "--bb-dock-height",
         `${Math.round(entry.contentRect.height)}px`,
       );
     });
-    observer.observe(dock);
+    const observeCurrentDock = () => {
+      const current = document.querySelector("[data-terminal-dock]");
+      if (current === dock) return;
+      if (dock) observer.unobserve(dock);
+      dock = current;
+      if (dock) observer.observe(dock);
+    };
+    observeCurrentDock();
+    // The lightweight terminal bar is replaced by the real, dynamically
+    // compiled dock on first use. Rebind the observer at that one boundary so
+    // open-dock padding continues to follow its dragged height.
+    const mutations = new MutationObserver(observeCurrentDock);
+    const terminalHost = document.querySelector("[data-lazy-terminal-host]");
+    if (terminalHost) mutations.observe(terminalHost, { childList: true });
     return () => {
+      mutations.disconnect();
       observer.disconnect();
       document.documentElement.style.removeProperty("--bb-dock-height");
     };
@@ -1600,6 +1626,18 @@ export default function DashboardClient({
     e.preventDefault();
     e.stopPropagation();
 
+    const interrupted = resizeSessionRef.current;
+    resizeCleanupRef.current?.();
+    resizeCleanupRef.current = null;
+    resizeSessionRef.current = null;
+    if (interrupted) {
+      updateLocalCluster(interrupted.clusterId, (item) => ({
+        ...item,
+        card_width: interrupted.previousWidth,
+        card_height: interrupted.previousHeight,
+      }));
+    }
+
     const session: ResizeSession = {
       clusterId: cluster.id,
       startX: e.clientX,
@@ -1655,12 +1693,22 @@ export default function DashboardClient({
       }));
     };
 
-    const handleEnd = () => {
+    let detached = false;
+    const detach = () => {
+      if (detached) return;
+      detached = true;
       window.removeEventListener("pointermove", handleMove);
       window.removeEventListener("pointerup", handleEnd);
       window.removeEventListener("pointercancel", handleEnd);
       document.body.style.cursor = previousCursor;
       document.body.style.userSelect = previousUserSelect;
+      if (resizeCleanupRef.current === detach) {
+        resizeCleanupRef.current = null;
+      }
+    };
+
+    const handleEnd = () => {
+      detach();
 
       const finished = resizeSessionRef.current;
       resizeSessionRef.current = null;
@@ -1694,6 +1742,7 @@ export default function DashboardClient({
     window.addEventListener("pointermove", handleMove);
     window.addEventListener("pointerup", handleEnd);
     window.addEventListener("pointercancel", handleEnd);
+    resizeCleanupRef.current = detach;
   }
 
   function openUploadModal(cluster: Cluster) {
@@ -3643,8 +3692,9 @@ export default function DashboardClient({
 
       <Toaster toasts={toasts} onDismiss={dismissToast} />
 
-      <DashboardAgentTerminal
+      <LazyDashboardAgentTerminal
         scope={clusterView === "public" ? "public" : "mine"}
+        restoreOwnerKey={userEmail.trim().toLowerCase()}
         initialPanel={initialTerminalPanel}
         backdropImage={bgImage}
       />

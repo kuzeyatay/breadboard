@@ -37,6 +37,7 @@ import type {
   GBrainSynthesizeOutput,
   GBrainRetrievalMode,
 } from "../gbrain/types.ts";
+import { readSupervisedServiceSnapshot } from "../supervisor-control.ts";
 
 export const GBRAIN_TOOLS = [
   "gbrain_status",
@@ -286,6 +287,22 @@ async function statusReport(
       embeddingsAvailable: false,
       configuredGardens,
       message: "GBrain is disabled for this deployment.",
+    };
+  }
+  const lifecycle = await readSupervisedServiceSnapshot("gbrain");
+  if (
+    lifecycle &&
+    (lifecycle.state === "pending" ||
+      lifecycle.state === "starting" ||
+      lifecycle.state === "stopped" ||
+      lifecycle.state === "available-but-stopped")
+  ) {
+    return {
+      state: "available-but-stopped",
+      mode: null,
+      embeddingsAvailable: false,
+      configuredGardens,
+      message: "GBrain is available and will start automatically when retrieval is requested.",
     };
   }
   const health = await new GBrainClient(config).health();

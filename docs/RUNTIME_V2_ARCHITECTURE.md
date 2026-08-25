@@ -1,0 +1,540 @@
+# Breadboard Runtime V2 architecture
+
+Status: implementation in progress. The Rust protocol, registry, admission, and
+durable job-store foundations exist in source, but Runtime V2 is not yet the
+active process owner. This document describes the required end state and the
+cutover rules; it does not claim that the migration is complete.
+
+## Current active path (source audit, 2026-08-25)
+
+The executable path still contradicts the target architecture and must not be
+mistaken for a partial cutover:
+
+- Electron runs `desktop/dist/main/main.js`, whose compiled lifecycle still
+  constructs the TypeScript `ServiceManager` and calls `startAll()`.
+- No `breadboard-runtime.exe` exists in the native target, desktop resources,
+  build resources, or installed-resource staging locations.
+- `desktop/src/main/runtime-process.ts` now contains a narrow, fail-closed
+  source adapter for the future binary, but application lifecycle has not been
+  wired to it. Its presence is not an active cutover.
+- The current `runtime-supervisor` source is a one-shot wrapper around one
+  arbitrary Electron-supplied command. It is optional; when its executable is
+  absent, `ServiceManager` directly spawns the service.
+- That helper source now drains output with bounded cleanup, reports incomplete
+  accounting, and preserves hard-limit classification, but those changes are
+  uncompiled and do not make it the generalized runtime owner.
+- Electron still owns service definitions, ports, adoption, readiness,
+  restarts, leases, memory sampling, pressure handling, and shutdown. Next also
+  retains direct worker/coordinator spawn paths.
+- The unbuilt TypeScript source now marks Hermes and GBrain on-demand with
+  ten-minute idle TTLs. Passive Terminal/Garden status reads distinguish
+  `available-but-stopped` without starting either tree; the first real
+  server-side operation acquires the existing transitional lease. This reduces
+  startup retention only after a future authorized rebuild and does not transfer
+  ownership to Rust.
+- The five current capability leases are admission wrappers only. They do not
+  transfer Learn, ingestion, artifact, browser, or Postiz process ownership to
+  Rust.
+- The current Rust manifest structs and checked-in version-1 foundation validate
+  identity, relative executable and entrypoint paths, dependencies, lifecycle
+  policy, and resource limits, but
+  they do not yet describe the fixed launch argument/configuration binding,
+  readiness proof, installation probe, or trusted secret references needed to
+  launch the real service inventory. They are therefore registry foundations,
+  not deployable product manifests.
+
+Consequently, a helper binary beside the legacy manager would not satisfy this
+design. Activation must select one authority before any service spawn, fail
+closed if that authority cannot start, and never fall back to direct Electron
+or Next execution in Runtime V2 mode.
+
+## Outcome
+
+Breadboard keeps its Electron shell, Next.js dashboard, React UI, and existing
+domain implementations. A single packaged Rust process becomes the only owner
+of Breadboard-managed processes:
+
+```text
+Electron main
+  `-- breadboard-runtime.exe
+        |-- dashboard (Next standalone)
+        |-- leased/scheduled services
+        |-- Postiz coordinator and its explicitly managed stack
+        `-- one-process-per-attempt finite workers
+```
+
+Electron owns only the runtime process. The runtime owns every managed service,
+worker, browser, compiler, and descendant through a Windows Job Object. Next.js
+remains an authenticated compatibility layer, but it submits work and relays
+events instead of spawning or retaining heavyweight work.
+
+There must never be two active lifecycle authorities. Legacy Electron-owned
+services and Runtime V2 are mutually exclusive modes until the all-service
+cutover is ready.
+
+## Ownership invariants
+
+1. Only the Rust runtime may start a registered service or worker executable.
+2. A renderer or HTTP request may name a registered service or job type, never
+   an executable, command line, environment block, or arbitrary path.
+3. Every managed process is assigned to the runtime's Job Object before its
+   first instruction executes. Assignment failure terminates and reaps the
+   suspended process before returning an error.
+4. Finite work gets a fresh process for one attempt. The process and its entire
+   descendant tree exit after the terminal result has been persisted.
+5. Persistent processes are limited to core, external, and registered leased or
+   scheduled services. An on-demand service with no live lease reaches its idle
+   deadline and exits.
+6. The Rust runtime is the sole writer for job state, service lease state,
+   admission decisions, worker fencing, and terminal classifications.
+7. Memory limits are a last-resort safety boundary. Normal memory reclamation
+   comes from worker or idle-service process exit.
+8. An ambiguous attempt is never silently retried. Recovery exposes an
+   `interrupted` or `uncertain` result and requires an explicit policy or user
+   action.
+9. The pre-migration capability registry is an immutable parity baseline. A
+   service being stopped changes lifecycle state, never agent visibility,
+   command routing, selection semantics, or capability availability.
+
+## Same-product parity gate
+
+The Runtime V2 migration is gated by stable capability IDs rather than by a
+small set of representative demos. The baseline captures every visible agent,
+slash command, implicit route, skill, connection, MCP surface, provider/model
+choice, approval path, chat surface, artifact type, and recovery contract.
+
+Each worker and service definition declares the capability IDs it serves. Before
+an adapter can cut over, the parity harness must prove that those IDs retain the
+same display name, ordering, entry point, routing, input/output type, progress,
+streaming, cancellation, approval, follow-up, artifact, and restart behavior.
+The old direct-spawn path is removed only after that focused before/after gate
+passes. A missing credential or external program is recorded as `BLOCKED` on
+both sides; it is never omitted or converted to `PASS`.
+
+## Trust boundary and registries
+
+Versioned worker and service manifests are packaged with the application. The
+runtime validates them before accepting requests and fails closed on:
+
+- an unsupported manifest or protocol version;
+- duplicate service, worker, or job-type ownership;
+- an unknown dependency or dependency cycle;
+- an absolute, traversing, or otherwise untrusted executable/entrypoint path;
+- an invalid memory, timeout, concurrency, or idle policy;
+- a finite worker configured to serve more than one job.
+
+Electron derives four roots and supplies them over the private bootstrap
+boundary. In development `appRoot` is the repository while `runtimeRoot` is
+`desktop/build-resources`; in an installed app they are respectively
+`resources/app-services` and `process.resourcesPath`. The runtime identity-pins
+both independently. It reads only
+`runtimeRoot/runtime-v2/manifests/{workers,services}.json`, resolves and pins
+`allowedExecutable` beneath `runtimeRoot`, and separately resolves and pins
+`allowedEntrypoint` beneath `appRoot`. Requests cannot add or override either
+path. Worker input, checkpoints, artifacts, and results use job-relative paths
+beneath the runtime data root.
+The source core also owns a non-serializable `ControlPlaneAuthority`: it checks
+the bounded per-launch bearer before it can mint an opaque user job context,
+redacts the secret from diagnostics, and keeps raw context constructors
+crate-private. The source path authority now canonicalizes and identity-pins
+existing roots, rejects symlink/junction/reparse components, verifies the final
+path from each opened handle, bounds reads before materialization, and pins
+manifest, launch, and database paths across their trusted consumer's open.
+The checked-in/staged service manifest currently covers the real dashboard,
+ChatMock, and Hermes paths. The worker manifest remains empty, and the source
+coverage validator deliberately fails for both mandatory worker types. Learn's
+existing worker depends on legacy Node IPC/start-file orchestration rather than
+the Runtime V2 ready/event protocol; document ingestion remains an in-process
+API pipeline with no finite worker entrypoint. No mock or hanging launch path
+is registered for either gap.
+These guarantees remain uncompiled and inactive until the runtime host is wired
+and verified.
+
+## Runtime data layout
+
+Runtime V2 uses a dedicated namespace and database. It does not repurpose the
+dashboard database or any garden database.
+
+```text
+<userData>/runtime-v2/
+  runtime-v2.sqlite3
+  jobs/<job-id>/
+    input.json
+    input/
+    workspace/
+    checkpoints/
+    artifacts/
+    result.json
+  logs/
+```
+
+Inputs are staged before admission by streaming into the private job directory.
+The input manifest contains bounded metadata and relative paths, not whole-file
+base64 payloads. Results are written to a temporary sibling and atomically
+renamed before the terminal event is accepted.
+
+## Durable job state
+
+The lifecycle is explicit:
+
+```text
+queued -> admitted -> starting -> running <-> checkpointing
+   |          |          |           |
+   `----------+----------+-----------+-> cancelling -> cancelled
+                         |           |
+                         +-----------+-> succeeded
+                         +-----------+-> failed
+                         +-----------+-> resource_exhausted
+                         `-----------+-> interrupted
+                         `-----------+-> uncertain
+```
+
+Terminal states never transition. Cancellation is first persisted as
+`cancelling`; `cancelled` is persisted only after the process owner confirms
+that the complete worker tree is gone. Restart recovery uses durable
+checkpoints and provider receipts: an attempt known not to have completed is
+`interrupted`, while a provider or external side effect whose completion cannot
+be determined is `uncertain`. Neither state is retried automatically. The
+source store now distinguishes cancellation, pre-ready interruption, a latest
+durable checkpoint, activity after a checkpoint, completion intent, and
+unclassified external effects. A newly started host can enumerate completion
+intents for trusted result validation before reconciliation. Durable
+provider-receipt writing is still absent, so post-checkpoint or otherwise
+ambiguous external effects remain `uncertain`.
+
+The dedicated SQLite store records:
+
+- generic job identity and type;
+- user, garden, and conversation ownership where applicable;
+- worker kind, resource class, attempt, and worker-instance fence;
+- input, workspace, checkpoint, artifact, and result paths;
+- stage, progress, heartbeat, timestamps, and cancellation intent;
+- structured failure or resource-exhaustion information;
+- an idempotency key;
+- an append-only replay stream and durable checkpoints.
+
+The runtime is the only writer. Readers use bounded event replay with a sequence
+cursor. Each replay page reads the ownership-scoped job row, the requested
+limit plus one events, and the active job reservation state from one SQLite
+read transaction. The replay `terminal` bit is true only when durable job state
+is terminal and no pending or resident job reservation remains. A failed worker
+whose process tree has not yet been confirmed gone therefore remains unsealed
+for replay even though job inspection reports `failed`; releasing the tree
+reservation seals the stream, and the live-tree release path appends its final
+public lifecycle event in that same transaction. A consumer is fully drained
+only when `terminal` is true and `hasMore` is false. Once sealed, authoritative
+store APIs permit and expect no later public event. Unknown persisted state or
+malformed stored events are corruption errors, never silently coerced to
+another state.
+
+## Worker protocol and fencing
+
+Each attempt has the tuple:
+
+```text
+(jobId, attempt, workerInstanceId)
+```
+
+Every worker event carries that tuple. An event from an earlier process or
+attempt is rejected even if it refers to the same job. Protocol lines, request
+bodies, identifiers, stages, failure messages, log lines, and buffered output
+all have explicit byte limits.
+
+Required worker events are:
+
+- `ready`
+- `heartbeat`
+- `progress`
+- `checkpoint`
+- `artifact`
+- `complete`
+- `failed`
+
+The authenticated status/replay boundary has a separate closed public contract
+in source. Rust uses typed event, stage, artifact-kind, and failure-code enums;
+the bounded Next client parses the same contract as a discriminated union. It
+accepts exactly 25 public event types:
+
+- runtime-origin: `queued`, `admitted`, `worker-assigned`,
+  `reservation-settled`, `reservation-released`, `cancellation-requested`,
+  `completion-confirmed`, `job-starting`, `job-running`, `job-checkpointing`,
+  `job-cancelling`, `job-cancelled`, `job-succeeded`, `job-failed`,
+  `job-resource-exhausted`, `job-interrupted`, and `job-uncertain`;
+- worker-origin: `worker-ready`, `worker-heartbeat`, `worker-progress`,
+  `worker-checkpoint`, `worker-artifact`, `worker-complete`, `worker-failed`,
+  and `worker-cancellation-acknowledged`.
+
+Each event has exactly one payload shape and one fence class; missing or extra
+payload fields, wrong fixed values, and mismatched fences fail closed. The
+fence assignment is:
+
+- `runtime-zero` (`attempt=0`, null worker identity and sequence): `queued` and
+  `admitted`;
+- `runtime-attempt` (positive attempt, runtime-owned worker identity, null
+  worker sequence): `worker-assigned`, `reservation-settled`,
+  `completion-confirmed`, `job-starting`, `job-running`, `job-checkpointing`,
+  `job-succeeded`, `job-failed`, and `job-uncertain`;
+- `runtime-current` (either valid runtime-zero or runtime-attempt):
+  `reservation-released`, `cancellation-requested`, `job-cancelling`,
+  `job-cancelled`, `job-resource-exhausted`, and `job-interrupted`;
+- `worker` (positive attempt, matching worker identity, and positive worker
+  sequence): all eight worker-origin events.
+
+Payloads are likewise exact. `reservation-settled`, `reservation-released`, and
+`worker-complete` use `{}`. `worker-heartbeat` has only `stage`;
+`worker-progress` has only `stage`, `progressCurrent`, and `progressTotal`;
+`worker-checkpoint` and `worker-artifact` have only `artifactKind`; and
+`worker-failed` is fixed to `state=failed`, `failureCode=WORKER_FAILED`, and the
+sanitized message `Runtime job execution failed.` The remaining state-only
+events are fixed as follows: `queued`/`admitted` preserve those states,
+`worker-assigned` and `job-starting` use `starting`, `completion-confirmed` and
+`job-succeeded` use `succeeded`, `worker-ready` and `job-running` use `running`,
+`cancellation-requested`, `worker-cancellation-acknowledged`, and
+`job-cancelling` use `cancelling`, and the remaining mappings are
+`job-checkpointing` to `checkpointing`, `job-cancelled` to `cancelled`,
+`job-failed` to `failed`, `job-resource-exhausted` to `resource_exhausted`,
+`job-interrupted` to `interrupted`, and `job-uncertain` to `uncertain`.
+
+The public stage vocabulary is exactly `preparing`, `working`, `generating`,
+`waiting-external`, `processing`, `persisting`, `finalizing`, and `cancelling`.
+The public artifact kinds are exactly `checkpoint`, `artifact`, `document`,
+`image`, `audio`, `video`, `model`, `report`, `archive`, and `page`. The public
+failure codes are exactly `RUNTIME_JOB_FAILED`, `WORKER_FAILED`,
+`BREADBOARD_RESOURCE_EXHAUSTED`, `JOB_INTERRUPTED`, and `JOB_UNCERTAIN`.
+Runtime-owned exact mappings use `working` and `artifact` for unknown private
+stage/artifact tokens; raw worker or durable failure identifiers and messages
+never cross this boundary.
+
+Workers never mutate the job database. They write only inside their private
+workspace and emit bounded events. A completion event is accepted only for the
+currently fenced attempt and exact result path. It records completion intent;
+it does not by itself publish `succeeded`. The runtime verifies that the result
+was durably written through the trusted path and that the complete fenced
+process tree exited before publishing terminal success and releasing the
+admission hold. `JobStore` now accepts only an opaque, non-serializable
+`WorkerCompletionProof`. Only the unconstructable core process-owner capability
+can mint it after tree exit, an exact handle-backed reopen, a 1 MiB ceiling,
+fenced envelope/sequence validation, structural validation, and SHA-256 hashing.
+The source-only process-owner foundation now drives the existing native Windows
+supervisor through pinned runtime/application/data authorities and mints that
+capability only after a matching root receipt, zero Job Object residents,
+complete final accounting, no cleanup errors, and matching supervisor exit.
+It remains uncompiled and is not yet wired into the product dispatcher.
+
+`qa/runtime-v2/validate-runtime-control-contract.mjs` performs a source-only
+drift check across the machine-readable control contract, Rust protocol source,
+Electron adapter source, and the bounded Next compatibility client. It is not a
+substitute for the unrun compiled, integration, Electron, parity, or memory
+suites. The source validator currently passes, and the focused plain-Node
+supervisor-control suite passes 26/26 for the matching parser and request
+boundary. The Rust/native implementation remains uncompiled and is not wired
+into the product runtime.
+
+## Windows process containment
+
+The runtime creates each root process suspended, attaches it to a Job Object,
+and resumes it only after successful assignment. The Job Object provides:
+
+- kill-on-close containment for descendants;
+- aggregate job memory accounting;
+- a hard job-wide commit ceiling as a final backstop;
+- completion notifications used to distinguish root exit from full-tree exit;
+- deterministic forced cancellation after a bounded graceful interval.
+
+Only the child's intended standard handles are inherited. Parent disconnect,
+runtime shutdown, assignment failure, readiness timeout, heartbeat timeout,
+maximum runtime, and hard-limit termination all have explicit terminal
+classification and reaping behavior.
+
+The source-only admission governor reads the system-wide Windows
+`CommitTotal`, `CommitLimit`, and page size through `GetPerformanceInfo`. It
+retains exact byte counters, rounds committed bytes up and the limit down for
+conservative MiB admission, samples once inside the serialized durable
+admission transaction, and cannot be configured below the 8 GiB reserve floor
+through its public API. This sampler and governor are not yet compiled or wired
+into a dispatcher.
+
+Workers that deliberately use `CREATE_BREAKAWAY_FROM_JOB`, detached/unref
+browser processes, shell backgrounding, or equivalent ownership escape hatches
+are incompatible with Runtime V2 and must be migrated before activation.
+
+## Admission and memory policy
+
+Admission uses Windows commit, not only process RSS. For a request, the runtime
+requires at least:
+
+```text
+configured reserve + estimated cold-start commit
+```
+
+The decision also accounts for active job and service resource classes,
+per-definition concurrency, and the product-wide heavyweight concurrency rule.
+The first policy is one heavyweight class at a time until measurements justify
+a narrower matrix.
+
+A denial is structured and non-retryable by default. It reports the resource,
+required headroom, available headroom, and reason. An HTTP retry loop must not
+turn an admission denial into a memory storm.
+
+Soft limits emit telemetry and may request a checkpoint or graceful release.
+Hard limits terminate the complete Job Object and persist
+`resource_exhausted`. Neither limit is considered successful completion.
+
+## Services and leases
+
+Service definitions declare startup policy (`eager`, `on-demand`, `scheduled`,
+or `external`), dependencies, resource class, commit estimates, limits, idle
+TTL, shutdown timeout, and restart policy.
+
+An authenticated caller acquires a bounded lease by registered service ID. The
+runtime starts dependencies in order, waits for readiness, and returns an opaque
+lease ID. Lease renewal and release are runtime operations. When the final lease
+expires or is released, an on-demand service begins its idle timer and the
+runtime shuts down and reaps the full tree at expiry.
+
+Service restarts are bounded and observable. Restart-on-failure never applies
+to deliberate shutdown, admission denial, or a hard memory-limit event. Eager
+startup is reserved for measured core requirements; optional compilers, model
+servers, browser runtimes, Docker stacks, and media services are not eager.
+
+Postiz is governed as one scheduled/on-demand capability: the coordinator,
+Docker/WSL command, containers, health checks, leases, idle deadline, and stack
+shutdown are represented under the same Rust authority. Existing Docker volumes
+and user data are preserved.
+
+## Electron and Next.js compatibility boundary
+
+Electron launches Runtime V2 with private bootstrap material and waits for a
+versioned readiness response. Renderer IPC exposes only allow-listed operations
+such as submit, cancel, subscribe, acquire lease, release lease, and status.
+Secrets and capability tokens remain in the main process/private control plane.
+
+The private bootstrap is one bounded NDJSON message containing only protocol
+version, runtime mode, and the application/data/config/runtime roots. The
+runtime root identifies packaged launch assets independently from application
+source and mutable data. Bootstrap cannot carry a command, argument vector,
+cwd, or environment block. The runtime replies once
+with a bounded `runtime-ready` message containing its PID, loopback control
+origin, private control token, dashboard URL, and sanitized service states.
+Electron validates the protocol version, PID, loopback origins, status schema,
+and service IDs before leaving the existing startup presentation. Runtime V2
+control uses authenticated `GET /v1/status`, `POST /v1/shutdown`, and bounded
+job submission/inspection/event-replay/cancellation endpoints under `/v1/jobs`;
+the token is never forwarded to the renderer. Those job endpoints currently
+stop at durable queued state because the dispatcher is not yet wired.
+
+Next.js routes preserve their current authentication, status codes, SSE event
+shape, and terminal payloads. During migration they become thin adapters:
+
+1. authenticate and authorize;
+2. stream/stage input into the runtime-owned job directory;
+3. submit a registered job type with an idempotency key;
+4. replay bounded runtime events to the existing client contract;
+5. propagate cancellation once, then wait for confirmed terminal state.
+
+The untrusted submission body is byte-limited before JSON deserialization and
+contains job type, scopes, idempotency key, and bounded request data only. The
+job owner comes from an opaque authenticated server context; a body cannot
+assert a user or internal principal. The transitional Next control client also
+caps authenticated status and command responses at 64 KiB before strict UTF-8
+and JSON decoding; this source contract has a focused Node test but is not yet
+present in built output.
+
+Routes must not import heavyweight model libraries, spawn children, open
+browsers, start Docker, or retain whole large documents after staging.
+
+## Dashboard modes
+
+Production and normal development use a built standalone dashboard supervised
+by Runtime V2. A separate explicit hot-development mode may run the Next
+compiler/watch server. Hot mode is never selected implicitly by the packaged
+application or by lean development, and it reports its compiler memory as an
+external development cost.
+
+Quartz and other compiler-backed product features remain available, but their
+builds run as disposable jobs when requested. No product compiler/watch service
+starts merely because the application opened.
+
+## Shutdown and recovery order
+
+Normal shutdown is coordinated in this order:
+
+1. stop accepting submissions and leases;
+2. persist cancellation intent for finite workers;
+3. request graceful worker/service shutdown;
+4. wait bounded deadlines while continuing to drain events;
+5. terminate remaining Job Objects and confirm complete-tree exit;
+6. persist final classifications and flush the database;
+7. close the root Job Object and exit the runtime;
+8. allow Electron to exit.
+
+On startup, the runtime verifies manifests and schema before opening admission,
+reconciles uncertain attempts without blind retry, restores replayable terminal
+state, and leaves optional services stopped until demand.
+
+## Packaging and cutover
+
+The packaged Rust binary and packaged manifests are one versioned unit. Builds
+must fail if Cargo is unavailable, if the binary cannot be rebuilt, if the
+manifest/protocol version disagrees, or if a staged binary cannot be verified.
+A previously existing executable is not proof that the current source was
+built.
+
+Cutover is allowed only when:
+
+- every Electron service definition has a Runtime V2 service definition;
+- every pre-migration capability ID remains in the parity registry;
+- every qualifying execution path has an inventory disposition;
+- direct-spawn and breakaway paths are removed from the active mode;
+- Electron launches only one lifecycle authority;
+- shutdown, cancellation, recovery, and renderer cleanup tests pass;
+- the real Electron workflow and memory burn-in complete with inspected
+  receipts.
+
+Until then, Runtime V2 source may be developed and tested in isolation, but it
+must not silently compete with legacy Electron ownership.
+
+## Evidence and current limitations
+
+The first installed-app baseline is preserved under
+`qa/runtime-v2/evidence/baseline-installed-2026-08-24T20-09-33-083Z/`. It is an
+aborted result, not a pass. Opening the old installed application eagerly
+started Quartz build/watch and `esbuild`; the QA-owned tree peaked at 3,634.2 MB
+private bytes, including 2,894.4 MB in the Quartz Node process and 270.7 MB in
+`esbuild`. The tree was immediately stopped and all captured PIDs were verified
+gone.
+
+A complete before/after workflow is still required. It must cover visible
+Electron startup, dashboard navigation, Garden, Learn setup/start/progress/
+completion/cancellation, ingestion, artifact/media/browser work, idle service
+reclamation, restart recovery, and repeated burn-in. Each receipt must record
+process-tree memory and Windows commit before, peak, after completion, and after
+idle TTL.
+
+Rust compilation and production dashboard compilation are currently withheld
+to honor the operator's explicit stop-compilation instruction. Source changes
+made under that condition are unverified until those compilers are explicitly
+allowed again.
+
+The machine-readable command ledger is
+`qa/runtime-v2/verification-status.json`. It records source-only passes, the
+aborted installed baseline, every required command still `NOT RUN`, and the
+current six-failure terminal source-assertion suite without converting targeted
+passing assertions into an overall pass. It also records the focused 26-test
+supervisor-control adapter pass and the passing source-only control-contract
+validator, neither of which started a compiler, bundler, service, worker, or
+application.
+Renderer lifecycle work has focused plain-Node evidence for stream reader
+release, duplicate terminal-probe suppression, terminal-rail and garden-card
+drag teardown, reference-counted history-request cancellation, Garden proposal
+request cancellation, and speech media/blob disposal. The focused renderer
+command passes 23/23 and the adjacent history/caching command passes 28/28.
+Those are source/runtime-unit results only: TypeScript compilation, actual
+renderer GPU/canvas reclamation, Electron behavior, and memory return remain
+unverified. A broader Hermes source-contract sample remains an honest FAIL at
+41/44 because three current dirty Terminal/Skills assertions disagree with the
+source.
+The inventory-only feature-parity command currently fails two frozen-source
+drift checks: the intentionally changed Terminal source hash and the Next API
+route-catalog hash. The baseline has not been silently regenerated around those
+changes.

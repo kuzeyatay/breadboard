@@ -19,10 +19,11 @@ These packages are retained:
 - `i18n`
 
 The upstream `apps/docs/src/renderer` and `apps/docs/src/shared` trees are also
-retained. Their visual/editor source is copied from the same pin. Six focused
+retained. Their visual/editor source is copied from the same pin. Seven focused
 compatibility files are intentionally overlaid during sync: the Electron IPC
-types, the renderer's global bridge declaration, the AI dock, two small browser
-bundling adaptations, and a narrow `bidi-js` type boundary for PDF-to-DOCX.
+types, the renderer's global bridge declaration, the Bread-branded AI dock and
+ribbon entry, two small browser bundling adaptations, and a narrow `bidi-js`
+type boundary for PDF-to-DOCX.
 The overlays live under
 `dashboard/src/vendor-overrides/genoffice/` and are included in the vendor
 drift check.

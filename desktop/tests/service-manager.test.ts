@@ -10,6 +10,7 @@ import {
   SourceChangeVerifier,
   watchedSourceFilename,
   type DesktopServiceDefinition,
+  type ServiceManagerOptions,
 } from "../src/main/service-manager";
 import type {
   ProcessMemorySample,
@@ -18,6 +19,12 @@ import type {
   ServiceResourceBudget,
 } from "../src/main/resource-monitor";
 import type { MemoryPolicy, SystemMemorySnapshot } from "../src/main/memory-policy";
+import {
+  MemoryGovernor,
+  ResourceExhaustionError,
+  type AdmissionRequest,
+  type MemoryRefreshOptions,
+} from "../src/main/memory-governor";
 import { isProcessAlive } from "../src/main/process-tree";
 
 function newManager(): { manager: ServiceManager; logsDir: string } {
@@ -51,6 +58,64 @@ function governedManager(freeCommitMb: number): { manager: ServiceManager; logsD
     systemMetrics: { async sample() { return snapshot; } },
   });
   return { manager, logsDir };
+}
+
+function mutableGovernedManager(
+  initialFreeCommitMb: number,
+  options: Pick<ServiceManagerOptions, "minimumLeaseMs"> = {},
+): {
+  manager: ServiceManager;
+  logsDir: string;
+  setFreeCommitMb(value: number): void;
+  sampleCount(): number;
+  resetSampleCount(): void;
+} {
+  const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-logs-"));
+  let freeCommitMb = initialFreeCommitMb;
+  let samples = 0;
+  const manager = new ServiceManager(new LogManager({ logsDir }), {
+    memoryPolicy: constrainedPolicy,
+    ...options,
+    systemMetrics: {
+      async sample() {
+        samples += 1;
+        return {
+          sampledAt: Date.now(),
+          commitTotalMb: 42_000 - freeCommitMb,
+          commitLimitMb: 42_000,
+          physicalTotalMb: 32_000,
+          physicalAvailableMb: 4_000,
+        };
+      },
+    },
+  });
+  return {
+    manager,
+    logsDir,
+    setFreeCommitMb(value) { freeCommitMb = value; },
+    sampleCount() { return samples; },
+    resetSampleCount() { samples = 0; },
+  };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T | PromiseLike<T>): void;
+  reject(reason?: unknown): void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function memoryGovernorOf(manager: ServiceManager): MemoryGovernor {
+  const governor = (manager as unknown as { governor: MemoryGovernor | null }).governor;
+  if (!governor) throw new Error("test requires a governed ServiceManager");
+  return governor;
 }
 
 function nodeService(
@@ -141,6 +206,632 @@ test("an eager but idle runtime does not occupy a heavyweight concurrency group"
     const lease = await manager.acquireServiceLease("browser", "test-browser-run");
     assert.equal(manager.status("browser").state, "healthy");
     lease.release();
+  } finally {
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
+test("parallel startup admissions are serialized until prior commit is observable", async () => {
+  const runtime = mutableGovernedManager(15_000);
+  const { manager, logsDir } = runtime;
+  manager.register(nodeService("first", "setInterval(()=>{},1000)", {
+    estimatedColdStartCommitMb: 6_000,
+    priority: 100,
+  }));
+  manager.register(nodeService("second", "setInterval(()=>{},1000)", {
+    estimatedColdStartCommitMb: 6_000,
+    priority: 90,
+  }));
+  manager.on("state-changed", (status) => {
+    if (status.id === "first" && status.state === "healthy") {
+      // The first tree has materialized its allocation. The second applicant
+      // must sample this value rather than spending the first one's stale
+      // 15 GB pre-start view.
+      runtime.setFreeCommitMb(9_000);
+    }
+  });
+
+  try {
+    await assert.rejects(() => manager.startAll(), /Required service "second" failed/);
+    assert.equal(manager.status("first").state, "healthy");
+    assert.equal(manager.status("second").state, "failed");
+    assert.equal(manager.status("second").pid, null);
+  } finally {
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
+test("capability admission reclaims an explicit owned tree once and restores it on release", async () => {
+  const runtime = mutableGovernedManager(12_000);
+  const { manager, logsDir } = runtime;
+  manager.register(nodeService("reclaimable", "setInterval(()=>{},1000)", {
+    required: false,
+    startPolicy: "eager",
+    estimatedColdStartCommitMb: 0,
+    priority: 70,
+    pressureSheddable: true,
+  }));
+  manager.registerCapability({
+    id: "foreground-job",
+    estimatedColdStartCommitMb: 3_000,
+    priority: 70,
+    reserveFloor: "critical",
+    concurrencyGroup: "large-generation",
+  });
+  manager.on("state-changed", (status) => {
+    if (status.id === "reclaimable" && status.state === "stopped") {
+      runtime.setFreeCommitMb(7_500);
+    }
+  });
+
+  try {
+    await manager.startAll();
+    assert.equal(manager.status("reclaimable").state, "healthy");
+    runtime.setFreeCommitMb(6_500);
+    runtime.resetSampleCount();
+
+    const lease = await manager.acquireCapabilityLease("foreground-job", "test-reclaim");
+    assert.equal(runtime.sampleCount(), 2, "one failed sample plus one post-reclaim sample");
+    assert.equal(manager.status("reclaimable").state, "stopped");
+    assert.deepEqual(manager.activeLeaseSummary(), [{ targetId: "foreground-job", count: 1 }]);
+
+    // The foreground allocation is gone before restoration starts.
+    runtime.setFreeCommitMb(12_000);
+    lease.release();
+    await waitUntil(() => manager.status("reclaimable").state === "healthy");
+    assert.deepEqual(manager.activeLeaseSummary(), []);
+  } finally {
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
+test("every overlapping capability holds a reclaimed service in either release order", async () => {
+  for (const releaseFirst of ["original", "overlap"] as const) {
+    const runtime = mutableGovernedManager(12_000);
+    const { manager, logsDir } = runtime;
+    manager.register(nodeService("reclaimable", "setInterval(()=>{},1000)", {
+      required: false,
+      startPolicy: "eager",
+      estimatedColdStartCommitMb: 0,
+      priority: 70,
+      pressureSheddable: true,
+    }));
+    manager.registerCapability({
+      id: "original-job",
+      estimatedColdStartCommitMb: 3_000,
+      priority: 90,
+      reserveFloor: "critical",
+      concurrencyGroup: "large-generation",
+    });
+    manager.registerCapability({
+      id: "overlap-job",
+      estimatedColdStartCommitMb: 3_000,
+      priority: 90,
+      reserveFloor: "critical",
+      concurrencyGroup: "browser-automation",
+    });
+    manager.on("state-changed", (status) => {
+      if (status.id === "reclaimable" && status.state === "stopped") {
+        runtime.setFreeCommitMb(12_000);
+      }
+    });
+
+    let originalLease: Awaited<ReturnType<ServiceManager["acquireCapabilityLease"]>> | null = null;
+    let overlapLease: Awaited<ReturnType<ServiceManager["acquireCapabilityLease"]>> | null = null;
+    try {
+      await manager.startAll();
+      runtime.setFreeCommitMb(6_500);
+      originalLease = await manager.acquireCapabilityLease("original-job", "forces reclaim");
+      // Strict production policy excludes simultaneous heavyweight starts.
+      // This unit isolates the ServiceManager bookkeeping by representing a
+      // capability that an alternate policy has already admitted.
+      const governor = memoryGovernorOf(manager);
+      const originalAdmit = governor.admit.bind(governor);
+      governor.admit = async (
+        request: AdmissionRequest,
+        refresh: MemoryRefreshOptions = {},
+      ): Promise<void> => {
+        if (request.id === "overlap-job") return;
+        await originalAdmit(request, refresh);
+      };
+      overlapLease = await manager.acquireCapabilityLease("overlap-job", "overlaps reclaim");
+      governor.admit = originalAdmit;
+      assert.equal(manager.status("reclaimable").state, "stopped");
+
+      const first = releaseFirst === "original" ? originalLease : overlapLease;
+      const last = releaseFirst === "original" ? overlapLease : originalLease;
+      first.release();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(
+        manager.status("reclaimable").state,
+        "stopped",
+        `${releaseFirst} release must not restore while the other capability overlaps`,
+      );
+
+      last.release();
+      await waitUntil(() => manager.status("reclaimable").state === "healthy");
+      assert.deepEqual(manager.activeLeaseSummary(), []);
+    } finally {
+      originalLease?.release();
+      overlapLease?.release();
+      await manager.stopAll();
+      fs.rmSync(logsDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("capability lease expiry releases its reclaim hold and restores the service", async () => {
+  const runtime = mutableGovernedManager(12_000, { minimumLeaseMs: 20 });
+  const { manager, logsDir } = runtime;
+  manager.register(nodeService("reclaimable", "setInterval(()=>{},1000)", {
+    required: false,
+    startPolicy: "eager",
+    estimatedColdStartCommitMb: 0,
+    pressureSheddable: true,
+  }));
+  manager.registerCapability({
+    id: "expiring-job",
+    estimatedColdStartCommitMb: 3_000,
+    priority: 90,
+    reserveFloor: "critical",
+    concurrencyGroup: "large-generation",
+    maxLeaseMs: 40,
+  });
+  manager.on("state-changed", (status) => {
+    if (status.id === "reclaimable" && status.state === "stopped") {
+      runtime.setFreeCommitMb(12_000);
+    }
+  });
+
+  try {
+    await manager.startAll();
+    runtime.setFreeCommitMb(6_500);
+    await manager.acquireCapabilityLease("expiring-job", "abandoned work");
+    assert.equal(manager.status("reclaimable").state, "stopped");
+    await waitUntil(() => manager.activeLeaseSummary().length === 0);
+    await waitUntil(() => manager.status("reclaimable").state === "healthy");
+    assert.match(manager.tailLog("desktop").join("\n"), /expired abandoned lease/);
+  } finally {
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
+test("a pending service lease claim prevents reclaim before lease publication", async () => {
+  const runtime = mutableGovernedManager(12_000);
+  const { manager, logsDir } = runtime;
+  manager.register(nodeService("reclaimable", "setInterval(()=>{},1000)", {
+    required: false,
+    startPolicy: "eager",
+    estimatedColdStartCommitMb: 0,
+    pressureSheddable: true,
+  }));
+  manager.registerCapability({
+    id: "foreground-job",
+    estimatedColdStartCommitMb: 3_000,
+    priority: 90,
+    reserveFloor: "critical",
+    concurrencyGroup: "large-generation",
+  });
+
+  const publicationGate = deferred<void>();
+  const startReturned = deferred<void>();
+  const originalStartService = manager.startService.bind(manager);
+  manager.startService = async (id: string) => {
+    const ok = await originalStartService(id);
+    startReturned.resolve(undefined);
+    await publicationGate.promise;
+    return ok;
+  };
+
+  let serviceLease: Awaited<ReturnType<ServiceManager["acquireServiceLease"]>> | null = null;
+  try {
+    // Use the unpatched implementation for initial startup.
+    manager.startService = originalStartService;
+    await manager.startAll();
+    const originalPid = manager.status("reclaimable").pid;
+    manager.startService = async (id: string) => {
+      const ok = await originalStartService(id);
+      startReturned.resolve(undefined);
+      await publicationGate.promise;
+      return ok;
+    };
+
+    const serviceLeasePromise = manager.acquireServiceLease("reclaimable", "about to use service");
+    await startReturned.promise;
+    runtime.setFreeCommitMb(6_500);
+    await assert.rejects(
+      () => manager.acquireCapabilityLease("foreground-job", "must not steal claimed tree"),
+      /Windows commit headroom/,
+    );
+    assert.equal(manager.status("reclaimable").state, "healthy");
+    assert.equal(manager.status("reclaimable").pid, originalPid);
+
+    publicationGate.resolve(undefined);
+    serviceLease = await serviceLeasePromise;
+    assert.equal(manager.status("reclaimable").activeLeases, 1);
+  } finally {
+    publicationGate.resolve(undefined);
+    serviceLease?.release();
+    manager.startService = originalStartService;
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
+test("pressure reclaim rolls back already-stopped services when a later stop fails", async () => {
+  const runtime = mutableGovernedManager(12_000);
+  const { manager, logsDir } = runtime;
+  manager.register(nodeService("first-reclaimable", "setInterval(()=>{},1000)", {
+    required: false,
+    startPolicy: "eager",
+    estimatedColdStartCommitMb: 0,
+    priority: 10,
+    pressureSheddable: true,
+  }));
+  manager.register(nodeService("second-reclaimable", "setInterval(()=>{},1000)", {
+    required: false,
+    startPolicy: "eager",
+    estimatedColdStartCommitMb: 0,
+    priority: 20,
+    pressureSheddable: true,
+  }));
+  manager.registerCapability({
+    id: "foreground-job",
+    estimatedColdStartCommitMb: 3_000,
+    priority: 90,
+    reserveFloor: "critical",
+    concurrencyGroup: "large-generation",
+  });
+  manager.on("state-changed", (status) => {
+    if (status.id === "first-reclaimable" && status.state === "stopped") {
+      runtime.setFreeCommitMb(12_000);
+    }
+  });
+  const originalStopService = manager.stopService.bind(manager);
+  manager.stopService = async (id: string) => {
+    if (id === "second-reclaimable") throw new Error("injected second stop failure");
+    await originalStopService(id);
+  };
+
+  try {
+    await manager.startAll();
+    runtime.setFreeCommitMb(6_500);
+    await assert.rejects(
+      () => manager.acquireCapabilityLease("foreground-job", "transaction rollback"),
+      /injected second stop failure/,
+    );
+    assert.equal(manager.status("first-reclaimable").state, "healthy");
+    assert.equal(manager.status("second-reclaimable").state, "healthy");
+    assert.deepEqual(manager.activeLeaseSummary(), []);
+  } finally {
+    manager.stopService = originalStopService;
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
+test("failed post-reclaim admission restores despite a pre-existing capability lease", async () => {
+  const runtime = mutableGovernedManager(12_000);
+  const { manager, logsDir } = runtime;
+  manager.register(nodeService("reclaimable", "setInterval(()=>{},1000)", {
+    required: false,
+    startPolicy: "eager",
+    estimatedColdStartCommitMb: 0,
+    pressureSheddable: true,
+  }));
+  manager.registerCapability({
+    id: "existing-job",
+    estimatedColdStartCommitMb: 1_000,
+    priority: 90,
+    reserveFloor: "critical",
+    concurrencyGroup: "browser-automation",
+  });
+  manager.registerCapability({
+    id: "rejected-job",
+    estimatedColdStartCommitMb: 3_000,
+    priority: 90,
+    reserveFloor: "critical",
+    concurrencyGroup: "large-generation",
+  });
+  manager.on("state-changed", (status) => {
+    if (status.id === "reclaimable" && status.state === "stopped") {
+      // Enough to restore the zero-estimate service, but not enough for the
+      // rejected capability's 10 GB overlap requirement.
+      runtime.setFreeCommitMb(9_000);
+    }
+  });
+
+  let existingLease: Awaited<ReturnType<ServiceManager["acquireCapabilityLease"]>> | null = null;
+  const governor = memoryGovernorOf(manager);
+  const originalAdmit = governor.admit.bind(governor);
+  let rejectedAdmissionCalls = 0;
+  try {
+    await manager.startAll();
+    existingLease = await manager.acquireCapabilityLease("existing-job", "already running");
+    governor.admit = async (
+      request: AdmissionRequest,
+      refresh: MemoryRefreshOptions = {},
+    ): Promise<void> => {
+      if (request.id !== "rejected-job") {
+        await originalAdmit(request, refresh);
+        return;
+      }
+      rejectedAdmissionCalls += 1;
+      throw new ResourceExhaustionError({
+        code: "BREADBOARD_RESOURCE_EXHAUSTED",
+        resource: "windows_commit",
+        denialReason: "headroom",
+        requiredHeadroomMb: 10_000,
+        availableHeadroomMb: rejectedAdmissionCalls === 1 ? 6_500 : 9_000,
+        reserveHeadroomMb: 4_000,
+        incomingEstimateMb: 3_000,
+        overlapHeadroomMb: 0,
+        retryable: false,
+        state: "constrained",
+      });
+    };
+    runtime.setFreeCommitMb(6_500);
+    await assert.rejects(
+      () => manager.acquireCapabilityLease("rejected-job", "post-reclaim still unsafe"),
+      /Windows commit headroom/,
+    );
+    assert.equal(rejectedAdmissionCalls, 2, "one initial denial and one post-reclaim denial");
+    assert.equal(manager.status("reclaimable").state, "healthy");
+    assert.deepEqual(manager.activeLeaseSummary(), [{ targetId: "existing-job", count: 1 }]);
+  } finally {
+    governor.admit = originalAdmit;
+    existingLease?.release();
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
+test("active-heavyweight denial never sheds an unrelated pressure-sheddable service", async () => {
+  const runtime = mutableGovernedManager(20_000);
+  const { manager, logsDir } = runtime;
+  manager.register(nodeService("reclaimable", "setInterval(()=>{},1000)", {
+    required: false,
+    startPolicy: "eager",
+    estimatedColdStartCommitMb: 0,
+    pressureSheddable: true,
+  }));
+  for (const [id, group] of [
+    ["active-job", "browser-automation"],
+    ["rejected-job", "large-generation"],
+  ] as const) {
+    manager.registerCapability({
+      id,
+      estimatedColdStartCommitMb: 1_000,
+      priority: 90,
+      reserveFloor: "critical",
+      concurrencyGroup: group,
+    });
+  }
+
+  let activeLease: Awaited<ReturnType<ServiceManager["acquireCapabilityLease"]>> | null = null;
+  try {
+    await manager.startAll();
+    const pid = manager.status("reclaimable").pid;
+    activeLease = await manager.acquireCapabilityLease("active-job", "exclusive owner");
+    await assert.rejects(
+      () => manager.acquireCapabilityLease("rejected-job", "must not reclaim"),
+      /Another heavyweight operation is already active/,
+    );
+    assert.equal(manager.status("reclaimable").state, "healthy");
+    assert.equal(manager.status("reclaimable").pid, pid);
+    assert.equal(
+      manager.tailLog("reclaimable").some((line) => line.includes("reclaiming pressure-sheddable")),
+      false,
+    );
+  } finally {
+    activeLease?.release();
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
+test("local-pressure denial never sheds a service because reclaim cannot clear it", async () => {
+  const runtime = mutableGovernedManager(20_000);
+  const { manager, logsDir } = runtime;
+  manager.register(nodeService("reclaimable", "setInterval(()=>{},1000)", {
+    required: false,
+    startPolicy: "eager",
+    estimatedColdStartCommitMb: 0,
+    pressureSheddable: true,
+  }));
+  manager.registerCapability({
+    id: "low-priority-job",
+    estimatedColdStartCommitMb: 1_000,
+    priority: 70,
+    reserveFloor: "critical",
+    concurrencyGroup: "large-generation",
+  });
+
+  try {
+    await manager.startAll();
+    const pid = manager.status("reclaimable").pid;
+    memoryGovernorOf(manager).constrainNewHeavyWork(60_000);
+    await assert.rejects(
+      () => manager.acquireCapabilityLease("low-priority-job", "pressure denial"),
+      /Memory pressure prevents new work/,
+    );
+    assert.equal(manager.status("reclaimable").state, "healthy");
+    assert.equal(manager.status("reclaimable").pid, pid);
+    assert.equal(
+      manager.tailLog("reclaimable").some((line) => line.includes("reclaiming pressure-sheddable")),
+      false,
+    );
+  } finally {
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
+test("pressure restoration awaits an existing start promise and remains retryable", async () => {
+  const runtime = mutableGovernedManager(12_000);
+  const { manager, logsDir } = runtime;
+  manager.register(nodeService("reclaimable", "setInterval(()=>{},1000)", {
+    required: false,
+    startPolicy: "eager",
+    estimatedColdStartCommitMb: 0,
+    pressureSheddable: true,
+  }));
+  manager.registerCapability({
+    id: "foreground-job",
+    estimatedColdStartCommitMb: 3_000,
+    priority: 90,
+    reserveFloor: "critical",
+    concurrencyGroup: "large-generation",
+  });
+  manager.on("state-changed", (status) => {
+    if (status.id === "reclaimable" && status.state === "stopped") {
+      runtime.setFreeCommitMb(12_000);
+    }
+  });
+
+  const existingStart = deferred<boolean>();
+  type ManagedStartAccess = { startPromise: Promise<boolean> | null };
+  const internal = manager as unknown as { services: Map<string, ManagedStartAccess> };
+  try {
+    await manager.startAll();
+    runtime.setFreeCommitMb(6_500);
+    const lease = await manager.acquireCapabilityLease("foreground-job", "forces reclaim");
+    const managed = internal.services.get("reclaimable");
+    assert.ok(managed);
+    managed.startPromise = existingStart.promise;
+
+    lease.release();
+    await waitUntil(() => manager.tailLog("reclaimable").some((line) => line.includes("restoring service")));
+    assert.equal(
+      manager.tailLog("reclaimable").some((line) => line.includes("restore remains pending")),
+      false,
+      "restore must remain attached to the existing promise while it is unresolved",
+    );
+
+    existingStart.resolve(false);
+    await waitUntil(() => manager.tailLog("reclaimable").some((line) => line.includes("restore remains pending")));
+    managed.startPromise = null;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(await manager.startService("reclaimable"), true);
+    assert.equal(manager.status("reclaimable").state, "healthy");
+  } finally {
+    existingStart.resolve(false);
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
+test("shutdown drains queued starts and capability acquisitions without late publication", async () => {
+  const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), "bb-logs-"));
+  const sampleStarted = deferred<void>();
+  const sampleResult = deferred<SystemMemorySnapshot>();
+  const manager = new ServiceManager(new LogManager({ logsDir }), {
+    memoryPolicy: constrainedPolicy,
+    systemMetrics: {
+      async sample() {
+        sampleStarted.resolve(undefined);
+        return sampleResult.promise;
+      },
+    },
+  });
+  const spawnedPath = path.join(logsDir, "queued-service-spawned.txt");
+  manager.register(nodeService(
+    "queued-service",
+    `require("fs").writeFileSync(${JSON.stringify(spawnedPath)}, "spawned");setInterval(()=>{},1000)`,
+  ));
+  for (const id of ["first-job", "queued-job"]) {
+    manager.registerCapability({
+      id,
+      estimatedColdStartCommitMb: 1_000,
+      priority: 90,
+      reserveFloor: "critical",
+      concurrencyGroup: id === "first-job" ? "large-generation" : "browser-automation",
+    });
+  }
+
+  try {
+    const firstAdmission = assert.rejects(
+      manager.acquireCapabilityLease("first-job", "holds admission turn"),
+      /shutting down/,
+    );
+    await sampleStarted.promise;
+    const queuedStart = manager.startService("queued-service");
+    const queuedAdmission = assert.rejects(
+      manager.acquireCapabilityLease("queued-job", "queued behind first"),
+      /shutting down/,
+    );
+    const shutdown = manager.stopAll();
+    sampleResult.resolve({
+      sampledAt: Date.now(),
+      commitTotalMb: 20_000,
+      commitLimitMb: 42_000,
+      physicalTotalMb: 32_000,
+      physicalAvailableMb: 8_000,
+    });
+
+    assert.equal(await queuedStart, false);
+    await Promise.all([firstAdmission, queuedAdmission, shutdown]);
+    assert.equal(manager.status("queued-service").state, "stopped");
+    assert.equal(fs.existsSync(spawnedPath), false);
+    assert.deepEqual(manager.activeLeaseSummary(), []);
+  } finally {
+    sampleResult.resolve({
+      sampledAt: Date.now(),
+      commitTotalMb: 20_000,
+      commitLimitMb: 42_000,
+      physicalTotalMb: 32_000,
+      physicalAvailableMb: 8_000,
+    });
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
+test("shutdown aborts an in-flight health wait instead of waiting for its startup timeout", async () => {
+  const { manager, logsDir } = newManager();
+  manager.register(nodeService("slow-health", "setInterval(()=>{},1000)", {
+    healthCheck: {
+      type: "http",
+      url: "http://127.0.0.1:1/never",
+      timeoutMs: 100,
+      intervalMs: 100,
+    },
+    startupTimeoutMs: 20_000,
+  }));
+
+  try {
+    const starting = manager.startService("slow-health");
+    await waitUntil(() => manager.status("slow-health").pid !== null);
+    const shutdownAt = Date.now();
+    await manager.stopAll();
+    assert.equal(await starting, false);
+    assert.ok(Date.now() - shutdownAt < 3_000, "shutdown must abort the 20s health wait");
+    assert.equal(manager.status("slow-health").state, "stopped");
+  } finally {
+    await manager.stopAll();
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  }
+});
+
+test("shutdown cannot let the 500ms liveness path publish healthy afterward", async () => {
+  const { manager, logsDir } = newManager();
+  const states: string[] = [];
+  manager.register(nodeService("liveness", "setInterval(()=>{},1000)"));
+  manager.on("state-changed", (status) => {
+    if (status.id === "liveness") states.push(status.state);
+  });
+
+  try {
+    const starting = manager.startService("liveness");
+    await waitUntil(() => manager.status("liveness").pid !== null);
+    await manager.stopAll();
+    assert.equal(await starting, false);
+    assert.equal(states.includes("healthy"), false);
+    assert.equal(manager.status("liveness").state, "stopped");
   } finally {
     await manager.stopAll();
     fs.rmSync(logsDir, { recursive: true, force: true });

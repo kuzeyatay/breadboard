@@ -30,6 +30,13 @@ import { fileURLToPath } from "node:url";
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(desktopRoot, "..");
 const stagingRoot = path.join(desktopRoot, "build-resources", "app-services");
+const runtimeV2ManifestSource = path.join(desktopRoot, "runtime-v2", "manifests");
+const runtimeV2ManifestTarget = path.join(
+  desktopRoot,
+  "build-resources",
+  "runtime-v2",
+  "manifests",
+);
 const hermesRoot = path.join(repoRoot, "hermes-agent");
 const HERMES_UPSTREAM_COMMIT = "55ef425d0c3967022cb54093112e638c5c3f9e01";
 const scientificSkillsRoot = path.join(repoRoot, "scientific-agent-skills");
@@ -230,6 +237,7 @@ copyTree(
 const learnScriptsTarget = path.join(dashboardTarget, "dashboard", "scripts");
 fs.mkdirSync(learnScriptsTarget, { recursive: true });
 for (const entry of [
+  "background-coordinator.mjs",
   "learn-worker.mjs",
   "learn-worker-import-hook.mjs",
   "windows-breakaway-process.mjs",
@@ -296,6 +304,17 @@ fs.mkdirSync(path.join(stagingRoot, "dashboard"), { recursive: true });
 fs.writeFileSync(
   path.join(stagingRoot, "dashboard", "README.txt"),
   "Marker directory. The dashboard server runs from dashboard-standalone/dashboard/server.js.\n",
+);
+
+// Runtime V2 manifests need one appRoot-relative dashboard entrypoint in both
+// source and installed layouts. This launcher resolves only the real staged
+// standalone dashboard and contains no mock or hot-build fallback. Learn is
+// intentionally not declared until its IPC worker has a Runtime V2 adapter.
+const runtimeV2DashboardScripts = path.join(stagingRoot, "dashboard", "scripts");
+fs.mkdirSync(runtimeV2DashboardScripts, { recursive: true });
+fs.copyFileSync(
+  path.join(repoRoot, "dashboard", "scripts", "runtime-v2-dashboard.mjs"),
+  path.join(runtimeV2DashboardScripts, "runtime-v2-dashboard.mjs"),
 );
 
 // Postiz is an optional background desktop service. Its coordinator runs under
@@ -862,6 +881,14 @@ function scanForbidden(dir) {
   }
 }
 scanForbidden(stagingRoot);
+
+// Manifests live beside bundled executable runtimes, not beneath app-services.
+// Keeping this a direct byte-for-byte stage makes the checked-in definitions
+// the sole package authority and prevents a packaging transform from inventing
+// different launch paths.
+log("staging Runtime V2 launch manifests");
+freshDir(runtimeV2ManifestTarget);
+copyTree(runtimeV2ManifestSource, runtimeV2ManifestTarget);
 if (forbidden.length > 0) {
   fail(`Mutable data or env secrets staged into resources:\n  ${forbidden.join("\n  ")}`);
 }

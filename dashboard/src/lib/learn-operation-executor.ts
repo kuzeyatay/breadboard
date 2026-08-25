@@ -233,6 +233,18 @@ export function executeLearnOperation(
   return withCapabilityLease(
     "learn-worker",
     `learn-${request.operation}`,
-    () => executeLearnOperationInner(request, yieldToResponse),
+    () => executeAdmittedLearnOperation(request, yieldToResponse),
   );
+}
+
+/**
+ * Execute after the dedicated worker has acquired its Learn capability lease.
+ * Keeping this entry point separate prevents that worker from acquiring twice,
+ * while the production in-process fallback above remains independently gated.
+ */
+export function executeAdmittedLearnOperation(
+  request: LearnWorkerRequest,
+  yieldToResponse?: (jobId: string) => Promise<void>,
+): Promise<unknown> {
+  return executeLearnOperationInner(request, yieldToResponse);
 }

@@ -178,11 +178,9 @@ test("Terminal navbar uses a runtime-neutral health dot without an engine badge"
     "dashboard/src/app/components/hermes/dashboard-agent-terminal.tsx",
   );
   assert.doesNotMatch(terminal, /function runtimeLabel/);
-  assert.match(terminal, /aria-label=\{`Agent runtime is/);
-  assert.match(
-    terminal,
-    /runtimeOnline && !knowledgeUnavailable\s*\?\s*"bg-\[#4F805E\]"\s*:\s*"bg-\[#B65B5B\]"/,
-  );
+  assert.match(terminal, /aria-label="Agent runtime is unavailable"/);
+  assert.match(terminal, /\{!runtimeOnline \? \(/);
+  assert.doesNotMatch(terminal, /knowledgeUnavailable/);
   assert.doesNotMatch(terminal, /Review skills/);
   assert.doesNotMatch(terminal, /session\.connection === "idle" \? "ready"/);
 });

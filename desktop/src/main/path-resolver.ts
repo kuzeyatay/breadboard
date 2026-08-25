@@ -18,9 +18,12 @@ export interface ResolvedPaths {
   readonly mode: DesktopMode;
   /** True only for the explicitly gated Playwright development harness. */
   readonly qaMode: boolean;
-  /** Repo root (dev) or `<resources>/app` (packaged): a directory that mirrors
-   * the repo layout for read-only assets (hermes-config, chatmock, ...). */
+  /** Repo root (dev) or `<resources>/app-services` (packaged): a directory
+   * that mirrors the repo layout for read-only code and entrypoints. */
   readonly appRoot: string;
+  /** Immutable executable/manifest authority root. Runtime V2 resolves only
+   * bundled runtimes and launch manifests here, never from appRoot or data. */
+  readonly runtimeRoot: string;
   /** Read-only resources root (equals appRoot in dev). */
   readonly resourcesRoot: string;
   /** Base of all mutable data (Electron userData in packaged mode). */
@@ -83,6 +86,7 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
     const repoRoot = repoRootFromModuleDir(input.moduleDir);
     assertDir(repoRoot, "repository root");
     const dataRoot = qaMode ? userDataRoot : repoRoot;
+    const runtimeRoot = path.join(repoRoot, "desktop", "build-resources");
     const quartzWorkspace = qaMode
       ? path.join(dataRoot, "quartz")
       : path.join(repoRoot, "quartz");
@@ -90,6 +94,7 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
       mode,
       qaMode,
       appRoot: repoRoot,
+      runtimeRoot,
       resourcesRoot: repoRoot,
       dataRoot,
       databaseDir: qaMode
@@ -150,6 +155,7 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
     mode,
     qaMode: false,
     appRoot,
+    runtimeRoot: resources,
     resourcesRoot: resources,
     dataRoot,
     databaseDir: path.join(dataRoot, "database"),

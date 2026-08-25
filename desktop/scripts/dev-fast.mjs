@@ -8,11 +8,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertWindowsCommitHeadroom } from "./commit-preflight.mjs";
 import {
+  availableDashboardBuild,
+  recoverInterruptedDashboardBuild,
   refreshStandaloneDashboardAssets,
   reusableDashboardBuild,
 } from "./dashboard-build-cache.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+recoverInterruptedDashboardBuild(repoRoot);
 const forceRebuild = process.argv.includes("--rebuild");
 const rawBuildEstimate = process.env.BREADBOARD_LEAN_BUILD_ESTIMATE_MB?.trim();
 if (rawBuildEstimate && !/^\d+$/.test(rawBuildEstimate)) {
@@ -61,13 +64,13 @@ async function runDashboardBuild() {
     build.once("exit", (code) => resolve(code ?? 1));
   });
   clearInterval(monitor);
+  if (status !== 0 || reserveCrossed) recoverInterruptedDashboardBuild(repoRoot);
   return reserveCrossed ? 2 : status;
 }
 
 const cached = forceRebuild
   ? { reusable: false, reason: "a rebuild was requested" }
   : reusableDashboardBuild(repoRoot);
-let dashboardMode = "standalone";
 if (cached.reusable) {
   process.stdout.write("[desktop] reusing unchanged standalone dashboard build\n");
   // Public assets do not alter the server graph, so keep them current without
@@ -83,12 +86,22 @@ if (cached.reusable) {
       process.stderr.write(`[desktop] ${error instanceof Error ? error.message : String(error)}\n`);
       process.exit(2);
     }
+    const previous = availableDashboardBuild(repoRoot);
+    if (!previous.available) {
+      process.stderr.write(
+        `[desktop] ${error instanceof Error ? error.message : String(error)} ` +
+        `No compatible standalone dashboard is available (${previous.reason}). ` +
+        "Lean mode will not start a hot compiler. Free memory and rerun, or use desktop:dev:hot explicitly.\n",
+      );
+      process.exit(2);
+    }
     admitted = false;
-    dashboardMode = "bounded-hot";
     process.stderr.write(
       `[desktop] ${error instanceof Error ? error.message : String(error)} ` +
-      "Starting the bounded on-demand dashboard instead; no full build was launched.\n",
+      `Reusing the last complete standalone dashboard${previous.builtAt ? ` from ${previous.builtAt}` : ""}; ` +
+      "recent dashboard source changes will not appear until a rebuild has enough headroom.\n",
     );
+    refreshStandaloneDashboardAssets(repoRoot);
   }
   if (admitted) {
     const buildStatus = await runDashboardBuild();
@@ -101,18 +114,6 @@ if (!npmCli) {
   process.stderr.write("[desktop] npm did not provide npm_execpath; cannot launch the desktop supervisor.\n");
   process.exit(1);
 }
-const explicitDashboardBudget = [
-  "BREADBOARD_DASHBOARD_DEV_HEAP_MB",
-  "BREADBOARD_DASHBOARD_TREE_SOFT_LIMIT_MB",
-  "BREADBOARD_DASHBOARD_TREE_HARD_LIMIT_MB",
-].some((key) => process.env[key]?.trim());
-const boundedHotBudget = dashboardMode === "bounded-hot" && !explicitDashboardBudget
-  ? {
-      BREADBOARD_DASHBOARD_DEV_HEAP_MB: "4096",
-      BREADBOARD_DASHBOARD_TREE_SOFT_LIMIT_MB: "6144",
-      BREADBOARD_DASHBOARD_TREE_HARD_LIMIT_MB: "7168",
-    }
-  : {};
 // Node 24 on Windows rejects direct `.cmd` execution with `shell:false` as
 // EINVAL. Invoke npm's JavaScript entry through the current Node executable so
 // the child remains shell-free, hidden, and owned by this exact process tree.
@@ -122,8 +123,7 @@ const child = spawn(process.execPath, [npmCli, "--prefix", "desktop", "run", "de
   shell: false,
   env: {
     ...process.env,
-    ...boundedHotBudget,
-    BREADBOARD_DESKTOP_DASHBOARD_MODE: dashboardMode,
+    BREADBOARD_DESKTOP_DASHBOARD_MODE: "standalone",
   },
 });
 child.once("error", (error) => {

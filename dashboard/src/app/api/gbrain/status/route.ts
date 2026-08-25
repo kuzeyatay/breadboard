@@ -5,6 +5,7 @@ import { resolveGBrainConfig } from "@/lib/gbrain/config.ts";
 import { GBrainClient } from "@/lib/gbrain/client.ts";
 import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import { loadClusterBySlug, getSyncState, getOrCreateSourceMapping } from "@/lib/gbrain/mapping.ts";
+import { readSupervisedServiceSnapshot } from "@/lib/supervisor-control.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,24 @@ export async function GET(request: Request) {
 
     if (config.mode === "disabled") {
       return NextResponse.json({ state: "disabled", mode: null, embeddingsAvailable: false });
+    }
+
+    const lifecycle = await readSupervisedServiceSnapshot("gbrain");
+    if (
+      lifecycle &&
+      (lifecycle.state === "pending" ||
+        lifecycle.state === "starting" ||
+        lifecycle.state === "stopped" ||
+        lifecycle.state === "available-but-stopped")
+    ) {
+      return NextResponse.json({
+        state: "available-but-stopped",
+        backend: null,
+        mode: null,
+        embeddingsAvailable: false,
+        indexed: null,
+        sync: null,
+      });
     }
 
     const health = await new GBrainClient(config).health();

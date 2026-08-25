@@ -52,6 +52,8 @@ export function adoptionProbe(
   const base = loopback(port);
   switch (serviceId) {
     case "dashboard":
+      // Detection-only. AppLifecycle uses this to refuse an already-running
+      // dashboard because adopting it would leave no PID for tree accounting.
       return { type: "http", url: `${base}/api/health`, expectBodyIncludes: '"status":"ok"', timeoutMs: 2_500 };
     case "chatmock":
       return { type: "http", url: `${base}/health`, timeoutMs: 2_500 };

@@ -347,7 +347,11 @@ test("a deleted chat leaves the list on the click, not when the server answers",
   );
   assert.match(sessionClient, /const deletingSessions = new Set<string>\(\)/);
   assert.match(sessionClient, /function withoutDeleting\(/);
-  assert.match(sessionClient, /return request\.then\(withoutDeleting\)/);
+  assert.match(
+    sessionClient,
+    /followSharedRequest\(request, options\.signal\)\.then\(withoutDeleting\)/,
+    "every joined summary response must still filter chats whose delete is in flight",
+  );
 
   // The garden workspace has its own list and its own route, and owes the
   // reader the same thing.

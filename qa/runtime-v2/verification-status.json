@@ -1,0 +1,241 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-08-25",
+  "operatorConstraint": {
+    "status": "ACTIVE",
+    "instruction": "stop compilation",
+    "prohibitedUntilExplicitlyReauthorized": [
+      "cargo",
+      "rustc",
+      "rustfmt",
+      "Next.js compilation",
+      "Quartz compilation",
+      "Electron compilation or packaging",
+      "bundlers",
+      "compiler-backed tests",
+      "application QA",
+      "service or worker QA",
+      "memory QA"
+    ]
+  },
+  "currentVerificationBoundary": {
+    "sourceOnly": true,
+    "nativeSourceCompiled": false,
+    "nativeSourceWiredIntoProductRuntime": false,
+    "startedCompilerBundlerBuildApplicationServiceWorkerOrMemoryQa": false
+  },
+  "checks": [
+    {
+      "id": "runtime-control-contract-source",
+      "command": "node qa/runtime-v2/validate-runtime-control-contract.mjs",
+      "result": "PASS",
+      "scope": "source-only drift validation across the machine-readable contract, Rust protocol and public-projection source, Electron adapter source, and bounded Next compatibility client",
+      "startedCompilerOrApplication": false,
+      "summary": "exact 25-event typed payload/fence matrix; 8 closed public stages; 10 closed artifact kinds; 5 closed failure codes; raw private stage, artifact, failure-code, and failure-message values fail closed or map to runtime-owned public fallbacks",
+      "nativeStatus": "Rust/native source is uncompiled and is not wired into the product runtime"
+    },
+    {
+      "id": "runtime-execution-inventory-source",
+      "command": "node qa/runtime-v2/validate-execution-inventory.mjs",
+      "result": "PASS",
+      "scope": "source-only inventory shape and source reference validation",
+      "startedCompilerOrApplication": false,
+      "summary": "122 entries; 66 finite; 56 persistent; 13 explicitly recorded gaps"
+    },
+    {
+      "id": "runtime-manifest-source-coverage",
+      "command": "node qa/runtime-v2/validate-runtime-manifests.mjs",
+      "result": "FAIL",
+      "scope": "source-only manifest shape, trusted-root, staging, and mandatory worker-kind coverage validation",
+      "startedCompilerOrApplication": false,
+      "failureCount": 2,
+      "failures": [
+        "Learn is not registered because its legacy Node worker uses IPC/start-file orchestration instead of the Runtime V2 ready/event worker protocol",
+        "document ingestion is not registered because the current in-process pipeline has no finite Runtime V2 worker entrypoint"
+      ],
+      "classification": "intentional fail-closed coverage gaps; the worker manifest remains empty and no mock, hanging, or falsely compliant adapter was registered"
+    },
+    {
+      "id": "runtime-feature-parity-inventory-source",
+      "command": "node qa/runtime-v2/run-parity.mjs --inventory-only",
+      "result": "FAIL",
+      "scope": "source-only frozen capability and registry drift validation",
+      "startedCompilerOrApplication": false,
+      "capabilityRows": 475,
+      "failureCount": 2,
+      "failures": [
+        "surface:dashboard-terminal sourceSha256 drift",
+        "Next API route source-catalog hash drift"
+      ],
+      "resolvedValidatorNoise": [
+        "mock/fallback declaration text and paths are unchanged; only generated line pointers moved from 625/3369 to 626/3375",
+        "baselineContractSha256 is now verified as an integrity checksum instead of reported as a duplicate drift failure for an already-reported constituent field"
+      ],
+      "auditedHashes": {
+        "dashboardTerminalSourceSha256": {
+          "frozen": "1397eaea717e5c069b44bb1ad4d7213d64a47bd652883be5fa432eb8a3539e7e",
+          "current": "de314fdb9b0c917c8b6e77d1604bbdc7aef8b209be2688d4324fb90c9b17cf80"
+        },
+        "nextApiRoutes": {
+          "countFrozen": 518,
+          "countCurrent": 518,
+          "sha256Frozen": "2ebb72fd536913178a99460d952c1f4c9c9b110bcb1fd3af489b561d2708afd9",
+          "sha256Current": "57d16f925059603202f4d797b1d8dc816810e8af3b2bc6cfdb4e08267a5d89fe"
+        }
+      },
+      "classification": "genuine post-freeze source drift from terminal and passive service-lifecycle work remains FAIL; the frozen pre-migration inventory and hashes were not regenerated or rebased"
+    },
+    {
+      "id": "runtime-feature-parity-validator-source",
+      "command": "node --test qa/runtime-v2/parity-drift.test.mjs",
+      "result": "PASS",
+      "scope": "plain Node tests for semantic mock/fallback evidence comparison, truncated-evidence fail-closed behavior, complete contract digest coverage, and precise source-catalog diagnostics",
+      "startedCompilerOrApplication": false,
+      "counts": {
+        "passed": 5,
+        "failed": 0,
+        "total": 5
+      }
+    },
+    {
+      "id": "terminal-and-gbrain-source-contracts",
+      "command": "node --test dashboard/tests/dashboard-agent-terminal-ui.test.mjs dashboard/tests/gbrain-status-badge.test.mjs",
+      "result": "FAIL",
+      "scope": "source-text assertions only",
+      "startedCompilerOrApplication": false,
+      "counts": {
+        "passed": 20,
+        "failed": 6,
+        "total": 26
+      },
+      "targetedRuntimeV2Assertions": [
+        "PASS: collapsed terminal bar has no implementation-status copy",
+        "PASS: mount polling is passive and stopped Hermes remains submit-ready",
+        "PASS: GBrain badge treats available-but-stopped as an ordinary no-badge state",
+        "PASS: Terminal connectivity is not coupled to optional GBrain status"
+      ],
+      "failingAssertions": [
+        "Hermes terminal uses the original Breadboard terminal shell",
+        "the brown terminal header toggles fully open and fully closed",
+        "the terminal always starts collapsed and uses saved height only after opening",
+        "initial transcript and Recents loading use the same text-free circle",
+        "a fully open terminal stops the page behind it from scrolling",
+        "a message queues while its chat is still loading"
+      ],
+      "classification": "current dirty UI source and its source assertions disagree; not attributed to a compiled Runtime V2 regression"
+    },
+    {
+      "id": "supervisor-control-bounded-response",
+      "command": "node --test dashboard/tests/supervisor-control.test.mjs",
+      "result": "PASS",
+      "scope": "plain Node runtime contract tests for authenticated leases, passive status, structured admission denial, literal-loopback/token validation, bounded authenticated Runtime V2 job submission/inspection/replay/cancellation, strict ownership and response binding, exact 25-event payload/fence discrimination, 8 closed public stages, 10 closed artifact kinds, 5 closed failure codes, sanitized failure projection, lossless JSON requests, and the 64 KiB response ceiling",
+      "startedCompilerOrApplication": false,
+      "counts": {
+        "passed": 26,
+        "failed": 0,
+        "total": 26
+      },
+      "note": "Node emitted MODULE_TYPELESS_PACKAGE_JSON; this did not start a TypeScript compiler or bundler."
+    },
+    {
+      "id": "runtime-v2-packaging-source",
+      "commands": [
+        "node --check desktop/scripts/build-runtime-supervisor.mjs",
+        "node --check desktop/scripts/verify-package.mjs",
+        "JSON parse package.json and desktop/package.json"
+      ],
+      "result": "PASS",
+      "scope": "source-only syntax and manifest validation for staging and package-verifying both the transitional containment helper and breadboard-runtime.exe; no native binary was built",
+      "startedCompilerOrApplication": false
+    },
+    {
+      "id": "renderer-lifecycle-source-contracts",
+      "command": "node --test dashboard/tests/agent-stream-watchdog.test.mjs dashboard/tests/agent-run-stream.test.mjs dashboard/tests/hermes-session-request-lifecycle.test.mjs dashboard/tests/renderer-lifecycle.test.mjs",
+      "result": "PASS",
+      "scope": "plain Node tests for bounded stream recovery, reader release, duplicate terminal probes, terminal-rail and garden-card drag cleanup, reference-counted shared history abort, Garden history/proposal teardown, timer/listener cleanup, and speech media/blob disposal",
+      "startedCompilerOrApplication": false,
+      "counts": {
+        "passed": 23,
+        "failed": 0,
+        "total": 23
+      },
+      "note": "Node emitted MODULE_TYPELESS_PACKAGE_JSON; TypeScript compilation, Next, Electron, and GPU/canvas runtime evidence remain NOT RUN."
+    },
+    {
+      "id": "hermes-history-lifecycle-source-contracts",
+      "command": "node --test dashboard/tests/chat-history-delete.test.mjs dashboard/tests/chat-load-failure.test.mjs dashboard/tests/garden-agent-chat-ui.test.mjs dashboard/tests/hermes-performance-caching.test.mjs dashboard/tests/hermes-session-request-lifecycle.test.mjs dashboard/tests/renderer-lifecycle.test.mjs",
+      "result": "PASS",
+      "scope": "plain Node behavioral and source-contract coverage for history deletion, failed-load retention, Garden Chat parity, summary/detail caching, shared-request cancellation, and renderer teardown",
+      "startedCompilerOrApplication": false,
+      "counts": {
+        "passed": 28,
+        "failed": 0,
+        "total": 28
+      },
+      "note": "Node emitted MODULE_TYPELESS_PACKAGE_JSON; no compiler, bundler, service, or application was started."
+    },
+    {
+      "id": "hermes-adjacent-source-regression-sample",
+      "command": "node --test dashboard/tests/chat-load-failure.test.mjs dashboard/tests/hermes-live-routing.test.mjs dashboard/tests/hermes-performance-caching.test.mjs dashboard/tests/chat-history-delete.test.mjs dashboard/tests/garden-agent-chat-ui.test.mjs",
+      "result": "FAIL",
+      "scope": "broader plain Node source-contract sample after history-lifecycle changes",
+      "startedCompilerOrApplication": false,
+      "counts": {
+        "passed": 41,
+        "failed": 3,
+        "total": 44
+      },
+      "failingAssertions": [
+        "terminal session hook restores a Breadboard session after refresh and aborts server-side",
+        "terminal planning receives the current conversation's recent user requests",
+        "the unified slash hub embeds Skills.sh discovery and the reviewed promotion flow"
+      ],
+      "classification": "current dirty Terminal/Skills source and pre-existing source-text assertions disagree; the focused history lifecycle and caching tests pass, but this broader command is honestly retained as FAIL"
+    },
+    {
+      "id": "installed-baseline",
+      "command": "installed Electron baseline capture",
+      "result": "ABORTED",
+      "scope": "real installed application startup",
+      "reason": "unexpected eager Quartz/esbuild compiler tree",
+      "receipt": "qa/runtime-v2/evidence/baseline-installed-2026-08-24T20-09-33-083Z/receipt.json",
+      "mustNotBeReportedAsPass": true
+    },
+    {
+      "id": "rust-required-checks",
+      "commands": [
+        "cargo test",
+        "cargo fmt --check",
+        "cargo clippy --all-targets --all-features -- -D warnings"
+      ],
+      "result": "NOT RUN",
+      "reason": "operator explicitly stopped compilation"
+    },
+    {
+      "id": "existing-compiled-and-application-checks",
+      "commands": [
+        "npm --prefix dashboard test",
+        "npm --prefix desktop test",
+        "npm run desktop:verify",
+        "npm run qa:electron:critical",
+        "npm run qa:electron:hermes",
+        "npm run qa:memory:smoke",
+        "npm run qa:memory:burn-in",
+        "npm run qa:runtime-v2:smoke",
+        "npm run qa:runtime-v2:burn-in",
+        "npm run qa:runtime-v2:parity",
+        "desktop packaging",
+        "installed Runtime V2 verification"
+      ],
+      "result": "NOT RUN",
+      "unrunCategories": [
+        "compiler and build",
+        "application and Electron",
+        "service",
+        "worker",
+        "memory"
+      ],
+      "reason": "operator explicitly stopped compilation; no build, application, service, worker, or memory QA was started"
+    }
+  ]
+}

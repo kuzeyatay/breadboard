@@ -96,6 +96,12 @@ export interface DesktopServiceDefinition {
   concurrencyGroup?: HeavyConcurrencyGroup;
   /** Hot dashboard only: recycle after a soft crossing at a safe job boundary. */
   safeRecycleOnSoftLimit?: boolean;
+  /**
+   * This owned, optional tree may be stopped at an admission boundary when no
+   * lease is active, then restored after the admitted capability releases.
+   * Eager services are never assumed reclaimable without this explicit flag.
+   */
+  pressureSheddable?: boolean;
 }
 
 /**
@@ -155,6 +161,7 @@ export interface CapabilityDefinition {
   estimatedColdStartCommitMb: number;
   priority: number;
   concurrencyGroup: HeavyConcurrencyGroup;
+  reserveFloor?: "minimum" | "critical";
   maxLeaseMs?: number;
 }
 
@@ -177,6 +184,11 @@ interface ManagedService {
   resourceLimitKills: number;
   startPromise: Promise<boolean> | null;
   leases: Set<string>;
+  /**
+   * Lease callers that have claimed this service but have not yet published
+   * their durable lease. Reclaim must treat these exactly like active leases.
+   */
+  pendingLeaseClaims: Set<string>;
   idleTimer: ReturnType<typeof setTimeout> | null;
   usingRuntimeHelper: boolean;
   softRecoveryInProgress: boolean;
@@ -199,6 +211,29 @@ export interface ServiceManagerOptions {
   systemMetrics?: SystemMemoryMetricSource;
   /** Windows Job Object helper. Missing binaries use the tested process-tree fallback. */
   runtimeSupervisorPath?: string;
+  /** Low test-only floor for abandoned-lease expiry; production keeps 30s. */
+  minimumLeaseMs?: number;
+}
+
+interface SupervisorLeaseRecord {
+  targetId: string;
+  kind: "service" | "capability";
+  group?: HeavyConcurrencyGroup;
+  timer: ReturnType<typeof setTimeout> | null;
+  /** Pressure-reclaimed services this capability currently keeps stopped. */
+  reclaimedServiceIds: Set<string>;
+}
+
+interface ReclaimedServiceRecord {
+  /** Every active capability whose work overlaps this reclaimed allocation. */
+  holders: Set<string>;
+  /** Coalesced restore attempt. A failed attempt leaves this record pending. */
+  restorePromise: Promise<void> | null;
+}
+
+interface PressureReclaimResult {
+  stoppedServiceIds: string[];
+  error?: unknown;
 }
 
 /**
@@ -223,16 +258,22 @@ export class ServiceManager extends EventEmitter {
   private readonly memoryPolicy: MemoryPolicy | null;
   private readonly capabilities = new Map<string, CapabilityDefinition>();
   private readonly runtimeSupervisorPath: string | null;
-  private readonly leases = new Map<
-    string,
-    { targetId: string; group?: HeavyConcurrencyGroup; timer: ReturnType<typeof setTimeout> | null }
-  >();
+  private readonly minimumLeaseMs: number;
+  private readonly leases = new Map<string, SupervisorLeaseRecord>();
+  /**
+   * Services stopped to admit foreground work. Records survive a failed
+   * restore so a later lease release or normal-memory transition can retry.
+   */
+  private readonly reclaimedServices = new Map<string, ReclaimedServiceRecord>();
+  /** Serializes admission through the point where a newly-started tree is observable. */
+  private admissionTail: Promise<void> = Promise.resolve();
   private shuttingDown = false;
 
   constructor(logs: LogManager, options: ServiceManagerOptions = {}) {
     super();
     this.logs = logs;
     this.memoryPolicy = options.memoryPolicy ?? null;
+    this.minimumLeaseMs = Math.max(1, Math.floor(options.minimumLeaseMs ?? 30_000));
     this.runtimeSupervisorPath =
       process.platform === "win32" &&
       options.runtimeSupervisorPath &&
@@ -262,9 +303,19 @@ export class ServiceManager extends EventEmitter {
               .write(`[governor] state=${state} freeCommitMb=${free}`);
             if (state !== "normal") void this.stopIdleOptionalServices(`memory-${state}`);
           },
+          onError: (error) => {
+            this.logs
+              .forService("desktop")
+              .write(`[governor] system memory sampling failed: ${message(error)}`);
+          },
         })
       : null;
     this.governor?.start();
+    this.governor?.on("state-changed", (state) => {
+      if (state === "normal") {
+        void this.retryPendingPressureRestores("memory returned to normal");
+      }
+    });
   }
 
   /** Test seam: run one resource sampling pass immediately. */
@@ -311,6 +362,7 @@ export class ServiceManager extends EventEmitter {
       resourceLimitKills: 0,
       startPromise: null,
       leases: new Set(),
+      pendingLeaseClaims: new Set(),
       idleTimer: null,
       usingRuntimeHelper: false,
       softRecoveryInProgress: false,
@@ -393,8 +445,14 @@ export class ServiceManager extends EventEmitter {
   async startAll(): Promise<void> {
     const waves = this.startPlan();
     for (const wave of waves) {
+      const orderedWave = [...wave].sort((leftId, rightId) => {
+        const left = this.requireService(leftId).definition;
+        const right = this.requireService(rightId).definition;
+        if (left.required !== right.required) return left.required ? -1 : 1;
+        return (right.priority ?? 50) - (left.priority ?? 50);
+      });
       const results = await Promise.all(
-        wave.map(async (id) => {
+        orderedWave.map(async (id) => {
           const managed = this.requireService(id);
           const policy = startupPolicyOf(managed.definition);
           if (policy === "on-demand" || policy === "scheduled" || policy === "external") {
@@ -438,10 +496,22 @@ export class ServiceManager extends EventEmitter {
     if (this.shuttingDown) return false;
     if (managed.state === "healthy") return true;
     if (managed.startPromise) return managed.startPromise;
-    const attempt = this.startServiceInner(managed);
+    // Admission cannot be serialized only around `governor.admit()`: until a
+    // child reaches healthy its allocation is absent from the next system
+    // sample. Holding the turn through startup makes the next applicant see
+    // the prior tree's real commit instead of independently spending the same
+    // headroom.
+    const attempt = this.withAdmissionTurn(async () => {
+      // This request may have queued before stopAll(). Admission serialization
+      // is only safe when shutdown is checked again after the turn is granted.
+      if (this.shuttingDown) return false;
+      return this.startServiceInner(managed);
+    });
     managed.startPromise = attempt;
     try {
-      return await attempt;
+      const ok = await attempt;
+      if (ok) this.completePressureRestore(managed.definition.id);
+      return ok;
     } catch (error) {
       // Admission failures used to escape while the service was still
       // "pending". AppLifecycle could then find no failed required service and
@@ -461,6 +531,14 @@ export class ServiceManager extends EventEmitter {
   private async startServiceInner(managed: ManagedService): Promise<boolean> {
     const definition = managed.definition;
     const id = definition.id;
+    if (this.shuttingDown) return false;
+    const reclaimed = this.reclaimedServices.get(id);
+    if (reclaimed && reclaimed.holders.size > 0) {
+      this.logs
+        .forService(id)
+        .write(`[supervisor] start deferred; ${reclaimed.holders.size} pressure reclaim hold(s)`);
+      return false;
+    }
     if (managed.idleTimer) {
       clearTimeout(managed.idleTimer);
       managed.idleTimer = null;
@@ -483,7 +561,9 @@ export class ServiceManager extends EventEmitter {
     // before reserving the budget for a process tree we will not spawn. This
     // matters most for `next dev`: an already-hot server can be safely reused
     // even when there is not enough commit headroom to compile another copy.
-    if (await this.adoptRunningInstance(managed, log)) return true;
+    const adopted = await this.adoptRunningInstance(managed, log);
+    if (this.shuttingDown) return false;
+    if (adopted) return true;
 
     if (this.governor) {
       await this.governor.admit({
@@ -496,6 +576,7 @@ export class ServiceManager extends EventEmitter {
           : {}),
         activeConcurrencyGroups: this.activeConcurrencyGroups(id),
       });
+      if (this.shuttingDown) return false;
     }
 
     let child: ChildProcess;
@@ -504,11 +585,26 @@ export class ServiceManager extends EventEmitter {
       const softBytes = definition.resourceBudget?.warningBytes ?? 0;
       const hardBytes = definition.resourceBudget?.hardLimitBytes ?? 0;
       const command = helper ?? definition.command;
+      const inheritedEnvironmentNames = [
+        ...new Map<string, string>(
+          Object.keys(definition.env).map(
+            (name) => [name.toUpperCase(), name] as const,
+          ),
+        ).values(),
+      ].sort((left, right) =>
+        left.toUpperCase().localeCompare(right.toUpperCase()),
+      );
+      const inheritedEnvironmentArgs = inheritedEnvironmentNames.flatMap((name) => [
+        "--inherit-env",
+        name,
+      ]);
       const args = helper
         ? [
             "--soft-limit-bytes", String(softBytes),
             "--hard-limit-bytes", String(hardBytes),
             "--graceful-timeout-ms", String(definition.gracefulShutdownMs),
+            "--cwd", definition.cwd,
+            ...inheritedEnvironmentArgs,
             "--",
             definition.command,
             ...definition.args,
@@ -573,6 +669,7 @@ export class ServiceManager extends EventEmitter {
     if (!definition.healthCheck) {
       // Process-liveness services: consider healthy after a short grace period.
       await delay(500);
+      if (this.shuttingDown) return false;
       if (exited) {
         this.setState(managed, "failed", exitDescription ?? "exited immediately");
         return false;
@@ -586,7 +683,10 @@ export class ServiceManager extends EventEmitter {
     const result = await waitForHealthy(definition.healthCheck, {
       startupTimeoutMs: definition.startupTimeoutMs,
       intervalMs: definition.healthCheck.intervalMs,
-      shouldAbort: () => (exited ? exitDescription ?? "process exited during startup" : null),
+      shouldAbort: () => {
+        if (this.shuttingDown) return "service manager is shutting down";
+        return exited ? exitDescription ?? "process exited during startup" : null;
+      },
     });
     if (this.shuttingDown) return false;
     if (!result.ok) {
@@ -621,6 +721,18 @@ export class ServiceManager extends EventEmitter {
       return true;
     }
     if (kind === "memory") return true; // high-rate telemetry is sampled centrally, not written to disk
+    if (
+      kind === "stream-truncated" &&
+      (event.stream === "stdout" || event.stream === "stderr") &&
+      typeof event.limitBytes === "number"
+    ) {
+      this.logs
+        .forService(managed.definition.id)
+        .write(
+          `[runtime-helper] ${event.stream} forwarding truncated after ${event.limitBytes} bytes`,
+        );
+      return true;
+    }
     if (kind === "started") {
       this.logs
         .forService(managed.definition.id)
@@ -660,41 +772,118 @@ export class ServiceManager extends EventEmitter {
     maxLeaseMs = 60 * 60_000,
   ): Promise<ServiceLease> {
     const managed = this.requireService(id);
-    const ok = await this.startService(id);
-    if (!ok) throw new Error(managed.lastError ?? `Service "${id}" is unavailable.`);
     const leaseId = randomUUID();
-    managed.leases.add(leaseId);
-    if (managed.idleTimer) {
-      clearTimeout(managed.idleTimer);
-      managed.idleTimer = null;
+    // Publish the claim before awaiting startup. A capability admission can
+    // otherwise run after the service reaches healthy but before this method's
+    // continuation inserts the real lease, and reclaim the tree underneath
+    // the caller that is about to use it.
+    managed.pendingLeaseClaims.add(leaseId);
+    try {
+      const ok = await this.startService(id);
+      if (!ok) throw new Error(managed.lastError ?? `Service "${id}" is unavailable.`);
+      if (this.shuttingDown) throw new Error("Service manager is shutting down.");
+      managed.leases.add(leaseId);
+      if (managed.idleTimer) {
+        clearTimeout(managed.idleTimer);
+        managed.idleTimer = null;
+      }
+      this.rememberLease(
+        leaseId,
+        id,
+        "service",
+        managed.definition.concurrencyGroup,
+        maxLeaseMs,
+      );
+      this.logs
+        .forService(id)
+        .write(`[supervisor] lease acquired id=${leaseId} reason=${sanitizeAuditReason(reason)}`);
+      return { id: leaseId, targetId: id, release: () => void this.releaseLease(leaseId) };
+    } finally {
+      managed.pendingLeaseClaims.delete(leaseId);
     }
-    this.rememberLease(leaseId, id, managed.definition.concurrencyGroup, maxLeaseMs);
-    this.logs
-      .forService(id)
-      .write(`[supervisor] lease acquired id=${leaseId} reason=${sanitizeAuditReason(reason)}`);
-    return { id: leaseId, targetId: id, release: () => void this.releaseLease(leaseId) };
   }
 
   /** Admission-only lease for a heavyweight job or external Docker tree. */
   async acquireCapabilityLease(id: string, reason: string): Promise<ServiceLease> {
+    if (this.shuttingDown) throw new Error("Service manager is shutting down.");
+    let rollbackIds: string[] = [];
+    try {
+      return await this.withAdmissionTurn(async () => {
+        if (this.shuttingDown) throw new Error("Service manager is shutting down.");
+        return this.acquireCapabilityLeaseInner(id, reason, (ids) => {
+          rollbackIds = [...ids];
+        });
+      });
+    } catch (error) {
+      // The admission turn is released before rollback starts. This avoids a
+      // re-entrant admission deadlock while still restoring every tree already
+      // stopped by a transaction that failed part-way through.
+      if (rollbackIds.length > 0) {
+        await this.restorePressureSheddableServices(
+          rollbackIds,
+          "rolling back failed capability admission",
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async acquireCapabilityLeaseInner(
+    id: string,
+    reason: string,
+    setRollbackIds: (ids: readonly string[]) => void,
+  ): Promise<ServiceLease> {
     const capability = this.capabilities.get(id);
     if (!capability) throw new Error(`Unknown capability "${id}"`);
     if (this.governor) {
-      await this.governor.admit({
+      const request = {
         id,
         estimatedColdStartCommitMb: capability.estimatedColdStartCommitMb,
         priority: capability.priority,
         required: false,
+        reserveFloor: capability.reserveFloor ?? "minimum",
         concurrencyGroup: capability.concurrencyGroup,
         activeConcurrencyGroups: this.activeConcurrencyGroups(),
-      });
+      } as const;
+      try {
+        await this.governor.admit(request);
+        if (this.shuttingDown) throw new Error("Service manager is shutting down.");
+      } catch (error) {
+        if (this.shuttingDown) throw new Error("Service manager is shutting down.");
+        if (!(error instanceof ResourceExhaustionError)) throw error;
+        // Shedding an idle service changes commit headroom only. It cannot end
+        // an active heavyweight lease or clear governor-local pressure, so
+        // retrying either denial would be a blind retry.
+        if (error.result.denialReason !== "headroom") throw error;
+        const reclaim = await this.stopPressureSheddableServices(
+          `capability-${id}-admission`,
+        );
+        setRollbackIds(reclaim.stoppedServiceIds);
+        if (reclaim.error !== undefined) throw reclaim.error;
+        // No state changed, so repeating the same admission would be a blind
+        // retry. Only one post-reclaim sample is allowed, and only after an
+        // owned tree was confirmed stopped.
+        if (reclaim.stoppedServiceIds.length === 0) throw error;
+        await this.governor.admit(
+          {
+            ...request,
+            activeConcurrencyGroups: this.activeConcurrencyGroups(),
+          },
+          { afterCurrentSample: true },
+        );
+        if (this.shuttingDown) throw new Error("Service manager is shutting down.");
+      }
     }
+    if (this.shuttingDown) throw new Error("Service manager is shutting down.");
     const leaseId = randomUUID();
+    const reclaimedServiceIds = this.holdAllReclaimedServices(leaseId);
     this.rememberLease(
       leaseId,
       id,
+      "capability",
       capability.concurrencyGroup,
       capability.maxLeaseMs ?? 2 * 60 * 60_000,
+      reclaimedServiceIds,
     );
     this.logs
       .forService("desktop")
@@ -707,8 +896,8 @@ export class ServiceManager extends EventEmitter {
     if (!lease) return false;
     this.leases.delete(leaseId);
     if (lease.timer) clearTimeout(lease.timer);
-    const service = this.services.get(lease.targetId);
-    if (service) {
+    const service = lease.kind === "service" ? this.services.get(lease.targetId) : undefined;
+    if (lease.kind === "service" && service) {
       service.leases.delete(leaseId);
       this.logs.forService(lease.targetId).write(`[supervisor] lease released id=${leaseId}`);
       this.scheduleIdleStop(service);
@@ -717,16 +906,25 @@ export class ServiceManager extends EventEmitter {
         .forService("desktop")
         .write(`[governor] capability lease released target=${lease.targetId} id=${leaseId}`);
     }
+    if (lease.reclaimedServiceIds.size > 0) {
+      this.releaseReclaimedServiceHolds(leaseId, lease.reclaimedServiceIds);
+    }
+    void this.retryPendingPressureRestores("lease released");
     return true;
   }
 
   private rememberLease(
     leaseId: string,
     targetId: string,
+    kind: "service" | "capability",
     group: HeavyConcurrencyGroup | undefined,
     maxLeaseMs: number,
+    reclaimedServiceIds: Iterable<string> = [],
   ): void {
-    const bounded = Math.max(30_000, Math.min(24 * 60 * 60_000, Math.floor(maxLeaseMs)));
+    const bounded = Math.max(
+      this.minimumLeaseMs,
+      Math.min(24 * 60 * 60_000, Math.floor(maxLeaseMs)),
+    );
     const timer = setTimeout(() => {
       this.logs
         .forService("desktop")
@@ -734,7 +932,27 @@ export class ServiceManager extends EventEmitter {
       this.releaseLease(leaseId);
     }, bounded);
     timer.unref?.();
-    this.leases.set(leaseId, { targetId, ...(group ? { group } : {}), timer });
+    this.leases.set(leaseId, {
+      targetId,
+      kind,
+      ...(group ? { group } : {}),
+      timer,
+      reclaimedServiceIds: new Set(reclaimedServiceIds),
+    });
+  }
+
+  private async withAdmissionTurn<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.admissionTail;
+    let release!: () => void;
+    this.admissionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
   private activeConcurrencyGroups(excludeServiceId?: string): Set<HeavyConcurrencyGroup> {
@@ -758,14 +976,14 @@ export class ServiceManager extends EventEmitter {
   }
 
   private scheduleIdleStop(managed: ManagedService): void {
-    if (managed.leases.size > 0 || this.shuttingDown) return;
+    if (managed.leases.size > 0 || managed.pendingLeaseClaims.size > 0 || this.shuttingDown) return;
     const ttl = managed.definition.idleTtlMs;
     const policy = startupPolicyOf(managed.definition);
     if (ttl === undefined || ttl < 0 || !["on-demand", "scheduled"].includes(policy)) return;
     if (managed.idleTimer) clearTimeout(managed.idleTimer);
     managed.idleTimer = setTimeout(() => {
       managed.idleTimer = null;
-      if (managed.leases.size > 0 || this.shuttingDown) return;
+      if (managed.leases.size > 0 || managed.pendingLeaseClaims.size > 0 || this.shuttingDown) return;
       this.logs.forService(managed.definition.id).write("[supervisor] idle TTL elapsed; stopping tree");
       void this.stopService(managed.definition.id);
     }, ttl);
@@ -777,6 +995,7 @@ export class ServiceManager extends EventEmitter {
       (managed) =>
         !managed.definition.required &&
         managed.leases.size === 0 &&
+        managed.pendingLeaseClaims.size === 0 &&
         ["healthy", "degraded"].includes(managed.state) &&
         ["on-demand", "scheduled"].includes(startupPolicyOf(managed.definition)),
     );
@@ -788,6 +1007,158 @@ export class ServiceManager extends EventEmitter {
         .write(`[supervisor] stopping idle optional service (${reason})`);
       await this.stopService(managed.definition.id);
     }
+  }
+
+  private async stopPressureSheddableServices(reason: string): Promise<PressureReclaimResult> {
+    const candidates = [...this.services.values()].filter(
+      (managed) => this.canPressureReclaim(managed),
+    );
+    const stopped: string[] = [];
+    for (const managed of candidates.sort(
+      (left, right) => (left.definition.priority ?? 50) - (right.definition.priority ?? 50),
+    )) {
+      // A service-lease claimant can appear while a prior candidate is being
+      // terminated. Revalidate at the exact stop boundary, not only when the
+      // candidate list was constructed.
+      if (!this.canPressureReclaim(managed)) continue;
+      const id = managed.definition.id;
+      this.logs
+        .forService(id)
+        .write(`[supervisor] reclaiming pressure-sheddable service (${reason})`);
+      try {
+        await this.stopService(id);
+      } catch (error) {
+        return {
+          stoppedServiceIds: stopped,
+          error,
+        };
+      }
+      if (managed.state === "stopped") {
+        stopped.push(id);
+        this.markPressureReclaimed(id);
+      }
+    }
+    return { stoppedServiceIds: stopped };
+  }
+
+  private canPressureReclaim(managed: ManagedService): boolean {
+    return (
+      !this.shuttingDown &&
+      managed.definition.pressureSheddable === true &&
+      !managed.definition.required &&
+      managed.leases.size === 0 &&
+      managed.pendingLeaseClaims.size === 0 &&
+      managed.child !== null &&
+      !managed.adopted &&
+      ["healthy", "degraded"].includes(managed.state)
+    );
+  }
+
+  private markPressureReclaimed(serviceId: string): void {
+    if (!this.reclaimedServices.has(serviceId)) {
+      this.reclaimedServices.set(serviceId, { holders: new Set(), restorePromise: null });
+    }
+  }
+
+  private holdAllReclaimedServices(leaseId: string): string[] {
+    const ids: string[] = [];
+    for (const [serviceId, record] of this.reclaimedServices) {
+      // Attach pre-existing capabilities only after the post-reclaim admission
+      // succeeds. If it fails, the old workload already coexisted with this
+      // service and rollback must be free to restore the pre-transaction state.
+      for (const [existingLeaseId, existingLease] of this.leases) {
+        if (existingLease.kind !== "capability") continue;
+        record.holders.add(existingLeaseId);
+        existingLease.reclaimedServiceIds.add(serviceId);
+      }
+      record.holders.add(leaseId);
+      ids.push(serviceId);
+    }
+    return ids;
+  }
+
+  private releaseReclaimedServiceHolds(
+    leaseId: string,
+    serviceIds: ReadonlySet<string>,
+  ): void {
+    for (const serviceId of serviceIds) {
+      const record = this.reclaimedServices.get(serviceId);
+      if (!record) continue;
+      record.holders.delete(leaseId);
+      if (record.holders.size === 0) {
+        void this.requestPressureRestore(serviceId, "final capability hold released");
+      }
+    }
+  }
+
+  private async restorePressureSheddableServices(
+    ids: readonly string[],
+    reason: string,
+  ): Promise<void> {
+    await Promise.all([...new Set(ids)].map((id) => this.requestPressureRestore(id, reason)));
+  }
+
+  private async retryPendingPressureRestores(reason: string): Promise<void> {
+    if (this.shuttingDown) return;
+    await Promise.all(
+      [...this.reclaimedServices.keys()].map((id) => this.requestPressureRestore(id, reason)),
+    );
+  }
+
+  private requestPressureRestore(serviceId: string, reason: string): Promise<void> {
+    const record = this.reclaimedServices.get(serviceId);
+    if (!record || this.shuttingDown || record.holders.size > 0) return Promise.resolve();
+    if (record.restorePromise) return record.restorePromise;
+
+    const attempt = this.restorePressureSheddableService(serviceId, record, reason).finally(() => {
+      const current = this.reclaimedServices.get(serviceId);
+      if (current === record && current.restorePromise === attempt) {
+        current.restorePromise = null;
+      }
+    });
+    record.restorePromise = attempt;
+    return attempt;
+  }
+
+  private async restorePressureSheddableService(
+    serviceId: string,
+    record: ReclaimedServiceRecord,
+    reason: string,
+  ): Promise<void> {
+    if (this.shuttingDown || record.holders.size > 0) return;
+    const managed = this.services.get(serviceId);
+    if (!managed || managed.definition.pressureSheddable !== true) {
+      this.reclaimedServices.delete(serviceId);
+      return;
+    }
+    this.logs
+      .forService(serviceId)
+      .write(`[supervisor] restoring service after pressure reclaim (${reason})`);
+    try {
+      // Always await startService, including an existing startPromise. Skipping
+      // that promise loses ownership of the only restore already in progress.
+      const ok = await this.startService(serviceId);
+      if (ok) this.completePressureRestore(serviceId);
+      else this.logPendingPressureRestore(serviceId, "service did not become healthy");
+    } catch (error) {
+      this.logPendingPressureRestore(serviceId, startFailureMessage(error));
+    }
+  }
+
+  private completePressureRestore(serviceId: string): void {
+    const record = this.reclaimedServices.get(serviceId);
+    if (!record || record.holders.size > 0) return;
+    const managed = this.services.get(serviceId);
+    if (!managed || managed.state !== "healthy") return;
+    this.reclaimedServices.delete(serviceId);
+    for (const lease of this.leases.values()) lease.reclaimedServiceIds.delete(serviceId);
+  }
+
+  private logPendingPressureRestore(serviceId: string, reason: string): void {
+    if (!this.reclaimedServices.has(serviceId)) return;
+    this.logs
+      .forService(serviceId)
+      .write(`[supervisor] pressure restore remains pending: ${reason}`);
   }
 
   /**
@@ -1093,10 +1464,13 @@ export class ServiceManager extends EventEmitter {
   /** Stop one service (graceful, then forced tree kill). */
   async stopService(id: string): Promise<void> {
     const managed = this.requireService(id);
-    if (managed.leases.size > 0) {
+    if (managed.leases.size > 0 || managed.pendingLeaseClaims.size > 0) {
       this.logs
         .forService(id)
-        .write(`[supervisor] stop deferred; ${managed.leases.size} active lease(s)`);
+        .write(
+          `[supervisor] stop deferred; ${managed.leases.size} active lease(s), ` +
+          `${managed.pendingLeaseClaims.size} pending lease claim(s)`,
+        );
       return;
     }
     managed.stopRequested = true;
@@ -1125,7 +1499,15 @@ export class ServiceManager extends EventEmitter {
     this.shuttingDown = true;
     this.governor?.stop();
     this.resources.stop();
+    // Abort in-flight health waits promptly and prevent exit handlers from
+    // scheduling restarts while the admission queue drains.
+    for (const managed of this.services.values()) managed.stopRequested = true;
+    // Every request queued before shutdown must observe `shuttingDown` inside
+    // its granted turn. Waiting for the tail proves none can spawn or publish a
+    // capability lease after the shutdown sweep begins.
+    await this.admissionTail.catch(() => undefined);
     for (const leaseId of [...this.leases.keys()]) this.releaseLease(leaseId);
+    this.reclaimedServices.clear();
     for (const managed of this.services.values()) this.closeChangeWatchers(managed);
     const waves = this.startPlan().reverse();
     for (const wave of waves) {

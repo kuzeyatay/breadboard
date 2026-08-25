@@ -19,8 +19,11 @@ test("the status badge covers all required states", () => {
   for (const state of ["healthy", "degraded", "indexing", "stale", "unavailable"]) {
     assert.match(badge, new RegExp(state), `badge must handle "${state}"`);
   }
-  // Disabled renders nothing (no palette clutter).
-  assert.match(badge, /state === "disabled"[\s\S]*return null/);
+  // Disabled and available-but-stopped are ordinary no-badge states.
+  assert.match(
+    badge,
+    /status\.state === "disabled"[\s\S]*status\.state === "available-but-stopped"[\s\S]*return \{ state:/,
+  );
 });
 
 test("the badge offers a reindex action gated on ownership", () => {
@@ -42,12 +45,10 @@ test("the badge is mounted in Garden Chat", () => {
   assert.match(chat, /gardenSlug=\{gardenSlug\}/);
 });
 
-test("the Terminal reads the same status but words none of it", () => {
-  // The header has no room for a sentence, so the state rides the status dot:
-  // red when knowledge retrieval is unavailable, and nothing written beside it.
-  assert.match(terminal, /useGBrainStatus\(\)/);
-  assert.match(terminal, /knowledgeUnavailable = knowledgeKey === "unavailable"/);
-  assert.match(terminal, /runtimeOnline && !knowledgeUnavailable/);
+test("the Terminal does not conflate optional retrieval with Terminal connectivity", () => {
+  assert.doesNotMatch(terminal, /useGBrainStatus\(\)/);
+  assert.doesNotMatch(terminal, /knowledgeUnavailable/);
+  assert.match(terminal, /\{!runtimeOnline \? \(/);
   assert.doesNotMatch(terminal, /<GBrainStatusBadge/);
   assert.doesNotMatch(terminal, /Knowledge: /);
 });

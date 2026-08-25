@@ -72,11 +72,17 @@ test("opening an active conversation reloads it and reattaches its run", () => {
   assert.match(sessionHook, /abortRef\.current\?\.abort\(\)/);
 });
 
-test("the terminal opens on a blank chat and a boot restore cannot reclaim it", () => {
-  // Opting out is what makes New chat the terminal's resting state; the run of
-  // whatever chat it was left in stays server-side and is reattached by opening
-  // that chat from history.
+test("a fresh terminal opens blank while a renderer reload reattaches its selected chat", () => {
+  // Opting out of the durable restore keeps New chat as the resting state for a
+  // fresh app window. The tab-scoped pointer is narrower: it only reattaches a
+  // conversation when that same renderer session reloads underneath it.
   assert.match(terminal, /restoreLastConversation: false/);
+  assert.match(terminal, /readActiveTerminalChatId\(restoreOwnerKey\)/);
+  assert.match(
+    terminal,
+    /openTerminalSession\([\s\S]*?savedSessionId,[\s\S]*?readActiveTerminalChatSnapshot\(restoreOwnerKey, savedSessionId\)/,
+  );
+  assert.match(terminal, /window\.addEventListener\("pagehide", persist\)/);
   assert.match(
     sessionHook,
     /if \(!restoreLastConversation\) \{\s*markLoadingSession\(false\);\s*return;\s*\}/,

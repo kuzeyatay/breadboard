@@ -35,7 +35,7 @@ import {
   stopDetachedLearnWorker,
   stopDetachedLearnWorkerNow,
 } from "./learn-worker-cleanup";
-import { allocatePort, allocatePortOrAdopt } from "./ports";
+import { allocatePort, allocatePortOrAdopt, allocateSupervisedPort } from "./ports";
 import { adoptionProbe, isOurServiceRunning, type AdoptionContext } from "./service-adoption";
 import {
   CLIPROXY_DEFAULT_PORT,
@@ -80,6 +80,12 @@ import { SupervisorControlPlane } from "./supervisor-control-plane";
 import { readStartupSoundEnabled, writeStartupSoundEnabled } from "./startup-sound";
 import { prepareQaServiceDefinitions } from "./qa-mode";
 import type { QaServiceProfile } from "./startup-options";
+
+// Conservative planning envelope: the dedicated worker is launched with a
+// 4096 MB V8 old-space ceiling, plus 50% for young/code spaces, native buffers,
+// loaded modules, and child-process overhead. This is explicitly not a measured
+// peak or a hard process-tree cap; future calibrated receipts may replace it.
+const LEARN_WORKER_ESTIMATED_COMMIT_MB = 6 * 1024;
 
 export interface StartupFailure {
   serviceId: string;
@@ -267,6 +273,13 @@ export class AppLifecycle {
       const identify = this.paths.qaMode
         ? undefined
         : (candidate: number) => isOurServiceRunning(serviceId, candidate, adoptionContext);
+      // The dashboard is the one service whose hot compiler can consume
+      // several GiB. Adopting it leaves the ServiceManager without a child PID,
+      // so neither its tree limit nor shutdown applies. Refuse that false
+      // supervision contract; a foreign occupant still relocates as before.
+      if (serviceId === "dashboard" && identify) {
+        return allocateSupervisedPort(serviceId, preferred, taken, identify);
+      }
       const { port, adopt } = await allocatePortOrAdopt(preferred, taken, identify);
       if (adopt) this.adoptedServicePorts.set(serviceId, port);
       return port;
@@ -380,8 +393,12 @@ export class AppLifecycle {
     });
     this.services.registerCapability({
       id: "learn-worker",
-      estimatedColdStartCommitMb: Math.min(6144, Math.round(initialMemory.physicalTotalMb * 0.19)),
+      estimatedColdStartCommitMb: LEARN_WORKER_ESTIMATED_COMMIT_MB,
       priority: 70,
+      // Learn is an explicit, fenced foreground operation. It may consume the
+      // soft reserve but must leave the critical reserve intact; critical and
+      // emergency machines still reject it.
+      reserveFloor: "critical",
       concurrencyGroup: "large-generation",
       maxLeaseMs: 6 * 60 * 60_000,
     });

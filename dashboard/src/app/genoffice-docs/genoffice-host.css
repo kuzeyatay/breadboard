@@ -23,3 +23,158 @@ body .editor-scroll,
 body .start-screen {
   background-color: #f5efe3;
 }
+
+/* Keep the conversation editor control without reserving a redundant title bar. */
+body .bread-ai-panel-collapse {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+}
+
+/* Quartz-inspired reading material, narrowed to Word work: a warm page-scoped
+   assistant with compact document actions and no competing app header. */
+body .ai-panel {
+  --color-bg-page: #faf7ef;
+  --color-bg-subtle: #ece3d2;
+  --color-border-default: #d8cfbe;
+  --color-border-strong: #b8ab96;
+  --color-text-primary: #2f312d;
+  --color-text-secondary: #59625b;
+  --color-text-tertiary: #7a817a;
+  --color-btn-primary: #53695d;
+  --color-btn-primary-hover: #43574c;
+  --docs-shadow-composer:
+    5px 6px 16px rgb(76 69 56 / 11%),
+    -3px -3px 10px rgb(255 255 255 / 68%);
+  background: #faf7ef;
+  border-right-color: #b8ab96;
+  box-shadow: 4px 0 18px rgb(72 62 46 / 8%);
+}
+
+body .bread-ai-word-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 76px 9px 12px;
+  border-bottom: 1px solid #d8cfbe;
+  background: color-mix(in srgb, #faf7ef 90%, #ece3d2);
+}
+
+body .bread-ai-word-actions button,
+body .bread-ai-document-scope {
+  min-height: 28px;
+  border: 1px solid #d1c5b2;
+  border-radius: 999px;
+  background: #fffdf8;
+  color: #4b534d;
+  padding: 5px 10px;
+  font: 500 12px/1.2 var(--gs-font-sans);
+}
+
+body .bread-ai-word-actions button {
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    transform 150ms ease;
+}
+
+body .bread-ai-word-actions button:hover:not(:disabled) {
+  border-color: #91a396;
+  background: #edf1eb;
+}
+
+body .bread-ai-word-actions button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+body .bread-ai-word-actions button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+body .bread-ai-document-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-color: transparent;
+  background: transparent;
+  color: #6b756e;
+  padding-left: 2px;
+}
+
+body .bread-ai-document-scope > span {
+  color: #78917f;
+  font-size: 8px;
+}
+
+body .ai-chat {
+  padding: 22px 14px;
+  gap: 14px;
+}
+
+body .ai-chat-empty {
+  margin-top: 46px;
+}
+
+body .ai-msg-user {
+  background: #ece3d2;
+  border: 1px solid #ded3c1;
+  border-radius: 14px 14px 4px 14px;
+}
+
+body .ai-composer {
+  padding: 8px 12px 13px;
+  background: #faf7ef;
+}
+
+body .ai-input-box {
+  border-color: #cfc3af;
+  background: #fffdf8;
+  box-shadow: var(--docs-shadow-composer);
+}
+
+body .ai-input-box:focus-within {
+  border-color: #82988a;
+  box-shadow:
+    0 0 0 3px rgb(120 145 127 / 16%),
+    var(--docs-shadow-composer);
+}
+
+body .bread-ai-selection-context {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  margin-bottom: 8px;
+  border: 1px solid #d8c275;
+  border-radius: 11px;
+  background: #f4e7ad;
+  color: #383a31;
+  padding: 8px 10px;
+  font: 12px/1.35 var(--gs-font-sans);
+}
+
+body .bread-ai-selection-context > span {
+  color: #657257;
+  font-size: 16px;
+}
+
+body .bread-ai-selection-context strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+body .bread-ai-selection-context p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+body .ai-applied-tag {
+  color: #405d4a;
+  background: #e5eee6;
+}

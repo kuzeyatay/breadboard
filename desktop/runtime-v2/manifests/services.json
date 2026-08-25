@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "services": [
+    {
+      "id": "chatmock",
+      "displayName": "Local AI (ChatMock)",
+      "capabilityIds": ["provider:chatmock", "tool-family:model-gateway"],
+      "allowedExecutable": "runtimes/python/python.exe",
+      "allowedEntrypoint": "chatmock/chatmock.py",
+      "startupPolicy": "eager",
+      "resourceClass": "local-model",
+      "dependencies": [],
+      "estimatedColdStartCommitMb": 768,
+      "softCommitLimitMb": 1536,
+      "hardCommitLimitMb": 2048,
+      "idleTtlMs": null,
+      "gracefulShutdownMs": 5000,
+      "restartPolicy": "on_failure"
+    },
+    {
+      "id": "dashboard",
+      "displayName": "Breadboard workspace",
+      "capabilityIds": [
+        "surface:dashboard-terminal",
+        "surface:garden-chat",
+        "surface:quartz-ai"
+      ],
+      "allowedExecutable": "runtimes/node/node.exe",
+      "allowedEntrypoint": "dashboard/scripts/runtime-v2-dashboard.mjs",
+      "startupPolicy": "eager",
+      "resourceClass": "core",
+      "dependencies": ["chatmock"],
+      "estimatedColdStartCommitMb": 1536,
+      "softCommitLimitMb": 2048,
+      "hardCommitLimitMb": 3072,
+      "idleTtlMs": null,
+      "gracefulShutdownMs": 15000,
+      "restartPolicy": "on_failure"
+    },
+    {
+      "id": "hermes",
+      "displayName": "Agent runtime (Hermes)",
+      "capabilityIds": [
+        "tool-family:hermes",
+        "surface:dashboard-terminal",
+        "surface:garden-chat"
+      ],
+      "allowedExecutable": "runtimes/python/python.exe",
+      "allowedEntrypoint": "hermes-agent/hermes_cli/main.py",
+      "startupPolicy": "on-demand",
+      "resourceClass": "large-generation",
+      "dependencies": ["chatmock"],
+      "estimatedColdStartCommitMb": 1536,
+      "softCommitLimitMb": 3072,
+      "hardCommitLimitMb": 4096,
+      "idleTtlMs": 600000,
+      "gracefulShutdownMs": 8000,
+      "restartPolicy": "on_failure"
+    }
+  ]
+}

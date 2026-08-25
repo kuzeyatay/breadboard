@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "classification": "ABORTED",
+  "reasonCode": "UNEXPECTED_EAGER_COMPILER",
+  "reason": "The installed application started the Quartz build/watch service and its esbuild compiler during startup. The QA-owned application tree was stopped immediately to honor the no-compile instruction.",
+  "runId": "baseline-installed-2026-08-24T20-09-33-083Z",
+  "installedExecutable": "C:/Users/20252082/AppData/Local/Programs/Breadboard/Breadboard.exe",
+  "installedVersion": "0.1.0",
+  "installedModifiedAt": "2026-07-27T22:27:58.000Z",
+  "workflowReached": "startup",
+  "fullWorkflowCompleted": false,
+  "sampleCount": 61,
+  "preLaunch": {
+    "freeCommitMb": 18999.0,
+    "ownedProcessCount": 0,
+    "ownedPrivateMb": 0.0
+  },
+  "startupVisible": {
+    "freeCommitMb": 19176.6,
+    "ownedProcessCount": 16,
+    "ownedPrivateMb": 413.8,
+    "ownedWorkingSetMb": 794.4
+  },
+  "peak": {
+    "freeCommitMb": 16185.5,
+    "ownedProcessCount": 17,
+    "ownedPrivateMb": 3634.2,
+    "ownedWorkingSetMb": 3780.7,
+    "quartzNodePrivateMb": 2894.4,
+    "esbuildPrivateMb": 270.7
+  },
+  "minimumFreeCommitMb": 16134.4,
+  "observedRoots": [
+    {
+      "kind": "core",
+      "name": "Breadboard",
+      "pid": 29836
+    },
+    {
+      "kind": "service",
+      "name": "ChatMock",
+      "pid": 20228
+    },
+    {
+      "kind": "service",
+      "name": "UI-TARS adapter",
+      "pid": 31800
+    },
+    {
+      "kind": "service",
+      "name": "Quartz build/watch",
+      "pid": 58916,
+      "compilerPid": 32960
+    }
+  ],
+  "cleanup": {
+    "qaOwnedTreeStopped": true,
+    "verifiedRemainingCapturedPids": 0,
+    "productionNextCompilerRunning": false,
+    "quartzEsbuildCompilerRunning": false
+  },
+  "artifacts": [
+    "01-startup.png",
+    "memory-samples.ndjson"
+  ],
+  "notes": [
+    "This is an honest aborted baseline, not a passing integrated workload.",
+    "The startup-only result already proves that eager Quartz compilation is a major transient/retained-memory contributor and that the installed runtime starts optional heavy services before user demand.",
+    "A complete visible-UI baseline remains required after a no-compiler lean runtime exists."
+  ]
+}

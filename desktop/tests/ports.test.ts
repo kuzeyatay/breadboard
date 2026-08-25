@@ -1,7 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as net from "node:net";
-import { allocatePort, allocatePortOrAdopt, findFreePort, isPortFree } from "../src/main/ports";
+import {
+  allocatePort,
+  allocatePortOrAdopt,
+  allocateSupervisedPort,
+  findFreePort,
+  isPortFree,
+} from "../src/main/ports";
 
 test("allocatePort prefers the requested port when free", async () => {
   const free = await findFreePort();
@@ -77,6 +83,41 @@ test("an occupied preferred port is kept when the service on it is ours", async 
     const result = await allocatePortOrAdopt(busyPort, taken, async () => true);
     assert.deepEqual(result, { port: busyPort, adopt: true });
     assert.ok(taken.has(busyPort));
+  } finally {
+    server.close();
+  }
+});
+
+test("a supervised process refuses an existing instance it cannot contain", async () => {
+  const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string");
+  const taken = new Set<number>();
+  try {
+    await assert.rejects(
+      allocateSupervisedPort("dashboard", address.port, taken, async () => true),
+      /outside this supervisor.*memory can be measured and bounded/i,
+    );
+    assert.equal(taken.has(address.port), false);
+  } finally {
+    server.close();
+  }
+});
+
+test("a supervised process still relocates around an unrelated occupant", async () => {
+  const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== "string");
+  try {
+    const allocated = await allocateSupervisedPort(
+      "dashboard",
+      address.port,
+      new Set<number>(),
+      async () => false,
+    );
+    assert.notEqual(allocated, address.port);
   } finally {
     server.close();
   }

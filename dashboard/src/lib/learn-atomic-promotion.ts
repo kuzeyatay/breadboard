@@ -305,9 +305,16 @@ export interface GardenLearnLeaseOptions {
   onLeaseLost?: (conflict: GardenLearnLock | null) => void;
 }
 
+export type GardenLearnLeaseOwnership = "owned" | "lost" | "uncertain";
+
 export interface GardenLearnLease {
   readonly lock: GardenLearnLock;
   readonly lost: boolean;
+  /**
+   * Confirm this exact fenced lease without collapsing a transient lock read or
+   * mutation-guard collision into definitive ownership loss.
+   */
+  confirmOwnership(): GardenLearnLeaseOwnership;
   /**
    * Renew immediately, for example at an orchestration phase boundary.
    * Returns true only after the fenced heartbeat is durably committed.
@@ -353,17 +360,47 @@ function isGardenLearnLock(value: unknown): value is GardenLearnLock {
   );
 }
 
-function readLockFile(filePath: string): GardenLearnLock | null {
+type GardenLearnLockRead =
+  | { status: "found"; lock: GardenLearnLock }
+  | { status: "missing" }
+  | { status: "uncertain" };
+
+function readLockFileState(filePath: string): GardenLearnLockRead {
+  let serialized: string;
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    return isGardenLearnLock(parsed) ? parsed : null;
-  } catch {
-    return null;
+    serialized = fs.readFileSync(filePath, "utf-8");
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT"
+      ? { status: "missing" }
+      : { status: "uncertain" };
   }
+  try {
+    const parsed: unknown = JSON.parse(serialized);
+    return isGardenLearnLock(parsed)
+      ? { status: "found", lock: parsed }
+      : { status: "uncertain" };
+  } catch {
+    return { status: "uncertain" };
+  }
+}
+
+function readLockFile(filePath: string): GardenLearnLock | null {
+  const result = readLockFileState(filePath);
+  return result.status === "found" ? result.lock : null;
 }
 
 export function readGardenLearnLock(gardenDir: string): GardenLearnLock | null {
   return readLockFile(lockPath(gardenDir)) ?? readLockFile(legacyLockPath(gardenDir));
+}
+
+function readGardenLearnLockState(gardenDir: string): GardenLearnLockRead {
+  const stable = readLockFileState(lockPath(gardenDir));
+  // A malformed or temporarily unreadable stable lock may be hiding a newer
+  // fencing token. Never fall back to legacy state unless stable storage is
+  // definitely absent.
+  return stable.status === "missing"
+    ? readLockFileState(legacyLockPath(gardenDir))
+    : stable;
 }
 
 function readMutationGuard(gardenDir: string): LockMutationGuard | null {
@@ -667,15 +704,19 @@ function heartbeatFencedGardenLearnLock(
   | { status: "renewed"; lock: GardenLearnLock }
   | { status: "lost" }
   | { status: "retry" } {
-  const current = readGardenLearnLock(gardenDir);
+  const currentState = readGardenLearnLockState(gardenDir);
+  const current = currentState.status === "found" ? currentState.lock : null;
   const owner: LockOwner = current
     ? { gardenSlug: current.gardenSlug, jobId, buildId: current.buildId }
     : { gardenSlug: "unknown", jobId, buildId: "unknown" };
   const guard = acquireMutationGuard(gardenDir, owner);
   if (!guard) return { status: "retry" };
   try {
-    const existing = readGardenLearnLock(gardenDir);
-    if (!existing || existing.jobId !== jobId) return { status: "lost" };
+    const existingState = readGardenLearnLockState(gardenDir);
+    if (existingState.status === "uncertain") return { status: "retry" };
+    if (existingState.status === "missing") return { status: "lost" };
+    const existing = existingState.lock;
+    if (existing.jobId !== jobId) return { status: "lost" };
     if (expectedLeaseId !== undefined && existing.leaseId !== expectedLeaseId) {
       return { status: "lost" };
     }
@@ -767,30 +808,32 @@ export function acquireGardenLearnLease(
     lossReported = true;
     try { options.onLeaseLost?.(readGardenLearnLock(gardenDir)); } catch { /* observer only */ }
   };
-  const heartbeat = (): boolean => {
-    if (released || lost) return false;
+  const confirmOwnership = (): GardenLearnLeaseOwnership => {
+    if (released || lost) return "lost";
     let result: ReturnType<typeof heartbeatFencedGardenLearnLock>;
     try {
       result = heartbeatFencedGardenLearnLock(gardenDir, lock.jobId, lock.leaseId, now());
     } catch {
       // A transient filesystem failure must not crash the process or surrender
       // ownership. The next interval (and phase-boundary heartbeat) can retry.
-      return false;
+      return "uncertain";
     }
-    if (result.status === "retry") return false;
+    if (result.status === "retry") return "uncertain";
     if (result.status === "lost") {
       lost = true;
       stopTimer();
       reportLoss();
-      return false;
+      return "lost";
     }
     lock = result.lock;
-    return true;
+    return "owned";
   };
+  const heartbeat = (): boolean => confirmOwnership() === "owned";
 
   const lease: GardenLearnLease = {
     get lock() { return lock; },
     get lost() { return lost; },
+    confirmOwnership,
     heartbeat,
     release(): boolean {
       if (released) return false;

@@ -1,6 +1,6 @@
 ---
-title: "Electromagnetism 1"
-date: "2026-08-14"
+title: "Electromagnetics 1"
+date: "2026-08-24"
 description: "Learning garden with 2 source documents, 0 lesson pages, and 6252 graph links."
 knowledge_type: "cluster-index"
 ---
@@ -11,7 +11,7 @@ This learning garden is organized from 2 source documents into a sequence of lin
 
 No lessons yet.
 
-Last updated: 2026-08-14.
+Last updated: 2026-08-24.
 
 ## Learning
 
