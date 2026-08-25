@@ -226,6 +226,14 @@ fn project_worker_event(
     }
 
     let (internal_type, event_type, payload) = match event {
+        WorkerEvent::Ready { .. } if record.event_type == "ready-after-cancellation" => (
+            "ready-after-cancellation",
+            RuntimeJobEventType::WorkerReady,
+            RuntimeJobEventPayload {
+                state: Some(JobState::Cancelling),
+                ..RuntimeJobEventPayload::default()
+            },
+        ),
         WorkerEvent::Ready { .. } => (
             "ready",
             RuntimeJobEventType::WorkerReady,
@@ -277,6 +285,14 @@ fn project_worker_event(
             "complete",
             RuntimeJobEventType::WorkerComplete,
             RuntimeJobEventPayload::default(),
+        ),
+        WorkerEvent::Failed { .. } if record.event_type == "failed-after-cancellation" => (
+            "failed-after-cancellation",
+            RuntimeJobEventType::WorkerFailed,
+            RuntimeJobEventPayload {
+                state: Some(JobState::Cancelling),
+                ..RuntimeJobEventPayload::default()
+            },
         ),
         WorkerEvent::Failed { .. } => (
             "failed",
@@ -545,6 +561,56 @@ mod tests {
             assert!(!encoded.contains("VENDOR_PRIVATE_FAILURE"));
             assert!(!encoded.contains("provider account"));
             assert!(!encoded.contains("private.bin"));
+        }
+    }
+
+    #[test]
+    fn late_ready_and_failed_projection_preserves_cancelling_state() {
+        let identity = WorkerIdentity {
+            job_id: "job_1".into(),
+            attempt: 1,
+            worker_instance_id: "worker_1".into(),
+        };
+        let cases = [
+            (
+                "ready-after-cancellation",
+                WorkerEvent::Ready {
+                    identity: identity.clone(),
+                    sequence: 1,
+                    protocol_version: breadboard_runtime_protocol::WIRE_PROTOCOL_VERSION,
+                },
+                RuntimeJobEventType::WorkerReady,
+            ),
+            (
+                "failed-after-cancellation",
+                WorkerEvent::Failed {
+                    identity: identity.clone(),
+                    sequence: 2,
+                    code: "PRIVATE_FAILURE".into(),
+                    message: "private failure detail".into(),
+                },
+                RuntimeJobEventType::WorkerFailed,
+            ),
+        ];
+
+        for (internal_type, raw, public_type) in cases {
+            let worker_sequence = raw.sequence();
+            let projected = project_event(&JobEventRecord {
+                sequence: i64::try_from(worker_sequence).unwrap(),
+                job_id: identity.job_id.clone(),
+                attempt: identity.attempt,
+                worker_instance_id: Some(identity.worker_instance_id.clone()),
+                worker_sequence: Some(worker_sequence),
+                event_type: internal_type.into(),
+                payload: serde_json::to_value(raw).unwrap(),
+                created_at: 100,
+            })
+            .unwrap();
+            assert_eq!(projected.event_type, public_type);
+            assert_eq!(projected.payload.state, Some(JobState::Cancelling));
+            assert_eq!(projected.payload.failure_code, None);
+            assert_eq!(projected.payload.failure_message, None);
+            assert!(projected.validate().is_ok());
         }
     }
 

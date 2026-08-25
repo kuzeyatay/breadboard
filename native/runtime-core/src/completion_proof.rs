@@ -1,6 +1,7 @@
-use crate::paths::{PathError, RuntimePaths};
+use crate::paths::{PathError, RuntimePaths, TrustedFilePin};
 use crate::process_owner::{AuthoritativeProcessOwner, ProcessTreeAccounting};
 use crate::store::{ValidatedWorkerResult, WorkerCompletionIntent};
+use crate::RuntimeGenerationScope;
 use breadboard_runtime_protocol::{WorkerIdentity, WIRE_PROTOCOL_VERSION};
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -31,10 +32,14 @@ pub enum CompletionProofError {
     StaleIdentity,
     #[error("process-owner fencing identity does not match completion intent")]
     OwnerFenceMismatch,
+    #[error("process-owner completion authority belongs to another Runtime V2 data root")]
+    GenerationScopeMismatch,
     #[error("durable worker result sequence does not match completion intent")]
     StaleCompletionSequence,
     #[error("durable worker result payload exceeds structural limits")]
     InvalidResultShape,
+    #[error("durable worker result changed after authoritative validation")]
+    ResultChanged,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,12 +56,22 @@ struct DurableWorkerResultEnvelope {
 /// durable result through `RuntimePaths`. There is deliberately no public
 /// constructor and the type is neither serializable nor deserializable.
 pub struct WorkerCompletionProof {
+    generation_scope: RuntimeGenerationScope,
     identity: WorkerIdentity,
     completion_sequence: u64,
     result: ValidatedWorkerResult,
+    result_file: CompletionResultFileAuthority,
     supervisor_pid: u32,
     root_pid: u32,
     accounting: ProcessTreeAccounting,
+}
+
+enum CompletionResultFileAuthority {
+    Pinned(Box<TrustedFilePin>),
+    #[cfg(test)]
+    Test {
+        valid: bool,
+    },
 }
 
 impl AuthoritativeProcessOwner {
@@ -72,6 +87,10 @@ impl AuthoritativeProcessOwner {
         paths: &RuntimePaths,
         intent: &WorkerCompletionIntent,
     ) -> Result<WorkerCompletionProof, CompletionProofError> {
+        let generation_scope = paths.runtime_generation_scope();
+        if !self.matches_generation_scope(&generation_scope) {
+            return Err(CompletionProofError::GenerationScopeMismatch);
+        }
         if !owner_fence_matches_intent(self.worker_identity(), intent) {
             return Err(CompletionProofError::OwnerFenceMismatch);
         }
@@ -124,43 +143,55 @@ impl WorkerCompletionProof {
         if normalize(intent.result_path()) != normalize(&expected.result_relative()) {
             return Err(CompletionProofError::IntentPathMismatch);
         }
-        let bytes =
-            paths.read_bounded_data_file(expected.result(), MAX_DURABLE_WORKER_RESULT_BYTES)?;
-        if bytes.is_empty() {
-            return Err(CompletionProofError::EmptyResult);
-        }
-        let envelope: DurableWorkerResultEnvelope =
-            serde_json::from_slice(&bytes).map_err(|_| CompletionProofError::InvalidEnvelope)?;
-        if envelope.protocol_version != WIRE_PROTOCOL_VERSION {
-            return Err(CompletionProofError::UnsupportedProtocol);
-        }
-        envelope
-            .identity
-            .validate()
-            .map_err(|_| CompletionProofError::StaleIdentity)?;
-        if &envelope.identity != identity {
-            return Err(CompletionProofError::StaleIdentity);
-        }
-        if envelope.completion_sequence != intent.sequence() {
-            return Err(CompletionProofError::StaleCompletionSequence);
-        }
-        validate_result_shape(&envelope.result)?;
+        let (result, result_file) = {
+            let (bytes, result_file) = paths.read_bounded_data_file_with_pin(
+                expected.result(),
+                MAX_DURABLE_WORKER_RESULT_BYTES,
+            )?;
+            if bytes.is_empty() {
+                return Err(CompletionProofError::EmptyResult);
+            }
+            let envelope: DurableWorkerResultEnvelope = serde_json::from_slice(&bytes)
+                .map_err(|_| CompletionProofError::InvalidEnvelope)?;
+            if envelope.protocol_version != WIRE_PROTOCOL_VERSION {
+                return Err(CompletionProofError::UnsupportedProtocol);
+            }
+            envelope
+                .identity
+                .validate()
+                .map_err(|_| CompletionProofError::StaleIdentity)?;
+            if &envelope.identity != identity {
+                return Err(CompletionProofError::StaleIdentity);
+            }
+            if envelope.completion_sequence != intent.sequence() {
+                return Err(CompletionProofError::StaleCompletionSequence);
+            }
+            validate_result_shape(&envelope.result)?;
 
-        let digest = Sha256::digest(&bytes);
-        let result = ValidatedWorkerResult::from_trusted_validation(
-            expected.result_relative(),
-            format!("{digest:x}"),
-            bytes.len() as u64,
-        )
-        .map_err(|_| CompletionProofError::InvalidEnvelope)?;
-        Ok(Self {
+            let digest = Sha256::digest(&bytes);
+            let result = ValidatedWorkerResult::from_trusted_validation(
+                expected.result_relative(),
+                format!("{digest:x}"),
+                bytes.len() as u64,
+            )
+            .map_err(|_| CompletionProofError::InvalidEnvelope)?;
+            (result, result_file)
+        };
+        let proof = Self {
+            generation_scope: paths.runtime_generation_scope(),
             identity: identity.clone(),
             completion_sequence: intent.sequence(),
             result,
+            result_file: CompletionResultFileAuthority::Pinned(Box::new(result_file)),
             supervisor_pid,
             root_pid,
             accounting,
-        })
+        };
+        // Re-read the same opened handle after JSON validation. On Windows the
+        // live pin also denies write/delete sharing until the proof is dropped;
+        // on other platforms this second check detects same-inode mutation.
+        proof.revalidate_result_file()?;
+        Ok(proof)
     }
 
     pub(crate) fn identity(&self) -> &WorkerIdentity {
@@ -177,6 +208,61 @@ impl WorkerCompletionProof {
 
     pub(crate) fn terminal_accounting(&self) -> (u32, u32, ProcessTreeAccounting) {
         (self.supervisor_pid, self.root_pid, self.accounting)
+    }
+
+    pub(crate) fn matches_generation_scope(&self, scope: &RuntimeGenerationScope) -> bool {
+        self.generation_scope == *scope
+    }
+
+    /// Revalidates the exact result handle and its content against the digest
+    /// and size captured by this proof. `JobStore` calls this while its success
+    /// transaction is open, immediately before the durable state transition.
+    pub(crate) fn revalidate_result_file(&self) -> Result<(), CompletionProofError> {
+        let bytes = match &self.result_file {
+            CompletionResultFileAuthority::Pinned(pin) => {
+                pin.read_bounded_revalidated(MAX_DURABLE_WORKER_RESULT_BYTES)?
+            }
+            #[cfg(test)]
+            CompletionResultFileAuthority::Test { valid: true } => return Ok(()),
+            #[cfg(test)]
+            CompletionResultFileAuthority::Test { valid: false } => {
+                return Err(CompletionProofError::ResultChanged)
+            }
+        };
+        if bytes.len() as u64 != self.result.size_bytes()
+            || format!("{:x}", Sha256::digest(&bytes)) != self.result.sha256()
+        {
+            return Err(CompletionProofError::ResultChanged);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        generation_scope: RuntimeGenerationScope,
+        identity: WorkerIdentity,
+        completion_sequence: u64,
+        result_path: impl Into<String>,
+    ) -> Self {
+        Self {
+            generation_scope,
+            identity,
+            completion_sequence,
+            result: ValidatedWorkerResult::from_trusted_validation(result_path, "0".repeat(64), 1)
+                .expect("test completion proof result must be valid"),
+            result_file: CompletionResultFileAuthority::Test { valid: true },
+            supervisor_pid: 7,
+            root_pid: 42,
+            accounting: ProcessTreeAccounting {
+                peak_private_commit_bytes: Some(1),
+                complete: true,
+            },
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn invalidate_result_file_for_test(&mut self) {
+        self.result_file = CompletionResultFileAuthority::Test { valid: false };
     }
 }
 
@@ -293,6 +379,7 @@ mod tests {
         assert_eq!(proof.identity(), intent.identity());
         assert_eq!(proof.completion_sequence(), 3);
         assert_eq!(proof.result().sha256().len(), 64);
+        assert!(proof.matches_generation_scope(&paths.runtime_generation_scope()));
         assert_eq!(
             proof.terminal_accounting(),
             (
@@ -304,6 +391,69 @@ mod tests {
                 }
             )
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn completion_proof_pins_result_against_mutation_and_delete_until_drop() {
+        let (_directory, paths) = authority();
+        let intent = intent();
+        write_result(&paths, intent.identity(), intent.sequence());
+        let result_path = paths
+            .job_paths(&intent.identity().job_id)
+            .unwrap()
+            .result()
+            .absolute()
+            .to_path_buf();
+        let proof = WorkerCompletionProof::validate_after_authoritative_tree_exit(
+            &paths,
+            &intent,
+            7,
+            42,
+            ProcessTreeAccounting {
+                peak_private_commit_bytes: Some(1024),
+                complete: true,
+            },
+        )
+        .unwrap();
+
+        assert!(fs::write(&result_path, b"mutated after proof").is_err());
+        assert!(fs::remove_file(&result_path).is_err());
+        proof.revalidate_result_file().unwrap();
+
+        drop(proof);
+        fs::write(&result_path, b"pin released after durable decision").unwrap();
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn completion_proof_revalidation_detects_same_inode_mutation() {
+        let (_directory, paths) = authority();
+        let intent = intent();
+        write_result(&paths, intent.identity(), intent.sequence());
+        let result_path = paths
+            .job_paths(&intent.identity().job_id)
+            .unwrap()
+            .result()
+            .absolute()
+            .to_path_buf();
+        let proof = WorkerCompletionProof::validate_after_authoritative_tree_exit(
+            &paths,
+            &intent,
+            7,
+            42,
+            ProcessTreeAccounting {
+                peak_private_commit_bytes: Some(1024),
+                complete: true,
+            },
+        )
+        .unwrap();
+
+        fs::write(&result_path, b"mutated after proof").unwrap();
+        assert!(matches!(
+            proof.revalidate_result_file(),
+            Err(CompletionProofError::ResultChanged)
+        ));
     }
 
     #[test]
@@ -337,5 +487,29 @@ mod tests {
         };
         assert!(!owner_fence_matches_intent(Some(&stale), &intent));
         assert!(!owner_fence_matches_intent(None, &intent));
+    }
+
+    #[test]
+    fn completion_owner_refuses_runtime_paths_from_another_data_root() {
+        let (_owner_directory, owner_paths) = authority();
+        let (_foreign_directory, foreign_paths) = authority();
+        assert_ne!(
+            owner_paths.runtime_generation_scope(),
+            foreign_paths.runtime_generation_scope()
+        );
+        let intent = intent();
+        let owner = AuthoritativeProcessOwner::worker_for_test(
+            owner_paths.runtime_generation_scope(),
+            intent.identity().clone(),
+        );
+
+        assert!(matches!(
+            owner.prove_completion_after_tree_exit(&foreign_paths, &intent),
+            Err(CompletionProofError::GenerationScopeMismatch)
+        ));
+        assert!(!foreign_paths
+            .data_root()
+            .join("runtime/jobs/job_1")
+            .exists());
     }
 }

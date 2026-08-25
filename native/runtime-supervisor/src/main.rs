@@ -670,7 +670,7 @@ mod windows_runtime {
                 state
                     .queued_bytes
                     .checked_add(line_len)
-                    .map_or(true, |bytes| bytes > byte_limit)
+                    .is_none_or(|bytes| bytes > byte_limit)
                     || state.queued_items() >= item_limit
             };
 
@@ -1073,12 +1073,12 @@ mod windows_runtime {
     unsafe fn pipe() -> Result<(Handle, Handle), (&'static str, String)> {
         let mut read = null_mut();
         let mut write = null_mut();
-        let mut security = SECURITY_ATTRIBUTES {
+        let security = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: null_mut(),
             bInheritHandle: 1,
         };
-        if CreatePipe(&mut read, &mut write, &mut security, 0) == 0 {
+        if CreatePipe(&mut read, &mut write, &security, 0) == 0 {
             return Err(("PIPE_FAILED", "CreatePipe failed".to_string()));
         }
         if SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0) == 0 {
@@ -1092,12 +1092,12 @@ mod windows_runtime {
     unsafe fn input_pipe() -> Result<(Handle, Handle), (&'static str, String)> {
         let mut read = null_mut();
         let mut write = null_mut();
-        let mut security = SECURITY_ATTRIBUTES {
+        let security = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: null_mut(),
             bInheritHandle: 1,
         };
-        if CreatePipe(&mut read, &mut write, &mut security, 0) == 0 {
+        if CreatePipe(&mut read, &mut write, &security, 0) == 0 {
             return Err(("PIPE_FAILED", "CreatePipe failed".to_string()));
         }
         if SetHandleInformation(write, HANDLE_FLAG_INHERIT, 0) == 0 {
@@ -1661,6 +1661,22 @@ mod windows_runtime {
         errors: Vec<SupervisorError>,
     }
 
+    struct PostSpawnCleanup<'a> {
+        job: Handle,
+        completion_port: HANDLE,
+        process: HANDLE,
+        process_in_job: bool,
+        termination_sent: bool,
+        exit_code: u32,
+        hard_trip: u64,
+        configured_hard_limit_bytes: u64,
+        output: &'a ProtocolSink,
+        child_control: Option<std::fs::File>,
+        stdout_forward: Option<Forwarder>,
+        stderr_forward: Option<Forwarder>,
+        hard_reported: bool,
+    }
+
     #[derive(Debug, Clone, Copy)]
     struct HardLimitEvidence {
         observed_job_commit_bytes: Option<u64>,
@@ -1735,7 +1751,7 @@ mod windows_runtime {
     fn poll_forwarder(forwarder: &mut Option<Forwarder>) -> ForwardResult {
         if forwarder
             .as_ref()
-            .map_or(true, |forwarder| !forwarder.is_finished())
+            .is_none_or(|forwarder| !forwarder.is_finished())
         {
             return Ok(());
         }
@@ -1750,7 +1766,7 @@ mod windows_runtime {
         stderr_forward: Option<Forwarder>,
         errors: &mut Vec<SupervisorError>,
     ) -> bool {
-        let mut forwarders = [stdout_forward, stderr_forward];
+        let forwarders = [stdout_forward, stderr_forward];
         let mut all_stopped = true;
         let drain_deadline = Instant::now() + FORWARDER_DRAIN_TIMEOUT;
         while forwarders
@@ -1865,21 +1881,22 @@ mod windows_runtime {
         }
     }
 
-    unsafe fn cleanup_post_spawn(
-        job: Handle,
-        completion_port: HANDLE,
-        process: HANDLE,
-        process_in_job: bool,
-        termination_sent: bool,
-        exit_code: u32,
-        hard_trip: u64,
-        configured_hard_limit_bytes: u64,
-        output: &ProtocolSink,
-        child_control: Option<std::fs::File>,
-        stdout_forward: Option<Forwarder>,
-        stderr_forward: Option<Forwarder>,
-        mut hard_reported: bool,
-    ) -> CleanupOutcome {
+    unsafe fn cleanup_post_spawn(cleanup: PostSpawnCleanup<'_>) -> CleanupOutcome {
+        let PostSpawnCleanup {
+            job,
+            completion_port,
+            process,
+            process_in_job,
+            termination_sent,
+            exit_code,
+            hard_trip,
+            configured_hard_limit_bytes,
+            output,
+            child_control,
+            stdout_forward,
+            stderr_forward,
+            mut hard_reported,
+        } = cleanup;
         let mut errors = Vec::new();
         let mut pending_hard_limit = None;
         let job_handle = job.0;
@@ -1888,16 +1905,17 @@ mod windows_runtime {
         // a cooperative target cannot remain blocked waiting for more control.
         drop(child_control);
 
-        if !process_in_job && WaitForSingleObject(process, 0) != WAIT_OBJECT_0 {
-            if TerminateProcess(process, exit_code) == 0 {
-                errors.push((
-                    "ROOT_TERMINATE_FAILED",
-                    format!(
-                        "terminating the unverified suspended root failed with Windows error {}",
-                        GetLastError()
-                    ),
-                ));
-            }
+        if !process_in_job
+            && WaitForSingleObject(process, 0) != WAIT_OBJECT_0
+            && TerminateProcess(process, exit_code) == 0
+        {
+            errors.push((
+                "ROOT_TERMINATE_FAILED",
+                format!(
+                    "terminating the unverified suspended root failed with Windows error {}",
+                    GetLastError()
+                ),
+            ));
         }
         if !termination_sent {
             if let Err(error) = terminate_owned_job(job_handle, exit_code) {
@@ -1910,7 +1928,6 @@ mod windows_runtime {
         let mut completion_port_usable = true;
         let mut process_wait_usable = true;
         let mut root_gone = false;
-        let mut tree_gone = false;
         loop {
             if completion_port_usable {
                 match drain_job_notifications(completion_port, job_handle) {
@@ -1937,7 +1954,7 @@ mod windows_runtime {
                 }
             }
 
-            tree_gone = active_process_zero
+            let tree_gone = active_process_zero
                 || job_process_ids(job_handle).is_some_and(|process_ids| process_ids.is_empty());
             if process_in_job && tree_gone {
                 root_gone = true;
@@ -2445,21 +2462,21 @@ mod windows_runtime {
                     Err(_) => 1,
                 }
             };
-            let cleanup = cleanup_post_spawn(
+            let cleanup = cleanup_post_spawn(PostSpawnCleanup {
                 job,
-                completion_port.0,
-                process.0,
+                completion_port: completion_port.0,
+                process: process.0,
                 process_in_job,
                 termination_sent,
-                cleanup_exit_code,
+                exit_code: cleanup_exit_code,
                 hard_trip,
-                options.hard_limit_bytes,
-                &output,
-                child_control.take(),
-                stdout_forward.take(),
-                stderr_forward.take(),
+                configured_hard_limit_bytes: options.hard_limit_bytes,
+                output: &output,
+                child_control: child_control.take(),
+                stdout_forward: stdout_forward.take(),
+                stderr_forward: stderr_forward.take(),
                 hard_reported,
-            );
+            });
             let resource_exhausted = cleanup.hard_reported;
             let zero_resident_confirmed = cleanup.zero_resident_confirmed;
             let final_peak_job_commit_bytes = cleanup.final_peak_job_commit_bytes;
@@ -2757,10 +2774,7 @@ mod tests {
             EndOfStream
         );
         assert_eq!(
-            windows_runtime::classify_stream_read_error(&Error::new(
-                ErrorKind::Other,
-                "synthetic read failure",
-            )),
+            windows_runtime::classify_stream_read_error(&Error::other("synthetic read failure")),
             Fail
         );
     }

@@ -5,8 +5,10 @@ use crate::system_commit::SystemCommitReadError;
 use crate::RuntimePaths;
 use crate::{
     validate_transition, AdmissionDecision, AdmissionDenial, AdmissionPolicy, AdmissionRequest,
-    PriorGenerationDrained, ProcessExitClassification, ProcessTreeAccounting, ProcessTreeExit,
-    ProcessTreeResidency, RuntimeGenerationScope, RuntimeLoad, SystemCommit, WorkerCompletionProof,
+    OwnedWorkerEvent, PriorGenerationDrained, ProcessExitClassification, ProcessOwnerError,
+    ProcessTreeAccounting, ProcessTreeExit, ProcessTreeResidency, ResidentWorkerProcess,
+    RuntimeGenerationScope, RuntimeLoad, SystemCommit, WorkerCompletionProof,
+    WorkerLaunchNotCreated, WorkerResidencyAuthority, WorkerTreeExitAuthority,
 };
 use breadboard_runtime_protocol::{
     validate_bounded_text, validate_identifier, validate_relative_path, validate_scope_id,
@@ -39,6 +41,8 @@ pub enum StoreError {
     JobNotFound(String),
     #[error("job id {0} is already bound to another request")]
     JobIdConflict(String),
+    #[error("runtime is not accepting new work")]
+    AdmissionClosed,
     #[error("idempotency key {key} was reused by {owner} with a different request")]
     IdempotencyConflict { owner: String, key: String },
     #[error("job {0} has corrupt persisted state")]
@@ -55,6 +59,8 @@ pub enum StoreError {
     ConflictingWorkerEvent { job_id: String, sequence: u64 },
     #[error("job {job_id} cannot accept a worker event while {state:?}")]
     WorkerEventInState { job_id: String, state: JobState },
+    #[error("worker event failed bounded semantic validation")]
+    WorkerEventRejected,
     #[error("job {0} cannot accept another worker event after completion intent")]
     WorkerEventAfterCompletionIntent(String),
     #[error("job {0} has no fenced worker completion intent")]
@@ -89,6 +95,21 @@ pub enum StoreError {
     Transition(#[from] crate::StateTransitionError),
     #[error(transparent)]
     ProtocolValidation(#[from] breadboard_runtime_protocol::ValidationError),
+}
+
+impl StoreError {
+    /// Classifies only deterministic semantic rejections at the worker-event
+    /// persistence boundary. Database, fencing, sequencing, generation, and
+    /// corrupt-state errors remain generation-fatal because their commit
+    /// outcome or authority cannot safely be inferred by the dispatcher.
+    pub fn is_deterministic_worker_event_rejection(&self) -> bool {
+        matches!(
+            self,
+            Self::WorkerEventInState { .. }
+                | Self::WorkerEventRejected
+                | Self::WorkerEventAfterCompletionIntent(_)
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -188,12 +209,13 @@ impl AuthenticatedJobContext {
         })
     }
 
-    pub(crate) fn user_id(&self) -> Option<i64> {
-        self.owner.user_id()
-    }
-
     pub(crate) fn owner(&self) -> &JobOwner {
         &self.owner
+    }
+
+    #[cfg(test)]
+    pub(crate) fn user_id(&self) -> Option<i64> {
+        self.owner.user_id()
     }
 
     pub(crate) fn garden_id(&self) -> Option<&str> {
@@ -484,7 +506,7 @@ impl WorkerCompletionIntent {
 /// after the same transaction has made the job durably resource-exhausted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobAdmissionResult {
-    Admitted(JobRecord),
+    Admitted(Box<JobRecord>),
     Denied(AdmissionDenial),
 }
 
@@ -578,21 +600,123 @@ impl WorkerDispatchClaim {
     pub fn job(&self) -> &JobRecord {
         &self.job
     }
+
+    pub(crate) fn matches_generation_scope(&self, scope: &RuntimeGenerationScope) -> bool {
+        self.generation_scope == *scope
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        generation_scope: RuntimeGenerationScope,
+        identity: WorkerIdentity,
+    ) -> Self {
+        let job_root = format!("runtime/jobs/{}", identity.job_id);
+        Self {
+            generation_scope,
+            identity: identity.clone(),
+            job: JobRecord {
+                job_id: identity.job_id,
+                job_type: "test-job".into(),
+                worker_kind: "test-worker".into(),
+                resource_class: "core".into(),
+                owner_principal: "internal:test-runtime".into(),
+                user_id: None,
+                garden_id: None,
+                conversation_id: None,
+                state: JobState::Starting,
+                stage: None,
+                attempt: identity.attempt,
+                worker_instance_id: Some(identity.worker_instance_id),
+                input_manifest_path: format!("{job_root}/input.json"),
+                workspace_path: format!("{job_root}/workspace"),
+                checkpoint_path: format!("{job_root}/checkpoint.json"),
+                result_path: format!("{job_root}/result.json"),
+                created_at: 0,
+                started_at: Some(0),
+                updated_at: 0,
+                finished_at: None,
+                last_heartbeat_at: None,
+                last_worker_sequence: 0,
+                progress_current: 0,
+                progress_total: 0,
+                failure_code: None,
+                failure_message: None,
+                cancellation_requested: false,
+                idempotency_key: "test-request".into(),
+                request_digest: "0".repeat(64),
+            },
+        }
+    }
+}
+
+/// Exact durable scheduler state for one fenced worker attempt. This is not an
+/// authenticated UI view and accepts no job-id-only lookup: a stale or foreign
+/// worker identity is rejected before any cancellation decision is returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerDispatchSnapshot {
+    identity: WorkerIdentity,
+    state: JobState,
+    cancellation_requested: bool,
+    last_worker_sequence: u64,
+}
+
+impl WorkerDispatchSnapshot {
+    pub fn identity(&self) -> &WorkerIdentity {
+        &self.identity
+    }
+
+    pub fn state(&self) -> JobState {
+        self.state
+    }
+
+    pub fn cancellation_requested(&self) -> bool {
+        self.cancellation_requested
+    }
+
+    pub fn last_worker_sequence(&self) -> u64 {
+        self.last_worker_sequence
+    }
+}
+
+/// Store failures never consume the only launch/residency/tree-exit authority.
+/// The caller receives the complete opaque value back and may retry the exact
+/// same transaction or retain it while initiating fatal runtime shutdown.
+#[must_use = "store transition failures retain authority and must be retried or held through shutdown"]
+pub struct WorkerStoreTransitionError<A> {
+    authority: Box<A>,
+    error: StoreError,
+}
+
+impl<A> std::fmt::Debug for WorkerStoreTransitionError<A> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkerStoreTransitionError")
+            .field("authority", &"<opaque retained authority>")
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
+impl<A> WorkerStoreTransitionError<A> {
+    pub fn error(&self) -> &StoreError {
+        &self.error
+    }
+
+    pub fn into_parts(self) -> (A, StoreError) {
+        (*self.authority, self.error)
+    }
 }
 
 #[derive(Debug)]
 #[must_use = "a claim outcome must be handled; dropping Claimed can strand a pending attempt"]
 pub enum WorkerClaimOutcome {
-    Claimed(WorkerDispatchClaim),
+    Claimed(Box<WorkerDispatchClaim>),
     NotClaimable,
 }
 
-/// Test-only model for the future launch-bound no-process-created authority.
-/// Production must not expose a caller-selected pre-residency finalizer: a
-/// dispatch claim alone cannot prove that no helper or target exists.
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreResidencyClaimDisposition {
+    #[cfg(test)]
     Cancellation,
     SpawnFailed,
     SpawnResourceExhausted,
@@ -658,6 +782,13 @@ impl JobStore {
     pub(crate) fn submit_raw(&self, input: &NewJob) -> Result<JobRecord, StoreError> {
         input.validate()?;
         let now = now_ms();
+        let admission_gate = self
+            .admission_open
+            .lock()
+            .expect("job admission gate mutex poisoned");
+        if !*admission_gate {
+            return Err(StoreError::AdmissionClosed);
+        }
         let mut connection = self.connection.lock().expect("job store mutex poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(existing) = query_job_by_idempotency_key(
@@ -735,6 +866,7 @@ impl JobStore {
     /// Loads the exact canonical request bytes for a trusted worker launcher.
     /// This is deliberately crate-private: renderer/HTTP callers receive job
     /// records, never the authority to launch work or read another job's input.
+    #[cfg(test)]
     pub(crate) fn load_canonical_request_payload(
         &self,
         job_id: &str,
@@ -816,7 +948,7 @@ impl JobStore {
         if current.state == JobState::Admitted {
             require_matching_active_job_reservation_tx(&transaction, &current, admission)?;
             transaction.commit()?;
-            return Ok(JobAdmissionResult::Admitted(current));
+            return Ok(JobAdmissionResult::Admitted(Box::new(current)));
         }
         validate_transition(current.state, JobState::Admitted)?;
         if active_job_reservation_tx(&transaction, job_id)?.is_some() {
@@ -925,7 +1057,7 @@ impl JobStore {
         )?;
         let admitted = query_job(&transaction, job_id)?;
         transaction.commit()?;
-        Ok(JobAdmissionResult::Admitted(admitted))
+        Ok(JobAdmissionResult::Admitted(Box::new(admitted)))
     }
 
     /// Returns bounded FIFO queued work for the admission scheduler. This is a
@@ -1072,20 +1204,76 @@ impl JobStore {
         )?;
         let job = query_job(&transaction, job_id)?;
         transaction.commit()?;
-        Ok(WorkerClaimOutcome::Claimed(WorkerDispatchClaim {
+        Ok(WorkerClaimOutcome::Claimed(Box::new(WorkerDispatchClaim {
             generation_scope: self.generation_scope.clone(),
             identity,
             job,
-        }))
+        })))
     }
 
-    /// Consumes both the durable dispatch claim and the exact live-owner
-    /// `started` authority before marking its process tree resident. Neither a
-    /// replayed job identity nor a caller-supplied PID can settle a reservation.
-    pub fn settle_job_reservation(
+    pub fn worker_dispatch_snapshot(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<WorkerDispatchSnapshot, StoreError> {
+        identity.validate()?;
+        let connection = self.connection.lock().expect("job store mutex poisoned");
+        let current = query_job(&connection, &identity.job_id)?;
+        require_identity(&current, identity)?;
+        Ok(WorkerDispatchSnapshot {
+            identity: identity.clone(),
+            state: current.state,
+            cancellation_requested: current.cancellation_requested,
+            last_worker_sequence: current.last_worker_sequence,
+        })
+    }
+
+    pub fn worker_completion_intent(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<WorkerCompletionIntent>, StoreError> {
+        identity.validate()?;
+        let mut connection = self.connection.lock().expect("job store mutex poisoned");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let current = query_job(&transaction, &identity.job_id)?;
+        require_identity(&current, identity)?;
+        let intent = completion_intent_tx(&transaction, identity)?;
+        transaction.commit()?;
+        Ok(intent)
+    }
+
+    /// Atomically consumes the coupled claim + accepted-started authority on
+    /// success. Every failure, including a transaction/commit error, returns
+    /// the complete authority so the exact operation can be retried.
+    pub fn settle_worker_residency(
+        &self,
+        authority: WorkerResidencyAuthority,
+    ) -> Result<ResidentWorkerProcess, WorkerStoreTransitionError<WorkerResidencyAuthority>> {
+        let result = {
+            let (claim, residency) = authority.parts();
+            self.settle_job_reservation_inner(claim, residency)
+        };
+        match result {
+            Ok(identity) => Ok(authority.into_resident(identity)),
+            Err(error) => Err(WorkerStoreTransitionError {
+                authority: Box::new(authority),
+                error,
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    fn settle_job_reservation(
         &self,
         claim: WorkerDispatchClaim,
         residency: ProcessTreeResidency,
+    ) -> Result<WorkerIdentity, StoreError> {
+        self.settle_job_reservation_inner(&claim, &residency)
+    }
+
+    fn settle_job_reservation_inner(
+        &self,
+        claim: &WorkerDispatchClaim,
+        residency: &ProcessTreeResidency,
     ) -> Result<WorkerIdentity, StoreError> {
         if claim.generation_scope != self.generation_scope
             || !residency.matches_generation_scope(&self.generation_scope)
@@ -1105,7 +1293,7 @@ impl JobStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = query_job(&transaction, &claim.identity.job_id)?;
         require_identity(&current, &claim.identity)?;
-        require_dispatch_claim_matches_job(&claim, &current)?;
+        require_dispatch_claim_matches_job(claim, &current)?;
         require_worker_event_state(&current, &[JobState::Starting, JobState::Cancelling])?;
         let reservation = require_active_job_reservation_matches_job_tx(&transaction, &current)?;
         if reservation.lifecycle_state != "pending" {
@@ -1119,7 +1307,7 @@ impl JobStore {
             "UPDATE runtime_admission_reservations
              SET lifecycle_state='resident', settled_at=?2, updated_at=?2
              WHERE subject_kind='job' AND subject_id=?1 AND lifecycle_state='pending'",
-            params![claim.identity.job_id, now],
+            params![&claim.identity.job_id, now],
         )?;
         if changed != 1 {
             return Err(StoreError::CorruptState(format!(
@@ -1137,65 +1325,143 @@ impl JobStore {
             now,
         )?;
         transaction.commit()?;
-        Ok(claim.identity)
+        Ok(claim.identity.clone())
     }
 
-    /// Borrows the opaque zero-resident process-tree receipt while releasing
-    /// the concurrency hold. A caller-supplied `WorkerIdentity` is not resource
-    /// authority. The job must already be terminal; durable repeated release
-    /// confirmation remains idempotent through replay/reconciliation paths.
-    pub fn release_job_reservation_after_tree_exit(
+    /// Finalizes a worker-reported failure only after the exact resident tree
+    /// has exited. A hard limit, supervisor/cleanup failure, or worker protocol
+    /// fault is stronger evidence than the provisional worker-authored failure
+    /// and replaces its public terminal classification in the same transaction
+    /// that releases the resident admission hold.
+    pub fn finalize_reported_worker_failure_after_tree_exit(
         &self,
         tree_exit: &ProcessTreeExit,
-    ) -> Result<(), StoreError> {
+    ) -> Result<JobRecord, StoreError> {
+        self.require_process_tree_exit_scope(tree_exit)?;
         let identity = tree_exit.worker_identity().cloned().ok_or_else(|| {
             StoreError::InvalidInput(
-                "service process-tree exit cannot release a worker reservation".into(),
+                "service process-tree exit cannot finalize a worker failure".into(),
             )
         })?;
         identity.validate()?;
+        let authoritative_override = match tree_exit.classification() {
+            ProcessExitClassification::ResourceExhausted => Some((
+                JobState::ResourceExhausted,
+                "WORKER_RESOURCE_EXHAUSTED",
+                "Worker process tree exhausted its enforced resource limit",
+            )),
+            ProcessExitClassification::SupervisorFailure => Some((
+                JobState::Failed,
+                "WORKER_SUPERVISION_FAILED",
+                "Worker process tree exited after authoritative supervision failed",
+            )),
+            ProcessExitClassification::WorkerProtocolFault => Some((
+                JobState::Failed,
+                "WORKER_PROTOCOL_FAULT",
+                "Worker process tree exited after an invalid fenced event stream",
+            )),
+            ProcessExitClassification::TargetExit | ProcessExitClassification::Stopped => None,
+        };
+
         let mut connection = self.connection.lock().expect("job store mutex poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = query_job(&transaction, &identity.job_id)?;
         require_identity(&current, &identity)?;
-        if !current.state.is_terminal() {
+        let reservation_state = latest_job_reservation_state_tx(&transaction, &identity.job_id)?
+            .ok_or_else(|| StoreError::MissingAdmissionReservation(identity.job_id.clone()))?;
+        if reservation_state == "released" {
+            if let Some((target, code, message)) = authoritative_override {
+                if current.state != target
+                    || current.failure_code.as_deref() != Some(code)
+                    || current.failure_message.as_deref() != Some(message)
+                {
+                    return Err(StoreError::CorruptState(identity.job_id.clone()));
+                }
+            } else if current.state != JobState::Failed || current.cancellation_requested {
+                return Err(StoreError::CorruptState(identity.job_id.clone()));
+            }
+            transaction.commit()?;
+            return Ok(current);
+        }
+        if reservation_state != "resident" {
+            return Err(StoreError::InvalidAdmissionReservationState {
+                job_id: identity.job_id.clone(),
+                state: reservation_state,
+            });
+        }
+        if current.state != JobState::Failed || current.cancellation_requested {
             return Err(StoreError::InvalidInput(format!(
-                "job {} cannot release its admission reservation before terminal tree exit",
+                "job {} has no authoritative worker-reported failure to finalize",
                 identity.job_id
             )));
         }
+        if completion_intent_tx(&transaction, &identity)?.is_some() {
+            return Err(StoreError::PendingCompletionIntent(identity.job_id.clone()));
+        }
+
         let now = now_ms();
-        if release_active_job_reservation_tx(&transaction, &identity.job_id, now)? {
+        if let Some((target, code, message)) = authoritative_override {
+            transaction.execute(
+                "UPDATE runtime_jobs SET state=?2, failure_code=?3, failure_message=?4,
+                 updated_at=?5, finished_at=?5 WHERE job_id=?1",
+                params![identity.job_id, state_name(target), code, message, now],
+            )?;
             append_event_tx(
                 &transaction,
                 &identity.job_id,
                 identity.attempt,
                 Some(&identity.worker_instance_id),
-                "reservation-released",
-                &serde_json::json!({ "reservationState": "released" }),
+                state_name(target),
+                &serde_json::json!({
+                    "code": code,
+                    "message": message,
+                    "processExitClassification": process_exit_classification_name(
+                        tree_exit.classification()
+                    )
+                }),
                 now,
             )?;
-        } else {
-            match latest_job_reservation_state_tx(&transaction, &identity.job_id)? {
-                Some(state) if state == "released" => {}
-                Some(state) => {
-                    return Err(StoreError::InvalidAdmissionReservationState {
-                        job_id: identity.job_id.clone(),
-                        state,
-                    })
-                }
-                None => {
-                    return Err(StoreError::MissingAdmissionReservation(
-                        identity.job_id.clone(),
-                    ))
-                }
-            }
         }
+        if !release_active_job_reservation_tx(&transaction, &identity.job_id, now)? {
+            return Err(StoreError::MissingAdmissionReservation(
+                identity.job_id.clone(),
+            ));
+        }
+        append_event_tx(
+            &transaction,
+            &identity.job_id,
+            identity.attempt,
+            Some(&identity.worker_instance_id),
+            "reservation-released",
+            &serde_json::json!({ "reservationState": "released" }),
+            now,
+        )?;
+        let updated = query_job(&transaction, &identity.job_id)?;
         transaction.commit()?;
-        Ok(())
+        Ok(updated)
     }
 
-    pub fn apply_worker_event(&self, event: &WorkerEvent) -> Result<JobRecord, StoreError> {
+    /// Applies only an event minted by this generation's authoritative process
+    /// owner. A protocol value plus a caller-known identity is not durable
+    /// mutation authority.
+    pub fn apply_owned_worker_event(
+        &self,
+        event: &OwnedWorkerEvent,
+    ) -> Result<JobRecord, StoreError> {
+        if !event.matches_generation_scope(&self.generation_scope) {
+            return Err(StoreError::GenerationAuthorityMismatch);
+        }
+        self.apply_worker_event_inner(event.event())
+    }
+
+    /// Unit tests exercise raw event semantics without opening a public path
+    /// around the process-owner authority required in production.
+    #[cfg(test)]
+    fn apply_worker_event(&self, event: &WorkerEvent) -> Result<JobRecord, StoreError> {
+        self.apply_worker_event_inner(event)
+    }
+
+    fn apply_worker_event_inner(&self, event: &WorkerEvent) -> Result<JobRecord, StoreError> {
         event.validate()?;
         let identity = event.identity();
         let mut connection = self.connection.lock().expect("job store mutex poisoned");
@@ -1203,13 +1469,11 @@ impl JobStore {
         let current = query_job(&transaction, &identity.job_id)?;
         require_identity(&current, identity)?;
         let now = now_ms();
-        let payload = serde_json::to_value(event)
-            .map_err(|error| StoreError::InvalidInput(error.to_string()))?;
-        let payload_json = canonical_json_string(&payload)?;
+        let payload = serde_json::to_value(event).map_err(|_| StoreError::WorkerEventRejected)?;
+        let payload_json =
+            canonical_json_string(&payload).map_err(|_| StoreError::WorkerEventRejected)?;
         if payload_json.len() > MAX_PROTOCOL_LINE_BYTES {
-            return Err(StoreError::InvalidInput(
-                "event payload is oversized".into(),
-            ));
+            return Err(StoreError::WorkerEventRejected);
         }
         let sequence = event.sequence();
         if sequence <= current.last_worker_sequence {
@@ -1236,17 +1500,46 @@ impl JobStore {
                 actual: sequence,
             });
         }
-        if let Some(intent) = completion_intent_tx(&transaction, identity)? {
-            if intent.sequence != current.last_worker_sequence {
+        let cancellation_wins = current.state == JobState::Cancelling;
+        if cancellation_wins && !current.cancellation_requested {
+            return Err(StoreError::CorruptState(identity.job_id.clone()));
+        }
+        if cancellation_wins {
+            let ready_accepted = worker_ready_accepted_tx(&transaction, identity)?;
+            if ready_accepted && current.last_worker_sequence == 0 {
                 return Err(StoreError::CorruptState(identity.job_id.clone()));
             }
-            return Err(StoreError::WorkerEventAfterCompletionIntent(
-                identity.job_id.clone(),
-            ));
+            if matches!(event, WorkerEvent::Ready { .. })
+                && (ready_accepted || current.last_worker_sequence != 0)
+            {
+                return Err(StoreError::WorkerEventRejected);
+            }
+            if matches!(
+                event,
+                WorkerEvent::Heartbeat { .. }
+                    | WorkerEvent::Progress { .. }
+                    | WorkerEvent::Checkpoint { .. }
+                    | WorkerEvent::Artifact { .. }
+                    | WorkerEvent::Complete { .. }
+            ) && !ready_accepted
+            {
+                return Err(StoreError::WorkerEventRejected);
+            }
+        }
+        if !cancellation_wins {
+            if let Some(intent) = completion_intent_tx(&transaction, identity)? {
+                if intent.sequence != current.last_worker_sequence {
+                    return Err(StoreError::CorruptState(identity.job_id.clone()));
+                }
+                return Err(StoreError::WorkerEventAfterCompletionIntent(
+                    identity.job_id.clone(),
+                ));
+            }
         }
 
         match event {
             WorkerEvent::Ready { .. } => {
+                require_worker_event_state(&current, &[JobState::Starting, JobState::Cancelling])?;
                 let reservation =
                     require_active_job_reservation_matches_job_tx(&transaction, &current)?;
                 if reservation.lifecycle_state != "resident" {
@@ -1255,7 +1548,9 @@ impl JobStore {
                         state: reservation.lifecycle_state,
                     });
                 }
-                transition_worker_tx(&transaction, &current, JobState::Running, now)?;
+                if !cancellation_wins {
+                    transition_worker_tx(&transaction, &current, JobState::Running, now)?;
+                }
                 transaction.execute(
                     "UPDATE runtime_jobs SET last_heartbeat_at=?2 WHERE job_id=?1",
                     params![identity.job_id, now],
@@ -1294,8 +1589,10 @@ impl JobStore {
                         JobState::Cancelling,
                     ],
                 )?;
-                let progress_current = u64_to_i64(*progress_current, "progress current")?;
-                let total = u64_to_i64(*total, "progress total")?;
+                let progress_current = u64_to_i64(*progress_current, "progress current")
+                    .map_err(|_| StoreError::WorkerEventRejected)?;
+                let total = u64_to_i64(*total, "progress total")
+                    .map_err(|_| StoreError::WorkerEventRejected)?;
                 transaction.execute(
                     "UPDATE runtime_jobs SET stage=?2, progress_current=?3, progress_total=?4,
                      last_heartbeat_at=?5, updated_at=?5 WHERE job_id=?1",
@@ -1311,7 +1608,8 @@ impl JobStore {
                         JobState::Cancelling,
                     ],
                 )?;
-                require_path_in_job_namespace(&current.job_id, path)?;
+                require_path_in_job_namespace(&current.job_id, path)
+                    .map_err(|_| StoreError::WorkerEventRejected)?;
                 if current.state == JobState::Running {
                     validate_transition(current.state, JobState::Checkpointing)?;
                 }
@@ -1343,7 +1641,8 @@ impl JobStore {
                         JobState::Cancelling,
                     ],
                 )?;
-                require_path_in_job_namespace(&current.job_id, path)?;
+                require_path_in_job_namespace(&current.job_id, path)
+                    .map_err(|_| StoreError::WorkerEventRejected)?;
                 transaction.execute(
                     "UPDATE runtime_jobs SET last_heartbeat_at=?2, updated_at=?2 WHERE job_id=?1",
                     params![identity.job_id, now],
@@ -1352,21 +1651,42 @@ impl JobStore {
             WorkerEvent::Complete { result_path, .. } => {
                 require_worker_event_state(
                     &current,
-                    &[JobState::Running, JobState::Checkpointing],
+                    &[
+                        JobState::Running,
+                        JobState::Checkpointing,
+                        JobState::Cancelling,
+                    ],
                 )?;
-                require_exact_job_result_path(&current, result_path)?;
+                require_exact_job_result_path(&current, result_path)
+                    .map_err(|_| StoreError::WorkerEventRejected)?;
                 transaction.execute(
                     "UPDATE runtime_jobs SET last_heartbeat_at=?2, updated_at=?2 WHERE job_id=?1",
                     params![identity.job_id, now],
                 )?;
             }
             WorkerEvent::Failed { code, message, .. } => {
-                transition_worker_tx(&transaction, &current, JobState::Failed, now)?;
-                transaction.execute(
-                    "UPDATE runtime_jobs SET failure_code=?2, failure_message=?3, finished_at=?4,
-                     last_heartbeat_at=?4 WHERE job_id=?1",
-                    params![identity.job_id, code, message, now],
+                require_worker_event_state(
+                    &current,
+                    &[
+                        JobState::Starting,
+                        JobState::Running,
+                        JobState::Checkpointing,
+                        JobState::Cancelling,
+                    ],
                 )?;
+                if cancellation_wins {
+                    transaction.execute(
+                        "UPDATE runtime_jobs SET last_heartbeat_at=?2, updated_at=?2 WHERE job_id=?1",
+                        params![identity.job_id, now],
+                    )?;
+                } else {
+                    transition_worker_tx(&transaction, &current, JobState::Failed, now)?;
+                    transaction.execute(
+                        "UPDATE runtime_jobs SET failure_code=?2, failure_message=?3, finished_at=?4,
+                         last_heartbeat_at=?4 WHERE job_id=?1",
+                        params![identity.job_id, code, message, now],
+                    )?;
+                }
             }
             WorkerEvent::CancellationAcknowledged { .. } => {
                 require_worker_event_state(&current, &[JobState::Cancelling])?;
@@ -1380,16 +1700,15 @@ impl JobStore {
             "UPDATE runtime_jobs SET last_worker_sequence=?2 WHERE job_id=?1",
             params![
                 identity.job_id,
-                u64_to_i64(sequence, "worker event sequence")?
+                u64_to_i64(sequence, "worker event sequence")
+                    .map_err(|_| StoreError::WorkerEventRejected)?
             ],
         )?;
         append_worker_event_tx(
             &transaction,
-            &identity.job_id,
-            identity.attempt,
-            &identity.worker_instance_id,
+            identity,
             sequence,
-            worker_event_name(event),
+            persisted_worker_event_name(event, cancellation_wins),
             &payload_json,
             now,
         )?;
@@ -1406,12 +1725,16 @@ impl JobStore {
         &self,
         proof: &WorkerCompletionProof,
     ) -> Result<JobRecord, StoreError> {
+        if !proof.matches_generation_scope(&self.generation_scope) {
+            return Err(StoreError::GenerationAuthorityMismatch);
+        }
         let terminal_accounting = proof.terminal_accounting();
         self.confirm_validated_worker_completion(
             proof.identity(),
             proof.completion_sequence(),
             proof.result(),
             Some(terminal_accounting),
+            Some(proof),
         )
     }
 
@@ -1423,6 +1746,7 @@ impl JobStore {
         &self,
         tree_exit: &ProcessTreeExit,
     ) -> Result<JobRecord, StoreError> {
+        self.require_process_tree_exit_scope(tree_exit)?;
         let code = "WORKER_COMPLETION_VALIDATION_FAILED";
         let message = "Durable worker completion could not be validated after process-tree exit";
         let identity = tree_exit.worker_identity().cloned().ok_or_else(|| {
@@ -1435,6 +1759,15 @@ impl JobStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = query_job(&transaction, &identity.job_id)?;
         require_identity(&current, &identity)?;
+        if matches!(current.state, JobState::Cancelling | JobState::Cancelled) {
+            confirm_cancelled_tx(&transaction, &current, &identity)?;
+            let updated = query_job(&transaction, &identity.job_id)?;
+            transaction.commit()?;
+            return Ok(updated);
+        }
+        if current.cancellation_requested {
+            return Err(StoreError::CorruptState(identity.job_id.clone()));
+        }
         if current.state == JobState::Failed
             && current.failure_code.as_deref() == Some(code)
             && current.failure_message.as_deref() == Some(message)
@@ -1518,6 +1851,7 @@ impl JobStore {
         completion_sequence: u64,
         result: &ValidatedWorkerResult,
         terminal_accounting: Option<(u32, u32, ProcessTreeAccounting)>,
+        completion_proof: Option<&WorkerCompletionProof>,
     ) -> Result<JobRecord, StoreError> {
         identity.validate()?;
         result.validate()?;
@@ -1526,6 +1860,18 @@ impl JobStore {
         let current = query_job(&transaction, &identity.job_id)?;
         require_identity(&current, identity)?;
         require_exact_job_result_path(&current, result.result_path())?;
+
+        if terminal_accounting.is_some()
+            && matches!(current.state, JobState::Cancelling | JobState::Cancelled)
+        {
+            confirm_cancelled_tx(&transaction, &current, identity)?;
+            let updated = query_job(&transaction, &identity.job_id)?;
+            transaction.commit()?;
+            return Ok(updated);
+        }
+        if current.cancellation_requested {
+            return Err(StoreError::CorruptState(identity.job_id.clone()));
+        }
 
         if current.state == JobState::Succeeded {
             let intent = completion_intent_tx(&transaction, identity)?
@@ -1543,6 +1889,12 @@ impl JobStore {
                         && &existing.result == result
                         && existing.terminal_accounting == terminal_accounting =>
                 {
+                    revalidate_completion_result_before_commit(
+                        completion_proof,
+                        identity,
+                        completion_sequence,
+                        result,
+                    )?;
                     transaction.commit()?;
                     return Ok(current);
                 }
@@ -1579,6 +1931,16 @@ impl JobStore {
             });
         }
 
+        // Keep the exact no-share-write/no-share-delete result handle alive
+        // while this IMMEDIATE transaction is open, and re-read that handle at
+        // the last point before success is durably published. Cancellation is
+        // deliberately settled above without consulting result bytes.
+        revalidate_completion_result_before_commit(
+            completion_proof,
+            identity,
+            completion_sequence,
+            result,
+        )?;
         let now = now_ms();
         transaction.execute(
             "UPDATE runtime_jobs SET state='succeeded', failure_code=NULL, failure_message=NULL,
@@ -1762,6 +2124,7 @@ impl JobStore {
     /// worker. Cancellation becomes terminal and its resident reservation is
     /// released in the same transaction.
     pub fn confirm_cancelled(&self, tree_exit: &ProcessTreeExit) -> Result<JobRecord, StoreError> {
+        self.require_process_tree_exit_scope(tree_exit)?;
         let identity = tree_exit.worker_identity().cloned().ok_or_else(|| {
             StoreError::InvalidInput(
                 "service process-tree exit cannot confirm worker cancellation".into(),
@@ -1772,61 +2135,7 @@ impl JobStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = query_job(&transaction, &identity.job_id)?;
         require_identity(&current, &identity)?;
-        if current.state == JobState::Cancelled {
-            if !current.cancellation_requested
-                || latest_job_reservation_state_tx(&transaction, &identity.job_id)?.as_deref()
-                    != Some("released")
-            {
-                return Err(StoreError::CorruptState(identity.job_id));
-            }
-            transaction.commit()?;
-            return Ok(current);
-        }
-        if current.state != JobState::Cancelling {
-            return Err(StoreError::WorkerEventInState {
-                job_id: identity.job_id,
-                state: current.state,
-            });
-        }
-        if !current.cancellation_requested {
-            return Err(StoreError::CorruptState(identity.job_id));
-        }
-        let reservation = require_active_job_reservation_matches_job_tx(&transaction, &current)?;
-        if reservation.lifecycle_state != "resident" {
-            return Err(StoreError::InvalidAdmissionReservationState {
-                job_id: identity.job_id,
-                state: reservation.lifecycle_state,
-            });
-        }
-        let now = now_ms();
-        transaction.execute(
-            "UPDATE runtime_jobs SET state='cancelled', failure_code=NULL, failure_message=NULL,
-             updated_at=?2, finished_at=?2 WHERE job_id=?1",
-            params![identity.job_id, now],
-        )?;
-        append_event_tx(
-            &transaction,
-            &identity.job_id,
-            identity.attempt,
-            Some(&identity.worker_instance_id),
-            "cancelled",
-            &serde_json::json!({ "state": "cancelled" }),
-            now,
-        )?;
-        if !release_active_job_reservation_tx(&transaction, &identity.job_id, now)? {
-            return Err(StoreError::MissingAdmissionReservation(
-                identity.job_id.clone(),
-            ));
-        }
-        append_event_tx(
-            &transaction,
-            &identity.job_id,
-            identity.attempt,
-            Some(&identity.worker_instance_id),
-            "reservation-released",
-            &serde_json::json!({ "reservationState": "released" }),
-            now,
-        )?;
+        confirm_cancelled_tx(&transaction, &current, &identity)?;
         let updated = query_job(&transaction, &identity.job_id)?;
         transaction.commit()?;
         Ok(updated)
@@ -1838,12 +2147,7 @@ impl JobStore {
         &self,
         tree_exit: &ProcessTreeExit,
     ) -> Result<JobRecord, StoreError> {
-        let identity = tree_exit.worker_identity().cloned().ok_or_else(|| {
-            StoreError::InvalidInput(
-                "service process-tree exit cannot terminate a worker job".into(),
-            )
-        })?;
-        identity.validate()?;
+        self.require_process_tree_exit_scope(tree_exit)?;
         let (target, code, message) = match tree_exit.classification() {
             ProcessExitClassification::ResourceExhausted => (
                 JobState::ResourceExhausted,
@@ -1871,7 +2175,7 @@ impl JobStore {
                 "Worker exited without a valid terminal event",
             ),
         };
-        self.worker_terminal_transition(&identity, target, code, message)
+        self.worker_terminal_transition(tree_exit, target, code, message)
     }
 
     /// Records a failure that occurred after admission but before a worker
@@ -1934,13 +2238,36 @@ impl JobStore {
         Ok(updated)
     }
 
-    /// Exercises the future no-process-created transition in unit tests only.
-    /// The production API stays closed until the launch boundary can return a
-    /// one-shot authority that cannot be retained across a successful retry.
+    /// Finalizes only an opaque claim-owned proof minted before CreateProcess.
+    /// The failure class is derived from the actual launch error rather than a
+    /// caller-selected release reason. Every database error returns the exact
+    /// proof intact for retry.
+    pub fn finish_worker_not_created(
+        &self,
+        authority: WorkerLaunchNotCreated,
+    ) -> Result<JobRecord, WorkerStoreTransitionError<WorkerLaunchNotCreated>> {
+        let disposition = pre_residency_disposition_for_launch_error(authority.error());
+        match self.finish_worker_claim_before_residency_inner(authority.claim(), disposition) {
+            Ok(job) => Ok(job),
+            Err(error) => Err(WorkerStoreTransitionError {
+                authority: Box::new(authority),
+                error,
+            }),
+        }
+    }
+
     #[cfg(test)]
     fn finish_worker_claim_before_residency(
         &self,
         claim: WorkerDispatchClaim,
+        disposition: PreResidencyClaimDisposition,
+    ) -> Result<JobRecord, StoreError> {
+        self.finish_worker_claim_before_residency_inner(&claim, disposition)
+    }
+
+    fn finish_worker_claim_before_residency_inner(
+        &self,
+        claim: &WorkerDispatchClaim,
         disposition: PreResidencyClaimDisposition,
     ) -> Result<JobRecord, StoreError> {
         if claim.generation_scope != self.generation_scope {
@@ -1969,8 +2296,13 @@ impl JobStore {
         }
         require_pending_job_reservation_tx(&transaction, &current)?;
 
-        let cancellation_wins = current.state == JobState::Cancelling
-            || disposition == PreResidencyClaimDisposition::Cancellation;
+        #[cfg(test)]
+        let caller_selected_test_cancellation =
+            disposition == PreResidencyClaimDisposition::Cancellation;
+        #[cfg(not(test))]
+        let caller_selected_test_cancellation = false;
+        let cancellation_wins =
+            current.state == JobState::Cancelling || caller_selected_test_cancellation;
         let now = now_ms();
         if cancellation_wins && current.state == JobState::Starting {
             validate_transition(JobState::Starting, JobState::Cancelling)?;
@@ -1980,10 +2312,10 @@ impl JobStore {
                    AND worker_instance_id=?3 AND workspace_path=?4
                    AND cancellation_requested=0",
                 params![
-                    claim.identity.job_id,
+                    &claim.identity.job_id,
                     claim.identity.attempt,
-                    claim.identity.worker_instance_id,
-                    current.workspace_path,
+                    &claim.identity.worker_instance_id,
+                    &current.workspace_path,
                     now,
                 ],
             )?;
@@ -2026,6 +2358,7 @@ impl JobStore {
                     "Worker start exhausted resources before authoritative tree residency",
                     "spawn-resource-exhausted-before-tree-residency",
                 ),
+                #[cfg(test)]
                 PreResidencyClaimDisposition::Cancellation => unreachable!(
                     "the cancellation disposition always selects the cancellation path"
                 ),
@@ -2050,10 +2383,10 @@ impl JobStore {
                AND workspace_path=?4 AND state=?9
                AND cancellation_requested=?10",
             params![
-                claim.identity.job_id,
+                &claim.identity.job_id,
                 claim.identity.attempt,
-                claim.identity.worker_instance_id,
-                current.workspace_path,
+                &claim.identity.worker_instance_id,
+                &current.workspace_path,
                 state_name(target),
                 failure_code,
                 failure_message,
@@ -2083,7 +2416,7 @@ impl JobStore {
             "UPDATE runtime_admission_reservations
              SET lifecycle_state='released', released_at=?2, updated_at=?2
              WHERE subject_kind='job' AND subject_id=?1 AND lifecycle_state='pending'",
-            params![claim.identity.job_id, now],
+            params![&claim.identity.job_id, now],
         )?;
         if released != 1 {
             return Err(StoreError::MissingAdmissionReservation(
@@ -2108,15 +2441,38 @@ impl JobStore {
         Ok(updated)
     }
 
-    /// Consumes a dispatch claim and the exact zero-resident receipt for the
-    /// race where the helper was activated but its target never produced an
-    /// accepted `started` boundary. The pending hold proves the runtime never
-    /// accepted residency; any worker event, resident hold, mismatched purpose,
-    /// service receipt, or replay fails closed.
-    pub fn finish_worker_claim_after_tree_exit(
+    /// Finalizes a claim only with the exact zero-resident receipt returned by
+    /// its coupled live owner. Every store error returns the full pair intact.
+    pub fn finish_worker_before_started(
+        &self,
+        authority: WorkerTreeExitAuthority,
+    ) -> Result<JobRecord, WorkerStoreTransitionError<WorkerTreeExitAuthority>> {
+        let result = {
+            let (claim, tree_exit) = authority.parts();
+            self.finish_worker_claim_after_tree_exit_inner(claim, tree_exit)
+        };
+        match result {
+            Ok(job) => Ok(job),
+            Err(error) => Err(WorkerStoreTransitionError {
+                authority: Box::new(authority),
+                error,
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    fn finish_worker_claim_after_tree_exit(
         &self,
         claim: WorkerDispatchClaim,
         tree_exit: ProcessTreeExit,
+    ) -> Result<JobRecord, StoreError> {
+        self.finish_worker_claim_after_tree_exit_inner(&claim, &tree_exit)
+    }
+
+    fn finish_worker_claim_after_tree_exit_inner(
+        &self,
+        claim: &WorkerDispatchClaim,
+        tree_exit: &ProcessTreeExit,
     ) -> Result<JobRecord, StoreError> {
         if claim.generation_scope != self.generation_scope
             || !tree_exit.matches_generation_scope(&self.generation_scope)
@@ -2141,7 +2497,7 @@ impl JobStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = query_job(&transaction, &claim.identity.job_id)?;
         require_identity(&current, &claim.identity)?;
-        require_dispatch_claim_matches_job(&claim, &current)?;
+        require_dispatch_claim_matches_job(claim, &current)?;
         require_worker_event_state(&current, &[JobState::Starting, JobState::Cancelling])?;
         require_pending_job_reservation_tx(&transaction, &current)?;
         let accepted_worker_events: i64 = transaction.query_row(
@@ -2149,9 +2505,9 @@ impl JobStore {
              WHERE job_id=?1 AND attempt=?2 AND worker_instance_id=?3
                AND worker_sequence IS NOT NULL",
             params![
-                claim.identity.job_id,
+                &claim.identity.job_id,
                 claim.identity.attempt,
-                claim.identity.worker_instance_id,
+                &claim.identity.worker_instance_id,
             ],
             |row| row.get(0),
         )?;
@@ -2220,10 +2576,10 @@ impl JobStore {
              WHERE job_id=?1 AND attempt=?2 AND worker_instance_id=?3
                AND workspace_path=?4 AND state=?9 AND cancellation_requested=?10",
             params![
-                claim.identity.job_id,
+                &claim.identity.job_id,
                 claim.identity.attempt,
-                claim.identity.worker_instance_id,
-                current.workspace_path,
+                &claim.identity.worker_instance_id,
+                &current.workspace_path,
                 state_name(target),
                 failure_code,
                 failure_message,
@@ -2255,7 +2611,7 @@ impl JobStore {
             "UPDATE runtime_admission_reservations
              SET lifecycle_state='released', released_at=?2, updated_at=?2
              WHERE subject_kind='job' AND subject_id=?1 AND lifecycle_state='pending'",
-            params![claim.identity.job_id, now],
+            params![&claim.identity.job_id, now],
         )?;
         if released != 1 {
             return Err(StoreError::MissingAdmissionReservation(
@@ -2481,7 +2837,10 @@ impl JobStore {
                 }
             }
             if let Some(intent) = &completion_intent {
-                if intent.sequence != job.last_worker_sequence {
+                if intent.sequence > job.last_worker_sequence
+                    || (job.state != JobState::Cancelling
+                        && intent.sequence != job.last_worker_sequence)
+                {
                     return Err(StoreError::CorruptState(job.job_id));
                 }
                 require_exact_job_result_path(&job, &intent.result_path)
@@ -2710,17 +3069,33 @@ impl JobStore {
 
     fn worker_terminal_transition(
         &self,
-        identity: &WorkerIdentity,
+        tree_exit: &ProcessTreeExit,
         target: JobState,
         code: &str,
         message: &str,
     ) -> Result<JobRecord, StoreError> {
+        self.require_process_tree_exit_scope(tree_exit)?;
+        let identity = tree_exit.worker_identity().cloned().ok_or_else(|| {
+            StoreError::InvalidInput(
+                "service process-tree exit cannot terminate a worker job".into(),
+            )
+        })?;
+        identity.validate()?;
         validate_identifier("failure code", code)?;
         validate_bounded_text("failure message", message, MAX_FAILURE_MESSAGE_BYTES)?;
         let mut connection = self.connection.lock().expect("job store mutex poisoned");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = query_job(&transaction, &identity.job_id)?;
-        require_identity(&current, identity)?;
+        require_identity(&current, &identity)?;
+        if matches!(current.state, JobState::Cancelling | JobState::Cancelled) {
+            confirm_cancelled_tx(&transaction, &current, &identity)?;
+            let updated = query_job(&transaction, &identity.job_id)?;
+            transaction.commit()?;
+            return Ok(updated);
+        }
+        if current.cancellation_requested {
+            return Err(StoreError::CorruptState(identity.job_id.clone()));
+        }
         if current.state == target
             && current.failure_code.as_deref() == Some(code)
             && current.failure_message.as_deref() == Some(message)
@@ -2733,7 +3108,7 @@ impl JobStore {
             transaction.commit()?;
             return Ok(current);
         }
-        if completion_intent_tx(&transaction, identity)?.is_some() {
+        if completion_intent_tx(&transaction, &identity)?.is_some() {
             return Err(StoreError::PendingCompletionIntent(identity.job_id.clone()));
         }
         validate_transition(current.state, target)?;
@@ -2770,6 +3145,118 @@ impl JobStore {
         transaction.commit()?;
         Ok(updated)
     }
+
+    fn require_process_tree_exit_scope(
+        &self,
+        tree_exit: &ProcessTreeExit,
+    ) -> Result<(), StoreError> {
+        if tree_exit.matches_generation_scope(&self.generation_scope) {
+            Ok(())
+        } else {
+            Err(StoreError::GenerationAuthorityMismatch)
+        }
+    }
+}
+
+fn revalidate_completion_result_before_commit(
+    proof: Option<&WorkerCompletionProof>,
+    identity: &WorkerIdentity,
+    completion_sequence: u64,
+    result: &ValidatedWorkerResult,
+) -> Result<(), StoreError> {
+    let Some(proof) = proof else {
+        // Crate-local semantic tests exercise the transaction independently of
+        // the production process-owner proof. The public production entrypoint
+        // always supplies `Some` here.
+        return Ok(());
+    };
+    if proof.identity() != identity
+        || proof.completion_sequence() != completion_sequence
+        || proof.result() != result
+    {
+        return Err(StoreError::ConflictingCompletionEvidence(
+            identity.job_id.clone(),
+        ));
+    }
+    proof
+        .revalidate_result_file()
+        .map_err(|_| StoreError::ConflictingCompletionEvidence(identity.job_id.clone()))
+}
+
+fn confirm_cancelled_tx(
+    transaction: &Transaction<'_>,
+    current: &JobRecord,
+    identity: &WorkerIdentity,
+) -> Result<(), StoreError> {
+    if current.state == JobState::Cancelled {
+        if !current.cancellation_requested
+            || latest_job_reservation_state_tx(transaction, &identity.job_id)?.as_deref()
+                != Some("released")
+        {
+            return Err(StoreError::CorruptState(identity.job_id.clone()));
+        }
+        return Ok(());
+    }
+    if current.state != JobState::Cancelling {
+        return Err(StoreError::WorkerEventInState {
+            job_id: identity.job_id.clone(),
+            state: current.state,
+        });
+    }
+    if !current.cancellation_requested {
+        return Err(StoreError::CorruptState(identity.job_id.clone()));
+    }
+    let reservation = require_active_job_reservation_matches_job_tx(transaction, current)?;
+    if reservation.lifecycle_state != "resident" {
+        return Err(StoreError::InvalidAdmissionReservationState {
+            job_id: identity.job_id.clone(),
+            state: reservation.lifecycle_state,
+        });
+    }
+    validate_transition(JobState::Cancelling, JobState::Cancelled)?;
+    let now = now_ms();
+    let changed = transaction.execute(
+        "UPDATE runtime_jobs SET state='cancelled', failure_code=NULL, failure_message=NULL,
+         updated_at=?2, finished_at=?2
+         WHERE job_id=?1 AND state='cancelling' AND attempt=?3
+           AND worker_instance_id=?4 AND cancellation_requested=1",
+        params![
+            &identity.job_id,
+            now,
+            identity.attempt,
+            &identity.worker_instance_id
+        ],
+    )?;
+    if changed != 1 {
+        return Err(StoreError::CorruptState(format!(
+            "cancelling job {} changed while tree exit was confirmed",
+            identity.job_id
+        )));
+    }
+    append_event_tx(
+        transaction,
+        &identity.job_id,
+        identity.attempt,
+        Some(&identity.worker_instance_id),
+        "cancelled",
+        &serde_json::json!({ "state": "cancelled" }),
+        now,
+    )?;
+    if !release_active_job_reservation_tx(transaction, &identity.job_id, now)? {
+        return Err(StoreError::MissingAdmissionReservation(
+            identity.job_id.clone(),
+        ));
+    }
+    append_event_tx(
+        transaction,
+        &identity.job_id,
+        identity.attempt,
+        Some(&identity.worker_instance_id),
+        "reservation-released",
+        &serde_json::json!({ "reservationState": "released" }),
+        now,
+    )?;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -3840,10 +4327,19 @@ fn completion_intent_tx(
         "SELECT worker_sequence,
                 CAST(substr(CAST(payload_json AS BLOB), 1, ?4) AS BLOB),
                 length(CAST(payload_json AS BLOB)), typeof(payload_json)
-         FROM runtime_job_events
-         WHERE job_id=?1 AND attempt=?2 AND worker_instance_id=?3
-           AND event_type='complete'
-         ORDER BY sequence ASC",
+         FROM runtime_job_events AS completion
+         WHERE completion.job_id=?1 AND completion.attempt=?2
+           AND completion.worker_instance_id=?3
+           AND completion.event_type='complete'
+           AND NOT EXISTS (
+               SELECT 1 FROM runtime_job_events AS cancellation
+               WHERE cancellation.job_id=completion.job_id
+                 AND cancellation.attempt=completion.attempt
+                 AND cancellation.worker_instance_id=completion.worker_instance_id
+                 AND cancellation.event_type='cancellation-requested'
+                 AND cancellation.sequence < completion.sequence
+           )
+         ORDER BY completion.sequence ASC",
     )?;
     let mut records = statement
         .query_map(
@@ -3949,8 +4445,8 @@ fn completion_confirmation_tx(
         || persisted.peak_private_commit_bytes.is_some()
         || persisted.peak_accounting_complete.is_some();
     if has_terminal_accounting
-        && (persisted.supervisor_pid.map_or(true, |pid| pid == 0)
-            || persisted.root_pid.map_or(true, |pid| pid == 0)
+        && (persisted.supervisor_pid.is_none_or(|pid| pid == 0)
+            || persisted.root_pid.is_none_or(|pid| pid == 0)
             || persisted.peak_private_commit_bytes.is_none()
             || persisted.peak_accounting_complete != Some(true))
     {
@@ -3983,6 +4479,56 @@ fn completion_confirmation_tx(
         result,
         terminal_accounting,
     }))
+}
+
+fn worker_ready_accepted_tx(
+    transaction: &Transaction<'_>,
+    identity: &WorkerIdentity,
+) -> Result<bool, StoreError> {
+    let mut statement = transaction.prepare(
+        "SELECT worker_sequence FROM runtime_job_events
+         WHERE job_id=?1 AND attempt=?2 AND worker_instance_id=?3
+           AND event_type IN ('ready','ready-after-cancellation')
+         ORDER BY sequence ASC
+         LIMIT 2",
+    )?;
+    let mut sequences = statement
+        .query_map(
+            params![
+                &identity.job_id,
+                identity.attempt,
+                &identity.worker_instance_id
+            ],
+            |row| row.get::<_, Option<i64>>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    if sequences.len() > 1 {
+        return Err(StoreError::CorruptState(identity.job_id.clone()));
+    }
+    let Some(stored_sequence) = sequences.pop() else {
+        return Ok(false);
+    };
+    let stored_sequence =
+        stored_sequence.ok_or_else(|| StoreError::CorruptState(identity.job_id.clone()))?;
+    let stored_sequence = u64::try_from(stored_sequence)
+        .map_err(|_| StoreError::CorruptState(identity.job_id.clone()))?;
+    let payload_json = persisted_worker_event_tx(transaction, identity, stored_sequence)?
+        .ok_or_else(|| StoreError::CorruptState(identity.job_id.clone()))?;
+    let event: WorkerEvent = serde_json::from_str(&payload_json)
+        .map_err(|_| StoreError::CorruptState(identity.job_id.clone()))?;
+    event
+        .validate()
+        .map_err(|_| StoreError::CorruptState(identity.job_id.clone()))?;
+    match event {
+        WorkerEvent::Ready {
+            identity: stored_identity,
+            sequence,
+            ..
+        } if stored_identity == *identity && sequence == 1 && sequence == stored_sequence => {
+            Ok(true)
+        }
+        _ => Err(StoreError::CorruptState(identity.job_id.clone())),
+    }
 }
 
 fn latest_checkpoint_for_attempt_tx(
@@ -4041,12 +4587,14 @@ fn latest_worker_event_name_tx(
     if !matches!(
         event_type.as_str(),
         "ready"
+            | "ready-after-cancellation"
             | "heartbeat"
             | "progress"
             | "checkpoint"
             | "artifact"
             | "complete"
             | "failed"
+            | "failed-after-cancellation"
             | "cancellation-acknowledged"
     ) {
         return Err(StoreError::CorruptState(identity.job_id.clone()));
@@ -4082,9 +4630,7 @@ fn persisted_worker_event_tx(
 
 fn append_worker_event_tx(
     transaction: &Transaction<'_>,
-    job_id: &str,
-    attempt: u32,
-    worker_instance_id: &str,
+    identity: &WorkerIdentity,
     worker_sequence: u64,
     event_type: &str,
     payload_json: &str,
@@ -4102,9 +4648,9 @@ fn append_worker_event_tx(
          (job_id, attempt, worker_instance_id, worker_sequence, event_type, payload_json, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
-            job_id,
-            attempt,
-            worker_instance_id,
+            identity.job_id,
+            identity.attempt,
+            identity.worker_instance_id,
             worker_sequence,
             event_type,
             payload_json,
@@ -4181,6 +4727,17 @@ fn worker_event_name(event: &WorkerEvent) -> &'static str {
     }
 }
 
+fn persisted_worker_event_name(event: &WorkerEvent, cancellation_wins: bool) -> &'static str {
+    if cancellation_wins {
+        match event {
+            WorkerEvent::Ready { .. } => return "ready-after-cancellation",
+            WorkerEvent::Failed { .. } => return "failed-after-cancellation",
+            _ => {}
+        }
+    }
+    worker_event_name(event)
+}
+
 fn process_exit_classification_name(classification: ProcessExitClassification) -> &'static str {
     match classification {
         ProcessExitClassification::TargetExit => "target-exit",
@@ -4188,6 +4745,28 @@ fn process_exit_classification_name(classification: ProcessExitClassification) -
         ProcessExitClassification::ResourceExhausted => "resource-exhausted",
         ProcessExitClassification::SupervisorFailure => "supervisor-failure",
         ProcessExitClassification::WorkerProtocolFault => "worker-protocol-fault",
+    }
+}
+
+fn pre_residency_disposition_for_launch_error(
+    error: &ProcessOwnerError,
+) -> PreResidencyClaimDisposition {
+    // Windows reports these before CreateProcess returns a child handle. The
+    // classification is derived from the OS error, never supplied by a
+    // dispatcher caller.
+    const ERROR_NOT_ENOUGH_MEMORY: i32 = 8;
+    const ERROR_OUTOFMEMORY: i32 = 14;
+    const ERROR_COMMITMENT_LIMIT: i32 = 1455;
+    match error {
+        ProcessOwnerError::Spawn(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(ERROR_NOT_ENOUGH_MEMORY | ERROR_OUTOFMEMORY | ERROR_COMMITMENT_LIMIT)
+            ) =>
+        {
+            PreResidencyClaimDisposition::SpawnResourceExhausted
+        }
+        _ => PreResidencyClaimDisposition::SpawnFailed,
     }
 }
 
@@ -4236,7 +4815,7 @@ fn now_ms() -> i64 {
 fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut version: i64 = transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version > SCHEMA_VERSION || version < 0 {
+    if !(0..=SCHEMA_VERSION).contains(&version) {
         return Err(StoreError::UnsupportedSchemaVersion {
             found: version,
             supported: SCHEMA_VERSION,
@@ -5084,7 +5663,7 @@ mod tests {
             })
             .unwrap()
         {
-            JobAdmissionResult::Admitted(job) => job,
+            JobAdmissionResult::Admitted(job) => *job,
             JobAdmissionResult::Denied(denial) => {
                 panic!("unexpected admission denial: {}", denial.reason)
             }
@@ -5141,9 +5720,20 @@ mod tests {
             .unwrap()
     }
 
+    fn job_event_count(store: &JobStore, job_id: &str) -> i64 {
+        let connection = store.connection.lock().unwrap();
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_job_events WHERE job_id=?1",
+                params![job_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
     fn claim(store: &JobStore, job_id: &str, worker: &str) -> WorkerDispatchClaim {
         match store.try_claim_admitted_worker(job_id, worker).unwrap() {
-            WorkerClaimOutcome::Claimed(claim) => claim,
+            WorkerClaimOutcome::Claimed(claim) => *claim,
             WorkerClaimOutcome::NotClaimable => panic!("job {job_id} was not claimable"),
         }
     }
@@ -5170,6 +5760,13 @@ mod tests {
 
     fn claim_and_settle(store: &JobStore, job_id: &str, worker: &str) -> WorkerIdentity {
         settle_claim(store, claim(store, job_id, worker))
+    }
+
+    fn resident_tree_exit(store: &JobStore, identity: WorkerIdentity) -> ProcessTreeExit {
+        ProcessTreeExit::worker_release_after_started_for_test_in_scope(
+            store.generation_scope.clone(),
+            identity,
+        )
     }
 
     fn start(store: &JobStore, job_id: &str, worker: &str) -> WorkerIdentity {
@@ -5208,6 +5805,88 @@ mod tests {
                 .as_slice(),
             br#"{"source":"test"}"#
         );
+    }
+
+    #[test]
+    fn closed_admission_rejects_submission_before_any_durable_row_or_event() {
+        let (_directory, store) = store();
+        store.set_accepting_work(false);
+
+        assert!(matches!(
+            store.submit_raw(&input("job_closed", "request_closed")),
+            Err(StoreError::AdmissionClosed)
+        ));
+        {
+            let connection = store.connection.lock().unwrap();
+            for table in ["runtime_jobs", "runtime_job_inputs", "runtime_job_events"] {
+                let count: i64 = connection
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(count, 0, "closed submission wrote to {table}");
+            }
+        }
+
+        // Tests may explicitly reopen the lifecycle gate; production shutdown
+        // never does so within the same generation.
+        store.set_accepting_work(true);
+        assert_eq!(
+            store
+                .submit_raw(&input("job_reopened", "request_reopened"))
+                .unwrap()
+                .state,
+            JobState::Queued
+        );
+        assert_eq!(
+            store
+                .events_after(&context(1), "job_reopened", 0, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn worker_event_rejection_classification_is_conservative() {
+        let deterministic = [
+            StoreError::WorkerEventInState {
+                job_id: "job_1".into(),
+                state: JobState::Cancelled,
+            },
+            StoreError::WorkerEventRejected,
+            StoreError::WorkerEventAfterCompletionIntent("job_1".into()),
+        ];
+        assert!(deterministic
+            .iter()
+            .all(StoreError::is_deterministic_worker_event_rejection));
+
+        let fatal = [
+            StoreError::Database(rusqlite::Error::InvalidQuery),
+            StoreError::CorruptState("job_1".into()),
+            StoreError::GenerationAuthorityMismatch,
+            StoreError::StaleWorker("job_1".into()),
+            StoreError::OutOfOrderWorkerEvent {
+                job_id: "job_1".into(),
+                expected: 2,
+                actual: 3,
+            },
+            StoreError::ConflictingWorkerEvent {
+                job_id: "job_1".into(),
+                sequence: 2,
+            },
+            StoreError::InvalidInput("ambiguous caller input".into()),
+            StoreError::Transition(crate::StateTransitionError {
+                from: JobState::Cancelling,
+                to: JobState::Running,
+            }),
+            StoreError::ProtocolValidation(
+                validate_identifier("worker event test", "").unwrap_err(),
+            ),
+        ];
+        assert!(fatal
+            .iter()
+            .all(|error| !error.is_deterministic_worker_event_rejection()));
     }
 
     #[test]
@@ -5623,7 +6302,7 @@ mod tests {
         let admission = registered_admission("learn-node", ResourceClass::Core, 128, 1);
         admit(&store, "job_1", &admission);
         let identity = claim_and_settle(&store, "job_1", "worker_1");
-        let tree_exit = ProcessTreeExit::worker_release_for_test(identity.clone());
+        let tree_exit = resident_tree_exit(&store, identity.clone());
         store.worker_exited_without_terminal(&tree_exit).unwrap();
         assert_eq!(
             store
@@ -5876,7 +6555,7 @@ mod tests {
         let mut claims = handles
             .into_iter()
             .filter_map(|handle| match handle.join().unwrap() {
-                WorkerClaimOutcome::Claimed(claim) => Some(claim),
+                WorkerClaimOutcome::Claimed(claim) => Some(*claim),
                 WorkerClaimOutcome::NotClaimable => None,
             })
             .collect::<Vec<_>>();
@@ -6142,6 +6821,132 @@ mod tests {
     }
 
     #[test]
+    fn claim_owned_no_process_authority_is_retry_safe_cancel_safe_and_replay_fenced() {
+        let (_directory, store) = store();
+        let admission = registered_admission("learn-node", ResourceClass::Core, 128, 8);
+        for (job_id, key) in [
+            ("job_retry", "request_retry"),
+            ("job_cancel", "request_cancel"),
+            ("job_scope", "request_scope"),
+        ] {
+            let mut job = input(job_id, key);
+            job.resource_class = "core".into();
+            store.submit_raw(&job).unwrap();
+            admit(&store, job_id, &admission);
+        }
+
+        let retry_claim = claim(&store, "job_retry", "worker_retry");
+        let replay = illicit_replay_claim(&retry_claim);
+        let not_created = WorkerLaunchNotCreated::for_test(
+            retry_claim,
+            ProcessOwnerError::Spawn(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "pre-CreateProcess test failure",
+            )),
+        );
+        let debug = format!("{not_created:?}");
+        assert!(!debug.contains("job_retry"));
+        assert!(!debug.contains("worker_retry"));
+
+        // Retrying consumes the entire old authority and returns a new one;
+        // there is no cloneable proof that can survive beside the retry.
+        let retried = not_created.retry_for_test();
+        let failed = store.finish_worker_not_created(retried).unwrap();
+        assert_eq!(failed.state, JobState::Interrupted);
+        assert_eq!(latest_reservation_state(&store, "job_retry"), "released");
+
+        let replay_error = store
+            .finish_worker_not_created(WorkerLaunchNotCreated::for_test(
+                replay,
+                ProcessOwnerError::Spawn(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "illicit replay",
+                )),
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            replay_error.error(),
+            StoreError::WorkerEventInState { .. }
+        ));
+        let (replayed_authority, _) = replay_error.into_parts();
+        assert_eq!(replayed_authority.identity().job_id, "job_retry");
+        assert_eq!(
+            store
+                .events_after(&context(1), "job_retry", 0, 20)
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "reservation-released")
+                .count(),
+            1
+        );
+
+        let cancelling_claim = claim(&store, "job_cancel", "worker_cancel");
+        store
+            .request_cancellation(&context(1), "job_cancel")
+            .unwrap();
+        let cancelled = store
+            .finish_worker_not_created(WorkerLaunchNotCreated::for_test(
+                cancelling_claim,
+                ProcessOwnerError::Spawn(std::io::Error::from_raw_os_error(1455)),
+            ))
+            .unwrap();
+        assert_eq!(cancelled.state, JobState::Cancelled);
+        assert_eq!(cancelled.failure_code, None);
+        assert_eq!(latest_reservation_state(&store, "job_cancel"), "released");
+
+        let mut foreign_claim = claim(&store, "job_scope", "worker_scope");
+        foreign_claim.generation_scope =
+            RuntimeGenerationScope::from_trusted_data_root_identity(7, 11);
+        assert_ne!(foreign_claim.generation_scope, store.generation_scope);
+        let scope_error = store
+            .finish_worker_not_created(WorkerLaunchNotCreated::for_test(
+                foreign_claim,
+                ProcessOwnerError::Spawn(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "foreign generation",
+                )),
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            scope_error.error(),
+            StoreError::GenerationAuthorityMismatch
+        ));
+        let (foreign_authority, _) = scope_error.into_parts();
+        assert_eq!(foreign_authority.identity().job_id, "job_scope");
+        assert_eq!(latest_reservation_state(&store, "job_scope"), "pending");
+    }
+
+    #[test]
+    fn no_process_store_failure_returns_full_authority_and_rolls_back() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        admit(&store, "job_1", &default_admission());
+        let claim = claim(&store, "job_1", "worker_1");
+        let expected_identity = claim.identity().clone();
+        let authority = WorkerLaunchNotCreated::for_test(
+            claim,
+            ProcessOwnerError::Spawn(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "pre-CreateProcess test failure",
+            )),
+        );
+        {
+            let connection = store.connection.lock().unwrap();
+            connection
+                .execute("DROP TABLE runtime_job_events", [])
+                .unwrap();
+        }
+
+        let transition_error = store.finish_worker_not_created(authority).unwrap_err();
+        assert!(matches!(transition_error.error(), StoreError::Database(_)));
+        let (authority, _) = transition_error.into_parts();
+        assert_eq!(authority.identity(), &expected_identity);
+        let persisted = store.get(&context(1), "job_1").unwrap();
+        assert_eq!(persisted.state, JobState::Starting);
+        assert_eq!(latest_reservation_state(&store, "job_1"), "pending");
+    }
+
+    #[test]
     fn pre_started_tree_exit_finalizer_is_exact_cancel_safe_and_single_use() {
         let (_directory, store) = store();
         let admission = registered_admission("learn-node", ResourceClass::Core, 128, 8);
@@ -6373,6 +7178,198 @@ mod tests {
     }
 
     #[test]
+    fn owned_worker_event_requires_exact_store_generation_before_validation_or_mutation() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        admit(&store, "job_1", &default_admission());
+        let identity = claim_and_settle(&store, "job_1", "worker_1");
+        let raw_ready = WorkerEvent::Ready {
+            identity,
+            sequence: 1,
+            protocol_version: breadboard_runtime_protocol::WIRE_PROTOCOL_VERSION,
+        };
+        let foreign_scope = RuntimeGenerationScope::from_trusted_data_root_identity(7, 11);
+        assert_ne!(foreign_scope, store.generation_scope);
+        let before_events = job_event_count(&store, "job_1");
+
+        let foreign_event = OwnedWorkerEvent::for_test(
+            foreign_scope,
+            WorkerEvent::Ready {
+                identity: raw_ready.identity().clone(),
+                sequence: 1,
+                protocol_version: 0,
+            },
+        );
+        assert!(matches!(
+            store.apply_owned_worker_event(&foreign_event),
+            Err(StoreError::GenerationAuthorityMismatch)
+        ));
+        let unchanged = store.get(&context(1), "job_1").unwrap();
+        assert_eq!(unchanged.state, JobState::Starting);
+        assert_eq!(unchanged.last_worker_sequence, 0);
+        assert_eq!(job_event_count(&store, "job_1"), before_events);
+
+        let exact_event = OwnedWorkerEvent::for_test(store.generation_scope.clone(), raw_ready);
+        assert_eq!(
+            store.apply_owned_worker_event(&exact_event).unwrap().state,
+            JobState::Running
+        );
+    }
+
+    #[test]
+    fn dispatcher_snapshot_is_exact_identity_scoped_and_cancel_visible() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        admit(&store, "job_1", &default_admission());
+        let claim = claim(&store, "job_1", "worker_1");
+        let identity = claim.identity().clone();
+
+        let snapshot = store.worker_dispatch_snapshot(&identity).unwrap();
+        assert_eq!(snapshot.identity(), &identity);
+        assert_eq!(snapshot.state(), JobState::Starting);
+        assert!(!snapshot.cancellation_requested());
+        assert_eq!(snapshot.last_worker_sequence(), 0);
+        assert_eq!(store.worker_completion_intent(&identity).unwrap(), None);
+
+        let mut stale = identity.clone();
+        stale.worker_instance_id = "other_worker".into();
+        assert!(matches!(
+            store.worker_dispatch_snapshot(&stale),
+            Err(StoreError::StaleWorker(_))
+        ));
+        assert!(matches!(
+            store.worker_completion_intent(&stale),
+            Err(StoreError::StaleWorker(_))
+        ));
+
+        store.request_cancellation(&context(1), "job_1").unwrap();
+        let cancelling = store.worker_dispatch_snapshot(&identity).unwrap();
+        assert_eq!(cancelling.state(), JobState::Cancelling);
+        assert!(cancelling.cancellation_requested());
+        drop(claim);
+    }
+
+    #[test]
+    fn every_resident_tree_exit_consumer_rejects_foreign_generation_without_mutation() {
+        let (_directory, store) = store();
+        let foreign_scope = RuntimeGenerationScope::from_trusted_data_root_identity(7, 11);
+        assert_ne!(foreign_scope, store.generation_scope);
+
+        store
+            .submit_raw(&input("job_release", "request_release"))
+            .unwrap();
+        let release_identity = start(&store, "job_release", "worker_release");
+        store
+            .apply_worker_event(&WorkerEvent::Failed {
+                identity: release_identity.clone(),
+                sequence: 2,
+                code: "WORKER_FAILED".into(),
+                message: "test failure".into(),
+            })
+            .unwrap();
+        let release_events = job_event_count(&store, "job_release");
+        let foreign_release = ProcessTreeExit::worker_release_after_started_for_test_in_scope(
+            foreign_scope.clone(),
+            release_identity.clone(),
+        );
+        assert!(matches!(
+            store.finalize_reported_worker_failure_after_tree_exit(&foreign_release),
+            Err(StoreError::GenerationAuthorityMismatch)
+        ));
+        assert_eq!(latest_reservation_state(&store, "job_release"), "resident");
+        assert_eq!(job_event_count(&store, "job_release"), release_events);
+        store
+            .finalize_reported_worker_failure_after_tree_exit(&resident_tree_exit(
+                &store,
+                release_identity,
+            ))
+            .unwrap();
+
+        store
+            .submit_raw(&input("job_reject", "request_reject"))
+            .unwrap();
+        let reject_identity = start(&store, "job_reject", "worker_reject");
+        store
+            .apply_worker_event(&WorkerEvent::Complete {
+                identity: reject_identity.clone(),
+                sequence: 2,
+                result_path: "runtime/jobs/job_reject/result.json".into(),
+            })
+            .unwrap();
+        let reject_events = job_event_count(&store, "job_reject");
+        let foreign_reject = ProcessTreeExit::worker_release_after_started_for_test_in_scope(
+            foreign_scope.clone(),
+            reject_identity.clone(),
+        );
+        assert!(matches!(
+            store.reject_worker_completion_after_tree_exit(&foreign_reject),
+            Err(StoreError::GenerationAuthorityMismatch)
+        ));
+        assert_eq!(
+            store.get(&context(1), "job_reject").unwrap().state,
+            JobState::Running
+        );
+        assert_eq!(latest_reservation_state(&store, "job_reject"), "resident");
+        assert_eq!(job_event_count(&store, "job_reject"), reject_events);
+        store
+            .reject_worker_completion_after_tree_exit(&resident_tree_exit(&store, reject_identity))
+            .unwrap();
+
+        store
+            .submit_raw(&input("job_cancel", "request_cancel"))
+            .unwrap();
+        let cancel_identity = start(&store, "job_cancel", "worker_cancel");
+        store
+            .request_cancellation(&context(1), "job_cancel")
+            .unwrap();
+        let cancel_events = job_event_count(&store, "job_cancel");
+        let foreign_cancel = ProcessTreeExit::worker_release_after_started_for_test_in_scope(
+            foreign_scope.clone(),
+            cancel_identity.clone(),
+        );
+        assert!(matches!(
+            store.confirm_cancelled(&foreign_cancel),
+            Err(StoreError::GenerationAuthorityMismatch)
+        ));
+        assert_eq!(
+            store.get(&context(1), "job_cancel").unwrap().state,
+            JobState::Cancelling
+        );
+        assert_eq!(latest_reservation_state(&store, "job_cancel"), "resident");
+        assert_eq!(job_event_count(&store, "job_cancel"), cancel_events);
+        store
+            .confirm_cancelled(&resident_tree_exit(&store, cancel_identity))
+            .unwrap();
+
+        store
+            .submit_raw(&input("job_exit", "request_exit"))
+            .unwrap();
+        let exit_identity = start(&store, "job_exit", "worker_exit");
+        let exit_events = job_event_count(&store, "job_exit");
+        let foreign_exit = ProcessTreeExit::worker_release_after_started_for_test_in_scope(
+            foreign_scope,
+            exit_identity.clone(),
+        );
+        assert!(matches!(
+            store.worker_exited_without_terminal(&foreign_exit),
+            Err(StoreError::GenerationAuthorityMismatch)
+        ));
+        assert_eq!(
+            store.get(&context(1), "job_exit").unwrap().state,
+            JobState::Running
+        );
+        assert_eq!(latest_reservation_state(&store, "job_exit"), "resident");
+        assert_eq!(job_event_count(&store, "job_exit"), exit_events);
+        assert_eq!(
+            store
+                .worker_exited_without_terminal(&resident_tree_exit(&store, exit_identity))
+                .unwrap()
+                .state,
+            JobState::Failed
+        );
+    }
+
+    #[test]
     fn worker_complete_is_intent_until_runtime_confirms_result_and_tree_exit() {
         let (_directory, store) = store();
         store.submit_raw(&input("job_1", "request_1")).unwrap();
@@ -6398,10 +7395,12 @@ mod tests {
         assert_eq!(pending[0].identity(), &identity);
         assert_eq!(pending[0].sequence(), 2);
         assert_eq!(pending[0].result_path(), "runtime/jobs/job_1/result.json");
+        assert_eq!(
+            store.worker_completion_intent(&identity).unwrap(),
+            Some(pending[0].clone())
+        );
         assert!(matches!(
-            store.worker_exited_without_terminal(&ProcessTreeExit::worker_release_for_test(
-                identity.clone()
-            ),),
+            store.worker_exited_without_terminal(&resident_tree_exit(&store, identity.clone())),
             Err(StoreError::PendingCompletionIntent(_))
         ));
 
@@ -6428,6 +7427,7 @@ mod tests {
                         complete: true,
                     },
                 )),
+                None,
             )
             .unwrap();
         assert_eq!(succeeded.state, JobState::Succeeded);
@@ -6461,11 +7461,74 @@ mod tests {
                             complete: true,
                         },
                     )),
+                    None,
                 )
                 .unwrap()
                 .state,
             JobState::Succeeded
         );
+    }
+
+    #[test]
+    fn completion_proof_requires_exact_store_generation_without_partial_mutation() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        let identity = start(&store, "job_1", "worker_1");
+        store
+            .apply_worker_event(&WorkerEvent::Complete {
+                identity: identity.clone(),
+                sequence: 2,
+                result_path: "runtime/jobs/job_1/result.json".into(),
+            })
+            .unwrap();
+        let before_events = job_event_count(&store, "job_1");
+        let foreign_scope = RuntimeGenerationScope::from_trusted_data_root_identity(7, 11);
+        assert_ne!(foreign_scope, store.generation_scope);
+        let foreign_proof = WorkerCompletionProof::for_test(
+            foreign_scope,
+            identity.clone(),
+            2,
+            "runtime/jobs/job_1/result.json",
+        );
+
+        assert!(matches!(
+            store.confirm_worker_completion(&foreign_proof),
+            Err(StoreError::GenerationAuthorityMismatch)
+        ));
+        let unchanged = store.get(&context(1), "job_1").unwrap();
+        assert_eq!(unchanged.state, JobState::Running);
+        assert_eq!(unchanged.last_worker_sequence, 2);
+        assert_eq!(latest_reservation_state(&store, "job_1"), "resident");
+        assert_eq!(job_event_count(&store, "job_1"), before_events);
+
+        let mut changed_result_proof = WorkerCompletionProof::for_test(
+            store.generation_scope.clone(),
+            identity.clone(),
+            2,
+            "runtime/jobs/job_1/result.json",
+        );
+        changed_result_proof.invalidate_result_file_for_test();
+        assert!(matches!(
+            store.confirm_worker_completion(&changed_result_proof),
+            Err(StoreError::ConflictingCompletionEvidence(_))
+        ));
+        let unchanged = store.get(&context(1), "job_1").unwrap();
+        assert_eq!(unchanged.state, JobState::Running);
+        assert_eq!(unchanged.last_worker_sequence, 2);
+        assert_eq!(latest_reservation_state(&store, "job_1"), "resident");
+        assert_eq!(job_event_count(&store, "job_1"), before_events);
+
+        let exact_proof = WorkerCompletionProof::for_test(
+            store.generation_scope.clone(),
+            identity,
+            2,
+            "runtime/jobs/job_1/result.json",
+        );
+        assert_eq!(
+            store.confirm_worker_completion(&exact_proof).unwrap().state,
+            JobState::Succeeded
+        );
+        assert_eq!(latest_reservation_state(&store, "job_1"), "released");
     }
 
     #[test]
@@ -6481,7 +7544,7 @@ mod tests {
             })
             .unwrap();
 
-        let tree_exit = ProcessTreeExit::worker_release_for_test(identity);
+        let tree_exit = resident_tree_exit(&store, identity);
         let failed = store
             .reject_worker_completion_after_tree_exit(&tree_exit)
             .unwrap();
@@ -6530,6 +7593,7 @@ mod tests {
                 2,
                 &validated_result("job_1"),
                 None,
+                None,
             ),
             Err(StoreError::MissingCompletionIntent(_))
         ));
@@ -6548,7 +7612,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            store.confirm_validated_worker_completion(&identity, 2, &wrong_path, None),
+            store.confirm_validated_worker_completion(&identity, 2, &wrong_path, None, None),
             Err(StoreError::InvalidInput(_))
         ));
         assert_eq!(
@@ -6573,11 +7637,19 @@ mod tests {
 
         let cancelling = store.request_cancellation(&context(1), "job_1").unwrap();
         assert_eq!(cancelling.state, JobState::Cancelling);
+        let acknowledged = store
+            .apply_worker_event(&WorkerEvent::CancellationAcknowledged {
+                identity: identity.clone(),
+                sequence: 3,
+            })
+            .unwrap();
+        assert_eq!(acknowledged.state, JobState::Cancelling);
+        assert_eq!(acknowledged.last_worker_sequence, 3);
         assert!(store
             .pending_worker_completion_intents_for_recovery()
             .unwrap()
             .is_empty());
-        let tree_exit = ProcessTreeExit::worker_release_for_test(identity);
+        let tree_exit = resident_tree_exit(&store, identity);
         let cancelled = store.confirm_cancelled(&tree_exit).unwrap();
         assert_eq!(cancelled.state, JobState::Cancelled);
         assert_eq!(latest_reservation_state(&store, "job_1"), "released");
@@ -6585,6 +7657,38 @@ mod tests {
             store.confirm_cancelled(&tree_exit).unwrap().state,
             JobState::Cancelled
         );
+    }
+
+    #[test]
+    fn cancellation_wins_an_exact_completion_proof_race_without_publishing_success() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        let identity = start(&store, "job_1", "worker_1");
+        store
+            .apply_worker_event(&WorkerEvent::Complete {
+                identity: identity.clone(),
+                sequence: 2,
+                result_path: "runtime/jobs/job_1/result.json".into(),
+            })
+            .unwrap();
+        store.request_cancellation(&context(1), "job_1").unwrap();
+        let proof = WorkerCompletionProof::for_test(
+            store.generation_scope.clone(),
+            identity,
+            2,
+            "runtime/jobs/job_1/result.json",
+        );
+
+        let cancelled = store.confirm_worker_completion(&proof).unwrap();
+        assert_eq!(cancelled.state, JobState::Cancelled);
+        assert!(cancelled.cancellation_requested);
+        assert_eq!(cancelled.failure_code, None);
+        assert_eq!(latest_reservation_state(&store, "job_1"), "released");
+        assert!(!store
+            .events_after(&context(1), "job_1", 0, 100)
+            .unwrap()
+            .iter()
+            .any(|event| event.event_type == "completion-confirmed"));
     }
 
     #[test]
@@ -6727,9 +7831,7 @@ mod tests {
         );
 
         store
-            .release_job_reservation_after_tree_exit(&ProcessTreeExit::worker_release_for_test(
-                identity,
-            ))
+            .finalize_reported_worker_failure_after_tree_exit(&resident_tree_exit(&store, identity))
             .unwrap();
         let after_release = store
             .replay_job_events_snapshot(&context(1), "job_1", 0, MAX_JOB_EVENT_REPLAY_RECORDS)
@@ -6743,6 +7845,73 @@ mod tests {
                 .map(|event| event.event_type.as_str()),
             Some("reservation-released")
         );
+    }
+
+    #[test]
+    fn authoritative_tree_exit_overrides_a_provisional_worker_failure() {
+        let (_directory, store) = store();
+        let cases = [
+            (
+                "job_resource",
+                ProcessExitClassification::ResourceExhausted,
+                JobState::ResourceExhausted,
+                "WORKER_RESOURCE_EXHAUSTED",
+            ),
+            (
+                "job_supervisor",
+                ProcessExitClassification::SupervisorFailure,
+                JobState::Failed,
+                "WORKER_SUPERVISION_FAILED",
+            ),
+            (
+                "job_protocol",
+                ProcessExitClassification::WorkerProtocolFault,
+                JobState::Failed,
+                "WORKER_PROTOCOL_FAULT",
+            ),
+            (
+                "job_target",
+                ProcessExitClassification::TargetExit,
+                JobState::Failed,
+                "PROVISIONAL_WORKER_FAILURE",
+            ),
+        ];
+
+        for (index, (job_id, classification, expected_state, expected_code)) in
+            cases.into_iter().enumerate()
+        {
+            store
+                .submit_raw(&input(job_id, &format!("request_{index}")))
+                .unwrap();
+            let identity = start(&store, job_id, &format!("worker_{index}"));
+            store
+                .apply_worker_event(&WorkerEvent::Failed {
+                    identity: identity.clone(),
+                    sequence: 2,
+                    code: "PROVISIONAL_WORKER_FAILURE".into(),
+                    message: "worker-authored failure detail".into(),
+                })
+                .unwrap();
+            let tree_exit = ProcessTreeExit::worker_release_for_test_in_scope(
+                store.generation_scope.clone(),
+                identity,
+                classification,
+            );
+            let finalized = store
+                .finalize_reported_worker_failure_after_tree_exit(&tree_exit)
+                .unwrap();
+            assert_eq!(finalized.state, expected_state);
+            assert_eq!(finalized.failure_code.as_deref(), Some(expected_code));
+            assert_eq!(latest_reservation_state(&store, job_id), "released");
+            assert_eq!(
+                store
+                    .finalize_reported_worker_failure_after_tree_exit(&tree_exit)
+                    .unwrap()
+                    .failure_code
+                    .as_deref(),
+                Some(expected_code)
+            );
+        }
     }
 
     #[test]
@@ -6838,7 +8007,7 @@ mod tests {
         };
         assert!(matches!(
             store.apply_worker_event(&event),
-            Err(StoreError::InvalidInput(_))
+            Err(StoreError::WorkerEventRejected)
         ));
         let wrong_result = WorkerEvent::Complete {
             identity,
@@ -6847,7 +8016,7 @@ mod tests {
         };
         assert!(matches!(
             store.apply_worker_event(&wrong_result),
-            Err(StoreError::InvalidInput(_))
+            Err(StoreError::WorkerEventRejected)
         ));
     }
 
@@ -6977,7 +8146,7 @@ mod tests {
             Some("cancellation-requested")
         );
 
-        let tree_exit = ProcessTreeExit::worker_release_for_test(identity.clone());
+        let tree_exit = resident_tree_exit(&store, identity.clone());
         assert!(matches!(
             store.confirm_cancelled(&tree_exit),
             Err(StoreError::InvalidAdmissionReservationState { .. })
@@ -6995,6 +8164,188 @@ mod tests {
     }
 
     #[test]
+    fn cancel_before_ready_sequences_late_nonterminal_events_without_leaving_cancelling() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        admit(&store, "job_1", &default_admission());
+        let identity = claim_and_settle(&store, "job_1", "worker_1");
+        assert_eq!(
+            store
+                .request_cancellation(&context(1), "job_1")
+                .unwrap()
+                .state,
+            JobState::Cancelling
+        );
+
+        assert!(matches!(
+            store.apply_worker_event(&WorkerEvent::Heartbeat {
+                identity: identity.clone(),
+                sequence: 1,
+                stage: "too-early".into(),
+            }),
+            Err(StoreError::WorkerEventRejected)
+        ));
+        assert_eq!(
+            store
+                .get(&context(1), "job_1")
+                .unwrap()
+                .last_worker_sequence,
+            0
+        );
+
+        let first_ready = WorkerEvent::Ready {
+            identity: identity.clone(),
+            sequence: 1,
+            protocol_version: breadboard_runtime_protocol::WIRE_PROTOCOL_VERSION,
+        };
+        let ready_state = store.apply_worker_event(&first_ready).unwrap();
+        assert_eq!(ready_state.state, JobState::Cancelling);
+        assert_eq!(ready_state.last_worker_sequence, 1);
+        assert!(store
+            .events_after(&context(1), "job_1", 0, 20)
+            .unwrap()
+            .iter()
+            .any(|event| event.worker_sequence == Some(1)
+                && event.event_type == "ready-after-cancellation"));
+        assert!(matches!(
+            store.apply_worker_event(&WorkerEvent::Ready {
+                identity: identity.clone(),
+                sequence: 2,
+                protocol_version: breadboard_runtime_protocol::WIRE_PROTOCOL_VERSION,
+            }),
+            Err(StoreError::WorkerEventRejected)
+        ));
+
+        let late_events = [
+            WorkerEvent::Heartbeat {
+                identity: identity.clone(),
+                sequence: 2,
+                stage: "stopping".into(),
+            },
+            WorkerEvent::Progress {
+                identity: identity.clone(),
+                sequence: 3,
+                stage: "stopping".into(),
+                current: 1,
+                total: 2,
+            },
+            WorkerEvent::Checkpoint {
+                identity: identity.clone(),
+                sequence: 4,
+                kind: "page".into(),
+                path: "runtime/jobs/job_1/checkpoints/page-1.json".into(),
+            },
+            WorkerEvent::Artifact {
+                identity: identity.clone(),
+                sequence: 5,
+                kind: "document".into(),
+                path: "runtime/jobs/job_1/artifacts/draft.json".into(),
+            },
+            WorkerEvent::CancellationAcknowledged {
+                identity: identity.clone(),
+                sequence: 6,
+            },
+        ];
+        for event in late_events {
+            let updated = store.apply_worker_event(&event).unwrap();
+            assert_eq!(updated.state, JobState::Cancelling);
+            assert!(updated.cancellation_requested);
+            assert_eq!(updated.last_worker_sequence, event.sequence());
+            assert_eq!(updated.finished_at, None);
+        }
+        assert_eq!(store.checkpoints(&context(1), "job_1").unwrap().len(), 1);
+        assert_eq!(latest_reservation_state(&store, "job_1"), "resident");
+    }
+
+    #[test]
+    fn late_complete_after_cancellation_is_sequenced_but_never_mints_success_intent() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        let identity = start(&store, "job_1", "worker_1");
+        store.request_cancellation(&context(1), "job_1").unwrap();
+
+        let updated = store
+            .apply_worker_event(&WorkerEvent::Complete {
+                identity: identity.clone(),
+                sequence: 2,
+                result_path: "runtime/jobs/job_1/result.json".into(),
+            })
+            .unwrap();
+        assert_eq!(updated.state, JobState::Cancelling);
+        assert!(updated.cancellation_requested);
+        assert_eq!(updated.last_worker_sequence, 2);
+        assert_eq!(updated.finished_at, None);
+        assert_eq!(store.worker_completion_intent(&identity).unwrap(), None);
+        assert!(store
+            .pending_worker_completion_intents_for_recovery()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .confirm_cancelled(&resident_tree_exit(&store, identity))
+                .unwrap()
+                .state,
+            JobState::Cancelled
+        );
+        assert_eq!(latest_reservation_state(&store, "job_1"), "released");
+    }
+
+    #[test]
+    fn late_failed_after_cancellation_is_sequenced_without_overriding_cancellation() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        let identity = start(&store, "job_1", "worker_1");
+        store.request_cancellation(&context(1), "job_1").unwrap();
+
+        let updated = store
+            .apply_worker_event(&WorkerEvent::Failed {
+                identity: identity.clone(),
+                sequence: 2,
+                code: "LATE_WORKER_FAILURE".into(),
+                message: "worker reported failure while stopping".into(),
+            })
+            .unwrap();
+        assert_eq!(updated.state, JobState::Cancelling);
+        assert!(updated.cancellation_requested);
+        assert_eq!(updated.last_worker_sequence, 2);
+        assert_eq!(updated.failure_code, None);
+        assert_eq!(updated.failure_message, None);
+        assert_eq!(updated.finished_at, None);
+        assert!(store
+            .events_after(&context(1), "job_1", 0, 20)
+            .unwrap()
+            .iter()
+            .any(|event| event.worker_sequence == Some(2)
+                && event.event_type == "failed-after-cancellation"));
+        assert_eq!(
+            store
+                .confirm_cancelled(&resident_tree_exit(&store, identity))
+                .unwrap()
+                .state,
+            JobState::Cancelled
+        );
+        assert_eq!(latest_reservation_state(&store, "job_1"), "released");
+    }
+
+    #[test]
+    fn exact_tree_exit_after_cancellation_finishes_cancelled_even_without_terminal_event() {
+        let (_directory, store) = store();
+        store.submit_raw(&input("job_1", "request_1")).unwrap();
+        let identity = start(&store, "job_1", "worker_1");
+        store.request_cancellation(&context(1), "job_1").unwrap();
+
+        let cancelled = store
+            .worker_exited_without_terminal(&resident_tree_exit(&store, identity))
+            .unwrap();
+        assert_eq!(cancelled.state, JobState::Cancelled);
+        assert!(cancelled.cancellation_requested);
+        assert_eq!(cancelled.failure_code, None);
+        assert_eq!(cancelled.failure_message, None);
+        assert!(cancelled.finished_at.is_some());
+        assert_eq!(latest_reservation_state(&store, "job_1"), "released");
+    }
+
+    #[test]
     fn started_cancellation_becomes_terminal_only_after_tree_exit_confirmation() {
         let (_directory, store) = store();
         let job_owner = context(1);
@@ -7004,7 +8355,7 @@ mod tests {
         assert_eq!(cancelling.state, JobState::Cancelling);
         assert!(cancelling.cancellation_requested);
         let cancelled = store
-            .confirm_cancelled(&ProcessTreeExit::worker_release_for_test(identity))
+            .confirm_cancelled(&resident_tree_exit(&store, identity))
             .unwrap();
         assert_eq!(cancelled.state, JobState::Cancelled);
         assert_eq!(latest_reservation_state(&store, "job_1"), "released");
@@ -7022,7 +8373,7 @@ mod tests {
             ..identity
         };
         assert!(matches!(
-            store.confirm_cancelled(&ProcessTreeExit::worker_release_for_test(stale)),
+            store.confirm_cancelled(&resident_tree_exit(&store, stale)),
             Err(StoreError::StaleWorker(_))
         ));
         assert_eq!(

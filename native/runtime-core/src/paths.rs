@@ -4,9 +4,10 @@ use breadboard_runtime_protocol::{
     WorkerStartManifest, MAX_REQUEST_BODY_BYTES, MAX_WORKER_START_MANIFEST_BYTES,
     WORKER_START_MANIFEST_FILE,
 };
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, File, Metadata, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -45,6 +46,23 @@ pub enum PathError {
     AlreadyStaged(&'static str),
     #[error("staged job input must be bounded canonical JSON")]
     InvalidJobInput,
+    #[error("job input blob size must be between 1 and its {maximum_bytes}-byte limit")]
+    InvalidBlobSize { maximum_bytes: u64 },
+    #[error("job input blob SHA-256 must be 64 lowercase hexadecimal characters")]
+    InvalidBlobDigest,
+    #[error("job input blob exceeded its declared {declared_bytes}-byte size")]
+    BlobOverflow { declared_bytes: u64 },
+    #[error(
+        "job input blob size mismatch: declared {declared_bytes} bytes but received {actual_bytes}"
+    )]
+    BlobSizeMismatch {
+        declared_bytes: u64,
+        actual_bytes: u64,
+    },
+    #[error("job input blob SHA-256 did not match its declared digest")]
+    BlobDigestMismatch,
+    #[error("job input blob staging writer is no longer valid")]
+    BlobWriterPoisoned,
     #[error("trusted filesystem operation failed")]
     Io(#[source] io::Error),
     #[error("trusted handle identity is unsupported on this platform")]
@@ -154,6 +172,19 @@ impl TrustedFilePin {
         self.root.revalidate()?;
         verify_regular_file(&self.root, &self.path, &self._file, true)?;
         self.root.revalidate()
+    }
+
+    /// Re-reads this exact already-opened file handle while retaining its
+    /// Windows no-share-write/no-share-delete authority. This is stronger than
+    /// reopening the pathname: callers can compare content immediately before
+    /// committing a durable decision without releasing the handle that fenced
+    /// mutation and replacement after the first validation.
+    pub(crate) fn read_bounded_revalidated(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, PathError> {
+        let mut file = self._file.try_clone().map_err(PathError::Io)?;
+        read_bounded_open_file(&self.root, &self.path, &mut file, maximum_bytes)
     }
 }
 
@@ -314,6 +345,237 @@ struct TemporaryStagingFile {
     file: File,
     identity: FileIdentity,
     published: bool,
+}
+
+/// A bounded, one-shot writer for one runtime-minted job input blob. The
+/// destination and unique unpublished sibling are derived exclusively from
+/// validated job/blob identifiers; callers never supply a filesystem path.
+#[must_use = "an unsealed job input blob is deleted when its staging authority is dropped"]
+pub struct JobInputBlobStaging {
+    paths: RuntimePaths,
+    blob_directory: TrustedDirectoryPin,
+    destination: ResolvedTrustedPath,
+    staging: TemporaryStagingFile,
+    declared_size: u64,
+    expected_sha256: [u8; 32],
+    streamed_sha256: Sha256,
+    written: u64,
+    poisoned: bool,
+}
+
+impl fmt::Debug for JobInputBlobStaging {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("JobInputBlobStaging")
+            .field("declared_size", &self.declared_size)
+            .field("written", &self.written)
+            .field("authority", &"<redacted runtime-data blob authority>")
+            .finish()
+    }
+}
+
+impl Write for JobInputBlobStaging {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.poisoned {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                PathError::BlobWriterPoisoned,
+            ));
+        }
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        let requested = u64::try_from(bytes.len()).map_err(|_| {
+            self.poisoned = true;
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                PathError::BlobOverflow {
+                    declared_bytes: self.declared_size,
+                },
+            )
+        })?;
+        let next = self.written.checked_add(requested).ok_or_else(|| {
+            self.poisoned = true;
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                PathError::BlobOverflow {
+                    declared_bytes: self.declared_size,
+                },
+            )
+        })?;
+        if next > self.declared_size {
+            self.poisoned = true;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                PathError::BlobOverflow {
+                    declared_bytes: self.declared_size,
+                },
+            ));
+        }
+
+        match self.staging.file.write(bytes) {
+            Ok(written) => {
+                self.streamed_sha256.update(&bytes[..written]);
+                self.written += written as u64;
+                Ok(written)
+            }
+            Err(error) => {
+                self.poisoned = true;
+                Err(error)
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.poisoned {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                PathError::BlobWriterPoisoned,
+            ));
+        }
+        if let Err(error) = self.staging.file.flush() {
+            self.poisoned = true;
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
+impl JobInputBlobStaging {
+    /// Publishes the exact received bytes once. Size/digest mismatches leave no
+    /// final path, and a pre-existing or racing destination is never replaced.
+    pub fn seal(mut self) -> Result<SealedJobInputBlob, PathError> {
+        if self.poisoned {
+            return Err(PathError::BlobWriterPoisoned);
+        }
+        if self.written != self.declared_size {
+            return Err(PathError::BlobSizeMismatch {
+                declared_bytes: self.declared_size,
+                actual_bytes: self.written,
+            });
+        }
+
+        self.flush().map_err(PathError::Io)?;
+        self.staging.file.sync_all().map_err(PathError::Io)?;
+        let before = verify_regular_file(
+            &self.paths.data_root,
+            &self.staging.path,
+            &self.staging.file,
+            true,
+        )?;
+        let metadata_size = self.staging.file.metadata().map_err(PathError::Io)?.len();
+        if metadata_size != self.declared_size {
+            return Err(PathError::FileChanged);
+        }
+
+        let streamed_sha256: [u8; 32] = self.streamed_sha256.clone().finalize().into();
+        let on_disk_sha256 = hash_open_file(&mut self.staging.file, self.declared_size)?;
+        let after = verify_regular_file(
+            &self.paths.data_root,
+            &self.staging.path,
+            &self.staging.file,
+            true,
+        )?;
+        if before != after || streamed_sha256 != on_disk_sha256 {
+            return Err(PathError::FileChanged);
+        }
+        if on_disk_sha256 != self.expected_sha256 {
+            return Err(PathError::BlobDigestMismatch);
+        }
+
+        self.paths.data_root.revalidate()?;
+        self.blob_directory.revalidate()?;
+        reject_parent_link_components(
+            &self.paths.data_root.canonical,
+            self.destination.absolute(),
+        )?;
+        reject_blob_destination(self.destination.absolute())?;
+        if let Err(error) =
+            install_file_no_replace(self.staging.path.absolute(), self.destination.absolute())
+        {
+            if error.kind() == io::ErrorKind::AlreadyExists
+                || fs::symlink_metadata(self.destination.absolute()).is_ok()
+            {
+                reject_blob_destination(self.destination.absolute())?;
+            }
+            return Err(PathError::Io(error));
+        }
+        self.staging.published = true;
+        sync_installed_parent(self.destination.absolute())?;
+        let installed_identity = verify_regular_file(
+            &self.paths.data_root,
+            &self.destination,
+            &self.staging.file,
+            true,
+        )?;
+        drop(self.staging);
+
+        let pinned = self.paths.pin_existing_data_file(&self.destination)?;
+        let pinned_identity = file_identity(&pinned._file)?;
+        if installed_identity != pinned_identity {
+            return Err(PathError::FileChanged);
+        }
+        let sealed = SealedJobInputBlob {
+            blob_directory: self.blob_directory,
+            file: pinned,
+            size: self.declared_size,
+            sha256: digest_hex(&on_disk_sha256),
+        };
+        sealed.revalidate()?;
+        Ok(sealed)
+    }
+}
+
+/// A non-forgeable pin for one sealed job input blob. It intentionally exposes
+/// only immutable metadata; the host path remains confined to `RuntimePaths`.
+#[must_use = "the sealed blob pin must remain alive through worker launch"]
+pub struct SealedJobInputBlob {
+    blob_directory: TrustedDirectoryPin,
+    file: TrustedFilePin,
+    size: u64,
+    sha256: String,
+}
+
+impl fmt::Debug for SealedJobInputBlob {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SealedJobInputBlob")
+            .field("size", &self.size)
+            .field("authority", &"<redacted runtime-data blob authority>")
+            .finish()
+    }
+}
+
+impl SealedJobInputBlob {
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    /// Revalidates the pinned directory and file identities and re-hashes the
+    /// exact final bytes, detecting replacement or mutation before launch.
+    pub fn revalidate(&self) -> Result<(), PathError> {
+        self.blob_directory.revalidate()?;
+        self.file.revalidate()?;
+        let mut verifier = open_read_pinned(self.file.path.absolute()).map_err(PathError::Io)?;
+        let before = verify_regular_file(&self.file.root, &self.file.path, &verifier, true)?;
+        let pinned_identity = file_identity(&self.file._file)?;
+        if before != pinned_identity
+            || verifier.metadata().map_err(PathError::Io)?.len() != self.size
+        {
+            return Err(PathError::FileChanged);
+        }
+        let digest = hash_open_file(&mut verifier, self.size)?;
+        let after = verify_regular_file(&self.file.root, &self.file.path, &verifier, true)?;
+        if before != after || digest_hex(&digest) != self.sha256 {
+            return Err(PathError::FileChanged);
+        }
+        self.file.revalidate()?;
+        self.blob_directory.revalidate()
+    }
 }
 
 impl Drop for TemporaryStagingFile {
@@ -492,12 +754,18 @@ impl RuntimePaths {
         })
     }
 
-    pub(crate) fn read_bounded_data_file(
+    /// Opens one exact data file with read-only sharing, validates and reads it
+    /// through that handle, then returns both the bounded bytes and the still-
+    /// live pin. The caller must retain the pin through the durable operation
+    /// authorized by those bytes.
+    pub(crate) fn read_bounded_data_file_with_pin(
         &self,
         path: &ResolvedTrustedPath,
         maximum_bytes: usize,
-    ) -> Result<Vec<u8>, PathError> {
-        read_bounded(&self.data_root, path, maximum_bytes)
+    ) -> Result<(Vec<u8>, TrustedFilePin), PathError> {
+        let pin = self.pin_existing_data_file(path)?;
+        let bytes = pin.read_bounded_revalidated(maximum_bytes)?;
+        Ok((bytes, pin))
     }
 
     /// Creates without truncation, or opens, a mutable data file and keeps a
@@ -587,6 +855,45 @@ impl RuntimePaths {
             "job input",
             ExistingDestinationPolicy::MatchExactBytes,
         )
+    }
+
+    /// Mints one private bounded staging authority beneath the exact job/blob
+    /// namespace. Validation completes before any directory or file is made.
+    pub fn begin_job_input_blob_staging(
+        &self,
+        job_id: &str,
+        blob_id: &str,
+        declared_size: u64,
+        maximum_bytes: u64,
+        expected_sha256: &str,
+    ) -> Result<JobInputBlobStaging, PathError> {
+        validate_identifier("jobId", job_id)?;
+        validate_identifier("blobId", blob_id)?;
+        if declared_size == 0 || maximum_bytes == 0 || declared_size > maximum_bytes {
+            return Err(PathError::InvalidBlobSize { maximum_bytes });
+        }
+        let expected_sha256 = parse_digest_hex(expected_sha256)?;
+
+        let blob_root = format!("runtime/jobs/{job_id}/inputs/{blob_id}");
+        let blob_directory = self.prepare_data_directory(&blob_root)?;
+        let destination = self.resolve_data(&format!("{blob_root}/payload"))?;
+        self.data_root.revalidate()?;
+        blob_directory.revalidate()?;
+        reject_parent_link_components(&self.data_root.canonical, destination.absolute())?;
+        reject_blob_destination(destination.absolute())?;
+        let staging = self.create_temporary_staging_file(&destination)?;
+
+        Ok(JobInputBlobStaging {
+            paths: self.clone(),
+            blob_directory,
+            destination,
+            staging,
+            declared_size,
+            expected_sha256,
+            streamed_sha256: Sha256::new(),
+            written: 0,
+            poisoned: false,
+        })
     }
 
     /// Creates a fresh attempt root and private workspace, then atomically
@@ -1030,9 +1337,100 @@ fn reject_existing_destination(path: &Path, kind: &'static str) -> Result<(), Pa
     }
 }
 
+fn reject_blob_destination(path: &Path) -> Result<(), PathError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if is_link_or_reparse(&metadata) => Err(PathError::ReparsePoint),
+        Ok(_) => Err(PathError::AlreadyStaged("job input blob")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(PathError::Io(error)),
+    }
+}
+
+fn parse_digest_hex(value: &str) -> Result<[u8; 32], PathError> {
+    let encoded = value.as_bytes();
+    if encoded.len() != 64
+        || encoded
+            .iter()
+            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(byte))
+    {
+        return Err(PathError::InvalidBlobDigest);
+    }
+    let mut digest = [0_u8; 32];
+    for (index, output) in digest.iter_mut().enumerate() {
+        let high = digest_nibble(encoded[index * 2])?;
+        let low = digest_nibble(encoded[index * 2 + 1])?;
+        *output = (high << 4) | low;
+    }
+    Ok(digest)
+}
+
+fn digest_nibble(value: u8) -> Result<u8, PathError> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        _ => Err(PathError::InvalidBlobDigest),
+    }
+}
+
+fn digest_hex(digest: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(64);
+    for byte in digest {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+fn hash_open_file(file: &mut File, expected_size: u64) -> Result<[u8; 32], PathError> {
+    file.seek(SeekFrom::Start(0)).map_err(PathError::Io)?;
+    let mut digest = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let remaining_with_sentinel = expected_size.saturating_sub(total).saturating_add(1);
+        let capacity = usize::try_from(remaining_with_sentinel.min(buffer.len() as u64))
+            .map_err(|_| PathError::FileChanged)?;
+        let read = file.read(&mut buffer[..capacity]).map_err(PathError::Io)?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or(PathError::FileChanged)?;
+        if total > expected_size {
+            return Err(PathError::BlobSizeMismatch {
+                declared_bytes: expected_size,
+                actual_bytes: total,
+            });
+        }
+        digest.update(&buffer[..read]);
+    }
+    if total != expected_size {
+        return Err(PathError::BlobSizeMismatch {
+            declared_bytes: expected_size,
+            actual_bytes: total,
+        });
+    }
+    Ok(digest.finalize().into())
+}
+
 fn read_bounded(
     root: &TrustedRoot,
     path: &ResolvedTrustedPath,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, PathError> {
+    validate_authority(root, path)?;
+    root.revalidate()?;
+    reject_link_components(&root.canonical, path.absolute())?;
+    let mut file = open_read_pinned(path.absolute()).map_err(PathError::Io)?;
+    read_bounded_open_file(root, path, &mut file, maximum_bytes)
+}
+
+fn read_bounded_open_file(
+    root: &TrustedRoot,
+    path: &ResolvedTrustedPath,
+    file: &mut File,
     maximum_bytes: usize,
 ) -> Result<Vec<u8>, PathError> {
     if maximum_bytes == 0 {
@@ -1041,21 +1439,21 @@ fn read_bounded(
     validate_authority(root, path)?;
     root.revalidate()?;
     reject_link_components(&root.canonical, path.absolute())?;
-    let mut file = open_read_pinned(path.absolute()).map_err(PathError::Io)?;
-    let before = verify_regular_file(root, path, &file, true)?;
+    file.seek(SeekFrom::Start(0)).map_err(PathError::Io)?;
+    let before = verify_regular_file(root, path, file, true)?;
     let length = file.metadata().map_err(PathError::Io)?.len();
     if length > maximum_bytes as u64 {
         return Err(PathError::OversizedFile { maximum_bytes });
     }
     let mut bytes = Vec::with_capacity(length as usize);
-    (&mut file)
+    (&mut *file)
         .take(maximum_bytes as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(PathError::Io)?;
     if bytes.len() > maximum_bytes {
         return Err(PathError::OversizedFile { maximum_bytes });
     }
-    let after = verify_regular_file(root, path, &file, true)?;
+    let after = verify_regular_file(root, path, file, true)?;
     if before.volume != after.volume
         || before.file != after.file
         || before.links != after.links
@@ -1451,6 +1849,11 @@ mod tests {
         (directory, paths)
     }
 
+    fn blob_digest(bytes: &[u8]) -> String {
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        digest_hex(&digest)
+    }
+
     #[test]
     fn runtime_paths_reject_traversal_and_absolute_paths() {
         let (_directory, paths) = roots("breadboard-runtime-path-test");
@@ -1581,6 +1984,226 @@ mod tests {
     }
 
     #[test]
+    fn job_input_blob_streams_and_seals_exact_bytes_under_minted_path() {
+        let (_directory, paths) = roots("breadboard-runtime-blob-seal");
+        let bytes = b"one bounded blob payload";
+        let digest = blob_digest(bytes);
+        let mut staging = paths
+            .begin_job_input_blob_staging("job_1", "blob_1", bytes.len() as u64, 1024, &digest)
+            .unwrap();
+        let temporary = staging.staging.path.absolute().to_path_buf();
+        assert_eq!(
+            temporary.parent().unwrap(),
+            paths.data_root().join("runtime/jobs/job_1/inputs/blob_1")
+        );
+        assert!(temporary
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("payload.pending."));
+
+        staging.write_all(&bytes[..7]).unwrap();
+        staging.write_all(&bytes[7..]).unwrap();
+        let sealed = staging.seal().unwrap();
+        assert_eq!(sealed.size(), bytes.len() as u64);
+        assert_eq!(sealed.sha256(), digest);
+        assert_eq!(
+            sealed.file.path.relative(),
+            Path::new("runtime/jobs/job_1/inputs/blob_1/payload")
+        );
+        assert_eq!(fs::read(sealed.file.path.absolute()).unwrap(), bytes);
+        assert!(!temporary.exists());
+        sealed.revalidate().unwrap();
+        assert!(!format!("{sealed:?}").contains(paths.data_root().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn job_input_blob_overflow_poisoning_removes_only_its_unsealed_temp() {
+        let (_directory, paths) = roots("breadboard-runtime-blob-overflow");
+        let expected = blob_digest(b"four");
+        let mut staging = paths
+            .begin_job_input_blob_staging("job_1", "blob_1", 4, 8, &expected)
+            .unwrap();
+        let temporary = staging.staging.path.absolute().to_path_buf();
+        assert!(staging.write_all(b"five!").is_err());
+        assert!(matches!(staging.seal(), Err(PathError::BlobWriterPoisoned)));
+        assert!(!temporary.exists());
+        assert!(!paths
+            .data_root()
+            .join("runtime/jobs/job_1/inputs/blob_1/payload")
+            .exists());
+    }
+
+    #[test]
+    fn job_input_blob_size_and_digest_mismatches_clean_up_without_publication() {
+        let (_directory, paths) = roots("breadboard-runtime-blob-mismatch");
+        let expected = blob_digest(b"1234");
+        let mut short = paths
+            .begin_job_input_blob_staging("job_1", "short", 4, 8, &expected)
+            .unwrap();
+        let short_temporary = short.staging.path.absolute().to_path_buf();
+        short.write_all(b"123").unwrap();
+        assert!(matches!(
+            short.seal(),
+            Err(PathError::BlobSizeMismatch {
+                declared_bytes: 4,
+                actual_bytes: 3
+            })
+        ));
+        assert!(!short_temporary.exists());
+
+        let mut wrong_digest = paths
+            .begin_job_input_blob_staging("job_1", "wrong_digest", 4, 8, &expected)
+            .unwrap();
+        let digest_temporary = wrong_digest.staging.path.absolute().to_path_buf();
+        wrong_digest.write_all(b"5678").unwrap();
+        assert!(matches!(
+            wrong_digest.seal(),
+            Err(PathError::BlobDigestMismatch)
+        ));
+        assert!(!digest_temporary.exists());
+        assert!(!paths
+            .data_root()
+            .join("runtime/jobs/job_1/inputs/short/payload")
+            .exists());
+        assert!(!paths
+            .data_root()
+            .join("runtime/jobs/job_1/inputs/wrong_digest/payload")
+            .exists());
+    }
+
+    #[test]
+    fn dropping_disconnected_job_input_blob_removes_its_unique_temp() {
+        let (_directory, paths) = roots("breadboard-runtime-blob-disconnect");
+        let expected = blob_digest(b"stream interrupted");
+        let mut staging = paths
+            .begin_job_input_blob_staging("job_1", "blob_1", 18, 64, &expected)
+            .unwrap();
+        staging.write_all(b"stream").unwrap();
+        let temporary = staging.staging.path.absolute().to_path_buf();
+        assert!(temporary.exists());
+        drop(staging);
+        assert!(!temporary.exists());
+        assert!(!paths
+            .data_root()
+            .join("runtime/jobs/job_1/inputs/blob_1/payload")
+            .exists());
+    }
+
+    #[test]
+    fn dropping_job_input_blob_never_deletes_a_replaced_temp_path() {
+        let (_directory, paths) = roots("breadboard-runtime-blob-drop-replacement");
+        let expected = blob_digest(b"unsealed");
+        let staging = paths
+            .begin_job_input_blob_staging("job_1", "blob_1", 8, 64, &expected)
+            .unwrap();
+        let temporary = staging.staging.path.absolute().to_path_buf();
+        let displaced = temporary.with_extension("displaced");
+        fs::rename(&temporary, &displaced).unwrap();
+        File::create(&temporary)
+            .unwrap()
+            .write_all(b"replacement")
+            .unwrap();
+
+        drop(staging);
+        assert_eq!(fs::read(&temporary).unwrap(), b"replacement");
+        assert!(displaced.exists());
+        fs::remove_file(temporary).unwrap();
+        fs::remove_file(displaced).unwrap();
+    }
+
+    #[test]
+    fn job_input_blob_replay_and_racing_destination_never_overwrite() {
+        let (_directory, paths) = roots("breadboard-runtime-blob-no-overwrite");
+        let bytes = b"first sealed bytes";
+        let digest = blob_digest(bytes);
+        let mut first = paths
+            .begin_job_input_blob_staging("job_1", "blob_1", bytes.len() as u64, 1024, &digest)
+            .unwrap();
+        first.write_all(bytes).unwrap();
+        let sealed = first.seal().unwrap();
+        assert!(matches!(
+            paths.begin_job_input_blob_staging(
+                "job_1",
+                "blob_1",
+                bytes.len() as u64,
+                1024,
+                &digest
+            ),
+            Err(PathError::AlreadyStaged("job input blob"))
+        ));
+        sealed.revalidate().unwrap();
+        assert_eq!(fs::read(sealed.file.path.absolute()).unwrap(), bytes);
+
+        let racing_bytes = b"candidate";
+        let mut racing = paths
+            .begin_job_input_blob_staging(
+                "job_1",
+                "blob_2",
+                racing_bytes.len() as u64,
+                1024,
+                &blob_digest(racing_bytes),
+            )
+            .unwrap();
+        racing.write_all(racing_bytes).unwrap();
+        let racing_temporary = racing.staging.path.absolute().to_path_buf();
+        let final_path = paths
+            .data_root()
+            .join("runtime/jobs/job_1/inputs/blob_2/payload");
+        File::create(&final_path)
+            .unwrap()
+            .write_all(b"racing winner")
+            .unwrap();
+        assert!(matches!(
+            racing.seal(),
+            Err(PathError::AlreadyStaged("job input blob"))
+        ));
+        assert!(!racing_temporary.exists());
+        assert_eq!(fs::read(final_path).unwrap(), b"racing winner");
+    }
+
+    #[test]
+    fn job_input_blob_rejects_zero_invalid_digest_and_traversal_before_creating_paths() {
+        let (_directory, paths) = roots("breadboard-runtime-blob-traversal");
+        let digest = blob_digest(b"x");
+        assert!(matches!(
+            paths.begin_job_input_blob_staging("job_1", "blob_1", 0, 1, &digest),
+            Err(PathError::InvalidBlobSize { maximum_bytes: 1 })
+        ));
+        assert!(matches!(
+            paths.begin_job_input_blob_staging("job_1", "blob_1", 1, 1, "ABC"),
+            Err(PathError::InvalidBlobDigest)
+        ));
+        assert!(paths
+            .begin_job_input_blob_staging("../job_1", "blob_1", 1, 1, &digest)
+            .is_err());
+        assert!(paths
+            .begin_job_input_blob_staging("job_1", "../blob_1", 1, 1, &digest)
+            .is_err());
+        assert!(!paths.data_root().join("runtime/jobs").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sealed_job_input_blob_revalidation_detects_same_inode_mutation() {
+        let (_directory, paths) = roots("breadboard-runtime-blob-mutation");
+        let bytes = b"sealed bytes";
+        let mut staging = paths
+            .begin_job_input_blob_staging(
+                "job_1",
+                "blob_1",
+                bytes.len() as u64,
+                64,
+                &blob_digest(bytes),
+            )
+            .unwrap();
+        staging.write_all(bytes).unwrap();
+        let sealed = staging.seal().unwrap();
+        fs::write(sealed.file.path.absolute(), b"altered byte").unwrap();
+        assert!(matches!(sealed.revalidate(), Err(PathError::FileChanged)));
+    }
+
+    #[test]
     fn job_input_is_validated_before_any_job_directory_is_created() {
         let (_directory, paths) = roots("breadboard-runtime-invalid-stage-input");
         assert!(matches!(
@@ -1640,8 +2263,8 @@ mod tests {
         let start_path = paths
             .resolve_data("runtime/jobs/job_1/attempts/2/worker_7/start.json")
             .unwrap();
-        let encoded = paths
-            .read_bounded_data_file(&start_path, MAX_WORKER_START_MANIFEST_BYTES)
+        let (encoded, _pin) = paths
+            .read_bounded_data_file_with_pin(&start_path, MAX_WORKER_START_MANIFEST_BYTES)
             .unwrap();
         let parsed = parse_worker_start_manifest(&encoded).unwrap();
         assert_eq!(&parsed, prepared.manifest());
@@ -1834,6 +2457,20 @@ mod tests {
             Err(PathError::ReparsePoint)
         ));
         assert_eq!(fs::read(outside_input).unwrap(), b"{}");
+
+        let outside_blob = directory.path().join("outside-blob");
+        fs::create_dir(&outside_blob).unwrap();
+        fs::create_dir_all(paths.data_root().join("runtime/jobs/job_4/inputs")).unwrap();
+        symlink(
+            &outside_blob,
+            paths.data_root().join("runtime/jobs/job_4/inputs/blob_1"),
+        )
+        .unwrap();
+        assert!(matches!(
+            paths.begin_job_input_blob_staging("job_4", "blob_1", 2, 2, &blob_digest(b"{}")),
+            Err(PathError::ReparsePoint)
+        ));
+        assert!(!outside_blob.join("payload").exists());
 
         drop(paths.stage_job_input("job_2", b"{}").unwrap());
         let outside_attempts = directory.path().join("outside-attempts");

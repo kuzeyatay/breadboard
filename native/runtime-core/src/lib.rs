@@ -11,6 +11,7 @@ mod service_leases;
 mod state_machine;
 mod store;
 mod system_commit;
+mod worker_launch;
 
 pub use admission::{
     AdmissionDecision, AdmissionDenial, AdmissionPolicy, AdmissionRequest, RegisteredJobAdmission,
@@ -27,15 +28,17 @@ pub use generation_guard::{
     RuntimeGenerationGuard, RuntimeGenerationScope,
 };
 pub use paths::{
-    PathError, ResolvedTrustedPath, RuntimePaths, TrustedDirectoryPin, TrustedFilePin,
-    TrustedLaunchDirectory,
+    JobInputBlobStaging, PathError, ResolvedTrustedPath, RuntimePaths, SealedJobInputBlob,
+    TrustedDirectoryPin, TrustedFilePin, TrustedLaunchDirectory,
 };
 pub use process_owner::{
-    AuthoritativeProcessOwner, ProcessExitClassification, ProcessOwnerError, ProcessOwnerEvent,
-    ProcessOwnerLimits, ProcessOwnerPurpose, ProcessOwnerTerminal, ProcessStopOutcome,
-    ProcessSupervisorFailure, ProcessTreeAccounting, ProcessTreeExit, ProcessTreeResidency,
-    RunningProcessOwner, TrustedProcessLaunch, WorkerProtocolFault,
-    MAX_PROCESS_OWNER_PROTOCOL_LINE_BYTES, RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE,
+    AuthoritativeProcessOwner, OwnedWorkerEvent, ProcessExitClassification, ProcessOwnerError,
+    ProcessOwnerEvent, ProcessOwnerLimits, ProcessOwnerPurpose, ProcessOwnerTerminal,
+    ProcessStopOutcome, ProcessSupervisorFailure, ProcessTreeAccounting, ProcessTreeExit,
+    ProcessTreeResidency, RunningProcessOwner, ServiceLaunchNotCreated, ServiceLaunchOutcome,
+    ServiceLaunchRequest, ServiceLaunchUncertain, WorkerLaunchRequest, WorkerProtocolFault,
+    MAX_PROCESS_OWNER_GRACEFUL_SHUTDOWN, MAX_PROCESS_OWNER_PROTOCOL_LINE_BYTES,
+    MIN_PROCESS_OWNER_GRACEFUL_SHUTDOWN, RESOURCE_EXHAUSTED_PROCESS_EXIT_CODE,
 };
 pub use registry::{Registry, RegistryError};
 pub use service_leases::{
@@ -50,6 +53,11 @@ pub use store::{
     AuthenticatedJobContext, CheckpointRecord, JobAdmissionResult, JobEventRecord,
     JobEventReplaySnapshot, JobRecord, JobStore, QueuedAdmissionCandidate, StoreError,
     WorkerClaimOutcome, WorkerCompletionIntent, WorkerDispatchCandidate, WorkerDispatchClaim,
-    MAX_DISPATCH_CANDIDATES,
+    WorkerDispatchSnapshot, WorkerStoreTransitionError, MAX_DISPATCH_CANDIDATES,
 };
 pub use system_commit::{read_system_commit, SystemCommitReadError, SystemCommitSnapshot};
+pub use worker_launch::{
+    ClaimedWorkerProcess, ResidentWorkerProcess, WorkerLaunchNotCreated, WorkerLaunchOutcome,
+    WorkerLaunchUncertain, WorkerProcessTransitionError, WorkerResidencyAuthority,
+    WorkerTreeExitAuthority,
+};

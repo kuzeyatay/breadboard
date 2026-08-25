@@ -103,6 +103,16 @@ pub enum GenerationGuardError {
     IncompatibleDrainJob,
     #[error("configuring the Runtime V2 generation drain job failed with Windows error {code}")]
     DrainJobConfigure { code: u32 },
+    #[error("querying current-process Runtime V2 generation membership failed with Windows error {code}")]
+    CurrentProcessMembershipQuery { code: u32 },
+    #[error("assigning the current Runtime V2 process to its generation boundary failed with Windows error {code}")]
+    CurrentProcessAssign { code: u32 },
+    #[error(
+        "Windows did not confirm current-process Runtime V2 generation membership after assignment"
+    )]
+    CurrentProcessNotContained,
+    #[error("querying child Runtime V2 generation membership failed with Windows error {code}")]
+    ChildMembershipQuery { code: u32 },
     #[error("querying the Runtime V2 generation drain job failed with Windows error {code}")]
     DrainJobQuery { code: u32 },
     #[error("terminating the previous Runtime V2 generation failed with Windows error {code}")]
@@ -168,7 +178,7 @@ impl RuntimeGenerationGuard {
             )?);
             let proof = PriorGenerationDrained {
                 scope: scope.clone(),
-                private: (),
+                _private: (),
             };
             Ok((
                 Self {
@@ -179,8 +189,14 @@ impl RuntimeGenerationGuard {
                 proof,
             ))
         })();
-        if result.is_err() {
-            GENERATION_GUARD_ACQUIRED.store(false, Ordering::Release);
+        if let Err(error) = &result {
+            // A current-process binding or keeper-disconnect failure can occur
+            // after the runtime entered the process-lifetime Job boundary. In
+            // that state the keeper deliberately retains the kernel authority,
+            // so this process must never attempt a second acquisition.
+            if !must_retain_acquisition_fence(error) {
+                GENERATION_GUARD_ACQUIRED.store(false, Ordering::Release);
+            }
         }
         result
     }
@@ -199,6 +215,10 @@ impl RuntimeGenerationGuard {
     }
 
     /// Mints cloneable launch membership backed by the same outer Job Object.
+    /// `acquire` assigns the current runtime process to that boundary before
+    /// this value can exist. With breakaway disabled, every subsequently
+    /// created supervisor is therefore inside the generation Job Object at
+    /// `CreateProcess` time rather than during a fallible post-create window.
     /// It carries no mutex ownership and cannot authorize reconciliation.
     pub fn membership(&self) -> CurrentGenerationMembership {
         CurrentGenerationMembership {
@@ -209,8 +229,21 @@ impl RuntimeGenerationGuard {
     }
 }
 
-/// Cloneable authority used only to place new helpers in the current outer Job
-/// Object. This is intentionally weaker than `PriorGenerationDrained`.
+#[cfg(windows)]
+fn must_retain_acquisition_fence(error: &GenerationGuardError) -> bool {
+    matches!(
+        error,
+        GenerationGuardError::OwnerKeeperDisconnected
+            | GenerationGuardError::CurrentProcessMembershipQuery { .. }
+            | GenerationGuardError::CurrentProcessAssign { .. }
+            | GenerationGuardError::CurrentProcessNotContained
+    )
+}
+
+/// Cloneable evidence that the current runtime process already belongs to the
+/// outer generation Job Object. Child processes inherit that membership
+/// atomically because the boundary forbids breakaway. This is intentionally
+/// weaker than `PriorGenerationDrained` and cannot authorize reconciliation.
 #[derive(Clone)]
 pub struct CurrentGenerationMembership {
     scope: RuntimeGenerationScope,
@@ -221,6 +254,43 @@ pub struct CurrentGenerationMembership {
 impl CurrentGenerationMembership {
     pub fn matches_scope(&self, scope: &RuntimeGenerationScope) -> bool {
         self.scope == *scope
+    }
+
+    /// Read-only verification that an exact owned child handle already belongs
+    /// to this generation Job Object. This neither assigns the process nor
+    /// accepts a caller-supplied PID, so tests and the native host can prove
+    /// inherited membership without opening a process-control path.
+    #[cfg(windows)]
+    pub fn contains_child_process(
+        &self,
+        child: &std::process::Child,
+    ) -> Result<bool, GenerationGuardError> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::GetLastError;
+        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+
+        let mut assigned = 0;
+        if unsafe {
+            IsProcessInJob(
+                child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+                self.raw_job_handle(),
+                &mut assigned,
+            )
+        } == 0
+        {
+            return Err(GenerationGuardError::ChildMembershipQuery {
+                code: unsafe { GetLastError() },
+            });
+        }
+        Ok(assigned != 0)
+    }
+
+    #[cfg(not(windows))]
+    pub fn contains_child_process(
+        &self,
+        _child: &std::process::Child,
+    ) -> Result<bool, GenerationGuardError> {
+        Err(GenerationGuardError::UnsupportedPlatform)
     }
 
     #[cfg(windows)]
@@ -242,19 +312,18 @@ impl fmt::Debug for CurrentGenerationMembership {
 /// acquired. It is neither cloneable nor constructible outside this module.
 pub struct PriorGenerationDrained {
     scope: RuntimeGenerationScope,
-    private: (),
+    _private: (),
 }
 
 impl PriorGenerationDrained {
     pub fn matches_scope(&self, scope: &RuntimeGenerationScope) -> bool {
-        let _ = self.private;
         self.scope == *scope
     }
 }
 
 impl fmt::Debug for PriorGenerationDrained {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = (&self.scope, &self.private);
+        let _ = &self.scope;
         formatter.write_str("PriorGenerationDrained(<opaque zero-resident proof>)")
     }
 }
@@ -312,6 +381,11 @@ mod windows {
 
     const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+    enum CurrentProcessBindingError {
+        BeforeAssignment(GenerationGuardError),
+        AfterAssignment(GenerationGuardError),
+    }
+
     pub(super) struct OwnedHandle(isize);
 
     impl OwnedHandle {
@@ -365,9 +439,43 @@ mod windows {
                         return;
                     }
                 };
-                if sender.send(Ok(drain)).is_err() {
-                    release_owned_mutex(&owner);
-                    return;
+                if let Err(error) = bind_current_process_to_generation(drain.raw()) {
+                    match error {
+                        CurrentProcessBindingError::BeforeAssignment(error) => {
+                            release_owned_mutex(&owner);
+                            let _ = sender.send(Err(error));
+                            return;
+                        }
+                        CurrentProcessBindingError::AfterAssignment(error) => {
+                            // Assignment already succeeded. Retain both
+                            // process-lifetime handles even while returning the
+                            // failed verification to bootstrap; closing this
+                            // kill-on-close job here would terminate a process
+                            // that may still have other runtime threads.
+                            let _ = sender.send(Err(error));
+                            let _drain = std::mem::ManuallyDrop::new(drain);
+                            let _owner = std::mem::ManuallyDrop::new(owner);
+                            loop {
+                                thread::park();
+                            }
+                        }
+                    }
+                }
+                if let Err(disconnected) = sender.send(Ok(drain)) {
+                    // The process is already a resident of this kill-on-close
+                    // job. A bootstrap receiver disappearing must not close
+                    // the last job handle while other runtime threads remain
+                    // executable, so retain both authorities until OS process
+                    // teardown just like the ordinary successful path.
+                    let drain = match disconnected.0 {
+                        Ok(drain) => drain,
+                        Err(_) => unreachable!("generation keeper sent only success here"),
+                    };
+                    let _drain = std::mem::ManuallyDrop::new(drain);
+                    let _owner = std::mem::ManuallyDrop::new(owner);
+                    loop {
+                        thread::park();
+                    }
                 }
 
                 // The successful generation boundary is process-lifetime, not
@@ -454,6 +562,49 @@ mod windows {
             return Err(GenerationGuardError::DrainJobConfigure {
                 code: unsafe { GetLastError() },
             });
+        }
+        Ok(())
+    }
+
+    /// Binds the runtime process itself before generation membership can leave
+    /// bootstrap. Windows then places every child in this non-breakaway job as
+    /// part of process creation. The native supervisor's later membership
+    /// query is defense in depth, not the operation that first contains it.
+    fn bind_current_process_to_generation(job: HANDLE) -> Result<(), CurrentProcessBindingError> {
+        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, IsProcessInJob};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        let current_process = unsafe { GetCurrentProcess() };
+        let mut already_assigned = 0;
+        if unsafe { IsProcessInJob(current_process, job, &mut already_assigned) } == 0 {
+            return Err(CurrentProcessBindingError::BeforeAssignment(
+                GenerationGuardError::CurrentProcessMembershipQuery {
+                    code: unsafe { GetLastError() },
+                },
+            ));
+        }
+        if already_assigned != 0 {
+            return Ok(());
+        }
+        if unsafe { AssignProcessToJobObject(job, current_process) } == 0 {
+            return Err(CurrentProcessBindingError::BeforeAssignment(
+                GenerationGuardError::CurrentProcessAssign {
+                    code: unsafe { GetLastError() },
+                },
+            ));
+        }
+        let mut confirmed = 0;
+        if unsafe { IsProcessInJob(current_process, job, &mut confirmed) } == 0 {
+            return Err(CurrentProcessBindingError::AfterAssignment(
+                GenerationGuardError::CurrentProcessMembershipQuery {
+                    code: unsafe { GetLastError() },
+                },
+            ));
+        }
+        if confirmed == 0 {
+            return Err(CurrentProcessBindingError::AfterAssignment(
+                GenerationGuardError::CurrentProcessNotContained,
+            ));
         }
         Ok(())
     }
@@ -597,7 +748,7 @@ mod tests {
         let other = RuntimeGenerationScope::from_trusted_data_root_identity(7, 12);
         let proof = PriorGenerationDrained {
             scope: scope.clone(),
-            private: (),
+            _private: (),
         };
 
         assert!(proof.matches_scope(&scope));
@@ -622,6 +773,29 @@ mod tests {
             validate_drain_wait(MAX_GENERATION_WAIT + Duration::from_millis(1)),
             Err(GenerationGuardError::InvalidDrainWait)
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ambiguous_current_process_binding_keeps_the_process_acquisition_fenced() {
+        assert!(must_retain_acquisition_fence(
+            &GenerationGuardError::OwnerKeeperDisconnected
+        ));
+        assert!(must_retain_acquisition_fence(
+            &GenerationGuardError::CurrentProcessMembershipQuery { code: 5 }
+        ));
+        assert!(must_retain_acquisition_fence(
+            &GenerationGuardError::CurrentProcessAssign { code: 5 }
+        ));
+        assert!(must_retain_acquisition_fence(
+            &GenerationGuardError::CurrentProcessNotContained
+        ));
+        assert!(!must_retain_acquisition_fence(
+            &GenerationGuardError::OwnerBusy
+        ));
+        assert!(!must_retain_acquisition_fence(
+            &GenerationGuardError::DrainJobCreate { code: 5 }
+        ));
     }
 
     #[cfg(not(windows))]

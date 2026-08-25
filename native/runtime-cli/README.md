@@ -9,15 +9,19 @@ The production `UnavailableRuntimeEngine` fails before binding or emitting a
 dashboard is ready, provide sanitized service status, and own bounded shutdown.
 Until that exists, this crate cannot truthfully provide a dashboard URL.
 
-Still missing by design: the dashboard/service/worker engine, restart
-reconciliation, full service dispatch, Electron cutover, and parity-gated
-packaging evidence. The source includes authenticated job
+Still missing by design: the dashboard/service engine, real worker adapters,
+full service dispatch, Electron cutover, and parity-gated packaging evidence.
+The source includes restart reconciliation plus authenticated job
 submission, inspection, snapshot-consistent bounded event replay, and durable
-cancellation control, but no dispatcher. Submission only creates the
-registry-derived `queued` row;
-it does not claim that work started. The control listener and durable adapter
-are therefore unreachable from the current production entry point after
-initialization fails closed.
+cancellation control. Its one-thread disposable-worker dispatcher is wired
+behind the shared admission gate: it performs bounded FIFO admission, retains
+opaque launch/process authority through exact tree exit, enforces ready,
+heartbeat, runtime, cancellation, and shutdown deadlines, and publishes
+success only after the durable result is re-opened and validated. The checked-in
+worker manifest remains empty, so no production worker can yet be selected.
+The control listener and durable adapter remain unreachable from the current
+production entry point because the dashboard/service engine still fails closed
+before readiness.
 
 Electron main supplies four private roots. `appRoot` remains the immutable code
 and entrypoint root, `runtimeRoot` is the separately identity-pinned executable

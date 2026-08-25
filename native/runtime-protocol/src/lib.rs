@@ -702,7 +702,10 @@ impl RuntimeJobEventPayload {
             Event::CompletionConfirmed | Event::JobSucceeded => {
                 self.is_exact_state(JobState::Succeeded)
             }
-            Event::WorkerReady | Event::JobRunning => self.is_exact_state(JobState::Running),
+            Event::WorkerReady => {
+                self.is_exact_state(JobState::Running) || self.is_exact_state(JobState::Cancelling)
+            }
+            Event::JobRunning => self.is_exact_state(JobState::Running),
             Event::JobCheckpointing => self.is_exact_state(JobState::Checkpointing),
             Event::JobCancelled => self.is_exact_state(JobState::Cancelled),
             Event::JobFailed => self.is_exact_state(JobState::Failed),
@@ -745,13 +748,14 @@ impl RuntimeJobEventPayload {
                     && self.failure_message.is_none()
             }
             Event::WorkerFailed => {
-                self.state == Some(JobState::Failed)
+                (self.state == Some(JobState::Failed)
                     && self.failure_code == Some(RuntimePublicFailureCode::WorkerFailed)
                     && self.failure_message.as_deref() == Some(SANITIZED_RUNTIME_FAILURE_MESSAGE)
                     && self.stage.is_none()
                     && self.progress_current.is_none()
                     && self.progress_total.is_none()
-                    && self.artifact_kind.is_none()
+                    && self.artifact_kind.is_none())
+                    || self.is_exact_state(JobState::Cancelling)
             }
         };
         if valid {
@@ -2458,6 +2462,30 @@ mod tests {
             }
             assert!(zero_fence.validate().is_ok());
         }
+    }
+
+    #[test]
+    fn cancellation_won_worker_observations_cannot_republish_running_or_failed_state() {
+        let cancelling = RuntimeJobEventPayload {
+            state: Some(JobState::Cancelling),
+            ..RuntimeJobEventPayload::default()
+        };
+        assert!(cancelling
+            .validate_for(RuntimeJobEventType::WorkerReady)
+            .is_ok());
+        assert!(cancelling
+            .validate_for(RuntimeJobEventType::WorkerFailed)
+            .is_ok());
+
+        let contradictory_failure = RuntimeJobEventPayload {
+            state: Some(JobState::Cancelling),
+            failure_code: Some(RuntimePublicFailureCode::WorkerFailed),
+            failure_message: Some(SANITIZED_RUNTIME_FAILURE_MESSAGE.into()),
+            ..RuntimeJobEventPayload::default()
+        };
+        assert!(contradictory_failure
+            .validate_for(RuntimeJobEventType::WorkerFailed)
+            .is_err());
     }
 
     #[test]

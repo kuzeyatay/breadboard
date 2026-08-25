@@ -44,8 +44,8 @@ impl SystemCommitSnapshot {
         if self.limit_bytes == 0 || self.total_bytes > self.limit_bytes {
             return Err(SystemCommitReadError::InvalidSnapshot);
         }
-        let total_mb =
-            self.total_bytes / MEBIBYTE_BYTES + u64::from(self.total_bytes % MEBIBYTE_BYTES != 0);
+        let total_mb = self.total_bytes / MEBIBYTE_BYTES
+            + u64::from(!self.total_bytes.is_multiple_of(MEBIBYTE_BYTES));
         let limit_mb = self.limit_bytes / MEBIBYTE_BYTES;
         if limit_mb == 0 {
             return Err(SystemCommitReadError::InvalidSnapshot);

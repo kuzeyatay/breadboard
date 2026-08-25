@@ -113,6 +113,9 @@ fn map_submission_registry_error(error: RegistryError) -> RuntimeJobControlError
         RegistryError::Store(error) => map_submission_store_error(error),
         RegistryError::DependencyCycle(_)
         | RegistryError::DuplicateJobType { .. }
+        | RegistryError::InvalidServiceProcessLimits(_)
+        | RegistryError::InvalidWorkerProcessLimits(_)
+        | RegistryError::ProcessOwner(_)
         | RegistryError::UnknownWorker(_)
         | RegistryError::UnknownService(_)
         | RegistryError::Path(_) => RuntimeJobControlError::Internal,
@@ -121,6 +124,7 @@ fn map_submission_registry_error(error: RegistryError) -> RuntimeJobControlError
 
 fn map_submission_store_error(error: StoreError) -> RuntimeJobControlError {
     match error {
+        StoreError::AdmissionClosed => RuntimeJobControlError::Unavailable,
         StoreError::JobIdConflict(_) | StoreError::IdempotencyConflict { .. } => {
             RuntimeJobControlError::Conflict
         }
@@ -178,6 +182,10 @@ mod tests {
                 key: "private-key".into(),
             }),
             RuntimeJobControlError::Conflict
+        ));
+        assert!(matches!(
+            map_submission_store_error(StoreError::AdmissionClosed),
+            RuntimeJobControlError::Unavailable
         ));
         assert!(matches!(
             map_owned_store_error(StoreError::JobNotFound("private-job".into())),
