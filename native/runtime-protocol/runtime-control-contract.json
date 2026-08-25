@@ -1,0 +1,635 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "transport": {
+    "bootstrap": "private-stdin-ndjson",
+    "ready": "private-stdout-ndjson",
+    "parentDisconnect": "bootstrap-stdin-eof",
+    "maximumLineBytes": 65536
+  },
+  "bootstrap": {
+    "type": "runtime-bootstrap",
+    "requiredFields": [
+      "type",
+      "protocolVersion",
+      "mode",
+      "appRoot",
+      "runtimeRoot",
+      "dataRoot",
+      "configRoot"
+    ],
+    "modes": ["lean", "hot", "packaged"],
+    "maximumRootBytes": 4096,
+    "rootAuthorities": {
+      "appRoot": "electron-main-derived-read-only-code-and-entrypoints",
+      "runtimeRoot": {
+        "lean": "desktop/build-resources",
+        "hot": "desktop/build-resources",
+        "packaged": "process.resourcesPath"
+      },
+      "dataRoot": "electron-main-derived-mutable-data",
+      "configRoot": "electron-main-derived-private-configuration"
+    },
+    "forbiddenAuthorityFields": [
+      "command",
+      "executable",
+      "args",
+      "cwd",
+      "env",
+      "serviceDefinitions",
+      "workerDefinitions"
+    ]
+  },
+  "launchManifests": {
+    "directory": "runtime-v2/manifests",
+    "workerFile": "workers.json",
+    "serviceFile": "services.json",
+    "workerManifestVersion": 1,
+    "serviceManifestVersion": 1,
+    "maximumFileBytes": 262144,
+    "manifestAuthority": "runtimeRoot",
+    "allowedExecutableAuthority": "runtimeRoot",
+    "allowedEntrypointAuthority": "appRoot",
+    "sourceDirectory": "desktop/runtime-v2/manifests",
+    "developmentStageDirectory": "desktop/build-resources/runtime-v2/manifests",
+    "installedDirectory": "resources/runtime-v2/manifests",
+    "requiredServiceIds": ["chatmock", "dashboard", "hermes"],
+    "requiredWorkerJobTypes": ["learn", "document-ingestion"],
+    "rejectMissingDefinitions": true,
+    "rejectAbsoluteOrTraversingPaths": true,
+    "ordinaryRequestsCannotSupplyDefinitions": true
+  },
+  "jobSubmission": {
+    "method": "POST",
+    "path": "/v1/jobs",
+    "requiredFields": ["jobType", "idempotencyKey", "requestPayload"],
+    "optionalFields": ["gardenId", "conversationId"],
+    "forbiddenAuthorityFields": [
+      "owner",
+      "ownerPrincipal",
+      "userId",
+      "principal",
+      "internalPrincipal",
+      "jobId",
+      "workerKind",
+      "resourceClass",
+      "inputManifestPath",
+      "workspacePath",
+      "checkpointPath",
+      "resultPath"
+    ],
+    "denyUnknownFields": true,
+    "maximumBodyBytes": 262144,
+    "maximumJobTypeBytes": 128,
+    "maximumIdempotencyKeyBytes": 256,
+    "idempotencyKeyGrammar": "nonempty-unicode-without-control-characters",
+    "maximumScopeIdBytes": 256,
+    "requestPayload": "plain-finite-json-value",
+    "maximumJsonNodesBeforeSerialization": 100000
+  },
+  "jobAuthorityHeaders": {
+    "required": ["x-breadboard-user-id"],
+    "optional": ["x-breadboard-garden-id", "x-breadboard-conversation-id"],
+    "rejectDuplicates": true,
+    "userId": "positive-json-safe-integer-decimal",
+    "scopeGrammar": "visible-ascii-without-whitespace",
+    "scopeValuesMustMatchSubmission": true,
+    "neverRendererAccessible": true
+  },
+  "jobStatus": {
+    "type": "runtime-job",
+    "states": [
+      "queued",
+      "admitted",
+      "starting",
+      "running",
+      "checkpointing",
+      "cancelling",
+      "cancelled",
+      "succeeded",
+      "failed",
+      "resource_exhausted",
+      "interrupted",
+      "uncertain"
+    ],
+    "publicStages": [
+      "preparing",
+      "working",
+      "generating",
+      "waiting-external",
+      "processing",
+      "persisting",
+      "finalizing",
+      "cancelling"
+    ],
+    "stageProvenance": {
+      "authority": "runtime-owned-closed-enum",
+      "mapping": "exact-private-token-match",
+      "unknownFallback": "working",
+      "rawPrivateValuesNeverReturned": true
+    },
+    "failureCodes": [
+      "RUNTIME_JOB_FAILED",
+      "WORKER_FAILED",
+      "BREADBOARD_RESOURCE_EXHAUSTED",
+      "JOB_INTERRUPTED",
+      "JOB_UNCERTAIN"
+    ],
+    "failureCodeProvenance": {
+      "authority": "runtime-owned-closed-enum",
+      "rawWorkerOrDurableValuesNeverReturned": true
+    },
+    "failureMessagePolicy": {
+      "nonNullValue": "Runtime job execution failed.",
+      "rawWorkerOrDurableValuesNeverReturned": true
+    },
+    "resourceClasses": [
+      "core",
+      "large-generation",
+      "document-processing",
+      "document-model",
+      "media-processing",
+      "browser-automation",
+      "local-model",
+      "docker-stack"
+    ],
+    "requiredFields": ["type", "protocolVersion", "job"],
+    "jobRequiredFields": [
+      "jobId",
+      "jobType",
+      "workerKind",
+      "resourceClass",
+      "state",
+      "stage",
+      "attempt",
+      "workerInstanceId",
+      "gardenId",
+      "conversationId",
+      "createdAt",
+      "startedAt",
+      "updatedAt",
+      "finishedAt",
+      "lastHeartbeatAt",
+      "lastWorkerSequence",
+      "progressCurrent",
+      "progressTotal",
+      "failureCode",
+      "failureMessage",
+      "cancellationRequested"
+    ],
+    "forbiddenFields": [
+      "owner",
+      "ownerPrincipal",
+      "userId",
+      "inputManifestPath",
+      "workspacePath",
+      "checkpointPath",
+      "resultPath",
+      "requestPayload",
+      "requestDigest",
+      "idempotencyKey",
+      "executable",
+      "args",
+      "cwd",
+      "env"
+    ],
+    "responseBindings": {
+      "submission": ["authenticatedScopes", "submittedJobType"],
+      "inspection": ["authenticatedScopes", "requestedJobId"],
+      "cancellation": ["authenticatedScopes", "requestedJobId"]
+    },
+    "denyUnknownFields": true
+  },
+  "jobEvents": {
+    "type": "runtime-job-events",
+    "method": "GET",
+    "pathTemplate": "/v1/jobs/{jobId}/events?after={sequence}&limit={limit}",
+    "requiredFields": [
+      "type",
+      "protocolVersion",
+      "jobId",
+      "after",
+      "nextAfter",
+      "terminal",
+      "hasMore",
+      "events"
+    ],
+    "eventRequiredFields": [
+      "sequence",
+      "jobId",
+      "attempt",
+      "workerInstanceId",
+      "workerSequence",
+      "eventType",
+      "payload",
+      "createdAt"
+    ],
+    "eventTypes": [
+      "queued",
+      "admitted",
+      "worker-assigned",
+      "reservation-settled",
+      "reservation-released",
+      "cancellation-requested",
+      "completion-confirmed",
+      "worker-ready",
+      "worker-heartbeat",
+      "worker-progress",
+      "worker-checkpoint",
+      "worker-artifact",
+      "worker-complete",
+      "worker-failed",
+      "worker-cancellation-acknowledged",
+      "job-starting",
+      "job-running",
+      "job-checkpointing",
+      "job-cancelling",
+      "job-cancelled",
+      "job-succeeded",
+      "job-failed",
+      "job-resource-exhausted",
+      "job-interrupted",
+      "job-uncertain"
+    ],
+    "eventOrigins": {
+      "runtime": [
+        "queued",
+        "admitted",
+        "worker-assigned",
+        "reservation-settled",
+        "reservation-released",
+        "cancellation-requested",
+        "completion-confirmed",
+        "job-starting",
+        "job-running",
+        "job-checkpointing",
+        "job-cancelling",
+        "job-cancelled",
+        "job-succeeded",
+        "job-failed",
+        "job-resource-exhausted",
+        "job-interrupted",
+        "job-uncertain"
+      ],
+      "worker": [
+        "worker-ready",
+        "worker-heartbeat",
+        "worker-progress",
+        "worker-checkpoint",
+        "worker-artifact",
+        "worker-complete",
+        "worker-failed",
+        "worker-cancellation-acknowledged"
+      ]
+    },
+    "fenceRules": {
+      "runtime-zero": {
+        "attempt": "zero",
+        "workerInstanceId": "null",
+        "workerSequence": "null"
+      },
+      "runtime-attempt": {
+        "attempt": "positive-json-safe-integer",
+        "workerInstanceId": "runtime-identifier",
+        "workerSequence": "null"
+      },
+      "runtime-current": {
+        "alternatives": ["runtime-zero", "runtime-attempt"]
+      },
+      "worker": {
+        "attempt": "positive-json-safe-integer",
+        "workerInstanceId": "runtime-identifier",
+        "workerSequence": "positive-json-safe-integer"
+      }
+    },
+    "publicArtifactKinds": [
+      "checkpoint",
+      "artifact",
+      "document",
+      "image",
+      "audio",
+      "video",
+      "model",
+      "report",
+      "archive",
+      "page"
+    ],
+    "artifactKindProvenance": {
+      "authority": "runtime-owned-closed-enum",
+      "unknownWorkerFallback": "artifact",
+      "rawWorkerValuesNeverReturned": true
+    },
+    "failureCodes": [
+      "RUNTIME_JOB_FAILED",
+      "WORKER_FAILED",
+      "BREADBOARD_RESOURCE_EXHAUSTED",
+      "JOB_INTERRUPTED",
+      "JOB_UNCERTAIN"
+    ],
+    "failureCodeProvenance": {
+      "authority": "runtime-owned-closed-enum",
+      "workerFailed": "WORKER_FAILED",
+      "rawWorkerOrDurableValuesNeverReturned": true
+    },
+    "sanitizedFailureMessage": "Runtime job execution failed.",
+    "eventRules": {
+      "queued": {
+        "origin": "runtime",
+        "fence": "runtime-zero",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "queued" } }
+      },
+      "admitted": {
+        "origin": "runtime",
+        "fence": "runtime-zero",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "admitted" } }
+      },
+      "worker-assigned": {
+        "origin": "runtime",
+        "fence": "runtime-attempt",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "starting" } }
+      },
+      "reservation-settled": {
+        "origin": "runtime",
+        "fence": "runtime-attempt",
+        "payload": { "exactFields": [], "fixed": {} }
+      },
+      "reservation-released": {
+        "origin": "runtime",
+        "fence": "runtime-current",
+        "payload": { "exactFields": [], "fixed": {} }
+      },
+      "cancellation-requested": {
+        "origin": "runtime",
+        "fence": "runtime-current",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "cancelling" } }
+      },
+      "completion-confirmed": {
+        "origin": "runtime",
+        "fence": "runtime-attempt",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "succeeded" } }
+      },
+      "worker-ready": {
+        "origin": "worker",
+        "fence": "worker",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "running" } }
+      },
+      "worker-heartbeat": {
+        "origin": "worker",
+        "fence": "worker",
+        "payload": {
+          "exactFields": ["stage"],
+          "enumValues": { "stage": "jobStatus.publicStages" }
+        }
+      },
+      "worker-progress": {
+        "origin": "worker",
+        "fence": "worker",
+        "payload": {
+          "exactFields": ["stage", "progressCurrent", "progressTotal"],
+          "enumValues": { "stage": "jobStatus.publicStages" },
+          "integerValues": {
+            "progressCurrent": "nonnegative-json-safe-integer",
+            "progressTotal": "positive-json-safe-integer"
+          },
+          "invariant": "progressCurrent-less-than-or-equal-to-progressTotal"
+        }
+      },
+      "worker-checkpoint": {
+        "origin": "worker",
+        "fence": "worker",
+        "payload": {
+          "exactFields": ["artifactKind"],
+          "enumValues": { "artifactKind": "jobEvents.publicArtifactKinds" }
+        }
+      },
+      "worker-artifact": {
+        "origin": "worker",
+        "fence": "worker",
+        "payload": {
+          "exactFields": ["artifactKind"],
+          "enumValues": { "artifactKind": "jobEvents.publicArtifactKinds" }
+        }
+      },
+      "worker-complete": {
+        "origin": "worker",
+        "fence": "worker",
+        "payload": { "exactFields": [], "fixed": {} }
+      },
+      "worker-failed": {
+        "origin": "worker",
+        "fence": "worker",
+        "payload": {
+          "exactFields": ["state", "failureCode", "failureMessage"],
+          "fixed": {
+            "state": "failed",
+            "failureCode": "WORKER_FAILED",
+            "failureMessage": "Runtime job execution failed."
+          }
+        }
+      },
+      "worker-cancellation-acknowledged": {
+        "origin": "worker",
+        "fence": "worker",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "cancelling" } }
+      },
+      "job-starting": {
+        "origin": "runtime",
+        "fence": "runtime-attempt",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "starting" } }
+      },
+      "job-running": {
+        "origin": "runtime",
+        "fence": "runtime-attempt",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "running" } }
+      },
+      "job-checkpointing": {
+        "origin": "runtime",
+        "fence": "runtime-attempt",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "checkpointing" } }
+      },
+      "job-cancelling": {
+        "origin": "runtime",
+        "fence": "runtime-current",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "cancelling" } }
+      },
+      "job-cancelled": {
+        "origin": "runtime",
+        "fence": "runtime-current",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "cancelled" } }
+      },
+      "job-succeeded": {
+        "origin": "runtime",
+        "fence": "runtime-attempt",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "succeeded" } }
+      },
+      "job-failed": {
+        "origin": "runtime",
+        "fence": "runtime-attempt",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "failed" } }
+      },
+      "job-resource-exhausted": {
+        "origin": "runtime",
+        "fence": "runtime-current",
+        "payload": {
+          "exactFields": ["state"],
+          "fixed": { "state": "resource_exhausted" }
+        }
+      },
+      "job-interrupted": {
+        "origin": "runtime",
+        "fence": "runtime-current",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "interrupted" } }
+      },
+      "job-uncertain": {
+        "origin": "runtime",
+        "fence": "runtime-attempt",
+        "payload": { "exactFields": ["state"], "fixed": { "state": "uncertain" } }
+      }
+    },
+    "payloadAllowedFields": [
+      "state",
+      "stage",
+      "progressCurrent",
+      "progressTotal",
+      "artifactKind",
+      "failureCode",
+      "failureMessage"
+    ],
+    "payloadForbiddenFields": [
+      "identity",
+      "path",
+      "resultPath",
+      "checkpointPath",
+      "artifactPath",
+      "sha256",
+      "owner",
+      "requestPayload",
+      "executable",
+      "args",
+      "cwd",
+      "env",
+      "token",
+      "providerSecret"
+    ],
+    "maximumRecords": 256,
+    "sourceQuery": "requested-limit-plus-one",
+    "snapshotConsistency": "owned-job-events-and-active-reservation-in-one-sqlite-read-transaction",
+    "responseBindings": ["requestedJobId", "requestedAfter", "requestedLimit"],
+    "maximumSerializedResponseBytes": 65536,
+    "strictlyIncreasingSequence": true,
+    "singleJobOnly": true,
+    "terminalMeaning": "durable-job-is-terminal-and-no-pending-or-resident-job-reservation",
+    "hasMoreMeaning": "another-byte-or-record-bounded-page-is-required",
+    "fullyDrainedWhen": "terminal-is-true-and-hasMore-is-false",
+    "denyUnknownFields": true
+  },
+  "jobInspection": {
+    "method": "GET",
+    "pathTemplate": "/v1/jobs/{jobId}"
+  },
+  "jobCancellation": {
+    "method": "POST",
+    "pathTemplate": "/v1/jobs/{jobId}/cancel",
+    "response": "runtime-job"
+  },
+  "errorResponse": {
+    "type": "runtime-error",
+    "codes": [
+      "INVALID_JOB_REQUEST",
+      "JOB_SCOPE_FORBIDDEN",
+      "JOB_NOT_FOUND",
+      "JOB_CONFLICT",
+      "BREADBOARD_RESOURCE_EXHAUSTED",
+      "RUNTIME_UNAVAILABLE",
+      "RUNTIME_INTERNAL_ERROR"
+    ],
+    "requiredFields": [
+      "type",
+      "protocolVersion",
+      "code",
+      "message",
+      "retryable",
+      "resource",
+      "requiredHeadroomMb",
+      "availableHeadroomMb"
+    ],
+    "denyUnknownFields": true,
+    "retryableMustBeFalse": true,
+    "resourceExhaustionEvidence": {
+      "code": "BREADBOARD_RESOURCE_EXHAUSTED",
+      "resource": "windows_commit",
+      "requiredHeadroomMb": "positive-integer",
+      "availableHeadroomMb": "nonnegative-integer",
+      "mustBeNullForOtherCodes": true
+    },
+    "forbiddenFields": ["executable", "args", "cwd", "env", "token", "providerSecret"]
+  },
+  "ready": {
+    "type": "runtime-ready",
+    "requiredFields": [
+      "type",
+      "protocolVersion",
+      "runtimePid",
+      "controlBaseUrl",
+      "controlToken",
+      "dashboardUrl",
+      "services"
+    ]
+  },
+  "status": {
+    "type": "runtime-status",
+    "requiredFields": [
+      "type",
+      "protocolVersion",
+      "runtimePid",
+      "acceptingWork",
+      "services"
+    ]
+  },
+  "serviceStatus": {
+    "requiredFields": [
+      "id",
+      "displayName",
+      "required",
+      "state",
+      "lastError",
+      "restarts",
+      "adopted"
+    ],
+    "states": [
+      "available-but-stopped",
+      "starting",
+      "ready",
+      "busy",
+      "resource-blocked",
+      "installation-unavailable",
+      "failed",
+      "stopping"
+    ],
+    "maximumRecords": 256,
+    "maximumIdBytes": 128,
+    "maximumDisplayNameBytes": 256,
+    "maximumLastErrorBytes": 8192,
+    "maximumRestarts": 64,
+    "adoptedMustBeFalse": true
+  },
+  "control": {
+    "origin": "literal-loopback-http",
+    "allowedHosts": ["127.0.0.1", "[::1]"],
+    "authorizationScheme": "Bearer",
+    "minimumTokenBytes": 32,
+    "maximumTokenBytes": 1024,
+    "maximumResponseBytes": 65536,
+    "maximumJsonSafeInteger": 9007199254740991,
+    "status": { "method": "GET", "path": "/v1/status" },
+    "submitJob": { "method": "POST", "path": "/v1/jobs" },
+    "inspectJob": { "method": "GET", "pathTemplate": "/v1/jobs/{jobId}" },
+    "replayJobEvents": {
+      "method": "GET",
+      "pathTemplate": "/v1/jobs/{jobId}/events?after={sequence}&limit={limit}"
+    },
+    "cancelJob": { "method": "POST", "pathTemplate": "/v1/jobs/{jobId}/cancel" },
+    "shutdown": { "method": "POST", "path": "/v1/shutdown" },
+    "shutdownResponse": { "ok": true }
+  }
+}

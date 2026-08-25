@@ -1,0 +1,18 @@
+[package]
+name = "breadboard-runtime-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Authoritative Runtime V2 host for Breadboard"
+
+[[bin]]
+name = "breadboard-runtime"
+path = "src/main.rs"
+
+[dependencies]
+breadboard-runtime-core = { path = "../runtime-core" }
+breadboard-runtime-protocol = { path = "../runtime-protocol" }
+getrandom = "0.2"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
