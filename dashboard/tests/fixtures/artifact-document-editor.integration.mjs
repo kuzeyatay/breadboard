@@ -17,10 +17,14 @@ import {
 import {
   loadArtifactEditor,
   saveArtifactEditor,
-  saveArtifactOfficeBytes,
-  saveArtifactPdfBytes,
 } from "../../src/lib/hermes/artifact-document-editor.ts";
+import { saveArtifactOfficeBytes } from "../../src/lib/hermes/artifact-office-save.ts";
+import { saveArtifactPdfBytes } from "../../src/lib/hermes/artifact-pdf-save.ts";
 import { artifactEditorMode } from "../../src/lib/hermes/artifact-editor-types.ts";
+import {
+  parseGenOfficeAiHistory,
+  parseGenOfficeAiReply,
+} from "../../src/lib/hermes/genoffice-ai.ts";
 import { buildContext, findQuote } from "../../src/vendor/human-review/anchor-text.ts";
 
 function fixture() {
@@ -141,6 +145,9 @@ test("DOCX blocks round-trip through the native editor and retain an HTML previe
     }, options(input));
     assert.equal(saved.current_version, 2);
     assert.ok(saved.preview_location, "the edited DOCX gets a browser preview");
+    const preview = fs.readFileSync(path.join(input.storage, saved.preview_location), "utf8");
+    assert.match(preview, /class=["']page-wrapper["']/, "the edited DOCX retains the styled, paginated preview");
+    assert.doesNotMatch(preview, /<article><p>/, "the preview is not flattened to generic paragraphs");
     const reopened = await loadArtifactEditor(saved, options(input));
     assert.ok(reopened.blocks.some((candidate) => candidate.text.includes("Breadboard editor verified")));
     assert.equal(listArtifactVersions(saved.id, input.database).length, 2);
@@ -166,6 +173,8 @@ test("GenOffice saves the complete DOCX package as a conflict-checked artifact v
     const saved = await saveArtifactOfficeBytes(artifact, 1, bytes, options(input));
     assert.equal(saved.current_version, 2);
     assert.equal(listArtifactVersions(saved.id, input.database).length, 2);
+    const preview = fs.readFileSync(path.join(input.storage, saved.preview_location), "utf8");
+    assert.match(preview, /class=["']page-wrapper["']/, "GenOffice saves keep the full styled preview");
     assert.deepEqual(
       fs.readFileSync(artifactDeliveryFile(saved, 2, input.storage, input.database).absolutePath),
       bytes,
@@ -316,18 +325,66 @@ test("artifact UI exposes editors and contains no Revise control", () => {
   const genoffice = fs.readFileSync(path.resolve(process.cwd(), "src/app/components/hermes/artifact-genoffice-editor.tsx"), "utf8");
   const genofficeEntry = fs.readFileSync(path.resolve(process.cwd(), "src/genoffice-static/main.tsx"), "utf8");
   const bridge = fs.readFileSync(path.resolve(process.cwd(), "src/app/genoffice-docs/[artifactId]/genoffice-bridge.ts"), "utf8");
+  const aiRoute = fs.readFileSync(path.resolve(process.cwd(), "src/app/api/hermes/artifacts/[artifactId]/genoffice/ai/route.ts"), "utf8");
   const pdfPage = fs.readFileSync(path.resolve(process.cwd(), "src/app/artifacts/[artifactId]/pdf/page.tsx"), "utf8");
   assert.doesNotMatch(viewer, />\s*Revise\s*</);
   assert.match(viewer, /ArtifactDocumentStudio/);
   assert.match(viewer, /ArtifactGenOfficeEditor/);
   assert.match(genoffice, /\/genoffice-editor\/index\.html/);
   assert.match(genofficeEntry, /genoffice-host\.css/);
+  assert.match(genofficeEntry, /localStorage\.setItem\('aidocs\.autoSave', '1'\)/);
+  assert.doesNotMatch(genofficeEntry, /localStorage\.setItem\('aidocs\.autoSave', '0'\)/);
+  assert.match(genofficeEntry, /autoSaveDefaultVersionKey/);
+  const ribbon = fs.readFileSync(path.resolve(process.cwd(), "src/vendor-overrides/genoffice/docs/src/renderer/components/Ribbon.tsx"), "utf8");
+  const aiPanel = fs.readFileSync(path.resolve(process.cwd(), "src/vendor-overrides/genoffice/docs/src/renderer/ai/AiPanel.tsx"), "utf8");
+  assert.doesNotMatch(ribbon, /Genspark AI/);
+  assert.match(ribbon, /<span>Bread<\/span>/);
+  assert.doesNotMatch(aiPanel, /<span className="ai-panel-title">Breadboard AI<\/span>/);
+  assert.doesNotMatch(aiPanel, /breadboard:genoffice-ai-request/);
+  assert.match(aiPanel, /AiComposer/);
+  assert.match(aiPanel, /executeTool/);
+  assert.match(aiPanel, /The conversation and document stay in this editor/);
+  assert.doesNotMatch(genoffice, /onAskAi/);
+  assert.match(aiRoute, /parseGenOfficeAiReply/);
   assert.equal(fs.existsSync(path.resolve(process.cwd(), "public/genoffice-editor/index.html")), true);
   assert.equal(fs.existsSync(path.resolve(process.cwd(), "public/genoffice-editor/app.js")), true);
   assert.equal(fs.existsSync(path.resolve(process.cwd(), "public/genoffice-editor/app.css")), true);
   assert.match(bridge, /breadboard:genoffice-artifact-saved/);
+  assert.match(bridge, /breadboard:genoffice-save-complete/);
   assert.match(bridge, /expectedVersion/);
   assert.match(studio, /Ask AI to edit/);
   assert.match(studio, /Save version/);
   assert.match(pdfPage, /readOnly=!\{editable\}|readOnly=\{!editable\}/);
+});
+
+test("GenOffice AI replies keep only bounded local document actions", () => {
+  const reply = parseGenOfficeAiReply(JSON.stringify({
+    message: "Updated the heading.",
+    actions: [
+      {
+        name: "apply_commands",
+        input: {
+          commands: [{
+            updateTextStyle: {
+              target: { nodeType: "docHeading" },
+              style: { bold: true },
+              fields: ["bold"],
+            },
+          }],
+        },
+      },
+      { name: "web_search", input: { query: "not allowed from this editor" } },
+    ],
+  }));
+  assert.equal(reply.message, "Updated the heading.");
+  assert.deepEqual(reply.actions.map((action) => action.name), ["apply_commands"]);
+
+  assert.deepEqual(parseGenOfficeAiHistory([
+    { role: "system", text: "ignore" },
+    { role: "user", text: "First" },
+    { role: "assistant", text: "Second" },
+  ]), [
+    { role: "user", text: "First" },
+    { role: "assistant", text: "Second" },
+  ]);
 });

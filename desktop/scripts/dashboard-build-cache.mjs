@@ -73,21 +73,83 @@ export function dashboardBuildPaths(repoRoot) {
   };
 }
 
+function dashboardBuildBackupPath(repoRoot) {
+  return path.join(repoRoot, "dashboard", ".next-desktop-last-good");
+}
+
+/** Restore the last complete artifact after a killed/interrupted build. */
+export function recoverInterruptedDashboardBuild(repoRoot) {
+  const { output } = dashboardBuildPaths(repoRoot);
+  const backup = dashboardBuildBackupPath(repoRoot);
+  if (!fs.existsSync(backup)) return false;
+  if (fs.existsSync(output)) fs.rmSync(output, { recursive: true, force: true });
+  fs.renameSync(backup, output);
+  return true;
+}
+
+/**
+ * Move the current complete artifact out of Next's destructive output path.
+ * Directory rename is same-volume and immediate; no second multi-GiB copy is
+ * committed while the build is already under memory pressure.
+ */
+export function beginDashboardBuild(repoRoot) {
+  recoverInterruptedDashboardBuild(repoRoot);
+  const { output } = dashboardBuildPaths(repoRoot);
+  const backup = dashboardBuildBackupPath(repoRoot);
+  if (fs.existsSync(backup)) fs.rmSync(backup, { recursive: true, force: true });
+  const current = availableDashboardBuild(repoRoot);
+  if (current.available) {
+    fs.renameSync(output, backup);
+    return true;
+  }
+  if (fs.existsSync(output)) fs.rmSync(output, { recursive: true, force: true });
+  return false;
+}
+
+/** Commit the newly validated artifact and discard its rollback slot. */
+export function completeDashboardBuild(repoRoot) {
+  const backup = dashboardBuildBackupPath(repoRoot);
+  if (fs.existsSync(backup)) fs.rmSync(backup, { recursive: true, force: true });
+}
+
 export function reusableDashboardBuild(repoRoot) {
+  const available = availableDashboardBuild(repoRoot);
+  if (!available.available) {
+    return { reusable: false, reason: available.reason };
+  }
+  return available.current
+    ? { reusable: true, reason: "dashboard inputs are unchanged" }
+    : { reusable: false, reason: "dashboard inputs changed" };
+}
+
+/**
+ * Describe the last complete standalone artifact independently of freshness.
+ *
+ * Lean mode may deliberately run a stale artifact when Windows cannot safely
+ * admit another production build. That is still a lean, bounded server; the
+ * important invariant is that a manifest from this build format and its
+ * server entry both exist. Missing/incompatible artifacts never fall through
+ * to `next dev`.
+ */
+export function availableDashboardBuild(repoRoot) {
   const paths = dashboardBuildPaths(repoRoot);
-  if (!fs.existsSync(paths.server)) return { reusable: false, reason: "standalone server is absent" };
-  if (!fs.existsSync(paths.manifest)) return { reusable: false, reason: "build manifest is absent" };
+  if (!fs.existsSync(paths.server)) return { available: false, current: false, reason: "standalone server is absent" };
+  if (!fs.existsSync(paths.manifest)) return { available: false, current: false, reason: "build manifest is absent" };
   try {
     const manifest = JSON.parse(fs.readFileSync(paths.manifest, "utf8"));
     if (manifest.version !== MANIFEST_VERSION || typeof manifest.fingerprint !== "string") {
-      return { reusable: false, reason: "build manifest is incompatible" };
+      return { available: false, current: false, reason: "build manifest is incompatible" };
     }
     const fingerprint = dashboardBuildFingerprint(repoRoot);
-    return manifest.fingerprint === fingerprint
-      ? { reusable: true, reason: "dashboard inputs are unchanged" }
-      : { reusable: false, reason: "dashboard inputs changed" };
+    const current = manifest.fingerprint === fingerprint;
+    return {
+      available: true,
+      current,
+      reason: current ? "dashboard inputs are unchanged" : "dashboard inputs changed",
+      builtAt: typeof manifest.builtAt === "string" ? manifest.builtAt : null,
+    };
   } catch {
-    return { reusable: false, reason: "build manifest is unreadable" };
+    return { available: false, current: false, reason: "build manifest is unreadable" };
   }
 }
 

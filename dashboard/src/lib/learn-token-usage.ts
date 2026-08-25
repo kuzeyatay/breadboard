@@ -152,12 +152,26 @@ export interface LearnModelRequestEvidence {
   readonly reasoningSummary: string | null;
 }
 
+/** Bounded identity attached only to Council requests that opted into the
+ * durable exact-result protocol. Keeping this separate from policy evidence
+ * lets persistence reconcile one logical request without guessing from the
+ * job-wide counters when unrelated model calls are active concurrently. */
+export interface LearnModelRequestIdentity {
+  readonly clientRequestId: string;
+  readonly clientRequestHash: string;
+}
+
 export type LearnTokenUsageEvent =
-  | { type: 'started'; requestEvidence?: LearnModelRequestEvidence }
+  | {
+      type: 'started';
+      requestEvidence?: LearnModelRequestEvidence;
+      requestIdentity?: LearnModelRequestIdentity;
+    }
   | {
       type: 'completed';
       usage: ChatTokenUsage | null;
       requestEvidence?: LearnModelRequestEvidence;
+      requestIdentity?: LearnModelRequestIdentity;
     };
 
 export type LearnTokenUsageListener = (event: LearnTokenUsageEvent) => void;
@@ -433,6 +447,55 @@ function modelRequestEvidence(
   });
 }
 
+const CLIENT_REQUEST_ID_RE = /^[A-Za-z0-9_.:-]{1,256}$/;
+const CLIENT_REQUEST_HASH_RE = /^[0-9a-f]{64}$/;
+
+function aliasedRequestIdentityField(
+  request: Record<string, unknown>,
+  preferredName: string,
+  alternateName: string,
+): string | null {
+  const preferred = request[preferredName];
+  const alternate = request[alternateName];
+  if (
+    preferred !== undefined &&
+    alternate !== undefined &&
+    preferred !== alternate
+  ) {
+    return null;
+  }
+  const value = preferred ?? alternate;
+  return typeof value === 'string' ? value : null;
+}
+
+/** Snapshot the exact server receipt binding from the effective outbound
+ * body. Invalid or incomplete bindings remain provider errors and are omitted
+ * from telemetry; telemetry must never change request behavior. */
+function modelRequestIdentity(
+  args: unknown[],
+): LearnModelRequestIdentity | undefined {
+  const request = isPlainRecord(args[0]) ? args[0] : {};
+  const clientRequestId = aliasedRequestIdentityField(
+    request,
+    'clientRequestId',
+    'client_request_id',
+  );
+  const clientRequestHash = aliasedRequestIdentityField(
+    request,
+    'clientRequestHash',
+    'client_request_hash',
+  );
+  if (
+    !clientRequestId ||
+    !clientRequestHash ||
+    !CLIENT_REQUEST_ID_RE.test(clientRequestId) ||
+    !CLIENT_REQUEST_HASH_RE.test(clientRequestHash)
+  ) {
+    return undefined;
+  }
+  return Object.freeze({ clientRequestId, clientRequestHash });
+}
+
 const trackingByCompletionResource = new WeakMap<object, TrackingState>();
 
 function notifyListener(
@@ -495,9 +558,11 @@ export function attachLearnTokenUsageTracking(
       requestArgs,
       requestOverrides !== undefined,
     );
+    const requestIdentity = modelRequestIdentity(requestArgs);
     notifyListener(requestListener, {
       type: 'started',
       ...(requestEvidence ? { requestEvidence } : {}),
+      ...(requestIdentity ? { requestIdentity } : {}),
     });
     try {
       const response = await retryModelTransport(
@@ -511,6 +576,7 @@ export function attachLearnTokenUsageTracking(
         type: 'completed',
         usage: chatTokenUsageFromResponse(response),
         ...(requestEvidence ? { requestEvidence } : {}),
+        ...(requestIdentity ? { requestIdentity } : {}),
       });
       return response;
     } catch (error) {
@@ -518,6 +584,7 @@ export function attachLearnTokenUsageTracking(
         type: 'completed',
         usage: null,
         ...(requestEvidence ? { requestEvidence } : {}),
+        ...(requestIdentity ? { requestIdentity } : {}),
       });
       throw error;
     }

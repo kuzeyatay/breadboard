@@ -67,6 +67,7 @@ import {
   AgentStreamDisconnectedError,
   agentStreamReconnectDelay,
   agentStreamTimeout,
+  disposeAgentStreamReader,
   isRecoverableAgentStreamDisconnect,
   isAgentStreamTurnActivity,
   isAgentStreamTimeoutError,
@@ -1365,6 +1366,7 @@ export function useAgentSession(
       return;
     }
     let cancelled = false;
+    const restoreController = new AbortController();
     // This restore may only fill a view nobody has touched since it mounted.
     // An empty `sessionRef` does not say that: starting a new chat empties it
     // too, so a restore still in flight would read the blank chat as "nothing
@@ -1378,7 +1380,9 @@ export function useAgentSession(
       viewEpochRef.current !== bootEpoch ||
       Boolean(sessionRef.current);
     markLoadingSession(true);
-    void loadHermesSessionSummaries(surface)
+    void loadHermesSessionSummaries(surface, {
+      signal: restoreController.signal,
+    })
       .then(async (sessions) => {
         if (superseded()) return;
         const preferredId =
@@ -1394,7 +1398,9 @@ export function useAgentSession(
         );
         if (!selected) return;
         primeInlineArtifacts({ conversationId: selected.id });
-        const restored = await loadHermesSessionDetail(surface, selected.id);
+        const restored = await loadHermesSessionDetail(surface, selected.id, {
+          signal: restoreController.signal,
+        });
         if (superseded()) return;
         if (restored.id !== selected.id) return;
         sessionRef.current = selected.id;
@@ -1456,6 +1462,7 @@ export function useAgentSession(
       });
     return () => {
       cancelled = true;
+      restoreController.abort();
     };
   }, [
     surface,
@@ -1505,6 +1512,7 @@ export function useAgentSession(
       // before/between tool calls). Kept so an aborted or answerless turn can
       // fall back to its last words instead of an empty message.
       const narrationSegments: string[] = [];
+      let streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
       const upsertActivity = (item: ActivityItem) => {
         setActivities((current) => {
           const index = current.findIndex(
@@ -1580,7 +1588,7 @@ export function useAgentSession(
               )
             : new Error("Could not open the agent event stream.");
         }
-        const reader = response.body.getReader();
+        streamReader = response.body.getReader();
         for (;;) {
           const timeout = agentStreamTimeout({
             connected,
@@ -1589,7 +1597,7 @@ export function useAgentSession(
               runStateRef.current === "waiting_for_permission",
           });
           const { done, value } = await withAgentStreamTimeout(
-            reader.read(),
+            streamReader.read(),
             timeout,
           );
           if (done) {
@@ -2074,6 +2082,8 @@ export function useAgentSession(
           ).catch(() => undefined);
         }
         throw streamError;
+      } finally {
+        await disposeAgentStreamReader(streamReader);
       }
     },
     [

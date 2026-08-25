@@ -2,7 +2,6 @@ from __future__ import annotations
 
 """Loopback-only, promptless recovery reads for durable Council results."""
 
-import hashlib
 import ipaddress
 import json
 from typing import Any, Dict
@@ -16,7 +15,9 @@ from .request_receipts import (
     default_receipt_store,
     legacy_completed_inventory,
     legacy_completed_matches,
+    legacy_outcome_matches,
     parse_iso,
+    strict_completed_result,
     valid_request_hash,
     valid_request_id,
 )
@@ -57,67 +58,7 @@ def _error(message: str, status: int, code: str):
 
 def _promptless_result(receipt: Dict[str, Any]) -> Dict[str, Any]:
     result = receipt.get("result")
-    if not isinstance(result, dict):
-        raise CouncilReceiptCorrupt("completed receipt has no result")
-    # The strict store writes this allowlist.  Re-project it here so an edited
-    # receipt can never expose arbitrary fields through the internal endpoint.
-    scalar_allowed = (
-        "councilRunId",
-        "councilMode",
-        "requestedModel",
-        "resolvedModel",
-        "finalAnswer",
-        "reasoningSummary",
-        "usageEstimated",
-        "responseHash",
-        "createdAt",
-        "updatedAt",
-    )
-    projected = {key: result.get(key) for key in scalar_allowed if key in result}
-    final_answer = projected.get("finalAnswer")
-    response_hash = projected.get("responseHash")
-    if (
-        not isinstance(final_answer, str)
-        or not final_answer.strip()
-        or not isinstance(response_hash, str)
-        or not valid_request_hash(response_hash)
-        or hashlib.sha256(final_answer.encode("utf-8")).hexdigest() != response_hash
-    ):
-        raise CouncilReceiptCorrupt("completed receipt result binding is invalid")
-    usage = result.get("usage")
-    if isinstance(usage, dict):
-        usage_allowed = (
-            "inputTokens",
-            "outputTokens",
-            "totalTokens",
-            "cachedInputTokens",
-            "reasoningTokens",
-            "callCount",
-            "reportedCallCount",
-        )
-        projected["usage"] = {
-            key: usage.get(key) for key in usage_allowed if key in usage
-        }
-    routing = result.get("modelRouting")
-    if isinstance(routing, list):
-        routing_allowed = (
-            "schemaVersion",
-            "at",
-            "requestId",
-            "endpoint",
-            "requestedModel",
-            "resolvedModel",
-            "upstreamModel",
-            "provider",
-            "outcome",
-            "fallback",
-        )
-        projected["modelRouting"] = [
-            {key: entry.get(key) for key in routing_allowed if key in entry}
-            for entry in routing
-            if isinstance(entry, dict)
-        ]
-    return projected
+    return strict_completed_result(result)
 
 
 @council_result_bp.get("/v1/internal/council-results/resolve")
@@ -130,17 +71,56 @@ def resolve_council_result():
     if not valid_request_id(request_id) or not valid_request_hash(request_hash):
         return _error("Invalid request receipt binding", 400, "invalid_binding")
     try:
-        receipt = default_receipt_store().read(request_id, request_hash)
+        store = default_receipt_store()
+        receipt = store.read(request_id, request_hash)
         state = receipt.get("state")
         if state == "started":
-            return _error(
-                "Council request is still in-flight or its outcome is ambiguous",
+            return (
+                jsonify(
+                    {
+                        "state": "started",
+                        "error": {
+                            "message": "Council request is still in-flight or its outcome is ambiguous",
+                            "code": "request_started",
+                        },
+                        "receipt": store.promptless_metadata(
+                            request_id,
+                            request_hash,
+                            receipt,
+                        ),
+                    }
+                ),
                 409,
-                "request_started",
             )
         if state == "failed":
-            return _error("Council request completed without a reusable answer", 409, "request_failed")
-        return jsonify({"state": "completed", "result": _promptless_result(receipt)})
+            return (
+                jsonify(
+                    {
+                        "state": "failed",
+                        "error": {
+                            "message": "Council request completed without a reusable answer",
+                            "code": "request_failed",
+                        },
+                        "receipt": store.promptless_metadata(
+                            request_id,
+                            request_hash,
+                            receipt,
+                        ),
+                    }
+                ),
+                409,
+            )
+        return jsonify(
+            {
+                "state": "completed",
+                "result": _promptless_result(receipt),
+                "receipt": store.promptless_metadata(
+                    request_id,
+                    request_hash,
+                    receipt,
+                ),
+            }
+        )
     except CouncilReceiptNotFound:
         return _error("Council request receipt not found", 404, "receipt_not_found")
     except CouncilReceiptConflict:
@@ -166,10 +146,15 @@ def resolve_legacy_council_result():
     if not effort or not summary or len(effort) > 32 or len(summary) > 32:
         return _error("Invalid legacy reasoning policy", 400, "invalid_policy")
     try:
+        after = parse_iso(created_after)
+        before = parse_iso(created_before)
+    except Exception:
+        return _error("Legacy result fence is invalid", 400, "invalid_fence")
+    try:
         matches = legacy_completed_matches(
             request_hash=request_hash,
-            created_after=parse_iso(created_after),
-            created_before=parse_iso(created_before),
+            created_after=after,
+            created_before=before,
             reasoning_effort=effort,
             reasoning_summary=summary,
         )
@@ -184,6 +169,65 @@ def resolve_legacy_council_result():
     if len(matches) != 1:
         return _error("Multiple exact legacy Council results exist", 409, "legacy_multiple")
     return jsonify({"state": "completed", "legacy": True, "result": matches[0]})
+
+
+@council_result_bp.get("/v1/internal/council-results/legacy-outcome")
+def resolve_legacy_council_outcome():
+    """Resolve one exact terminal pre-receipt run, including safe failures."""
+
+    denial = _internal_read_denial()
+    if denial is not None:
+        return denial
+    request_hash = request.args.get("requestHash", "")
+    created_after = request.args.get("createdAfter", "")
+    created_before = request.args.get("createdBefore", "")
+    effort = request.args.get("reasoningEffort", "")
+    summary = request.args.get("reasoningSummary", "")
+    if not valid_request_hash(request_hash):
+        return _error("Invalid legacy request hash", 400, "invalid_binding")
+    if not effort or not summary or len(effort) > 32 or len(summary) > 32:
+        return _error("Invalid legacy reasoning policy", 400, "invalid_policy")
+    try:
+        after = parse_iso(created_after)
+        before = parse_iso(created_before)
+    except Exception:
+        return _error("Legacy outcome fence is invalid", 400, "invalid_fence")
+    try:
+        matches = legacy_outcome_matches(
+            request_hash=request_hash,
+            created_after=after,
+            created_before=before,
+            reasoning_effort=effort,
+            reasoning_summary=summary,
+        )
+    except CouncilReceiptConflict:
+        return _error("Legacy outcome fence is invalid", 400, "invalid_fence")
+    except CouncilReceiptCorrupt:
+        return _error(
+            "Legacy Council outcome is ambiguous",
+            409,
+            "legacy_ledger_ambiguous",
+        )
+    except Exception:
+        return _error(
+            "Legacy Council outcome could not be read",
+            500,
+            "legacy_read_failed",
+        )
+    if not matches:
+        return _error("No exact terminal legacy Council outcome exists", 404, "legacy_not_found")
+    if len(matches) != 1:
+        return _error("Multiple exact legacy Council outcomes exist", 409, "legacy_multiple")
+    outcome = matches[0]
+    if outcome.get("outcome") == "completed":
+        return jsonify(
+            {
+                "state": "completed",
+                "legacy": True,
+                "result": outcome["result"],
+            }
+        )
+    return jsonify({"state": "failed", "legacy": True, "failure": outcome})
 
 
 @council_result_bp.get("/v1/internal/council-results/legacy-inventory")

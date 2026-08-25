@@ -7,6 +7,13 @@ import ts from "typescript";
 import type OpenAI from "openai";
 import { withCouncil } from "./council.ts";
 import {
+  GENERATED_VISUAL_COUNCIL_REASONING,
+  runGeneratedVisualCouncilRequestWithReceipt,
+  type GeneratedVisualCouncilReceiptResult,
+  type GeneratedVisualCouncilRecoveryMetadata,
+  type RunGeneratedVisualCouncilRequestInput,
+} from "./generated-visual-council-receipts.ts";
+import {
   runObservedGeneratedVisualBrowserProcess,
   type GeneratedVisualBrowserCompletion,
   type GeneratedVisualObservedBrowserResult,
@@ -37,9 +44,9 @@ export const GENERATED_VISUAL_SCHEMA_VERSION =
   GENERATED_VISUAL_CAPABILITY_MANIFEST.definitionSchemaVersion;
 export const GENERATED_VISUAL_MAX_SOURCE_CHARS =
   GENERATED_VISUAL_CAPABILITY_MANIFEST.hardLimits.sourceCharacters;
-/** An accepted-but-slow model call cannot be distinguished from an unaccepted
- * request after a client timeout. Keep this boundary single-shot; definite
- * pre-accept recovery remains owned by the request-bound Learn client. */
+/** Provider dispatch is single-shot at this semantic boundary. The built-in
+ * author/critic path adds a durable request receipt beneath it; custom provider
+ * seams still may not replay an ambiguous call. */
 export const GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS = 1;
 /** Spatial visuals can require several critic-guided, model-authored revisions
  * across independent geometry, runtime, and accessibility gates. Keep that
@@ -71,15 +78,20 @@ const GENERATED_VISUAL_TRANSIENT_BROWSER_MOUNT_ERROR_CODES = new Set([
   "ENFILE",
   "ERROR_SHARING_VIOLATION",
 ]);
-/** Complex declarative visual generation can legitimately take longer than a
- * general chat request. This is a soft observability threshold: crossing it
- * must not abort a council run that ChatMock will continue server-side. */
-export const GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS = 180_000;
+/** Complex declarative visual generation can legitimately occupy ChatMock's
+ * full 30-minute provider window. This is a soft observability threshold:
+ * crossing it must not abort a council run that ChatMock will continue
+ * server-side. */
+export const GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS = 20 * 60_000;
 /** Keep listening to the original request after the soft threshold so a late
  * council result can be adopted without issuing a second model-authored call.
- * The hard boundary remains finite; exhaustion fails closed because ChatMock
- * cannot prove whether an aborted HTTP request was accepted. */
-export const GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS = 120_000;
+ * The hard boundary remains finite; exhaustion fails closed and a later
+ * process may only adopt the exact durable Council receipt. */
+export const GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS = 11 * 60_000;
+/** One minute beyond ChatMock's 30-minute total provider deadline. Clamp the
+ * combined soft threshold and grace, rather than either component in
+ * isolation, so configuration cannot accidentally create an unbounded wait. */
+export const GENERATED_VISUAL_PROVIDER_MAX_TOTAL_WAIT_MS = 31 * 60_000;
 
 const SDK_IMPORT = GENERATED_VISUAL_CAPABILITY_MANIFEST.sourceForm.importModule;
 const IMPORT_ALLOWLIST = new Set([SDK_IMPORT, "react"]);
@@ -286,6 +298,32 @@ export interface GeneratedVisualBrowserAttemptDiagnostics {
   browserExitedNaturally?: boolean;
   cleanupMethod?: GeneratedVisualObservedBrowserResult["cleanupMethod"];
   cleanupConfirmed?: boolean;
+}
+
+export interface GeneratedVisualCouncilReceiptObservation {
+  phase: "author" | "critic";
+  semanticAttempt: number;
+  criticAttempt?: number;
+  requestedModel: string;
+  resolvedModel: string;
+  requestId: string;
+  requestHash: string;
+  councilRunId: string;
+  recovered: boolean;
+  /** Whether this process invoked chat.completions.create for the result. */
+  dispatched: boolean;
+  dispatchCount: number;
+  /** True when this process received and validated the HTTP completion body,
+   * so the attached Learn tracker already recorded its usage. */
+  httpCompletionObserved: boolean;
+  usage: GeneratedVisualCouncilReceiptResult["usage"];
+}
+
+interface GeneratedVisualCouncilRecoveryBoundary {
+  durableRecoveryDir: string;
+  invocationKey: string;
+  metadata: GeneratedVisualCouncilRecoveryMetadata;
+  onReceipt?: (receipt: GeneratedVisualCouncilReceiptResult) => void;
 }
 
 export interface GeneratedVisualPreviewCaptureAttempt
@@ -5537,6 +5575,7 @@ async function requestGeneratedVisualizationCandidateRaw(input: {
   repairHistory?: GeneratedVisualRepairHistoryEntry[];
   previews?: GeneratedVisualPreviewArtifact[];
   errors?: string[];
+  councilRecovery?: GeneratedVisualCouncilRecoveryBoundary;
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<{
@@ -5735,52 +5774,64 @@ export default defineVisualization({
     },
     repairContext,
   };
-  const response = await input.client.chat.completions.create(
-    withCouncil(
-      {
-        model: input.model,
-        messages: [
-          { role: "system", content: system },
-          {
-            role: "user",
-            content: availablePreviews.length
-              ? [
-                  { type: "text", text: JSON.stringify(authorEvidence) },
-                  ...generatedVisualPreviewImageParts(availablePreviews),
-                ]
-              : JSON.stringify(authorEvidence),
-          },
-        ],
-        max_completion_tokens: Math.max(
-          1_000,
-          Math.min(
-            12_000,
-            Number(
-              process.env.LEARN_GENERATED_VISUAL_MAX_OUTPUT_TOKENS ?? 6_000,
-            ) || 6_000,
-          ),
-        ),
-        response_format: {
-          type: "json_schema",
-          json_schema: generatedCandidateSchema(),
-        },
-      },
-      {
-        taskType: "visualization_generation",
-        gardenId: input.opportunity.gardenId,
-        pageId: input.opportunity.targetPage,
-        sourceContext: input.sourceContext,
-        councilModeOverride: "direct_council",
-      },
-    ),
+  const request = withCouncil(
     {
-      signal: input.signal,
-      // The caller owns a soft deadline plus a bounded late-result grace. An
-      // SDK timeout here would sever the only handle to a council run that
-      // continues after the client connection closes.
-      maxRetries: 0,
+      model: input.model,
+      messages: [
+        { role: "system" as const, content: system },
+        {
+          role: "user" as const,
+          content: availablePreviews.length
+            ? [
+                { type: "text" as const, text: JSON.stringify(authorEvidence) },
+                ...generatedVisualPreviewImageParts(availablePreviews),
+              ]
+            : JSON.stringify(authorEvidence),
+        },
+      ],
+      reasoning: GENERATED_VISUAL_COUNCIL_REASONING,
+      max_completion_tokens: Math.max(
+        1_000,
+        Math.min(
+          12_000,
+          Number(
+            process.env.LEARN_GENERATED_VISUAL_MAX_OUTPUT_TOKENS ?? 6_000,
+          ) || 6_000,
+        ),
+      ),
+      response_format: {
+        type: "json_schema" as const,
+        json_schema: generatedCandidateSchema(),
+      },
+    },
+    {
+      taskType: "visualization_generation",
+      gardenId: input.opportunity.gardenId,
+      pageId: input.opportunity.targetPage,
+      sourceContext: input.sourceContext,
+      councilModeOverride: "direct_council",
     },
   );
+  if (input.councilRecovery) {
+    const recovered = await runGeneratedVisualCouncilRequestWithReceipt({
+      client: input.client as unknown as RunGeneratedVisualCouncilRequestInput["client"],
+      durableRecoveryDir: input.councilRecovery.durableRecoveryDir,
+      invocationKey: input.councilRecovery.invocationKey,
+      recoveryMetadata: input.councilRecovery.metadata,
+      request,
+      allowImageUrlParts: availablePreviews.length > 0,
+      signal: input.signal,
+    });
+    input.councilRecovery.onReceipt?.(recovered);
+    return { content: recovered.content, tokenUsage: recovered.tokenUsage };
+  }
+  const response = await input.client.chat.completions.create(request, {
+    signal: input.signal,
+    // The caller owns a soft deadline plus a bounded late-result grace. An
+    // SDK timeout here would sever the only handle to a council run that
+    // continues after the client connection closes.
+      maxRetries: 0,
+  });
   const content = response.choices[0]?.message?.content ?? "";
   const tokenUsage = generatedVisualTokenUsage(response.usage);
   return {
@@ -5833,6 +5884,7 @@ export async function generateVisualizationCandidate(input: {
   repairHistory?: GeneratedVisualRepairHistoryEntry[];
   previews?: GeneratedVisualPreviewArtifact[];
   errors?: string[];
+  councilRecovery?: GeneratedVisualCouncilRecoveryBoundary;
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<GeneratedVisualizationCandidate> {
@@ -6197,6 +6249,7 @@ async function requestGeneratedVisualizationCriticRaw(input: {
   /** Why the previous critic reply was unusable, quoted back so a retry
    * corrects the shape instead of repeating the identical prompt. */
   priorCriticFailure?: string;
+  councilRecovery?: GeneratedVisualCouncilRecoveryBoundary;
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<{
@@ -6274,13 +6327,12 @@ async function requestGeneratedVisualizationCriticRaw(input: {
         }
       : undefined,
   };
-  const response = await input.client.chat.completions.create(
-    withCouncil(
+  const request = withCouncil(
       {
         model: input.model,
         messages: [
           {
-            role: "system",
+            role: "system" as const,
             // Council-routed requests drop `response_format`, so the required
             // shape is spelled out here as well as in the schema below.
             content:
@@ -6296,10 +6348,10 @@ async function requestGeneratedVisualizationCriticRaw(input: {
               "The immutableContract controls and outputs are planner-owned and cannot be changed in this candidate loop. The trusted runtime renders every exact immutable control before numeric outputs and observable scenes, and passed runtimeEvidence verifies DOM order and rendered mobile visibility; a candidate cannot author control placement. Do not request a duplicate selector, scene-embedded control, CSS, or runtime ordering change. Reject only with requestedChanges that a complete replacement candidate can make through its six authored fields and sourceCode using the supplied capabilityManifest. Requested changes must be sourceCode/SDK-feasible: never request a contract, planner, lesson, route, renderer, runtime, CSS, or unavailable SDK mutation. Use each labelled rendered preview only as evidence for its stated viewport and select state; do not claim a mobile or alternate-state defect from a different or unshown preview. When previewCoverage.selectStateCoverageTruncated is true, it is bounded representative evidence rather than proof of complete or unshown select-state coverage. Approve only if interaction improves understanding, belongs in this subsection, uses meaningful controls, has a useful default state, introduces every variable, preserves source claims and units, matches primitive topology and domain, avoids duplication and unnecessary complexity, and is accessible.",
           },
           {
-            role: "user",
+            role: "user" as const,
             content: availablePreviews.length
               ? [
-                  { type: "text", text: JSON.stringify(evidence) },
+                  { type: "text" as const, text: JSON.stringify(evidence) },
                   ...generatedVisualPreviewImageParts(availablePreviews),
                 ]
               : JSON.stringify(evidence),
@@ -6316,8 +6368,9 @@ async function requestGeneratedVisualizationCriticRaw(input: {
               ]
             : []),
         ],
+        reasoning: GENERATED_VISUAL_COUNCIL_REASONING,
         response_format: {
-          type: "json_schema",
+          type: "json_schema" as const,
           json_schema: {
             name: "breadboard_generated_visual_critic",
             strict: true,
@@ -6370,14 +6423,26 @@ async function requestGeneratedVisualizationCriticRaw(input: {
         sourceContext: input.opportunity,
         councilModeOverride: "direct_council",
       },
-    ),
-    {
-      signal: input.signal,
-      // Keep the original response promise recoverable past the soft deadline;
-      // the outer boundary still aborts it after a finite grace period.
-      maxRetries: 0,
-    },
   );
+  if (input.councilRecovery) {
+    const recovered = await runGeneratedVisualCouncilRequestWithReceipt({
+      client: input.client as unknown as RunGeneratedVisualCouncilRequestInput["client"],
+      durableRecoveryDir: input.councilRecovery.durableRecoveryDir,
+      invocationKey: input.councilRecovery.invocationKey,
+      recoveryMetadata: input.councilRecovery.metadata,
+      request,
+      allowImageUrlParts: availablePreviews.length > 0,
+      signal: input.signal,
+    });
+    input.councilRecovery.onReceipt?.(recovered);
+    return { content: recovered.content, tokenUsage: recovered.tokenUsage };
+  }
+  const response = await input.client.chat.completions.create(request, {
+    signal: input.signal,
+    // Keep the original response promise recoverable past the soft deadline;
+    // the outer boundary still aborts it after a finite grace period.
+      maxRetries: 0,
+  });
   const content = response.choices[0]?.message?.content ?? "";
   const tokenUsage = generatedVisualTokenUsage(response.usage);
   return {
@@ -6594,6 +6659,29 @@ function notifyGeneratedVisualTimeoutObserver<T>(
   }
 }
 
+function boundedGeneratedVisualProviderWait(input: {
+  timeoutMs: number;
+  lateResultGraceMs: number;
+}): { timeoutMs: number; lateResultGraceMs: number } {
+  const requestedTimeoutMs = Number.isFinite(input.timeoutMs)
+    ? Math.max(1, Math.floor(input.timeoutMs))
+    : GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS;
+  const requestedLateResultGraceMs = Number.isFinite(input.lateResultGraceMs)
+    ? Math.max(0, Math.floor(input.lateResultGraceMs))
+    : GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS;
+  const timeoutMs = Math.min(
+    requestedTimeoutMs,
+    GENERATED_VISUAL_PROVIDER_MAX_TOTAL_WAIT_MS,
+  );
+  return {
+    timeoutMs,
+    lateResultGraceMs: Math.min(
+      requestedLateResultGraceMs,
+      GENERATED_VISUAL_PROVIDER_MAX_TOTAL_WAIT_MS - timeoutMs,
+    ),
+  };
+}
+
 async function withGeneratedVisualTimeout<T>(input: {
   timeoutMs: number;
   lateResultGraceMs: number;
@@ -6695,12 +6783,16 @@ export async function retryGeneratedVisualProviderRequest<T>(input: {
   input.checkCancelled?.();
   if (input.externalSignal?.aborted)
     throw generatedVisualAbortReason(input.externalSignal);
+  const wait = boundedGeneratedVisualProviderWait({
+    timeoutMs: input.timeoutMs,
+    lateResultGraceMs: input.lateResultGraceMs ?? input.timeoutMs,
+  });
   // The timeout boundary adopts the original late result when possible and
   // otherwise throws its exact terminal object. Never wrap a provider throw:
   // callers need object identity for durable ambiguity and cancellation audit.
   return withGeneratedVisualTimeout({
-    timeoutMs: input.timeoutMs,
-    lateResultGraceMs: input.lateResultGraceMs ?? input.timeoutMs,
+    timeoutMs: wait.timeoutMs,
+    lateResultGraceMs: wait.lateResultGraceMs,
     externalSignal: input.externalSignal,
     work: (signal) => input.work(signal, transportAttempt),
     onLateResultWait: input.onLateResultWait,
@@ -6806,6 +6898,12 @@ export type CreateGeneratedVisualizationInput = {
   client: OpenAI;
   model: string;
   gardenDir: string;
+  /** Stable per-garden runtime root used only for strict Council request
+   * bindings. It must live outside published and staging garden trees. */
+  durableRecoveryDir?: string;
+  /** Stable owner for a resumable generation job. Deliberate new jobs use a
+   * new owner, while an exact still-ambiguous request can be adopted by hash. */
+  recoveryOwnerId?: string;
   opportunity: VisualizationOpportunity;
   pageMarkdown: string;
   sourceContext?: unknown;
@@ -6827,6 +6925,10 @@ export type CreateGeneratedVisualizationInput = {
   /** Called synchronously at the rejection boundary for every semantic
    * attempt, including provider failures that produced no candidate. */
   onRejectedAttempt?: GeneratedVisualRejectedAttemptSink;
+  /** Receives bounded receipt/model/usage proof without prompts or images. */
+  onCouncilReceipt?: (
+    observation: GeneratedVisualCouncilReceiptObservation,
+  ) => void;
   abortSignal?: AbortSignal;
   checkCancelled?: () => void;
 };
@@ -6911,6 +7013,65 @@ async function createGeneratedVisualizationWithSlot(
   const runId = `${nowIso()
     .replace(/[^0-9]/g, "")
     .slice(0, 17)}-${process.pid}`;
+  const recoveryOwnerId = (input.recoveryOwnerId ?? runId).trim();
+  if (
+    input.durableRecoveryDir &&
+    (!recoveryOwnerId || recoveryOwnerId.length > 200)
+  ) {
+    throw new Error("Generated-visual durable recovery owner is invalid.");
+  }
+  const recoveryOwnerHash = crypto
+    .createHash("sha256")
+    .update(
+      `${input.opportunity.gardenId}\0${recoveryOwnerId}`,
+      "utf8",
+    )
+    .digest("hex");
+  const councilRecoveryFor = (
+    phase: "author" | "critic",
+    semanticAttempt: number,
+    criticAttempt?: number,
+  ): GeneratedVisualCouncilRecoveryBoundary | undefined => {
+    if (!input.durableRecoveryDir) return undefined;
+    const invocationKey = [
+      "generated-visual-v1",
+      recoveryOwnerHash,
+      id,
+      `version-${version}`,
+      phase,
+      `semantic-${semanticAttempt}`,
+      ...(criticAttempt === undefined ? [] : [`critic-${criticAttempt}`]),
+    ].join("/");
+    return {
+      durableRecoveryDir: input.durableRecoveryDir,
+      invocationKey,
+      metadata: {
+        gardenId: input.opportunity.gardenId,
+        visualizationId: id,
+        recoveryOwnerId,
+        phase,
+        semanticAttempt,
+        ...(criticAttempt === undefined ? {} : { criticAttempt }),
+        version,
+      },
+      onReceipt: (receipt) =>
+        input.onCouncilReceipt?.({
+          phase,
+          semanticAttempt,
+          ...(criticAttempt === undefined ? {} : { criticAttempt }),
+          requestedModel: receipt.requestedModel,
+          resolvedModel: receipt.resolvedModel,
+          requestId: receipt.requestId,
+          requestHash: receipt.requestHash,
+          councilRunId: receipt.councilRunId,
+          recovered: receipt.recovered,
+          dispatched: receipt.dispatched,
+          dispatchCount: receipt.dispatchCount,
+          httpCompletionObserved: receipt.httpCompletionObserved,
+          usage: receipt.usage,
+        }),
+    };
+  };
   const maxAttempts = Math.max(
     1,
     Math.min(
@@ -6933,28 +7094,29 @@ async function createGeneratedVisualizationWithSlot(
       process.env.LEARN_GENERATED_VISUAL_TIMEOUT_MS ??
         GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS,
     ) || GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS);
-  const requestTimeoutMs = Math.max(
+  const requestedTimeoutMs = Math.max(
     // Explicit values are a deterministic test/integration seam. Environment
     // configuration retains the production floor that prevents accidental
     // sub-five-second model deadlines.
     input.timeoutMs === undefined ? 5_000 : 1,
-    Math.min(
-      300_000,
-      configuredRequestTimeoutMs,
-    ),
+    Math.floor(configuredRequestTimeoutMs),
   );
   const configuredLateResultGraceMs =
     input.lateResultGraceMs ??
     Number(process.env.LEARN_GENERATED_VISUAL_LATE_RESULT_GRACE_MS);
-  const lateResultGraceMs = Math.max(
+  const requestedLateResultGraceMs = Math.max(
     1,
-    Math.min(
-      300_000,
-      Number.isFinite(configuredLateResultGraceMs)
-        ? Math.floor(configuredLateResultGraceMs)
-        : GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS,
-    ),
+    Number.isFinite(configuredLateResultGraceMs)
+      ? Math.floor(configuredLateResultGraceMs)
+      : GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS,
   );
+  const {
+    timeoutMs: requestTimeoutMs,
+    lateResultGraceMs,
+  } = boundedGeneratedVisualProviderWait({
+    timeoutMs: requestedTimeoutMs,
+    lateResultGraceMs: requestedLateResultGraceMs,
+  });
   let currentRepairAttempt = 0;
   const recordRepairFailure = (entry: Omit<
     GeneratedVisualRepairHistoryEntry,
@@ -7044,6 +7206,7 @@ async function createGeneratedVisualizationWithSlot(
               kind: "raw" as const,
               raw: await requestGeneratedVisualizationCandidateRaw({
                 ...candidateRequest,
+                councilRecovery: councilRecoveryFor("author", attempt),
                 signal,
               }),
             },
@@ -7343,9 +7506,11 @@ async function createGeneratedVisualizationWithSlot(
           ),
         );
     const criticStartedAt = Date.now();
-    const criticModel = String(
-      process.env.LEARN_GENERATED_VISUAL_CRITIC_MODEL ?? input.model,
-    );
+    // Author and critic belong to one generated-visual operation and one
+    // immutable Learn model policy. A hidden process-wide critic override can
+    // otherwise violate the selected model after the author request has
+    // already been issued and make exact receipt accounting irreconcilable.
+    const criticModel = input.model;
     let priorCriticFailure: string | undefined;
     for (
       let criticAttempt = 1;
@@ -7390,6 +7555,11 @@ async function createGeneratedVisualizationWithSlot(
                 kind: "raw" as const,
                 raw: await requestGeneratedVisualizationCriticRaw({
                   ...criticRequest,
+                  councilRecovery: councilRecoveryFor(
+                    "critic",
+                    attempt,
+                    criticAttempt,
+                  ),
                   signal,
                 }),
               },

@@ -99,7 +99,7 @@ test("model call labels are plain text without a badge or status dot", () => {
   );
   assert.match(
     workspaceSource,
-    /metric\.label === "Total" && learnPanelModel[\s\S]*?<dt className="text-gray-600">Model:<\/dt>[\s\S]*?<dd[\s\S]*?className="font-mono tabular-nums text-gray-200"/,
+    /\{learnPanelModel \? \([\s\S]*?<span className="text-gray-600">Model:<\/span>[\s\S]*?<span[\s\S]*?className="font-mono tabular-nums text-gray-200"/,
   );
   // In flight, the chip names the model actually placing the calls. Idle, it
   // names the model the next run will use, so changing the Intelligence picker

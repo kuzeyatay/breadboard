@@ -13,6 +13,8 @@
     "typecheck:knowledge": "tsc -p tsconfig.brain-map.json",
     "typecheck:brain": "npm run typecheck:knowledge",
     "smoke:knowledge": "node scripts/brain-map-smoke.mjs",
+    "smoke:genoffice-ai": "node scripts/genoffice-ai-smoke.mjs",
+    "smoke:genoffice-ai-api": "node scripts/genoffice-ai-api-smoke.mjs",
     "smoke:brain": "npm run smoke:knowledge",
     "start": "next start",
     "lint": "eslint",

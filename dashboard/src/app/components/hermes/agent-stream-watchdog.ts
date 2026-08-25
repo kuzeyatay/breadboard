@@ -140,3 +140,34 @@ export async function withAgentStreamTimeout<T>(
     if (timer) clearTimeout(timer);
   }
 }
+
+type AgentStreamReader = Pick<
+  ReadableStreamDefaultReader<Uint8Array>,
+  "cancel" | "releaseLock"
+>;
+
+/**
+ * Give a renderer-owned response stream back to the browser on every exit.
+ *
+ * Aborting the fetch is necessary when a view goes away, but it is not the
+ * whole ownership boundary: a normal terminal event returns from the consumer
+ * without aborting. Explicit cancellation closes that response body promptly,
+ * and releasing the lock lets the stream and its queued chunks be collected.
+ * Cleanup is best-effort because an already errored/aborted stream may reject
+ * either operation; one failed step must not prevent the other.
+ */
+export async function disposeAgentStreamReader(
+  reader: AgentStreamReader | null | undefined,
+): Promise<void> {
+  if (!reader) return;
+  try {
+    await reader.cancel();
+  } catch {
+    // The transport may already be aborted or errored.
+  }
+  try {
+    reader.releaseLock();
+  } catch {
+    // A browser may have released the lock while aborting the response.
+  }
+}

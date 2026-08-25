@@ -23,6 +23,8 @@ extraResources:
     to: app-services
   - from: build-resources/runtimes
     to: runtimes
+  - from: build-resources/runtime-v2
+    to: runtime-v2
   - from: build-resources/bun-cache
     to: bun-cache
   - from: build-resources/licenses

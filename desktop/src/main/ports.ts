@@ -69,6 +69,29 @@ export async function allocatePort(preferred: number, taken: Set<number>): Promi
 }
 
 /**
+ * Allocate a port for a process tree this supervisor must own.
+ *
+ * A positively identified existing instance is not safe to adopt when memory
+ * enforcement and shutdown require a child PID/job handle. Fail explicitly
+ * instead of either duplicating that large service or pretending an
+ * uncontained process is supervised. Unrelated occupants still relocate.
+ */
+export async function allocateSupervisedPort(
+  serviceId: string,
+  preferred: number,
+  taken: Set<number>,
+  identify: (port: number) => Promise<boolean>,
+): Promise<number> {
+  const result = await allocatePortOrAdopt(preferred, taken, identify);
+  if (!result.adopt) return result.port;
+  taken.delete(preferred);
+  throw new Error(
+    `${serviceId} is already running on 127.0.0.1:${preferred} outside this supervisor. ` +
+      "Stop that process before starting Breadboard so its memory can be measured and bounded.",
+  );
+}
+
+/**
  * Allocate a port, or keep the preferred one because the service is already
  * running on it.
  *

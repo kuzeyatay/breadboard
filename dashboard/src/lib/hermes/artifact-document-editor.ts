@@ -4,6 +4,7 @@ import path from "node:path";
 import { PDFParse } from "pdf-parse";
 import type Database from "better-sqlite3";
 import { editDocument } from "../genoffice/agent-query.ts";
+import { prepareOfficeExport } from "../office/agent-query.ts";
 import { OfficeCliError, runOfficeCli } from "../office/officecli.ts";
 import {
   artifactDeliveryFile,
@@ -175,53 +176,6 @@ async function inspectSpreadsheetFile(
   return { blocks, truncated: total > blocks.length };
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-async function writeNativePreview(
-  workspace: string,
-  filePath: string,
-): Promise<string> {
-  const extension = path.extname(filePath).toLowerCase();
-  let sections = "";
-  if (extension === ".xlsx") {
-    const inspected = await inspectSpreadsheetFile(filePath, workspace);
-    const sheets = new Map<string, ArtifactEditorBlock[]>();
-    for (const block of inspected.blocks) {
-      const key = block.sheet ?? "Sheet";
-      sheets.set(key, [...(sheets.get(key) ?? []), block]);
-    }
-    sections = [...sheets.entries()].map(([sheet, cells]) => `
-      <section><h2>${escapeHtml(sheet)}</h2><table><thead><tr><th>Cell</th><th>Value</th></tr></thead><tbody>
-      ${cells.map((cell) => `<tr><th>${escapeHtml(cell.cell ?? cell.anchor)}</th><td>${escapeHtml(cell.text)}</td></tr>`).join("")}
-      </tbody></table></section>`).join("");
-  } else {
-    const inspected = await editDocument(workspace, { file: path.relative(workspace, filePath) });
-    if (inspected.operation !== "inspect") {
-      throw new ArtifactStoreError(500, "artifact_editor_preview_failed", "The edited document could not be previewed.");
-    }
-    if (inspected.format === "pptx") {
-      const slides = new Map<number, typeof inspected.blocks>();
-      for (const block of inspected.blocks) {
-        const slide = block.slide ?? 1;
-        slides.set(slide, [...(slides.get(slide) ?? []), block]);
-      }
-      sections = [...slides.entries()].map(([slide, blocks]) => `
-        <section class="slide"><h2>Slide ${slide}</h2>${blocks.map((block) => `<p>${escapeHtml(block.text)}</p>`).join("")}</section>`).join("");
-    } else {
-      sections = `<article>${inspected.blocks.map((block) => `<p>${escapeHtml(block.text)}</p>`).join("")}</article>`;
-    }
-  }
-  const preview = path.join(workspace, "editor-preview.html");
-  fs.writeFileSync(preview, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{margin:0;padding:32px;background:#f3f4f6;color:#1f2937;font:16px/1.55 system-ui,sans-serif}article,section{max-width:900px;margin:0 auto 24px;padding:32px;background:white;box-shadow:0 8px 28px #0002}p{white-space:pre-wrap}table{width:100%;border-collapse:collapse}th,td{border:1px solid #d1d5db;padding:8px;text-align:left;vertical-align:top}.slide{aspect-ratio:16/9;overflow:auto}</style></head><body>${sections}</body></html>`, "utf8");
-  return preview;
-}
-
 export async function loadArtifactEditor(
   artifact: ArtifactRow,
   options: ArtifactEditorStoreOptions = {},
@@ -332,12 +286,18 @@ async function importEditedOffice(
       "The native document editor did not write its output file.",
     );
   }
-  const previewFilePath = await writeNativePreview(workspace, filePath);
+  // Reuse the same Office renderer that produced the original artifact
+  // preview. Reconstructing a preview from extracted paragraphs discards the
+  // document's styles, tables, page geometry, images, headers, and footers.
+  const stagedPreview = await prepareOfficeExport(workspace, {
+    file: path.relative(workspace, filePath),
+    title: artifact.title,
+  });
   return importArtifactVersion({
     artifact,
     authorizedRoot: workspace,
     filePath,
-    previewFilePath,
+    previewFilePath: stagedPreview.previewFilePath,
     runId: artifact.originating_run_id,
     assistantMessageId: null,
     metadata: {

@@ -12,7 +12,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-type State = "disabled" | "unavailable" | "degraded" | "healthy";
+type State =
+  | "disabled"
+  | "available-but-stopped"
+  | "unavailable"
+  | "degraded"
+  | "healthy";
 
 interface StatusResponse {
   state?: State;
@@ -68,7 +73,11 @@ export function useGBrainStatus(gardenSlug?: string): GBrainStatusView {
     return () => clearInterval(t);
   }, [refresh]);
 
-  if (!status || status.state === "disabled") {
+  if (
+    !status ||
+    status.state === "disabled" ||
+    status.state === "available-but-stopped"
+  ) {
     return { state: status?.state ?? null, key: null, refresh };
   }
 

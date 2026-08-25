@@ -571,6 +571,21 @@ test("the settings status agrees with what the loader can actually load", async 
   }
 });
 
+test("Turbopack leaves the linked mem0 engine as a Node runtime dependency", () => {
+  const nextConfig = fs.readFileSync(new URL("../next.config.ts", import.meta.url), "utf8");
+  const bridge = fs.readFileSync(
+    new URL("../src/lib/mem0/mem0ai-oss-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    nextConfig,
+    /['"]mem0ai\/oss['"]:\s*['"]\.\/src\/lib\/mem0\/mem0ai-oss-runtime\.ts['"]/,
+  );
+  assert.match(bridge, /const importRuntimeExternal = Function\(/);
+  assert.match(bridge, /importRuntimeExternal\("mem0ai\/oss"\)/);
+  assert.doesNotMatch(bridge, /await import\("mem0ai\/oss"\)/);
+});
+
 test("the settings status explains why recall is degraded", async () => {
   const status = await import("../src/lib/mem0/status.ts");
   const off = await status.semanticMemoryStatus(1, db, { BREADBOARD_EMBEDDINGS: "off" });

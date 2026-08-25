@@ -2462,6 +2462,16 @@ describe("rollback snapshot lifetime and lease-loss ownership", () => {
   });
 
   test("lease loss leaves snapshots for the new owner and skips outer rebuild rollback", () => {
+    const confirmationSource = sourceOf(
+      namedFunction("confirmLearnLeaseForFailureCleanup"),
+    );
+    assert.match(confirmationSource, /lease\.lost/);
+    assert.match(confirmationSource, /leaseLostLearnJobs\.has\(jobId\)/);
+    assert.match(confirmationSource, /lease\.confirmOwnership\(\)/);
+    assert.match(confirmationSource, /ownership === "owned"/);
+    assert.match(confirmationSource, /ownership === "lost"/);
+    assert.match(confirmationSource, /Atomics\.wait/);
+
     for (const [functionName, ownershipHelper] of [
       ["runLearnPlanning", "stillOwnPlanningLease"],
       ["runTextbookGeneration", "stillOwnGenerationLease"],
@@ -2470,7 +2480,7 @@ describe("rollback snapshot lifetime and lease-loss ownership", () => {
       const functionSource = sourceOf(namedFunction(functionName));
       assert.match(
         functionSource,
-        new RegExp(`const ${ownershipHelper} = \\(\\): boolean => \\{[\\s\\S]*?lease\\.lost[\\s\\S]*?leaseLostLearnJobs\\.has\\(job\\.id\\)[\\s\\S]*?lease\\.heartbeat\\(\\)`),
+        new RegExp(`const ${ownershipHelper} = \\(\\): boolean => \\{[\\s\\S]*?confirmLearnLeaseForFailureCleanup\\(lease, job\\.id\\)`),
         `${functionName} must freshly and safely verify lease ownership before rollback`,
       );
       assert.match(
@@ -2488,16 +2498,20 @@ describe("rollback snapshot lifetime and lease-loss ownership", () => {
 
     const rebuildSource = sourceOf(namedFunction("rebuildEntireGarden"));
     const ownershipIndex = rebuildSource.indexOf("const stillOwnRebuildLease");
-    const leaseLossIndex = rebuildSource.indexOf("rebuildLease.lost", ownershipIndex);
-    const heartbeatIndex = rebuildSource.indexOf("rebuildLease.heartbeat()", leaseLossIndex);
-    const ownershipGuardIndex = rebuildSource.indexOf("!stillOwnRebuildLease()", heartbeatIndex);
+    const confirmationIndex = rebuildSource.indexOf(
+      "confirmLearnLeaseForFailureCleanup(rebuildLease, planningJobId)",
+      ownershipIndex,
+    );
+    const ownershipGuardIndex = rebuildSource.indexOf(
+      "!stillOwnRebuildLease()",
+      confirmationIndex,
+    );
     const throwIndex = rebuildSource.indexOf("throw error", ownershipGuardIndex);
     const rollbackIndex = rebuildSource.indexOf("await rollbackLearnRun", throwIndex);
     assert.ok(
       ownershipIndex >= 0 &&
-        leaseLossIndex > ownershipIndex &&
-        heartbeatIndex > leaseLossIndex &&
-        ownershipGuardIndex > heartbeatIndex &&
+        confirmationIndex > ownershipIndex &&
+        ownershipGuardIndex > confirmationIndex &&
         throwIndex > ownershipGuardIndex &&
         rollbackIndex > throwIndex,
     );

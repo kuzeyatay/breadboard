@@ -4,7 +4,7 @@ import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
 import { artifactFile, getArtifactForUser, ArtifactStoreError } from "@/lib/hermes/artifact-store.ts";
 import { presentArtifact } from "@/lib/hermes/artifact-store.ts";
-import { saveArtifactPdfBytes } from "@/lib/hermes/artifact-document-editor.ts";
+import { saveArtifactPdfBytes } from "@/lib/hermes/artifact-pdf-save.ts";
 import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 
 export const dynamic = "force-dynamic";

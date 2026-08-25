@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import path from "node:path";
 
 import {
   convertPdfToDocx,
@@ -24,7 +25,13 @@ export interface PdfToDocxResult {
 
 /** Resolved through package exports so it works in development and a traced standalone app. */
 export function resolvePdfiumWasmPath(): string {
-  return require.resolve("@embedpdf/pdfium/pdfium.wasm");
+  // Resolving the non-JavaScript export directly makes Turbopack treat the
+  // WASM binary as a module even though the package is server-external. It then
+  // follows PDFium's generated imports (`env` and `wasi_snapshot_preview1`)
+  // instead of leaving initialization to the package at runtime. Resolve the
+  // external package's executable entry and use the adjacent shipped asset;
+  // standalone tracing includes the complete package directory.
+  return path.join(path.dirname(require.resolve("@embedpdf/pdfium")), "pdfium.wasm");
 }
 
 async function loadPdfium(): Promise<PdfiumModule> {

@@ -32,6 +32,13 @@ export const RUN_STREAM_TERMINAL_EVENTS = new Set([
 
 export type AgentRunStreamFailure = "run_not_found" | "stream_unavailable";
 
+// `EventSource` can dispatch another error while the first terminal-state
+// probe is still in flight. One probe per source prevents duplicate history
+// downloads and, more importantly, duplicate replay of the terminal event.
+// The WeakSet itself adds no persistent strong owner after the request chain
+// releases its normal callback closure.
+const activeErrorProbes = new WeakSet<EventSource>();
+
 /**
  * Called from an `EventSource`'s `onerror`. `replayEnding` receives the run's
  * terminal event when the probe finds one the card missed — only that event,
@@ -49,6 +56,8 @@ export function resolveAgentRunStreamError({
   replayEnding?: (event: AgentRunStreamEvent) => void;
   onUnavailable: (reason: AgentRunStreamFailure) => void;
 }): void {
+  if (activeErrorProbes.has(source)) return;
+  activeErrorProbes.add(source);
   void fetch(`${base}/events?since=0`)
     .then(async (response) => {
       const data = (await response.json().catch(() => ({}))) as {
@@ -75,5 +84,6 @@ export function resolveAgentRunStreamError({
       for (const event of ending) replayEnding?.(event);
       source.close();
     })
-    .catch(() => undefined);
+    .catch(() => undefined)
+    .finally(() => activeErrorProbes.delete(source));
 }

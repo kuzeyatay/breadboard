@@ -26,6 +26,7 @@ test("dev mode resolves everything inside the repository", () => {
   assert.equal(paths.mode, "dev");
   assert.equal(paths.qaMode, false);
   assert.equal(paths.appRoot, fakeRepo);
+  assert.equal(paths.runtimeRoot, path.join(fakeRepo, "desktop", "build-resources"));
   assert.equal(paths.databaseDir, path.join(fakeRepo, "dashboard", "db"));
   assert.equal(paths.quartzContent, path.join(fakeRepo, "quartz", "content"));
   assert.equal(paths.dashboardServerDir, path.join(fakeRepo, "dashboard"));
@@ -46,6 +47,7 @@ test("QA dev mode uses repo programs and isolates every mutable path", () => {
   assert.equal(paths.mode, "dev");
   assert.equal(paths.qaMode, true);
   assert.equal(paths.appRoot, fakeRepo);
+  assert.equal(paths.runtimeRoot, path.join(fakeRepo, "desktop", "build-resources"));
   assert.equal(
     paths.dashboardServerDir,
     path.join(userData, "Data", "dashboard-workspace"),
@@ -72,6 +74,7 @@ test("packaged mode separates resources from user data", () => {
   assert.equal(paths.mode, "packaged");
   assert.equal(paths.qaMode, false);
   assert.equal(paths.appRoot, path.join(resources, "app-services"));
+  assert.equal(paths.runtimeRoot, resources);
   assert.ok(isInside(userData, paths.databaseDir));
   assert.ok(isInside(userData, paths.quartzContent));
   assert.ok(isInside(userData, paths.logsDir));

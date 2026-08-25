@@ -56,6 +56,14 @@ function tmp(prefix) {
   return dir;
 }
 
+function stableGardenLearnLockPath(gardenDir) {
+  const garden = path.resolve(gardenDir);
+  return path.join(
+    path.dirname(garden),
+    `.${path.basename(garden)}.learn-build.lock.json`,
+  );
+}
+
 async function eventually(predicate, timeoutMs = 1500) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -612,7 +620,6 @@ test("2b. all-caps disposable paths stay excluded while canonical ledgers affect
   fs.writeFileSync(path.join(breadboard, "CRITIC-REPORT.MD"), "stale critic");
   fs.writeFileSync(path.join(breadboard, "EVENTS.JSONL"), "ignored event\n");
   fs.writeFileSync(path.join(breadboard, "LEARN-BUILD.LOCK.JSON"), "{}");
-
   assert.equal(fingerprintDurableGardenState(garden), before);
   fs.writeFileSync(path.join(breadboard, "SOURCE-ANCHORS.JSON"), "{}");
   const withSourceAnchors = fingerprintDurableGardenState(garden);
@@ -1077,6 +1084,77 @@ test("50b. an old fenced lease cannot release a stale takeover with the same job
   assert.equal(original.lease.release(), false);
   assert.equal(readGardenLearnLock(garden)?.buildId, "new-build");
   releaseGardenLearnLock(garden, "resumed-job");
+});
+
+test("50c. lease ownership confirmation reports an exact fenced owner", () => {
+  const garden = tmp("lock-confirm-owned");
+  const result = acquireGardenLearnLease(garden, {
+    gardenSlug: "g",
+    jobId: "confirmed-job",
+    buildId: "confirmed-build",
+  });
+  assert.equal(result.acquired, true);
+  if (!result.acquired) return;
+
+  assert.equal(result.lease.confirmOwnership(), "owned");
+  assert.equal(result.lease.lost, false);
+  assert.equal(result.lease.release(), true);
+});
+
+test("50d. guard contention and unreadable state remain uncertain, not lost", () => {
+  const garden = tmp("lock-confirm-uncertain");
+  const result = acquireGardenLearnLease(garden, {
+    gardenSlug: "g",
+    jobId: "uncertain-job",
+    buildId: "uncertain-build",
+  });
+  assert.equal(result.acquired, true);
+  if (!result.acquired) return;
+
+  const stableLock = stableGardenLearnLockPath(garden);
+  const mutationGuard = `${stableLock}.guard`;
+  fs.mkdirSync(mutationGuard);
+  try {
+    assert.equal(result.lease.confirmOwnership(), "uncertain");
+    assert.equal(result.lease.lost, false);
+  } finally {
+    fs.rmSync(mutationGuard, { recursive: true, force: true });
+  }
+
+  const expectedLock = result.lease.lock;
+  fs.writeFileSync(stableLock, "{temporarily incomplete", "utf8");
+  assert.equal(result.lease.confirmOwnership(), "uncertain");
+  assert.equal(result.lease.lost, false);
+
+  fs.writeFileSync(stableLock, `${JSON.stringify(expectedLock, null, 2)}\n`, "utf8");
+  assert.equal(result.lease.confirmOwnership(), "owned");
+  assert.equal(result.lease.release(), true);
+});
+
+test("50e. same-job replacement token is definitive fenced ownership loss", () => {
+  const garden = tmp("lock-confirm-token-loss");
+  const started = Date.now();
+  const original = acquireGardenLearnLease(
+    garden,
+    { gardenSlug: "g", jobId: "reused-job", buildId: "old-build" },
+    { now: () => started },
+  );
+  assert.equal(original.acquired, true);
+  if (!original.acquired) return;
+
+  const replacement = acquireGardenLearnLock(
+    garden,
+    { gardenSlug: "g", jobId: "reused-job", buildId: "new-build" },
+    started + LOCK_STALE_MS + 1,
+  );
+  assert.equal(replacement.acquired, true);
+  if (!replacement.acquired) return;
+  assert.notEqual(replacement.lock.leaseId, original.lease.lock.leaseId);
+
+  assert.equal(original.lease.confirmOwnership(), "lost");
+  assert.equal(original.lease.lost, true);
+  assert.equal(readGardenLearnLock(garden)?.leaseId, replacement.lock.leaseId);
+  releaseGardenLearnLock(garden, "reused-job");
 });
 
 // ---------------------------------------------------------------------------

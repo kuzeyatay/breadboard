@@ -29,9 +29,6 @@ import {
   consumeArtifactAiEdit,
   type ArtifactAiEditDetail,
 } from "./artifact-ai-edit";
-// The Terminal reads GBrain status but never words it: the header dot carries
-// it. GBrainStatusBadge itself stays a Garden Chat component.
-import { useGBrainStatus } from "./gbrain-status-badge";
 import {
   chatSessionIsActive,
   deleteChatSession,
@@ -281,6 +278,8 @@ type TerminalScope = "mine" | "public";
 
 interface Props {
   scope: TerminalScope;
+  /** Stable account identity used only to scope tab-local reload recovery. */
+  restoreOwnerKey: string;
   /** Opens a route-owned panel as soon as the terminal mounts. */
   initialPanel?: TerminalPanel | null;
   /**
@@ -301,6 +300,77 @@ interface RuntimeHistorySession {
 
 const HEIGHT_KEY = "breadboard:knowledge-terminal-height";
 const OPEN_STATE_KEY = "breadboard:knowledge-terminal-open";
+const ACTIVE_CHAT_KEY = "breadboard:terminal:active-chat";
+const ACTIVE_CHAT_SNAPSHOT_KEY = "breadboard:terminal:active-chat-snapshot";
+const ACTIVE_CHAT_SNAPSHOT_MAX_CHARS = 1_500_000;
+
+interface ActiveTerminalChatSnapshot {
+  ownerKey: string;
+  sessionId: string;
+  messages: AgentMessage[];
+}
+
+function readActiveTerminalChatId(ownerKey: string): string | null {
+  const stored = window.sessionStorage.getItem(ACTIVE_CHAT_KEY)?.trim();
+  if (!stored) return null;
+  try {
+    const parsed = JSON.parse(stored) as {
+      ownerKey?: unknown;
+      sessionId?: unknown;
+    };
+    return parsed.ownerKey === ownerKey &&
+      typeof parsed.sessionId === "string" &&
+      parsed.sessionId.startsWith("conv_")
+      ? parsed.sessionId
+      : null;
+  } catch {
+    // Unscoped ids from an earlier build cannot be safely attributed after an
+    // account switch, so they deliberately fall back to a fresh terminal.
+    return null;
+  }
+}
+
+function readActiveTerminalChatSnapshot(
+  ownerKey: string,
+  sessionId: string,
+): AgentMessage[] {
+  try {
+    const parsed = JSON.parse(
+      window.sessionStorage.getItem(ACTIVE_CHAT_SNAPSHOT_KEY) ?? "null",
+    ) as ActiveTerminalChatSnapshot | null;
+    return parsed?.ownerKey === ownerKey &&
+      parsed.sessionId === sessionId &&
+      Array.isArray(parsed.messages)
+      ? parsed.messages
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeActiveTerminalChatSnapshot(
+  ownerKey: string,
+  sessionId: string,
+  messages: AgentMessage[],
+): void {
+  // This is a paint-through cache, not another source of truth. Bound it to
+  // the recent transcript so a tool-heavy chat cannot exhaust sessionStorage;
+  // the authoritative server read replaces it immediately after a reload.
+  let recent = messages.slice(-40);
+  while (recent.length > 0) {
+    const encoded = JSON.stringify({ ownerKey, sessionId, messages: recent });
+    if (encoded.length <= ACTIVE_CHAT_SNAPSHOT_MAX_CHARS) {
+      try {
+        window.sessionStorage.setItem(ACTIVE_CHAT_SNAPSHOT_KEY, encoded);
+      } catch {
+        window.sessionStorage.removeItem(ACTIVE_CHAT_SNAPSHOT_KEY);
+      }
+      return;
+    }
+    recent = recent.slice(Math.max(1, Math.floor(recent.length / 2)));
+  }
+  window.sessionStorage.removeItem(ACTIVE_CHAT_SNAPSHOT_KEY);
+}
 /**
  * Shown when a Recents refresh does not land. Named so the next successful
  * refresh can retract exactly this note and leave a real error — a delete that
@@ -409,8 +479,15 @@ type HealthState = {
   mode: "required" | "preferred" | "legacy";
 };
 
-async function loadRuntimeHealth(): Promise<HealthState> {
-  const response = await fetch("/api/hermes/health", { cache: "no-store" });
+async function loadRuntimeHealth({
+  reconnect = false,
+}: {
+  reconnect?: boolean;
+} = {}): Promise<HealthState> {
+  const response = await fetch("/api/hermes/health", {
+    method: reconnect ? "POST" : "GET",
+    cache: "no-store",
+  });
   if (!response.ok) {
     throw new Error(`Runtime health returned ${response.status}`);
   }
@@ -419,7 +496,9 @@ async function loadRuntimeHealth(): Promise<HealthState> {
     data?.dashboardMode === "preferred" || data?.dashboardMode === "legacy"
       ? data.dashboardMode
       : "required";
-  if (data?.enabled && data?.healthy) return { status: "runtime", mode };
+  if (data?.enabled && (data?.healthy || data?.available === true)) {
+    return { status: "runtime", mode };
+  }
   if (data?.enabled) return { status: "unavailable", mode };
   return { status: "disabled", mode };
 }
@@ -472,6 +551,7 @@ type VideoUseLaunchSource =
 
 export default function DashboardAgentTerminal({
   scope,
+  restoreOwnerKey,
   initialPanel = null,
   backdropImage = null,
 }: Props) {
@@ -488,6 +568,9 @@ export default function DashboardAgentTerminal({
     async function checkHealth() {
       let shouldRetry = false;
       try {
+        // Mount and background retries are observational. A stopped on-demand
+        // runtime remains available here; the retained user submission acquires
+        // the actual service lease in the server-side Hermes adapter.
         const nextHealth = await loadRuntimeHealth();
         if (cancelled) return;
         if (nextHealth.status === "unavailable") {
@@ -525,9 +608,12 @@ export default function DashboardAgentTerminal({
   }, []);
 
   const refreshRuntimeHealth = useCallback(async (): Promise<boolean> => {
-    setHealth((current) => ({ ...current, status: "checking" }));
     try {
-      const nextHealth = await loadRuntimeHealth();
+      // Keep the known red state visible while the button spins. Switching to
+      // the initial "checking" state used to remove the button immediately,
+      // shrink the brown bar, and make a failed retry look like no action at
+      // all. Commit green only after the active reconnect succeeds.
+      const nextHealth = await loadRuntimeHealth({ reconnect: true });
       setHealth(nextHealth);
       return nextHealth.status === "runtime";
     } catch {
@@ -543,6 +629,7 @@ export default function DashboardAgentTerminal({
     return (
       <RuntimeTerminal
         scope={scope}
+        restoreOwnerKey={restoreOwnerKey}
         initialPanel={initialPanel}
         backdropImage={backdropImage}
         runtimeUnavailable={health.status === "unavailable"}
@@ -557,6 +644,7 @@ export default function DashboardAgentTerminal({
     return (
       <RuntimeTerminal
         scope={scope}
+        restoreOwnerKey={restoreOwnerKey}
         initialPanel={initialPanel}
         backdropImage={backdropImage}
         onRefreshRuntime={refreshRuntimeHealth}
@@ -567,6 +655,7 @@ export default function DashboardAgentTerminal({
     return (
       <RuntimeTerminal
         scope={scope}
+        restoreOwnerKey={restoreOwnerKey}
         initialPanel={initialPanel}
         backdropImage={backdropImage}
         runtimeUnavailable
@@ -590,6 +679,7 @@ export default function DashboardAgentTerminal({
 
 function RuntimeTerminal({
   scope,
+  restoreOwnerKey,
   initialPanel = null,
   backdropImage = null,
   runtimeUnavailable = false,
@@ -605,6 +695,8 @@ function RuntimeTerminal({
   } | null>(null);
   const preferredOpenHeightRef = useRef<number | null>(null);
   const openStatePersistenceReadyRef = useRef(false);
+  const activeChatRestoreStartedRef = useRef(false);
+  const activeChatPersistenceReadyRef = useRef(false);
   const [height, setHeight] = useState(COLLAPSED_HEIGHT);
 
   useEffect(() => {
@@ -955,6 +1047,77 @@ function RuntimeTerminal({
     [temporaryChat],
   );
   const session = useAgentSession("dashboard_terminal", sessionCreateOptions);
+  const openTerminalSession = session.openSession;
+  // A fresh app window intentionally starts on New chat, but a renderer reload
+  // is not a new visit. Keep the selected conversation in sessionStorage so a
+  // dev-server refresh or desktop renderer recovery reattaches the transcript
+  // and any live run instead of replacing them with the blank state. New chat
+  // clears this pointer below, and closing the window clears it naturally.
+  useEffect(() => {
+    if (activeChatRestoreStartedRef.current) return;
+    activeChatRestoreStartedRef.current = true;
+    const savedSessionId = readActiveTerminalChatId(restoreOwnerKey);
+    activeChatPersistenceReadyRef.current = true;
+    if (savedSessionId?.startsWith("conv_")) {
+      void openTerminalSession(
+        savedSessionId,
+        readActiveTerminalChatSnapshot(restoreOwnerKey, savedSessionId),
+      );
+    }
+  }, [openTerminalSession, restoreOwnerKey]);
+
+  useEffect(() => {
+    // The hook begins in a loading state. Waiting for it prevents the initial
+    // null session from erasing the id that the restore effect just read.
+    if (
+      !activeChatPersistenceReadyRef.current ||
+      session.loadingSession
+    ) {
+      return;
+    }
+    if (temporaryChat || !session.sessionId) {
+      window.sessionStorage.removeItem(ACTIVE_CHAT_KEY);
+      window.sessionStorage.removeItem(ACTIVE_CHAT_SNAPSHOT_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(
+      ACTIVE_CHAT_KEY,
+      JSON.stringify({ ownerKey: restoreOwnerKey, sessionId: session.sessionId }),
+    );
+  }, [restoreOwnerKey, session.loadingSession, session.sessionId, temporaryChat]);
+
+  useEffect(() => {
+    if (
+      !activeChatPersistenceReadyRef.current ||
+      temporaryChat ||
+      session.loadingSession ||
+      !session.sessionId ||
+      session.messages.length === 0
+    ) {
+      return;
+    }
+    const persist = () => {
+      writeActiveTerminalChatSnapshot(
+        restoreOwnerKey,
+        session.sessionId!,
+        session.messages,
+      );
+    };
+    const timer = window.setTimeout(persist, 150);
+    // A real renderer navigation may happen before the debounce lands. Capture
+    // the latest visible rows synchronously while the old page still exists.
+    window.addEventListener("pagehide", persist);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("pagehide", persist);
+    };
+  }, [
+    session.loadingSession,
+    session.messages,
+    session.sessionId,
+    restoreOwnerKey,
+    temporaryChat,
+  ]);
   // A half-written message survives a reload, and stays with the chat it was
   // written in. A temporary chat is excluded: it keeps no record anywhere else,
   // so it may not leave one here either.
@@ -1005,13 +1168,6 @@ function RuntimeTerminal({
   } = ruflo;
   const finishExternalAgentTurn = session.finishExternalAgentTurn;
   const runtimeOnline = !runtimeUnavailable;
-  // Knowledge retrieval being down is a real failure, but the header has no room
-  // for a sentence about it: the status dot goes red and the tooltip explains.
-  const { key: knowledgeKey } = useGBrainStatus();
-  const knowledgeUnavailable = knowledgeKey === "unavailable";
-  const knowledgeNote = knowledgeUnavailable
-    ? ", knowledge retrieval unavailable"
-    : "";
   const busy =
     session.connection === "connecting" ||
     session.connection === "streaming" ||
@@ -1199,6 +1355,7 @@ function RuntimeTerminal({
     let cancelled = false;
     let inFlight = false;
     let refreshQueued = false;
+    const historyController = new AbortController();
     const refreshHistory = (force = false): void => {
       if (inFlight) {
         // A title can finish while the creation refresh is still in flight.
@@ -1210,7 +1367,10 @@ function RuntimeTerminal({
       if (document.visibilityState === "hidden") return;
       inFlight = true;
       const epoch = historyEpoch.current;
-      void loadHermesSessionSummaries("dashboard_terminal", { force })
+      void loadHermesSessionSummaries("dashboard_terminal", {
+        force,
+        signal: historyController.signal,
+      })
         .then((sessions) => {
           if (cancelled || historyEpoch.current !== epoch) return;
           // A list that lands clears the note a previous miss left behind.
@@ -1276,6 +1436,7 @@ function RuntimeTerminal({
     window.addEventListener(HERMES_SESSIONS_CHANGED_EVENT, onSessionsChanged);
     return () => {
       cancelled = true;
+      historyController.abort();
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener(
@@ -7413,13 +7574,11 @@ function RuntimeTerminal({
         style={{
           background: glassActive ? "transparent" : "var(--terminal-bar)",
         }}
-        className={`bb-neu-toolbar flex shrink-0 cursor-row-resize touch-none select-none items-center gap-3 border-b border-[rgba(169,193,177,0.55)] px-4 ${
-          // The collapsed bar is the dock's own height — except while a press
-          // has prewarmed the box to its open size, where `h-full` would
-          // stretch the bar to the full 600-odd pixels and centre its contents
-          // somewhere below the fold. The one height it is ever collapsed at,
-          // stated outright, survives that.
-          headerMounted ? "py-2.5" : "h-12 justify-center py-0"
+        className={`bb-neu-toolbar flex h-12 shrink-0 cursor-row-resize touch-none select-none items-center gap-3 border-b border-[rgba(169,193,177,0.55)] px-4 py-0 ${
+          // The brown bar has one invariant height. The reconnect button is
+          // taller than the title, so content-driven vertical padding made the
+          // whole dock jump whenever that button appeared or disappeared.
+          headerMounted ? "" : "justify-center"
         } ${glassActive ? "bb-terminal-glass-bar" : ""}`}
       >
         {headerMounted ? (
@@ -7430,16 +7589,14 @@ function RuntimeTerminal({
               style={{ animationDelay: "40ms" }}
               className={`${headerItemAnim} flex min-w-0 items-center gap-2`}
             >
-              {/* One dot, one job: red when the runtime or knowledge retrieval
-                  has a problem, live green otherwise — the same green the
-                  unread dot carries, further right and in Recents. It used
-                  to run alongside a second dot for unread state — same slot,
-                  same green, read as one light doubled. */}
-              {!runtimeOnline || knowledgeUnavailable ? (
+              {/* One dot, one job: Terminal connectivity. Optional knowledge
+                  retrieval has its own status surface and must not make a
+                  working Terminal look disconnected. */}
+              {!runtimeOnline ? (
                 <span
                   role="status"
-                  aria-label={`Agent runtime is ${runtimeOnline ? "available" : "unavailable"}${knowledgeNote}`}
-                  title={`Agent runtime ${runtimeOnline ? "available" : "unavailable"}${knowledgeNote}`}
+                  aria-label="Agent runtime is unavailable"
+                  title="Agent runtime unavailable"
                   className="h-2 w-2 shrink-0 rounded-full bg-[#B65B5B]"
                 />
               ) : (

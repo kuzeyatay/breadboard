@@ -302,31 +302,38 @@ export default function GardenAgentChat({
     };
   }, [gardenSlug]);
 
+  const proposalRequestRef = useRef<AbortController | null>(null);
   const loadProposals = useCallback(async () => {
+    proposalRequestRef.current?.abort();
+    const controller = new AbortController();
+    proposalRequestRef.current = controller;
     try {
       const response = await fetch(
         `/api/gardens/${encodeURIComponent(gardenSlug)}/proposals?status=pending`,
+        { signal: controller.signal },
       );
       if (!response.ok) return;
       const data = await response.json();
+      if (controller.signal.aborted) return;
       // setState after an async fetch is the endorsed "subscribe to external
       // system" pattern; it is not a synchronous set within the effect body.
       setProposals(Array.isArray(data.proposals) ? data.proposals : []);
     } catch {
       // Non-fatal; proposals just won't refresh.
+    } finally {
+      if (proposalRequestRef.current === controller) {
+        proposalRequestRef.current = null;
+      }
     }
   }, [gardenSlug]);
 
   // Load once and refresh whenever a turn finishes (the agent may have proposed).
   // Fetching happens asynchronously; state is only set after the network reply.
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (cancelled) return;
-      await loadProposals();
-    })();
+    void loadProposals();
     return () => {
-      cancelled = true;
+      proposalRequestRef.current?.abort();
+      proposalRequestRef.current = null;
     };
   }, [loadProposals, session.connection]);
 
@@ -344,10 +351,14 @@ export default function GardenAgentChat({
   useEffect(() => {
     let cancelled = false;
     let inFlight = false;
+    const historyController = new AbortController();
     const refreshHistory = (force = false) => {
       if (inFlight || document.visibilityState === "hidden") return;
       inFlight = true;
-      void loadHermesSessionSummaries("garden_chat", { force })
+      void loadHermesSessionSummaries("garden_chat", {
+        force,
+        signal: historyController.signal,
+      })
         .then((sessions) => {
           if (cancelled) return;
           setHistory(
@@ -394,6 +405,7 @@ export default function GardenAgentChat({
     window.addEventListener(HERMES_SESSIONS_CHANGED_EVENT, onSessionsChanged);
     return () => {
       cancelled = true;
+      historyController.abort();
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener(

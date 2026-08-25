@@ -80,6 +80,50 @@ test("a run still working keeps its stream so a dropped connection recovers", as
   assert.equal(source.closed, false);
 });
 
+test("repeated stream errors share one terminal-state probe", async () => {
+  const source = fakeSource();
+  const replayed = [];
+  let fetchCount = 0;
+  let resolveFetch;
+  const original = globalThis.fetch;
+  globalThis.fetch = () => {
+    fetchCount += 1;
+    return new Promise((resolve) => {
+      resolveFetch = resolve;
+    });
+  };
+  try {
+    const input = {
+      source,
+      base: "/api/open-gym/runs/r-concurrent",
+      replayEnding: (event) => replayed.push(event.type),
+      onUnavailable: () => assert.fail("the completed run still exists"),
+    };
+    resolveAgentRunStreamError(input);
+    resolveAgentRunStreamError(input);
+    assert.equal(fetchCount, 1, "one EventSource must own at most one active probe");
+    resolveFetch({
+      ok: true,
+      json: async () => ({
+        events: [
+          {
+            sequenceNumber: 2,
+            type: "run.completed",
+            payload: { summary: "done" },
+            at: "",
+          },
+        ],
+      }),
+    });
+    await settle();
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  assert.equal(source.closed, true);
+  assert.deepEqual(replayed, ["run.completed"]);
+});
+
 test("a forgotten run closes its stream and says which failure it was", async () => {
   for (const [body, status, expected] of [
     [{ ok: false, error: "run_not_found" }, 404, "run_not_found"],

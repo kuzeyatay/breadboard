@@ -20,13 +20,77 @@ const summaries = new Map<
   HermesSurface,
   { expiresAt: number; value: HermesSessionSnapshot[] }
 >();
-const summaryRequests = new Map<HermesSurface, Promise<HermesSessionSnapshot[]>>();
-const detailRequests = new Map<string, Promise<HermesSessionSnapshot>>();
+interface SharedRequest<T> {
+  controller: AbortController;
+  consumers: Set<symbol>;
+  settled: boolean;
+  promise: Promise<T>;
+  abandon: () => void;
+}
+
+const summaryRequests = new Map<
+  HermesSurface,
+  SharedRequest<HermesSessionSnapshot[]>
+>();
+const detailRequests = new Map<string, SharedRequest<HermesSessionSnapshot>>();
 const details = new Map<string, HermesSessionSnapshot>();
 const detailFreshUntil = new Map<string, number>();
 const recentPrefetches = new Map<string, number>();
 const PREFETCH_REUSE_MS = 5_000;
 const DETAIL_CACHE_FRESH_MS = 5_000;
+
+function abortReason(signal: AbortSignal): unknown {
+  return (
+    signal.reason ??
+    new DOMException("The operation was aborted.", "AbortError")
+  );
+}
+
+/**
+ * Join one deduplicated fetch without making any one component its owner.
+ * The underlying request is cancelled only after every active consumer has
+ * gone away; one route unmount therefore cannot break another mounted reader.
+ */
+function followSharedRequest<T>(
+  request: SharedRequest<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const consumer = Symbol("hermes-request-consumer");
+  request.consumers.add(consumer);
+
+  return new Promise<T>((resolve, reject) => {
+    let finished = false;
+    const release = () => {
+      request.consumers.delete(consumer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const settle = (action: () => void) => {
+      if (finished) return;
+      finished = true;
+      release();
+      action();
+    };
+    const onAbort = () => {
+      if (finished) return;
+      finished = true;
+      release();
+      reject(abortReason(signal as AbortSignal));
+      if (!request.settled && request.consumers.size === 0) {
+        request.abandon();
+      }
+    };
+
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    request.promise.then(
+      (value) => settle(() => resolve(value)),
+      (cause) => settle(() => reject(cause)),
+    );
+  });
+}
 
 export const HERMES_SESSIONS_CHANGED_EVENT = "breadboard:hermes-sessions-changed";
 
@@ -67,18 +131,35 @@ export function notifyHermesSessionsChanged(surface: HermesSurface): void {
 /** Deduplicate the terminal and session hook's simultaneous history request. */
 export async function loadHermesSessionSummaries(
   surface: HermesSurface,
-  options: { force?: boolean } = {},
+  options: { force?: boolean; signal?: AbortSignal } = {},
 ): Promise<HermesSessionSnapshot[]> {
   const pending = summaryRequests.get(surface);
-  if (pending) return pending.then(withoutDeleting);
+  if (pending) {
+    return followSharedRequest(pending, options.signal).then(withoutDeleting);
+  }
+  if (options.signal?.aborted) throw abortReason(options.signal);
   const cached = summaries.get(surface);
   if (!options.force && cached && cached.expiresAt > Date.now()) {
     return withoutDeleting(cached.value);
   }
 
-  const request = fetch(
+  const controller = new AbortController();
+  const request: SharedRequest<HermesSessionSnapshot[]> = {
+    controller,
+    consumers: new Set<symbol>(),
+    settled: false,
+    promise: Promise.resolve([] as HermesSessionSnapshot[]),
+    abandon: () => undefined,
+  };
+  request.abandon = () => {
+    if (summaryRequests.get(surface) === request) {
+      summaryRequests.delete(surface);
+    }
+    controller.abort();
+  };
+  request.promise = fetch(
     `/api/hermes/sessions?surface=${encodeURIComponent(surface)}`,
-    { cache: "no-store" },
+    { cache: "no-store", signal: controller.signal },
   )
     .then(async (response) => {
       if (!response.ok) throw new Error("Chats could not be loaded.");
@@ -87,9 +168,14 @@ export async function loadHermesSessionSummaries(
       summaries.set(surface, { expiresAt: Date.now() + SUMMARY_TTL_MS, value });
       return value as HermesSessionSnapshot[];
     })
-    .finally(() => summaryRequests.delete(surface));
+    .finally(() => {
+      request.settled = true;
+      if (summaryRequests.get(surface) === request) {
+        summaryRequests.delete(surface);
+      }
+    });
   summaryRequests.set(surface, request);
-  return request.then(withoutDeleting);
+  return followSharedRequest(request, options.signal).then(withoutDeleting);
 }
 
 /**
@@ -133,11 +219,12 @@ export function cachedHermesSessionDetail(
 export async function loadHermesSessionDetail(
   surface: HermesSurface,
   id: string,
-  options: { reuseRecentPrefetch?: boolean } = {},
+  options: { reuseRecentPrefetch?: boolean; signal?: AbortSignal } = {},
 ): Promise<HermesSessionSnapshot> {
   const key = detailKey(surface, id);
   const pending = detailRequests.get(key);
-  if (pending) return pending;
+  if (pending) return followSharedRequest(pending, options.signal);
+  if (options.signal?.aborted) throw abortReason(options.signal);
   const prefetchedUntil = recentPrefetches.get(key) ?? 0;
   const prefetched = details.get(key);
   recentPrefetches.delete(key);
@@ -148,9 +235,21 @@ export async function loadHermesSessionDetail(
   ) {
     return prefetched;
   }
-  const request = fetch(
+  const controller = new AbortController();
+  const request: SharedRequest<HermesSessionSnapshot> = {
+    controller,
+    consumers: new Set<symbol>(),
+    settled: false,
+    promise: Promise.resolve({} as HermesSessionSnapshot),
+    abandon: () => undefined,
+  };
+  request.abandon = () => {
+    if (detailRequests.get(key) === request) detailRequests.delete(key);
+    controller.abort();
+  };
+  request.promise = fetch(
     `/api/hermes/sessions/${encodeURIComponent(id)}?surface=${encodeURIComponent(surface)}`,
-    { cache: "no-store" },
+    { cache: "no-store", signal: controller.signal },
   )
     .then(async (response) => {
       if (!response.ok) throw new Error("This chat could not be loaded.");
@@ -169,9 +268,12 @@ export async function loadHermesSessionDetail(
       }
       return data.session as HermesSessionSnapshot;
     })
-    .finally(() => detailRequests.delete(key));
+    .finally(() => {
+      request.settled = true;
+      if (detailRequests.get(key) === request) detailRequests.delete(key);
+    });
   detailRequests.set(key, request);
-  return request;
+  return followSharedRequest(request, options.signal);
 }
 
 /**

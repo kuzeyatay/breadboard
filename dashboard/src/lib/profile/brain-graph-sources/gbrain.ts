@@ -3,6 +3,7 @@ import { resolveGBrainConfig } from "../../gbrain/config.ts";
 import { deriveSourceId } from "../../gbrain/mapping.ts";
 import { scanClusterKnowledge, type KnowledgeNode } from "../../knowledge.ts";
 import { INTERNAL_CONCEPT_TYPE } from "../../learning-garden.ts";
+import { readSupervisedServiceSnapshot } from "../../supervisor-control.ts";
 import {
   gardensForScope,
   type AuthorizedGarden,
@@ -44,6 +45,18 @@ export const gbrainBrainSource = {
   ): Promise<BrainGraphFragment> {
     const config = resolveGBrainConfig();
     if (config.mode === "disabled") return { nodes: [], edges: [] };
+    const lifecycle = await readSupervisedServiceSnapshot("gbrain");
+    if (
+      lifecycle &&
+      (lifecycle.state === "pending" ||
+        lifecycle.state === "starting" ||
+        lifecycle.state === "stopped" ||
+        lifecycle.state === "available-but-stopped")
+    ) {
+      // This overview is observational. Absence of an active GBrain tree is an
+      // ordinary idle state and must not create a warning or cold-start it.
+      return { nodes: [], edges: [] };
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 750);
     signal?.addEventListener("abort", () => controller.abort(), { once: true });

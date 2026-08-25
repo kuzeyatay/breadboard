@@ -119,6 +119,7 @@ export function useRailResize({
   const widthRef = useRef(width);
   const maxRef = useRef(maxWidth);
   const openRef = useRef(openWidth);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     widthRef.current = width;
     maxRef.current = maxWidth;
@@ -177,6 +178,18 @@ export function useRailResize({
     return () => window.removeEventListener("resize", applyViewportLimit);
   }, [max, min, threshold, viewportShare]);
 
+  // Pointer listeners are installed from an event handler rather than an
+  // effect. Keep their disposer in a ref so route navigation or a conditional
+  // panel unmount cannot strand a window-level drag subscription (or leave the
+  // document in its no-selection resize state).
+  useEffect(
+    () => () => {
+      dragCleanupRef.current?.();
+      dragCleanupRef.current = null;
+    },
+    [],
+  );
+
   const toggle = useCallback(() => {
     // Read through the mirror rather than a functional update: collapsing has
     // to remember the width it is leaving, and a second setState belongs
@@ -196,6 +209,10 @@ export function useRailResize({
   const onPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLElement>) => {
       if (event.button !== 0) return;
+      // A second press should replace, never stack on, an unfinished gesture.
+      dragCleanupRef.current?.();
+      dragCleanupRef.current = null;
+      setDragging(false);
       const startX = event.clientX;
       const startWidth = widthRef.current;
       let travelled = false;
@@ -203,6 +220,7 @@ export function useRailResize({
 
       // Not preventDefault: the edge is a button, and swallowing the press
       // would take its focus with it. Selection is stopped the other way.
+      const previousCursor = document.body.style.cursor;
       const previousUserSelect = document.body.style.userSelect;
       document.body.style.userSelect = "none";
 
@@ -221,12 +239,19 @@ export function useRailResize({
         setWidth(next);
       };
 
-      const handleEnd = () => {
+      const detach = () => {
         window.removeEventListener("pointermove", handleMove);
         window.removeEventListener("pointerup", handleEnd);
         window.removeEventListener("pointercancel", handleEnd);
-        document.body.style.cursor = "";
+        document.body.style.cursor = previousCursor;
         document.body.style.userSelect = previousUserSelect;
+        if (dragCleanupRef.current === detach) {
+          dragCleanupRef.current = null;
+        }
+      };
+
+      const handleEnd = () => {
+        detach();
         // A press that never travelled is a click, and a click toggles — which
         // is the whole reason the edge no longer needs a button beside it.
         if (!travelled) {
@@ -248,6 +273,7 @@ export function useRailResize({
       window.addEventListener("pointermove", handleMove);
       window.addEventListener("pointerup", handleEnd);
       window.addEventListener("pointercancel", handleEnd);
+      dragCleanupRef.current = detach;
     },
     [min, persist, railWidth, side, threshold, toggle],
   );

@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 import path from "node:path";
 
+const desktopBuild = process.env.BREADBOARD_DESKTOP_BUILD === "1";
+const bundlerRoot = path.resolve(process.cwd(), "..");
+
 // Mutable data, local secrets, and build state must never be traced into a
 // (standalone) build: the desktop package would otherwise ship a snapshot of
 // the developer's database and env files as read-only program resources.
@@ -53,11 +56,11 @@ const nextConfig: NextConfig = {
   // Desktop packaging builds a self-contained server (node server.js) that the
   // Electron supervisor runs with a bundled Node runtime. Opt-in via env so
   // normal `next build`/`next start` development flows are unchanged.
-  ...(process.env.BREADBOARD_DESKTOP_BUILD === "1" ? { output: "standalone" as const } : {}),
+  ...(desktopBuild ? { output: "standalone" as const } : {}),
   // Allows CI/local validation to build beside a running Windows dev server,
   // whose OneDrive-backed `.next` tree may contain locked reparse points.
   distDir: process.env.BREADBOARD_NEXT_DIST_DIR?.trim() || ".next",
-  ...(process.env.BREADBOARD_DESKTOP_BUILD === "1"
+  ...(desktopBuild
     ? { typescript: { tsconfigPath: "tsconfig.desktop.json" } }
     : {}),
   devIndicators: false,
@@ -95,6 +98,7 @@ const nextConfig: NextConfig = {
     // database and env files as read-only program resources.
     '/*': dataTraceExcludes,
     '/**': dataTraceExcludes,
+    'next-server': dataTraceExcludes,
     '/api/markdown-images': gardenAssetRouteExcludes,
     '/api/markdown-videos': gardenAssetRouteExcludes,
   },
@@ -116,9 +120,12 @@ const nextConfig: NextConfig = {
       'node_modules/@firecrawl/anydoc-win32-x64-msvc/**/*',
     ],
   },
-  outputFileTracingRoot: path.resolve(process.cwd(), ".."),
+  outputFileTracingRoot: bundlerRoot,
   turbopack: {
-    root: path.resolve(process.cwd(), ".."),
+    // Shared renderer metadata and the linked mem0 package live at repo scope.
+    // Runtime filesystem probes are individually marked as non-assets instead
+    // of narrowing this root and making those real modules unresolvable.
+    root: bundlerRoot,
     resolveAlias: {
       // Turbopack does not implement Windows absolute-path imports. Aliases are
       // resolved from the Next project directory, so keep local targets
@@ -140,6 +147,11 @@ const nextConfig: NextConfig = {
       '@genoffice/pptx-render/preset-geometry': './src/vendor/genoffice/pptx-render/src/preset-geometry.ts',
       '@genoffice/pptx-render': './src/vendor/genoffice/pptx-render/src/index.ts',
       '@genoffice/ui': './src/vendor/genoffice/ui/src/index.ts',
+      // `mem0ai` is a local junction. Turbopack follows it before applying
+      // serverExternalPackages and then attempts to bundle optional native
+      // providers. This Node-only bridge leaves the fixed package request to
+      // the runtime; webpack keeps using the explicit external below.
+      'mem0ai/oss': './src/lib/mem0/mem0ai-oss-runtime.ts',
       'pdf-parse': 'pdf-parse/dist/pdf-parse/cjs/index.cjs',
     },
   },

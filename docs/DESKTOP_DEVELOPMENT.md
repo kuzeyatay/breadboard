@@ -28,7 +28,7 @@ npm run desktop:dev
 compiles the shell (`tsc`) and launches Electron with `--breadboard-dev`:
 
 - services run from the repo exactly like `scripts/dev-all.mjs` does
-  (system node/bun/python, Next dev server with Webpack, dev data layout);
+  (system node/bun/python, Next dev server with Turbopack, dev data layout);
 - the startup screen, supervisor, health checks, log capture and process-tree
   cleanup are the same code paths as the packaged app;
 - logs: `.runtime/desktop-logs/*.log`;
@@ -116,23 +116,22 @@ process. They should not be hard-coded in a packaged launch.
 
 ## Development dashboard memory
 
-`next dev --webpack` compiles routes on demand and does not unload a route
-bundle once the server has evaluated it. This dashboard has ~517 API routes and
-~26 MB of TypeScript; compiling a route was measured to retain roughly 50–100 MB
-permanently, so a long session grows without bound. Requests to routes that are
-already compiled are flat — 3000 of them moved the heap from 1217 MB to 972 MB —
-so the growth is compilation, not traffic.
+`next dev` uses Next 16's default Turbopack compiler and compiles routes on
+demand. The earlier Webpack audit showed why an old-space cap alone did not fix
+the incident: evaluated route entries remained loaded, while native buffers,
+source maps, mapped cache files, and compiler descendants consumed memory that
+V8's heap counter cannot see. Repeated requests to already compiled routes were
+flat; compiling new entries was the growth trigger.
 
 Next.js guards against this itself: after every dev request it compares
 `used_heap_size` with `0.8 * heap_size_limit` and restarts its server child when
 it crosses. `heap_size_limit` is whatever `--max-old-space-size` says, so the
 heap budget is really the *recycle* threshold, not just a ceiling.
 
-`desktop/src/main/dashboard-heap-budget.ts` computes it: take what is left after
-an 8 GiB system reserve (Electron, WSL, Python runtimes, editor, Defender, OS),
-give the dashboard 35% of that for the sidecars' sake, and clamp to
-1 GiB–6 GiB. On a 32 GiB workstation that is 6 GiB, which puts Next's recycle
-point at ~4.9 GiB of heap and about 8.4 GiB of committed process-tree memory.
+`desktop/src/main/memory-policy.ts` computes the current heap, tree, and commit
+reserves from detected physical memory and Windows commit. The V8 budget sets a
+recycle/old-space boundary; the descendant-tree budget and commit governor are
+the actual containment layers for memory outside that heap.
 
 The ceiling is a trade-off in both directions. Too high and the process is
 unbounded — that is the incident. Too low and Next recycles often enough to drop

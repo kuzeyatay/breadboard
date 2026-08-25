@@ -356,6 +356,109 @@ function ArtifactDocumentViewport({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * OfficeCLI snapshots are real paper-sized pages. Keep that geometry, but fit
+ * each page to the dock and let the dock own vertical scrolling. If the iframe
+ * keeps its own scrollport, a document gets a second vertical scrollbar plus
+ * a horizontal one for the unscaled 612pt page.
+ */
+function ArtifactOfficeDocumentFrame({
+  src,
+  title,
+}: {
+  src: string;
+  title: string;
+}) {
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const [contentHeight, setContentHeight] = useState<number | null>(null);
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    let disposed = false;
+
+    const fitPages = () => {
+      if (disposed) return;
+      const previewDocument = frame.contentDocument;
+      const previewWindow = frame.contentWindow;
+      if (!previewDocument?.body || !previewWindow) return;
+
+      // This is a same-origin, authenticated preview. The iframe is expanded
+      // to its full document height below, so scroll belongs to the artifact
+      // surface rather than to a nested frame.
+      previewDocument.documentElement.style.overflow = "hidden";
+      previewDocument.body.style.overflow = "hidden";
+      previewDocument.body.style.maxWidth = "100%";
+
+      const bodyStyle = previewWindow.getComputedStyle(previewDocument.body);
+      const horizontalPadding =
+        (Number.parseFloat(bodyStyle.paddingLeft) || 0) +
+        (Number.parseFloat(bodyStyle.paddingRight) || 0);
+      const availableWidth = Math.max(1, frame.clientWidth - horizontalPadding);
+
+      previewDocument
+        .querySelectorAll<HTMLElement>(".page-wrapper")
+        .forEach((wrapper) => {
+          const page = wrapper.querySelector<HTMLElement>(".page");
+          if (!page || page.style.display === "none") return;
+          const pageWidth = page.offsetWidth;
+          const pageHeight = page.offsetHeight;
+          const scale = pageWidth > 0 ? Math.min(availableWidth / pageWidth, 1) : 1;
+
+          page.style.transformOrigin = "left top";
+          page.style.transform = `scale(${scale})`;
+          wrapper.style.width = `${pageWidth * scale}px`;
+          wrapper.style.height = `${pageHeight * scale}px`;
+          // A transform shrinks the paint but not the element's layout box.
+          // Clipping that original box is what removes horizontal overflow.
+          wrapper.style.overflow = "hidden";
+        });
+
+      const nextHeight = Math.ceil(
+        Math.max(
+          previewDocument.body.scrollHeight,
+          previewDocument.documentElement.scrollHeight,
+        ),
+      );
+      setContentHeight((current) =>
+        current !== null && Math.abs(current - nextHeight) < 2
+          ? current
+          : nextHeight,
+      );
+    };
+
+    const onLoad = () => {
+      fitPages();
+      void frame.contentDocument?.fonts?.ready.then(fitPages).catch(() => undefined);
+    };
+    frame.addEventListener("load", onLoad);
+
+    const resizeObserver = new ResizeObserver(fitPages);
+    resizeObserver.observe(frame);
+    fitPages();
+
+    return () => {
+      disposed = true;
+      frame.removeEventListener("load", onLoad);
+      resizeObserver.disconnect();
+    };
+  }, [src]);
+
+  return (
+    <iframe
+      ref={frameRef}
+      title={title}
+      sandbox="allow-same-origin"
+      allow=""
+      referrerPolicy="no-referrer"
+      src={src}
+      style={contentHeight === null ? undefined : { height: contentHeight }}
+      className="block min-h-[26rem] w-full border-0 bg-[var(--neu-surface-pressed)]"
+      data-artifact-office-preview
+    />
+  );
+}
+
 interface ArtifactViewerProps {
   artifact: PresentedArtifact | null;
   onClose: () => void;
@@ -691,12 +794,9 @@ export default function ArtifactViewer({
       if (usesGenOfficeEditor) {
         return (
           <ArtifactGenOfficeEditor
+            key={artifact.id}
             artifact={artifact}
             onSaved={(saved) => onUpdated?.(saved)}
-            onAskAi={(prompt) => {
-              dispatchArtifactAiEdit({ artifact, prompt });
-              onClose();
-            }}
           />
         );
       }
@@ -903,7 +1003,13 @@ export default function ArtifactViewer({
       // here gets — scripts on, same-origin off — and nothing else does, so a
       // plain HTML artifact stays inert.
       const liveDeck = artifact.metadata?.boltSlidesDeck === true;
-      return (
+      return artifact.kind === "document" ? (
+        <ArtifactOfficeDocumentFrame
+          key={previewUrl}
+          title={`${artifact.title} preview`}
+          src={previewUrl}
+        />
+      ) : (
         <iframe
           title={`${artifact.title} preview`}
           sandbox={liveDeck ? "allow-scripts" : ""}
@@ -1017,8 +1123,26 @@ export default function ArtifactViewer({
             </button>
           ) : null}
           {artifact.downloadAvailable ? (
-            <a href={downloadUrl} className={actionButton}>
-              Download
+            <a
+              href={downloadUrl}
+              className="neu-button-icon inline-flex shrink-0 items-center justify-center rounded-lg px-2 py-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-strong)]"
+              aria-label={`Download ${artifact.filename}`}
+              title="Download"
+            >
+              <svg
+                viewBox="0 0 16 16"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M8 2v7.5M5.25 7 8 9.75 10.75 7" />
+                <path d="M3 11.5v1.25c0 .7.55 1.25 1.25 1.25h7.5c.7 0 1.25-.55 1.25-1.25V11.5" />
+              </svg>
             </a>
           ) : null}
           <button
@@ -1069,7 +1193,11 @@ export default function ArtifactViewer({
         ) : null}
         <div
           className={`bb-neu-recessed min-h-0 flex-1 ${
-            usesDocumentViewer ? "overflow-hidden p-0" : "overflow-auto px-5 py-4"
+            usesDocumentViewer
+              ? "overflow-hidden p-0"
+              : artifact.kind === "document" && !editingDocument
+                ? "overflow-auto p-0"
+                : "overflow-auto px-5 py-4"
           }`}
         >
           {renderBody()}

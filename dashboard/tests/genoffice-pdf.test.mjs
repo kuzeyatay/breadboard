@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 
 import { PDFDocument, StandardFonts } from "@cantoo/pdf-lib";
@@ -9,6 +10,18 @@ const { openDocx } = await import("../src/lib/genoffice/docx-edit.ts");
 const { pdfToDocx, resolvePdfiumWasmPath } = await import(
   "../src/lib/genoffice/pdf-to-docx.ts"
 );
+
+test("the server runtime resolves PDFium through its JavaScript entry", () => {
+  const source = fs.readFileSync(
+    new URL("../src/lib/genoffice/pdf-to-docx.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /require\.resolve\(["']@embedpdf\/pdfium["']\)/);
+  assert.doesNotMatch(
+    source,
+    /require\.resolve\(["']@embedpdf\/pdfium\/pdfium\.wasm["']\)/,
+  );
+});
 
 async function pdfFixture() {
   const document = await PDFDocument.create();

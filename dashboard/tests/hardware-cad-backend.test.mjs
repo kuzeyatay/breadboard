@@ -635,6 +635,26 @@ test("a file the bridge reports is validated before it is read", () => {
   // Parts are written into Breadboard's own workspace, never over the user's.
   const config = source("src/lib/cad/solidworks/config.ts");
   assert.match(config, /BREADBOARD_SOLIDWORKS_MCP_PATH/);
+  assert.match(config, /path\.join\(candidate, "src", "solidworks_mcp", "server\.py"\)/);
+  assert.doesNotMatch(
+    config,
+    /CLONE_MARKERS|path\.join\(candidate,\s*marker\)/,
+    "clone discovery must not make the production bundler enumerate an arbitrary candidate tree",
+  );
+  assert.match(config, /existsSync\(\/\* turbopackIgnore: true \*\/ candidate\)/);
+  assert.match(config, /statSync\(\/\* turbopackIgnore: true \*\/ candidate\)/);
+  assert.match(config, /readdirSync\(\/\* turbopackIgnore: true \*\/ candidate\)/);
+  assert.match(
+    config,
+    /path\.join\(\/\* turbopackIgnore: true \*\/ base, name\)/,
+  );
+  const nextConfig = source("next.config.ts");
+  assert.match(
+    nextConfig,
+    /const bundlerRoot = path\.resolve\(process\.cwd\(\), "\.\."\)/,
+  );
+  assert.match(nextConfig, /outputFileTracingRoot:\s*bundlerRoot/);
+  assert.match(nextConfig, /turbopack:\s*\{[\s\S]*?root:\s*bundlerRoot/);
   assert.doesNotMatch(config, /C:\\\\Users\\\\/, "no absolute developer path may be hard-coded");
 });
 

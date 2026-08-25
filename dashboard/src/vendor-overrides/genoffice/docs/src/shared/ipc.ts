@@ -31,6 +31,20 @@ export interface AiSettings {
   providers: Record<string, { apiKey: string; model: string; baseUrl?: string }>
 }
 
+/** The retained editor tools use this small structural part of GenOffice's
+ * agent-core protocol; Breadboard supplies the model loop in its API route. */
+export interface AgentToolCall {
+  id?: string
+  name: string
+  input: Record<string, unknown>
+}
+
+export interface AgentToolDef {
+  name: string
+  description: string
+  inputSchema: Record<string, unknown>
+}
+
 export const AI_PROVIDERS = [
   { id: 'breadboard', defaultModel: 'workspace', needsBaseUrl: false },
 ] as const
@@ -116,6 +130,31 @@ export interface DesktopApi {
   pickImage(): Promise<PickImageResult | null>
   fontMetrics(family: string): Promise<FaceVerticalMetrics | null>
   getAiSettings(): Promise<AiSettings>
+  webSearch(
+    query: string,
+    maxResults?: number,
+  ): Promise<{
+    results: Array<{ title: string; url: string; snippet: string }>
+    answer?: string
+    method: string
+    error?: string
+  }>
+  imageSearch(
+    query: string,
+    maxResults?: number,
+  ): Promise<{
+    images: Array<{
+      title: string
+      imageUrl: string
+      sourceUrl: string
+      source: string
+      width?: number
+      height?: number
+    }>
+    method: string
+    error?: string
+  }>
+  fetchImage(url: string): Promise<{ base64: string; mime: string } | null>
   print(): Promise<{ ok: boolean; error?: string }>
   exportPdf(
     defaultName: string,

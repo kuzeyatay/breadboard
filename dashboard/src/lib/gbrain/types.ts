@@ -49,6 +49,7 @@ export interface GBrainConnectionsOutput {
 
 export type GBrainStatusState =
   | "disabled"
+  | "available-but-stopped"
   | "unavailable"
   | "degraded"
   | "healthy";

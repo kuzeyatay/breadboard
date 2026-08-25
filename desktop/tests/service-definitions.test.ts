@@ -308,8 +308,12 @@ test("dev dashboard retains the historical dashboard/db data layout", () => {
     dashboard.env["BREADBOARD_LEARN_SOURCE_ROOT"],
     path.join(devPaths.appRoot, "dashboard", "src"),
   );
-  assert.ok(dashboard.args.includes("--webpack"));
+  assert.equal(dashboard.env["BREADBOARD_BACKGROUND_COORDINATOR_HEAP_MB"], "1024");
+  assert.equal(dashboard.env["BREADBOARD_MEMORY_TELEMETRY_INTERVAL_MS"], "15000");
+  assert.equal(dashboard.env["BREADBOARD_MEMORY_TELEMETRY_SAMPLES"], "240");
+  assert.ok(!dashboard.args.includes("--webpack"));
   assert.ok(!dashboard.args.includes("--turbopack"));
+  assert.equal(dashboard.env["BREADBOARD_DASHBOARD_BUNDLER"], "turbopack");
 });
 
 test("fast dev dashboard uses an existing standalone build", () => {
@@ -427,10 +431,10 @@ test("Hermes is a hidden-loopback supervised runtime and its endpoint is not pub
   assert.equal(hermes.required, false);
   assert.equal(
     hermes.startPolicy,
-    "eager",
-    "the primary agent runtime must be ready without a client-side lease deadlock",
+    "on-demand",
+    "the first server-side session acquisition starts Hermes without a polling lease",
   );
-  assert.equal(hermes.idleTtlMs, undefined);
+  assert.equal(hermes.idleTtlMs, 10 * 60_000);
   assert.deepEqual(hermes.dependsOn, ["chatmock"]);
   assert.deepEqual(
     hermes.args.slice(0, 3),
@@ -577,8 +581,8 @@ test("GBrain is present by default, absent only when explicitly disabled", () =>
   const byDefault = fixture("packaged");
   const defaultGbrain = byDefault.definitions.find((d) => d.id === "gbrain");
   assert.ok(defaultGbrain);
-  assert.equal(defaultGbrain.startPolicy, "eager");
-  assert.equal(defaultGbrain.idleTtlMs, undefined);
+  assert.equal(defaultGbrain.startPolicy, "on-demand");
+  assert.equal(defaultGbrain.idleTtlMs, 10 * 60_000);
   assert.deepEqual(defaultGbrain.dependsOn, ["chatmock"]);
   const dashDefault = byDefault.definitions.find((d) => d.id === "dashboard");
   assert.ok(dashDefault);
@@ -615,6 +619,7 @@ test("GBrain is present by default, absent only when explicitly disabled", () =>
   assert.equal(gbrain.env["GBRAIN_EMBEDDING_MODEL"], "local/bge-small-en-v1.5");
   assert.equal(gbrain.env["GBRAIN_EMBEDDING_DIMENSIONS"], "384");
   assert.ok((gbrain.env["GBRAIN_EMBEDDING_API_KEY"] ?? "").length > 0);
+  assert.equal(gbrain.pressureSheddable, true);
 
   // The dashboard learns the adapter URL + shared secret, but the secret never
   // appears in a non-secret place unexpectedly (it is the per-install secret).

@@ -8,7 +8,7 @@ import {
   getArtifactForUser,
   presentArtifact,
 } from "@/lib/hermes/artifact-store.ts";
-import { saveArtifactOfficeBytes } from "@/lib/hermes/artifact-document-editor.ts";
+import { saveArtifactOfficeBytes } from "@/lib/hermes/artifact-office-save.ts";
 import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 
 export const dynamic = "force-dynamic";

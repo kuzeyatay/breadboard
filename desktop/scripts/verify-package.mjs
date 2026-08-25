@@ -50,8 +50,31 @@ function checkResourcesRoot(resources, label) {
   );
   requireFile(
     path.join(resources, "bin", "runtime-supervisor.exe"),
-    `${label} Windows Job Object runtime supervisor`,
+    `${label} transitional Windows Job Object containment helper`,
   );
+  requireFile(
+    path.join(resources, "bin", "breadboard-runtime.exe"),
+    `${label} authoritative Runtime V2 binary`,
+  );
+  const runtimeV2Manifests = path.join(resources, "runtime-v2", "manifests");
+  for (const manifestName of ["workers.json", "services.json"]) {
+    const manifestPath = path.join(runtimeV2Manifests, manifestName);
+    requireFile(manifestPath, `${label} Runtime V2 ${manifestName}`);
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+        if (manifest?.version !== 1) {
+          problems.push(`${label} Runtime V2 ${manifestName} has an unsupported version`);
+        }
+      } catch (error) {
+        problems.push(
+          `${label} Runtime V2 ${manifestName} is invalid JSON: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  }
   requireFile(
     path.join(resources, "runtimes", "python", "Lib", "site-packages", "flask", "__init__.py"),
     `${label} ChatMock Python dependencies`,
@@ -73,8 +96,16 @@ function checkResourcesRoot(resources, label) {
     `${label} GenOffice Office-style CSS`,
   );
   requireFile(
+    path.join(dashboard, "scripts", "background-coordinator.mjs"),
+    `${label} background coordinator entrypoint`,
+  );
+  requireFile(
     path.join(dashboard, "scripts", "learn-worker.mjs"),
     `${label} durable Learn worker entrypoint`,
+  );
+  requireFile(
+    path.join(resources, "app-services", "dashboard", "scripts", "runtime-v2-dashboard.mjs"),
+    `${label} Runtime V2 dashboard entrypoint`,
   );
   requireFile(
     path.join(dashboard, "worker-src", "lib", "learn.ts"),

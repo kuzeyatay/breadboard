@@ -15,19 +15,27 @@
 // Server-only — it reads the filesystem. Imported by scripts as well as by the
 // dashboard server, so it stays free of Next-only imports.
 
-import fs from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+function pathExists(candidate: string): boolean {
+  // These are runtime configuration/install probes, never bundle assets. The
+  // ignore marker must annotate the bare fs argument: annotating a nested
+  // path.join does not suppress Turbopack's dynamic-filesystem tracer.
+  return existsSync(/* turbopackIgnore: true */ candidate);
+}
+
+function pathIsDirectory(candidate: string): boolean {
+  return statSync(/* turbopackIgnore: true */ candidate).isDirectory();
+}
+
+function directoryEntries(candidate: string): string[] {
+  return readdirSync(/* turbopackIgnore: true */ candidate);
+}
+
 /** Directory names the clone is known by, in the order they are tried. */
 const CLONE_DIRECTORY_NAMES = ["SolidworksMCP-python", "solidworks-mcp-python"];
-
-/** Files that prove a directory really is the clone and not a namesake. */
-const CLONE_MARKERS = [
-  path.join("src", "solidworks_mcp", "server.py"),
-  path.join("src", "solidworks_mcp", "config.py"),
-  "pyproject.toml",
-];
 
 export interface SolidWorksPaths {
   /** The clone's root, or null when it could not be found. */
@@ -42,11 +50,19 @@ export interface SolidWorksPaths {
 
 function isClone(candidate: string): boolean {
   try {
-    if (!fs.statSync(candidate).isDirectory()) return false;
+    if (!pathIsDirectory(candidate)) return false;
   } catch {
     return false;
   }
-  return CLONE_MARKERS.every((marker) => fs.existsSync(path.join(candidate, marker)));
+  // Keep these suffixes explicit. A nested dynamic `path.join(candidate,
+  // marker)` makes Turbopack conservatively enumerate every descendant of a
+  // possible discovery root, including unrelated or access-restricted user
+  // directories. These exact probes are runtime discovery, not build assets.
+  return (
+    pathExists(path.join(candidate, "src", "solidworks_mcp", "server.py")) &&
+    pathExists(path.join(candidate, "src", "solidworks_mcp", "config.py")) &&
+    pathExists(path.join(candidate, "pyproject.toml"))
+  );
 }
 
 /** Breadboard's own directory for SolidWorks bridge state. Never the clone. */
@@ -87,7 +103,7 @@ export function solidworksMcpPath(
   const bases = [dashboardRoot, repoRoot, path.resolve(repoRoot, "..")];
   for (const base of bases) {
     for (const name of CLONE_DIRECTORY_NAMES) {
-      const candidate = path.join(base, name);
+      const candidate = path.join(/* turbopackIgnore: true */ base, name);
       if (isClone(candidate)) return { path: candidate, source: "sibling" };
     }
   }
@@ -100,13 +116,13 @@ function clonePython(clone: string): string | null {
     process.platform === "win32"
       ? [path.join(clone, ".venv", "Scripts", "python.exe")]
       : [path.join(clone, ".venv", "bin", "python3"), path.join(clone, ".venv", "bin", "python")];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  return candidates.find((candidate) => pathExists(candidate)) ?? null;
 }
 
 /** `uv`, looked for where its installers put it. Mirrors the clone's own script. */
 function findUv(env: NodeJS.ProcessEnv): string | null {
   const explicit = env.BREADBOARD_UV_PATH?.trim();
-  if (explicit && fs.existsSync(explicit)) return explicit;
+  if (explicit && pathExists(explicit)) return explicit;
 
   const executable = process.platform === "win32" ? "uv.exe" : "uv";
   const home = env.USERPROFILE?.trim() || os.homedir();
@@ -116,12 +132,12 @@ function findUv(env: NodeJS.ProcessEnv): string | null {
     ...(env.APPDATA ? [path.join(env.APPDATA, "Python", "Scripts", executable)] : []),
   ];
   for (const candidate of known) {
-    if (fs.existsSync(candidate)) return candidate;
+    if (pathExists(candidate)) return candidate;
   }
   for (const entry of (env.PATH ?? "").split(path.delimiter)) {
     if (!entry) continue;
     const candidate = path.join(entry, executable);
-    if (fs.existsSync(candidate)) return candidate;
+    if (pathExists(candidate)) return candidate;
   }
   return null;
 }
@@ -149,7 +165,7 @@ export function solidworksPaths(env: NodeJS.ProcessEnv = process.env): SolidWork
 export function solidworksInstallPath(env: NodeJS.ProcessEnv = process.env): string | null {
   if (process.platform !== "win32") return null;
   const configured = env.BREADBOARD_SOLIDWORKS_EXE?.trim();
-  if (configured) return fs.existsSync(configured) ? path.resolve(configured) : null;
+  if (configured) return pathExists(configured) ? path.resolve(configured) : null;
 
   const programFiles = [
     env["ProgramFiles"],
@@ -165,7 +181,7 @@ export function solidworksInstallPath(env: NodeJS.ProcessEnv = process.env): str
     seen.add(corp);
     let entries: string[];
     try {
-      entries = fs.readdirSync(corp);
+      entries = directoryEntries(corp);
     } catch {
       continue;
     }
@@ -173,7 +189,7 @@ export function solidworksInstallPath(env: NodeJS.ProcessEnv = process.env): str
     for (const entry of entries) {
       if (!/^SOLIDWORKS/i.test(entry)) continue;
       const executable = path.join(corp, entry, "SLDWORKS.exe");
-      if (fs.existsSync(executable)) return executable;
+      if (pathExists(executable)) return executable;
     }
   }
   return null;

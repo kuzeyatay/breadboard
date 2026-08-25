@@ -9,6 +9,7 @@ import {
   GENERATED_VISUAL_PREVIEW_MAX_SELECT_STATES,
   GENERATED_VISUAL_REPAIR_HISTORY_MAX_ENTRIES,
   GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS,
+  GENERATED_VISUAL_PROVIDER_MAX_TOTAL_WAIT_MS,
   GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS,
   GENERATED_VISUAL_PROVIDER_TRANSPORT_MAX_ATTEMPTS,
   GENERATED_VISUAL_SEMANTIC_MAX_ATTEMPTS,
@@ -462,6 +463,41 @@ test("the soft deadline adopts the original late result without starting an iden
   assert.ok(recoveries[0].waitedMs >= 0);
 });
 
+test("provider deadline defaults cover ChatMock's full 30-minute window with one finite hard bound", () => {
+  assert.equal(GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS, 20 * 60_000);
+  assert.equal(GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS, 11 * 60_000);
+  assert.equal(GENERATED_VISUAL_PROVIDER_MAX_TOTAL_WAIT_MS, 31 * 60_000);
+  assert.equal(
+    GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS +
+      GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS,
+    GENERATED_VISUAL_PROVIDER_MAX_TOTAL_WAIT_MS,
+  );
+  assert.ok(GENERATED_VISUAL_PROVIDER_MAX_TOTAL_WAIT_MS > 5 * 60_000);
+  assert.ok(GENERATED_VISUAL_PROVIDER_MAX_TOTAL_WAIT_MS > 30 * 60_000);
+});
+
+test("the provider deadline clamps the combined wait while preserving tiny deterministic overrides", async () => {
+  const waits = [];
+  const result = await retryGeneratedVisualProviderRequest({
+    timeoutMs: 5,
+    lateResultGraceMs: GENERATED_VISUAL_PROVIDER_MAX_TOTAL_WAIT_MS,
+    work: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      return "bounded late result";
+    },
+    onLateResultWait: (event) => waits.push(event),
+  });
+
+  assert.equal(result, "bounded late result");
+  assert.deepEqual(waits, [
+    {
+      timeoutMs: 5,
+      lateResultGraceMs: GENERATED_VISUAL_PROVIDER_MAX_TOTAL_WAIT_MS - 5,
+      hardTimeoutMs: GENERATED_VISUAL_PROVIDER_MAX_TOTAL_WAIT_MS,
+    },
+  ]);
+});
+
 test("an exhausted ambiguous deadline fails closed after one call", async () => {
   let calls = 0;
   await assert.rejects(
@@ -656,8 +692,8 @@ test("built-in candidate keeps its SDK request recoverable and sends the exact m
 
     assert.equal(result.manifest?.generationAttempt, 1, result.errors.join("; "));
     assert.equal(bodies.length, 1);
-    assert.equal(GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS, 180_000);
-    assert.equal(GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS, 120_000);
+    assert.equal(GENERATED_VISUAL_PROVIDER_REQUEST_TIMEOUT_MS, 20 * 60_000);
+    assert.equal(GENERATED_VISUAL_PROVIDER_LATE_RESULT_GRACE_MS, 11 * 60_000);
     assert.equal(options[0].timeout, undefined);
     assert.ok(options[0].signal instanceof AbortSignal);
     assert.equal(options[0].maxRetries, 0);

@@ -80,10 +80,13 @@ function mockClient(allTimePages, hooks = {}) {
 
 test("shared instrumentation isolates the Node-only catalog scheduler", () => {
   const shared = fs.readFileSync(new URL("../src/instrumentation.ts", import.meta.url), "utf8");
+  const runtime = fs.readFileSync(new URL("../src/instrumentation-runtime.ts", import.meta.url), "utf8");
   const nodeOnly = fs.readFileSync(new URL("../src/instrumentation-node.ts", import.meta.url), "utf8");
   assert.match(shared, /NEXT_RUNTIME === ["']nodejs["']/);
-  assert.match(shared, /import\(["']\.\/instrumentation-node\.ts["']\)/);
+  assert.match(shared, /import\(["']\.\/instrumentation-runtime\.ts["']\)/);
   assert.doesNotMatch(shared, /skills-catalog-(?:store|sync)/);
+  assert.doesNotMatch(runtime, /skills-catalog-(?:store|sync)/);
+  assert.match(runtime, /startBackgroundCoordinator\(\)/);
   assert.match(nodeOnly, /import ["']server-only["']/);
   assert.match(nodeOnly, /skills-catalog-store\.ts/);
   assert.match(nodeOnly, /skills-catalog-sync\.ts/);

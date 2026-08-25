@@ -81,6 +81,7 @@ export interface CurrentPlanningJobBinding {
   garden_id: string;
   user_id: number | null;
   model: string | null;
+  source_set_hash: string | null;
   source_ids_json: string | null;
   syllabus_source_id: string | null;
   source_only: number | null;
@@ -140,6 +141,132 @@ export function exactStrictReceiptOriginBinding(
     originCreatedAt > originUpdatedAt ||
     originUpdatedAt > currentCreatedAt
   );
+}
+
+export type RecoveredLegacyPlanningOriginDisposition =
+  | "unrelated"
+  | "proven_unissued"
+  | "exact"
+  | "conflict";
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const RECOVERED_WORKER_STEP =
+  "Unresponsive Learn worker recovered; prior Learn state restored";
+const RECOVERED_WORKER_ERROR =
+  "Learn stopped responding before completion. Your garden was restored and is safe to retry.";
+
+/** Classify an abandoned no-receipt job before the legacy ledger bridge.
+ *
+ * A complete source-set hash is part of every recoverable planning envelope.
+ * Two valid, unequal hashes therefore prove different request epochs even when
+ * the raw document selection is the same. Conversely, a missing/corrupt hash
+ * is ambiguity, never permission to dispatch.
+ *
+ * A migration waiver is an explicit pre-run transition to the strict receipt
+ * protocol. For a job created strictly after that seal, the strict runtime's
+ * synchronous checkpoint-before-POST invariant makes an exact zero checkpoint
+ * and zero-observation record positive negative-dispatch evidence. Pre-seal
+ * jobs retain the full legacy source/model-policy requirements.
+ */
+export function classifyRecoveredLegacyPlanningOrigin(input: {
+  origin: PriorRecoveredPlanningJobRow;
+  current: CurrentPlanningJobBinding;
+  checkpointCount: number;
+  migrationSealedAt?: string | null;
+  expectedRequestModel: string;
+  expectedReasoningEffort: string;
+  expectedReasoningSummary: string;
+}): RecoveredLegacyPlanningOriginDisposition {
+  const { origin, current } = input;
+  const originSourceIds = exactStringArrayJson(origin.job_source_ids_json);
+  const currentSourceIds = exactStringArrayJson(current.source_ids_json);
+
+  // Invalid raw bindings are ambiguous. Valid but different immutable user,
+  // selection, option, or model bindings are genuinely unrelated.
+  if (originSourceIds === null || currentSourceIds === null) return "conflict";
+  if (
+    origin.garden_id !== current.garden_id ||
+    origin.job_garden_id !== current.garden_id ||
+    origin.job_user_id !== current.user_id ||
+    origin.job_model !== current.model ||
+    originSourceIds !== currentSourceIds ||
+    origin.job_syllabus_source_id !== current.syllabus_source_id ||
+    Number(origin.job_source_only ?? 0) !== Number(current.source_only ?? 0) ||
+    Number(origin.job_include_source_snapshots ?? 0) !==
+      Number(current.include_source_snapshots ?? 0)
+  ) {
+    return "unrelated";
+  }
+
+  const originSourceSetHash = origin.job_source_set_hash;
+  const currentSourceSetHash = current.source_set_hash;
+  if (
+    typeof originSourceSetHash !== "string" ||
+    !SHA256_HEX.test(originSourceSetHash) ||
+    typeof currentSourceSetHash !== "string" ||
+    !SHA256_HEX.test(currentSourceSetHash)
+  ) {
+    return "conflict";
+  }
+  if (originSourceSetHash !== currentSourceSetHash) return "unrelated";
+
+  const originCreatedAt = Date.parse(origin.job_created_at);
+  const originUpdatedAt = Date.parse(origin.job_updated_at);
+  const currentCreatedAt = Date.parse(current.created_at);
+  if (
+    origin.job_status !== "failed" ||
+    origin.job_current_step !== RECOVERED_WORKER_STEP ||
+    origin.job_error !== RECOVERED_WORKER_ERROR ||
+    origin.map_count !== 0 ||
+    origin.version_count !== 0 ||
+    !Number.isFinite(originCreatedAt) ||
+    !Number.isFinite(originUpdatedAt) ||
+    !Number.isFinite(currentCreatedAt) ||
+    originCreatedAt > originUpdatedAt ||
+    originUpdatedAt > currentCreatedAt
+  ) {
+    return "conflict";
+  }
+
+  if (input.migrationSealedAt !== undefined && input.migrationSealedAt !== null) {
+    const migrationSealedAt = Date.parse(input.migrationSealedAt);
+    if (!Number.isFinite(migrationSealedAt)) return "conflict";
+    if (migrationSealedAt < originCreatedAt) {
+      const usageUpdatedAt = Date.parse(origin.usage_updated_at ?? "");
+      const exactZeroObservation =
+        origin.started_requests === 0 &&
+        origin.completed_requests === 0 &&
+        origin.reported_requests === 0 &&
+        origin.policy_observed_requests === 0 &&
+        origin.policy_mismatch_requests === 0 &&
+        origin.request_model === null &&
+        origin.reasoning_effort === null &&
+        origin.reasoning_summary === null &&
+        Number.isFinite(usageUpdatedAt) &&
+        usageUpdatedAt >= originCreatedAt &&
+        usageUpdatedAt <= originUpdatedAt;
+      return Number.isSafeInteger(input.checkpointCount) &&
+        input.checkpointCount === 0 &&
+        exactZeroObservation
+        ? "proven_unissued"
+        : "conflict";
+    }
+  }
+
+  const observed = origin.policy_observed_requests;
+  return (
+    origin.request_model === input.expectedRequestModel &&
+    origin.reasoning_effort === input.expectedReasoningEffort &&
+    origin.reasoning_summary === input.expectedReasoningSummary &&
+    origin.policy_mismatch_requests === 0 &&
+    typeof observed === "number" &&
+    Number.isSafeInteger(observed) &&
+    observed > 0 &&
+    origin.started_requests === observed &&
+    origin.completed_requests === observed
+  )
+    ? "exact"
+    : "conflict";
 }
 
 export type PlanningCheckpointRecoveryDisposition =

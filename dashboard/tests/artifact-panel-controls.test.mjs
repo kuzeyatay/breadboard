@@ -42,6 +42,26 @@ test("creating an artifact refreshes its archive without opening artifact UI", (
   assert.match(panel, /void refresh\(\)/);
 });
 
+test("the artifact viewer uses an icon download action and fits Office pages", () => {
+  const viewer = source("../src/app/components/hermes/artifact-viewer.tsx");
+
+  assert.match(viewer, /aria-label=\{`Download \$\{artifact\.filename\}`\}/);
+  assert.match(viewer, /title="Download"/);
+  assert.doesNotMatch(
+    viewer,
+    /href=\{downloadUrl\}[\s\S]{0,400}>\s*Download\s*<\/a>/,
+  );
+
+  assert.match(viewer, /function ArtifactOfficeDocumentFrame/);
+  assert.match(viewer, /Math\.min\(availableWidth \/ pageWidth, 1\)/);
+  assert.match(viewer, /wrapper\.style\.overflow = "hidden"/);
+  assert.match(viewer, /data-artifact-office-preview/);
+  assert.match(
+    viewer,
+    /artifact\.kind === "document" && !editingDocument[\s\S]{0,120}\? "overflow-auto p-0"/,
+  );
+});
+
 test("Garden artifact tabs use the archive icon without a duplicate panel header", () => {
   const panel = source("../src/app/components/hermes/artifact-panel.tsx");
   const floatingGarden = source("../src/app/components/hermes/garden-agent-chat.tsx");
