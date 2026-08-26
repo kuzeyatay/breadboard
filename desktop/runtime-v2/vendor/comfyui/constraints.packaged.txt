@@ -1,0 +1,5 @@
+# Breadboard's universal Windows x64 CPU policy for ComfyUI.
+# Keep the PyTorch family on one compatible release line.
+torch==2.11.0
+torchvision==0.26.0
+torchaudio==2.11.0
