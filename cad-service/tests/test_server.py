@@ -7,8 +7,9 @@ import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
-from breadboard_cad.server import _Handler
+from breadboard_cad.server import _Handler, _kernel_probe, _reset_kernel_probe_cache
 
 SECRET = "test-secret-value"
 
@@ -64,6 +65,45 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(body["pythonVersion"].startswith("3."))
         self.assertEqual(set(body["exportFormats"]), {"step", "stl", "glb", "3mf"})
         self.assertEqual(body["engines"], ["cadquery"])
+
+    def test_kernel_probe_rejects_a_native_crash_after_valid_output(self):
+        completed = type(
+            "Completed",
+            (),
+            {
+                "returncode": -1073741819,
+                "stdout": b'{"python":"3.12.10","cadquery":"2.6.0"}',
+                "stderr": b"",
+            },
+        )()
+        _reset_kernel_probe_cache()
+        try:
+            with patch("breadboard_cad.server.subprocess.run", return_value=completed):
+                probe = _kernel_probe()
+        finally:
+            _reset_kernel_probe_cache()
+        self.assertIn("exited with code", probe["error"])
+
+    def test_kernel_probe_caches_a_successful_immutable_runtime(self):
+        completed = type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": b'{"python":"3.12.10","cadquery":"2.6.0","ocp":"7.8.1.1.post1"}',
+                "stderr": b"",
+            },
+        )()
+        _reset_kernel_probe_cache()
+        try:
+            with patch(
+                "breadboard_cad.server.subprocess.run", return_value=completed
+            ) as run:
+                self.assertEqual(_kernel_probe()["cadquery"], "2.6.0")
+                self.assertEqual(_kernel_probe()["cadquery"], "2.6.0")
+                run.assert_called_once()
+        finally:
+            _reset_kernel_probe_cache()
 
     def test_execute_requires_the_shared_secret(self):
         status, _ = request(f"{self.base}/execute", method="POST", token=None, payload={"source": BOX})

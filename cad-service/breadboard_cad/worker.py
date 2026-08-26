@@ -279,8 +279,27 @@ def main(argv: list[str]) -> int:
 
     with open(result_path, "w", encoding="utf-8") as handle:
         json.dump(result.model_dump(by_alias=True, mode="json"), handle)
+        handle.flush()
+        os.fsync(handle.fileno())
     return 0
 
 
+def _exit_without_native_teardown(exit_code: int) -> None:
+    """Finish a one-shot worker without finalizing CadQuery's native graph.
+
+    CadQuery 2.6.0 loads both CasADi and NLopt; the exact pinned Windows graph
+    can fault while embedded CPython 3.12 unloads their native DLLs. The job and
+    every export are already closed before this point, so interpreter
+    finalizers have no durable work left to do. A direct process exit keeps a
+    completed CAD job from being reported as a native crash during teardown.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    os._exit(exit_code)
+
+
 if __name__ == "__main__":  # pragma: no cover - process entry point
-    raise SystemExit(main(sys.argv))
+    _exit_without_native_teardown(main(sys.argv))

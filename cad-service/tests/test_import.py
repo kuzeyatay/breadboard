@@ -7,9 +7,12 @@ proves an attached STEP file really does become something a viewer can draw.
 """
 
 import base64
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
-
-import cadquery as cq
+from pathlib import Path
 
 from breadboard_cad.executor import convert
 from breadboard_cad.models import ConvertRequest
@@ -26,23 +29,59 @@ def _request(payload: bytes, fmt: str = "step") -> ConvertRequest:
     )
 
 
-def _export(shape, suffix: str, export_type: str) -> bytes:
-    import os
-    import tempfile
+def _source_fixtures() -> dict[str, bytes]:
+    """Create exchange fixtures in a one-shot kernel child.
 
-    directory = tempfile.mkdtemp()
-    path = os.path.join(directory, f"part{suffix}")
-    cq.exporters.export(shape, path, exportType=export_type)
-    with open(path, "rb") as handle:
-        return handle.read()
+    CadQuery 2.6.0's pinned Windows native graph can fault while CPython
+    unloads it. Keeping fixture generation in the same direct-exit lifecycle
+    as the production worker prevents a successful test process from crashing
+    during interpreter teardown.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        script = f"""
+import os
+import sys
+import cadquery as cq
+from OCP.IGESControl import IGESControl_Writer
+
+directory = {directory!r}
+step_part = cq.Workplane("XY").box(30, 20, 10).faces(">Z").workplane().hole(6)
+cq.exporters.export(step_part, os.path.join(directory, "part.step"), exportType="STEP")
+
+shape = cq.Workplane("XY").box(20, 20, 20).val()
+shape.exportBrep(os.path.join(directory, "part.brep"))
+writer = IGESControl_Writer()
+writer.AddShape(shape.wrapped)
+writer.Write(os.path.join(directory, "part.igs"))
+
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(0)
+"""
+        completed = subprocess.run(
+            [sys.executable, "-s", "-B", "-c", script],
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"CAD fixture child exited with code {completed.returncode}: {detail[:2_000]}"
+            )
+        return {
+            name: (Path(directory) / name).read_bytes()
+            for name in ("part.step", "part.brep", "part.igs")
+        }
 
 
 class ImportTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        # A part with a hole, so the tessellation has something curved to do.
-        cls.part = cq.Workplane("XY").box(30, 20, 10).faces(">Z").workplane().hole(6)
-        cls.step = _export(cls.part, ".step", "STEP")
+        fixtures = _source_fixtures()
+        cls.step = fixtures["part.step"]
+        cls.brep = fixtures["part.brep"]
+        cls.iges = fixtures["part.igs"]
 
     def test_a_step_file_becomes_a_mesh_the_browser_can_draw(self) -> None:
         outcome = convert(_request(self.step))
@@ -65,27 +104,11 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(glb[:4], b"glTF")
 
     def test_the_kernel_reads_brep_and_iges_as_well(self) -> None:
-        from OCP.IGESControl import IGESControl_Writer
-
-        import os
-        import tempfile
-
-        shape = cq.Workplane("XY").box(20, 20, 20).val()
-        directory = tempfile.mkdtemp()
-
-        brep_path = os.path.join(directory, "part.brep")
-        shape.exportBrep(brep_path)
-        with open(brep_path, "rb") as handle:
-            brep = convert(_request(handle.read(), "brep")).result
+        brep = convert(_request(self.brep, "brep")).result
         self.assertTrue(brep.ok, brep.failure.message if brep.failure else "")
         self.assertAlmostEqual(brep.bounding_box.x, 20.0, places=3)
 
-        iges_path = os.path.join(directory, "part.igs")
-        writer = IGESControl_Writer()
-        writer.AddShape(shape.wrapped)
-        writer.Write(iges_path)
-        with open(iges_path, "rb") as handle:
-            iges = convert(_request(handle.read(), "iges")).result
+        iges = convert(_request(self.iges, "iges")).result
         self.assertTrue(iges.ok, iges.failure.message if iges.failure else "")
         self.assertAlmostEqual(iges.bounding_box.x, 20.0, places=3)
 
