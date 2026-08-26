@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -28,6 +29,10 @@ from .models import IMPORT_FORMATS, BuildRequest, ConvertRequest, HealthResponse
 #: One build at a time per service. OpenCascade is memory-hungry and a queue of
 #: them on a laptop is worse than a short wait.
 _BUILD_SEMAPHORE = threading.BoundedSemaphore(2)
+_KERNEL_PROBE_LOCK = threading.Lock()
+_KERNEL_PROBE_CACHE: dict[str, str] | None = None
+_KERNEL_PROBE_CACHED_AT = 0.0
+_KERNEL_PROBE_FAILURE_RETRY_SECONDS = 60.0
 
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 #: An import carries the user's file inline as base64, so its ceiling is the
@@ -43,31 +48,76 @@ def _kernel_probe() -> dict[str, str]:
     few hundred megabytes — out of the service, and makes a broken install a
     reported health state rather than a service that will not start.
     """
-    script = (
-        "import json,sys\n"
-        "out={'python': sys.version.split()[0]}\n"
-        "try:\n"
-        "    import cadquery\n"
-        "    out['cadquery']=getattr(cadquery,'__version__','unknown')\n"
-        "except Exception as error:\n"
-        "    out['error']=f'{type(error).__name__}: {error}'\n"
-        "try:\n"
-        "    import importlib.metadata as m\n"
-        "    out['ocp']=m.version('cadquery-ocp')\n"
-        "except Exception:\n"
-        "    out['ocp']='unknown'\n"
-        "sys.stdout.write(json.dumps(out))\n"
-    )
-    try:
-        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            [sys.executable, "-s", "-B", "-c", script],
-            capture_output=True,
-            timeout=120,
-            check=False,
+    global _KERNEL_PROBE_CACHE, _KERNEL_PROBE_CACHED_AT
+
+    with _KERNEL_PROBE_LOCK:
+        now = time.monotonic()
+        if _KERNEL_PROBE_CACHE is not None and (
+            "error" not in _KERNEL_PROBE_CACHE
+            or now - _KERNEL_PROBE_CACHED_AT < _KERNEL_PROBE_FAILURE_RETRY_SECONDS
+        ):
+            return dict(_KERNEL_PROBE_CACHE)
+
+        script = (
+            "import json,os,sys\n"
+            "out={'python': sys.version.split()[0]}\n"
+            "try:\n"
+            "    import cadquery\n"
+            "    out['cadquery']=getattr(cadquery,'__version__','unknown')\n"
+            "except Exception as error:\n"
+            "    out['error']=f'{type(error).__name__}: {error}'\n"
+            "try:\n"
+            "    import importlib.metadata as m\n"
+            "    out['ocp']=m.version('cadquery-ocp')\n"
+            "except Exception:\n"
+            "    out['ocp']='unknown'\n"
+            "sys.stdout.write(json.dumps(out))\n"
+            "sys.stdout.flush()\n"
+            # The exact CadQuery Windows native graph can fault only during
+            # embedded-Python teardown. The probe has no state to finalize.
+            "os._exit(0)\n"
         )
-        return json.loads(completed.stdout.decode("utf-8", errors="replace") or "{}")
-    except Exception as error:
-        return {"error": f"{type(error).__name__}: {error}", "python": sys.version.split()[0]}
+        try:
+            completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+                [sys.executable, "-s", "-B", "-c", script],
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+            if completed.returncode != 0:
+                detail = completed.stderr.decode("utf-8", errors="replace").strip()
+                result = {
+                    "error": f"kernel probe exited with code {completed.returncode}"
+                    + (f": {detail[:1_000]}" if detail else ""),
+                    "python": sys.version.split()[0],
+                }
+            else:
+                parsed = json.loads(completed.stdout.decode("utf-8", errors="replace") or "{}")
+                result = (
+                    parsed
+                    if isinstance(parsed, dict)
+                    else {
+                        "error": "kernel probe returned invalid JSON",
+                        "python": sys.version.split()[0],
+                    }
+                )
+        except Exception as error:
+            result = {
+                "error": f"{type(error).__name__}: {error}",
+                "python": sys.version.split()[0],
+            }
+        _KERNEL_PROBE_CACHE = {str(key): str(value) for key, value in result.items()}
+        _KERNEL_PROBE_CACHED_AT = time.monotonic()
+        return dict(_KERNEL_PROBE_CACHE)
+
+
+def _reset_kernel_probe_cache() -> None:
+    """Reset process-local probe state for deterministic tests."""
+    global _KERNEL_PROBE_CACHE, _KERNEL_PROBE_CACHED_AT
+
+    with _KERNEL_PROBE_LOCK:
+        _KERNEL_PROBE_CACHE = None
+        _KERNEL_PROBE_CACHED_AT = 0.0
 
 
 class _Handler(BaseHTTPRequestHandler):

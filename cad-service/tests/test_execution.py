@@ -7,6 +7,8 @@ prove the service does what its contract says.
 
 import struct
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from breadboard_cad.executor import execute
 from breadboard_cad.models import BuildRequest
@@ -91,6 +93,22 @@ class ExecutionTest(unittest.TestCase):
         self.assertTrue(result.solids[0].watertight)
         self.assertTrue(passed(result.issues), [i.model_dump() for i in result.issues])
         self.assertEqual({"step", "stl", "glb"}, set(outcome.files))
+
+    def test_a_native_crash_is_rejected_even_after_writing_a_result(self):
+        class CrashedWorker:
+            returncode = -1073741819
+
+            def __init__(self, argv, **_kwargs):
+                Path(argv[-1]).write_text('{"ok":true}', encoding="utf-8")
+
+            def communicate(self, timeout=None):  # noqa: ARG002 - subprocess-compatible fake
+                return b"", b""
+
+        with patch("breadboard_cad.executor.subprocess.Popen", CrashedWorker):
+            outcome = build(BOX, exports=[])
+        self.assertFalse(outcome.result.ok)
+        self.assertEqual(outcome.result.failure.code, "worker_crashed")
+        self.assertEqual(outcome.files, {})
 
     def test_step_and_stl_are_nonempty_and_parseable(self):
         outcome = build(BOX)

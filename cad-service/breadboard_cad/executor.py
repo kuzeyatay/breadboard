@@ -335,14 +335,34 @@ def _supervise(
                 {},
             )
 
+        if process.returncode != 0:
+            result_state = (
+                "after writing a result"
+                if os.path.isfile(result_path)
+                else "without writing a result"
+            )
+            return ExecutionOutcome(
+                BuildResult(
+                    ok=False,
+                    failure=ExecutionFailure(
+                        code="worker_crashed",
+                        message=f"The CAD worker exited with code {process.returncode} "
+                        f"{result_state}. This is usually an OpenCascade crash.",
+                    ),
+                    stdout=_truncate(stdout),
+                    stderr=_truncate(stderr),
+                    durationMs=duration_ms,
+                ),
+                {},
+            )
+
         if not os.path.isfile(result_path):
             return ExecutionOutcome(
                 BuildResult(
                     ok=False,
                     failure=ExecutionFailure(
                         code="worker_crashed",
-                        message=f"The CAD worker exited with code {process.returncode} without "
-                        "writing a result. This is usually an OpenCascade crash.",
+                        message="The CAD worker exited successfully without writing a result.",
                     ),
                     stdout=_truncate(stdout),
                     stderr=_truncate(stderr),
